@@ -182,6 +182,20 @@ class FinishedMessage:
 AudienceFilter = Literal["none", "co_location", "full"]
 SAFE_FALLBACK = "safe_fallback"
 """The ``degradation`` entry of a turn whose reply is the safe fallback (#68)."""
+QUARANTINED_CONTEXT = "quarantined_context"
+"""The ``degradation`` entry of a turn whose rejected renders quarantined context records
+(FR-GUARD-5; #145): the regeneration ran without them."""
+PIN_QUARANTINED = "pin_quarantined"
+"""The warning naming an author pin the convergence rule quarantined (#145)."""
+
+
+@dataclass(frozen=True, slots=True)
+class TurnWarning:
+    """Something the turn did that the consumer should know (#145: ``pin_quarantined``, an
+    author pin the output gate's convergence rule quarantined, with its ``memory_id``)."""
+
+    kind: str
+    memory_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,6 +275,8 @@ class RespondResult:
     """The capabilities that configuration enables (#109)."""
     quality_status: QualityStatus | None = None
     """That configuration's quality status: ``uncertified`` in M3 (#109)."""
+    warnings: list[TurnWarning] = field(default_factory=list)
+    """What the turn did that the consumer should know (#145: ``pin_quarantined``)."""
     profile: ProfileVersionRef | None = None
     """The engine profile and the version the turn ran under (C-16, FR-PROF-6; #113): the
     configuration it captured at its start. ``None`` only in a result stored before #113."""
@@ -282,6 +298,8 @@ class RegenerateResult(RespondResult):
 
 __all__ = [
     "MAX_INPUT_CHARS",
+    "PIN_QUARANTINED",
+    "QUARANTINED_CONTEXT",
     "SAFE_FALLBACK",
     "BudgetOverride",
     "BudgetReport",
@@ -296,4 +314,5 @@ __all__ = [
     "RespondRequest",
     "RespondResult",
     "SceneContext",
+    "TurnWarning",
 ]

@@ -95,6 +95,16 @@ source_modules = ["epistrel.core"]
 forbidden_modules = ["epistrel.orchestrator", "epistrel.api"]
 
 [[tool.importlinter.contracts]]
+# FR-PROP-6,9, FR-RET-2 (#139): resolution never calls a model. Nothing in `epistrel.core.resolution`
+# reaches the Model Access Layer (the Orchestrator), the Engine or the API, directly or through
+# another module; `tests/test_resolution.py` also runs the resolvers with a stub adapter that fails
+# on any call.
+name = "resolution-calls-no-model"
+type = "forbidden"
+source_modules = ["epistrel.core.resolution"]
+forbidden_modules = ["epistrel.orchestrator", "epistrel.engine", "epistrel.api"]
+
+[[tool.importlinter.contracts]]
 # #74: `epistrel.core` imports `epistrel.observability` (the telemetry scope and spans), so
 # observability must not reach the orchestrator, the API or the Engine, or core would through it.
 name = "observability-is-below-orchestrator-and-api"
@@ -158,6 +168,21 @@ ignore_imports = [
     "epistrel.core.erasure.erase -> epistrel.core.feedback",
 ]
 
+[[tool.importlinter.contracts]]
+# NFR-QUAL-8 (#134): the eval harness never runs in a turn. Nothing in the engine (Core, the
+# Orchestrator, the API, the Engine, observability) imports `epistrel.evals`, directly or through
+# another module; the harness may import any of them (it drives the in-process Engine).
+name = "nothing-in-the-engine-imports-the-eval-harness"
+type = "forbidden"
+source_modules = [
+    "epistrel.core",
+    "epistrel.orchestrator",
+    "epistrel.api",
+    "epistrel.engine",
+    "epistrel.observability",
+]
+forbidden_modules = ["epistrel.evals"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -208,12 +233,14 @@ addopts = "-ra --strict-markers"
 markers = [
     "integration: needs PostgreSQL (Docker via testcontainers, or EPISTREL_TEST_DATABASE_URL)",
     "redteam: red-team suite (docs/04 §10, R-xx); runs in PR CI with everything else",
+    "redteam_long: the full red-team corpora (R-01's 20 poisoning sequences; #145); deselected unless -m names the marker, run nightly by redteam.yml. PR CI runs the `redteam` subset",
     "live_model: needs a real OpenAI-compatible endpoint (EPISTREL_LIVE_BASE_URL/_MODEL/_API_KEY); deselected unless -m names it, and fails when those are unset (#54)",
     "chaos: chaos suite (docs/04 §12, X-xx); every test under tests/chaos/ (auto-marked). PR CI runs only the chaos_quick ones, at their default EPISTREL_CHAOS_ITERATIONS; the weekly chaos.yml runs them all at 500 (#75)",
     "chaos_quick: the chaos tests PR CI runs (quick at their default iteration count; #75)",
     "perf_quick: the performance tests PR CI runs (P-03's quick subset; #76); the nightly perf.yml runs them with the perf_long ones",
     "perf_long: long performance tests (P-03 on the 20,000-event reference story; #76); deselected unless -m names the marker, run nightly by perf.yml. P-04's reference workload itself is `python -m perf.lite_smoke`, not a test",
     "smoke: the deployment smoke (C-10, #77): every test under tests/smoke/ (auto-marked), run against a live compose stack at EPISTREL_SMOKE_BASE_URL; deselected unless -m names it, and fails when that is unset. publish-edge.yml and release.yml run it before publishing",
+    "soak: long-horizon soak tests (docs/04 §12, X-01's 20,000 turns; #147); deselected unless -m names the marker, run weekly by soak.yml",
     "part(milestone, requirements, interim_until=None): milestone part (docs/04 §13) — gates from <milestone>, covers <requirements>; see tests/README.md",
 ]
 # tests/gates/fixtures holds deliberately broken test trees for the gate checks; pytest must not collect them.
@@ -225,7 +252,8 @@ asyncio_default_test_loop_scope = "session"
 [tool.coverage.run]
 branch = true
 source = ["epistrel"]
-omit = ["tools/*"]
+# The eval harness (#134) is measured by its own runs, not by the core coverage gate.
+omit = ["tools/*", "*/epistrel/evals/*"]
 
 [tool.coverage.report]
 # fail_under is deliberately not set here: the gate passes `--cov-fail-under=90` explicitly for

@@ -205,6 +205,10 @@ async def _scenario(url: str, steps: list[Action]) -> None:
             "story_heads": 1,
             "story_texts": 1,
             "lite_summary_segments": len(incremental.segments),
+            # The structured projections over canon (#137): a Lite story has none.
+            "relationships": 0,
+            "placement": 0,
+            "scene_state": 0,
         }
         # The corrupted row is replaced and the invented row is gone, not kept.
         assert all("corrupted" not in row and BOGUS_ID not in row for row in rebuilt.transcript)
@@ -220,11 +224,19 @@ async def _scenario(url: str, steps: list[Action]) -> None:
 )
 @given(steps=actions)
 # Always run once: random draws favour the list's first entries, and a run whose draws never
-# reached the later ones would fail the occurrence check for want of trying (#60).
+# reached the later ones would fail the occurrence check for want of trying (#60). The example
+# alone makes every kind the occurrence check names occur, whatever the random draws do (#276):
+# turns 1-3 are truncated away, restored, truncated again, written over and swapped back.
 @example(
     steps=[
         ("turn", 0),
         ("turn", 1),
+        ("turn", 2),
+        ("truncate", 1),
+        ("untruncate", 0),
+        ("truncate", 1),
+        ("turn", 3),
+        ("swap", 0),
         ("pins", 3),
         ("instructions", 1),
         ("regenerate", 0),

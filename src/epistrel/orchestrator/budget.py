@@ -24,11 +24,16 @@ the story's cap, or a ``deadline_s`` above its turn deadline (``budgets.deadline
 ``validation_error``.
 A cap below ``1 + G`` is 422 ``budget_below_safety_minimum`` with ``minimum_required``,
 ``max_calls`` and ``reserved``, raised before any model call.
+
+**Embedding calls** (#141): a structured turn's retrieval embeds its query (and may re-embed
+rehydrated memories in one batch); ``counted_embedder`` wraps the injected embedder so each
+call is counted in ``TurnBudget.embedding_calls``, apart from the call cap.
 """
 
 from __future__ import annotations
 
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -63,6 +68,11 @@ class TurnBudget:
     """The guardrail calls G reserved at planning: ``guardrail_input``, ``guardrail_output``."""
     held: int = 0
     """Reserved slots not yet spent: only a first attempt may spend one."""
+    embedding_calls: int = 0
+    """The embedding calls the turn's retrievals made (a query, a rehydration batch; #141).
+    Counted apart from ``used``: an embedding call is no model call of the cap (NFR-PERF-6
+    counts generation-side calls), and it is reported under ``purpose=embedding`` and in
+    ``model_calls`` like any other (#138)."""
 
     def __post_init__(self) -> None:
         if self.max_calls is not None and self.max_calls < 0:
@@ -145,6 +155,19 @@ class TurnBudget:
         }
 
 
+def counted_embedder[**P, R](
+    embed: Callable[P, Awaitable[R]], budget: TurnBudget
+) -> Callable[P, Awaitable[R]]:
+    """``embed`` (a ``core.retrieval`` ``Embedder`` or ``BatchEmbedder``) counting each call it
+    makes in ``budget.embedding_calls``, failed calls included (#141)."""
+
+    async def counted(*args: P.args, **kwargs: P.kwargs) -> R:
+        budget.embedding_calls += 1
+        return await embed(*args, **kwargs)
+
+    return counted
+
+
 def effective_max_calls(
     story_max_calls: int | None, deployment_max_calls: int | None, guardrail_calls: int
 ) -> tuple[int, str]:
@@ -213,6 +236,7 @@ __all__ = [
     "MIN_CALLS_PER_TURN",
     "MIN_DEADLINE_S",
     "TurnBudget",
+    "counted_embedder",
     "effective_max_calls",
     "lite_default_calls",
     "plan_lite_budget",

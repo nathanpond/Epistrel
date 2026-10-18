@@ -15,7 +15,9 @@ and enqueues the job of every story with work. Every ``lite_summary`` job runs o
 its transcript rows, declaring every source turn's operation and every included segment's
 operation as an input (``operations:<id>``, FR-STORE-27). Then, outside the snapshot, it calls
 the ``lite_summary`` purpose through the Model Access Layer, under its own budget of
-``MAX_CALLS_PER_RUN`` (20) calls, never a turn's (FR-LITE-7):
+``MAX_CALLS_PER_RUN`` (20) calls, never a turn's (FR-LITE-7), routed by the story's effective
+configuration (``models.purposes.lite_summary``: its model, and its params over the call's own,
+#325):
 
 - **compress**: each chunk, oldest first, becomes one level-0 segment (the segment just before
   is context only). Each text passes the story's **deterministic** output policies before it is
@@ -42,7 +44,7 @@ without one bound the run fails (its class name is the job's result).
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
@@ -63,6 +65,7 @@ from epistrel.core.ids import new_ulid
 from epistrel.core.input_versions import input_key
 from epistrel.core.policies.model import ModelAssistedRule, Policy
 from epistrel.core.ports import RegeneratedText, Regeneration, SummaryWindow
+from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.summary import Chunk, Segment
 from epistrel.core.tables import characters, lite_summary_segments, operations, stories
 from epistrel.core.tables import transcript_messages as transcript
@@ -74,8 +77,9 @@ from epistrel.orchestrator.jobs.recurring import OK as TASK_OK
 from epistrel.orchestrator.jobs.recurring import NoPayload, RecurringTask, record
 from epistrel.orchestrator.jobs.types import JobContext, JobHandler, JobOutput, PositionedOutput
 from epistrel.orchestrator.lite.prompt import prompt_hash, transcript_line
-from epistrel.orchestrator.models.access import ModelAccessLayer
+from epistrel.orchestrator.models.access import NO_ROUTES, ModelAccessLayer, routing
 from epistrel.orchestrator.models.adapter import ModelParams
+from epistrel.orchestrator.models.config import Route, routes_of
 from epistrel.orchestrator.models.errors import BudgetExhausted, ModelError
 from epistrel.orchestrator.models.registry import LiteSummaryInputs
 from epistrel.orchestrator.policies.output_gate import deterministic_check, output_policies
@@ -176,6 +180,8 @@ class _Run:
     budget: TurnBudget
     cap: int
     """The summary's token cap (``compress_threshold_tokens``) the run merges down to."""
+    routes: Mapping[str, Route] = NO_ROUTES
+    """The story's per-purpose routes (its effective configuration's ``models.purposes``)."""
     pending: list[_Pending] = field(default_factory=list)
     rejected: list[GuardrailOutputRejected] = field(default_factory=list)
     calls_failed: bool = False
@@ -205,13 +211,27 @@ async def _story_names(conn: AsyncConnection, story_id: str) -> dict[str, str]:
     return {r.id: r.name for r in found}
 
 
+BUILT_IN_PARAMS = ModelParams(
+    temperature=summary.TEMPERATURE, max_tokens=summary.RESPONSE_MAX_TOKENS
+)
+"""The summary call's own params; the story's ``lite_summary`` route's params win over them."""
+
+
+async def _routes(conn: AsyncConnection, story_id: str) -> Mapping[str, Route]:
+    """The story's per-purpose routes (#325), from its effective configuration as it stands
+    (routing needs no whole-combination check)."""
+    return routes_of((await effective_configuration(conn, story_id, validate=False)).settings)
+
+
 async def _write(run: _Run, inputs: LiteSummaryInputs) -> _Text | None:
     """One summary text that passes the deterministic output policies, or ``None`` after
     ``ATTEMPTS_PER_TEXT`` violating ones (each kept as an audit record)."""
-    params = ModelParams(temperature=summary.TEMPERATURE, max_tokens=summary.RESPONSE_MAX_TOKENS)
+    route = run.routes.get(LITE_SUMMARY)
+    params = BUILT_IN_PARAMS.merged(route.params if route is not None else None)
     for attempt in range(ATTEMPTS_PER_TEXT):
         _, _, messages = run.models.prepare(LITE_SUMMARY, inputs)
-        result = await run.models.call(LITE_SUMMARY, inputs, params, budget=run.budget)
+        with routing(run.routes):
+            result = await run.models.call(LITE_SUMMARY, inputs, params, budget=run.budget)
         text = result.text.strip()
         check = deterministic_check(text, run.policies)
         if check.passed:
@@ -361,6 +381,7 @@ async def _run_story(ctx: JobContext, story_id: str) -> JobOutput:
         for segment in state.segments:
             await ctx.declare_input(conn, input_key(operations.name, segment.operation_id))
         names = await _story_names(conn, story_id)
+        routes = await _routes(conn, story_id)
         chunks: list[tuple[Chunk, list[Any]]] = []
         for chunk in state.chunks[: summary.MAX_CALLS_PER_RUN]:
             for turn in chunk.turns:
@@ -379,6 +400,7 @@ async def _run_story(ctx: JobContext, story_id: str) -> JobOutput:
         names=list(names.values()),
         budget=TurnBudget(max_calls=summary.MAX_CALLS_PER_RUN),
         cap=state.settings.max_tokens,
+        routes=routes,
     )
     await _summarise(run, chunks, state.segments)
     return _output(story_id, run, chunks)
@@ -499,6 +521,7 @@ class ErasureCompressor:
     ) -> Regeneration:
         async with db.connect() as conn:
             names = await _story_names(conn, story_id)
+            routes = await _routes(conn, story_id)
             chunks: list[tuple[SummaryWindow, list[Any]]] = []
             for window in windows:
                 rows = await transcript_rows(
@@ -518,6 +541,7 @@ class ErasureCompressor:
             names=list(names.values()),
             budget=TurnBudget(max_calls=summary.MAX_CALLS_PER_RUN),
             cap=0,
+            routes=routes,
         )
         texts: dict[str, RegeneratedText] = {}
         capped = failed = False

@@ -4,9 +4,14 @@ import pytest
 
 from tests.conftest import REPO_ROOT
 
+# The inner collections run in a subprocess. In process, pytester restores its `sys.modules`
+# snapshot afterwards and drops the modules the inner run imported first, while module-level
+# state they registered elsewhere survives: a later re-import of `epistrel.core.schema` then
+# redeclared `schema_meta` on the surviving `MetaData` (#311).
+
 
 def test_not_integration_selects_no_integration_tests(pytester: pytest.Pytester) -> None:
-    result = pytester.runpytest(
+    result = pytester.runpytest_subprocess(
         "--collect-only",
         "-q",
         "-m",
@@ -24,7 +29,7 @@ def test_not_integration_selects_no_integration_tests(pytester: pytest.Pytester)
 
 
 def _collected(pytester: pytest.Pytester, *args: str) -> list[str]:
-    result = pytester.runpytest(
+    result = pytester.runpytest_subprocess(
         "--collect-only",
         "-q",
         *args,

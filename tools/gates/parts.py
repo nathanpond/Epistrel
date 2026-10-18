@@ -14,6 +14,7 @@ from typing import Literal
 
 from tools.gates.spec import (
     ID_PATTERN,
+    TEST_ID_RE,
     Spec,
     SpecError,
     expand_ids,
@@ -78,7 +79,11 @@ class PartsReport:
 
 
 def derive_test_id(name: str) -> str | None:
-    """`test_i_18__pins` → `I-18`; `test_outbox` → `OUTBOX`; non-`test_` names → None."""
+    """`test_i_18__pins` → `I-18`; `test_outbox` → `OUTBOX`; non-`test_` names → None.
+
+    A name whose ID a §15 Tests entry cannot hold (`test_1x` → `1X`, `test__x` → `-X`) maps to
+    None too, so it is reported as unmappable rather than asked for in §15 (#307).
+    """
     if not name.startswith("test_"):
         return None
     rest = name.removeprefix("test_").split("__", 1)[0]
@@ -86,8 +91,10 @@ def derive_test_id(name: str) -> str | None:
         return None
     head, _, tail = rest.partition("_")
     if head in TEST_ID_FAMILIES and tail:
-        return f"{head.upper()}-{tail.upper().replace('_', '-')}"
-    return rest.upper().replace("_", "-")
+        test_id = f"{head.upper()}-{tail.upper().replace('_', '-')}"
+    else:
+        test_id = rest.upper().replace("_", "-")
+    return test_id if TEST_ID_RE.match(test_id) else None
 
 
 # --- AST collection -------------------------------------------------------------------------
@@ -208,7 +215,8 @@ def collect_parts(tests_root: Path, repo_root: Path, spec: Spec) -> tuple[list[P
     """Walk `tests_root`; return (parts, findings about individual parts), sorted by (file, line).
 
     Findings here are about a part's own shape against the spec (bad milestone, undefined or
-    later requirement, bad interim_until). Coverage findings are computed by `check_parts`.
+    later requirement, bad interim_until, a name that maps to no docs/04 test ID). Coverage
+    findings are computed by `check_parts`.
     """
     tests_root = tests_root.resolve()
     repo_root = repo_root.resolve()
@@ -284,6 +292,13 @@ def collect_parts(tests_root: Path, repo_root: Path, spec: Spec) -> tuple[list[P
                     continue
                 candidates.append((max(gating), ids, None, "docstring"))
 
+            test_id = derive_test_id(name.rsplit("::", 1)[-1])
+            if markers and test_id is None:
+                # Said here, not only by check-traceability, so the author learns it from the
+                # marker's own gate before §15 asks for an entry it cannot hold (#307).
+                findings.append(
+                    f"unmappable part {node_id}: name does not map to a docs/04 test ID"
+                )
             for milestone, ids, interim_label, origin in candidates:
                 if milestone not in rows:
                     label = milestone_label(milestone)
@@ -307,7 +322,7 @@ def collect_parts(tests_root: Path, repo_root: Path, spec: Spec) -> tuple[list[P
                 parts.append(
                     Part(
                         node_id=node_id,
-                        test_id=derive_test_id(name.rsplit("::", 1)[-1]),
+                        test_id=test_id,
                         milestone=milestone,
                         requirements=ids,
                         interim_until=interim_number,

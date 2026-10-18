@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ValidationError
 
+from epistrel.core.errors import nul_location, without_nul
 from epistrel.core.policies.evaluate import evaluate
 from epistrel.core.policies.model import Policy, Target
 from epistrel.orchestrator.budget import TurnBudget
@@ -121,10 +122,13 @@ def parse[T: BaseModel](text: str, schema: type[T]) -> T | _Failure:
     """``text`` as a strict ``schema`` instance, or why it is not one (never its contents)."""
     body = unfence(text).strip()
     try:
-        json.loads(body)
+        document = json.loads(body)
     except ValueError as exc:
         detail = exc.msg if isinstance(exc, json.JSONDecodeError) else "not JSON"
         return _Failure("parse_error", f"it is not valid JSON ({detail})")
+    if nul_location(document) is not None:
+        # A JSON ``\u0000`` escape decodes to the NUL ``send`` removed from the raw text (#275).
+        body = json.dumps(without_nul(document))
     try:
         return schema.model_validate_json(body, strict=True)
     except ValidationError as exc:

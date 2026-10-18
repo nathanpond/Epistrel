@@ -1,7 +1,8 @@
 """The model matrix tool's library (NFR-PORT-3, NFR-PERF-8; #54): percentiles, rows, merge and
-rendering, the call breakdown (#303), and E-06's prompt-parameter check against the stub. The
-end-to-end runs against a local OpenAI-compatible server and against the stub with scripted
-deadline faults are ``tests/integration/test_model_matrix_run.py``."""
+rendering, the call breakdown (#303), P-08's calls assertion against recorded turns (#308),
+and E-06's prompt-parameter check against the stub. The end-to-end runs against a local
+OpenAI-compatible server and against the stub with scripted deadline faults are
+``tests/integration/test_model_matrix_run.py``."""
 
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ from epistrel.orchestrator.models.metrics import CallLog, ModelCall, Outcome
 from epistrel.orchestrator.policies.output_gate import DEADLINE
 from epistrel.tools import model_matrix as mm
 from tests.auth_support import auth_settings
+from tests.perf.test_p_08 import check_rows
 
 MINORS_DESIGN = {"generation": 1, "guardrail_check": 2}
 """A minors-row turn's plan: one generation, the input check and the output check."""
@@ -168,6 +170,134 @@ def test_call_breakdown_of_turns_on_design() -> None:
     per_turn = mm.calls_per_turn(turns)
     assert per_turn == breakdown.designed_calls_per_turn == {"generation": 1, "guardrail_check": 2}
     assert all(float(count).is_integer() for count in per_turn.values())
+
+
+CAP = 7
+"""A recorded turn's call cap (``budget.max_calls``) in the P-08 tests below."""
+OFF_DESIGN = {"generation": 1}
+
+
+def minors(calls: list[ModelCall], *causes: str, cap: int | None = CAP) -> mm.TurnCalls:
+    return mm.TurnCalls(calls, MINORS_DESIGN, causes, cap)
+
+
+def off_turns(n: int = 3) -> list[mm.TurnCalls]:
+    return [mm.TurnCalls([entry("generation")], OFF_DESIGN, (), CAP) for _ in range(n)]
+
+
+def flagged_regenerated() -> list[ModelCall]:
+    """The output check flagged a benign draft, the output gate regenerated and the re-check
+    passed (#68): two calls beyond the design, no fault."""
+    return [*on_design(), entry("generation"), entry("guardrail_check")]
+
+
+def recorded_minors() -> list[mm.TurnCalls]:
+    """A minors row as a live run records it: #303's five turns (two cut by the deadline in a
+    regeneration or a re-check, a structured retry, a deadline before the output check), each
+    with its cap, plus a flagged draft regenerated and re-checked."""
+    return [minors(turn.calls, *turn.fallback_causes) for turn in scripted_turns()] + [
+        minors(flagged_regenerated())
+    ]
+
+
+def old_p_08(rows: dict[str, list[mm.TurnCalls]]) -> None:
+    """P-08's calls assertion before #308: the folded mean."""
+    off, on = mm.calls_per_turn(rows["off"]), mm.calls_per_turn(rows["minors"])
+    assert off == {"generation": 1.0}
+    assert on["guardrail_check"] == 2.0
+    assert sum(on.values()) > sum(off.values())
+
+
+def test_p_08_asserts_the_design_of_flagged_and_deadline_turns() -> None:
+    """#308: on recorded turns with a flagged draft regenerated and re-checked and turns the
+    deadline cut, the folded mean is ``guardrail_check 2.33``, so the old assertion fails
+    though the design held. ``check_rows`` passes: the designed calls per turn are
+    ``generation 1, guardrail_check 2`` and ``generation 1``, and the extra calls are
+    reported, each turn within its cap."""
+    rows = {"off": off_turns(), "minors": recorded_minors()}
+    assert mm.calls_per_turn(rows["minors"]) == {"generation": 1.5, "guardrail_check": 2.33}
+    with pytest.raises(AssertionError):
+        old_p_08(rows)
+    breakdowns = check_rows(rows)
+    assert breakdowns["minors"].designed_calls_per_turn == {"generation": 1, "guardrail_check": 2}
+    assert breakdowns["minors"].extra_calls == {"generation": 3, "guardrail_check": 3}
+    assert breakdowns["minors"].faulted_turns == [2, 3, 4, 5]
+    assert breakdowns["minors"].fallbacks == {"deadline": 3}
+    assert breakdowns["off"].designed_calls_per_turn == {"generation": 1}
+    assert breakdowns["off"].extra_calls == {}
+
+
+def test_p_08_passes_turns_on_design_as_before() -> None:
+    """Complement: turns on design pass both the old assertion and ``check_rows``."""
+    rows = {"off": off_turns(), "minors": [minors(on_design()) for _ in range(3)]}
+    old_p_08(rows)
+    assert check_rows(rows)["minors"].extra_calls == {}
+
+
+WRONG_MINORS: dict[str, tuple[list[mm.TurnCalls], str]] = {
+    "output check not designed": (
+        [
+            mm.TurnCalls(
+                [entry("guardrail_check"), entry("generation")],
+                OFF_DESIGN | {"guardrail_check": 1},
+                (),
+                CAP,
+            )
+        ],
+        "turn 1: designed",
+    ),
+    "a check skipped with no fault": (
+        [minors(on_design()), minors([entry("guardrail_check"), entry("generation")])],
+        "turn 2: 1 of 2 designed guardrail_check calls, with no deadline or error",
+    ),
+    "a regeneration released unchecked": (
+        [minors([*on_design(), entry("generation")])],
+        "turn 1: its last draft was released unchecked",
+    ),
+    "a call outside the design": (
+        [minors([*on_design(), entry("extraction")])],
+        "turn 1: 1 extraction calls outside the design",
+    ),
+    "a turn over its cap": (
+        [minors(flagged_regenerated() * 2)],
+        f"turn 1: 10 calls, over its budget of {CAP}",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(WRONG_MINORS))
+def test_p_08_fails_a_wrong_minors_row(case: str) -> None:
+    """#308: a genuinely wrong run still fails ``check_rows``, and ``design_problems`` names
+    the turn and the fault."""
+    turns, problem = WRONG_MINORS[case]
+    assert any(p.startswith(problem) for p in mm.design_problems(turns, MINORS_DESIGN))
+    with pytest.raises(AssertionError):
+        check_rows({"off": off_turns(), "minors": turns})
+
+
+def test_p_08_fails_a_wrong_run_the_old_assertion_passed() -> None:
+    """A skipped check in one turn and a regeneration in another fold into a mean of exactly
+    ``guardrail_check 2.0``: the old assertion passed it, ``check_rows`` fails it."""
+    skipped = minors([entry("guardrail_check"), entry("generation")])
+    rows = {"off": off_turns(), "minors": [skipped, minors(flagged_regenerated())]}
+    old_p_08(rows)
+    with pytest.raises(AssertionError, match="turn 1: 1 of 2 designed guardrail_check"):
+        check_rows(rows)
+
+
+def test_p_08_fails_a_wrong_off_row_and_an_unbounded_turn() -> None:
+    """A policies-off turn that makes a ``guardrail_check`` call fails, and so does a turn
+    that recorded no call cap, since its extra calls would be unbounded."""
+    checked = [mm.TurnCalls([entry("generation"), entry("guardrail_check")], OFF_DESIGN, (), CAP)]
+    assert mm.design_problems(checked, OFF_DESIGN) == [
+        "turn 1: 1 guardrail_check calls outside the design"
+    ]
+    with pytest.raises(AssertionError):
+        check_rows({"off": checked, "minors": recorded_minors()})
+    uncapped = [*recorded_minors(), minors(on_design(), cap=None)]
+    assert mm.design_problems(uncapped, MINORS_DESIGN) == []
+    with pytest.raises(AssertionError):
+        check_rows({"off": off_turns(), "minors": uncapped})
 
 
 def test_merge_replaces_same_key_and_keeps_others() -> None:

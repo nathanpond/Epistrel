@@ -32,6 +32,10 @@ FR-CONC-6, NFR-REL-5; #71).
   ``core.feedback``, which nothing in the Orchestrator imports (FR-FB-3: feedback is
   flag-only). Until #123 indexes a rating's text there are no subject-index rows to drop with
   it; #123 drops them here too.
+- the structured read set's change index (``proposition_changes``, #136) older than
+  ``readset_change_retention_days`` (7): in the transaction that deletes a story's rows it moves
+  the story's ``changes_pruned_through_revision`` to the highest revision deleted, so a turn
+  whose base is below it conflicts rather than rebasing against a partial index.
 
 No M2 operation kind writes only audit events, so no operation row is deleted. Every delete
 runs in chunks of ``CHUNK`` rows, each its own transaction, at most ``MAX_CHUNKS`` per table and
@@ -89,6 +93,7 @@ from epistrel.core.settings_schema import STORY_LIFETIME, FeedbackSettings, Rete
 from epistrel.core.tables import audit_log, events, idempotency_keys, jobs, operations, stories
 from epistrel.core.tables.events import ALLOW_AUDIT_EXPIRY_GUC
 from epistrel.core.tables.feedback import feedback_history, message_feedback
+from epistrel.core.tables.readset import proposition_changes
 from epistrel.orchestrator.jobs.recurring import NoPayload, RecurringTask, recording
 from epistrel.orchestrator.jobs.types import JobContext, JobHandler, JobOutput
 
@@ -245,6 +250,46 @@ async def _purge_offboarding(db: AsyncEngine, before: datetime) -> int:
     return deleted
 
 
+async def _prune_changes(db: AsyncEngine, before: datetime) -> int:
+    """``proposition_changes`` rows recorded before ``before`` (#136), with each story's pruning
+    watermark moved in the same transaction."""
+    pc = proposition_changes
+    deleted = 0
+    for _ in range(MAX_CHUNKS):
+        async with db.begin() as conn:
+            chunk = (
+                select(pc.c.id)
+                .where(pc.c.tx_time < before)
+                .limit(CHUNK)
+                .with_for_update(skip_locked=True)
+                .scalar_subquery()
+            )
+            gone = (
+                await conn.execute(
+                    delete(pc)
+                    .where(pc.c.id.in_(chunk))
+                    .returning(pc.c.story_id, pc.c.timeline_revision)
+                )
+            ).all()
+            highest: dict[str, int] = {}
+            for story_id, revision in gone:
+                highest[story_id] = max(highest.get(story_id, 0), int(revision))
+            for story_id in sorted(highest):
+                await conn.execute(
+                    update(stories)
+                    .where(stories.c.id == story_id)
+                    .values(
+                        changes_pruned_through_revision=func.greatest(
+                            stories.c.changes_pruned_through_revision, highest[story_id]
+                        )
+                    )
+                )
+        deleted += len(gone)
+        if len(gone) < CHUNK:
+            break
+    return deleted
+
+
 async def sweep_retention(db: AsyncEngine, now: datetime | None = None) -> dict[str, int]:
     """One retention run (see the module docstring); returns how many rows of each it deleted."""
     moment = now or clock.now()
@@ -270,6 +315,9 @@ async def sweep_retention(db: AsyncEngine, now: datetime | None = None) -> dict[
             db, moment - timedelta(days=settings.rating_check_retention_days)
         ),
         **await _expire_feedback(db, moment),
+        "proposition_changes": await _prune_changes(
+            db, moment - timedelta(days=settings.readset_change_retention_days)
+        ),
     }
 
 

@@ -32,10 +32,12 @@ exactly one tag of each kind.
 **Modules and levels.** ``MODULES`` names each capability module (the names #109 reports as
 capabilities and #122's genesis defers by), the setting that switches it, the level each value
 of that setting means, and the settings it owns. ``DELIVERED`` maps each module this deployment
-has delivered to its delivered levels; in M3 that is the ``lite`` pipeline, the rolling summary,
-pinned memories, the polish pass, budgets and models. M4 to M6 flip entries here and nothing
-else. ``delivered_schema`` derives, from the full model, the JSON Schema of only the delivered
-modules and levels: the OpenAPI document and ``GET /engine-profiles/schema`` publish that one.
+has delivered to its delivered levels: in M3 the ``lite`` pipeline, the rolling summary, pinned
+memories, the polish pass, budgets and models; M4 adds the ``structured`` pipeline, episodic
+retrieval, consolidation, verification at every level, contradiction checking, commitment and
+the repair attempts (#129). M5 and M6 flip entries here and nothing else. ``delivered_schema``
+derives, from the full model, the JSON Schema of only the delivered modules and levels: the
+OpenAPI document and ``GET /engine-profiles/schema`` publish that one.
 ``PATCH_SCHEMA`` is the same with ``null`` allowed for every member: a JSON merge patch over a
 story's overrides (#113).
 
@@ -180,7 +182,29 @@ class Episodic(ProfileModel):
     k: Annotated[int, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(default=8, ge=1, le=100)
     """How many memories one retrieval returns."""
     hybrid_search: Annotated[bool, BEHAVIORAL, PROSPECTIVE, RELEVANT] = True
+    """Run the lexical and exact-alias arms beside the vector arm (FR-RET-4)."""
     reranking: Annotated[bool, BEHAVIORAL, PROSPECTIVE, RELEVANT] = False
+    """Not delivered: ``true`` is refused (``UNDELIVERED_VALUES``)."""
+    weight_similarity: Annotated[float, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
+        default=0.6, ge=0.0, le=10.0
+    )
+    """The ranking's weight on the fused similarity of the search arms (FR-RET-5)."""
+    weight_recency: Annotated[float, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
+        default=0.2, ge=0.0, le=10.0
+    )
+    """The ranking's weight on recency (decay over turns before the query's position)."""
+    weight_importance: Annotated[float, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
+        default=0.2, ge=0.0, le=10.0
+    )
+    """The ranking's weight on decayed importance (FR-MEM-7)."""
+    recency_half_life_turns: Annotated[int, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
+        default=100, ge=1, le=1_000_000
+    )
+    """The turns over which a memory's recency halves."""
+    retrieval_token_budget: Annotated[int, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
+        default=3_000, ge=100, le=200_000
+    )
+    """The tokens (``len // 4``) one retrieval's assembled context may hold (FR-RET-7)."""
 
 
 class Consolidation(ProfileModel):
@@ -190,18 +214,45 @@ class Consolidation(ProfileModel):
     cadence_turns: Annotated[int, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
         default=20, ge=1, le=1_000
     )
-    """Turns between consolidation runs."""
+    """Turns between consolidation runs: a commit this many turns past the last consolidated
+    turn starts one."""
+    window_memories: Annotated[int, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
+        default=50, ge=1, le=10_000
+    )
+    """Uncovered episodic memories that start a consolidation run (whichever of this and
+    ``cadence_turns`` is reached first), and the most one window compresses."""
 
 
 class HotSet(ProfileModel):
-    """The hot-set budgets of the structured pipeline's memories (FR-MEM-8)."""
+    """The hot set of the structured pipeline's memories (FR-MEM-8, NFR-SCALE-2; #147): the
+    unpinned budgets, how retirement ranks and how long an overflow may last, and which vectors
+    are kept off the hot set."""
 
     memories_per_character: Annotated[int, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
         default=2_000, ge=1, le=100_000
     )
+    """A character's unpinned hot memories (``hot_memory_budget_per_character``)."""
     vectors_per_story: Annotated[int, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
         default=50_000, ge=1, le=10_000_000
     )
+    """The story's unpinned hot vectors (``hot_vector_budget_per_story``)."""
+    importance_floor: Annotated[float, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
+        default=0.2, ge=0.0, le=1.0
+    )
+    """A memory whose decayed importance is below it is retired first, with those already
+    covered by consolidation."""
+    retirement_max_lag: Annotated[int, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
+        default=50, ge=1, le=100_000
+    )
+    """The committed turns an overflow episode may last: at its deadline the lowest-ranked
+    uncovered memories are retired anyway (``retired_uncovered``)."""
+    retain_retired_vectors: Annotated[bool, BEHAVIORAL, PROSPECTIVE, RELEVANT] = False
+    """Keep a retired memory's vector (and store the one its rehydration computes) instead of
+    dropping it; off, a retired memory is re-embedded each time it is rehydrated."""
+    retain_dormant_vectors: Annotated[bool, BEHAVIORAL, PROSPECTIVE, RELEVANT] = False
+    """Keep the vectors of a dormant or discarded continuation's memories, so a swap or an
+    undo that reactivates it restores byte-identical vectors (FR-STORE-30); off, they are
+    dropped and re-embedded with the story's pinned embedding model on reactivation."""
 
 
 class Memory(ProfileModel):
@@ -270,10 +321,28 @@ class Verification(ProfileModel):
         Literal["gated", "always"], DATA_PRODUCING, INTERPRETIVE, RELEVANT
     ] = "gated"
     entailment_gate: Annotated[float, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
-        default=0.5, ge=0.0, le=1.0
+        default=1.0, ge=0.0, le=1.0
     )
-    """The predicate-resolution confidence below which a verdict escalates (FR-VERIFY-3)."""
+    """The predicate-resolution confidence below which an ``uncertain`` verdict escalates to
+    the entailment model (FR-VERIFY-3). The default, 1.0, escalates every one: the gate launches
+    conservatively and is tightened per predicate shape (#155)."""
+    entailment_min_confidence: Annotated[float, BEHAVIORAL, INTERPRETIVE, RELEVANT] = Field(
+        default=0.6, ge=0.0, le=1.0
+    )
+    """The least confidence an entailment verdict needs to count; below it the claim takes the
+    safe disposition (FR-VERIFY-8)."""
+    safe_disposition: Annotated[
+        Literal["repair", "surface"], BEHAVIORAL, INTERPRETIVE, RELEVANT
+    ] = "repair"
+    """What a claim the engine cannot decide becomes (FR-VERIFY-8): ``repair`` rewrites the
+    sentence so it no longer asserts it, and records why; ``surface`` lets the beat stand and
+    lists the claim in the turn report's ``uncertain_claims`` for the author."""
     contradiction_checking: Annotated[bool, BEHAVIORAL, INTERPRETIVE, RELEVANT] = False
+    implication_max_depth: Annotated[int, BEHAVIORAL, INTERPRETIVE, RELEVANT] = Field(
+        default=3, ge=1, le=10
+    )
+    """How deep the bounded implication closure goes (FR-PROP-11): ``core.verify.rules`` stops
+    there and flags the stop in the verdict's evidence."""
 
 
 class Commitment(ProfileModel):
@@ -334,6 +403,12 @@ class Repair(ProfileModel):
 
     max_attempts: Annotated[int, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(default=0, ge=0, le=10)
     """Repair attempts of the structured pipeline's repair ladder (FR-REPAIR)."""
+    implication_threshold: Annotated[int, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
+        default=2, ge=0, le=10
+    )
+    """How many rejected renders within one story may implicate a memory before it is
+    quarantined automatically (FR-GUARD-5; #145). ``0`` turns auto-quarantine off. Structured
+    stories only: a Lite reply's context holds no memory records."""
     polish: Polish = Field(default_factory=Polish)
 
 
@@ -402,7 +477,8 @@ class ProfileSettings(ProfileModel):
     pipeline: Annotated[Literal["lite", "structured"], DATA_PRODUCING, PROSPECTIVE, RELEVANT] = (
         "lite"
     )
-    """The pipeline every turn runs: ``lite`` (FR-LITE)."""
+    """The pipeline every turn runs: ``lite`` (FR-LITE) or ``structured`` (the Engine Core
+    path)."""
     memory: Memory = Field(default_factory=Memory)
     pins: Pins = Field(default_factory=Pins)
     character_knowledge: CharacterKnowledge = Field(default_factory=CharacterKnowledge)
@@ -462,8 +538,8 @@ def tags_of(info: FieldInfo) -> SettingTags:
 
 INTERPRETIVE_SETTINGS: frozenset[str] = frozenset()
 """Engine-profile settings read as interpretive whatever their ``ConfigClass`` tag says. Empty:
-every delivered setting in M3 is prospective, so the per-setting class of a configuration
-change has nothing real to tell apart. Read at call time, so a test may reclassify delivered
+the schema's own tags decide (M4 delivers the first interpretive settings: verification's and
+commitment's). Read at call time, so a test may reclassify delivered
 settings (``epistrel.testing.profiles.interpretive``)."""
 
 
@@ -527,7 +603,7 @@ MODULES: tuple[Module, ...] = (
         "pipeline",
         (("lite", "lite"), ("structured", "structured")),
         owns=("pipeline",),
-        owns_at=(("structured", ("memory.hot_set",)),),
+        owns_at=(("structured", ("memory.hot_set", "repair.implication_threshold")),),
     ),
     _flag("rolling_summary", "memory.rolling_summary.enabled", "memory.rolling_summary"),
     _flag("episodic", "memory.episodic.enabled", "memory.episodic"),
@@ -549,7 +625,10 @@ MODULES: tuple[Module, ...] = (
         owns=("verification",),
         owns_at=(
             ("extraction", ("verification.extraction_mode",)),
-            ("entailment", ("verification.entailment_gate",)),
+            (
+                "entailment",
+                ("verification.entailment_gate", "verification.entailment_min_confidence"),
+            ),
         ),
     ),
     _flag("contradiction_checking", "verification.contradiction_checking"),
@@ -575,17 +654,35 @@ MODULE: Mapping[str, Module] = types.MappingProxyType({m.name: m for m in MODULE
 
 DELIVERED: Mapping[str, frozenset[str]] = types.MappingProxyType(
     {
-        "pipeline": frozenset({"lite"}),
+        "pipeline": frozenset({"lite", "structured"}),
         "rolling_summary": frozenset({ON}),
+        "episodic": frozenset({ON}),
+        "consolidation": frozenset({ON}),
         "pins": frozenset({ON}),
+        "verification": frozenset({"declared", "extraction", "entailment"}),
+        "contradiction_checking": frozenset({ON}),
+        "commitment": frozenset({ON}),
+        "repair": frozenset({ON}),
         "polish": frozenset({ON}),
         "budgets": frozenset({ON}),
         "models": frozenset({ON}),
     }
 )
-"""The modules this deployment has delivered, each with its delivered levels (M3: the ``lite``
-pipeline, the rolling summary, pinned memories, the polish pass, budgets and models). A module
-not listed is not delivered at any level."""
+"""The modules this deployment has delivered, each with its delivered levels. M3: the ``lite``
+pipeline, the rolling summary, pinned memories, the polish pass, budgets and models. M4 (#129):
+the ``structured`` pipeline (with the hot-set budgets it owns), episodic retrieval,
+consolidation, verification at ``declared``, ``extraction`` and ``entailment`` (with
+``extraction_mode``, ``entailment_gate`` and ``entailment_min_confidence``; #142 adds the
+latter and ``safe_disposition``), contradiction checking, commitment, and the repair
+attempts. A module not listed is not delivered at any level."""
+
+
+UNDELIVERED_VALUES: Mapping[str, tuple[object, ...]] = types.MappingProxyType(
+    {"memory.episodic.reranking": (True,)}
+)
+"""Values of delivered settings that name an undelivered feature: a document setting one is
+refused like an undelivered setting (#141: retrieval has no reranker in M4, so
+``reranking: true`` is refused while ``false`` stays valid)."""
 
 
 def _owners() -> list[tuple[str, str, str | None]]:
@@ -717,8 +814,9 @@ DATA_PRODUCING_MODULES: frozenset[str] = frozenset(
     m.name for m in MODULES if _switch_tag(m) is Tag.data_producing
 )
 """Modules whose switch is tagged data-producing: turning one on, or raising its level, makes the
-engine write structured data that a story's existing history lacks (FR-PROF-6). In M3 none of
-them is delivered. Read at call time, so a test may mark a delivered module data-producing
+engine write structured data that a story's existing history lacks (FR-PROF-6). M4 delivers
+the first of them: the ``structured`` pipeline, consolidation, verification and commitment
+(#129). Read at call time, so a test may mark a delivered module data-producing
 (``epistrel.testing.profiles.data_producing``)."""
 
 DATA_PRODUCING_DIALS: Mapping[str, str] = types.MappingProxyType(
@@ -1054,6 +1152,7 @@ __all__ = [
     "RELEVANT",
     "SETTINGS_SCHEMA",
     "SWITCHES",
+    "UNDELIVERED_VALUES",
     "Budgets",
     "Clause",
     "DependencyRule",

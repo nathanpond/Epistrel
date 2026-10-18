@@ -1,0 +1,128 @@
+"""Eval suites and their registry (#134).
+
+A suite names its metrics (``gate.Metric``: id, rule, floor, direction), the ``GUARANTEES``
+rows (#132) it measures, whether CI gates on its stub run (``ci_gate``: its stub floors are
+deterministic), and its labeled set: ``evals/sets/<name>/cases.jsonl`` under ``--sets-dir``,
+one JSON object per line, each validated by the suite's ``case_model`` (a malformed line fails
+the suite with ``MalformedCase``, naming the line). ``evaluate`` plays one case through the
+real code paths (``runner.CaseContext``: the in-process ``Engine``, scratch stories) and
+returns an ``Outcome``: per metric, good, bad or not observed. ``stub_answers`` scripts the
+stub adapter per case (``StubAdapter.case``), so a stub run exercises the harness end to end.
+
+Suites register with ``@register``; the CLI names them by ``name`` (``smoke``; #157's and
+#158's suites by their docs/04 ids: ``e01``, ``q01``, …).
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, ClassVar
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from epistrel.evals.gate import Metric
+
+if TYPE_CHECKING:
+    from epistrel.evals.runner import CaseContext
+
+CASES_FILE = "cases.jsonl"
+CASE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$"
+
+
+class MalformedCase(Exception):
+    """A labeled set's line is not a valid case of its suite (or the set is missing)."""
+
+
+class CaseModel(BaseModel):
+    """The base of every suite's case schema: a stable id, unknown keys refused."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str = Field(pattern=CASE_ID_PATTERN)
+
+
+@dataclass(frozen=True, slots=True)
+class Outcome:
+    """One case's observations: metric id → good (``True``), bad (``False``) or not observed
+    (``None``, or absent), the output to keep for a failure's record, and its latency."""
+
+    observations: Mapping[str, bool | None]
+    output: str = ""
+    detail: Mapping[str, Any] = field(default_factory=dict)
+
+
+class Suite:
+    """A labeled eval suite (see the module docstring); subclasses set the class attributes."""
+
+    name: ClassVar[str]
+    title: ClassVar[str]
+    metrics: ClassVar[tuple[Metric, ...]]
+    guarantees: ClassVar[tuple[str, ...]] = ()
+    ci_gate: ClassVar[bool] = False
+    case_model: ClassVar[type[CaseModel]] = CaseModel
+
+    def load(self, sets_dir: Path) -> list[CaseModel]:
+        """The suite's cases from ``<sets_dir>/<name>/cases.jsonl``."""
+        path = sets_dir / self.name / CASES_FILE
+        if not path.is_file():
+            raise MalformedCase(f"{self.name}: no labeled set at {path}")
+        cases: list[CaseModel] = []
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            if not line.strip():
+                continue
+            try:
+                cases.append(self.case_model.model_validate(json.loads(line)))
+            except (ValueError, ValidationError) as exc:
+                reason = exc.errors()[0]["msg"] if isinstance(exc, ValidationError) else str(exc)
+                raise MalformedCase(f"{self.name}: {path.name} line {number}: {reason}") from None
+        ids = [case.id for case in cases]
+        duplicates = sorted({i for i in ids if ids.count(i) > 1})
+        if duplicates:
+            raise MalformedCase(f"{self.name}: duplicate case ids {duplicates}")
+        if not cases:
+            raise MalformedCase(f"{self.name}: {path} holds no cases")
+        return cases
+
+    async def evaluate(self, ctx: CaseContext, case: CaseModel) -> Outcome:
+        raise NotImplementedError
+
+    def stub_answers(self, case: CaseModel) -> Mapping[str, str]:
+        """Purpose → the stub's answer for ``case`` (empty: the stub's default answers)."""
+        return {}
+
+
+SUITES: dict[str, Suite] = {}
+"""Every registered suite by name, in registration order."""
+
+
+def register[S: type[Suite]](cls: S) -> S:
+    """Register one instance of the suite class ``cls`` under its ``name``."""
+    if cls.name in SUITES:
+        raise ValueError(f"suite {cls.name!r} is registered twice")
+    SUITES[cls.name] = cls()
+    return cls
+
+
+def get_suites(names: Sequence[str] | None = None) -> list[Suite]:
+    """The named suites (every registered one for ``None``); ``KeyError`` for an unknown name."""
+    if names is None:
+        return list(SUITES.values())
+    return [SUITES[name] for name in names]
+
+
+# The suites shipped with the engine register on import.
+from epistrel.evals.suites import smoke as _smoke  # noqa: E402, F401
+
+__all__ = [
+    "CASES_FILE",
+    "SUITES",
+    "CaseModel",
+    "MalformedCase",
+    "Outcome",
+    "Suite",
+    "get_suites",
+    "register",
+]

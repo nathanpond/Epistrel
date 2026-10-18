@@ -6,6 +6,7 @@ events for attribution and never validates, resolves, or interprets it.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 SYSTEM_PRINCIPAL = "system"
@@ -13,10 +14,23 @@ SYSTEM_PRINCIPAL = "system"
 
 MAX_PRINCIPAL_LENGTH = 256
 
-PRINCIPAL_PATTERN = r"^[\t ]*[^\x00-\x1f\x7f]{1,256}[\t ]*$"
-"""A principal as sent: 1 to 256 characters without control characters, between optional
-spaces and tabs (which are trimmed). ``principal_problem`` is the full rule (it also refuses a
-blank one); ``system`` is reserved besides."""
+CONTROL_CHARACTERS = r"\x00-\x1f\x7f-\x9f"
+"""Every control character (Unicode ``Cc``: C0, DEL and C1), as a regular expression range.
+The one definition the identifier rules share: a principal, a relation filter's principal
+(#321) and a listing status value (#110)."""
+
+_CONTROL = re.compile(f"[{CONTROL_CHARACTERS}]")
+
+
+def has_control(value: str) -> bool:
+    """Whether ``value`` holds a control character (``CONTROL_CHARACTERS``)."""
+    return _CONTROL.search(value) is not None
+
+
+PRINCIPAL_PATTERN = rf"^[\t ]*[^{CONTROL_CHARACTERS}]{{1,256}}[\t ]*$"
+"""A principal as sent: 1 to 256 characters without control characters (C0, DEL or C1; #321),
+between optional spaces and tabs (which are trimmed). ``principal_problem`` is the full rule (it
+also refuses a blank one); ``system`` is reserved besides."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +59,6 @@ def principal_problem(value: str) -> str | None:
         return "must not be empty"
     if len(value) > MAX_PRINCIPAL_LENGTH:
         return f"must be at most {MAX_PRINCIPAL_LENGTH} characters"
-    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
+    if has_control(value):
         return "must not contain control characters"
     return None

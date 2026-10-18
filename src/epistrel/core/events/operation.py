@@ -10,10 +10,15 @@ revisions, the story rating's version and the interpretive settings its kind dep
 (FR-CONC-2). ``commit()`` runs
 one transaction that does all of the following:
 
-1. takes ``SELECT … FOR UPDATE`` on the story row, with ``lock_timeout`` 5 s;
+1. takes ``SELECT … FOR UPDATE`` on the story row, with ``lock_timeout`` 5 s, and in the same
+   statement sets the revision this commit leaves (``core.readset.COMMIT_REVISION_SETTING``),
+   which the read set's change index stamps on what the commit's canon writes record (#136);
 2. with ``decide``, revalidates against the base (``epistrel.core.concurrency``), including
    whether a configuration dependency changed (``ConfigRecheck``, FR-CONC-16): ``Regenerate``,
-   ``Abandon`` and ``ConfigRecheck`` roll back and raise ``RevalidationRequired``;
+   ``Abandon`` and ``ConfigRecheck`` roll back and raise ``RevalidationRequired``. A structured
+   turn (a keyed read set, #136) is also touched when a change since its base matches one of its
+   query keys (one query over ``proposition_changes``) or its base is below the story's pruning
+   watermark, and its rebase re-runs ``core.readset.REBASE_CHECKS`` under the lock;
 3. positions the operation: only ``turn`` operations allocate a turn index (FR-STORE-8,24),
    as variant ``max(existing) + 1`` at it, recording the active variant of the turn before it
    as ``parent_variant`` (the variant tree, #66); a ``turn`` at the head's index (regenerate)
@@ -27,9 +32,14 @@ one transaction that does all of the following:
    ``erased_subject_referenced``, the operation ``abandoned``; a revalidating turn regenerates
    within its budget first) before they are indexed;
 5. finalises the operation (``committed``, ``membership_tx`` = the commit's ``tx_time``, the
-   story's resulting ``timeline_revision``), bumps ``stories.timeline_revision`` by one when the
+   story's resulting ``timeline_revision``), refreshes a turn's structured scene and what the
+   operations it made dormant project (``projections.structured.after_turn``, #137), runs the
+   ``TURN_HOOKS`` (#147's hot-set deadline), bumps
+   ``stories.timeline_revision`` by one when the
    operation ``bumps_revision`` (FR-CONC-1), records a control action on the story, and checks
-   the active variants are one chain (FR-STORE-28, ``ChainBroken``);
+   the active variants are one chain (FR-STORE-28, ``ChainBroken``): at the chain's head, by
+   index lookups, unless the commit is a control action or ``stories.chain_unchecked`` says the
+   active turns changed some other way, when every active turn is checked (#281);
 6. under an idempotent call (#61), binds the operation to the call's ``Idempotency-Key``: a late
    original whose key a retry took over is refused, so a key never maps to two commits.
 
@@ -47,16 +57,30 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from types import SimpleNamespace, TracebackType
 from typing import Any, Literal, Self
 
-from sqlalchemy import and_, delete, func, insert, select, text, update
+from sqlalchemy import (
+    Integer,
+    Select,
+    Text,
+    and_,
+    cast,
+    delete,
+    func,
+    insert,
+    literal,
+    select,
+    text,
+    update,
+)
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from sqlalchemy.orm import aliased
+from sqlalchemy.sql.elements import ColumnElement
 
 from epistrel.core import (
     clock,
@@ -64,6 +88,7 @@ from epistrel.core import (
     idempotency,
     pause,
     projections,
+    readset,
     summary_port,
     turn_gate,
 )
@@ -72,8 +97,10 @@ from epistrel.core.concurrency import (
     Abandon,
     ConfigRecheck,
     Decide,
+    KeyedReadSetSource,
     ReadSet,
     ReadSetSource,
+    Rebase,
     Regenerate,
     RevalidationRequired,
     RevalidationState,
@@ -103,6 +130,7 @@ from epistrel.core.errors import (
 )
 from epistrel.core.events.registry import EventPayload, lookup, validate
 from epistrel.core.ids import new_ulid
+from epistrel.core.membership import flip_membership
 from epistrel.core.ratings.stamp import guardrail_stamp
 from epistrel.core.settings_schema import StorySettings
 from epistrel.core.tables import events, operations, stories, turn_queue
@@ -117,6 +145,22 @@ Origin = Literal["generated", "ingested"]
 
 CommitStep = Callable[[AsyncConnection], Awaitable[None]]
 """Extra work run inside the commit transaction, under the story lock, after the events."""
+
+TurnHook = Callable[[AsyncConnection, str, int, tuple[str, ...]], Awaitable[None]]
+"""``hook(conn, story_id, turn, made_dormant)``: run inside a committed ``turn`` operation's
+transaction, after it is finalised (``turn`` is the story's head now), with the operations it
+made ``dormant`` (a regenerated variant, a shelved tail). #147's hot set registers its deadline
+check here."""
+
+TURN_HOOKS: list[TurnHook] = []
+
+
+def register_turn_hook(hook: TurnHook) -> TurnHook:
+    """Run ``hook`` in every turn commit (once per hook)."""
+    if hook not in TURN_HOOKS:
+        TURN_HOOKS.append(hook)
+    return hook
+
 
 Database = AsyncEngine | AsyncConnection
 
@@ -144,6 +188,80 @@ def _failure_status(error: BaseException) -> OperationStatus:
     if isinstance(error, ErasedSubjectReferenced):
         return OperationStatus.ABANDONED
     return OperationStatus.FAILED
+
+
+CHAIN_OPERATION_SETTING = "epistrel.chain_operation"
+"""Transaction-local: the operation whose commit holds the story lock. Migration 0045's chain
+triggers leave that operation's own finalising update to its head check (#281)."""
+
+ACTIVE_TURN_SQL = (
+    "operations.kind = 'turn' AND operations.status = 'committed' "
+    "AND operations.membership = 'active'"
+)
+"""``ACTIVE_TURN_PREDICATE`` as literal SQL, so the planner can use the partial unique index
+``uq_operations_active_turn`` (bound parameters would hide the predicate from a generic plan)."""
+
+
+def _active_turns(story_id: str | None) -> ColumnElement[bool]:
+    return and_(operations.c.story_id == story_id, text(ACTIVE_TURN_SQL))
+
+
+async def chain_violation(conn: AsyncConnection, story_id: str) -> dict[str, Any] | None:
+    """The full FR-STORE-28 chain check over every active turn of the story (TIME (f)): ``None``
+    when the active turn variants are turns 1..k, one variant each, every parent link points to
+    the active variant of the turn before it, and the next turn index is k+1; otherwise the
+    ``ChainBroken`` details. Its cost grows with the story, so a commit runs it only when its
+    head check cannot decide (``Operation._check_chain``, #281)."""
+    active = (
+        await conn.execute(
+            select(
+                func.count(),
+                func.count(func.distinct(operations.c.narrative_turn)),
+                func.coalesce(func.min(operations.c.narrative_turn), 1),
+                func.coalesce(func.max(operations.c.narrative_turn), 0),
+            ).where(
+                operations.c.story_id == story_id,
+                operations.c.kind == OperationKind.TURN.value,
+                operations.c.status == OperationStatus.COMMITTED.value,
+                operations.c.membership == Membership.ACTIVE.value,
+            )
+        )
+    ).one()
+    count, distinct, lowest, highest = (int(v) for v in active)
+    next_turn = await conn.scalar(select(stories.c.next_turn_index).where(stories.c.id == story_id))
+    parent = aliased(operations)
+    orphans = await conn.scalar(
+        select(func.count())
+        .select_from(operations)
+        .outerjoin(
+            parent,
+            and_(
+                parent.c.story_id == operations.c.story_id,
+                parent.c.narrative_turn == operations.c.narrative_turn - 1,
+                parent.c.kind == OperationKind.TURN.value,
+                parent.c.status == OperationStatus.COMMITTED.value,
+                parent.c.membership == Membership.ACTIVE.value,
+            ),
+        )
+        .where(
+            operations.c.story_id == story_id,
+            operations.c.kind == OperationKind.TURN.value,
+            operations.c.status == OperationStatus.COMMITTED.value,
+            operations.c.membership == Membership.ACTIVE.value,
+            operations.c.narrative_turn > 1,
+            operations.c.parent_variant.is_not(None),
+            parent.c.turn_variant.is_distinct_from(operations.c.parent_variant),
+        )
+    )
+    if count == distinct == highest and lowest == 1 and next_turn == highest + 1 and not orphans:
+        return None
+    return {
+        "story_id": story_id,
+        "active_turns": count,
+        "highest_turn": highest,
+        "next_turn_index": next_turn,
+        "orphaned_turns": int(orphans or 0),
+    }
 
 
 class Withdrawn(Exception):
@@ -275,6 +393,9 @@ class Operation:
         """The story's revision after this operation committed."""
         self._staged: list[StagedEvent] = []
         self._commit_steps: list[CommitStep] = []
+        self._followed: list[str] = []
+        """Operations this commit made ``dormant`` (a regenerate, a rewound tail), for the
+        structured projections (#137)."""
 
     # -- lifecycle ---------------------------------------------------------------------------
 
@@ -329,7 +450,7 @@ class Operation:
                         kind=self.kind.value,
                         principal=self.principal,
                         base_revision=self.base_revision,
-                        read_set=self.read_set,
+                        read_set=self._read_set_document(),
                         config_revisions=self.config_revisions,
                         idempotency_key=self.idempotency_key,
                         viewpoint=self.viewpoint,
@@ -378,7 +499,7 @@ class Operation:
                 kind=self.kind.value,
                 principal=self.principal,
                 base_revision=self.base_revision,
-                read_set=self.read_set,
+                read_set=self._read_set_document(),
                 config_revisions=self.config_revisions,
                 idempotency_key=self.idempotency_key,
                 viewpoint=self.viewpoint,
@@ -408,7 +529,7 @@ class Operation:
             .values(
                 status=OperationStatus.IN_FLIGHT.value,
                 base_revision=self.base_revision,
-                read_set=self.read_set,
+                read_set=self._read_set_document(),
                 config_revisions=self.config_revisions,
             )
             .returning(operations.c.operation_id)
@@ -434,7 +555,7 @@ class Operation:
                     .where(operations.c.operation_id == self.operation_id)
                     .values(
                         base_revision=self.base_revision,
-                        read_set=self.read_set,
+                        read_set=self._read_set_document(),
                         config_revisions=self.config_revisions,
                     )
                 )
@@ -468,6 +589,9 @@ class Operation:
                 conn, self.story_id, self.config_captured
             )
             if self.read_set_source is not None:
+                keyed = self._keyed()
+                if keyed is not None:
+                    keyed.start_attempt()  # each attempt reads afresh (#136)
                 self.read_set = await self.read_set_source.hashes(conn, self.story_id)
         return await read(conn) if read is not None else None
 
@@ -490,6 +614,36 @@ class Operation:
                 .values(config_revisions=self.config_revisions)
             )
         return moved
+
+    def use_read_set(self, source: ReadSetSource) -> None:
+        """Compute the operation's read set with ``source`` (``run_with_revalidation``). A
+        structured turn's (a ``KeyedReadSetSource``, #136) also depends on the story's
+        predicate registry and the interpretive verification settings (FR-CONC-16, M4)."""
+        self.read_set_source = source
+        if isinstance(source, KeyedReadSetSource) and self.kind is OperationKind.TURN:
+            self.config_captured = config_dependencies.captured_for(
+                self.kind, self.origin, structured=True
+            )
+            self.config_dependencies = config_dependencies.dependencies_for(
+                self.kind, self.origin, structured=True
+            )
+
+    def _keyed(self) -> KeyedReadSetSource | None:
+        source = self.read_set_source
+        return source if isinstance(source, KeyedReadSetSource) else None
+
+    def _read_set_document(self) -> Any:
+        """``operations.read_set``: the Lite hashes, or a structured turn's ``{lite, keys,
+        retrieved}`` (#136)."""
+        keyed = self._keyed()
+        return self.read_set if keyed is None else keyed.document(self.read_set)
+
+    async def rebase_recheck(self) -> bool:
+        """A structured turn's ``REBASE_CHECKS`` (#140's verify, #144's permission checks) on
+        its own connection, after an interpretive configuration change (FR-CONC-16)."""
+        self._require_in_flight("re-check")
+        async with self._connection() as conn, conn.begin():
+            return await readset.run_rebase_checks(conn, self)
 
     def append(
         self,
@@ -633,6 +787,7 @@ class Operation:
 
     async def _write(self, conn: AsyncConnection, decide: Decide | None) -> None:
         kind = self.kind.value
+        self._followed = []
         crash.hit("before_lock", kind)
         advance = False
         current_revision = 0
@@ -645,6 +800,20 @@ class Operation:
                         stories.c.last_control_revision,
                         stories.c.last_control_operation_id,
                         stories.c.status,
+                        stories.c.changes_pruned_through_revision,
+                        # The chain triggers leave this operation's own finalising update to
+                        # the head check (#281).
+                        func.set_config(CHAIN_OPERATION_SETTING, self.operation_id, True),
+                        # The revision this commit leaves, which the change index stamps
+                        # (#136): no extra statement.
+                        func.set_config(
+                            readset.COMMIT_REVISION_SETTING,
+                            cast(
+                                stories.c.timeline_revision + (1 if self.bumps_revision else 0),
+                                Text,
+                            ),
+                            True,
+                        ),
                     )
                     .where(stories.c.id == self.story_id)
                     .with_for_update()
@@ -728,6 +897,17 @@ class Operation:
                 ],
             )
         await self._finalise(conn, advance, current_revision)
+        if (
+            self.story_id is not None
+            and self.kind is OperationKind.TURN
+            and self.narrative_turn is not None
+        ):
+            # The turn's scene, and what the operations it made dormant project (#137).
+            await projections.structured.after_turn(
+                conn, self.story_id, self.narrative_turn, self._followed
+            )
+            for hook in list(TURN_HOOKS):
+                await hook(conn, self.story_id, self.narrative_turn, tuple(self._followed))
         if self.story_id is not None and self.kind is OperationKind.TURN:
             # The guardrail set the turn variant passed (FR-RATE-7, #118), in force now.
             await conn.execute(
@@ -757,6 +937,14 @@ class Operation:
             assert self.read_set_source is not None  # noqa: S101 - set together
             now = await self.read_set_source.hashes(conn, self.story_id)
             touched = touched_members(self.read_set, now)
+        keyed = self._keyed()
+        if keyed is not None and not control and current != base and not touched:
+            # FR-CONC-12 (#136): a change since the base matching a query key touches the read
+            # set; a base the change index no longer covers counts as touched.
+            if base < int(locked.changes_pruned_through_revision):
+                touched = ("changes_pruned",)
+            else:
+                touched = tuple(await keyed.touched(conn, self.story_id, base))
         config_changed: tuple[str, ...] = ()
         if not control and not touched and self.config_dependencies:
             current_config = await config_dependencies.capture(
@@ -775,7 +963,17 @@ class Operation:
             config_changed=config_changed,
         )
         outcome = decide(state)
-        self.attempts.append(attempt_record(state, outcome))
+        if keyed is not None and isinstance(outcome, Rebase):
+            # A structured turn's rebase re-runs its deterministic checks against current state
+            # (#140's verify, #144's permission checks) and re-stamps its read set.
+            if await readset.run_rebase_checks(conn, self):
+                keyed.rebased_to = current
+            else:
+                outcome = Regenerate(reason="rebase_failed")
+        record = attempt_record(state, outcome)
+        if keyed is not None:
+            record.update(keyed.counts())
+        self.attempts.append(record)
         if isinstance(outcome, Regenerate | Abandon | ConfigRecheck):
             raise RevalidationRequired(outcome, state)
 
@@ -837,8 +1035,8 @@ class Operation:
     async def _retire_variant(self, conn: AsyncConnection) -> None:
         """A regenerated turn replaces the active variant at its index: everything positioned
         at it (the old turn and the work hanging off it) goes ``dormant`` (kept, swappable,
-        FR-STORE-12/28) in the same transaction."""
-        await conn.execute(
+        FR-STORE-12/28) in the same transaction, and their derived records with them (#130)."""
+        retired = await conn.execute(
             update(operations)
             .where(
                 operations.c.story_id == self.story_id,
@@ -847,13 +1045,16 @@ class Operation:
                 operations.c.membership == Membership.ACTIVE.value,
             )
             .values(membership=Membership.DORMANT.value, membership_tx=func.transaction_timestamp())
+            .returning(operations.c.operation_id)
         )
+        await self._derived_follow(conn, retired.scalars().all())
 
     async def _shelve_discarded(self, conn: AsyncConnection) -> None:
         """A rewound tail becomes a dormant continuation at the first turn written over it
         (#66): the still-``discarded`` operations at or after this turn's index go ``dormant``.
-        The transcript projection makes the same change from the turn's events."""
-        await conn.execute(
+        The transcript projection makes the same change from the turn's events; the derived
+        records of those operations follow them (#130)."""
+        shelved = await conn.execute(
             update(operations)
             .where(
                 operations.c.story_id == self.story_id,
@@ -862,70 +1063,82 @@ class Operation:
                 operations.c.membership == Membership.DISCARDED.value,
             )
             .values(membership=Membership.DORMANT.value, membership_tx=func.transaction_timestamp())
+            .returning(operations.c.operation_id)
         )
+        await self._derived_follow(conn, shelved.scalars().all())
+
+    async def _derived_follow(self, conn: AsyncConnection, operation_ids: Sequence[str]) -> None:
+        """The derived records of operations this commit made ``dormant`` follow them (#130):
+        these changes run no ``core.timeline`` membership hook."""
+        await flip_membership(conn, operation_ids, Membership.DORMANT, story_id=self.story_id)
+        self._followed.extend(operation_ids)
 
     async def _check_chain(self, conn: AsyncConnection) -> None:
         """The active turn variants must be one chain: turns 1..k, one variant each, and the
-        story's next turn index k+1 (FR-STORE-28, TIME (f)). Raises ``ChainBroken``."""
-        active = (
+        story's next turn index k+1 (FR-STORE-28, TIME (f)). Raises ``ChainBroken``.
+
+        The head check (#281) decides it without reading every active turn: given a chain that
+        was valid before this commit, the only way this commit can have changed it is at the head.
+        The partial unique index ``uq_operations_active_turn`` keeps one active variant per turn,
+        so the head check reads the lowest and the highest active turn and the story's next turn
+        index. For a turn it also reads the active variant of the turn before it, which must be
+        this turn's ``parent_variant``. Each of these is one index lookup. The full check
+        (``chain_violation``) runs instead for a control action, and for a story whose
+        ``chain_unchecked`` flag says its active turn set changed some other way, through a
+        commit step, a fork's copy or SQL run outside an operation; a passing full check clears
+        the flag. When the head check fails, the full check runs, so the refusal and its details
+        are always the full check's."""
+        assert self.story_id is not None  # noqa: S101 - only a story's commit checks its chain
+        probe = (await conn.execute(self._head_probe())).one()
+        if not self.control_action and not probe.chain_unchecked and self._head_holds(probe):
+            return
+        violation = await chain_violation(conn, self.story_id)
+        if violation is not None:
+            raise ChainBroken("the active turn variants would not form a single chain", violation)
+        if probe.chain_unchecked:
             await conn.execute(
-                select(
-                    func.count(),
-                    func.count(func.distinct(operations.c.narrative_turn)),
-                    func.coalesce(func.min(operations.c.narrative_turn), 1),
-                    func.coalesce(func.max(operations.c.narrative_turn), 0),
-                ).where(
-                    operations.c.story_id == self.story_id,
-                    operations.c.kind == OperationKind.TURN.value,
-                    operations.c.status == OperationStatus.COMMITTED.value,
-                    operations.c.membership == Membership.ACTIVE.value,
-                )
+                update(stories).where(stories.c.id == self.story_id).values(chain_unchecked=False)
             )
-        ).one()
-        count, distinct, lowest, highest = (int(v) for v in active)
-        next_turn = await conn.scalar(
-            select(stories.c.next_turn_index).where(stories.c.id == self.story_id)
+
+    def _head_probe(self) -> Select[Any]:
+        """One statement, index lookups only: the story's next turn index and change marker,
+        its lowest and highest active turn, and (for a turn after turn 1) the active variant of
+        the turn before this one."""
+        turn = self.narrative_turn if self.kind is OperationKind.TURN else None
+        parent = (
+            select(operations.c.turn_variant)
+            .where(_active_turns(self.story_id), operations.c.narrative_turn == turn - 1)
+            .scalar_subquery()
+            if turn is not None and turn > 1
+            else literal(None, Integer)
         )
-        parent = aliased(operations)
-        orphans = await conn.scalar(
-            select(func.count())
-            .select_from(operations)
-            .outerjoin(
-                parent,
-                and_(
-                    parent.c.story_id == operations.c.story_id,
-                    parent.c.narrative_turn == operations.c.narrative_turn - 1,
-                    parent.c.kind == OperationKind.TURN.value,
-                    parent.c.status == OperationStatus.COMMITTED.value,
-                    parent.c.membership == Membership.ACTIVE.value,
-                ),
-            )
-            .where(
-                operations.c.story_id == self.story_id,
-                operations.c.kind == OperationKind.TURN.value,
-                operations.c.status == OperationStatus.COMMITTED.value,
-                operations.c.membership == Membership.ACTIVE.value,
-                operations.c.narrative_turn > 1,
-                operations.c.parent_variant.is_not(None),
-                parent.c.turn_variant.is_distinct_from(operations.c.parent_variant),
-            )
+        return select(
+            stories.c.next_turn_index,
+            stories.c.chain_unchecked,
+            select(func.min(operations.c.narrative_turn))
+            .where(_active_turns(self.story_id))
+            .scalar_subquery()
+            .label("lowest"),
+            select(func.max(operations.c.narrative_turn))
+            .where(_active_turns(self.story_id))
+            .scalar_subquery()
+            .label("highest"),
+            parent.label("parent"),
+        ).where(stories.c.id == self.story_id)
+
+    def _head_holds(self, probe: Any) -> bool:
+        """The full check's conditions, at the head of a chain that was valid before."""
+        lowest = 1 if probe.lowest is None else int(probe.lowest)
+        highest = 0 if probe.highest is None else int(probe.highest)
+        if lowest != 1 or probe.next_turn_index != highest + 1:
+            return False
+        if self.kind is not OperationKind.TURN or self.narrative_turn is None:
+            return True
+        if self.narrative_turn <= 1:
+            return True
+        return probe.parent is not None and (
+            self.parent_variant is None or probe.parent == self.parent_variant
         )
-        if not (
-            count == distinct == highest
-            and lowest == 1
-            and next_turn == highest + 1
-            and not orphans
-        ):
-            raise ChainBroken(
-                "the active turn variants would not form a single chain",
-                {
-                    "story_id": self.story_id,
-                    "active_turns": count,
-                    "highest_turn": highest,
-                    "next_turn_index": next_turn,
-                    "orphaned_turns": int(orphans or 0),
-                },
-            )
 
     def _log_events(self, story_id: str, ids: list[str]) -> list[projections.LogEvent]:
         """The staged events as projections see them (this operation is ``active``)."""
@@ -1021,6 +1234,7 @@ class Operation:
                 attempts=self.attempts,
                 timeline_revision=self.timeline_revision,
                 **({"stage_log": list(self._stages)} if self._stages else {}),
+                **({"read_set": self._read_set_document()} if self._keyed() is not None else {}),
             )
             .returning(operations.c.membership_tx)
         )
@@ -1092,7 +1306,14 @@ class Operation:
                 await conn.execute(
                     update(operations)
                     .where(operations.c.operation_id == self.operation_id)
-                    .values(attempts=self.attempts)
+                    .values(
+                        attempts=self.attempts,
+                        **(
+                            {"read_set": self._read_set_document()}
+                            if self._keyed() is not None
+                            else {}
+                        ),
+                    )
                 )
         except Exception as exc:
             logger.warning(

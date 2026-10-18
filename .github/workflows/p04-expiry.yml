@@ -1,0 +1,79 @@
+# The P-04 expiry reminder (#283). P-04's reference workload (`python -m perf.lite_smoke`, 30
+# minutes on a compose stack) is run by hand on a maintainer's machine, and the PR gate
+# (tests/perf/test_p_04.py::test_p_04) accepts its committed report for 30 days. Every day this
+# workflow asks `perf.lite_smoke.freshness` where the newest full-length report stands, and once it
+# is 14 days or less from expiring (or expired, or missing) it opens a "P-04 report expires" issue
+# with the rerun command. While such an issue is open it does nothing more. It gates nothing.
+name: P-04 expiry
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p04-expiry
+  cancel-in-progress: false
+
+env:
+  # The gate's uv (ci.yml).
+  UV_VERSION: "0.12.23"
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v10.3.0  # exact: setup-uv publishes no floating major tag past v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.14"
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Check the newest P-04 report
+        id: freshness
+        run: |
+          uv run python -m perf.lite_smoke.freshness | tee -a "$GITHUB_OUTPUT"
+      - name: Summarise
+        env:
+          REPORT: ${{ steps.freshness.outputs.report }}
+          EXPIRES: ${{ steps.freshness.outputs.expires }}
+          DUE: ${{ steps.freshness.outputs.due }}
+        run: |
+          printf '%s\n' "## P-04 report: ${REPORT:-none}" '' "Expires: ${EXPIRES:-already}; reminder due: $DUE" >> "$GITHUB_STEP_SUMMARY"
+      - name: Open the reminder
+        if: steps.freshness.outputs.due == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REPORT: ${{ steps.freshness.outputs.report }}
+          STARTED: ${{ steps.freshness.outputs.started }}
+          EXPIRES: ${{ steps.freshness.outputs.expires }}
+          EXPIRED: ${{ steps.freshness.outputs.expired }}
+        run: |
+          open=$(gh issue list --state open --search 'in:title "P-04 report expires"' --json number --jq '.[0].number // empty')
+          if [ -n "$open" ]; then
+            echo "Reminder already open: #$open"
+            exit 0
+          fi
+          if [ -z "$REPORT" ]; then
+            state='There is no full-length P-04 report in `perf/results/`, so the PR gate (`tests/perf/test_p_04.py::test_p_04`) is red.'
+            title="P-04 report expires: none committed"
+          elif [ "$EXPIRED" = "true" ]; then
+            state="The newest full-length P-04 report, \`$REPORT\` ($STARTED), expired on $EXPIRES: the PR gate (\`tests/perf/test_p_04.py::test_p_04\`) is red."
+            title="P-04 report expires $EXPIRES (expired)"
+          else
+            state="The newest full-length P-04 report, \`$REPORT\` ($STARTED), expires on $EXPIRES. After that the PR gate (\`tests/perf/test_p_04.py::test_p_04\`), and with it \`publish-edge.yml\` and \`release.yml\`, goes red."
+            title="P-04 report expires $EXPIRES"
+          fi
+          body=$(printf '%s\n' "$state" '' 'Rerun the reference workload on a maintainer'"'"'s machine (about 30 minutes plus seeding) and commit the new report and its JSON sidecar:' '' '```bash' 'uv sync --group perf && uv run python -m perf.lite_smoke --minutes 30 --host-class mac' '```' '' 'Opened by `p04-expiry.yml` (#283); close this issue once the new report is on `main`.')
+          gh issue create --title "$title" --label needs-owner-action --label area:ci --label performance --body "$body"

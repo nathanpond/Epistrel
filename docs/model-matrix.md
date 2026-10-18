@@ -44,10 +44,10 @@ nothing is derived from it. The next live run of the tier fills them.
 
 ## Results
 
-| Tier | Policies | Protocol | `generation` | `guardrail_check` | `lite_summary` | E-06 | Turns | p50 | p95 | Calls per turn |
-|---|---|---|---|---|---|---|---|---|---|---|
-| local: cydonia-24b-v4.3 | minors policy on | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓) | ✓ (tokens 32/32, 128/128; temp 0: 10/10 identical) | 20 | 18.31 s | 45.06 s | 3.15 (generation 1.1, guardrail_check 2.05) |
-| local: cydonia-24b-v4.3 | policies off | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓) | ✓ (tokens 32/32, 128/128; temp 0: 10/10 identical) | 20 | 13.40 s | 16.87 s | 1 (generation 1) |
+| Tier | Policies | Protocol | `generation` | `guardrail_check` | `consolidation` | `lite_summary` | `importance_scoring` | `entailment` | `salience_detection` | E-06 | Turns | p50 | p95 | Calls per turn |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| local: cydonia-24b-v4.3 | minors policy on | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | not run | ✓ (context ✓) | not run | not run | not run | ✓ (tokens 32/32, 128/128; temp 0: 10/10 identical) | 20 | 18.31 s | 45.06 s | 3.15 (generation 1.1, guardrail_check 2.05) |
+| local: cydonia-24b-v4.3 | policies off | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | not run | ✓ (context ✓) | not run | not run | not run | ✓ (tokens 32/32, 128/128; temp 0: 10/10 identical) | 20 | 13.40 s | 16.87 s | 1 (generation 1) |
 
 ## Calls
 
@@ -62,5 +62,14 @@ nothing is derived from it. The next live run of the tier fills them.
 |---|---|---|---|---|---|---|
 | local: cydonia-24b-v4.3 | minors policy on | 2026-10-12 | `cd0261d` | Apple M3 Max, 128 GB; context 16,384 | LM Studio 0.4.26 | respond (#57) |
 | local: cydonia-24b-v4.3 | policies off | 2026-10-12 | `cd0261d` | Apple M3 Max, 128 GB; context 16,384 | LM Studio 0.4.26 | respond (#57) |
+
+## Embedding
+
+The embedding endpoint (the `embedding` port, #138), measured when the run names one:
+**Protocol** is `GET /models` and one embedding; **Dimension** is what every vector of that
+model has (the deployment pins it at the first embedding); **Max batch** is the largest of 64,
+16 and 1 texts one request embeds; **p50** is over single-text calls.
+
+No embedding endpoint has been measured yet.
 
 Raw timings for every row are in [model-matrix.json](model-matrix.json).

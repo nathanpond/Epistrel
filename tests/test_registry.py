@@ -20,6 +20,7 @@ from epistrel.orchestrator.models.access import (
 from epistrel.orchestrator.models.adapter import UndeclaredInput, UnknownPurpose
 from epistrel.orchestrator.models.registry import (
     DELIVERED,
+    PORTS,
     RESERVED,
     ContentCategory,
     GenerationInputs,
@@ -59,10 +60,24 @@ def bad_template_env(source: str) -> Environment:
 
 
 def test_m2_purposes_are_delivered_with_tagged_schemas() -> None:
-    # M3 delivers rating_suggestion (#121), which defaults to guardrail_check's row (FR-MODEL-2).
-    assert set(DELIVERED) == {"generation", "guardrail_check", "lite_summary", "rating_suggestion"}
+    # M3 delivers rating_suggestion (#121), which defaults to guardrail_check's row (FR-MODEL-2);
+    # M4 the eval harness's quality_judge (#134), memory importance_scoring (#135) and
+    # verify's entailment (#142), memory consolidation (#143), which lite_summary now
+    # defaults to (#51's note), and commitment's salience_detection (#146).
+    assert set(DELIVERED) == {
+        "generation",
+        "guardrail_check",
+        "consolidation",
+        "lite_summary",
+        "rating_suggestion",
+        "quality_judge",
+        "importance_scoring",
+        "entailment",
+        "salience_detection",
+    }
     for purpose in DELIVERED.values():
-        expected = "guardrail_check" if purpose.name == "rating_suggestion" else "default"
+        parents = {"rating_suggestion": "guardrail_check", "lite_summary": "consolidation"}
+        expected = parents.get(purpose.name, "default")
         assert purpose.default_model_key == expected
         assert purpose.capability_floor.min_context_tokens == 8_192
         registry.validate_purpose(purpose)
@@ -72,8 +87,11 @@ def test_m2_purposes_are_delivered_with_tagged_schemas() -> None:
 
 
 def test_registry_enumerates_every_named_purpose() -> None:
-    assert set(DELIVERED) | set(RESERVED) >= FR_MODEL_2
+    # M4 delivers the embedding port (#138): a port, configured like a purpose, never a chat one.
+    assert set(DELIVERED) | set(PORTS) | set(RESERVED) >= FR_MODEL_2
     assert not set(DELIVERED) & set(RESERVED)
+    assert not set(PORTS) & (set(DELIVERED) | set(RESERVED))
+    assert set(PORTS) == {"embedding"}
     for reserved in RESERVED.values():
         assert reserved.milestone in {"M3", "M4", "M5", "M6", "M7", "M8"}
         assert reserved.defaults_to is None or reserved.defaults_to in FR_MODEL_2
@@ -82,14 +100,14 @@ def test_registry_enumerates_every_named_purpose() -> None:
 
 def test_reserved_and_unknown_purposes_are_refused() -> None:
     with pytest.raises(UnknownPurpose) as reserved:
-        get_delivered("entailment")
+        get_delivered("time_estimation")
     details = dict(reserved.value.details)
     assert len(details.pop("errors")) == 1
     assert details == {
         "field": "body",
-        "purpose": "entailment",
+        "purpose": "time_estimation",
         "reason": "reserved",
-        "milestone": "M4",
+        "milestone": "M6",
     }
     with pytest.raises(UnknownPurpose) as unknown:
         get_delivered("nope")

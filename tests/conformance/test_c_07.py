@@ -1,21 +1,33 @@
 """C-07: adapter swap and capability reporting (docs/04), the M2 parts: the swap (#51) and
-protocol vs per-purpose capability (#54)."""
+protocol vs per-purpose capability (#54); and the M4 part (#138): the embedding adapter and the
+lexical backend swap the same way, and the model matrix reports the embedding endpoint."""
 
 from __future__ import annotations
 
 import ast
+import dataclasses
 import hashlib
+import re
 from pathlib import Path
+from typing import Any
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.core.retrieval import LexicalFilters, LexicalSearch, TsvectorLexicalSearch, search
 from epistrel.engine import Engine
+from epistrel.orchestrator.jobs import queue
+from epistrel.orchestrator.jobs.handlers.reembed import EMBED
+from epistrel.orchestrator.models import config as model_config
 from epistrel.orchestrator.models.access import ModelAccessLayer
 from epistrel.orchestrator.models.capability import STRUCTURED_CALLS, assess
 from epistrel.orchestrator.models.registry import DELIVERED
+from epistrel.tools import model_matrix as mm
+from epistrel.tools.model_matrix import embedding_row
 from tests.auth_support import auth_settings
 from tests.conformance.suite import GENERATION_MODEL, run_suite
+from tests.embedding_support import embedding_db, run_jobs, say, structured_story, vectors
 from tests.model_support import config_key, mock_openai, restored_model_config
 
 CORE = Path(__file__).resolve().parents[2] / "src" / "epistrel" / "core"
@@ -120,3 +132,118 @@ async def test_c_07__capability(dummy_dsn: str) -> None:
     assert not unreachable.protocol.ok
     assert unreachable.protocol.reason == "connection"
     assert unreachable.purposes == {}
+
+
+class InMemoryLexicalSearch:
+    """A test-only lexical backend (C-07 M4): reads the story's active hot memories and ranks
+    them by how many of the query's words they contain, in Python."""
+
+    name = "in_memory"
+
+    async def search(
+        self,
+        conn: Any,
+        story_id: str,
+        query: str,
+        k: int,
+        filters: LexicalFilters | None = None,
+    ) -> list[tuple[str, float]]:
+        found = await conn.execute(
+            text(
+                "SELECT id, text FROM memories WHERE story_id = :s AND membership = 'active' "
+                "AND retrieval_tier = 'hot'"
+            ),
+            {"s": story_id},
+        )
+        words = set(re.findall(r"\w+", query.lower()))
+        scored = [
+            (str(r.id), float(len(words & set(re.findall(r"\w+", r.text.lower()))))) for r in found
+        ]
+        return sorted(((i, s) for i, s in scored if s > 0), key=lambda h: (-h[1], h[0]))[:k]
+
+
+LINES = (
+    "The lighthouse keeper hid the brass key under the third step.",
+    "Rain hammered the harbour all night long.",
+)
+
+
+def core_mentions_of_the_embedding_adapter() -> list[str]:
+    """Modules under core that name the embedding adapter switch or its implementations."""
+    found: list[str] = []
+    for path in sorted(CORE.rglob("*.py")):
+        source = path.read_text()
+        for name in ("embedding_adapter", "EPISTREL_EMBEDDING_ADAPTER", "EmbeddingAdapter"):
+            if name in source:
+                found.append(f"{path.name}: names {name}")
+    return found
+
+
+@pytest.mark.part("M4", "NFR-PORT-2")
+async def test_c_07__adapters(pg_url: str) -> None:
+    """Swapping the embedding adapter (``EPISTREL_EMBEDDING_ADAPTER=openai|stub``) or the
+    lexical backend (``LexicalSearch``: ``tsvector`` or a test-only in-memory one) changes no
+    file under ``src/epistrel/core``, and the same embed-and-search run passes for each. The
+    model matrix reports the embedding endpoint's protocol compatibility and dimension.
+
+    Complements: the two runs really used different transports (the endpoint saw
+    ``/embeddings`` requests only under ``openai``), and an endpoint that fails the probe is
+    reported as a protocol failure with no dimension."""
+    assert core_mentions_of_model_access() == []
+    assert core_mentions_of_the_embedding_adapter() == []
+    before = core_digest()
+    seen: dict[str, int] = {}
+    dimensions = {"openai": 24, "stub": 64}
+    for kind in ("openai", "stub"):
+        async with embedding_db(pg_url, embedding_adapter=kind) as s:
+            with mock_openai(embedding_dimension=24) as server:
+                if kind == "openai":
+                    await model_config.write_config(
+                        s.db,
+                        "embedding",
+                        keybox=s.lib.models.keybox,
+                        principal="p-operator",
+                        base_url=f"{server.root}/v1",
+                        model="mock-embed",
+                        api_key="k-embed",
+                    )
+                service = s.lib.models.embeddings
+                assert service.adapter.name == kind
+                story, cast = await structured_story(s.db)
+                memory_ids = [await say(s.db, story, cast["Cal"], line) for line in LINES]
+                assert await run_jobs(s.db, EMBED, story) == [queue.CommitOutcome.COMMITTED]
+                stored = await vectors(s.db, story)
+                query = stored[memory_ids[0]].text
+                for lexical in (TsvectorLexicalSearch(), InMemoryLexicalSearch()):
+                    async with s.db.connect() as conn:
+                        found = await search(
+                            conn,
+                            story,
+                            query,
+                            k=5,
+                            lexical=lexical,
+                            embed=service.query_embedder(),
+                        )
+                    assert found.degradation == ()
+                    assert found.vector[0].memory_id == memory_ids[0]
+                    assert found.lexical[0].memory_id == memory_ids[0]
+                    assert isinstance(lexical, LexicalSearch)
+
+                row = await embedding_row(service, tier=kind, model=kind, calls=3)
+                assert row.protocol is True
+                assert row.dimension == dimensions[kind]
+                assert row.max_batch == 64
+                assert row.p50_ms is not None
+                seen[kind] = len([r for r in server.requests if r.path.endswith("/embeddings")])
+                if kind == "openai":
+                    server.fail_with = 500
+                    failed = await embedding_row(service, tier=kind, model=kind, calls=1)
+                    assert failed.protocol is False
+                    assert failed.dimension is None
+                    assert failed.protocol_reason == "http_error"
+    assert core_digest() == before
+    assert seen["openai"] > 0
+    assert seen["stub"] == 0
+    rendered = mm.render([], [dataclasses.asdict(row)])
+    assert "## Embedding" in rendered
+    assert "| stub: stub | ✓ | stub | 64 | 64 |" in rendered

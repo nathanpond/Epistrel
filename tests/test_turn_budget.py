@@ -74,3 +74,24 @@ def test_the_deadline_clamps_each_call() -> None:
     assert reason == "deadline"
     assert 0 < timeout <= 1.0
     assert TurnBudget(deadline_s=100.0).clamp(5.0) == (5.0, "timeout")
+
+
+async def test_embedding_calls_are_counted_apart_from_the_cap() -> None:
+    """#141: a retrieval's embedding calls (the query, a rehydration batch) are counted in
+    ``TurnBudget.embedding_calls`` through ``counted_embedder``, failed calls too, and never in
+    ``used`` (the model-call cap)."""
+    from epistrel.orchestrator.budget import counted_embedder
+
+    budget = TurnBudget(max_calls=3)
+
+    async def embed(text: str) -> list[float]:
+        if text == "boom":
+            raise RuntimeError("down")
+        return [1.0, 0.0]
+
+    counted = counted_embedder(embed, budget)
+    assert await counted("hello") == [1.0, 0.0]
+    with pytest.raises(RuntimeError):
+        await counted("boom")
+    assert (budget.embedding_calls, budget.used) == (2, 0)
+    assert "embedding_calls" not in budget.report()

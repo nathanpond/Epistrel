@@ -3,7 +3,8 @@
 ``apply_events`` runs inside ``Operation.commit()``'s transaction, before COMMIT. For each
 projection it loads the rows the new events can touch, applies the events, and writes only the
 difference. ``fold`` replays every event of the story's committed operations in ``seq`` order
-through the same ``apply``, in memory, and ``rebuild`` replaces the stored rows with the result
+through the same ``apply``, in memory (a projection over canon, #137, folds ``facts`` instead:
+``Projection.fold_state``), and ``rebuild`` replaces the stored rows with the result
 under the story lock as a ``maintenance`` operation, so it bumps no revision (FR-CONC-1) and
 writes no event.
 """
@@ -108,6 +109,10 @@ async def fold(
     ]
     folded: dict[str, Rows] = {}
     for projection in only if only is not None else registered_projections():
+        state = await projection.fold_state(conn, story_id)
+        if state is not None:
+            folded[projection.name] = state
+            continue
         rows = Rows(projection.table)
         for event in log:
             projection.apply(rows, event)

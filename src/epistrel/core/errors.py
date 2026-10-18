@@ -135,6 +135,19 @@ def refuse_nul(value: Any, loc: tuple[int | str, ...] = ()) -> None:
         )
 
 
+def without_nul(value: Any) -> Any:
+    """``value`` (a JSON-like document) with every NUL character removed from its keys and
+    strings (#275). For text the Engine did not receive from a caller, a model's answer above
+    all: refusing it would answer the caller for what the model wrote."""
+    if isinstance(value, str):
+        return value.replace(NUL, "")
+    if isinstance(value, dict):
+        return {without_nul(key): without_nul(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [without_nul(item) for item in value]
+    return value
+
+
 def _error_field(error: Any, prefix: ValidationLoc) -> str:
     loc = (*prefix, *tuple(error.get("loc", ())))
     if error.get("type") in NON_FIELD_ERRORS:
@@ -932,6 +945,14 @@ class StoryCharacterNotFound(EpistrelError):
     http_status = 404
 
 
+class StoryEntityNotFound(EpistrelError):
+    """The story has no entity with that id (it may belong to another story; #137's profile
+    read). ``details``: ``story_id`` and ``entity_id``."""
+
+    code = "not_found"
+    http_status = 404
+
+
 class OffboardingNotFound(EpistrelError):
     """The offboarding job a call names does not exist (or its report was purged).
     ``details``: ``job_id``."""
@@ -1052,3 +1073,50 @@ class LedgerUnavailable(EpistrelError):
 
     code = "ledger_unavailable"
     http_status = 503
+
+
+class ModuleOff(EpistrelError):
+    """A call needs a profile module the story's effective configuration has off (FR-PROF-2;
+    #143: ``POST /admin/stories/{id}/consolidate`` with ``memory.consolidation.enabled`` off).
+    ``details``: ``story_id`` and ``module``. Nothing is written."""
+
+    code = "module_off"
+    http_status = 409
+
+
+class ScopeMismatch(EpistrelError):
+    """A consolidation's inputs span viewpoint scopes no one output may combine (FR-MEM-9; #143):
+    the intersection of their scopes is empty (two characters' private memories). Refused when
+    the job is planned, before any model call. ``details``: ``story_id`` and ``scopes`` (the
+    input scopes found)."""
+
+    code = "scope_mismatch"
+    http_status = 422
+
+
+class MemoryNotFound(EpistrelError):
+    """The memory a call names is not one of the story's (FR-GUARD-4; #145). ``details``:
+    ``story_id`` and ``memory_id``."""
+
+    code = "not_found"
+    http_status = 404
+
+
+class PinLimitExceeded(EpistrelError):
+    """A pin would take a character or the story past its pin ceiling (FR-MEM-8; #147):
+    ``max_pinned_per_character`` or ``max_pinned_per_story`` (a story's pinned memories and its
+    text pins together). ``details``: ``scope`` (``character`` or ``story``: the first limit the
+    pin hits), ``limit``, ``actual`` (what the story would hold) and, for a character,
+    ``character_id``. Nothing is written; unpinning admits again."""
+
+    code = "pin_limit_exceeded"
+    http_status = 422
+
+
+class SpanNotFound(EpistrelError):
+    """A sanitize's ``span`` does not occur in the memory's text (FR-GUARD-4; #145): it is an
+    exact substring, every occurrence of which is replaced. ``details``: ``memory_id``.
+    Nothing is written."""
+
+    code = "span_not_found"
+    http_status = 422

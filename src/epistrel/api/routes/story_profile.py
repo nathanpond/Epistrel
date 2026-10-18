@@ -7,6 +7,8 @@
 - ``GET /stories/{id}/effective-config``: the deployment's defaults, the profile and version the
   story runs on, its overrides, every delivered setting at its effective value, and the
   configuration's fingerprint, capabilities and quality status.
+- ``GET /stories/{id}/guarantees`` (#132): the guarantee table of the story's effective
+  configuration (FR-VERIFY-15, FR-PROF-12).
 - ``PUT /stories/{id}/engine-profile`` (#113): run the story under another profile.
 - ``PATCH /stories/{id}/profile-overrides`` (#113): change the story's overrides of its
   profile's dials (a JSON merge patch).
@@ -28,6 +30,7 @@ from epistrel.api.idempotency import answered
 from epistrel.api.responses import MutationResponse
 from epistrel.api.routes.engine_profiles import PROFILES_TAG
 from epistrel.core.profiles.effective import EffectiveConfig
+from epistrel.core.profiles.guarantees import GuaranteeTable
 from epistrel.core.profiles.impact import ImpactPreviewRequest, ImpactReport, TwoStageResult
 from epistrel.core.profiles.story import ProfileAssignment, ProfileOverridesPatch
 
@@ -62,6 +65,24 @@ EFFECTIVE_DESCRIPTION = (
     "included), the `capabilities` it enables and its `quality_status` (`uncertified` until a "
     "certification matches the fingerprint). A turn captures this configuration when it starts "
     "and runs under it to the end."
+)
+GUARANTEES_DESCRIPTION = (
+    "The guarantee table of the story's effective configuration, its overrides included, with "
+    "the profile and version it runs on (FR-VERIFY-15, FR-PROF-12; "
+    "`GET /engine-profiles/{id}/guarantees` answers a profile's). 404 for an unknown story. "
+    "Each row is one step of the guarantee boundary (FR-VERIFY-15): the model proposes; the "
+    "engine validates structured claims, effects, and permissions. `kind` is "
+    "`deterministic` (performed by rules) or `model_dependent` (performed by a model); a "
+    "model-dependent step names the NFR-QUAL `metric` that measures it, or `unmeasured`, "
+    "and a deterministic one has none (`null`). `requires` lists the modules it needs, each "
+    "on at `level` or above (any level when `null`, exactly that level when `exact`), and "
+    "`setting` a setting value it also needs; `purposes` names the model purposes it calls. "
+    "`provided` says whether the step applies under this configuration (`null` for a step "
+    "that never runs inside a story), and `delivered_in` names the milestone that delivers "
+    "a step this deployment cannot provide yet. The rows are those of `docs/guarantees.md`, "
+    "in its order, and the impact report's `guarantees_lost` names the deterministic ones a "
+    "change loses by `id`. Only the "
+    "claims detected in an output are checked."
 )
 TWO_STAGE = (
     " Two stages (FR-PROF-7): the impact report (`impact`, one story) is always answered; a "
@@ -157,6 +178,19 @@ async def get_effective_config(
     story_id: StoryId, ctx: ContextDep, engine: EngineDep
 ) -> EffectiveConfig:
     return await engine.get_effective_config(ctx, story_id)
+
+
+@router.get(
+    "/stories/{story_id}/guarantees",
+    response_model=GuaranteeTable,
+    operation_id="get_story_guarantees",
+    summary="Read a story's guarantee table",
+    description=GUARANTEES_DESCRIPTION,
+)
+async def get_story_guarantees(
+    story_id: StoryId, ctx: ContextDep, engine: EngineDep
+) -> GuaranteeTable:
+    return await engine.get_story_guarantees(ctx, story_id)
 
 
 @router.put(

@@ -21,6 +21,8 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.core.catalog import validation
+from epistrel.core.catalog.checks.base import DEPLOYMENT_CAPABILITIES
 from epistrel.core.catalog.scenario_models import ScenarioDraft, ScenarioModel
 from epistrel.core.ids import ULID_PATTERN
 from epistrel.core.seeds.ratings import EVERYONE_ID
@@ -100,8 +102,29 @@ LOCKED_VERSIONS = 3
 OPENING = "Rain on the windows; the roast is late."
 """The opening narration of ``scenario()``'s body (a published scenario needs one, #111)."""
 M3_UNAVAILABLE = ("fact_consistency", "seed_normalization", "state_schema")
-"""The checks a validation lists ``unavailable`` on every M3 deployment (#111): they need the
-structured pipeline or the module tracking starting values, which M3 has not delivered."""
+"""The checks a full validation lists ``unavailable`` on every deployment from M3 on (#111): the
+capability-gated checks, each either needing a capability the deployment has not delivered or
+listing itself until it is implemented (M4 delivers the structured pipeline, #129)."""
+
+
+def undeliverable_checks() -> list[str]:
+    """The scenario checks this deployment cannot run (their capability is not delivered): the
+    ones a validation still lists after the document check stops the rest."""
+    return sorted(
+        check.name
+        for check in validation.CHECKS
+        if check.capability is not None and check.capability not in DEPLOYMENT_CAPABILITIES
+    )
+
+
+def runnable_gated_checks() -> list[str]:
+    """The capability-gated checks this deployment can run: a validation lists one only when it
+    runs (it lists itself until implemented), so after a gate stops the run none appears."""
+    return sorted(
+        check.name
+        for check in validation.CHECKS
+        if check.capability is not None and check.name not in undeliverable_checks()
+    )
 
 
 def role(
@@ -661,11 +684,13 @@ __all__ = [
     "published_character",
     "read",
     "role",
+    "runnable_gated_checks",
     "save",
     "scenario",
     "seed",
     "seeds_of",
     "set_cast_limits",
     "stored_form",
+    "undeliverable_checks",
     "version_rows",
 ]

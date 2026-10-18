@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, Depends, FastAPI
+from sqlalchemy.exc import DBAPIError
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from epistrel import __version__
@@ -29,6 +31,8 @@ from epistrel.engine import Engine
 from epistrel.observability import metrics
 from epistrel.observability.instrument import TelemetryMiddleware
 from epistrel.orchestrator.models.config import config_key_problem
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -64,6 +68,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await app.state.epistrel.posters.status()
     app.state.engine = engine
     app.state.epistrel.bind(engine)
+    # The core vocabulary's rows follow the code (#131); an unreachable database does not stop
+    # the start (the next start re-syncs).
+    try:
+        await epistrel.sync_vocabulary()
+    except DBAPIError as exc:
+        logger.warning("the core vocabulary re-sync failed at start-up: %s", type(exc).__name__)
     try:
         await epistrel.start_erasure_reconcile()
     except (erasure_ledger.LedgerCorrupt, erasure_ledger.LedgerMismatch) as exc:

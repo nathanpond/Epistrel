@@ -15,7 +15,14 @@ catalog validation's model-call budget ``validation_model_calls`` (#111) and its
 ``require_primary_image`` (#115), and message feedback's
 text cap and retention (``feedback_text_max_chars``, ``feedback_retention``; #112) and its
 export switch and aggregate window (``feedback_export``, ``feedback_regen_window_s``; #126),
-and what a catalog erasure does with media others still reference (``erasure_shared_media``, #124).
+and what a catalog erasure does with media others still reference (``erasure_shared_media``, #124),
+and how fast memory importance decays (``memory_importance_half_life_turns``, #135),
+and the embedding port's batches and HNSW index (``embedding_batch_max``,
+``reembed_batch_size``, ``embedding_hnsw_m``, ``embedding_hnsw_ef_construction``; #138; and
+``embedding_hnsw_ef_search``, #141), and the retrieval's arms (``retrieval_vector_k``,
+``retrieval_lexical_k``, ``retrieval_rrf_k``, ``retrieval_rehydrate_max_rows``; #141), and how
+much the verifier reads around a claim (``neighborhood_max_facts``, ``entailment_max_records``;
+#142), and how many open thunks a story keeps (``thunks_max_open``, #146).
 ``media_sweep_interval`` also moves its recurring task's ``recurring_tasks`` row
 (``RECURRING_INTERVAL_SETTINGS``).
 
@@ -47,6 +54,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     StrictBool,
+    StrictFloat,
     StrictInt,
     ValidationError,
     model_validator,
@@ -145,36 +153,37 @@ class SettingsPatch(BaseModel):
     )
 
     default_content_rating_id: str | None = None
-    minor_age_threshold: int | None = None
-    max_characters_at_start_default: int | None = None
-    max_characters_at_start_ceiling: int | None = None
+    minor_age_threshold: StrictInt | None = None
+    max_characters_at_start_default: StrictInt | None = None
+    max_characters_at_start_ceiling: StrictInt | None = None
     default_engine_profile_id: str | None = None
-    lite_summary_chunk: int | None = None
-    max_pinned_memories: int | None = None
-    max_custom_instructions_chars: int | None = None
-    idempotency_result_window: int | None = None
-    turn_queue_max: int | None = None
-    structured_retry_budget: int | None = None
-    uncertain_below: float | None = None
+    lite_summary_chunk: StrictInt | None = None
+    max_pinned_memories: StrictInt | None = None
+    max_custom_instructions_chars: StrictInt | None = None
+    idempotency_result_window: StrictInt | None = None
+    turn_queue_max: StrictInt | None = None
+    structured_retry_budget: StrictInt | None = None
+    uncertain_below: StrictFloat | None = None
     default_safe_fallback: str | None = None
     rating_check_model_calls_per_record: StrictInt | None = None
-    audit_retention_days: int | None = None
-    job_retention_days: int | None = None
-    offboarding_report_retention_days: int | None = None
-    rating_check_retention_days: int | None = None
-    worker_heartbeat_timeout: float | None = None
-    timer_lag_alert: float | None = None
+    audit_retention_days: StrictInt | None = None
+    job_retention_days: StrictInt | None = None
+    offboarding_report_retention_days: StrictInt | None = None
+    rating_check_retention_days: StrictInt | None = None
+    readset_change_retention_days: StrictInt | None = None
+    worker_heartbeat_timeout: StrictFloat | None = None
+    timer_lag_alert: StrictFloat | None = None
     media_allowed_types: list[str] | None = None
-    media_max_bytes: int | None = None
+    media_max_bytes: StrictInt | None = None
     media_moderation_webhook_url: str | None = None
-    media_moderation_timeout_ms: int | None = None
-    media_sweep_interval: int | None = None
+    media_moderation_timeout_ms: StrictInt | None = None
+    media_sweep_interval: StrictInt | None = None
     public_base_url: str | None = None
-    media_signed_url_ttl: int | None = None
-    media_multipart_threshold: int | None = None
-    media_upload_ttl: int | None = None
+    media_signed_url_ttl: StrictInt | None = None
+    media_multipart_threshold: StrictInt | None = None
+    media_upload_ttl: StrictInt | None = None
     listing_status_values: list[str] | None = None
-    validation_model_calls: int | None = None
+    validation_model_calls: StrictInt | None = None
     require_primary_image: StrictBool | None = None
     feedback_tags: list[str] | None = None
     feedback_text_max_chars: StrictInt | None = None
@@ -182,6 +191,21 @@ class SettingsPatch(BaseModel):
     feedback_export: StrictBool | None = None
     feedback_regen_window_s: StrictInt | None = None
     erasure_shared_media: ErasureSharedMedia | None = None
+    memory_importance_half_life_turns: StrictInt | None = None
+    max_pinned_per_character: StrictInt | None = None
+    max_pinned_per_story: StrictInt | None = None
+    embedding_batch_max: StrictInt | None = None
+    reembed_batch_size: StrictInt | None = None
+    embedding_hnsw_m: StrictInt | None = None
+    embedding_hnsw_ef_construction: StrictInt | None = None
+    embedding_hnsw_ef_search: StrictInt | None = None
+    retrieval_vector_k: StrictInt | None = None
+    retrieval_lexical_k: StrictInt | None = None
+    retrieval_rrf_k: StrictInt | None = None
+    retrieval_rehydrate_max_rows: StrictInt | None = None
+    neighborhood_max_facts: StrictInt | None = None
+    entailment_max_records: StrictInt | None = None
+    thunks_max_open: StrictInt | None = None
     profile_defaults: SettingsDocument | None = None
 
     @model_validator(mode="before")

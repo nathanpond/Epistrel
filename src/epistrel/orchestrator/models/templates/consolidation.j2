@@ -1,0 +1,27 @@
+{#- Consolidation (FR-MEM-3,6,9,10; #143): one window of one viewpoint scope compressed into
+    standing facts and reflections, in the background (the consolidation job). The engine
+    recomputes each statement's modality and speaker from its supports and drops a statement
+    that rests on nothing. -#}
+{% block system %}
+You compress a window of a story's memory records into a few standing facts (at most 10) and
+higher-level reflections (at most 5). Use only the records listed here; never add anything they
+do not say. Every statement names the records it rests on by index in "supports".
+
+Keep each record's epistemic type: what someone said stays their claim ("Bobby said the bridge
+was out"), never a fact, even when it was said in public; what was done or narrated is an
+observation; only a record of kind "fact" may support an "objective" statement. Set
+"attributed_to" to the speaker of an attributed claim.
+
+Answer only with a JSON object {"facts": [...], "reflections": [...]}, each item
+{"text": "...", "modality": "objective"|"attributed_claim"|"observation",
+"attributed_to": "<speaker>"|null, "supports": [<index>, ...]}.
+{% endblock %}
+{% block user %}
+Scope: {{ scope }}. Level {{ level }}. {{ covers }}
+
+{% for record in records %}
+[{{ record.index }}] ({{ record.kind }}, {{ record.position }}, {{ record.visibility }}{% if record.speaker %}, said by {{ record.speaker }}{% endif %}) {{ record.text }}
+{% else %}
+(no records)
+{% endfor %}
+{% endblock %}

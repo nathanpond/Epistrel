@@ -8,7 +8,9 @@ as ``RuntimeFacts``.
   configuration (its own row's ``model``, else the ``default`` row's; ``/admin/model-config``,
   #52), read in the caller's transaction, so a turn's fingerprint comes from the snapshot its
   prompt was read in. No adapter reports a model version in M3, so ``reported_version`` is
-  ``null``. Endpoints and keys never enter a fingerprint.
+  ``null``. Endpoints and keys never enter a fingerprint. These are the deployment's models: a
+  configuration that routes a purpose (``models.purposes``) names its own model in the
+  fingerprint (``core.profiles.fingerprint.routed_models``, #325), as its calls use it.
 - **Templates** (``TEMPLATE_HASHES``): the SHA-256 of each delivered purpose's template file as
   it ships, by template name, computed once at import. Editing a template changes every
   fingerprint, as FR-PROF-16's "prompt-template versions" require.

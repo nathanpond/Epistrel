@@ -19,6 +19,8 @@ dials (FR-PROF-1..4, FR-API-6; #106).
   latest version when there is no body or it holds no settings; it changes nothing
   (``mutating=False``: no ``Idempotency-Key``).
 - ``GET /engine-profiles/{id}/versions``: every version, oldest first.
+- ``GET /engine-profiles/{id}/guarantees``: the guarantee table of the latest version (or
+  ``?version=n``) over the deployment's defaults (FR-VERIFY-15, FR-PROF-12; #132).
 - ``DELETE /engine-profiles/{id}``: a soft delete answering the stories still using the profile
   and the scenarios recommending it; the ``retention_sweep`` purges it once no story uses it. A
   fork of a story on a deleted profile runs under it too (a fork copies its story).
@@ -53,6 +55,7 @@ from epistrel.api.routes.stories import (
     RelationFilterParam,
 )
 from epistrel.core.context import PRINCIPAL_PATTERN
+from epistrel.core.profiles.guarantees import GuaranteeTable
 from epistrel.core.profiles.impact import ImpactReport, TwoStageResult
 from epistrel.core.profiles.schema import Quality, SettingTags, Tag
 from epistrel.core.profiles.store import (
@@ -418,6 +421,40 @@ async def list_profile_versions(
     profile_id: ProfileId, ctx: ContextDep, engine: EngineDep
 ) -> ProfileVersionsBody:
     return ProfileVersionsBody(items=await engine.list_profile_versions(ctx, profile_id))
+
+
+GUARANTEES_DESCRIPTION = (
+    "The guarantee table of the profile's latest version (`version`: that one's) over the "
+    "deployment's `profile_defaults`, as a story following it without overrides runs "
+    "(FR-VERIFY-15, FR-PROF-12; `GET /stories/{id}/guarantees` includes a story's "
+    "overrides). A deleted profile still answers; an unknown profile or version is 404. "
+    "Each row is one step of the guarantee boundary (FR-VERIFY-15): the model proposes; the "
+    "engine validates structured claims, effects, and permissions. `kind` is "
+    "`deterministic` (performed by rules) or `model_dependent` (performed by a model); a "
+    "model-dependent step names the NFR-QUAL `metric` that measures it, or `unmeasured`, "
+    "and a deterministic one has none (`null`). `requires` lists the modules it needs, each "
+    "on at `level` or above (any level when `null`, exactly that level when `exact`), and "
+    "`setting` a setting value it also needs; `purposes` names the model purposes it calls. "
+    "`provided` says whether the step applies under this configuration (`null` for a step "
+    "that never runs inside a story), and `delivered_in` names the milestone that delivers "
+    "a step this deployment cannot provide yet. The rows are those of `docs/guarantees.md`, "
+    "in its order, and the impact report's `guarantees_lost` names the deterministic ones a "
+    "change loses by `id`. Only the "
+    "claims detected in an output are checked."
+)
+
+
+@router.get(
+    "/{profile_id}/guarantees",
+    response_model=GuaranteeTable,
+    operation_id="get_profile_guarantees",
+    summary="Read an engine profile's guarantee table",
+    description=GUARANTEES_DESCRIPTION,
+)
+async def get_profile_guarantees(
+    profile_id: ProfileId, ctx: ContextDep, engine: EngineDep, version: VersionQuery = None
+) -> GuaranteeTable:
+    return await engine.get_profile_guarantees(ctx, profile_id, version=version)
 
 
 @router.delete(

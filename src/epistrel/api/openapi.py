@@ -214,6 +214,7 @@ ERROR_STATUS: dict[str, int] = {
     "url_expired": 403,
     "feedback_export_disabled": 403,
     "not_found": 404,
+    "fact_not_found": 404,
     "client_event_conflict": 409,
     "idempotency_conflict": 409,
     "nothing_to_undo": 409,
@@ -231,6 +232,9 @@ ERROR_STATUS: dict[str, int] = {
     "persona_name_taken": 409,
     "upload_closed": 409,
     "upload_incomplete": 409,
+    "module_off": 409,
+    "fact_superseded": 409,
+    "fact_inactive": 409,
     "length_required": 411,
     "draft_too_large": 413,
     "media_too_large": 413,
@@ -246,6 +250,7 @@ ERROR_STATUS: dict[str, int] = {
     "creation_conflicts": 422,
     "cursor_invalid": 422,
     "eligibility_failed": 422,
+    "embedding_unreachable": 422,
     "entry_archived": 422,
     "guardrail_violation": 422,
     "inheritance_cycle": 422,
@@ -270,6 +275,11 @@ ERROR_STATUS: dict[str, int] = {
     "publish_invalid": 422,
     "rating_check_failed": 422,
     "rating_retired": 422,
+    "scope_mismatch": 422,
+    "span_not_found": 422,
+    "pin_limit_exceeded": 422,
+    "key_mismatch": 422,
+    "unknown_predicate": 422,
     "slot_required": 422,
     "subjects_required": 422,
     "transfer_target_invalid": 422,
@@ -343,6 +353,10 @@ _SCENARIO_SAVE = (
 )
 """What a scenario's create or save can answer besides the rules' ``validation_error`` (#108)."""
 _ADMIN_CONFIG = ("config_conflict",)
+_MUTATION = ("story_archived", "story_paused", "erased_subject_referenced")
+"""A mutation primitive's precheck and guard (#145)."""
+_FACT_VERSION = (*_MUTATION, "module_off", "fact_not_found", "fact_superseded", "fact_inactive")
+"""A call on one fact version (#145)."""
 _TEXT_EDIT = ("story_archived", "story_paused", "timeline_changed", "erased_subject_referenced")
 """A pinned-memory or custom-instruction edit (#127: one prepared before an erasure that names
 the erased subject is refused)."""
@@ -365,7 +379,12 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "cast_limit_exceeded",
         "rating_check_failed",
         "profile_deleted",
+        # A replay of a blocked story's creation (#369); a scenario, catalog character or
+        # persona a pending catalog-scope erasure reaches (#346).
+        "erasure_pending",
+        "ledger_unavailable",
     ),
+    "list_media": ("ledger_unavailable",),
     "respond": (
         *_GATED,
         *_TURN,
@@ -393,7 +412,10 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "unsupported_event_kind",
         "erased_subject_referenced",
     ),
-    "set_pinned_memories": (*_GATED, *_TEXT_EDIT),
+    # A predicate proposal's decision (#131): an archived story's registry is read-only.
+    "approve_predicate": ("story_archived",),
+    "reject_predicate": ("story_archived",),
+    "set_pinned_memories": (*_GATED, *_TEXT_EDIT, "pin_limit_exceeded"),
     "set_custom_instructions": (*_GATED, *_TEXT_EDIT),
     "truncate": ("story_archived", "story_paused", "story_busy"),
     "untruncate": ("story_archived", "story_paused", "story_busy", "nothing_to_undo"),
@@ -423,7 +445,22 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     # A story's rating (#118): a tightening pauses the story, so a second change waits.
     "set_content_rating": ("story_archived", "story_paused", "rating_retired"),
     "rebuild_projections": ("story_busy",),
+    "consolidate_story": ("module_off", "scope_mismatch"),
+    # The mutation primitives and the low-level fact calls (#145).
+    "quarantine_memory": (*_MUTATION, "module_off"),
+    "unquarantine_memory": (*_MUTATION, "module_off"),
+    # Author pins (#147): any profile; the ceilings refuse a pin past them.
+    "pin_memory": (*_MUTATION, "pin_limit_exceeded"),
+    "unpin_memory": _MUTATION,
+    "sanitize_memory": (*_MUTATION, "module_off", "span_not_found", "guardrail_violation"),
+    "commit_fact": (*_MUTATION, "module_off", "unknown_predicate"),
+    "supersede_fact": (*_FACT_VERSION, "unknown_predicate", "key_mismatch"),
+    "lock_fact": _FACT_VERSION,
+    "unlock_fact": _FACT_VERSION,
+    "list_facts": ("module_off", "omniscient_required", "viewpoint_unresolved"),
+    "inspect_ledger": ("module_off", "omniscient_required", "viewpoint_unresolved"),
     "history": ("omniscient_required", "viewpoint_unresolved", "unknown_chain"),
+    "retrieve": ("omniscient_required", "viewpoint_unresolved"),
     "get_story": ("viewpoint_unresolved",),
     "get_operation": (
         "idempotency_conflict",
@@ -445,7 +482,7 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "policies_create": (*_ADMIN_CONFIG, "cannot_relax"),
     "policies_update": (*_ADMIN_CONFIG, "cannot_relax"),
     "policies_retire": _ADMIN_CONFIG,
-    "replace_model_config": (*_ADMIN_CONFIG, "config_key_missing"),
+    "replace_model_config": (*_ADMIN_CONFIG, "config_key_missing", "embedding_unreachable"),
     "remove_model_override": _ADMIN_CONFIG,
     "set_model_api_key": (*_ADMIN_CONFIG, "config_key_missing"),
     "remove_model_api_key": _ADMIN_CONFIG,
@@ -483,8 +520,10 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     # status (it follows its character's), a cursor given for other filters.
     "set_listing_status_character": ("invalid_listing_status",),
     "set_listing_status_scenario": ("invalid_listing_status", "companion_follows_character"),
-    "search_catalog_character": ("invalid_listing_status", "cursor_invalid"),
-    "search_catalog_scenario": ("invalid_listing_status", "cursor_invalid"),
+    # A list leaves out what a pending catalog-scope erasure reaches (#346), the ledger compared
+    # first.
+    "search_catalog_character": ("invalid_listing_status", "cursor_invalid", "ledger_unavailable"),
+    "search_catalog_scenario": ("invalid_listing_status", "cursor_invalid", "ledger_unavailable"),
     "upload_media": (
         *_UPLOADED,
         "use_multipart",
@@ -522,7 +561,7 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     # Personas (#114): a name the owner already uses (a transfer too), a list's cursor.
     "create_persona": ("persona_name_taken",),
     "update_persona": ("persona_name_taken",),
-    "list_personas": ("cursor_invalid",),
+    "list_personas": ("cursor_invalid", "ledger_unavailable"),
     "transfer_owner_persona": ("persona_name_taken",),
     # Engine profiles (#106): settings that cannot run, a deleted profile, the default.
     "create_profile": ("invalid_profile",),
@@ -536,7 +575,7 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "set_profile_overrides": ("invalid_profile", "story_archived"),
     # Principal lookup and offboarding (#117): a page's cursor another page gave; a request
     # that cannot run, or a principal already being offboarded.
-    "lookup_principal": ("cursor_invalid",),
+    "lookup_principal": ("cursor_invalid", "ledger_unavailable"),
     # Erasure (#124): a story character scoped to the catalog; no config key for the ledger.
     "erase": (
         "invalid_erasure_scope",
@@ -545,6 +584,8 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "revision_conflict",
         "config_key_missing",
         "ledger_unavailable",
+        # A blocked story (#383), or a catalog-scope request while one is pending (#346).
+        "erasure_pending",
     ),
     # The reconciler (#125): a ledger file that cannot be read or disagrees with the database.
     "reconcile_erasure": ("ledger_unavailable",),
@@ -652,6 +693,17 @@ def _multipart_body(component: str) -> dict[str, Any]:
 ERASURE_UNGATED_ROUTES = frozenset({("DELETE", "/stories/{story_id}")})
 """Story routes a story blocked by the erasure reconciler still answers (#125)."""
 
+CATALOG_PATH_PARAMETERS = (
+    "{character_id}",
+    "{scenario_id}",
+    "{persona_id}",
+    "{media_id}",
+    "{upload_id}",
+)
+"""Path parameters naming a catalog entry, persona, media asset or upload session: a route
+with one (and no story) is refused while a pending catalog-scope erasure reaches the entry
+(#346, ADR-157)."""
+
 
 def _rule_errors(method: str, path: str, *, mutating: bool) -> list[str]:
     codes = ["unauthenticated", "validation_error", "database_unavailable"]
@@ -660,6 +712,10 @@ def _rule_errors(method: str, path: str, *, mutating: bool) -> list[str]:
     if STORY_PATH_PARAMETER in path and (method, path) not in ERASURE_UNGATED_ROUTES:
         # A story the erasure reconciler blocked is refused until its erasures are reapplied
         # (#125); ``ledger_unavailable`` when the ledger cannot be compared on the first call.
+        codes += ["erasure_pending", "ledger_unavailable"]
+    elif any(parameter in path for parameter in CATALOG_PATH_PARAMETERS):
+        # An entry a pending catalog-scope erasure reaches is refused until it is reapplied
+        # (#346); ``ledger_unavailable`` as for a story.
         codes += ["erasure_pending", "ledger_unavailable"]
     if method in MUTATING_METHODS:
         codes.append("principal_required")

@@ -29,6 +29,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.routing import APIRoute, iter_route_contexts
 from pydantic import BaseModel, SecretStr
+from sqlalchemy import text
 
 from epistrel.api import create_app
 from epistrel.api.config_changes import ConfigChangesBody
@@ -39,11 +40,17 @@ from epistrel.api.routes.admin.model_config import (
     ModelConfigItem,
     ModelConfigMutation,
 )
+from epistrel.api.routes.admin.mutation import FactListBody, FactWritten, MemoryWritten
 from epistrel.api.routes.admin.offboarding import OffboardingPlanBody, OffboardingQueuedBody
 from epistrel.api.routes.admin.policies import PolicyBody, PolicyList, PolicyMutation
 from epistrel.api.routes.admin.ratings import RatingDetailBody, RatingList, RatingMutation
 from epistrel.api.routes.admin.settings import SettingsBody
-from epistrel.api.routes.admin.stories import RebuildQueuedResponse, RebuildResponse
+from epistrel.api.routes.admin.stories import (
+    ConsolidationQueuedResponse,
+    HotSetBody,
+    RebuildQueuedResponse,
+    RebuildResponse,
+)
 from epistrel.api.routes.catalog_characters import (
     CharacterDraftBody,
     CharacterListBody,
@@ -68,6 +75,7 @@ from epistrel.api.routes.engine_profiles import (
     ProfileVersionsBody,
 )
 from epistrel.api.routes.history import HistoryResponse
+from epistrel.api.routes.inspect import LedgerBody
 from epistrel.api.routes.media import (
     MediaListBody,
     MediaUploadedBody,
@@ -84,7 +92,10 @@ from epistrel.api.routes.ownership import (
     StoryRelationBody,
 )
 from epistrel.api.routes.personas import PersonaBody, PersonaListBody
+from epistrel.api.routes.predicates import PredicateDecisionBody, PredicateListBody
 from epistrel.api.routes.respond import RespondResponse
+from epistrel.api.routes.retrieval import RetrievalBody
+from epistrel.api.routes.scene import EntityProfileBody, SceneBody
 from epistrel.api.routes.stories import (
     IngestResponse,
     PromotionBody,
@@ -141,16 +152,23 @@ from epistrel.core.fork import Forked, ForkRequest
 from epistrel.core.ingest import IngestRequest
 from epistrel.core.media.assets import MediaUpload
 from epistrel.core.media.uploads import UploadOpen
+from epistrel.core.memory.consolidation import ConsolidateRequest
+from epistrel.core.mutation import FactRequest, QuarantineRequest, SanitizeRequest, SupersedeRequest
 from epistrel.core.offboarding import OffboardingPlan, OffboardingRequest
 from epistrel.core.ownership import OwnerTransferRequest, RelationRequest
 from epistrel.core.policies.model import Scope
 from epistrel.core.profiles.impact import ImpactPreviewRequest
 from epistrel.core.profiles.store import ProfileCopy, ProfileCreate, ProfileUpdate, ProfileValidate
 from epistrel.core.profiles.story import ProfileAssignment, ProfileOverridesPatch
+from epistrel.core.propositions import registry as predicate_registry
+from epistrel.core.propositions import store
+from epistrel.core.propositions.model import Cardinality, Interval, Proposition
+from epistrel.core.propositions.registry import ApproveRequest
+from epistrel.core.propositions.vocabulary import CORE_BY_NAME, MEMBER_OF
 from epistrel.core.ratings import RatingFields, RatingReplacement
 from epistrel.core.ratings.change import RatingChangeRequest, RatingCheckStarted
 from epistrel.core.ratings.suggest import SuggestionRequest
-from epistrel.core.seeds.profiles import LITE_PRESET_ID
+from epistrel.core.seeds.profiles import LITE_PRESET_ID, STRUCTURED_M4_PROFILE_ID
 from epistrel.core.seeds.ratings import EVERYONE_ID, EXPLICIT_ID
 from epistrel.core.stories import AdHocCharacter, StorySpec
 from epistrel.core.story_texts import CustomInstructionsRequest, PinnedMemoriesRequest
@@ -169,6 +187,7 @@ from tests.character_support import complete as complete_character
 from tests.conformance.conftest import migrated_database
 from tests.media_support import files, metadata, png
 from tests.model_support import config_key
+from tests.profile_support import undelivered
 from tests.scenario_support import complete_with as complete_scenario
 from tests.story_support import story_body
 
@@ -183,9 +202,18 @@ FINGERPRINT = re.compile(r"^sha256:[0-9a-f]{64}$")
 DROPPED = frozenset({"idempotency_key"})
 """Transport fields: the key REST echoes (generated per request)."""
 ZEROED = frozenset(
-    {"elapsed_ms", "latency_ms", "queued_ms", "first_call_offset_ms", "request_id", "policy_set"}
+    {
+        "elapsed_ms",
+        "latency_ms",
+        "queued_ms",
+        "first_call_offset_ms",
+        "request_id",
+        "policy_set",
+        "timings",
+    }
 )
-"""Durations (#76: a turn's queue wait and first-call delay too), and hashes over ids: the
+"""Durations (#76: a turn's queue wait and first-call delay too; #141: a retrieval's stage
+timings), and hashes over ids: the
 stub's request id (of the prompt) and an operation's ``config_revisions.policy_set`` (of the
 policy ids in force)."""
 
@@ -225,6 +253,9 @@ class Step:
     status: Callable[[dict[str, Any]], int] | None = None
     """The library result's REST status, when the route's own status is not it (a 202 the
     route answers beside its 200, #117)."""
+    prepare: Callable[[Engine, Ids], Awaitable[None]] | None = None
+    """Engine-side state the step needs that no public call creates (#131: a proposal the
+    structured pipeline files), written on each surface's database before the call."""
 
     @property
     def label(self) -> str:
@@ -277,6 +308,103 @@ async def _rebuild(engine: Engine, story_id: str) -> dict[str, Any]:
     if isinstance(result, RebuildQueued):
         return dump(RebuildQueuedResponse.of(result))
     return dump(RebuildResponse.of(result))
+
+
+WINDOW_ONE = {"from_turn": 1, "to_turn": 1}
+
+
+async def _structured_fork(engine: Engine, ids: Ids) -> None:
+    """The fork on the seeded ``Structured (M4)`` profile, consolidation on (#143)."""
+    async with engine.db.begin() as conn:
+        await conn.execute(
+            text(
+                "UPDATE stories SET engine_profile_id = :p, engine_profile_version_pin = NULL "
+                "WHERE id = :s"
+            ),
+            {"s": ids["fork"], "p": STRUCTURED_M4_PROFILE_ID},
+        )
+
+
+async def _consolidate(engine: Engine, story_id: str) -> dict[str, Any]:
+    queued = await engine.consolidate(CTX, story_id, ConsolidateRequest(from_turn=1, to_turn=2))
+    return dump(ConsolidationQueuedResponse.of(queued))
+
+
+KNOWS_PREDICATE = CORE_BY_NAME["knows"].id
+MUTATION_GROUP = "mutation"
+"""The ``Step.group`` of the mutation-primitive steps (#145)."""
+MUTATION_ANSWERS = [
+    ("commit_fact", 409),
+    ("commit_fact", 201),
+    ("lock_fact", 200),
+    ("unlock_fact", 200),
+    ("list_facts", 200),
+    ("inspect_ledger", 200),
+    ("quarantine_memory", 200),
+    ("unquarantine_memory", 200),
+    ("pin_memory", 200),
+    ("unpin_memory", 200),
+    ("hot_set", 200),
+    ("sanitize_memory", 200),
+    ("supersede_fact", 201),
+]
+"""What they answer on both surfaces: 409 ``module_off`` on the Lite story, then each call on
+the structured fork as written."""
+QUARANTINE = {"reason": "Parity quarantine."}
+SANITIZE = {"span": "Ada", "surrogate": "a friend"}
+
+
+async def _fork_cast(engine: Engine, ids: Ids) -> None:
+    """The fork on ``Structured (M4)`` (episodic memory on, so an author fact writes an author
+    memory) and its characters' ids, for the fact calls' propositions (#145)."""
+    await _structured_fork(engine, ids)
+    async with engine.db.connect() as conn:
+        found = await conn.execute(
+            text("SELECT id, name FROM characters WHERE story_id = :s ORDER BY name"),
+            {"s": ids["fork"]},
+        )
+        for row in found:
+            ids[f"fork_{str(row.name).lower()}"] = str(row.id)
+
+
+def _knows(ids: Ids, story: str, *, since: int = 0) -> dict[str, Any]:
+    """Wren knows Ada (#131's ``knows``, a ``multi`` fluent) from story-minute ``since``, in
+    ``story`` (``story``: the Lite story's cast, ``fork``: the fork's)."""
+    prefix = "" if story == "story" else "fork_"
+    return Proposition(
+        subject_id=ids[f"{prefix}wren"],
+        predicate_id=KNOWS_PREDICATE,
+        object_id=ids[f"{prefix}ada"],
+        valid_time=Interval.of(since, None),
+    ).model_dump(mode="json")
+
+
+async def _commit_fact(
+    engine: Engine, story_id: str, proposition: dict[str, Any]
+) -> dict[str, Any]:
+    return await _fact_written(
+        engine.commit_fact(CTX, story_id, FactRequest.model_validate({"proposition": proposition}))
+    )
+
+
+async def _fact_written(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(FactWritten.of(await call))
+
+
+async def _memory_written(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(MemoryWritten.of(await call))
+
+
+async def _hot_set(engine: Engine, story_id: str) -> dict[str, Any]:
+    return dump(HotSetBody.of(await engine.hot_set(CTX, story_id)))
+
+
+async def _fact_list(engine: Engine, story_id: str) -> dict[str, Any]:
+    return dump(FactListBody.of(await engine.list_facts(CTX, story_id, viewpoint="omniscient")))
+
+
+async def _ledger(engine: Engine, story_id: str) -> dict[str, Any]:
+    return dump(LedgerBody.of(await engine.inspect_ledger(CTX, story_id, viewpoint="omniscient")))
 
 
 def _keep(name: str, *path: str | int) -> Callable[[dict[str, Any], Ids], None]:
@@ -473,7 +601,7 @@ PROFILE = {
 }
 PROFILE_EDIT = {"name": "Parity profile", "settings": {"pins": {"max_pinned": 10}}}
 PROFILE_COPY = {"name": "Parity copy"}
-PROFILE_DRY_RUN = {"settings": {"pipeline": "structured"}}
+PROFILE_DRY_RUN = {"settings": undelivered()}
 PROFILE_ANSWERS = [
     ("create_profile", 201),
     ("get_profile", 200),
@@ -481,6 +609,7 @@ PROFILE_ANSWERS = [
     ("update_profile", 200),
     ("get_profile", 200),
     ("list_profile_versions", 200),
+    ("get_profile_guarantees", 200),
     ("copy_profile", 201),
     ("validate_profile", 200),
     ("validate_profile", 200),
@@ -491,17 +620,19 @@ PROFILE_ANSWERS = [
     ("transfer_owner", 200),
     ("impact_preview", 200),
     ("get_effective_config", 200),
+    ("get_story_guarantees", 200),
     ("assign_engine_profile", 200),
     ("set_profile_overrides", 200),
     ("get_effective_config", 200),
 ]
 """What the engine-profile steps (#106) answer on both surfaces: a profile created, read, listed,
-edited into version 2 (two-stage, #109: no story follows it, so it applies at once), read at
-version 1, its versions listed, copied, validated (and refused for an undelivered level), the
-schema read, the default refused deletion, the copy deleted, and the profile transferred; then
-(#109) the impact of assigning it to the story previewed, and the story's effective
-configuration read; then (#113) the profile assigned to the story (no capability changes, so it
-applies at once), one of its dials overridden, and its configuration read again."""
+edited into version 2 (two-stage, #109: no story follows it, so it applies at once), read at version
+1, its versions listed, its guarantee table read (#132), copied, validated (and refused for an
+undelivered level), the schema read, the default refused deletion, the copy deleted, and the profile
+transferred; then (#109) the impact of assigning it to the story previewed, and the story's
+effective configuration and guarantee table (#132) read; then (#113) the profile assigned to the
+story (no capability changes, so it applies at once), one of its dials overridden, and its
+configuration read again."""
 STORY_OVERRIDES = {"settings": {"memory": {"rolling_summary": {"window_messages": 12}}}}
 """A story's override of its profile's verbatim window (#113)."""
 DEPLOYMENT_PATCH = {"profile_defaults": {"memory": {"rolling_summary": {"window_messages": 40}}}}
@@ -663,6 +794,67 @@ def _steps() -> list[Step]:
             "custom_instructions",
             lambda ids: Rest("GET", f"{s}/custom-instructions"),
             lambda e, ids: _read_instructions(e, ids["story"]),
+        ),
+        # -- the predicate registry (#131): two auto predicates with an engine proposal each
+        # (seeded on both surfaces: no public call files one), listed; one proposal approved,
+        # the other rejected; a core predicate takes no decision (404 on both surfaces).
+        Step(
+            "list_predicates",
+            lambda ids: Rest("GET", f"{s}/predicates"),
+            lambda e, ids: _predicates(e, ids["story"]),
+            prepare=_proposals,
+            group=REGISTRY_GROUP,
+        ),
+        Step(
+            "approve_predicate",
+            lambda ids: Rest(
+                "POST", f"{s}/predicates/{{approved}}/approve", {"changes": ["cardinality"]}
+            ),
+            lambda e, ids: _predicate_decision(
+                e.approve_predicate(
+                    CTX, ids["story"], ids["approved"], ApproveRequest(changes=["cardinality"])
+                )
+            ),
+            group=REGISTRY_GROUP,
+        ),
+        Step(
+            "reject_predicate",
+            lambda ids: Rest("POST", f"{s}/predicates/{{rejected}}/reject"),
+            lambda e, ids: _predicate_decision(
+                e.reject_predicate(CTX, ids["story"], ids["rejected"])
+            ),
+            group=REGISTRY_GROUP,
+        ),
+        Step(
+            "reject_predicate",
+            lambda ids: Rest("POST", f"{s}/predicates/{MEMBER_OF}/reject"),
+            lambda e, ids: _predicate_decision(e.reject_predicate(CTX, ids["story"], MEMBER_OF)),
+            group=REGISTRY_GROUP,
+        ),
+        # -- the structured projections (#137): the scene, and the profile of an entity the
+        # resolver would have recorded (seeded on both surfaces: no public call adds one).
+        Step(
+            "scene",
+            lambda ids: Rest("GET", f"{s}/scene", params={"viewpoint": "omniscient"}),
+            lambda e, ids: _scene(e, ids["story"]),
+        ),
+        Step(
+            "entity_profile",
+            lambda ids: Rest(
+                "GET", f"{s}/entities/{{entity}}/profile", params={"viewpoint": "omniscient"}
+            ),
+            lambda e, ids: _entity_profile(e, ids["story"], ids["entity"]),
+            prepare=_entity,
+        ),
+        # -- retrieval (#141): the debugging read, omniscient.
+        Step(
+            "retrieve",
+            lambda ids: Rest(
+                "GET",
+                f"{s}/retrieve",
+                params={"q": "Those guys at the game a month ago", "viewpoint": "omniscient"},
+            ),
+            lambda e, ids: _retrieve(e, ids["story"]),
         ),
         # -- turns
         Step(
@@ -838,6 +1030,12 @@ def _steps() -> list[Step]:
             lambda ids: Rest("POST", f"/admin{s}/rebuild"),
             lambda e, ids: _rebuild(e, ids["story"]),
         ),
+        # A Lite story has consolidation off: 409 module_off on both surfaces (#143).
+        Step(
+            "consolidate",
+            lambda ids: Rest("POST", f"/admin{s}/consolidate", {"from_turn": 1, "to_turn": 2}),
+            lambda e, ids: _consolidate(e, ids["story"]),
+        ),
         Step(
             "archive_story",
             lambda ids: Rest("POST", f"{s}/archive"),
@@ -847,6 +1045,132 @@ def _steps() -> list[Step]:
             "unarchive_story",
             lambda ids: Rest("POST", f"{s}/unarchive"),
             lambda e, ids: _status(e.unarchive_story(CTX, ids["story"])),
+        ),
+        # The fork, on the Structured (M4) profile, consolidates (202, replayed by C-15), and is
+        # deleted next.
+        Step(
+            "consolidate",
+            lambda ids: Rest(
+                "POST", "/admin/stories/{fork}/consolidate", {"from_turn": 1, "to_turn": 1}
+            ),
+            lambda e, ids: _consolidate(e, ids["fork"]),
+            prepare=_structured_fork,
+        ),
+        # The mutation primitives and the low-level fact calls (#145): 409 module_off on the Lite
+        # story, then on the structured fork an author fact, its lock and unlock, the canon read,
+        # the quarantine of its author memory and its release, a sanitize and a supersede.
+        Step(
+            "commit_fact",
+            lambda ids: Rest("POST", f"/admin{s}/facts", {"proposition": _knows(ids, "story")}),
+            lambda e, ids: _commit_fact(e, ids["story"], _knows(ids, "story")),
+            group=MUTATION_GROUP,
+        ),
+        Step(
+            "commit_fact",
+            lambda ids: Rest(
+                "POST", "/admin/stories/{fork}/facts", {"proposition": _knows(ids, "fork")}
+            ),
+            lambda e, ids: _commit_fact(e, ids["fork"], _knows(ids, "fork")),
+            _both(_keep("fork_fact", "fact", "id"), _keep("fork_memory", "memory_id")),
+            prepare=_fork_cast,
+            group=MUTATION_GROUP,
+        ),
+        Step(
+            "lock_fact",
+            lambda ids: Rest("POST", "/admin/stories/{fork}/facts/{fork_fact}/lock"),
+            lambda e, ids: _fact_written(e.lock_fact(CTX, ids["fork"], ids["fork_fact"])),
+            _keep("fork_fact", "fact", "id"),
+            group=MUTATION_GROUP,
+        ),
+        Step(
+            "unlock_fact",
+            lambda ids: Rest("DELETE", "/admin/stories/{fork}/facts/{fork_fact}/lock"),
+            lambda e, ids: _fact_written(e.unlock_fact(CTX, ids["fork"], ids["fork_fact"])),
+            _keep("fork_fact", "fact", "id"),
+            group=MUTATION_GROUP,
+        ),
+        Step(
+            "list_facts",
+            lambda ids: Rest(
+                "GET", "/admin/stories/{fork}/facts", params={"viewpoint": "omniscient"}
+            ),
+            lambda e, ids: _fact_list(e, ids["fork"]),
+            group=MUTATION_GROUP,
+        ),
+        # The thunks and the promissory ledger (#146), omniscient, on the structured fork.
+        Step(
+            "inspect_ledger",
+            lambda ids: Rest(
+                "GET", "/stories/{fork}/inspect/ledger", params={"viewpoint": "omniscient"}
+            ),
+            lambda e, ids: _ledger(e, ids["fork"]),
+            group=MUTATION_GROUP,
+        ),
+        Step(
+            "quarantine_memory",
+            lambda ids: Rest(
+                "POST", "/admin/stories/{fork}/memories/{fork_memory}/quarantine", QUARANTINE
+            ),
+            lambda e, ids: _memory_written(
+                e.quarantine_memory(
+                    CTX, ids["fork"], ids["fork_memory"], QuarantineRequest(**QUARANTINE)
+                )
+            ),
+            group=MUTATION_GROUP,
+        ),
+        Step(
+            "unquarantine_memory",
+            lambda ids: Rest("DELETE", "/admin/stories/{fork}/memories/{fork_memory}/quarantine"),
+            lambda e, ids: _memory_written(
+                e.unquarantine_memory(CTX, ids["fork"], ids["fork_memory"])
+            ),
+            group=MUTATION_GROUP,
+        ),
+        # Author pins and the hot set (#147), on the structured fork's author memory.
+        Step(
+            "pin_memory",
+            lambda ids: Rest("POST", "/stories/{fork}/memories/{fork_memory}/pin"),
+            lambda e, ids: _memory_written(e.pin_memory(CTX, ids["fork"], ids["fork_memory"])),
+            group=MUTATION_GROUP,
+        ),
+        Step(
+            "unpin_memory",
+            lambda ids: Rest("DELETE", "/stories/{fork}/memories/{fork_memory}/pin"),
+            lambda e, ids: _memory_written(e.unpin_memory(CTX, ids["fork"], ids["fork_memory"])),
+            group=MUTATION_GROUP,
+        ),
+        Step(
+            "hot_set",
+            lambda ids: Rest("GET", "/admin/stories/{fork}/hot-set"),
+            lambda e, ids: _hot_set(e, ids["fork"]),
+            group=MUTATION_GROUP,
+        ),
+        Step(
+            "sanitize_memory",
+            lambda ids: Rest(
+                "POST", "/admin/stories/{fork}/memories/{fork_memory}/sanitize", SANITIZE
+            ),
+            lambda e, ids: _memory_written(
+                e.sanitize_memory(CTX, ids["fork"], ids["fork_memory"], SanitizeRequest(**SANITIZE))
+            ),
+            group=MUTATION_GROUP,
+        ),
+        Step(
+            "supersede_fact",
+            lambda ids: Rest(
+                "POST",
+                "/admin/stories/{fork}/facts/{fork_fact}/supersede",
+                {"proposition": _knows(ids, "fork", since=10)},
+            ),
+            lambda e, ids: _fact_written(
+                e.supersede_fact(
+                    CTX,
+                    ids["fork"],
+                    ids["fork_fact"],
+                    SupersedeRequest(proposition=_knows(ids, "fork", since=10)),
+                )
+            ),
+            group=MUTATION_GROUP,
         ),
         Step(
             "delete_story",
@@ -1422,6 +1746,17 @@ def _steps() -> list[Step]:
             lambda ids: Rest("GET", "/admin/erasure/boundary"),
             lambda e, ids: _erasure_boundary(e),
         ),
+        # -- the re-embed run (#138): no model change yet, so nothing to report or retry
+        Step(
+            "reembed_status",
+            lambda ids: Rest("GET", "/admin/reembed/status"),
+            lambda e, ids: _reembed_status(e),
+        ),
+        Step(
+            "retry_reembed",
+            lambda ids: Rest("POST", "/admin/reembed/retry"),
+            lambda e, ids: _retry_reembed(e),
+        ),
         # -- media assets (#105)
         Step(
             "upload_media",
@@ -1552,6 +1887,12 @@ def _steps() -> list[Step]:
             group=PROFILE_GROUP,
         ),
         Step(
+            "get_profile_guarantees",
+            lambda ids: Rest("GET", "/engine-profiles/{profile}/guarantees", params={"version": 1}),
+            lambda e, ids: _dumped(e.get_profile_guarantees(CTX, ids["profile"], version=1)),
+            group=PROFILE_GROUP,
+        ),
+        Step(
             "copy_profile",
             lambda ids: Rest("POST", "/engine-profiles/{profile}/copy", PROFILE_COPY),
             lambda e, ids: _profile_write(
@@ -1620,6 +1961,12 @@ def _steps() -> list[Step]:
             "get_effective_config",
             lambda ids: Rest("GET", f"{s}/effective-config"),
             lambda e, ids: _effective(e, ids["story"]),
+            group=PROFILE_GROUP,
+        ),
+        Step(
+            "get_story_guarantees",
+            lambda ids: Rest("GET", f"{s}/guarantees"),
+            lambda e, ids: _dumped(e.get_story_guarantees(CTX, ids["story"])),
             group=PROFILE_GROUP,
         ),
         # -- the story's profile and overrides (#113), then its configuration read again
@@ -1939,6 +2286,63 @@ async def _rating_check(engine: Engine, story_id: str, job_id: str) -> dict[str,
     return dump(RatingCheckBody.of(await engine.get_rating_check(CTX, story_id, job_id)))
 
 
+REGISTRY_GROUP = "registry"
+"""The ``Step.group`` of the predicate-registry steps (#131)."""
+REGISTRY_ANSWERS = [
+    ("list_predicates", 200),
+    ("approve_predicate", 200),
+    ("reject_predicate", 200),
+    ("reject_predicate", 404),
+]
+"""What the registry steps answer on both surfaces: the registry listed with two pending
+proposals, one approved, one rejected, and a core predicate's (none) refused."""
+
+
+async def _proposals(engine: Engine, ids: Ids) -> None:
+    """Two auto predicates of the story, each with a pending ``functional`` proposal, written
+    as the structured pipeline would (#131)."""
+    async with engine.db.begin() as conn:
+        for key, relation in (("approved", "apprenticed with"), ("rejected", "rides with")):
+            found = await predicate_registry.auto_register(conn, ids["story"], relation)
+            await predicate_registry.file_proposal(
+                conn,
+                ids["story"],
+                found.id,
+                predicate_registry.ProposedChanges(cardinality=Cardinality.FUNCTIONAL),
+            )
+            ids[key] = found.id
+
+
+async def _predicates(engine: Engine, story_id: str) -> dict[str, Any]:
+    return dump(PredicateListBody.of(await engine.list_predicates(CTX, story_id)))
+
+
+async def _scene(engine: Engine, story_id: str) -> dict[str, Any]:
+    return dump(SceneBody.of(await engine.scene(CTX, story_id, viewpoint="omniscient")))
+
+
+async def _entity(engine: Engine, ids: Ids) -> None:
+    """An entity of the story, written as #139's resolver would (#137's profile read)."""
+    async with engine.db.begin() as conn:
+        ids["entity"] = await store.add_entity(conn, ids["story"], "person", "Profiled")
+
+
+async def _entity_profile(engine: Engine, story_id: str, entity_id: str) -> dict[str, Any]:
+    found = await engine.entity_profile(CTX, story_id, entity_id, viewpoint="omniscient")
+    return dump(EntityProfileBody.of(found))
+
+
+async def _retrieve(engine: Engine, story_id: str) -> dict[str, Any]:
+    found = await engine.retrieve(
+        CTX, story_id, q="Those guys at the game a month ago", viewpoint="omniscient"
+    )
+    return dump(RetrievalBody.of(found))
+
+
+async def _predicate_decision(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(PredicateDecisionBody.of(await call))
+
+
 async def _no_content(call: Awaitable[Any]) -> dict[str, Any]:
     await call
     return {}
@@ -2112,6 +2516,18 @@ async def _erasure_status(engine: Engine) -> dict[str, Any]:
     return dump(ErasureStatusBody.of(await engine.erasure_status(CTX)))
 
 
+async def _reembed_status(engine: Engine) -> dict[str, Any]:
+    from epistrel.api.routes.admin.reembed import ReembedStatusBody
+
+    return dump(ReembedStatusBody.of(await engine.reembed_status(CTX)))
+
+
+async def _retry_reembed(engine: Engine) -> dict[str, Any]:
+    from epistrel.api.routes.admin.reembed import ReembedRetryBody
+
+    return dump(ReembedRetryBody.of(await engine.retry_reembed(CTX)))
+
+
 async def _erasure_boundary(engine: Engine) -> dict[str, Any]:
     from epistrel.api.routes.admin.erasure import ErasureBoundaryBody
 
@@ -2133,6 +2549,10 @@ async def _story_profile_write(call: Awaitable[Any]) -> dict[str, Any]:
 async def _impact(engine: Engine, story_id: str, body: dict[str, Any]) -> dict[str, Any]:
     request = ImpactPreviewRequest.model_validate(body)
     return dump(await engine.impact_preview(CTX, story_id, request))
+
+
+async def _dumped(call: Awaitable[BaseModel]) -> dict[str, Any]:
+    return dump(await call)
 
 
 async def _effective(engine: Engine, story_id: str) -> dict[str, Any]:
@@ -2303,10 +2723,12 @@ async def run_rest(settings: Settings, steps: list[Step]) -> list[Rendered]:
     out: list[Rendered] = []
     ids: Ids = {}
     headers = bearer() | {"X-Epistrel-Principal": PRINCIPAL}
-    async with surface_engine(settings) as (_, app):
+    async with surface_engine(settings) as (lib, app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             for step in steps:
+                if step.prepare is not None:
+                    await step.prepare(lib, ids)
                 call = step.rest(ids)
                 response = await client.request(
                     call.method,
@@ -2334,6 +2756,8 @@ async def run_library(settings: Settings, steps: list[Step]) -> list[Rendered]:
     async with surface_engine(settings) as (engine, app):
         statuses = _statuses(app)
         for step in steps:
+            if step.prepare is not None:
+                await step.prepare(engine, ids)
             try:
                 body = await step.library(engine, ids)
             except EpistrelError as error:
@@ -2445,6 +2869,18 @@ async def test_c_03(surfaces: tuple[Settings, Settings], dummy_dsn: str) -> None
         if step.operation in ("set_content_rating", "get_rating_check")
     ]
     assert rating == [("set_content_rating", 200), ("get_rating_check", 404)]
+    # #131's registry steps answered as written (REGISTRY_ANSWERS).
+    assert [
+        (step.operation, status)
+        for step, (status, _) in zip(steps, rest, strict=True)
+        if step.group == REGISTRY_GROUP
+    ] == REGISTRY_ANSWERS
+    # #145's mutation steps answered as written (MUTATION_ANSWERS).
+    assert [
+        (step.operation, status)
+        for step, (status, _) in zip(steps, rest, strict=True)
+        if step.group == MUTATION_GROUP
+    ] == MUTATION_ANSWERS
     # The character steps (#103) answered what they were written to answer, on both surfaces.
     answered = [
         (step.operation, status)

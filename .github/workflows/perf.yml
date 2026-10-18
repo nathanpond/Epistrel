@@ -3,7 +3,8 @@
 # also runs). P-03 gates itself (p95 <= 250 ms, no commit over 2 s), so a regression turns this
 # run red; the run reports in the step summary, uploads the timings, and on a red run opens (or
 # comments on) a "Nightly perf run failed" issue. P-04's reference workload (`python -m
-# perf.lite_smoke`, 30 minutes on a compose stack) is run by hand and its report committed.
+# perf.lite_smoke`, 30 minutes on a compose stack) is run by hand and its report committed;
+# p04-expiry.yml opens a reminder issue 14 days before that report expires (#283).
 name: Perf
 
 on:

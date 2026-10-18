@@ -255,11 +255,19 @@ class ScenarioLocation(ScenarioModel):
     description: Annotated[Text | None, FieldClass.knowledge_seed] = None
 
 
+EntityKind = Literal["person", "place", "organization", "item", "event", "other"]
+"""A scenario entity's kind (``core.propositions.model.ENTITY_KINDS``; #139)."""
+
+EVENT_TYPES_MAX = 50
+
+
 class ScenarioEntity(ScenarioModel):
-    """A named entity of the world (an organisation, an item, a place) with its aliases."""
+    """A named entity of the world (an organisation, an item, a place) with its aliases and,
+    optionally, its ``kind`` (#139: without one it is ``other``)."""
 
     id: Annotated[Slug, FieldClass.knowledge_seed]
     name: Annotated[Name, FieldClass.knowledge_seed]
+    kind: Annotated[EntityKind | None, FieldClass.knowledge_seed] = None
     aliases: Annotated[list[Alias], FieldClass.knowledge_seed] = Field(
         default_factory=list, max_length=ALIASES_MAX
     )
@@ -267,12 +275,21 @@ class ScenarioEntity(ScenarioModel):
 
 
 class ScenarioWorld(ScenarioModel):
-    """The world: its description (setting and lore, seeded as canon), named locations and
-    named entities."""
+    """The world: its description (setting and lore, seeded as canon), named locations, named
+    entities and, optionally, the story's own event types (#139: occasion words beyond the
+    engine's vocabulary, each its own word, e.g. ``joust``)."""
 
     description: Annotated[Text | None, FieldClass.knowledge_seed] = None
     locations: list[ScenarioLocation] = Field(default_factory=list, max_length=LOCATIONS_MAX)
     entities: list[ScenarioEntity] = Field(default_factory=list, max_length=ENTITIES_MAX)
+    event_types: Annotated[list[Alias] | None, FieldClass.knowledge_seed] = Field(
+        default=None, max_length=EVENT_TYPES_MAX
+    )
+
+    @field_validator("event_types")
+    @classmethod
+    def _distinct_types(cls, value: list[str] | None) -> list[str] | None:
+        return None if value is None else _unique(value)
 
 
 # -- seeds -------------------------------------------------------------------------------------
@@ -525,6 +542,10 @@ class StorySettingsDefaults(ScenarioModel):
     audit_retention_days: Annotated[int | None, FieldClass.configuration, Use.story_setting] = (
         Field(default=None, ge=AUDIT_RETENTION_MIN_DAYS, le=AUDIT_RETENTION_MAX_DAYS)
     )
+    allow_new_arrivals: Annotated[bool | None, FieldClass.configuration, Use.story_setting] = None
+    """The scenario's arrival policy (FR-VERIFY-11; #144): whether a director pass may introduce
+    new arrivals, and a render a new unmodeled person as scene texture. ``null`` leaves the
+    story's default (true)."""
     policies: list[ScenarioPolicy] = Field(default_factory=list, max_length=POLICIES_MAX)
     required_providers: Annotated[list[ProviderName], FieldClass.configuration, Use.policy] = Field(
         default_factory=list, max_length=NAMES_MAX

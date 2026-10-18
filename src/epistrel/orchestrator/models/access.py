@@ -7,6 +7,14 @@ purpose's input schema (an undeclared field is refused), renders its template, a
 ``complete(purpose, messages, params)`` sends prepared messages. Under the stub, calls never
 need ``model_config``: the stub only reports the configured model name when a database is bound.
 
+**Routing** (#325): ``routing(routes)`` scopes a story's per-purpose routes (``config.Route``,
+from its effective configuration's ``models.purposes``) to the calls made inside it, in this task
+and the tasks it starts. ``resolve`` lays the route over the deployment's configuration
+(``config.routed``), so the adapter, the model a call is recorded under and the stub's reported
+model all follow it. A Lite turn routes from the configuration it captured at its start, and the
+``lite_summary`` job from the story's; calls outside a story (rating suggestions, catalog checks,
+probes) use the deployment's configuration.
+
 Every call goes through ``send``, which is where provider failures stop (FR-MODEL-6, NFR-REL-3):
 the call is bounded by its timeout (the purpose's ``params.timeout``, default 60 s) and by the
 turn's deadline when a ``TurnBudget`` is passed, whichever is sooner (``TurnBudget.clamp``), and
@@ -16,6 +24,16 @@ the unreserved remainder, and a call the budget cannot afford is not made (``Bud
 every SDK exception becomes a ``ModelError`` (``errors.map_provider_error``). An unstructured
 call that answers only whitespace raises ``EmptyCompletion``. Structured results go through
 ``structured_call`` (``structured.py``), which never returns a partially parsed object.
+
+**Eval scope** (#134): inside ``eval_scope(case_id, seed)`` every call ``send`` makes carries
+an ``X-Eval-Case: <case id>`` line appended to its system message (a system message of its own
+when the prompt has none), and the run's ``seed`` when the call's params set none. Only the eval
+harness opens one; outside it nothing is added, so every other prompt is byte-identical.
+
+A completion's text leaves ``send`` without NUL characters (#275): PostgreSQL cannot store one,
+and a model's answer reaches event payloads (a generation, a guardrail's reason), so a NUL failed
+the commit with a database error. The model wrote it, not the caller, so it is removed rather
+than refused; only the purpose and the count are logged (invariant 3).
 """
 
 from __future__ import annotations
@@ -23,18 +41,24 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable, Mapping, Sequence
-from typing import Any
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ValidationError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core.errors import NUL
 from epistrel.core.settings_schema import StructuredSettings
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models import config as model_config
 from epistrel.orchestrator.models.adapter import (
     DEFAULT_TIMEOUT_S,
+    EVAL_CASE_HEADER,
     PROBE_TIMEOUT_S,
     REQUEST_FIELDS,
     Message,
@@ -50,6 +74,8 @@ from epistrel.orchestrator.models.config import (
     ConfigEntry,
     EffectiveConfig,
     KeyBox,
+    Route,
+    routed,
 )
 from epistrel.orchestrator.models.errors import (
     BudgetExhausted,
@@ -69,6 +95,7 @@ from epistrel.orchestrator.models.openai_compatible import OpenAICompatibleAdapt
 from epistrel.orchestrator.models.prompts import payload_fields, render
 from epistrel.orchestrator.models.registry import (
     DELIVERED,
+    PORTS,
     RESERVED,
     InputSchema,
     Purpose,
@@ -82,7 +109,69 @@ from epistrel.orchestrator.models.structured import (
 )
 from epistrel.orchestrator.models.stub import StubAdapter
 
+if TYPE_CHECKING:
+    from epistrel.orchestrator.embeddings.service import EmbeddingService
+
 log = logging.getLogger(__name__)
+
+
+NO_ROUTES: Mapping[str, Route] = MappingProxyType({})
+ROUTES: ContextVar[Mapping[str, Route]] = ContextVar("ROUTES", default=NO_ROUTES)
+"""The per-purpose routes of the story whose calls are being made (``routing``)."""
+
+
+@contextmanager
+def routing(routes: Mapping[str, Route]) -> Iterator[None]:
+    """Route the calls made inside the block by ``routes`` (a story's ``config.routes_of``)."""
+    token = ROUTES.set(MappingProxyType(dict(routes)))
+    try:
+        yield
+    finally:
+        ROUTES.reset(token)
+
+
+@dataclass(frozen=True, slots=True)
+class EvalScope:
+    """The eval case the calls in progress belong to, and the run's seed (#134)."""
+
+    case_id: str
+    seed: int | None = None
+
+
+EVAL_SCOPE: ContextVar[EvalScope | None] = ContextVar("EVAL_SCOPE", default=None)
+"""The eval case of the calls being made (``eval_scope``); ``None`` outside the harness."""
+
+
+@contextmanager
+def eval_scope(case_id: str, seed: int | None = None) -> Iterator[None]:
+    """Mark the calls made inside the block as eval case ``case_id`` under ``seed`` (see the
+    module docstring). A case id is one token: no whitespace."""
+    if not case_id or any(ch.isspace() for ch in case_id):
+        raise ValueError(f"an eval case id is one non-empty token, got {case_id!r}")
+    token = EVAL_SCOPE.set(EvalScope(case_id, seed))
+    try:
+        yield
+    finally:
+        EVAL_SCOPE.reset(token)
+
+
+def _in_scope(
+    messages: Sequence[Message], params: ModelParams
+) -> tuple[Sequence[Message], ModelParams]:
+    """``messages`` and ``params`` as the current eval scope sends them (unchanged outside one)."""
+    scope = EVAL_SCOPE.get()
+    if scope is None:
+        return messages, params
+    line = f"{EVAL_CASE_HEADER}: {scope.case_id}"
+    marked = list(messages)
+    first = next((i for i, m in enumerate(marked) if m.role == "system"), None)
+    if first is None:
+        marked.insert(0, Message(role="system", content=line))
+    else:
+        marked[first] = Message(role="system", content=f"{marked[first].content}\n\n{line}")
+    if params.seed is None and scope.seed is not None:
+        params = params.model_copy(update={"seed": scope.seed})
+    return marked, params
 
 
 def get_delivered(name: str) -> Purpose:
@@ -90,6 +179,11 @@ def get_delivered(name: str) -> Purpose:
     purpose = DELIVERED.get(name)
     if purpose is not None:
         return purpose
+    if name in PORTS:
+        raise UnknownPurpose(
+            f"{name!r} is a port, not a chat purpose",
+            details={"purpose": name, "reason": "port"},
+        )
     reserved = RESERVED.get(name)
     if reserved is not None:
         raise UnknownPurpose(
@@ -146,6 +240,16 @@ def _attempted(error: ModelError) -> bool:
     return error.details.get("reason") not in NOT_ATTEMPTED
 
 
+def _without_nul(purpose: str, result: ModelResult) -> ModelResult:
+    """``result`` with the NUL characters removed from its text (#275; see the module
+    docstring)."""
+    count = result.text.count(NUL)
+    if not count:
+        return result
+    log.warning("model answer held NUL characters purpose=%s removed=%d", purpose, count)
+    return result.model_copy(update={"text": result.text.replace(NUL, "")})
+
+
 def _elapsed_ms(started: float) -> int:
     return max(0, round((time.perf_counter() - started) * 1000))
 
@@ -164,6 +268,11 @@ class ModelAccessLayer:
         self.response_format = ResponseFormatMemo()
         self._db: AsyncEngine | None = None
         self.adapter: ModelAdapter = adapter or self._make_adapter(settings)
+        # The embedding port (#138): its own adapter (EPISTREL_EMBEDDING_ADAPTER), row and
+        # accounting. Imported here: the embeddings package imports this one's modules.
+        from epistrel.orchestrator.embeddings.service import EmbeddingService
+
+        self.embeddings: EmbeddingService = EmbeddingService(settings, self.keybox)
 
     @classmethod
     def from_settings(cls, settings: Settings) -> ModelAccessLayer:
@@ -180,6 +289,7 @@ class ModelAccessLayer:
         self._db = db
         self.cache.clear()
         self.response_format.clear()
+        self.embeddings.bind(db)
 
     @property
     def db(self) -> AsyncEngine:
@@ -195,8 +305,9 @@ class ModelAccessLayer:
         return self.adapter
 
     async def resolve(self, purpose: str) -> EffectiveConfig:
-        """``purpose``'s effective configuration as of the current ``config_revision``."""
-        return await self.cache.effective(self.db, purpose)
+        """``purpose``'s effective configuration as of the current ``config_revision``, under
+        the current story's route for it (``routing``) when it has one."""
+        return routed(await self.cache.effective(self.db, purpose), ROUTES.get().get(purpose))
 
     async def _configured_model(self, purpose: str) -> str | None:
         if self._db is None:
@@ -243,7 +354,7 @@ class ModelAccessLayer:
         ``model_calls``), as ``attempt`` of its caller's sequence; an answer ``usable`` rejects
         is recorded as ``invalid_output`` and still returned for the caller to handle."""
         get_delivered(purpose)
-        params = params or ModelParams()
+        messages, params = _in_scope(messages, params or ModelParams())
         first = attempt == 1
         if budget is not None:
             if budget.expired():
@@ -283,6 +394,7 @@ class ModelAccessLayer:
                 budget.refund()  # nothing was sent: the budget counts recorded calls only
             # ``from None``: the provider's message can echo the prompt (invariant 3).
             raise mapped from None
+        result = _without_nul(purpose, result)
         outcome: Outcome = "ok" if usable is None or usable(result) else "invalid_output"
         record(
             ModelCall(
@@ -409,12 +521,19 @@ class ModelAccessLayer:
 
     async def aclose(self) -> None:
         await self.adapter.aclose()
+        await self.embeddings.aclose()
 
 
 __all__ = [
+    "EVAL_SCOPE",
+    "NO_ROUTES",
+    "ROUTES",
+    "EvalScope",
     "ModelAccessLayer",
     "build_inputs",
     "declared_fields",
+    "eval_scope",
     "get_delivered",
     "payload_fields",
+    "routing",
 ]

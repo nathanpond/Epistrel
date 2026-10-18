@@ -117,7 +117,14 @@ async def test_stub_scripts_matches_faults_and_latches() -> None:
 
 
 def test_model_params_bounds_and_override() -> None:
-    for bad in ({"temperature": 2.5}, {"top_p": -0.1}, {"max_tokens": 4_001}, {"seed": 1}):
+    for bad in (
+        {"temperature": 2.5},
+        {"top_p": -0.1},
+        {"max_tokens": 4_001},
+        {"seed": -1},
+        {"seed": 2**31},
+        {"frequency_penalty": 1},
+    ):
         with pytest.raises(ValidationError):
             ModelParams.model_validate(bad)
     base = ModelParams(temperature=0.8, top_p=0.95, max_tokens=400)

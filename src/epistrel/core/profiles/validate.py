@@ -134,6 +134,12 @@ def undelivered_settings(
         switch = schema.SWITCHES.get(path)
         level = None if switch is None else switch.level(schema.value_at(settings, path))
         if schema.exposed(path):
+            refused = schema.UNDELIVERED_VALUES.get(path, ())
+            if any(type(value) is type(r) and value == r for r in refused):
+                owner = schema.owner_of(path)
+                module = owner[0] if owner is not None else path
+                found.append(UndeliveredSetting(module=module, level=None, setting=path))
+                continue
             undelivered_level = (
                 switch is not None
                 and level is not None

@@ -207,7 +207,11 @@ def _content_rating(document: Mapping[str, Any] | None) -> str | None:
 
 def indexed_fields(draft: ScenarioDraft) -> dict[str, str | None]:
     """The scenario's prose, by dotted path: every text a subject's name or alias may appear
-    in (``core.erasure.index`` scans them)."""
+    in (``core.erasure.index`` scans them). The objects stored as given (the ``starting_state``
+    objects and each role's ``state_initial_values``) and the scenario's own policies
+    (``story_settings_defaults.policies``: name, rule, message and the rest) are walked whole
+    (``records.text_fields``: every string leaf but an id-like key's, the strings the erasure's
+    redaction rewrites; #323, #422)."""
     fields: dict[str, str | None] = {
         "public_card.name": draft.public_card.name,
         "public_card.public_description": draft.public_card.public_description,
@@ -237,6 +241,17 @@ def indexed_fields(draft: ScenarioDraft) -> dict[str, str | None]:
             fields[f"{at}.name_overrides.canonical"] = role.name_overrides.canonical
             for alias_index, alias in enumerate(role.name_overrides.aliases):
                 fields[f"{at}.name_overrides.aliases[{alias_index}]"] = alias
+        fields.update(text_fields(role.state_initial_values, f"{at}.state_initial_values"))
+    start = draft.starting_state
+    for name in ("states", "clock", "scheduled_events", "predicates", "closed_sets", "rules"):
+        fields.update(text_fields(getattr(start, name), f"starting_state.{name}"))
+    for index, policy in enumerate(draft.story_settings_defaults.policies):
+        fields.update(
+            text_fields(
+                policy.model_dump(mode="json", exclude_none=True),
+                f"story_settings_defaults.policies[{index}]",
+            )
+        )
     for loc, seed in draft.seeds():
         fields[dotted((*loc, "text"))] = seed.text
     drivers = draft.drivers

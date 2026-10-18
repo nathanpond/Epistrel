@@ -5,6 +5,10 @@ projection rows and one event: it reads and changes nothing but ``rows``. The in
 (``Operation.commit``) and the fold (``rebuild``) both call it, so a rebuilt projection equals
 the incrementally maintained one by construction (FR-STORE-4); the two paths differ only in how
 rows are loaded and written.
+
+A projection over stored state rather than the log (#137's structured projections, a cache over
+canon) answers its rows from ``fold_state``: the fold uses them instead of replaying the log,
+and its ``apply`` is a no-op for every event (its incremental path is canon's own write hook).
 """
 
 from __future__ import annotations
@@ -103,6 +107,12 @@ class Projection(ABC):
     @abstractmethod
     async def load(self, conn: AsyncConnection, story_id: str, events: Sequence[LogEvent]) -> Rows:
         """The rows of ``story_id`` that applying ``events`` can read or change."""
+
+    async def fold_state(self, conn: AsyncConnection, story_id: str) -> Rows | None:
+        """The story's rows folded from stored state, for a projection that is not a fold of
+        the log; ``None`` (the default): fold the log through ``apply``."""
+        del conn, story_id
+        return None
 
 
 _PROJECTIONS: dict[str, Projection] = {}

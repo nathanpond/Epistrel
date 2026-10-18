@@ -1,5 +1,6 @@
 """`epistrel` command line: `serve --mode all|api|worker` runs the Engine (default ``all``: the
 API and the background workers in one process); `worker` is `serve --mode worker`;
+`evals …` runs the model-quality eval harness (``epistrel.evals``, #134);
 `moderation-secret` prints the secret a media moderation hook verifies Epistrel's requests with
 (#105); `backup dump` and `backup verify <dump>` take and check a database backup (#125:
 erasure markers are expected gaps, and the dump's erasure ledger is checked against the file)."""
@@ -45,6 +46,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--concurrency", type=_positive, help="override EPISTREL_WORKER_CONCURRENCY"
     )
     backup_tool.add_parser(sub)
+    evals = sub.add_parser(
+        "evals",
+        add_help=False,
+        help="the model-quality evals: `epistrel evals run|index|--check …` "
+        "(`epistrel evals --help` for the options)",
+    )
+    # Its arguments are the eval CLI's own; ``main`` hands them over before parsing.
+    evals.add_argument("evals_args", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
     sub.add_parser(
         "moderation-secret",
         help="print the secret a media moderation hook verifies X-Epistrel-Signature with "
@@ -170,8 +179,14 @@ def moderation_secret() -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw = sys.argv[1:] if argv is None else list(argv)
+    if raw[:1] == ["evals"]:
+        # The eval CLI parses its own arguments (``--help`` and ``--check`` included).
+        from epistrel.evals.cli import main as evals_main  # lazy: it loads the whole engine
+
+        return evals_main(raw[1:])
     parser = _build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw)
     if args.command == "moderation-secret":
         return moderation_secret()
     if args.command == "backup":

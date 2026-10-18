@@ -527,3 +527,454 @@ def test_sent_hash_is_added_null_and_dropped_on_downgrade(scratch_database: str)
         engine.dispose()
     assert [tuple(r) for r in legacy] == [("old", None)]
     assert kept == ["old"]
+
+
+def test_every_character_gets_an_entity(scratch_database: str) -> None:
+    """0054 (#139): each existing character gets a ``person`` entity with the character's id,
+    its name as a ``canonical`` alias and its persona's gender; the downgrade drops the new
+    columns and keeps the rows."""
+    from epistrel.core.seeds.profiles import LITE_PRESET_ID
+
+    cfg = alembic_config(scratch_database)
+    command.upgrade(cfg, "0053")
+    engine = make_sync_engine(scratch_database)
+    story, player, npc = new_ulid(), new_ulid(), new_ulid()
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO stories (id, owner_principal, engine_profile_id) "
+                    "VALUES (:s, 'p-test', :p)"
+                ),
+                {"s": story, "p": LITE_PRESET_ID},
+            )
+            for character, ordinal, name, persona in (
+                (player, 0, "Sam", '{"name": "Sam", "gender": "Woman"}'),
+                (npc, 1, "Tom", None),
+            ):
+                conn.execute(
+                    text(
+                        "INSERT INTO characters (id, story_id, ordinal, name, definition, "
+                        "true_age, is_player, persona_snapshot) VALUES (:c, :s, :o, :n, 'x', 30, "
+                        ":player, CAST(:persona AS jsonb))"
+                    ),
+                    {
+                        "c": character,
+                        "s": story,
+                        "o": ordinal,
+                        "n": name,
+                        "player": ordinal == 0,
+                        "persona": persona,
+                    },
+                )
+        command.upgrade(cfg, "0054")
+        with engine.connect() as conn:
+            found = conn.execute(
+                text(
+                    "SELECT e.id, e.kind, e.canonical_name, e.character_id, e.gender, "
+                    "e.descriptors, a.alias, a.source FROM entities e "
+                    "JOIN entity_aliases a ON a.entity_id = e.id ORDER BY e.canonical_name"
+                )
+            ).all()
+        command.downgrade(cfg, "0053")
+        with engine.connect() as conn:
+            kept = conn.scalar(text("SELECT count(*) FROM entities"))
+    finally:
+        engine.dispose()
+    assert [tuple(r) for r in found] == [
+        (player, "person", "Sam", player, "feminine", [], "Sam", "canonical"),
+        (npc, "person", "Tom", npc, None, [], "Tom", "canonical"),
+    ]
+    assert kept == 2
+
+
+def test_the_implication_depth_joins_the_profile_defaults(scratch_database: str) -> None:
+    """0055 (#140): ``verification.implication_max_depth`` is added to the deployment's
+    ``profile_defaults`` at the schema's default (3) and the rest of the document is kept; a
+    value already there is kept; the downgrade removes it again."""
+    cfg = alembic_config(scratch_database)
+    command.upgrade(cfg, "0054")
+    engine = make_sync_engine(scratch_database)
+
+    def depth() -> Any:
+        with engine.connect() as conn:
+            return conn.scalar(
+                text(
+                    "SELECT profile_defaults->'verification'->'implication_max_depth' "
+                    "FROM deployment_state"
+                )
+            )
+
+    def defaults() -> Any:
+        with engine.connect() as conn:
+            return conn.scalar(text("SELECT profile_defaults FROM deployment_state"))
+
+    try:
+        before = defaults()
+        assert depth() is None
+        command.upgrade(cfg, "0055")
+        assert depth() == 3
+        after = defaults()
+        after["verification"].pop("implication_max_depth")
+        assert after == before
+        command.downgrade(cfg, "0054")
+        assert depth() is None
+        assert defaults() == before
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE deployment_state SET profile_defaults = jsonb_set(profile_defaults, "
+                    "'{verification,implication_max_depth}', '5')"
+                )
+            )
+        command.upgrade(cfg, "0055")
+        assert depth() == 5
+    finally:
+        engine.dispose()
+
+
+def test_the_retrieval_columns_and_dials(scratch_database: str) -> None:
+    """0056 (#141): ``memories`` gains ``event_type``, ``participants`` (``{}`` for existing
+    rows) and the generated ``search`` vector with their indexes; the guard lets ``search``
+    through; the retrieval dials join the profile defaults at the schema's values and the rest
+    of the document is kept; the downgrade removes all of it again."""
+    cfg = alembic_config(scratch_database)
+    command.upgrade(cfg, "0055")
+    engine = make_sync_engine(scratch_database)
+
+    def columns() -> set[str]:
+        with engine.connect() as conn:
+            return set(
+                conn.scalars(
+                    text(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name = 'memories'"
+                    )
+                )
+            )
+
+    def defaults() -> Any:
+        with engine.connect() as conn:
+            return conn.scalar(text("SELECT profile_defaults FROM deployment_state"))
+
+    def indexes() -> set[str]:
+        with engine.connect() as conn:
+            return set(
+                conn.scalars(text("SELECT indexname FROM pg_indexes WHERE tablename = 'memories'"))
+            )
+
+    added = {"ix_memories_participants", "ix_memories_search", "ix_memories_story_occasion"}
+    try:
+        before = defaults()
+        assert not {"event_type", "participants", "search"} & columns()
+        command.upgrade(cfg, "0056")
+        assert {"event_type", "participants", "search"} <= columns()
+        assert added <= indexes()
+        after = defaults()
+        episodic = after["memory"]["episodic"]
+        assert {
+            k: episodic.pop(k) for k in list(episodic) if k not in before["memory"]["episodic"]
+        } == {
+            "weight_similarity": 0.6,
+            "weight_recency": 0.2,
+            "weight_importance": 0.2,
+            "recency_half_life_turns": 100,
+            "retrieval_token_budget": 3_000,
+        }
+        assert after == before
+        with engine.connect() as conn:
+            guard = conn.scalar(
+                text("SELECT prosrc FROM pg_proc WHERE proname = 'epistrel_memories_guard'")
+            )
+        assert "'search'" in str(guard)
+        command.downgrade(cfg, "0055")
+        assert not {"event_type", "participants", "search"} & columns()
+        assert not added & indexes()
+        assert defaults() == before
+    finally:
+        engine.dispose()
+
+
+def test_the_escalation_dials_join_the_profile_defaults(scratch_database: str) -> None:
+    """0057 (#142): ``verification.entailment_min_confidence`` (0.6) and
+    ``verification.safe_disposition`` (``repair``) join the deployment's ``profile_defaults``
+    and the rest of the document is kept; a stored ``entailment_gate`` of 0.5 (the unreleased
+    0047's default) becomes 1.0, and any other value is kept; the downgrade removes the dials
+    and leaves the gate."""
+    cfg = alembic_config(scratch_database)
+    command.upgrade(cfg, "0056")
+    engine = make_sync_engine(scratch_database)
+
+    def defaults() -> Any:
+        with engine.connect() as conn:
+            return conn.scalar(text("SELECT profile_defaults FROM deployment_state"))
+
+    def set_gate(value: str) -> None:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE deployment_state SET profile_defaults = jsonb_set(profile_defaults, "
+                    "'{verification,entailment_gate}', CAST(:v AS jsonb))"
+                ),
+                {"v": value},
+            )
+
+    try:
+        set_gate("0.5")
+        before = defaults()
+        assert "safe_disposition" not in before["verification"]
+        command.upgrade(cfg, "0057")
+        after = defaults()
+        verification = after["verification"]
+        assert verification.pop("entailment_min_confidence") == 0.6
+        assert verification.pop("safe_disposition") == "repair"
+        assert verification.pop("entailment_gate") == 1.0
+        before["verification"].pop("entailment_gate")
+        assert after == before
+        command.downgrade(cfg, "0056")
+        reverted = defaults()["verification"]
+        assert "safe_disposition" not in reverted
+        assert "entailment_min_confidence" not in reverted
+        assert reverted["entailment_gate"] == 1.0
+        set_gate("0.8")
+        command.upgrade(cfg, "0057")
+        assert defaults()["verification"]["entailment_gate"] == 0.8
+    finally:
+        engine.dispose()
+
+
+def test_the_consolidation_columns_and_dial(scratch_database: str) -> None:
+    """0058 (#143): ``memories`` gains ``covered_by`` (``{}`` for existing rows), ``level``,
+    ``modality``, ``inputs_hash``, ``model``, ``model_version`` and ``prompt_hash`` with their
+    checks and ``ix_memories_story_kind_turn``; the guard lets ``covered_by`` change;
+    ``memory.consolidation.window_memories`` (50) joins the profile defaults and the rest of the
+    document is kept; the downgrade removes all of it again."""
+    cfg = alembic_config(scratch_database)
+    command.upgrade(cfg, "0057")
+    engine = make_sync_engine(scratch_database)
+    added = {"covered_by", "level", "modality", "inputs_hash", "model", "model_version"}
+    added.add("prompt_hash")
+
+    def columns() -> set[str]:
+        with engine.connect() as conn:
+            return set(
+                conn.scalars(
+                    text(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name = 'memories'"
+                    )
+                )
+            )
+
+    def defaults() -> Any:
+        with engine.connect() as conn:
+            return conn.scalar(text("SELECT profile_defaults FROM deployment_state"))
+
+    def indexes() -> set[str]:
+        with engine.connect() as conn:
+            return set(
+                conn.scalars(text("SELECT indexname FROM pg_indexes WHERE tablename = 'memories'"))
+            )
+
+    try:
+        before = defaults()
+        assert not added & columns()
+        command.upgrade(cfg, "0058")
+        assert added <= columns()
+        assert "ix_memories_story_kind_turn" in indexes()
+        after = defaults()
+        assert after["memory"]["consolidation"].pop("window_memories") == 50
+        assert after == before
+        with engine.connect() as conn:
+            guard = conn.scalar(
+                text("SELECT prosrc FROM pg_proc WHERE proname = 'epistrel_memories_guard'")
+            )
+        assert "'covered_by'" in str(guard)
+        assert "'search'" in str(guard)
+        command.downgrade(cfg, "0057")
+        assert not added & columns()
+        assert "ix_memories_story_kind_turn" not in indexes()
+        assert defaults() == before
+        with engine.connect() as conn:
+            guard = conn.scalar(
+                text("SELECT prosrc FROM pg_proc WHERE proname = 'epistrel_memories_guard'")
+            )
+        assert "'covered_by'" not in str(guard)
+    finally:
+        engine.dispose()
+
+
+def test_the_quarantine_columns_guard_and_dial(scratch_database: str) -> None:
+    """0059 (#145): ``memories`` gains ``quarantined_at``, ``quarantine_reason``,
+    ``quarantined_by`` and ``implication_count`` (``0`` for existing rows) with their checks; the
+    guard lets them change and, under ``epistrel.sanitize``, one row's text;
+    ``repair.implication_threshold`` (2) joins the profile defaults and the rest of the document
+    is kept; the downgrade removes all of it again."""
+    cfg = alembic_config(scratch_database)
+    command.upgrade(cfg, "0058")
+    engine = make_sync_engine(scratch_database)
+    added = {"quarantined_at", "quarantine_reason", "quarantined_by", "implication_count"}
+
+    def columns() -> set[str]:
+        with engine.connect() as conn:
+            return set(
+                conn.scalars(
+                    text(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name = 'memories'"
+                    )
+                )
+            )
+
+    def defaults() -> Any:
+        with engine.connect() as conn:
+            return conn.scalar(text("SELECT profile_defaults FROM deployment_state"))
+
+    def guard() -> str:
+        with engine.connect() as conn:
+            return str(
+                conn.scalar(
+                    text("SELECT prosrc FROM pg_proc WHERE proname = 'epistrel_memories_guard'")
+                )
+            )
+
+    try:
+        before = defaults()
+        assert not added & columns()
+        command.upgrade(cfg, "0059")
+        assert added <= columns()
+        after = defaults()
+        assert after["repair"].pop("implication_threshold") == 2
+        assert after == before
+        assert "'quarantine_reason'" in guard()
+        assert "epistrel.sanitize" in guard()
+        assert "'covered_by'" in guard()
+        command.downgrade(cfg, "0058")
+        assert not added & columns()
+        assert defaults() == before
+        assert "epistrel.sanitize" not in guard()
+        assert "'covered_by'" in guard()
+    finally:
+        engine.dispose()
+
+
+def test_the_commitment_tables_and_lifecycle_guard(scratch_database: str) -> None:
+    """0060 (#146): ``thunks`` and ``promissory_ledger`` are created, ``fact_commit_state``
+    gains ``revised``, and the facts guard lets ``commit_state`` move along the lifecycle's
+    edges only; the downgrade drops the tables and types, takes ``revised`` out of the enum and
+    restores 0049's guard."""
+    cfg = alembic_config(scratch_database)
+    command.upgrade(cfg, "0059")
+    engine = make_sync_engine(scratch_database)
+
+    def tables() -> set[str]:
+        with engine.connect() as conn:
+            return set(
+                conn.scalars(
+                    text(
+                        "SELECT table_name FROM information_schema.tables "
+                        "WHERE table_name IN ('thunks', 'promissory_ledger')"
+                    )
+                )
+            )
+
+    def states() -> list[str]:
+        with engine.connect() as conn:
+            return list(
+                conn.scalars(
+                    text(
+                        "SELECT e.enumlabel FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid "
+                        "WHERE t.typname = 'fact_commit_state' ORDER BY e.enumsortorder"
+                    )
+                )
+            )
+
+    def guard() -> str:
+        with engine.connect() as conn:
+            return str(
+                conn.scalar(
+                    text("SELECT prosrc FROM pg_proc WHERE proname = 'epistrel_facts_append_only'")
+                )
+            )
+
+    try:
+        assert tables() == set()
+        assert states() == ["committed", "introduced", "pending"]
+        command.upgrade(cfg, "0060")
+        assert tables() == {"thunks", "promissory_ledger"}
+        assert states() == ["committed", "introduced", "pending", "revised"]
+        assert "'committed>revised'" in guard()
+        assert "'introduced>revised'" not in guard()
+        command.downgrade(cfg, "0059")
+        assert tables() == set()
+        assert states() == ["committed", "introduced", "pending"]
+        assert "commit_state" not in guard()
+    finally:
+        engine.dispose()
+
+
+def test_the_hot_set_columns_table_and_dials(scratch_database: str) -> None:
+    """0061 (#147): ``memories`` gains the pin and retirement columns (a pinned row is always
+    hot, CHECK) and the guard lets them change, ``stories`` gains ``hot_counts`` (``NULL``:
+    computed when first needed), ``overflow_episodes`` is created, and the four new
+    ``memory.hot_set`` dials join ``profile_defaults`` at the schema's defaults; the downgrade
+    removes all of it and restores 0059's guard."""
+    cfg = alembic_config(scratch_database)
+    command.upgrade(cfg, "0060")
+    engine = make_sync_engine(scratch_database)
+
+    def columns(table: str) -> set[str]:
+        with engine.connect() as conn:
+            return set(
+                conn.scalars(
+                    text(
+                        "SELECT column_name FROM information_schema.columns WHERE table_name = :t"
+                    ),
+                    {"t": table},
+                )
+            )
+
+    def guard() -> str:
+        with engine.connect() as conn:
+            return str(
+                conn.scalar(
+                    text("SELECT prosrc FROM pg_proc WHERE proname = 'epistrel_memories_guard'")
+                )
+            )
+
+    def hot_set_defaults() -> dict[str, Any]:
+        with engine.connect() as conn:
+            found = conn.scalar(text("SELECT profile_defaults FROM deployment_state"))
+        return dict((found or {}).get("memory", {}).get("hot_set", {}))
+
+    added = {"pinned", "pinned_by", "retired_reason", "retired_at", "retired_turn"}
+    try:
+        assert not added & columns("memories")
+        assert "hot_counts" not in columns("stories")
+        assert columns("overflow_episodes") == set()
+        assert set(hot_set_defaults()) == {"memories_per_character", "vectors_per_story"}
+        command.upgrade(cfg, "0061")
+        assert added <= columns("memories")
+        assert "hot_counts" in columns("stories")
+        assert {"opened_turn", "deadline_turn", "closed_turn", "excess"} <= columns(
+            "overflow_episodes"
+        )
+        assert "'retired_reason'" in guard()
+        assert "'pinned'" in guard()
+        assert hot_set_defaults() == {
+            "memories_per_character": 2_000,
+            "vectors_per_story": 50_000,
+            "importance_floor": 0.2,
+            "retirement_max_lag": 50,
+            "retain_retired_vectors": False,
+            "retain_dormant_vectors": False,
+        }
+        command.downgrade(cfg, "0060")
+        assert not added & columns("memories")
+        assert "hot_counts" not in columns("stories")
+        assert columns("overflow_episodes") == set()
+        assert "'retired_reason'" not in guard()
+        assert "'implication_count'" in guard()
+        assert set(hot_set_defaults()) == {"memories_per_character", "vectors_per_story"}
+    finally:
+        engine.dispose()

@@ -288,14 +288,27 @@ async def _verbatim(
     return every[-window_messages:]
 
 
+GENERATION_PURPOSE = "generation"
+"""The model purpose a Lite turn's generation calls (``models.purposes`` keys it)."""
+
+
 def generation_of(settings: ProfileSettings) -> GenerationSettings:
     """A configuration's generation settings as a layer of ``resolve_generation`` (FR-LITE-4):
-    ``response_length`` is the turn's ``length``."""
+    ``models.generation``, with ``response_length`` as the turn's ``length``, under the
+    ``generation`` purpose's routed params (#325): its ``temperature`` and ``top_p``, and its
+    ``max_tokens`` as a token-cap ``length``, win where set. A request's ``prompt_params`` still
+    win over both."""
     generation = settings.models.generation
+    route = settings.models.purposes.get(GENERATION_PURPOSE)
+    params = route.params if route is not None else None
+
+    def pick[T](routed: T | None, default: T) -> T:
+        return routed if routed is not None else default
+
     return GenerationSettings(
-        temperature=generation.temperature,
-        top_p=generation.top_p,
-        length=generation.response_length,
+        temperature=pick(params.temperature if params else None, generation.temperature),
+        top_p=pick(params.top_p if params else None, generation.top_p),
+        length=pick(params.max_tokens if params else None, generation.response_length),
     )
 
 

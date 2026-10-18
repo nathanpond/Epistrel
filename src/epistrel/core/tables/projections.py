@@ -17,14 +17,34 @@ timestamps of their own: every value is a function of the log and the ``operatio
   membership}]``) and its ``membership``: its operation's, except ``superseded`` while an
   active merged segment holds it as a source. Unique on ``(story_id, covers_from, covers_to,
   level, turn_variant)``.
+
+The structured projections (FR-STORE-3; #137) are caches over canon (``facts``), not over the
+event log, folded by ``core.projections.structured``:
+
+- ``relationships``: one row per active canon fact version of a ``relationships`` or ``scene``
+  predicate with an entity object (one per member of a set object), keyed by
+  ``(story_id, source_fact_id, object_id)``: subject, predicate, object, the key qualifiers
+  (ids and typed literals, never prose), the fact's outer valid bounds, its narrative position
+  (``since_turn``/``since_slot``, ``NULL`` for a position-less fact), the active version that
+  closed it (``closed_by_fact_id`` and its position; ``NULL`` while current: a superseded row is
+  closed, never deleted, while its fact is active) and its visibility.
+- ``placement``: the same for ``placement`` predicates, keyed by ``(story_id, source_fact_id)``:
+  the placed ``entity_id`` and exactly one of ``location_id`` (``located_at``) and
+  ``container_id`` (``holds``: the holder contains the item).
+- ``scene_state``: one row per active turn whose scene is not empty, keyed by
+  ``(story_id, turn, variant)``: the player character's location at the turn's end, the
+  entities present there (omniscient) and the turn's operation.
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 from sqlalchemy import (
     TIMESTAMP,
     BigInteger,
     Boolean,
+    CheckConstraint,
     Column,
     Index,
     Integer,
@@ -33,7 +53,7 @@ from sqlalchemy import (
     Text,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 
 from epistrel.core.enums import Membership
 from epistrel.core.tables.base import metadata, pg_enum, ulid_type
@@ -105,4 +125,60 @@ lite_summary_segments = Table(
         "turn_variant",
         unique=True,
     ),
+)
+
+
+def _structured_columns() -> list[Column[Any]]:
+    """The columns ``relationships`` and ``placement`` share after their own: the fact's outer
+    valid bounds, its position, its active closer and its visibility."""
+    return [
+        Column("valid_from", BigInteger, nullable=True),
+        Column("valid_to", BigInteger, nullable=True),
+        Column("since_turn", Integer, nullable=True),
+        Column("since_slot", SmallInteger, nullable=True),
+        Column("closed_by_fact_id", ulid_type(), nullable=True),
+        Column("closed_turn", Integer, nullable=True),
+        Column("closed_slot", SmallInteger, nullable=True),
+        Column("visibility", JSONB, nullable=False),
+    ]
+
+
+relationships = Table(
+    "relationships",
+    metadata,
+    Column("story_id", ulid_type(), primary_key=True),
+    Column("source_fact_id", ulid_type(), primary_key=True),
+    Column("object_id", ulid_type(), primary_key=True),
+    Column("subject_id", ulid_type(), nullable=False),
+    Column("predicate_id", ulid_type(), nullable=False),
+    Column("qualifiers", JSONB, nullable=False),
+    *_structured_columns(),
+    Index("ix_relationships_story_subject", "story_id", "subject_id"),
+    Index("ix_relationships_story_object", "story_id", "object_id"),
+)
+
+placement = Table(
+    "placement",
+    metadata,
+    Column("story_id", ulid_type(), primary_key=True),
+    Column("source_fact_id", ulid_type(), primary_key=True),
+    Column("entity_id", ulid_type(), nullable=False),
+    Column("location_id", ulid_type(), nullable=True),
+    Column("container_id", ulid_type(), nullable=True),
+    *_structured_columns(),
+    CheckConstraint("num_nonnulls(location_id, container_id) = 1", name="one_target"),
+    Index("ix_placement_story_entity", "story_id", "entity_id"),
+    Index("ix_placement_story_location", "story_id", "location_id"),
+    Index("ix_placement_story_container", "story_id", "container_id"),
+)
+
+scene_state = Table(
+    "scene_state",
+    metadata,
+    Column("story_id", ulid_type(), primary_key=True),
+    Column("turn", Integer, primary_key=True),
+    Column("variant", SmallInteger, primary_key=True),
+    Column("location_id", ulid_type(), nullable=True),
+    Column("present_entity_ids", ARRAY(ulid_type()), nullable=False),
+    Column("source_operation_id", ulid_type(), nullable=False),
 )

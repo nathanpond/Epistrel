@@ -7,15 +7,19 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from pydantic import BaseModel, ValidationError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
-from epistrel.core.config_changes import read_settings, redact
-from epistrel.core.deployment import apply_settings
+from epistrel.core.config_changes import SECTIONS, read_section, read_settings, redact
+from epistrel.core.deployment import SettingsPatch, apply_settings
+from epistrel.core.errors import InvalidRequest
 from epistrel.core.ids import new_ulid, ulid_after
-from epistrel.core.settings_schema import DeploymentSettings
+from epistrel.core.settings_schema import DeploymentSettings, StorySettings, TurnQueueDefaults
+from epistrel.core.story_settings import update_story_settings
 from tests.auth_support import auth_settings
-from tests.event_support import rows
+from tests.event_support import new_story as event_story
+from tests.event_support import rows, scalar
 from tests.respond_support import new_story, respond_client
 from tests.story_support import READ, WRITE, override
 
@@ -101,6 +105,73 @@ async def test_admin_settings_cover_every_setting(
                 headers=OPERATOR,
             )
             assert restored.status_code == 200, restored.text
+
+
+STORED: dict[str, Any] = {
+    "lite_summary_chunk": 12,
+    "max_pinned_memories": 51,
+    "idempotency_result_window": 25,
+    "structured_retry_budget": 3,
+    "rating_check_model_calls_per_record": 3,
+    "audit_retention_days": 30,
+    "job_retention_days": 8,
+    "offboarding_report_retention_days": 91,
+    "rating_check_retention_days": 31,
+    "readset_change_retention_days": 8,
+    "worker_heartbeat_timeout": 10.0,
+    "timer_lag_alert": 120.0,
+    "media_sweep_interval": 7200,
+    "validation_model_calls": 1,
+    "feedback_text_max_chars": 1999,
+    "erasure_shared_media": "retire",
+    "memory_importance_half_life_turns": 150,
+    "max_pinned_per_story": 1_999,
+    "reembed_batch_size": 400,
+    "retrieval_rrf_k": 61,
+    "neighborhood_max_facts": 40,
+    "thunks_max_open": 499,
+}
+"""A non-default value of one setting or more in every section of the settings document
+(all of #315's three missing sections' settings among them)."""
+
+
+async def test_a_write_keeps_every_other_section(
+    stub_settings: Settings, engine: AsyncEngine
+) -> None:
+    """Every section of the settings document reads back as stored, and a ``PUT`` of one
+    unrelated setting leaves the others as they were, both on ``/admin/settings`` and in what
+    the retention sweep, ``/health`` and erasure read (``read_section``; #315, FR-CONC-14,15;
+    FR-ADMIN-2 for the erasure's ``erasure_shared_media``).
+    Before #315 the retention, worker-health and erasure settings read as their defaults and
+    the next write reset them."""
+    views = {name: view for view in SECTIONS for name in view.model_fields}
+    assert {views[name] for name in STORED} == set(SECTIONS) - {TurnQueueDefaults}
+    async with respond_client(stub_settings, engine) as (client, _):
+        start = (await client.get("/admin/settings", headers=READ)).json()
+        assert all(start[name] != value for name, value in STORED.items())
+        try:
+            stored = await client.put("/admin/settings", json=STORED, headers=OPERATOR)
+            assert stored.status_code == 200, stored.text
+            assert {name: stored.json()[name] for name in STORED} == STORED
+            unrelated = await client.put(
+                "/admin/settings", json={"turn_queue_max": 9}, headers=OPERATOR
+            )
+            assert unrelated.status_code == 200, unrelated.text
+            assert unrelated.json()["turn_queue_max"] == 9
+            assert {name: unrelated.json()[name] for name in STORED} == STORED
+            after = (await client.get("/admin/settings", headers=READ)).json()
+            assert {name: after[name] for name in STORED} == STORED
+            for name, value in STORED.items():
+                assert getattr(await read_section(engine, views[name]), name) == value, name
+        finally:
+            restored = await client.put(
+                "/admin/settings",
+                json={name: start[name] for name in (*STORED, "turn_queue_max")},
+                headers=OPERATOR,
+            )
+            assert restored.status_code == 200, restored.text
+            for name in STORED:
+                assert getattr(await read_section(engine, views[name]), name) == start[name]
 
 
 async def test_listings_filter_page_and_redact(
@@ -280,3 +351,111 @@ async def test_rows_of_one_write_list_in_the_order_written(engine: AsyncEngine) 
     later = "7" + "Z" * 24 + "Y"  # far in the future: a fresh id would sort before it
     assert new_ulid() < later
     assert ulid_after(later) == "7" + "Z" * 25
+
+
+def _typed(model: type[BaseModel], kind: str) -> list[str]:
+    """The settings of ``model`` whose JSON Schema allows a JSON ``kind`` (``integer`` or
+    ``number``)."""
+    properties = model.model_json_schema()["properties"]
+    return sorted(
+        name
+        for name, schema in properties.items()
+        if kind in {s.get("type") for s in [schema, *schema.get("anyOf", ())]}
+    )
+
+
+INTEGER_DEPLOYMENT = _typed(DeploymentSettings, "integer")
+NUMBER_DEPLOYMENT = _typed(DeploymentSettings, "number")
+INTEGER_STORY = _typed(StorySettings, "integer")
+NOT_AN_INTEGER: tuple[Any, ...] = (True, False, "7", 2.5, 2048.0)
+NOT_A_NUMBER: tuple[Any, ...] = (True, "0.5")
+
+
+def _refused_at(model: type[BaseModel], document: dict[str, Any], name: str) -> None:
+    with pytest.raises(ValidationError) as refused:
+        model.model_validate(document)
+    assert [error["loc"][0] for error in refused.value.errors()] == [name], document
+
+
+def test_settings_refuse_values_only_lax_coercion_accepts() -> None:
+    """Every integer deployment and story setting refuses a boolean, a numeric string and a
+    float, integral or not, and every number setting a boolean and a numeric string, at its
+    field: in ``SettingsPatch``, in ``DeploymentSettings`` (what every library write validates,
+    ``apply_settings``) and in ``StorySettings`` (FR-API-4; #322). Before #322 ``true`` was
+    stored as ``1``. A JSON integer is still a number."""
+    assert {"turn_queue_max", "minor_age_threshold", "validation_model_calls"} <= set(
+        INTEGER_DEPLOYMENT
+    )
+    assert {"uncertain_below", "worker_heartbeat_timeout"} <= set(NUMBER_DEPLOYMENT)
+    assert {"turn_queue_max", "regenerate_retry_budget"} <= set(INTEGER_STORY)
+    complete = {"default_content_rating_id": "general"}
+    for names, values in ((INTEGER_DEPLOYMENT, NOT_AN_INTEGER), (NUMBER_DEPLOYMENT, NOT_A_NUMBER)):
+        for name in names:
+            for value in values:
+                _refused_at(SettingsPatch, {name: value}, name)
+                _refused_at(DeploymentSettings, {**complete, name: value}, name)
+    for name in INTEGER_STORY:
+        for value in NOT_AN_INTEGER:
+            _refused_at(StorySettings, {name: value}, name)
+    assert SettingsPatch.model_validate({"turn_queue_max": 7, "uncertain_below": 1}).changes() == {
+        "turn_queue_max": 7,
+        "uncertain_below": 1.0,
+    }
+
+
+async def test_library_writes_refuse_a_mistyped_integer(engine: AsyncEngine) -> None:
+    """``apply_settings`` and ``update_story_settings`` refuse ``true``, ``"7"`` and ``2048.0``
+    for an integer setting with 422 ``validation_error`` at ``body.<field>``, writing nothing
+    (FR-API-4; #322)."""
+    before = await read_settings(engine)
+    story = await event_story(engine)
+    revision = await scalar(engine, "SELECT config_revision FROM stories WHERE id = :s", s=story)
+    for value in (True, "7", 2048.0):
+        with pytest.raises(InvalidRequest) as deployment:
+            await apply_settings(engine, {"turn_queue_max": value}, principal="p-operator")
+        assert deployment.value.details["field"] == "body.turn_queue_max"
+        with pytest.raises(InvalidRequest) as story_write:
+            await update_story_settings(
+                engine, story, {"regenerate_retry_budget": value}, principal="p-author"
+            )
+        assert story_write.value.details["field"] == "body.regenerate_retry_budget"
+    after = await read_settings(engine)
+    assert after.config_revision == before.config_revision
+    assert after.as_settings() == before.as_settings()
+    assert (
+        await scalar(engine, "SELECT config_revision FROM stories WHERE id = :s", s=story)
+        == revision
+    )
+
+
+async def test_routes_refuse_a_mistyped_integer(
+    stub_settings: Settings, engine: AsyncEngine
+) -> None:
+    """``PUT /admin/settings`` and ``PATCH /stories/{id}/settings`` answer 422
+    ``validation_error`` at ``body.<field>`` for a boolean, a numeric string or a float given
+    to an integer setting, writing nothing (FR-API-4; #322)."""
+    async with respond_client(stub_settings, engine) as (client, _):
+        start = (await client.get("/admin/settings", headers=READ)).json()
+        story, _ = await new_story(client)
+        settings = (await client.get(f"/stories/{story}/settings", headers=READ)).json()
+        for value in (True, "7", 2.5, 2048.0):
+            refused = await client.put(
+                "/admin/settings", json={"validation_model_calls": value}, headers=OPERATOR
+            )
+            assert refused.status_code == 422, (value, refused.text)
+            error = refused.json()["error"]
+            assert (error["code"], error["details"]["field"]) == (
+                "validation_error",
+                "body.validation_model_calls",
+            )
+            patched = await client.patch(
+                f"/stories/{story}/settings", json={"turn_queue_max": value}, headers=WRITE
+            )
+            assert patched.status_code == 422, (value, patched.text)
+            error = patched.json()["error"]
+            assert (error["code"], error["details"]["field"]) == (
+                "validation_error",
+                "body.turn_queue_max",
+            )
+        assert (await client.get("/admin/settings", headers=READ)).json() == start
+        assert (await client.get(f"/stories/{story}/settings", headers=READ)).json() == settings

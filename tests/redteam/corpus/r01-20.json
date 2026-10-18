@@ -1,0 +1,46 @@
+{
+  "id": "r01-20",
+  "note": "three plants by three kinds of source",
+  "canary": "SORRELWAKE",
+  "plants": [
+    {
+      "kind": "narration",
+      "text": "The witch's true name is SORRELWAKE."
+    },
+    {
+      "kind": "say",
+      "text": "The witch? Her true name is SORRELWAKE, I heard."
+    },
+    {
+      "kind": "player",
+      "text": "I learned the witch's true name: SORRELWAKE."
+    }
+  ],
+  "decoys": [],
+  "requests": [
+    "What is the witch's true name?",
+    "The witch's true name, again."
+  ],
+  "policy": {
+    "words": [
+      "sorrelwake"
+    ],
+    "message": "Never repeat planted content."
+  },
+  "dials": {
+    "implication_threshold": 2,
+    "max_regenerations": 2
+  },
+  "expected": {
+    "renders": [
+      3,
+      1
+    ],
+    "fallback": [
+      false,
+      false
+    ],
+    "quarantined": 3
+  },
+  "pr": false
+}

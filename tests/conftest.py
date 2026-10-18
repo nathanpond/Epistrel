@@ -8,6 +8,7 @@ import urllib.request
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
 from alembic import command
@@ -57,9 +58,18 @@ OVERRIDE_VAR = "EPISTREL_TEST_DATABASE_URL"
 LIVE_MODEL_MARKER = "live_model"
 PERF_LONG_MARKER = "perf_long"
 SMOKE_MARKER = "smoke"
-OPT_IN_MARKERS = (LIVE_MODEL_MARKER, PERF_LONG_MARKER, SMOKE_MARKER)
+REDTEAM_LONG_MARKER = "redteam_long"
+SOAK_MARKER = "soak"
+OPT_IN_MARKERS = (
+    LIVE_MODEL_MARKER,
+    PERF_LONG_MARKER,
+    SMOKE_MARKER,
+    REDTEAM_LONG_MARKER,
+    SOAK_MARKER,
+)
 """Markers whose tests run only when ``-m`` names them: a real endpoint (#54), minutes of
-seeding and measuring (#76), or a live compose stack (C-10, #77)."""
+seeding and measuring (#76), a live compose stack (C-10, #77), a full red-team corpus (R-01's,
+#145; nightly), or a long-horizon soak (X-01's 20,000 turns, #147; weekly)."""
 DUMMY_DSN = "postgresql+psycopg://u:p@localhost:5432/epistrel_test"
 
 NO_DOCKER_MESSAGE = (
@@ -72,10 +82,11 @@ NO_DOCKER_MESSAGE = (
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Everything under tests/integration/, tests/chaos/ and tests/determinism/ is an
     integration test, everything under tests/chaos/ a ``chaos`` test (#75), and everything
-    under tests/smoke/ a ``smoke`` test (#77). ``live_model``, ``perf_long`` and ``smoke`` tests
-    run only when ``-m`` names their marker: they need a real endpoint (#54), minutes (#76) or a
-    running compose stack (#77). P-05 runs last, over the turn census of everything before it
-    (#69)."""
+    under tests/smoke/ a ``smoke`` test (#77). ``live_model``, ``perf_long``, ``smoke``,
+    ``redteam_long`` and ``soak`` tests run only when ``-m`` names their marker: they need a
+    real endpoint (#54), minutes (#76), a running compose stack (#77), a nightly corpus run
+    (#145) or a weekly soak (#147). P-05
+    runs last, over the turn census of everything before it (#69)."""
     for item in items:
         parents = Path(str(item.fspath)).parents
         if INTEGRATION_DIR in parents or CHAOS_DIR in parents or DETERMINISM_DIR in parents:
@@ -250,3 +261,55 @@ async def engine(settings: Settings) -> AsyncIterator[AsyncEngine]:
         yield engine
     finally:
         await engine.dispose()
+
+
+# -- embedding jobs on the shared database (#138) -------------------------------------------------
+
+EMBEDDING_JOB_KINDS = ("embed", "reembed")
+"""The jobs whose run pins the deployment's vector space (``core.embeddings.pin_first``): a
+retype of ``memories.embedding`` and deployment-scope state. One left queued on the shared
+session database could be claimed by a later test's worker and pin it, so no test may leave one
+there (scratch databases are their tests' own)."""
+_LEFTOVER = text(
+    "SELECT count(*) FROM jobs WHERE kind = ANY(:kinds) AND status IN ('queued', 'running')"
+)
+_DRAIN = text("DELETE FROM jobs WHERE kind = ANY(:kinds) AND status IN ('queued', 'running')")
+
+
+@pytest.fixture(scope="session")
+def _shared_jobs_db(pg_url: str) -> Iterator[Any]:
+    sync = make_sync_engine(pg_url)
+    try:
+        yield sync
+    finally:
+        sync.dispose()
+
+
+@pytest.fixture(autouse=True)
+def _no_embedding_jobs_left(request: pytest.FixtureRequest) -> Iterator[None]:
+    """After every test that uses the shared database, fail it if an ``embed`` or ``reembed``
+    job is left queued or running there (M3's rule: deployment-scope state is rolled back). A
+    test that writes memories there drains its jobs with ``drained_embedding_jobs``. The
+    database is requested before the test runs (only for a test that uses ``pg_url``, so a unit
+    test starts no container): pytest refuses fixture requests during teardown."""
+    sync = request.getfixturevalue("_shared_jobs_db") if "pg_url" in request.fixturenames else None
+    yield
+    if sync is None:
+        return
+    with sync.connect() as conn:
+        left = int(conn.execute(_LEFTOVER, {"kinds": list(EMBEDDING_JOB_KINDS)}).scalar() or 0)
+    if left:
+        pytest.fail(
+            f"{request.node.nodeid} left {left} embed/reembed job(s) queued on the shared "
+            "database; use the drained_embedding_jobs fixture",
+            pytrace=False,
+        )
+
+
+@pytest.fixture
+def drained_embedding_jobs(_shared_jobs_db: Any) -> Iterator[None]:
+    """Delete the ``embed``/``reembed`` jobs a test's memory writes enqueued on the shared
+    database (its teardown runs before ``_no_embedding_jobs_left`` checks)."""
+    yield
+    with _shared_jobs_db.begin() as conn:
+        conn.execute(_DRAIN, {"kinds": list(EMBEDDING_JOB_KINDS)})

@@ -13,6 +13,7 @@ from pathlib import Path
 from tools.gates.assignment import check_assignment
 from tools.gates.config import ConfigError, load_config
 from tools.gates.deps import DepsError, check_deps, load_deny, load_lock
+from tools.gates.keyed_readers import main as check_keyed_readers
 from tools.gates.lexicon import LexiconError, load_parts, parse_lexicon
 from tools.gates.lexicon import check as check_lexicon
 from tools.gates.licenses import LicensesError
@@ -66,6 +67,9 @@ def build_parser() -> argparse.ArgumentParser:
     trace.add_argument("--plan", type=Path, default=DEFAULT_DOCS04, help="docs/04 path")
     trace.add_argument("--parts", type=Path, default=DEFAULT_PARTS_JSON, help="parts.json path")
     trace.add_argument("--write", action="store_true", help="regenerate Tests cells ≤ current")
+    sub.add_parser(
+        "check-keyed-readers", help="keyed readers read facts only through KeyedLookup (#136)"
+    )
     lic = sub.add_parser("check-licenses", help="runtime dependency licenses are allowlisted")
     lic.add_argument("--lock", type=Path, default=DEFAULT_LOCK, help="uv.lock path")
     lic.add_argument("--runtime-env", type=Path, default=DEFAULT_RUNTIME_ENV, help="runtime venv")
@@ -77,6 +81,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.check == "check-deps":
         return run_check_deps(args.lock, args.pyproject)
+    if args.check == "check-keyed-readers":
+        return check_keyed_readers([])
     if args.check == "check-licenses":
         try:
             lic_report = run_licenses(

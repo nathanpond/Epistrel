@@ -2,9 +2,10 @@
 detailed tests behind them.
 
 Every U-28 (M3) and C-16 (M3) part lives in this file, because traceability counts a test ID per
-milestone in one file: #113's U-28 and C-16 parts join it. So does C-16's M4 interim slice
-(#109's ``test_c_16__upgrade_unavailable``), and any later C-16 (M4) part. The C-17 (M3) parts
-are here too. The I-21 part (profiles' owners) is ``test_i_21__profiles`` in
+milestone in one file: #113's U-28 and C-16 parts join it. The C-16 (M4) parts, M4's interim
+slice of FR-PROF-7 among them (#109 first held it here, with a module marked data-producing for
+the test; #129 moved it to consolidation), are in ``tests/integration/test_capability_map.py``.
+The C-17 (M3) parts are here too. The I-21 part (profiles' owners) is ``test_i_21__profiles`` in
 ``tests/integration/test_i_21.py``; C-18 (#109) is in ``tests/integration/test_two_stage.py``.
 
 - ``test_u_28__schema``: the schema's three tags on every setting, the published schema holding
@@ -18,9 +19,6 @@ are here too. The I-21 part (profiles' owners) is ``test_i_21__profiles`` in
   held for confirmation, then applied with ``ignore_warnings``; one they would not feel applies
   at once; settings that cannot run are refused even when confirmed; the impact preview; and a
   creation held until confirmed, through the same flow.
-- ``test_c_16__upgrade_unavailable`` (#109; M4's slot, interim until M7): a data-producing
-  edit cannot reach a story with history, which keeps its version, while one without turns
-  upgrades.
 - ``test_u_28__effective`` (#113): the effective configuration, deployment defaults → profile
   version → story overrides, validated as a whole; an invalid override refused and not stored;
   the overrides kept across versions; a behavioral edit followed at the next turn with no job;
@@ -68,7 +66,6 @@ from epistrel.core import fork as forking
 from epistrel.core.db import make_engine, make_sync_engine
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.profiles.effective import Configuration, effective_configuration
-from epistrel.core.profiles.estimates import CALL_LATENCY_MS
 from epistrel.core.profiles.fingerprint import RuntimeFacts
 from epistrel.core.profiles.impact import (
     CAMEL_CASE,
@@ -91,10 +88,13 @@ from epistrel.core.profiles.schema import (
     Quality,
     Requirement,
     Tag,
+    allowed_values,
+    delivered_levels,
     delivered_schema,
     delivered_tags,
     exposed,
     missing_tags,
+    owner_of,
     setting_tags,
 )
 from epistrel.core.profiles.validate import (
@@ -111,10 +111,16 @@ from epistrel.core.seeds.profiles import LITE_PRESET_ID, lite_settings
 from epistrel.core.settings_schema import ConfigClass
 from epistrel.core.stories import delete_story
 from epistrel.orchestrator.jobs.handlers import retention
+from epistrel.orchestrator.models.registry import (
+    CONSOLIDATION,
+    ENTAILMENT,
+    IMPORTANCE_SCORING,
+    SALIENCE_DETECTION,
+    STORY_PURPOSES,
+)
 from epistrel.orchestrator.models.registry import RESERVED as RESERVED_PURPOSES
-from epistrel.orchestrator.models.registry import STORY_PURPOSES
 from epistrel.testing import pauses
-from epistrel.testing.profiles import TEST_CLAUSE, data_producing, extra_rule
+from epistrel.testing.profiles import TEST_CLAUSE, extra_rule
 from tests.auth_support import auth_settings, bearer
 from tests.conformance.conftest import migrated_database
 from tests.conftest import alembic_config
@@ -123,11 +129,11 @@ from tests.policy_support import AUTHOR, story_item
 from tests.profile_support import (
     EDITED,
     LITE_CAPABILITIES,
-    POLISH,
+    M3_DELIVERED,
     PROFILES,
     REDERIVATION,
+    SEEDED_PROFILES,
     SETTINGS,
-    UNAVAILABLE_WARNINGS,
     UNCERTIFIED,
     configuration_rows,
     covered_pairs,
@@ -139,6 +145,8 @@ from tests.profile_support import (
     profile_body,
     requirement_text,
     satisfying,
+    undelivered,
+    undelivered_finding,
     undelivered_levels,
     undelivered_modules,
     violating,
@@ -153,6 +161,18 @@ READ = bearer()
 A = "p-profiles-a"
 B = "p-profiles-b"
 PURPOSES = Purposes.of(list(STORY_PURPOSES), list(RESERVED_PURPOSES))
+
+LITE_ROUTED = set(STORY_PURPOSES) - {
+    IMPORTANCE_SCORING.name,
+    ENTAILMENT.name,
+    CONSOLIDATION.name,
+    SALIENCE_DETECTION.name,
+}
+"""The story purposes the Lite preset names in ``models.purposes``: every one a Lite story calls.
+``importance_scoring`` (#135) needs episodic memory, ``entailment`` (#142) verification at
+``entailment``, ``consolidation`` (#143) the consolidation module and ``salience_detection``
+(#146) commitment, which Lite has off; unnamed, each inherits the deployment's model
+configuration, as every purpose does under ``Structured (M4)``."""
 
 
 def headers(principal: str, key: str | None = None) -> dict[str, str]:
@@ -272,7 +292,8 @@ async def test_u_28__schema(engine: AsyncEngine) -> None:
     delivered in M3 is prospective, and pinned memories are the quality-irrelevant ones.
 
     The published schema holds only what is delivered: its settings are exactly the delivered
-    ones, the pipeline offers only ``lite``, and no undelivered module's setting is in it.
+    ones, the pipeline offers ``lite`` and only its other delivered levels, and no undelivered
+    module's setting is in it.
 
     The Lite preset validates, as shipped and as stored: owned by ``system``, a preset, the
     deployment's default, at version 1 with the shipped settings: the ``lite`` pipeline, a
@@ -296,7 +317,8 @@ async def test_u_28__schema(engine: AsyncEngine) -> None:
     }
     assert set(setting_tags()) == set(LEAF_PATHS)
     tags = delivered_tags()
-    assert {t.change_class for t in tags.values()} == {ConfigClass.prospective}
+    m3 = {path: t for path, t in tags.items() if (owner_of(path) or ("",))[0] in M3_DELIVERED}
+    assert {t.change_class for t in m3.values()} == {ConfigClass.prospective}
     irrelevant = sorted(path for path, t in tags.items() if t.quality is Quality.irrelevant)
     assert irrelevant == ["pins.enabled", "pins.max_pinned"]
     assert tags["pipeline"].tag is Tag.data_producing
@@ -305,7 +327,9 @@ async def test_u_28__schema(engine: AsyncEngine) -> None:
     # -- the published schema: delivered modules and levels only
     published = delivered_schema()
     assert _schema_leaves(published) == {path for path in LEAF_PATHS if exposed(path)}
-    assert published["properties"]["pipeline"]["enum"] == ["lite"]
+    assert published["properties"]["pipeline"]["enum"] == allowed_values("pipeline")
+    assert "lite" in published["properties"]["pipeline"]["enum"]
+    assert undelivered_modules()
     for module in undelivered_modules():
         assert module.switch not in _schema_leaves(published), module.name
 
@@ -321,7 +345,7 @@ async def test_u_28__schema(engine: AsyncEngine) -> None:
         "compress_threshold_tokens": 6_000,
     }
     assert shipped["budgets"] == {"model_calls": None, "deadline_ms": 45_000}
-    assert set(shipped["models"]["purposes"]) == set(STORY_PURPOSES)
+    assert set(shipped["models"]["purposes"]) == LITE_ROUTED
     (stored,) = await rows(
         engine,
         "SELECT p.name, p.owner_principal, p.preset, v.settings, v.created_by, "
@@ -412,12 +436,12 @@ async def test_c_16__crud(scratch: Space) -> None:
             k: v for k, v in created.items() if k not in ("config_revision", "idempotency_key")
         }
         listed = await ok(await client.get(PROFILES, headers=READ))
-        assert [item["id"] for item in listed["items"]] == [profile, LITE_PRESET_ID]
-        assert listed["items"][1]["preset"] is True
+        assert [item["id"] for item in listed["items"]] == [profile, *SEEDED_PROFILES]
+        assert listed["items"][-1]["preset"] is True
         mine = await ok(await client.get(PROFILES, params={"owner": A}, headers=READ))
         assert [item["id"] for item in mine["items"]] == [profile]
         shipped = await ok(await client.get(PROFILES, params={"owner": "system"}, headers=READ))
-        assert [item["id"] for item in shipped["items"]] == [LITE_PRESET_ID]
+        assert [item["id"] for item in shipped["items"]] == SEEDED_PROFILES
 
         # -- edit into version 2; a name-only edit makes none (no story follows the profile, so
         # each edit applies at once: #109's two stages)
@@ -475,13 +499,11 @@ async def test_c_16__crud(scratch: Space) -> None:
         assert valid == {"valid": True, "missing_dependencies": [], "undelivered": []}
         dry = await client.post(
             f"{PROFILES}/{profile}/validate",
-            json={"settings": {"pipeline": "structured"}},
+            json={"settings": undelivered()},
             headers=headers(A),
         )
         error = refused(dry, 422, "invalid_profile")
-        assert error["details"]["undelivered"] == [
-            {"module": "pipeline", "level": "structured", "setting": "pipeline"}
-        ]
+        assert error["details"]["undelivered"] == [undelivered_finding()]
 
         # -- presets are ordinary profiles: edited and copied like any other
         lite = merged(lite_settings(), nest("memory.rolling_summary.window_messages", 40))
@@ -707,7 +729,7 @@ async def test_c_16__two_stage(scratch: Space) -> None:
 
         # -- what cannot run is refused, confirmed or not; so are both spellings at odds
         still = await configuration_rows(scratch.db)
-        invalid = {"name": "Brisk Lite", "settings": {"pipeline": "structured"}}
+        invalid = {"name": "Brisk Lite", "settings": undelivered()}
         for body in (invalid, {**invalid, "ignore_warnings": True}):
             refused(
                 await client.put(f"{PROFILES}/{profile}", json=body, headers=headers(A)),
@@ -717,7 +739,7 @@ async def test_c_16__two_stage(scratch: Space) -> None:
         refused(
             await client.post(
                 f"/stories/{idle}/impact-preview",
-                json={"overrides": {"pipeline": "structured"}},
+                json={"overrides": undelivered()},
                 headers=headers(A),
             ),
             422,
@@ -781,155 +803,6 @@ async def test_c_16__two_stage(scratch: Space) -> None:
     second: TwoStageResult[str] = await two_stage(report_fn, create, ignore_warnings=True)
     assert (second.applied, second.result, created) == (True, "story", ["story"])
     assert second.impact == first.impact
-
-
-@pytest.mark.part("M4", "FR-PROF-7", interim_until="M7")
-async def test_c_16__upgrade_unavailable(scratch: Space) -> None:
-    """Until M7 nothing re-derives a story's data from its transcript, so a data-producing
-    increase cannot reach a story with history. A delivered module is marked data-producing for
-    the test (none is in M3; M4's own slice uses consolidation). Two stories follow a profile
-    with the polish pass off; one has played a turn. Turning the polish pass on, without
-    ``ignore_warnings``, changes nothing and reports, by story id: the story with history
-    ``upgrade_unavailable``, its re-derivation needed with an estimate over its transcript (one
-    call per 30 messages, its characters over four in tokens, the measured per-call latency),
-    and keeping its fingerprint and its capabilities (no polish pass); the story without turns
-    gaining the polish pass with nothing to re-derive, its capabilities after holding it. With
-    ``ignore_warnings`` the edit applies to the second story, which runs on version 2 with the
-    polish pass, while the first keeps version 1 (pinned, as its effective configuration states)
-    and its next turn runs on it: each runs with the capabilities its entry stated. A preview of
-    the same increase reports the same for each story alone.
-
-    Complement asserted: without the marking, the same kind of edit moves a story with history
-    to the new version, as an ordinary gained capability."""
-    off = merged(SETTINGS, nest(POLISH, False))
-    on = merged(SETTINGS, nest(POLISH, True))
-    async with respond_client(scratch.settings, scratch.db) as (client, _):
-        profile = (
-            await ok(
-                await client.post(PROFILES, json=profile_body(settings=off), headers=headers(A)),
-                201,
-            )
-        )["id"]
-        await _default(client, profile)
-        played, actor = await _story(client)
-        await _play(client, played, actor)
-        fresh, _ = await _story(client)
-        before = {s: (await _effective(client, s))["fingerprint"] for s in (played, fresh)}
-        sizes = await rows(
-            scratch.db,
-            "SELECT count(*), sum(length(text)) FROM transcript_messages "
-            "WHERE story_id = :s AND membership = 'active'",
-            s=played,
-        )
-        (messages, characters) = tuple(sizes[0])
-        edit = {"name": "Brisk Lite", "settings": on}
-        with data_producing("polish"):
-            unchanged = await configuration_rows(scratch.db)
-            held = await ok(
-                await client.put(f"{PROFILES}/{profile}", json=edit, headers=headers(A))
-            )
-            assert held["applied"] is False
-            assert await configuration_rows(scratch.db) == unchanged
-            report = held["impact"]
-            assert report["warnings"] == UNAVAILABLE_WARNINGS
-            entries = {e["story_id"]: e for e in report["affected_stories"]}
-            assert list(entries) == sorted([played, fresh])
-            kept, moved = entries[played], entries[fresh]
-            assert (kept["upgrade_unavailable"], kept["capabilities_gained"]) == (True, ["polish"])
-            assert kept[REDERIVATION] == {
-                "needed": True,
-                "estimate": {
-                    "model_calls": -(-messages // 30),
-                    "tokens": characters // 4,
-                    "duration_s": -(-messages // 30) * CALL_LATENCY_MS / 1000,
-                },
-            }
-            assert kept["fingerprint_before"] == kept["fingerprint_after"] == before[played]
-            unpolished = [c for c in LITE_CAPABILITIES if c != "polish"]
-            assert kept["capabilities_after"] == unpolished
-            assert (moved["upgrade_unavailable"], moved["capabilities_gained"]) == (
-                False,
-                ["polish"],
-            )
-            assert moved[REDERIVATION] == {"needed": False, "estimate": None}
-            assert moved["fingerprint_before"] == before[fresh] != moved["fingerprint_after"]
-            assert moved["capabilities_after"] == LITE_CAPABILITIES
-
-            preview = await ok(
-                await client.post(
-                    f"/stories/{played}/impact-preview",
-                    json={"overrides": nest(POLISH, True)},
-                    headers=headers(A),
-                )
-            )
-            assert preview["warnings"] == UNAVAILABLE_WARNINGS
-            assert preview["affected_stories"][0]["upgrade_unavailable"] is True
-            assert preview["capabilities_after"] == unpolished
-            alone = await ok(
-                await client.post(
-                    f"/stories/{fresh}/impact-preview",
-                    json={"overrides": nest(POLISH, True)},
-                    headers=headers(A),
-                )
-            )
-            assert alone["warnings"] == ["capabilities_gained"]
-            assert alone["capabilities_after"] == LITE_CAPABILITIES
-
-            confirmed = await ok(
-                await client.put(
-                    f"{PROFILES}/{profile}",
-                    json={**edit, "ignore_warnings": True},
-                    headers=headers(A),
-                )
-            )
-            assert (confirmed["applied"], confirmed["result"]["version"]) == (True, 2)
-        stays = await _effective(client, played)
-        goes = await _effective(client, fresh)
-        assert (stays["profile"]["version"], stays["profile"]["pinned"]) == (1, True)
-        assert "polish" not in stays["capabilities"]
-        assert stays["capabilities"] == kept["capabilities_after"]
-        assert stays["fingerprint"] == before[played]
-        assert (goes["profile"]["version"], goes["profile"]["pinned"]) == (2, False)
-        assert "polish" in goes["capabilities"]
-        assert goes["capabilities"] == moved["capabilities_after"]
-        assert goes["fingerprint"] == moved["fingerprint_after"]
-        pins = await rows(
-            scratch.db,
-            "SELECT id, engine_profile_version_pin FROM stories WHERE id IN (:a, :b)",
-            a=played,
-            b=fresh,
-        )
-        assert dict((r[0], r[1]) for r in pins) == {played: 1, fresh: None}
-        turn = await _play(client, played, actor)
-        assert turn["fingerprint"] == before[played]
-        assert "polish" not in turn["capabilities"]
-
-        # -- complement: unmarked, the same kind of edit moves a story with history along
-        other = (
-            await ok(
-                await client.post(PROFILES, json=profile_body(settings=off), headers=headers(A)),
-                201,
-            )
-        )["id"]
-        await _default(client, other)
-        lived, hero = await _story(client)
-        await _play(client, lived, hero)
-        ordinary = await ok(await client.put(f"{PROFILES}/{other}", json=edit, headers=headers(A)))
-        assert ordinary["impact"]["warnings"] == ["capabilities_gained"]
-        assert ordinary["impact"]["affected_stories"][0]["upgrade_unavailable"] is False
-        moved_on = await ok(
-            await client.put(
-                f"{PROFILES}/{other}", json={**edit, "ignore_warnings": True}, headers=headers(A)
-            )
-        )
-        assert moved_on["applied"] is True
-        assert (await _effective(client, lived))["profile"] == {
-            "id": other,
-            "version": 2,
-            "pinned": False,
-            "deleted": False,
-        }
-        await _default(client, LITE_PRESET_ID)
 
 
 # -- C-17 --------------------------------------------------------------------------------------
@@ -1290,7 +1163,7 @@ async def test_c_17__profiles(scratch: Space) -> None:
     assert seen >= every_pair
     assert len(rows_) < 2 ** len(FACTORS)
     configurations = [merged(*(nest(path, value) for path, value in row.items())) for row in rows_]
-    rejected = merged(configurations[0], {"pipeline": "structured"})
+    rejected = merged(configurations[0], undelivered())
 
     async with respond_client(scratch.settings, scratch.db) as (client, _):
         ran = 0
@@ -1424,7 +1297,7 @@ async def test_settings_are_checked_at_the_boundary(
             "validation_error",
             "body.settings.models.purposes.generation.base_url",
         ),
-        ({"models": {"purposes": {"entailment": {"model": "m"}}}}, "invalid_profile", ""),
+        ({"models": {"purposes": {"time_estimation": {"model": "m"}}}}, "invalid_profile", ""),
         (
             nest("models.purposes.generation.model", "a\x00b"),
             "validation_error",
@@ -1445,7 +1318,11 @@ async def test_settings_are_checked_at_the_boundary(
                 assert error["details"]["field"] == field, (settings, error)
             else:
                 assert error["details"]["undelivered"] == [
-                    {"module": "models", "level": None, "setting": "models.purposes.entailment"}
+                    {
+                        "module": "models",
+                        "level": None,
+                        "setting": "models.purposes.time_estimation",
+                    }
                 ]
             with pytest.raises((InvalidRequest, InvalidProfile)):
                 await lib.create_profile(
@@ -1865,14 +1742,9 @@ async def test_the_schema_route_publishes_what_is_delivered(
     async with respond_client(stub_settings, engine) as (client, lib):
         found = await ok(await client.get(f"{PROFILES}/schema", headers=READ))
         assert found["schema"] == delivered_schema()
-        assert found["delivered"] == {
-            "pipeline": ["lite"],
-            "rolling_summary": ["on"],
-            "pins": ["on"],
-            "polish": ["on"],
-            "budgets": ["on"],
-            "models": ["on"],
-        }
+        assert found["delivered"] == delivered_levels()
+        for module, levels in M3_DELIVERED.items():
+            assert levels <= set(found["delivered"][module]), module
         assert found["purposes"] == sorted(STORY_PURPOSES)
         assert found["tags"]["pins.max_pinned"] == {
             "tag": "behavioral",
@@ -1888,7 +1760,7 @@ async def test_the_schema_route_publishes_what_is_delivered(
         for name in ("ProfileCreate", "ProfileUpdate", "EngineProfile", "ProfileBody"):
             published = components[name]["properties"]["settings"]
             assert _schema_leaves(published) == delivered, name
-            assert published["properties"]["pipeline"]["enum"] == ["lite"], name
+            assert published["properties"]["pipeline"]["enum"] == allowed_values("pipeline"), name
         dry_run = components["ProfileValidate"]["properties"]["settings"]["anyOf"]
         assert _schema_leaves(dry_run[0]) == delivered
 
@@ -1904,7 +1776,7 @@ def test_lite_settings_validate_as_a_model() -> None:
     assert lite.repair == defaults.repair
     assert lite.budgets == defaults.budgets
     assert lite.models.generation == defaults.models.generation
-    assert set(lite.models.purposes) == set(STORY_PURPOSES)
+    assert set(lite.models.purposes) == LITE_ROUTED
     assert all(route.model is None for route in lite.models.purposes.values())
 
 
@@ -1988,9 +1860,7 @@ async def test_library_matches_rest(stub_settings: Settings, engine: AsyncEngine
         checked = await lib.validate_profile(ctx, profile, ProfileValidate())
         assert checked.valid
         with pytest.raises(InvalidProfile):
-            await lib.validate_profile(
-                ctx, profile, ProfileValidate(settings={"pipeline": "structured"})
-            )
+            await lib.validate_profile(ctx, profile, ProfileValidate(settings=undelivered()))
         versions = await lib.list_profile_versions(ctx, profile)
         assert [v.version for v in versions] == [1, 2]
         deleted = await lib.delete_profile(ctx, profile)

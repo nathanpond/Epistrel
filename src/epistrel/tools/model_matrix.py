@@ -20,6 +20,13 @@ into it. The tool then:
    counting its model calls by purpose (P-08) against the calls the turn was designed to make
    (#303).
 
+**Embedding** (#138, C-07 M4). With ``--embedding-base-url`` and ``--embedding-model`` the run
+also measures that ``/embeddings`` endpoint through the embedding port
+(``ModelAccessLayer.embeddings``): protocol compatibility (``GET /models`` and one embedding),
+the model it reports, its dimension, the largest batch (of 64, 16 and 1 texts) it embeds, and
+the p50 of ``EMBEDDING_CALLS`` single-text calls. Its row (``embedding_rows`` in the JSON) is
+keyed by tier and model; ``embedding_row`` measures any ``EmbeddingService``, the stub's in CI.
+
 The rows go to ``docs/model-matrix.json`` (raw timings included) and are rendered into
 ``docs/model-matrix.md``. A row is keyed by tier, model and policies, so a re-run replaces its
 own rows and keeps every other tier's. The matrix is **reported, not gated**: CI never runs
@@ -44,7 +51,10 @@ re-checks, and revision regenerations. A call the deadline cuts is never retried
 output check or a regeneration, the turn releases the safe fallback (cause ``deadline``). If it
 is the input check or the first generation, the turn fails and the run writes nothing. A row
 measured before the breakdown holds ``null`` in those fields, and the md shows them as *not
-recorded* until that tier's next live run.
+recorded* until that tier's next live run. P-08 asserts each row's design with
+``design_problems`` and reports the extra calls instead of failing on them (#308): they are
+bounded by each turn's call cap, and a check skipped or a draft released unchecked without a
+deadline or error is still a failure.
 """
 
 from __future__ import annotations
@@ -75,6 +85,7 @@ from epistrel.core.policies.model import Target as PolicyTarget
 from epistrel.core.stories import CharacterSpec, StorySpec, create_story_from
 from epistrel.engine import Engine
 from epistrel.orchestrator.budget import TurnBudget
+from epistrel.orchestrator.embeddings.service import EmbeddingService
 from epistrel.orchestrator.lite.schemas import SAFE_FALLBACK, PlayerInputBody, RespondRequest
 from epistrel.orchestrator.models import config as model_config
 from epistrel.orchestrator.models.capability import (
@@ -99,6 +110,9 @@ TURN_DEADLINE_S = 300.0
 TURN_PATH = "respond (#57)"
 GUARDED_REPLY_PATH = "guarded reply (#53), until respond (#57)"
 EX_UNAVAILABLE = 1
+EMBEDDING_CALLS = 10
+EMBEDDING_BATCHES = (64, 16, 1)
+EMBEDDING_TEXT = "The lighthouse keeper keeps a lamp lit through the storm."
 
 type PolicySet = Literal["off", "minors"]
 POLICY_SETS: tuple[PolicySet, ...] = ("off", "minors")
@@ -141,19 +155,23 @@ SCRIPT = (
 
 class TurnCalls(CallLog):
     """One measured turn (#303): its model calls in the order they were made (every attempt,
-    failed ones included), the calls it was designed to make by purpose, and the cause of each
-    safe fallback it released (``deadline``, ``retry_budget`` or ``call_budget``)."""
+    failed ones included), the calls it was designed to make by purpose, the cause of each
+    safe fallback it released (``deadline``, ``retry_budget`` or ``call_budget``), and its
+    budget's call cap (``max_calls``, #69; ``None`` when the turn had none or it is unknown,
+    #308)."""
 
     def __init__(
         self,
         calls: Iterable[ModelCall],
         designed: Mapping[str, int],
         fallback_causes: Iterable[str] = (),
+        max_calls: int | None = None,
     ) -> None:
         super().__init__()
         self.calls.extend(calls)
         self.designed = dict(designed)
         self.fallback_causes = list(fallback_causes)
+        self.max_calls = max_calls
 
     def extra(self) -> dict[str, int]:
         """The calls made beyond the design, by purpose. A designed call that was never made
@@ -249,6 +267,7 @@ class RespondDriver:
             result.model_calls,
             designed_calls(sum(result.budget.reserved.values())),
             [d.cause for d in result.degradation_details if d.step == SAFE_FALLBACK],
+            result.budget.max_calls,
         )
 
 
@@ -366,6 +385,53 @@ def call_breakdown(turns: Sequence[TurnCalls]) -> CallBreakdown:
         faulted_turns=faulted,
         fallbacks=dict(sorted(fallbacks.items())),
     )
+
+
+def design_problems(
+    turns: Sequence[TurnCalls], design: Mapping[str, int], *, output_checked: bool | None = None
+) -> list[str]:
+    """What is wrong with measured turns against the ``design`` a row expects (P-08, #308);
+    empty when nothing is. Extra calls (a flagged draft's regeneration and re-check, a retry,
+    a call the deadline cut) are not wrong by themselves; ``call_breakdown`` reports them.
+    A turn (numbered from 1) is wrong when:
+
+    - its design is not ``design`` (the turn was planned with other calls);
+    - it made fewer calls of a designed purpose than designed and hit no model-call deadline
+      or error (a call was skipped);
+    - it made a call of a purpose outside ``design``;
+    - it made more calls than its budget's ``max_calls``: the bound on extra calls
+      (NFR-PERF-6), checked when the turn recorded its cap;
+    - with ``output_checked`` (by default, when ``design`` has a ``guardrail_check``: the
+      matrix's minors policy checks the input and the output), it hit no deadline or error and
+      its last ``generation`` call was not followed by a ``guardrail_check``: a draft released
+      unchecked."""
+    if output_checked is None:
+        output_checked = GUARDRAIL_CHECK.name in design
+    expected = dict(design)
+    problems: list[str] = []
+    for number, turn in enumerate(turns, start=1):
+        made = turn.by_purpose()
+        if turn.designed != expected:
+            problems.append(f"turn {number}: designed {turn.designed}, expected {expected}")
+        for purpose, count in sorted(expected.items()):
+            if made.get(purpose, 0) < count and not turn.faulted:
+                problems.append(
+                    f"turn {number}: {made.get(purpose, 0)} of {count} designed {purpose} "
+                    "calls, with no deadline or error"
+                )
+        for purpose in sorted(set(made) - set(expected)):
+            problems.append(f"turn {number}: {made[purpose]} {purpose} calls outside the design")
+        if turn.max_calls is not None and len(turn.calls) > turn.max_calls:
+            problems.append(
+                f"turn {number}: {len(turn.calls)} calls, over its budget of {turn.max_calls}"
+            )
+        if output_checked and not turn.faulted:
+            purposes = [call.purpose for call in turn.calls]
+            generated = [i for i, p in enumerate(purposes) if p == GENERATION.name]
+            checked = [i for i, p in enumerate(purposes) if p == GUARDRAIL_CHECK.name]
+            if generated and not (checked and checked[-1] > generated[-1]):
+                problems.append(f"turn {number}: its last draft was released unchecked")
+    return problems
 
 
 BREAKDOWN = tuple(f.name for f in fields(CallBreakdown))
@@ -586,7 +652,17 @@ existed; a live re-run through `respond` (#57) is pending and will replace them.
 """
 
 
-def render(rows: Sequence[Mapping[str, Any]]) -> str:
+EMBEDDING_NOTE = """\
+The embedding endpoint (the `embedding` port, #138), measured when the run names one:
+**Protocol** is `GET /models` and one embedding; **Dimension** is what every vector of that
+model has (the deployment pins it at the first embedding); **Max batch** is the largest of 64,
+16 and 1 texts one request embeds; **p50** is over single-text calls.
+"""
+
+
+def render(
+    rows: Sequence[Mapping[str, Any]], embedding_rows: Sequence[Mapping[str, Any]] = ()
+) -> str:
     """``docs/model-matrix.md`` for ``rows``. The notes appear only while they apply: *not
     recorded* while a row lacks the call breakdown, and the turn-path note while a row was
     measured on the guarded reply (#303)."""
@@ -642,13 +718,130 @@ def render(rows: Sequence[Mapping[str, Any]]) -> str:
                 f"{row['turn_path']} |"
             )
         lines.append("")
+    lines += _embedding_lines(embedding_rows)
     lines.append("Raw timings for every row are in [model-matrix.json](model-matrix.json).")
     return "\n".join(lines) + "\n"
 
 
-def write_matrix(rows: Sequence[Mapping[str, Any]], markdown: Path, raw: Path) -> None:
-    raw.write_text(json.dumps({"rows": list(rows)}, indent=2, sort_keys=True) + "\n", "utf-8")
-    markdown.write_text(render(rows), encoding="utf-8")
+def write_matrix(
+    rows: Sequence[Mapping[str, Any]],
+    markdown: Path,
+    raw: Path,
+    embedding_rows: Sequence[Mapping[str, Any]] = (),
+) -> None:
+    document = {"rows": list(rows), "embedding_rows": list(embedding_rows)}
+    raw.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", "utf-8")
+    markdown.write_text(render(rows, embedding_rows), encoding="utf-8")
+
+
+# -- the embedding row (#138) -------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class EmbeddingRow:
+    """One embedding endpoint as measured: protocol, what it reports, its batch limit and
+    single-call latency."""
+
+    tier: str
+    model: str
+    measured_at: str
+    sha: str
+    protocol: bool
+    protocol_reason: str | None
+    reported_model: str | None
+    dimension: int | None
+    max_batch: int | None
+    p50_ms: int | None
+    latencies_ms: list[int]
+
+    @property
+    def key(self) -> str:
+        return f"{self.tier}|{self.model}"
+
+
+async def embedding_row(
+    service: EmbeddingService,
+    *,
+    tier: str,
+    model: str,
+    calls: int = EMBEDDING_CALLS,
+    now: datetime | None = None,
+) -> EmbeddingRow:
+    """Measure ``service``'s configured endpoint (see the module docstring)."""
+    measured_at = (now or datetime.now(UTC)).strftime("%Y-%m-%d")
+    sha = engine_sha()
+    try:
+        probe = await service.probe()
+    except ModelError as exc:
+        reason = str(exc.details.get("reason", exc.code))
+        return EmbeddingRow(
+            tier, model, measured_at, sha, False, reason, None, None, None, None, []
+        )
+    max_batch: int | None = None
+    for size in EMBEDDING_BATCHES:
+        try:
+            await service.embed([f"{EMBEDDING_TEXT} ({i})" for i in range(size)])
+        except ModelError:
+            continue
+        max_batch = size
+        break
+    latencies: list[int] = []
+    for _ in range(calls):
+        started = time.perf_counter()
+        await service.embed([EMBEDDING_TEXT])
+        latencies.append(round((time.perf_counter() - started) * 1000))
+    return EmbeddingRow(
+        tier=tier,
+        model=model,
+        measured_at=measured_at,
+        sha=sha,
+        protocol=probe.protocol_ok,
+        protocol_reason=None,
+        reported_model=probe.model,
+        dimension=probe.dimension,
+        max_batch=max_batch,
+        p50_ms=round(nearest_rank(latencies, 50)) if latencies else None,
+        latencies_ms=latencies,
+    )
+
+
+def merge_embedding(
+    existing: Iterable[Mapping[str, Any]], rows: Iterable[EmbeddingRow]
+) -> list[dict[str, Any]]:
+    merged = {f"{r['tier']}|{r['model']}": dict(r) for r in existing}
+    for row in rows:
+        merged[row.key] = asdict(row)
+    return [merged[key] for key in sorted(merged)]
+
+
+def load_embedding_rows(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    data = json.loads(path.read_text(encoding="utf-8"))
+    found: list[dict[str, Any]] = data.get("embedding_rows", [])
+    return found
+
+
+def _embedding_lines(rows: Sequence[Mapping[str, Any]]) -> list[str]:
+    lines = ["## Embedding", "", EMBEDDING_NOTE]
+    if not rows:
+        return [*lines, "No embedding endpoint has been measured yet.", ""]
+    lines += [
+        "| Tier | Protocol | Reported model | Dimension | Max batch | p50 | Measured "
+        "| Engine SHA |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for row in rows:
+        protocol = _mark(row["protocol"])
+        if row.get("protocol_reason"):
+            protocol += f" ({row['protocol_reason']})"
+        lines.append(
+            f"| {row['tier']}: {row['model']} | {protocol} | {row['reported_model'] or '—'} | "
+            f"{row['dimension'] if row['dimension'] is not None else '—'} | "
+            f"{row['max_batch'] if row['max_batch'] is not None else '—'} | "
+            f"{_seconds(row['p50_ms'])} | {row['measured_at']} | `{row['sha']}` |"
+        )
+    return [*lines, ""]
 
 
 # -- the run ----------------------------------------------------------------------------------
@@ -663,6 +856,9 @@ class Target:
     hardware: str = ""
     server_version: str = ""
     purpose_models: Mapping[str, str] = field(default_factory=dict)
+    embedding_base_url: str | None = None
+    embedding_model: str | None = None
+    embedding_api_key: str | None = None
 
 
 def engine_sha() -> str:
@@ -707,6 +903,16 @@ async def configure(engine: Engine, target: Target) -> None:
     for purpose, model in target.purpose_models.items():
         await model_config.write_config(
             engine.db, purpose, keybox=keybox, principal=PRINCIPAL, model=model
+        )
+    if target.embedding_base_url and target.embedding_model:
+        await model_config.write_config(
+            engine.db,
+            "embedding",
+            keybox=keybox,
+            principal=PRINCIPAL,
+            base_url=target.embedding_base_url,
+            model=target.embedding_model,
+            api_key=target.embedding_api_key or target.api_key,
         )
 
 
@@ -826,13 +1032,23 @@ async def _main(args: argparse.Namespace) -> int:
         hardware=args.hardware,
         server_version=args.server_version,
         purpose_models=dict(args.purpose_model),
+        embedding_base_url=getattr(args, "embedding_base_url", None),
+        embedding_model=getattr(args, "embedding_model", None),
+        embedding_api_key=getattr(args, "embedding_api_key", None),
     )
+    embedded: list[EmbeddingRow] = []
     async with database(args.database_url) as dsn:
         settings = make_settings(dsn)
         db = make_engine(settings)
         engine = Engine(settings, db)
         try:
             rows = await run_matrix(engine, target, turns=args.turns)
+            if rows is not None and target.embedding_model:
+                embedded.append(
+                    await embedding_row(
+                        engine.models.embeddings, tier=target.tier, model=target.embedding_model
+                    )
+                )
         except ModelError as exc:
             # A failure part-way through writes nothing: a partial row would mislead.
             print(f"model call failed: {exc.code} {exc.details}", file=sys.stderr)
@@ -843,7 +1059,12 @@ async def _main(args: argparse.Namespace) -> int:
     if rows is None:
         return EX_UNAVAILABLE
     merged = merge(load_rows(args.raw), rows)
-    write_matrix(merged, args.output, args.raw)
+    write_matrix(
+        merged,
+        args.output,
+        args.raw,
+        merge_embedding(load_embedding_rows(args.raw), embedded),
+    )
     print(f"wrote {args.output} and {args.raw} ({len(rows)} rows for {target.tier})")
     return 0
 
@@ -871,6 +1092,9 @@ def parser() -> argparse.ArgumentParser:
         metavar="PURPOSE=MODEL",
         help="a per-purpose model override (repeatable)",
     )
+    p.add_argument("--embedding-base-url", help="an /embeddings endpoint to measure too")
+    p.add_argument("--embedding-model", help="the embedding model at --embedding-base-url")
+    p.add_argument("--embedding-api-key", help="its API key (default: --api-key)")
     p.add_argument("--database-url", help="a scratch database instead of a testcontainer")
     p.add_argument("--turns", type=int, default=DEFAULT_TURNS, help="measured turns per row")
     p.add_argument("--output", type=Path, default=MATRIX_PATH, help=argparse.SUPPRESS)

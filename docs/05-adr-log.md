@@ -35,7 +35,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-MULTI | §16 | 043, 126 |
 | FR-API | §17 | 092, 138 |
 | FR-AUTH | §17.1 | 078, 091, 093, 144, 149, 152 |
-| FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144, 153, 154, 155, 156 |
+| FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144, 153, 154, 155, 156, 157 |
 | FR-CAT | §18.1 | 081, 088, 089, 090, 091, 095, 097, 107, 108, 138, 144 |
 | FR-SCN | §18.2 | 081, 082, 087, 088, 091, 097, 107, 140, 141, 142 |
 | FR-PROF | §18.3 | 084, 086, 087, 107, 134, 138, 141, 142, 144 |
@@ -51,7 +51,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 112, 114, 115 |
 | NFR-REL | §20 | 045, 127 |
 | NFR-SEC | §20 | 138, 149, 152 |
-| NFR-PRIV | §20 | 077, 101, 154 |
+| NFR-PRIV | §20 | 077, 101, 154, 157 |
 | NFR-PORT | §20 | 150 |
 | NFR-OPS | §20 | 127, 148, 151 |
 | NFR-MAINT | §20 | 148 |
@@ -214,10 +214,11 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 150 | The model transport is the `openai` SDK against OpenAI-compatible endpoints | Current | — |
 | 151 | Video posters are taken with ffmpeg, a GPL program run as a separate process | Current | — |
 | 152 | A short-lived signed URL is enough to read media content | Current | — |
-| 153 | The erasure ledger's file is the authority, and a restore is reconciled before it is served | Current | — |
+| 153 | The erasure ledger's file is the authority, and a restore is reconciled before it is served | Amended | 157 |
 | 154 | Erasure redacts only mentions attributed to the subject; ambiguous ones are reported, not guessed | Partly superseded | 155 |
 | 155 | Erasure matches a name in any case by full case-folding, and at any dash | Partly superseded | 156 |
 | 156 | The erasure fold is canonical caseless matching, `ı` is `i`, and a soft hyphen is no character | Current | — |
+| 157 | A pending catalog-scope erasure holds back what it reaches until it is reapplied | Current | — |
 
 ---
 
@@ -1458,6 +1459,7 @@ Launch conservative (high continuity, more escalation), then **tighten data-driv
 
 ### ADR-153 — The erasure ledger's file is the authority, and a restore is reconciled before it is served
 **Status:** Accepted. Builds on ADR-046.
+**Amended by:** ADR-157 — a pending catalog-scope erasure also holds back what it reaches in the catalog until it is reapplied.
 **Context:** FR-ADMIN-7 keeps the erasure ledger outside the backups it governs and copied into each of them, and serves no restored story until the ledger has been reapplied. ADR-046 decided that, but not where the outside copy lives, which copy wins, or how a restore is caught when the backup predates an erasure. The owner decided, when M3 was planned (#125, round one), that Epistrel reapplies the ledger by itself at start-up and blocks the affected stories until it has.
 **Decision:** The authority is an append-only file, `EPISTREL_ERASURE_LEDGER_DIR/ledger.jsonl`, on its own volume (`erasure-ledger` in compose, separate from `pgdata` and `media`). It holds one JSON line per erasure, with identifiers, counts and keyed hashes and never a name. The lines are hash-chained: each `ledger_hash` is the SHA-256 of the line's canonical JSON, and each `ledger_hash_prev` is the previous line's hash. An erasure appends its line and fsyncs it before it commits, under an advisory lock held to the commit, so the chain's order is the commit order. The same row, with the same hashes, goes into the `erasure_ledger` table, which every `pg_dump` carries. A file that cannot be written refuses the erasure (503 `ledger_unavailable`). Before traffic, start-up compares the file with the table. A line the table lacks becomes pending and blocks its story (`blocked_by_erasure`: every read and write is 503 `erasure_pending`, except deleting the story and listing it). A row the file lacks is appended to the file. Differing copies, a broken chain or an unwritable directory refuse the start (exit 78). The reconciler reapplies each pending erasure with #124's own operation: the original id, principal `system`, and no new ledger line. It runs in the background under an advisory lock that every process shares, catalog erasures first, then every 5 minutes until none is pending. `epistrel backup verify` lists erasure markers as expected gaps and checks a dump's ledger rows against the file. `GET /admin/erasure/boundary`, `docs/OPERATIONS.md` and the API description state the erasure boundary from one constant (FR-ADMIN-7, FR-ADMIN-8, FR-ADMIN-4).
 **Consequences:** Restoring an old backup cannot serve an erased person again. The restored stories wait, refused, until the reapply finishes. A deployment that loses the ledger volume rebuilds it from the database's copy, chained anew. One that restores the file from a backup loses the erasures made after that backup, so the documentation says never to restore it. A reapply that cannot run, for example without `EPISTREL_CONFIG_KEY`, keeps its story blocked and is reported, never dropped. Tests S-ERASURE-BOUNDARY (M3) and `tests/integration/test_erasure_ledger.py`.
@@ -1521,6 +1523,25 @@ The guard's normalisation is the same fold (FR-ADMIN-6, FR-ADMIN-9).
 - A name stored with a soft hyphen between two halves ("Mary" U+00AD "Jane") is one word, "MaryJane". That narrows ADR-155's "plus the soft hyphen".
 - Ledger rows written before this change hash names holding `ı`, a soft hyphen, a minus sign or a decomposable upper case differently. M3 is unreleased, so no deployment holds such rows.
 - Tests: `tests/test_erasure_matcher.py` (the fold, and the guard's own hashes against the ledger's term hashes, #392) and `tests/integration/test_erasure_mentions.py` (end to end, and the guard's 409s).
+
+---
+
+### ADR-157 — A pending catalog-scope erasure holds back what it reaches until it is reapplied
+**Status:** Accepted. Amends ADR-153 (what a pending erasure blocks).
+**Context:** After a restore, ADR-153 blocks the story a pending erasure was made in until the reconciler reapplies it. A catalog-scope erasure is made in no story, so its pending entry blocked nothing: until the background reapply ran, the restored catalog served the erased character or persona, the entries and media naming her, and the deployment-scoped stored results of `GET /operations/{id}` (#346). FR-ADMIN-7 named restored stories only, and NFR-PRIV-2's intent is that an erased person is not served again. The owner decided on 2026-10-16, at M4's triage, that while a catalog-scope erasure is pending, catalog reads that touch it are refused with 503 `erasure_pending`, or the entry is left out of lists, until the reapply finishes.
+**Decision:** While a catalog-scope ledger entry is pending, its **reach** is what its reapply would touch, computed the way the erasure finds it: the subject's own entry or persona, a catalog character's companion scenarios, every catalog record the subject-reference index names for the subject or the subject's terms (and the confirmed candidates, ADR-154) match, the media that depict or name her, the deployment-scoped stored results and events that name her, and the creation reports that carry her public card. In the Engine, so REST and the library agree:
+- every call naming a reached catalog character, scenario, persona, media asset or upload session is refused, reads and writes alike, with 503 `erasure_pending` (`Retry-After: 30`; `details.story_id` is null, with the first pending erasure that reaches it and how many do). Deletes are refused too: deleting the subject would take the terms the reapply redacts the other records by;
+- a story created from a scenario is refused when the scenario, a catalog character filling a role, or a player's saved persona is reached, because a catalog-scope erasure never touches a story (FR-STORE-14);
+- `GET /operations/{id}` and an `Idempotency-Key` replay are refused when the stored result or the creation report they would serve is reached;
+- a catalog-scope erasure, dry run or not, is refused while another is pending (its candidate snippets quote the catalog), as a story's is (#383);
+- catalog lists and search, `GET /personas` and `GET /media` leave reached entries out, so a page may be short; the principal lookup lists them with a `null` name, as it lists a blocked story.
+
+Nothing is persisted: the reach is computed afresh on each call while an entry is pending, and is one query otherwise. The block lifts entry by entry as the reapply settles them, catalog entries first (FR-ADMIN-7, NFR-PRIV-2).
+**Consequences:**
+- Restoring a backup cannot serve an erased catalog character or persona, or what names her, before the reapply; what does not name her is served throughout.
+- A catalog call during a restore window costs a scan of the catalog's records per pending catalog erasure. The window lasts until the reapply ends (minutes at hobby scale), and a deployment with no pending catalog erasure pays one query.
+- Deployment-scoped reads outside the catalog (policies, configuration history) are not held; #429 tracks them.
+- Tests: `tests/integration/test_erasure_ledger.py` (the restore window for a catalog character and for a persona, held with the reapply's pause; every Engine method naming a catalog entry is gated; the OpenAPI document states the 503).
 
 ---
 

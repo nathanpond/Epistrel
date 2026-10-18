@@ -6,17 +6,23 @@ from datetime import datetime
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel import Engine, ProfileOverridesPatch, RelationRequest
 from epistrel.config import Settings
 from epistrel.core import clock, turn_gate
+from epistrel.core.commit import lifecycle
+from epistrel.core.commit.sketch import ThunkSketch
 from epistrel.core.context import RequestContext
-from epistrel.core.enums import OperationKind
+from epistrel.core.enums import OpenSlot, OperationKind
 from epistrel.core.errors import GuardrailViolation
+from epistrel.core.events import Operation
 from epistrel.core.feedback import FeedbackRequest
 from epistrel.core.ids import new_ulid
 from epistrel.core.ingest import IngestRequest
+from epistrel.core.propositions import registry as predicate_registry
+from epistrel.core.propositions import store
+from epistrel.core.propositions.model import Interval, Proposition
 from epistrel.core.stories import STORY_ID_EXCEPTIONS, STORY_TABLES
 from epistrel.core.tables.ownership import EntityType
 from epistrel.orchestrator.jobs import queue as job_queue
@@ -24,6 +30,7 @@ from epistrel.orchestrator.jobs import timers
 from epistrel.orchestrator.jobs.handlers.rebuild import REBUILD_KIND
 from epistrel.orchestrator.policies.input_gate import EntryPoint, GateText
 from epistrel.orchestrator.policies.schemas import StoryPolicyItem
+from tests import canon_support, memory_support
 from tests import erasure_support as erasure
 from tests import genesis_support as g
 from tests.event_support import interleave, play_turn, rows
@@ -141,6 +148,83 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
             ),
             {"id": new_ulid(), "s": story_id, "o": new_ulid()},
         )
+        # The structured stores (#131): an entity with an alias, an auto predicate (a
+        # configuration change) with a proposal, a proposition and an author's closed set.
+        ann = await store.add_entity(conn, story_id, "person", "Ann", aliases=["Annie"])
+        auto = await predicate_registry.auto_register(conn, story_id, "sails with")
+        await predicate_registry.file_proposal(
+            conn, story_id, auto.id, predicate_registry.ProposedChanges(symmetric=True)
+        )
+        found = await predicate_registry.load(conn, story_id)
+        await store.write_proposition(
+            conn,
+            story_id,
+            Proposition(
+                subject_id=ann, predicate_id=auto.id, object_id=ann, valid_time=Interval.of(0, 9)
+            ),
+            found,
+        )
+        await store.declare_closed_set(
+            conn, story_id, store.ClosedSet(auto.id, ann, (ann,)), found, asserted_by="author"
+        )
+    # Bitemporal canon (#133): a fact version, superseded, so both versions are the story's.
+    sailing = Proposition(
+        subject_id=ann, predicate_id=auto.id, object_id=ann, valid_time=Interval.of(10, 20)
+    )
+    first = await canon_support.commit(engine, story_id, sailing)
+    await canon_support.supersede(
+        engine,
+        story_id,
+        first.id,
+        sailing.model_copy(update={"valid_time": Interval.of(5, 25)}),
+        authority="author",
+    )
+    # The structured projections (#137): the player at a place and a friendship, so the turn
+    # writing them leaves a placement, a relationship and a scene row.
+    async with engine.begin() as conn:
+        player = await conn.scalar(
+            text("SELECT id FROM characters WHERE story_id = :s AND is_player"), {"s": story_id}
+        )
+        here = await store.add_entity(conn, story_id, "place", "the quay")
+        me = await store.add_entity(conn, story_id, "person", "Me", character_id=player)
+    await canon_support.commit(engine, story_id, canon_support.at(me, here, 0, None))
+    await canon_support.commit(
+        engine,
+        story_id,
+        Proposition(
+            subject_id=me,
+            predicate_id=canon_support.KNOWS,
+            object_id=ann,
+            valid_time=Interval.of(0, None),
+        ),
+    )
+    # Memory records (#135): a memory of the story, written by its own operation.
+    await memory_support.derived_memory(engine, story_id, "Ann sails at dawn.", [])
+    # The hot set (#147): an overflow episode of the story's vectors, planted (one needs a
+    # story over its budget).
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO overflow_episodes (id, story_id, scope, scope_id, opened_turn, "
+                "deadline_turn, excess_at_open, excess) VALUES (:id, :s, 'story', :s, 1, 51, "
+                "1, 1)"
+            ),
+            {"id": new_ulid(), "s": story_id},
+        )
+    # Commitments (#146): a salient thunk (someone sails with Ann) and its ledger entry.
+    sketch = ThunkSketch(
+        subject_text="someone",
+        relation_text=auto.name,
+        object_text="Ann",
+        predicate_id=auto.id,
+        object_id=ann,
+        open_slot=OpenSlot.SUBJECT,
+    )
+
+    async def owe(conn: AsyncConnection, op: Operation) -> None:
+        await lifecycle.introduce(conn, op, sketch, valid_time=0, salient=True, on=True)
+
+    await canon_support.run(engine, story_id, owe)
 
 
 def _due() -> datetime:

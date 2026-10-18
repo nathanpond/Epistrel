@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import ast
 import json
+import re
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -15,10 +17,12 @@ from pydantic import ValidationError
 import epistrel
 from epistrel.api.auth import TRUST_BOUNDARY_STATEMENT
 from epistrel.api.routes.ownership import CONFERS_NOTHING, OWNERSHIP_TAG
+from epistrel.core.context import PRINCIPAL_PATTERN, has_control, principal_problem
 from epistrel.core.erasure.boundary import render_boundary
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.ownership import (
     REGISTRY,
+    RELATION_FILTER_PATTERN,
     SEGMENTS,
     RelationFilter,
     RelationRequest,
@@ -28,6 +32,8 @@ from epistrel.core.ownership import (
     path_relation,
     relation_name_problem,
 )
+from epistrel.core.principals import lookup_principal_id
+from epistrel.core.settings_schema import LISTING_STATUS_PATTERN
 from epistrel.core.tables.ownership import EntityType
 from tests.conftest import REPO_ROOT
 
@@ -165,6 +171,7 @@ def test_relation_names_and_filters() -> None:
         (lambda: parse_relation_filter("editor"), "query.relation"),
         (lambda: parse_relation_filter("true"), "query.relation"),
         (lambda: parse_relation_filter("editor:a\x01b"), "query.relation"),
+        (lambda: parse_relation_filter("editor:a\x85b"), "query.relation"),
         (lambda: parse_relation_filter(f"{'x' * 65}:p-1"), "query.relation"),
         (lambda: owner_filter("\t"), "query.owner"),
         (lambda: path_relation("a b"), "path.relation"),
@@ -174,6 +181,42 @@ def test_relation_names_and_filters() -> None:
         with pytest.raises(InvalidRequest) as refused:
             call()
         assert refused.value.details["field"] == field
+
+
+def test_principal_rule_refuses_every_control_character() -> None:
+    """A principal holds no control character (#321): every code point Unicode classes ``Cc``
+    (C0, DEL and C1, U+0080 to U+009F) is refused, and no other, by ``principal_problem``, the
+    published ``PRINCIPAL_PATTERN``, and the principal half of ``RELATION_FILTER_PATTERN`` alike;
+    the listing status pattern (#110) shares the one definition. Complement: a principal with any
+    other character passes all of them."""
+    principal = re.compile(PRINCIPAL_PATTERN)
+    relation = re.compile(RELATION_FILTER_PATTERN)
+    listing = re.compile(LISTING_STATUS_PATTERN)
+    controls = []
+    for code in range(0x110000):
+        ch = chr(code)
+        control = unicodedata.category(ch) == "Cc"
+        value = f"a{ch}b"
+        assert has_control(value) is control, hex(code)
+        assert (principal_problem(value) is not None) is control, hex(code)
+        assert (principal.fullmatch(value) is None) is control, hex(code)
+        assert (relation.fullmatch(f"editor:{value}") is None) is control, hex(code)
+        if control:
+            assert listing.fullmatch(value) is None, hex(code)
+            controls.append(code)
+    assert controls == [*range(0x20), *range(0x7F, 0xA0)]
+    for c1 in ("\x80", "\x85", "\x9f"):
+        with pytest.raises(ValidationError):
+            RelationRequest(principal=f"p{c1}a", relation="editor")
+        for check, field in (
+            (lambda v: parse_relation_filter(f"editor:{v}"), "query.relation"),
+            (owner_filter, "query.owner"),
+            (path_principal, "path.principal"),
+            (lookup_principal_id, "path.principal_id"),
+        ):
+            with pytest.raises(InvalidRequest) as refused:
+                check(f"p{c1}a")
+            assert refused.value.details["field"] == field
 
 
 def test_registry_names_every_owned_type() -> None:

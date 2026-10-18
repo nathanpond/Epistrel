@@ -111,6 +111,10 @@ class QueueDrainer:
                     )
                 except StoryNotFound:
                     return
+                except turn_gate.NotQueued:
+                    # The head ended while it waited (a control action failed it, #329): it is
+                    # not run and the slot stays free; the next head is read at once.
+                    continue
                 if held is not None:
                     await turn_gate.wakeups.wait(story_id, turn_gate.POLL_S)
                     continue

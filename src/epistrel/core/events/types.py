@@ -281,6 +281,14 @@ class RejectedViolation(EventPayload):
     kind: str
 
 
+class RecordRef(EventPayload):
+    """A structured record a render's context held (FR-GUARD-5; #145): its ``table``
+    (``memories`` or ``facts``) and id."""
+
+    table: str
+    id: str
+
+
 @register("guardrail_output_rejected", category=EventCategory.AUDIT)
 class GuardrailOutputRejected(EventPayload):
     """A text an output policy rejected (FR-GUARD-6, FR-STORE-25; #68): a generated draft
@@ -288,7 +296,12 @@ class GuardrailOutputRejected(EventPayload):
     line that itself broke a policy (``reason`` ``fallback_policy``). Audit only: it holds the
     text, but no story view and no prompt reads it; it is written with its turn, so it follows
     the turn's membership (discarded with it on truncation). ``confidence`` is the guardrail
-    model's, when a model-assisted check decided."""
+    model's, when a model-assisted check decided.
+
+    Payload version 2 (#145, FR-GUARD-5) adds ``implicated_record_ids``: the memories and facts
+    the rejected draft's context held. It is left out of the stored payload when empty (a Lite
+    reply and a fallback line hold none), so a Lite turn's event is byte-identical to version
+    1's, and a version-1 payload reads as empty."""
 
     text: str
     reason: str
@@ -296,6 +309,9 @@ class GuardrailOutputRejected(EventPayload):
     policy_ids: tuple[str, ...] = ()
     violations: tuple[RejectedViolation, ...] = ()
     confidence: float | None = None
+    implicated_record_ids: tuple[RecordRef, ...] = Field(
+        default=(), exclude_if=lambda refs: not refs
+    )
 
 
 class SummarySource(EventPayload):
@@ -323,6 +339,22 @@ class LiteSummarySegment(EventPayload):
     prompt_hash: str | None = None
 
 
+@register("consolidation_output", category=EventCategory.DERIVED)
+class ConsolidationOutput(EventPayload):
+    """A consolidation window's outputs (FR-MEM-2,3,6, FR-STORE-27; #143): the semantic
+    memories and reflections it wrote (``memory_ids``, possibly none) over turns
+    ``from_turn``..``to_turn`` of ``scope`` at ``level``, and the earlier outputs it replaced
+    (``superseded_ids``: a rerun's). Its operation (``consolidation``) is positioned at
+    ``to_turn``, so the outputs follow that turn's membership. Identifiers and counts only."""
+
+    memory_ids: tuple[str, ...] = ()
+    superseded_ids: tuple[str, ...] = ()
+    from_turn: int = Field(ge=1)
+    to_turn: int = Field(ge=1)
+    scope: str = "shared"
+    level: int = Field(default=1, ge=1, le=2)
+
+
 @register("erasure_marker", category=EventCategory.CONTROL)
 class ErasureMarker(EventPayload):
     """Where erasure (FR-ADMIN-2,6; #124) deleted a structured record of the story: the
@@ -338,3 +370,155 @@ class ErasureMarker(EventPayload):
     scope: str
     record_table: str
     record_id: str
+
+
+@register("fact_committed", category=EventCategory.DERIVED)
+class FactCommitted(EventPayload):
+    """A fact version written to ``facts`` (FR-BITEMP-1, FR-STORE-9; #133): the new version
+    (``fact_id``, its ``lineage_id`` and ``proposition_id``), the versions it closed
+    (``supersedes``) and the remainders it kept of them (``remainders``: what is left of a
+    trimmed version on either side of the new valid-time). Identifiers only; the fact follows
+    its operation's membership, so this event does too."""
+
+    fact_id: str
+    lineage_id: str
+    proposition_id: str
+    supersedes: tuple[str, ...] = ()
+    remainders: tuple[str, ...] = ()
+
+
+@register("fact_superseded", category=EventCategory.DERIVED)
+class FactSuperseded(EventPayload):
+    """An explicit supersede (FR-BITEMP-2,4; #133): version ``superseded_id`` of a fact was
+    closed in transaction-time by ``fact_id`` (same ``lineage_id``), never deleted; ``authority``
+    is the new version's (``author`` for a retcon). Identifiers only."""
+
+    fact_id: str
+    superseded_id: str
+    lineage_id: str
+    proposition_id: str
+    authority: str
+    supersedes: tuple[str, ...] = ()
+    remainders: tuple[str, ...] = ()
+
+
+# -- commitments (FR-COMMIT-1..3,5..7,10,13; #146) ---------------------------------------------
+
+
+@register("thunk_introduced", category=EventCategory.DERIVED)
+class ThunkIntroduced(EventPayload):
+    """A thunk was introduced (#146): ``thunk_id``, which slot of its proposition is open
+    (``open_slot``) and whether a salient reference introduced it. Identifiers only; the sketch
+    lives in the ``thunks`` row."""
+
+    thunk_id: str
+    open_slot: str
+    salient: bool = False
+
+
+@register("thunk_resolved", category=EventCategory.DERIVED)
+class ThunkResolved(EventPayload):
+    """A dependence resolved a thunk, once, globally (FR-COMMIT-2,10; #146): the committed
+    ``fact_id``. Identifiers only."""
+
+    thunk_id: str
+    fact_id: str
+
+
+@register("ledger_entry", category=EventCategory.DERIVED)
+class LedgerEntryCreated(EventPayload):
+    """A salient reference created a promissory-ledger entry (FR-COMMIT-7,13; #146): on a
+    thunk (``thunk_id``) or on a hidden fact's proposition (``proposition_id``), exactly one.
+    Identifiers only."""
+
+    entry_id: str
+    thunk_id: str | None = None
+    proposition_id: str | None = None
+
+
+@register("ledger_discharged", category=EventCategory.DERIVED)
+class LedgerDischarged(EventPayload):
+    """A ledger entry was discharged (#146): how (``mode``: ``dependence``, ``render`` or
+    ``minimal``) and, for a minimal commit, the fact it wrote. Identifiers only."""
+
+    entry_id: str
+    mode: str
+    fact_id: str | None = None
+
+
+# -- the mutation primitives (FR-GUARD-4,5; #145) --------------------------------------------------
+
+
+@register("memory_quarantined", category=EventCategory.CONTROL)
+class MemoryQuarantined(EventPayload):
+    """A memory was quarantined (FR-GUARD-4; #145): excluded from retrieval and from every
+    generation context from this operation on. ``reason`` is the author's (at most 500
+    characters) or ``repeated_implication`` when the output gate's convergence rule
+    quarantined it (``automatic``, FR-GUARD-5; ``pinned`` when it was an author pin). Written by
+    a position-less ``control`` operation, so a truncation never discards it."""
+
+    memory_id: str
+    reason: str
+    automatic: bool = False
+    pinned: bool = False
+
+
+@register("memory_unquarantined", category=EventCategory.CONTROL)
+class MemoryUnquarantined(EventPayload):
+    """A quarantine was reversed (#145): the memory is retrievable again."""
+
+    memory_id: str
+
+
+# -- the hot set (FR-MEM-8; #147) -----------------------------------------------------------------
+
+
+@register("memory_pinned", category=EventCategory.CONTROL)
+class MemoryPinned(EventPayload):
+    """An author pinned a memory (FR-MEM-8; #147): outside the hot-set budgets and never retired
+    from this operation on (a retired memory is rehydrated to the hot set). Written by a
+    position-less ``control`` operation, so a truncation never discards it. Identifiers only."""
+
+    memory_id: str
+
+
+@register("memory_unpinned", category=EventCategory.CONTROL)
+class MemoryUnpinned(EventPayload):
+    """A pin was removed (#147): the memory counts toward the hot-set budgets again."""
+
+    memory_id: str
+
+
+@register("sanitized", category=EventCategory.NARRATIVE_STATE)
+class Sanitized(EventPayload):
+    """A memory's text had every occurrence of a span replaced by ``surrogate`` (FR-GUARD-4;
+    #145): the replacement as narrative state. The span itself is only in the paired
+    ``sanitize_original`` audit event. History views are unchanged (sanitize rewrites the memory
+    record, never the beat)."""
+
+    memory_id: str
+    surrogate: str
+    occurrences: int = Field(ge=1)
+
+
+@register("sanitize_original", category=EventCategory.AUDIT)
+class SanitizeOriginal(EventPayload):
+    """What a sanitize replaced (#145): the span and the memory's text before the rewrite.
+    Audit only: no story view, retrieval or prompt reads it."""
+
+    memory_id: str
+    span: str
+    text: str
+
+
+@register("memories_implicated", category=EventCategory.CONTROL)
+class MemoriesImplicated(EventPayload):
+    """A rejected render's context implicated these records (FR-GUARD-5; #145): each memory's
+    ``implication_count`` went up by one; ``fact_ids`` are reported, never changed. ``turn``
+    is the operation whose render was rejected, and ``attempt`` the render. Identifiers
+    only; written by a ``system`` control operation before the regeneration."""
+
+    turn: str
+    attempt: int = Field(ge=0)
+    memory_ids: tuple[str, ...] = ()
+    fact_ids: tuple[str, ...] = ()

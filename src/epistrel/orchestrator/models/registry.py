@@ -6,9 +6,12 @@ with a ``ContentCategory``. Prompt templates (``prompts.py``) and the payload bu
 (``access.ModelAccessLayer.call``) use only declared inputs, so a prompt can carry only what its
 purpose declares.
 
-``DELIVERED`` holds the purposes a model call may use today; ``RESERVED`` names every other
-purpose (and the two separate ports) FR-MODEL-2 enumerates, with the milestone that delivers
-it. Purposes join ``DELIVERED`` as the capabilities that use them land (FR-MODEL-13, §22).
+``DELIVERED`` holds the purposes a model call may use today; ``PORTS`` the separate ports
+delivered so far (``embedding``, #138: not a chat completion, so it has no template and no
+response schema, but its own capability floor, input schema and ``model_config`` row);
+``RESERVED`` names every other purpose (and port) FR-MODEL-2 enumerates, with the milestone
+that delivers it. Purposes join ``DELIVERED`` as the capabilities that use them land
+(FR-MODEL-13, §22).
 
 The registry validates itself at import: a field with no category (its own, or one on an
 enclosing field) or a category the purpose ``never_receives`` raises ``RegistryError``.
@@ -43,6 +46,32 @@ class ContentCategory(StrEnum):
     RATING_DESCRIPTION = "rating_description"
     SCENARIO_TEXT = "scenario_text"
     DIRECTOR_NOTES = "director_notes"
+    EVAL_TEXT = "eval_text"
+    """Text an eval case supplies or an eval's scratch story produced (#134): what the
+    ``quality_judge`` compares. Never a live story's content."""
+    MEMORY_TEXT = "memory_text"
+    """A memory record's text and kind (#135): what ``importance_scoring`` rates, the
+    ``embedding`` port embeds (#138; a retrieval query is embedded as one) and ``consolidation``
+    compresses (#143: with the canon facts positioned in its window, rendered as one line)."""
+    RECORD_META = "record_meta"
+    """What ``consolidation`` is told about each record it compresses (#143): its index, kind,
+    holder, visibility, position and speaker. Labels and positions only, never other text."""
+    SCOPE_META = "scope_meta"
+    """The viewpoint scope, level and turns one ``consolidation`` call covers (#143)."""
+    CLAIM_TEXT = "claim_text"
+    """A normalized claim rendered as ``<subject> <predicate> <object> [T+minutes]`` (#142): what
+    the ``entailment`` purpose judges. Names and ids only, never the beat's prose."""
+    CANON_RECORD = "canon_record"
+    """One of the claim holder's records (#142): a canon fact rendered like a claim, its holder
+    and its valid-time. Only the records the deterministic check fetched for the claim and their
+    neighborhood, never unrelated story content."""
+    RENDER_TEXT = "render_text"
+    """The observable beats of one render (#146): each beat's index, kind, speaker's name and
+    text, as ``salience_detection`` reads them. Never a ``think``/``latent`` beat or the
+    player's input."""
+    SCENE = "scene"
+    """What a render's scene holds (#146): the names of the entities present and the text of the
+    last few observable beats before it (``scene_context``)."""
 
 
 class StructuredOutput(StrEnum):
@@ -279,6 +308,225 @@ class RatingSuggestionVerdict(BaseModel):
     concerns: list[SuggestedConcern] = Field(default_factory=list, max_length=200)
 
 
+class QualityJudgeInputs(InputSchema):
+    """One pairwise comparison (NFR-QUAL-14,15; #134): two passages from an eval's scratch
+    stories and what to compare them on. A placeholder schema: #158 replaces it with the
+    calibrated rubric's."""
+
+    first: Annotated[str, C.EVAL_TEXT]
+    second: Annotated[str, C.EVAL_TEXT]
+    criteria: Annotated[str, C.EVAL_TEXT] = "voice consistency and readability"
+
+
+class QualityJudgeVerdict(BaseModel):
+    """Which passage a ``quality_judge`` call prefers, or a tie; no free text."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    preferred: Literal["first", "second", "tie"] = "tie"
+
+
+class ImportanceScoringInputs(InputSchema):
+    """One memory to score (FR-MEM-7; #135): its text and its kind."""
+
+    text: Annotated[str, C.MEMORY_TEXT]
+    kind: Annotated[Literal["episodic", "semantic", "reflection"], C.MEMORY_TEXT] = "episodic"
+
+
+class ImportanceScore(BaseModel):
+    """The structured result of one ``importance_scoring`` call: a number, no free text."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    importance: float = Field(ge=0.0, le=1.0)
+
+
+class EntailmentRecord(InputSchema):
+    """One holder record the ``entailment`` model judges a claim against (#142)."""
+
+    text: Annotated[str, C.CANON_RECORD] = Field(max_length=1_000)
+    holder: Annotated[str, C.CANON_RECORD] = Field(default="canon", max_length=200)
+    valid_time: Annotated[str, C.CANON_RECORD] = Field(default="always", max_length=200)
+
+
+ENTAILMENT_MAX_RECORDS = 200
+"""The most records one ``entailment`` request may carry (the deployment's
+``entailment_max_records`` is at most this)."""
+
+
+class EntailmentInputs(InputSchema):
+    """The fuzzy residual of one ``verify`` (FR-VERIFY-3; #142): the normalized claim and the
+    holder's records it rests on, nothing else."""
+
+    claim: Annotated[str, C.CLAIM_TEXT] = Field(max_length=1_000)
+    records: Annotated[list[EntailmentRecord], C.CANON_RECORD] = Field(
+        default_factory=list, max_length=ENTAILMENT_MAX_RECORDS
+    )
+
+
+class EntailmentVerdict(BaseModel):
+    """The structured result of one ``entailment`` call: a verdict from the enum and a
+    confidence, no free text. The defaults (``novel`` at confidence 0) are the most conservative
+    answer: validated, they take the safe disposition (FR-VERIFY-8)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    verdict: Literal["supported", "contradicted", "novel"] = "novel"
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+CONSOLIDATION_MAX_RECORDS = 200
+"""The most records one ``consolidation`` request carries (a window is cut to it)."""
+CONSOLIDATION_STATEMENTS_MAX = 50
+"""The most facts, and the most reflections, one ``consolidation`` answer may hold (the engine
+keeps the first ``consolidation`` targets: 10 and 5)."""
+
+RecordKind = Literal["episodic", "semantic", "reflection", "fact"]
+Modality = Literal["objective", "attributed_claim", "observation"]
+"""A consolidation statement's epistemic type (FR-MEM-9): ``objective`` (a world fact),
+``attributed_claim`` (someone said it: "Bobby said P") or ``observation`` (something seen
+done or narrated)."""
+
+
+class ConsolidationRecord(InputSchema):
+    """One record a consolidation compresses (#143): its index (what a statement's ``supports``
+    name), its text, and the labels that keep its epistemic scope and type."""
+
+    index: Annotated[int, Field(ge=0), C.RECORD_META]
+    text: Annotated[str, Field(max_length=2_000), C.MEMORY_TEXT]
+    kind: Annotated[RecordKind, C.RECORD_META] = "episodic"
+    holder: Annotated[str, Field(max_length=200), C.RECORD_META] = "shared"
+    visibility: Annotated[str, Field(max_length=200), C.RECORD_META] = "public"
+    position: Annotated[str, Field(max_length=64), C.RECORD_META] = ""
+    speaker: Annotated[str | None, Field(max_length=200), C.RECORD_META] = None
+    """The character a ``say`` record quotes (``None`` for narration, a deed or a fact)."""
+
+
+class ConsolidationInputs(InputSchema):
+    """One window of one viewpoint scope (FR-MEM-3,6,9; #143): its records, oldest first, the
+    scope's label, the level (1: episodic memories and canon; 2: level-1 outputs) and the turns
+    it covers."""
+
+    records: Annotated[list[ConsolidationRecord], Field(max_length=CONSOLIDATION_MAX_RECORDS)] = (
+        Field(default_factory=list)
+    )
+    scope: Annotated[str, Field(max_length=500), C.SCOPE_META] = "shared"
+    level: Annotated[int, Field(ge=1, le=2), C.SCOPE_META] = 1
+    covers: Annotated[str, Field(max_length=64), C.SCOPE_META] = ""
+
+
+class ConsolidationStatement(BaseModel):
+    """One standing fact or reflection a consolidation proposes: its text, its epistemic type,
+    whose claim it is (``attributed_claim``) and the records it rests on. The engine recomputes
+    the type and the speaker from ``supports`` and never widens either (FR-MEM-9)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    text: str = Field(min_length=1, max_length=2_000)
+    modality: Modality = "observation"
+    attributed_to: str | None = Field(default=None, max_length=200)
+    supports: list[int] = Field(default_factory=list, max_length=CONSOLIDATION_MAX_RECORDS)
+
+
+class ConsolidationResult(BaseModel):
+    """The structured result of one ``consolidation`` call: standing facts and reflections. The
+    defaults (nothing) are the conservative answer: no output, the window stays as it is."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    facts: list[ConsolidationStatement] = Field(
+        default_factory=list, max_length=CONSOLIDATION_STATEMENTS_MAX
+    )
+    reflections: list[ConsolidationStatement] = Field(
+        default_factory=list, max_length=CONSOLIDATION_STATEMENTS_MAX
+    )
+
+
+SALIENCE_MAX_BEATS = 50
+"""The most beats one ``salience_detection`` request carries (one render's)."""
+SALIENCE_LAST_BEATS = 6
+"""How many earlier beats ``scene_context.last_beats`` holds."""
+SALIENCE_MAX_SPANS = 50
+"""The most salient spans, and texture spans, one answer may hold."""
+
+
+class SalienceBeat(InputSchema):
+    """One observable beat of the render being read (#146)."""
+
+    index: Annotated[int, Field(ge=0), C.RENDER_TEXT]
+    kind: Annotated[Literal["say", "do", "narration"], C.RENDER_TEXT] = "narration"
+    speaker: Annotated[str | None, Field(max_length=200), C.RENDER_TEXT] = None
+    text: Annotated[str, Field(max_length=4_000), C.RENDER_TEXT]
+
+
+class SceneContext(InputSchema):
+    """What the scene holds around the render (#146): who and what is present, by name, and
+    the last observable beats before it."""
+
+    present_entities: Annotated[list[str], Field(max_length=100), C.SCENE] = Field(
+        default_factory=list
+    )
+    last_beats: Annotated[list[str], Field(max_length=SALIENCE_LAST_BEATS), C.SCENE] = Field(
+        default_factory=list
+    )
+
+
+class SalienceInputs(InputSchema):
+    """One render's observable beats and its scene (FR-COMMIT-3; #146)."""
+
+    beats: Annotated[list[SalienceBeat], Field(max_length=SALIENCE_MAX_BEATS)] = Field(
+        default_factory=list
+    )
+    scene_context: SceneContext = Field(default_factory=SceneContext)
+
+
+class SalienceSpan(BaseModel):
+    """A span of one beat: its index and ``[start, end)`` in the beat's text."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    beat: int = Field(ge=0)
+    start: int = Field(ge=0)
+    end: int = Field(ge=0)
+
+
+class SalienceSketch(BaseModel):
+    """The proposition a salient span makes salient, as text (#140 normalizes it): its
+    subject, relation and object, any of them an indefinite ("someone") when unknown."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    subject: str = Field(default="", max_length=500)
+    relation: str = Field(default="", max_length=500)
+    object: str | None = Field(default=None, max_length=500)
+    time: str | None = Field(default=None, max_length=200)
+
+
+class SalientSpan(BaseModel):
+    """Content placed to be noticed (FR-COMMIT-3): where, and the proposition it raises."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    span: SalienceSpan
+    proposition_sketch: SalienceSketch
+
+
+class SalienceResult(BaseModel):
+    """The structured result of one ``salience_detection`` call. The defaults (nothing
+    salient) are the safe answer: every beat is texture, and nothing is owed."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    salient: list[SalientSpan] = Field(default_factory=list, max_length=SALIENCE_MAX_SPANS)
+    texture: list[SalienceSpan] = Field(default_factory=list, max_length=SALIENCE_MAX_SPANS)
+
+
+class EmbeddingInputs(InputSchema):
+    """One text to embed (FR-EMBED-1; #138): a memory's text, or a retrieval query's."""
+
+    text: Annotated[str, C.MEMORY_TEXT]
+
+
 # -- purposes ---------------------------------------------------------------------------------
 
 
@@ -317,6 +565,37 @@ class ReservedPurpose:
     status: PurposeStatus = field(default=PurposeStatus.RESERVED, init=False)
 
 
+@dataclass(frozen=True)
+class EmbeddingFloor:
+    """The recommended minimum an embedding model must meet (FR-MODEL-10 for the port): it
+    accepts inputs of ``min_input_tokens``, its vectors have ``min_dimension`` to
+    ``max_dimension`` dimensions, and one request may carry up to ``max_batch`` texts."""
+
+    min_input_tokens: int = 512
+    min_dimension: int = 64
+    max_dimension: int = 4_096
+    max_batch: int = 64
+
+
+@dataclass(frozen=True)
+class Port:
+    """A delivered port (FR-MODEL-2's separately ported capability): configured through its
+    own ``model_config`` row (``default_model_key``, its own name, with no fallback to the
+    ``default`` row) and called through its own adapter, never as a chat completion."""
+
+    name: str
+    description: str
+    default_model_key: str
+    floor: EmbeddingFloor
+    input_schema: type[InputSchema]
+    hot_path: bool
+    never_receives: frozenset[ContentCategory]
+    story_scoped: bool = False
+    """A port has one deployment-wide configuration; an engine profile cannot route it."""
+    kind: Literal["port"] = "port"
+    status: PurposeStatus = field(default=PurposeStatus.DELIVERED, init=False)
+
+
 DEFAULT_MODEL_KEY = "default"
 _EVERYTHING = frozenset(ContentCategory)
 
@@ -330,7 +609,7 @@ GENERATION = Purpose(
     hot_path=True,
     # Policy text arrives only as a regeneration's constraints (#68): the violated policies'
     # messages, never a policy prompt, subject label or age.
-    never_receives=frozenset({C.SUBJECT_TRUE_AGE, C.CHECKED_TEXT}),
+    never_receives=frozenset({C.SUBJECT_TRUE_AGE, C.CHECKED_TEXT, C.EVAL_TEXT}),
     history_field="recent_messages",
 )
 
@@ -346,15 +625,34 @@ GUARDRAIL_CHECK = Purpose(
     response_schema=GuardrailVerdict,
 )
 
+CONSOLIDATION = Purpose(
+    name="consolidation",
+    description=(
+        "Compresses one window of episodic memories (and the canon in it) into standing facts "
+        "and reflections, in the background (FR-MEM-3,6,9,10)."
+    ),
+    default_model_key=DEFAULT_MODEL_KEY,
+    capability_floor=CapabilityFloor(structured_output=StructuredOutput.PARSE_VALIDATE_RETRY),
+    input_schema=ConsolidationInputs,
+    template="consolidation.j2",
+    hot_path=False,
+    # The window's records and their labels only: never a definition, a policy, an age, a
+    # transcript or eval text, and never a record outside the window or the scope.
+    never_receives=_EVERYTHING - {C.MEMORY_TEXT, C.RECORD_META, C.SCOPE_META},
+    response_schema=ConsolidationResult,
+)
+
 LITE_SUMMARY = Purpose(
     name="lite_summary",
     description="Folds old messages into a Lite story's rolling summary (FR-LITE-2).",
-    default_model_key=DEFAULT_MODEL_KEY,
+    # #51's note, applied by #143: the rolling summary is a consolidation, so a deployment that
+    # configures a consolidation model summarises with it unless lite_summary has its own row.
+    default_model_key=CONSOLIDATION.name,
     capability_floor=CapabilityFloor(structured_output=StructuredOutput.NONE),
     input_schema=LiteSummaryInputs,
     template="lite_summary.j2",
     hot_path=False,
-    never_receives=frozenset({C.POLICY_TEXT, C.SUBJECT_TRUE_AGE, C.CHECKED_TEXT}),
+    never_receives=frozenset({C.POLICY_TEXT, C.SUBJECT_TRUE_AGE, C.CHECKED_TEXT, C.EVAL_TEXT}),
 )
 
 RATING_SUGGESTION = Purpose(
@@ -380,14 +678,72 @@ RATING_SUGGESTION = Purpose(
     story_scoped=False,
 )
 
+QUALITY_JUDGE = Purpose(
+    name="quality_judge",
+    description="Pairwise prose comparisons (eval only, never in a turn; NFR-QUAL-14,15).",
+    default_model_key=DEFAULT_MODEL_KEY,
+    capability_floor=CapabilityFloor(structured_output=StructuredOutput.PARSE_VALIDATE_RETRY),
+    input_schema=QualityJudgeInputs,
+    template="quality_judge.j2",
+    hot_path=False,
+    # Eval text only: every story-content category is refused, so the judge can never be handed
+    # a live story's transcript, memories or definitions (the harness also refuses any story
+    # that is not one of its scratch stories, #134).
+    never_receives=_EVERYTHING - {C.EVAL_TEXT},
+    response_schema=QualityJudgeVerdict,
+    story_scoped=False,
+)
+
+IMPORTANCE_SCORING = Purpose(
+    name="importance_scoring",
+    description="Scores one memory's importance, 0 (trivia) to 1 (pivotal) (FR-MEM-7).",
+    default_model_key=DEFAULT_MODEL_KEY,
+    capability_floor=CapabilityFloor(structured_output=StructuredOutput.PARSE_VALIDATE_RETRY),
+    input_schema=ImportanceScoringInputs,
+    template="importance_scoring.j2",
+    hot_path=False,
+    # The memory's own text and kind only: never a definition, a policy, an age or eval text.
+    never_receives=_EVERYTHING - {C.MEMORY_TEXT},
+    response_schema=ImportanceScore,
+)
+
+ENTAILMENT = Purpose(
+    name="entailment",
+    description=(
+        "Judges the fuzzy residual of verify: one claim the deterministic check left uncertain, "
+        "against the holder's records only (FR-VERIFY-3,8)."
+    ),
+    default_model_key=DEFAULT_MODEL_KEY,
+    capability_floor=CapabilityFloor(structured_output=StructuredOutput.PARSE_VALIDATE_RETRY),
+    input_schema=EntailmentInputs,
+    template="entailment.j2",
+    hot_path=True,
+    # The claim and the holder's records only: never a transcript, a definition, a memory, a
+    # policy, an age or eval text.
+    never_receives=_EVERYTHING - {C.CLAIM_TEXT, C.CANON_RECORD},
+    response_schema=EntailmentVerdict,
+)
+
+SALIENCE_DETECTION = Purpose(
+    name="salience_detection",
+    description=(
+        "Tells content placed to be noticed from background texture in one render's beats, "
+        "naming the proposition each salient span raises (FR-COMMIT-3)."
+    ),
+    default_model_key=DEFAULT_MODEL_KEY,
+    capability_floor=CapabilityFloor(structured_output=StructuredOutput.PARSE_VALIDATE_RETRY),
+    input_schema=SalienceInputs,
+    template="salience.j2",
+    hot_path=True,
+    # The render's own observable beats and its scene only: never a definition, a memory, a
+    # policy, an age, a think/latent beat or eval text.
+    never_receives=_EVERYTHING - {C.RENDER_TEXT, C.SCENE},
+    response_schema=SalienceResult,
+)
+
 RESERVED_PURPOSES: tuple[ReservedPurpose, ...] = (
     ReservedPurpose("regeneration", "Regenerates a span under corrected constraints.", "M4"),
-    ReservedPurpose("entailment", "The fuzzy residual of verify.", "M4"),
-    ReservedPurpose("consolidation", "Summaries and reflections (worker).", "M4"),
-    ReservedPurpose("importance_scoring", "Scores one memory's importance.", "M4"),
-    ReservedPurpose("salience_detection", "Detects signals that need commitment.", "M4"),
     ReservedPurpose("extraction_backstop", "Model layer of claim detection.", "M4"),
-    ReservedPurpose("quality_judge", "Pairwise prose comparisons (eval only).", "M4"),
     ReservedPurpose(
         "belief_adjudication", "Adjudicated belief transitions.", "M5", defaults_to="entailment"
     ),
@@ -399,7 +755,6 @@ RESERVED_PURPOSES: tuple[ReservedPurpose, ...] = (
     ),
     ReservedPurpose("image_prompt", "Writes image prompts.", "M8", defaults_to="generation"),
     ReservedPurpose("image_check", "Vision checks of image outputs; no default.", "M8"),
-    ReservedPurpose("embedding", "The embedding port (FR-EMBED).", "M4", kind="port"),
     ReservedPurpose("image_generation", "The image-generation port (FR-IMG-1).", "M8", kind="port"),
 )
 
@@ -488,12 +843,52 @@ def validate_purpose(purpose: Purpose) -> None:
         raise RegistryError(f"{purpose.name}: history field {purpose.history_field!r} undeclared")
 
 
+EMBEDDING = Port(
+    name="embedding",
+    description=(
+        "Embeds memory texts and retrieval queries over the OpenAI-compatible `/embeddings` "
+        "surface (FR-EMBED-1). One deployment-wide model: its dimension is pinned at the first "
+        "embedding, and changing the model re-embeds every hot vector in the background "
+        "(FR-EMBED-3,4)."
+    ),
+    default_model_key="embedding",
+    floor=EmbeddingFloor(),
+    input_schema=EmbeddingInputs,
+    hot_path=True,
+    # Texts only: a memory's or a query's, of the story being searched. Never a definition, a
+    # policy, an age or eval text.
+    never_receives=_EVERYTHING - {C.MEMORY_TEXT},
+)
+
+PORTS: Mapping[str, Port] = types.MappingProxyType({EMBEDDING.name: EMBEDDING})
+"""The ports delivered so far, by name (configurable like purposes, never chat-completed)."""
+
+
+def validate_port(port: Port) -> None:
+    """Raise ``RegistryError`` unless every input is tagged and none is a forbidden category."""
+    forbidden = schema_categories(port.input_schema) & port.never_receives
+    if forbidden:
+        names = ", ".join(sorted(forbidden))
+        raise RegistryError(f"{port.name}: declares inputs it never receives: {names}")
+    if port.default_model_key != port.name:
+        raise RegistryError(f"{port.name}: a port has its own model_config row")
+
+
+for _port in PORTS.values():
+    validate_port(_port)
+
+
 def _build(purposes: tuple[Purpose, ...]) -> Mapping[str, Purpose]:
     built: dict[str, Purpose] = {}
     reserved = {r.name for r in RESERVED_PURPOSES}
     for purpose in purposes:
         validate_purpose(purpose)
-        if purpose.name in built or purpose.name in reserved or purpose.name == DEFAULT_MODEL_KEY:
+        if (
+            purpose.name in built
+            or purpose.name in reserved
+            or purpose.name in PORTS
+            or purpose.name == DEFAULT_MODEL_KEY
+        ):
             raise RegistryError(f"{purpose.name}: declared twice")
         parent = purpose.default_model_key
         if parent != DEFAULT_MODEL_KEY and (
@@ -508,7 +903,17 @@ def _build(purposes: tuple[Purpose, ...]) -> Mapping[str, Purpose]:
 
 
 DELIVERED: Mapping[str, Purpose] = _build(
-    (GENERATION, GUARDRAIL_CHECK, LITE_SUMMARY, RATING_SUGGESTION)
+    (
+        GENERATION,
+        GUARDRAIL_CHECK,
+        CONSOLIDATION,
+        LITE_SUMMARY,
+        RATING_SUGGESTION,
+        QUALITY_JUDGE,
+        IMPORTANCE_SCORING,
+        ENTAILMENT,
+        SALIENCE_DETECTION,
+    )
 )
 """Purposes a model call may use now, by name."""
 
@@ -516,7 +921,8 @@ STORY_PURPOSES: Mapping[str, Purpose] = types.MappingProxyType(
     {name: purpose for name, purpose in DELIVERED.items() if purpose.story_scoped}
 )
 """The delivered purposes that run inside a story: what an engine profile routes, a story's
-runtime facts fingerprint and the model matrix measures (not ``rating_suggestion``, #121)."""
+runtime facts fingerprint and the model matrix measures (not ``rating_suggestion``, #121, nor
+``quality_judge``, #134)."""
 
 RESERVED: Mapping[str, ReservedPurpose] = types.MappingProxyType(
     {r.name: r for r in RESERVED_PURPOSES}
@@ -530,29 +936,65 @@ def get_purpose(name: str) -> Purpose:
 
 
 __all__ = [
+    "CONSOLIDATION",
+    "CONSOLIDATION_MAX_RECORDS",
+    "CONSOLIDATION_STATEMENTS_MAX",
     "DEFAULT_MODEL_KEY",
     "DELIVERED",
+    "EMBEDDING",
+    "ENTAILMENT",
+    "ENTAILMENT_MAX_RECORDS",
+    "IMPORTANCE_SCORING",
+    "PORTS",
+    "QUALITY_JUDGE",
     "RATING_SUGGESTION",
     "RESERVED",
+    "SALIENCE_DETECTION",
+    "SALIENCE_LAST_BEATS",
+    "SALIENCE_MAX_BEATS",
+    "SALIENCE_MAX_SPANS",
     "STORY_PURPOSES",
     "SUBJECT_LABEL_PATTERN",
     "CapabilityFloor",
     "CharacterDefinition",
+    "ConsolidationInputs",
+    "ConsolidationRecord",
+    "ConsolidationResult",
+    "ConsolidationStatement",
     "ContentCategory",
     "ElementKind",
+    "EmbeddingFloor",
+    "EmbeddingInputs",
+    "EntailmentInputs",
+    "EntailmentRecord",
+    "EntailmentVerdict",
     "GenerationInputs",
     "GuardrailCheckInputs",
     "GuardrailVerdict",
+    "ImportanceScore",
+    "ImportanceScoringInputs",
     "InputSchema",
     "KnownHit",
     "LiteSummaryInputs",
+    "Modality",
     "PlayerInput",
+    "Port",
     "Purpose",
     "PurposeStatus",
+    "QualityJudgeInputs",
+    "QualityJudgeVerdict",
     "RatingSuggestionInputs",
     "RatingSuggestionVerdict",
+    "RecordKind",
     "RegistryError",
     "ReservedPurpose",
+    "SalienceBeat",
+    "SalienceInputs",
+    "SalienceResult",
+    "SalienceSketch",
+    "SalienceSpan",
+    "SalientSpan",
+    "SceneContext",
     "StructuredOutput",
     "Subject",
     "SuggestedConcern",
@@ -565,5 +1007,6 @@ __all__ = [
     "field_categories",
     "get_purpose",
     "schema_categories",
+    "validate_port",
     "validate_purpose",
 ]

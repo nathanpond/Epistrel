@@ -21,7 +21,26 @@ and that version's whole document as genesis copied it; all three or none
 (``ck_stories_scenario_snapshot``). #125 adds the ``blocked_by_erasure`` status and
 ``status_before_block``: the status a story had when the erasure reconciler blocked it (a restored
 backup that predates an erasure the ledger holds), restored when its reapply completes; set
-exactly while the story is blocked (``ck_stories_status_before_block``).
+exactly while the story is blocked (``ck_stories_status_before_block``). #281 adds
+``chain_unchecked``: the story's active turn chain changed in a way a commit's head-only chain
+check cannot see, so the next check is the full one (``Operation._check_chain``). #282 adds
+``summary_epoch`` and ``summary_inclusion``: a counter that migration 0046's triggers bump when an
+input of the rolling summary's inclusion changes, and what inclusion last yielded at that epoch,
+so scheduling the summary after a turn does not reread every segment (``core.summary``). #131
+adds the story-time columns: ``story_epoch`` (the calendar instant of story-minute 0; ``NULL`` for
+an unanchored story, whose granules use ``core.propositions.model.DEFAULT_EPOCH``) and
+``story_minute_zero`` (the story-minute the story starts at, M4's "now" at turn 0 until the clock
+lands, M6), and ``predicate_rules``: the author's implication rules (FR-PROP-4,11), as
+``{when, then, via}`` predicate ids, written at structured genesis (#149;
+``core.propositions.registry``). #136 adds ``changes_pruned_through_revision``: the highest
+revision whose ``proposition_changes`` rows the retention sweep removed (``core.readset``).
+#138 adds ``embedding_model_version``: the embedding-model version the story's vectors are in,
+set at its first embedding and advanced by the re-embed job; while it differs from the
+deployment's pin the story's searches are lexical-only (``core.embeddings``). A fork copies it
+with the vectors. #147 adds ``hot_counts``: the hot-set counters (FR-MEM-8), ``{characters: {id:
+n}, story_vectors: n}``, kept in the transactions that change them; ``NULL`` means "not computed
+yet" (a new or forked story, or one an erasure touched), and the next reader recomputes them
+exactly (``core.memory.retirement``).
 
 Nothing references ``stories`` from another story, and story deletion enumerates every table
 with a ``story_id`` (``epistrel.core.stories.STORY_TABLES``) instead of cascading.
@@ -32,6 +51,7 @@ from __future__ import annotations
 from sqlalchemy import (
     TIMESTAMP,
     BigInteger,
+    Boolean,
     CheckConstraint,
     Column,
     ForeignKey,
@@ -94,6 +114,20 @@ stories = Table(
     Column("last_control_revision", BigInteger, nullable=False, server_default=text("0")),
     Column("last_control_operation_id", ulid_type(), nullable=True),
     Column("settings", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    # FR-STORE-28 (#281): set by the ``operations_chain_changed_*`` triggers (migration 0045)
+    # when the story's active turn set changed outside the commit that checks only the chain's
+    # head; the next commit that checks the chain runs the full check and clears it.
+    Column("chain_unchecked", Boolean, nullable=False, server_default=text("false")),
+    # FR-LITE-2, NFR-PERF-3 (#282): bumped by the ``summary_inputs_changed_*`` triggers
+    # (migration 0046) when a ``lite_summary_segments`` row, or an operation's committed and
+    # active state, of the story changes; ``summary_inclusion`` is ``{epoch, covered_to, tokens,
+    # segments}`` of the included segments, valid while its epoch is the current one.
+    Column("summary_epoch", BigInteger, nullable=False, server_default=text("0")),
+    Column("summary_inclusion", JSONB, nullable=True),
+    # FR-CONC-12 (#136): the highest timeline revision whose ``proposition_changes`` rows the
+    # retention sweep pruned; a structured turn whose base is below it cannot be checked against
+    # the change index, so it conflicts instead of rebasing.
+    Column("changes_pruned_through_revision", BigInteger, nullable=False, server_default=text("0")),
     # FR-CONC-5 (#63): same-story turn concurrency and the queue's bound (null: the
     # deployment's ``turn_queue_max``), mirrored in ``StorySettings``; and the durable in-flight
     # marker: the turn holding the story's turn slot and its lease (never a lock held across
@@ -135,6 +169,14 @@ stories = Table(
     Column("scenario_id", ulid_type(), nullable=True),
     Column("scenario_version", Integer, nullable=True),
     Column("scenario_snapshot", JSONB, nullable=True),
+    # FR-PROP-1, FR-PROP-4 (#131): story-time and the author's implication rules.
+    Column("story_epoch", TIMESTAMP(timezone=True), nullable=True),
+    Column("story_minute_zero", BigInteger, nullable=False, server_default=text("0")),
+    Column("predicate_rules", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    # FR-EMBED-3, FR-STORE-30 (#138): the embedding-model version the story's vectors are in.
+    Column("embedding_model_version", Text, nullable=True),
+    # FR-MEM-8 (#147): the hot-set counters, ``NULL`` until computed (``core.memory.retirement``).
+    Column("hot_counts", JSONB, nullable=True),
     CheckConstraint(STATUS_CHECK, name="status"),
     CheckConstraint(STATUS_BEFORE_BLOCK_CHECK, name="status_before_block"),
     CheckConstraint(SCENARIO_SNAPSHOT_CHECK, name="scenario_snapshot"),

@@ -69,6 +69,14 @@ class Settings(BaseSettings):
     model_adapter: Literal["openai", "stub"] = "openai"
     # Seconds the stub adapter waits before answering (load and latency tests); 0 answers at once.
     stub_latency_s: float = Field(default=0.0, ge=0.0, le=600.0)
+    # Which adapter serves the embedding port (FR-EMBED-1, NFR-PORT-2; #138): `openai` calls the
+    # `embedding` row's OpenAI-compatible `/embeddings` endpoint; `stub` derives a deterministic
+    # vector from the text's SHA-256. Unset, it follows `model_adapter`.
+    embedding_adapter: Literal["openai", "stub"] | None = None
+    # The stub embedding's dimension (#138): 64 keeps fixtures small.
+    stub_embedding_dimension: int = Field(default=64, ge=2, le=4096)
+    # The lexical search backend (NFR-PORT-2; #138): `tsvector`, PostgreSQL full-text search.
+    lexical_backend: Literal["tsvector"] = "tsvector"
     # A projection rebuild of a story with more events than this runs as a background job
     # (``rebuild_projections``, #70); smaller stories rebuild synchronously in the request.
     rebuild_async_threshold: int = Field(default=10_000, ge=1)
@@ -131,6 +139,11 @@ class Settings(BaseSettings):
     # (exit 78). The image sets /var/lib/epistrel/erasure-ledger (compose: the
     # ``erasure-ledger`` volume, separate from ``pgdata`` and ``media``).
     erasure_ledger_dir: Path = Path("var/erasure-ledger")
+
+    @property
+    def embedding_adapter_kind(self) -> Literal["openai", "stub"]:
+        """The embedding port's adapter: ``embedding_adapter``, else ``model_adapter``'s."""
+        return self.embedding_adapter or self.model_adapter
 
     @field_validator("database_url")
     @classmethod

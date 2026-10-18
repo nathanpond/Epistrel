@@ -92,8 +92,8 @@ steps = st.lists(
         st.sampled_from(["turn", "pins", "instructions", "relax"]),
         st.integers(min_value=0, max_value=len(ATTACKS) - 1),
         st.integers(min_value=0, max_value=2),
-        # NUL is excluded: PostgreSQL's jsonb cannot hold it (a payload with one fails as a
-        # database error; filed as #275).
+        # NUL is excluded: a caller's text holding one is refused with 422 before anything
+        # runs (#73); this property is about the policies, not that refusal (#275).
         st.text(st.characters(codec="utf-8", exclude_characters="\x00"), max_size=80),
     ),
     min_size=1,

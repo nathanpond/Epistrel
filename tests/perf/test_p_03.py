@@ -22,8 +22,9 @@ every night by ``perf.yml`` (``-m "perf_quick or perf_long"``, ``--benchmark-jso
 
 **Thresholds.** 250 ms is NFR-PERF-3's own budget, unchanged for both. Measured locally (Apple
 silicon, Postgres in Docker): p50 31 ms, p95 34 ms, max 94 ms on the 20,000-event story, and p50
-17 ms, p95 21 ms, max 26 ms on the 2,000-event one. The commit grows with the story (the
-FR-STORE-28 chain check reads every active turn, #281), so the quick subset sits lower. The
+17 ms, p95 21 ms, max 26 ms on the 2,000-event one. Those figures predate #281: the FR-STORE-28
+chain check then read every active turn, so the commit grew with the story and the quick subset
+sat lower; it now checks only the chain's head, with index lookups (``test_chain_check``). The
 margin to 250 ms is what absorbs a slower CI runner or the full suite's load, while a regression
 that multiplies the commit's cost still fails. 2 s for any single commit is the complement (a
 stuck lock, or a commit waiting on another transaction): well under the commit's 5 s

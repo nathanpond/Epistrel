@@ -13,6 +13,10 @@ Both are edited by replacing the whole value: ``PUT /stories/{id}/pinned-memorie
   ``max_custom_instructions_chars``, and the story's effective ``pins.max_pinned`` (#113: its
   profile's, or its own override; the deployment's cap is a ceiling over it); exceeding one is
   422 ``validation_error`` with ``details.{cap, limit, actual}``, ``cap`` naming the smaller.
+  The text pins also share the deployment's ``max_pinned_per_story`` with the story's pinned
+  memories (#147, ``core.memory.pins``): an edit that grows them past it is 422
+  ``pin_limit_exceeded`` (``details.scope = story``), checked again under the story lock, and
+  the whole edit is refused.
 - **Order of checks** (#44/#56): the body (422, before the handler) → the story (404) → ids,
   duplicates and caps (422) → archived (409) → the expected revision (409) → no change → the
   input gate over every text (``gate``, passed in by the Engine, which owns the Orchestrator)
@@ -53,6 +57,7 @@ from epistrel.core.errors import InvalidRequest, StoryNotFound
 from epistrel.core.events import Operation
 from epistrel.core.events.types import CustomInstructionsSet, PinnedItem, PinnedMemoriesSet
 from epistrel.core.ids import new_ulid
+from epistrel.core.memory import pins
 from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.settings_schema import PINNED_ITEM_MAX_CHARS, StoryTextCaps
 from epistrel.core.stories import require_writable
@@ -357,6 +362,8 @@ async def set_pinned_memories(
     check_pinned_cap(
         request.items, await read_story_text_caps(db), configuration.settings.pins.max_pinned
     )
+    async with db.connect() as conn:
+        await pins.check_text_pins(conn, story_id, len(request.items))
     resolved = resolve_items(request.items, stored.pinned)
     await require_writable(db, story_id)
     revision = await check_expected_revision(db, story_id, expected_revision)
@@ -370,6 +377,12 @@ async def set_pinned_memories(
         items = resolve_items(request.items, current.pinned)
         written[:] = [items]
         op.append("pinned_memories_set", PinnedMemoriesSet(items=items, previous=current.pinned))
+
+        async def admit(conn: AsyncConnection) -> None:
+            # The story's pin ceiling, under the lock: memory pins share it (#147).
+            await pins.check_text_pins(conn, story_id, len(items))
+
+        op.add_commit_step(admit)
 
     op = await _edit(
         db, story_id, principal=principal, idempotency_key=idempotency_key, stage=stage

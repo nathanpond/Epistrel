@@ -1,5 +1,7 @@
 """S-REWIND, M2 part: delete message 801 of a 1,000-message story and undo it (docs/04 §7;
-#65). One turn per message: player-only turns written through ``Operation``."""
+#65). One turn per message: player-only turns written through ``Operation``. The M4 part
+(#143, ``test_s_rewind__reflections``): a reflection across the cut is invalid and rebuilt from
+what survived."""
 
 from __future__ import annotations
 
@@ -11,10 +13,16 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.core import timeline
 from epistrel.core.enums import OperationKind, Provenance
 from epistrel.core.events import Operation
+from epistrel.core.memory import records
+from epistrel.core.memory.consolidation import Window
 from epistrel.core.views import corrected_history
+from epistrel.orchestrator.jobs.handlers.consolidation import consolidate_window
+from epistrel.orchestrator.models.access import ModelAccessLayer
+from tests import consolidation_support as cs
+from tests.auth_support import auth_settings
 from tests.concurrency_support import assert_single_chain, chain, regenerate
 from tests.event_support import new_story, rows, scalar
-from tests.projection_support import snapshot
+from tests.projection_support import snapshot, truncate
 
 MESSAGES = 1_000
 CHECKPOINT = 800
@@ -107,4 +115,65 @@ async def test_s_rewind(engine: AsyncEngine) -> None:
     assert dormant == "dormant"
     assert [e.id for e in await corrected_history(engine, story, MESSAGES - 1)] == [
         e.id for e in await corrected_history(engine, story) if (e.narrative_turn or 0) < MESSAGES
+    ]
+
+
+@pytest.mark.part("M4", "FR-STORE-13,26")
+async def test_s_rewind__reflections(
+    engine: AsyncEngine, pg_url: str, drained_embedding_jobs: None
+) -> None:
+    """A 1,000-turn structured story (one episodic memory a turn) with turns 1-299 consolidated
+    and a reflection distilled across 300-900 (positioned at 900). Truncating to 800 discards
+    the reflection (it is not in the view through 800, and its row is kept) and enqueues
+    consolidation over the surviving 300-800 window, which rebuilds a reflection from the
+    surviving episodes only: positioned at 800, every source at or before 800, in the corrected
+    view through 800 (a reflection created later from pre-800 sources). Complement: the
+    untouched 1-299 window and the episodes through 800 stay active."""
+    models = ModelAccessLayer.from_settings(auth_settings(pg_url, model_adapter="stub"))
+    models.bind(engine)
+    w = await cs.story(engine, cs.dials(window_memories=10_000, cadence_turns=1_000))
+    story, bobby = w.story_id, w.characters["Bobby"]
+    await cs.bulk_turns(engine, story, MESSAGES, actor=bobby, name="Bobby", does=True)
+    early = await consolidate_window(engine, story, Window(1, 299), models=models)
+    assert str(early.outcome) == "committed"
+    models.stub.script(
+        "consolidation",
+        [cs.answer(reflections=[("Bobby works every day.", "observation", [0, 1])])],
+    )
+    wide = await consolidate_window(engine, story, Window(300, 900), models=models)
+    assert str(wide.outcome) == "committed"
+    (original,) = await cs.outputs(engine, story)
+    assert (original.narrative_turn, original.kind) == (900, "reflection")
+
+    await truncate(engine, story, CHECKPOINT)
+    (gone,) = await cs.outputs(engine, story)
+    assert (gone.id, gone.membership_text) == (original.id, "discarded")
+    async with engine.connect() as conn:
+        assert original.id not in {m.id for m in await records.memories_through(conn, story, 800)}
+    (job,) = await cs.jobs(engine, story, "queued")
+    assert (job.payload["from_turn"], job.payload["to_turn"]) == (300, CHECKPOINT)
+
+    models.stub.script(
+        "consolidation",
+        [cs.answer(reflections=[("Bobby works every day, still.", "observation", [0, 1])])],
+    )
+    assert await cs.run_jobs(engine, models, story) == ["committed"]
+    rebuilt = [r for r in await cs.outputs(engine, story) if r.membership_text == "active"]
+    assert [(r.text, r.narrative_turn) for r in rebuilt] == [
+        ("Bobby works every day, still.", CHECKPOINT)
+    ]
+    sources = await rows(
+        engine,
+        "SELECT e.narrative_turn FROM events e WHERE e.id = ANY(:ids)",
+        ids=list(rebuilt[0].source_event_ids),
+    )
+    assert len(sources) == CHECKPOINT - 299
+    assert max(s.narrative_turn for s in sources) == CHECKPOINT
+    async with engine.connect() as conn:
+        view = {m.id for m in await records.memories_through(conn, story, CHECKPOINT)}
+    assert rebuilt[0].id in view
+    windows = [r for r in await cs.windows(engine, story) if r.membership == "active"]
+    assert [(r.source_window["from_turn"], r.source_window["to_turn"]) for r in windows] == [
+        (1, 299),
+        (300, CHECKPOINT),
     ]

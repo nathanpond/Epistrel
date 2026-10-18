@@ -78,6 +78,10 @@ async def test_rebuild_no_revision_bump(engine: AsyncEngine) -> None:
         "story_heads": 1,
         "story_texts": 1,
         "lite_summary_segments": 0,
+        # The structured projections over canon (#137): a Lite story has none.
+        "relationships": 0,
+        "placement": 0,
+        "scene_state": 0,
     }
 
     await play_turn(engine, story_id, "turn 3, again")
@@ -159,6 +163,10 @@ def test_history_survives_dropping_and_rebuilding_projections(pg_url: str) -> No
             "story_heads": 1,
             "story_texts": 1,
             "lite_summary_segments": 0,
+            # The structured projections over canon (#137): a Lite story has none.
+            "relationships": 0,
+            "placement": 0,
+            "scene_state": 0,
         }
         assert len(rebuilt.json()["operation_id"]) == 26
 

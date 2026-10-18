@@ -1,0 +1,89 @@
+# The weekly soak (#147, docs/04 §12): X-01's long-horizon consistency run, 20,000 narration-only
+# stub turns of one structured story (`soak`, which PR CI deselects). It asserts the bounded
+# retrieved context, the hot set's bounds outside overflow episodes, every episode's deadline,
+# and linear growth of active records and total storage; it reports in the step summary,
+# uploads the log, and on a red run opens (or comments on) a "Weekly soak run failed" issue.
+name: Soak
+
+on:
+  schedule:
+    - cron: '0 5 * * 0'
+  workflow_dispatch:
+    inputs:
+      turns:
+        description: EPISTREL_SOAK_TURNS (the turns X-01 plays)
+        type: string
+        required: false
+        default: "20000"
+
+permissions:
+  contents: read
+
+# One soak at a time; a run in progress is never cancelled (its issue step must run).
+concurrency:
+  group: soak
+  cancel-in-progress: false
+
+env:
+  # The gate's uv (ci.yml), so the soak tests the toolchain the merge gate uses.
+  UV_VERSION: "0.12.23"
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v10.3.0  # exact: setup-uv publishes no floating major tag past v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.14"
+          enable-cache: true
+      - run: uv sync --frozen
+      # Integration fixtures start pgvector/pgvector:pg16 through testcontainers on the runner's
+      # Docker; X-01 runs on a database of its own there.
+      - name: Soak
+        id: soak
+        env:
+          EPISTREL_SOAK_TURNS: ${{ inputs.turns || '20000' }}
+        run: |
+          mkdir -p build/soak
+          set -o pipefail
+          uv run pytest tests/soak -m soak -s -rA --junitxml=build/soak/junit.xml 2>&1 | tee build/soak/soak.log
+      - name: Summarise
+        if: always()
+        env:
+          OUTCOME: ${{ steps.soak.outcome }}
+        run: |
+          {
+            printf '%s\n' "## Weekly soak run: $OUTCOME" '' '```'
+            grep -E '^X-01 ' build/soak/soak.log | tail -45 || printf '%s\n' '(no checkpoints printed)'
+            grep -E '^(FAILED|ERROR|PASSED) |[0-9]+ (passed|failed)' build/soak/soak.log | tail -10 || true
+            printf '%s\n' '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: soak-log
+          path: build/soak/
+          if-no-files-found: warn
+      - name: Report a red run
+        if: failure() && steps.soak.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          failed=$(grep -E '^(FAILED|ERROR) ' build/soak/soak.log | head -20 || true)
+          body=$(printf '%s\n' "The weekly soak run failed: $RUN_URL" '' 'Failed:' '```' "$failed" '```')
+          open=$(gh issue list --state open --search 'in:title "Weekly soak run failed"' --json number --jq '.[0].number // empty')
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --body "$body"
+          else
+            gh issue create --title "Weekly soak run failed $(date -u +%F)" --label bug --label needs-triage --body "$body"
+          fi

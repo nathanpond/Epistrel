@@ -105,6 +105,7 @@ from epistrel.core.profiles import store as profiles
 from epistrel.core.profiles.effective import ProfileVersionRef
 from epistrel.core.profiles.impact import ImpactReport
 from epistrel.core.ratings import require_assignable
+from epistrel.core.resolution.entities import add_entities, character_spec
 from epistrel.core.settings_schema import (
     CHARACTER_VIEWPOINT_PREFIX,
     COLUMN_SETTINGS,
@@ -129,8 +130,11 @@ from epistrel.core.tables import (
     lite_summary_segments,
     media_assets,
     operations,
+    placement,
     policies,
     rating_check_jobs,
+    relationships,
+    scene_state,
     stories,
     story_heads,
     story_profile_overrides,
@@ -142,10 +146,23 @@ from epistrel.core.tables import (
     worker_heartbeats,
 )
 from epistrel.core.tables.characters import DEFLECTION_STYLE_MAX, TRUE_AGE_MAX, TRUE_AGE_MIN
+from epistrel.core.tables.commitments import promissory_ledger, thunks
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
+from epistrel.core.tables.facts import facts
 from epistrel.core.tables.feedback import feedback_history, message_feedback
+from epistrel.core.tables.hot_set import overflow_episodes
 from epistrel.core.tables.media import MediaKind
+from epistrel.core.tables.memories import memories
 from epistrel.core.tables.ownership import EntityType
+from epistrel.core.tables.propositions import (
+    closed_sets,
+    entities,
+    entity_aliases,
+    predicate_proposals,
+    predicates,
+    propositions,
+)
+from epistrel.core.tables.readset import proposition_changes
 from epistrel.core.trimmed import trim_as_sent
 
 Database = AsyncEngine | AsyncConnection
@@ -167,6 +184,10 @@ STORY_TABLES: tuple[Table, ...] = (
     lite_summary_segments,
     story_heads,
     story_texts,
+    # The structured projections over canon (#137): caches, rebuilt by a fork.
+    scene_state,
+    placement,
+    relationships,
     story_profile_overrides,
     policies,
     genesis_deferred,
@@ -177,6 +198,25 @@ STORY_TABLES: tuple[Table, ...] = (
     rating_check_jobs,
     guardrail_check_results,
     timers,
+    # Commitments (#146): derived tables, before the operations they reference (the ledger
+    # names thunks, and a thunk the fact that resolved it; none of them has a foreign key).
+    promissory_ledger,
+    thunks,
+    # Bitemporal canon (#133): a derived table, before the operations it references.
+    facts,
+    # Memory records (#135): a derived table, before the operations it references.
+    memories,
+    # The hot set's overflow episodes (#147): maintenance state, no foreign key.
+    overflow_episodes,
+    # The structured read set's change index (#136), before the operations it references.
+    proposition_changes,
+    # The structured stores (#131): story rows only (core predicates have no story).
+    predicate_proposals,
+    closed_sets,
+    propositions,
+    predicates,
+    entity_aliases,
+    entities,
     operations,
 )
 """Every table with a ``story_id`` column, in the order deletion empties them (events before the
@@ -199,6 +239,8 @@ STORY_TABLES_NOT_COPIED: frozenset[str] = frozenset(
         feedback_history.name,
         rating_check_jobs.name,
         guardrail_check_results.name,
+        proposition_changes.name,
+        overflow_episodes.name,
     }
 )
 """Story-scoped tables a fork (#67) leaves behind: work in progress (``jobs``, the turn queue,
@@ -208,7 +250,10 @@ records, idempotency keys (a fork answers its own requests), the subject-referen
 (#112: a rating belongs to the message it rated, FR-FB-2; the fork's copy of a message is a
 new message that starts unrated, and copying would count one rating twice), and a rating
 change's check and verdict cache (#118: a check is the source's work, and the cache's record
-keys name the source's events). Every other table
+keys name the source's events), the read set's change index (#136: it records what changed
+under the source's turns; the fork's turns begin from its own revision), and the hot set's
+overflow episodes (#147: maintenance state; the fork recounts its counters and its next commit
+opens the episodes it needs). Every other table
 in ``STORY_TABLES`` is copied by ``core.fork``, so a new story-scoped table is copied unless it
 is named here."""
 
@@ -565,6 +610,13 @@ async def create_story_from(
             )
         )
         await index_rows(conn, characters, characters.c.story_id == story_id, character_record)
+        # Every character is an entity of the story, Lite included (FR-PROP-6; #139).
+        await add_entities(
+            conn,
+            story_id,
+            [character_spec(character_id, character.name) for character_id, character in cast],
+            operation_id=op.operation_id,
+        )
         # The story row after its cast (#123): a name that mentions a character needs the
         # character to exist when the row is scanned.
         await index_rows(conn, stories, stories.c.id == story_id, story_record)
@@ -848,8 +900,14 @@ async def add_story_character(
                 images=list(request.images),
             )
         )
-        # The new name may already be in the story's records: they are scanned again
-        # (FR-ADMIN-6; #123), the new row with them.
+        # The character's entity (FR-PROP-6; #139), then the new name may already be in the
+        # story's records: they are scanned again (FR-ADMIN-6; #123), the new rows with them.
+        await add_entities(
+            conn,
+            story_id,
+            [character_spec(character_id, request.name)],
+            operation_id=op.operation_id,
+        )
         await reindex_story(conn, story_id)
 
     async with op:

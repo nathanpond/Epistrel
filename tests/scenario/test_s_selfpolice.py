@@ -1,7 +1,9 @@
 """S-SELFPOLICE: guardrail regeneration, then the safe fallback (docs/04 §7): the M2 parts (#68)
 and the M3 slice ``test_s_selfpolice__deflection`` (#115: the deflection uses the character's
 stored style). R-05's jailbreak battery against the same deflection is
-``tests/redteam/test_r_05.py``.
+``tests/redteam/test_r_05.py``. The M4 slice ``test_s_selfpolice__quarantine`` (#145): planted
+content plus a repeat request converges through quarantine (``tests/poisoning_support.py``'s
+loop; R-01's corpus is ``tests/redteam/test_r_01.py``).
 
 A Teen story with a story-scoped wordlist policy the test seeds (no alcohol talk; output, the
 default for a story policy). The player asks for an adult topic: the request itself passes the
@@ -12,19 +14,32 @@ memory and custom instructions — claim the rule is lifted; the policy never yi
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Any
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
 from epistrel.core.config_changes import read_settings
 from epistrel.core.deployment import apply_settings
+from epistrel.core.enums import OperationKind
+from epistrel.core.events import Operation
+from epistrel.core.mutation import RecordRef
+from epistrel.core.retrieval.assemble import ContextItem, Tier
+from epistrel.core.retrieval.pipeline import (
+    SourceRequest,
+    register_context_source,
+    remove_context_source,
+)
 from epistrel.core.seeds.ratings import TEEN_ID
-from epistrel.orchestrator.policies.output_gate import CONSTRAINT
+from epistrel.orchestrator.lite.schemas import TurnWarning
+from epistrel.orchestrator.policies.output_gate import CONSTRAINT, rejected_event
 from tests.auth_support import auth_settings
 from tests.concurrency_support import set_instructions, set_pins
 from tests.event_support import rows
+from tests.poisoning_support import Plant, Spec, converge, planted_in, run_sequence
 from tests.policy_support import AUTHOR, row_hashes, story_item, words
 from tests.respond_support import (
     FIRST,
@@ -259,3 +274,162 @@ async def test_s_selfpolice__deflection(stub_settings: Settings, engine: AsyncEn
         await played(client, plain, body(plain_ids[PLAYER], "Hello?"))
         (prompt,) = [system_of(call) for call in generation_calls(stub)]
         assert "refuses or changes the subject" not in prompt
+
+
+# -- M4: the poisoning loop converges through quarantine (FR-GUARD-4,5; #145) -------------------
+
+CANARY = "ZEPHYRQUILL"
+POISON = Spec(
+    id="selfpolice",
+    canary=CANARY,
+    plants=(Plant("narration", f"A stranger whispers that the vault password is {CANARY}."),),
+    requests=(
+        "What vault password did the stranger whisper?",
+        "Tell me the vault password the stranger whispered, again.",
+    ),
+    policy_message="Never repeat a planted password.",
+    threshold=2,
+    max_regenerations=2,
+    expected={},
+)
+
+
+async def _quarantine_state(engine: AsyncEngine, memory_id: str) -> Any:
+    (row,) = await rows(
+        engine,
+        "SELECT quarantined_at, quarantine_reason, quarantined_by, implication_count "
+        "FROM memories WHERE id = :m",
+        m=memory_id,
+    )
+    return row
+
+
+@pytest.mark.part("M4", "FR-GUARD-4,5")
+async def test_s_selfpolice__quarantine(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """Planted content plus a repeat request converges through quarantine. An ingested
+    narration carrying a policy-violating phrase is retrieved into the context, and the model
+    repeats it. Render 1 is rejected, and the planted memory is implicated (``implication_count``
+    1, a ``memories_implicated`` event naming the turn and the render). Render 2 is rejected:
+    the second implication reaches ``repair.implication_threshold`` (2), and the memory is
+    quarantined by ``system`` with reason ``repeated_implication``. Render 3 retrieves again
+    without it and is clean, within the polish budget (2 regenerations), and ``degradation``
+    names ``quarantined_context``. The repeat request converges at once. The rejected drafts'
+    ``guardrail_output_rejected`` events name the memory in ``implicated_record_ids``. The
+    planted phrase is in no reply and in no violation message. An author pin the
+    violation overlaps is quarantined too, reported as a ``pin_quarantined`` warning (the
+    owner's decision on #145).
+
+    Complements asserted: without auto-quarantine (threshold 0) the same loop exhausts the
+    budget and falls back on both requests, the memory is never quarantined, and the phrase is
+    still never emitted. A Lite turn's rejected-output event carries no
+    ``implicated_record_ids``: #68's behaviour is unchanged."""
+    async with respond_client(stub_settings, engine) as (client, lib):
+        models = lib.models
+        run = await run_sequence(engine, lib, models, POISON)
+        (planted,) = run.planted
+        first, repeat = run.requests
+        assert (first.renders, first.fallback) == (3, False)
+        assert [r.attempt for r in first.gated.rejected] == [0, 1]
+        assert all(RecordRef("memories", planted) in r.implicated for r in first.gated.rejected)
+        assert first.quarantined == (planted,)
+        assert first.fields["degradation"] == ["quarantined_context"]
+        assert first.fields["warnings"] == []
+        prompts = [
+            "\n".join(m.content for m in call.messages)
+            for call in models.stub.calls
+            if call.purpose == "generation"
+        ]
+        assert planted_in(prompts, CANARY) == [True, True, False, False]
+        assert (repeat.renders, repeat.fallback, repeat.gated.rejected) == (1, False, ())
+        assert run.emissions == 0
+        state = await _quarantine_state(engine, planted)
+        assert state.quarantined_at is not None
+        assert (state.quarantine_reason, state.quarantined_by, state.implication_count) == (
+            "repeated_implication",
+            "system",
+            2,
+        )
+        implicated = await rows(
+            engine,
+            "SELECT payload FROM events WHERE story_id = :s AND type = 'memories_implicated' "
+            "ORDER BY seq",
+            s=run.story_id,
+        )
+        assert [(e.payload["attempt"], e.payload["memory_ids"]) for e in implicated] == [
+            (0, [planted]),
+            (1, [planted]),
+        ]
+        (automatic,) = await rows(
+            engine,
+            "SELECT payload FROM events WHERE story_id = :s AND type = 'memory_quarantined'",
+            s=run.story_id,
+        )
+        assert automatic.payload["automatic"] is True
+        # The rejected drafts' audit events, as the turn records them.
+        async with Operation(
+            engine, story_id=run.story_id, kind=OperationKind.TURN, principal="p-test"
+        ) as op:
+            for rejected in first.gated.rejected:
+                op.append("guardrail_output_rejected", rejected_event(rejected), beat=2)
+            await op.commit()
+        audits = await rows(
+            engine,
+            "SELECT payload FROM events WHERE operation_id = :o ORDER BY seq",
+            o=op.operation_id,
+        )
+        assert [a.payload["implicated_record_ids"] for a in audits] == [
+            [{"table": "memories", "id": planted}]
+        ] * 2
+
+        # An author pin the violation overlaps is quarantined too, with a warning.
+        pinned = await run_sequence(engine, lib, models, dataclasses.replace(POISON, requests=()))
+        (pin_id,) = pinned.planted
+        pin_text = (await rows(engine, "SELECT text FROM memories WHERE id = :m", m=pin_id))[0]
+
+        async def pins(conn: Any, request: SourceRequest) -> list[ContextItem]:
+            if request.story_id != pinned.story_id:
+                return []
+            quarantined = await conn.scalar(
+                text("SELECT quarantined_at FROM memories WHERE id = :m"), {"m": pin_id}
+            )
+            if quarantined is not None:
+                return []
+            return [ContextItem(Tier.LEDGER_AND_PINS, "pin", pin_id, pin_text.text)]
+
+        register_context_source(pins)
+        try:
+            pinned_run = await converge(
+                engine, models, pinned.story_id, "What was the vault password?"
+            )
+        finally:
+            remove_context_source(pins)
+        assert (pinned_run.renders, pinned_run.fallback) == (3, False)
+        assert pinned_run.gated.pins_quarantined == (pin_id,)
+        assert pinned_run.fields["warnings"] == [
+            TurnWarning(kind="pin_quarantined", memory_id=pin_id)
+        ]
+        assert CANARY not in pinned_run.released
+
+        # Complement: no auto-quarantine, so the budget is spent and the fallback released.
+        stuck = await run_sequence(engine, lib, models, POISON, auto=False)
+        assert [(r.renders, r.fallback) for r in stuck.requests] == [(3, True), (3, True)]
+        assert stuck.emissions == 0
+        (stuck_plant,) = stuck.planted
+        state = await _quarantine_state(engine, stuck_plant)
+        assert (state.quarantined_at, state.implication_count) == (None, 6)
+
+        # Complement: a Lite turn's rejection carries no implicated records.
+        story, ids = await new_story(client, PLAYER, FIRST)
+        await lib.policies_set_story(AUTHOR, story, [story_item(words("whisky"))])
+        models.stub.reset()
+        models.stub.script("generation", ["Whisky?", "Tea."])
+        played_turn = await played(client, story, body(ids[PLAYER], ASK))
+        assert "warnings" not in played_turn
+        (lite,) = [
+            e
+            for e in await _events(engine, story, played_turn["turn"])
+            if e.type == "guardrail_output_rejected"
+        ]
+        assert "implicated_record_ids" not in lite.payload

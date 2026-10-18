@@ -196,6 +196,7 @@ from epistrel.core.ratings.change import (
     classify,
     live_guardrail_ids,
 )
+from epistrel.core.resolution.entities import EntitySpec, add_entities, character_spec
 from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX, StorySettings
 from epistrel.core.stories import (
     CharacterRef,
@@ -921,6 +922,8 @@ def _settings(
         values["turn_concurrency"] = defaults.turn_concurrency
     if defaults.audit_retention_days is not None:
         values["audit_retention_days"] = defaults.audit_retention_days
+    if defaults.allow_new_arrivals is not None:
+        values["allow_new_arrivals"] = defaults.allow_new_arrivals
     inactive = materialized.settings()
     if inactive:
         values[INACTIVE_KEY] = inactive
@@ -1376,9 +1379,12 @@ async def _locked_catalog(conn: AsyncConnection, found: Plan) -> None:
             )
 
 
-async def insert_cast(conn: AsyncConnection, story_id: str, found: Plan) -> None:
-    """The ``characters`` rows and the catalog characters' ``character_snapshots`` (one
-    multi-row ``VALUES``, so ``age_recorded_at`` is the transaction's time)."""
+async def insert_cast(
+    conn: AsyncConnection, story_id: str, found: Plan, operation_id: str | None = None
+) -> None:
+    """The ``characters`` rows, the catalog characters' ``character_snapshots`` (one
+    multi-row ``VALUES``, so ``age_recorded_at`` is the transaction's time) and each
+    character's entity (#139)."""
     rows: list[dict[str, Any]] = []
     for ordinal, member in enumerate(found.members):
         row: dict[str, Any] = {
@@ -1420,6 +1426,25 @@ async def insert_cast(conn: AsyncConnection, story_id: str, found: Plan) -> None
     ]
     if snapshots:
         await conn.execute(insert(character_snapshots), snapshots)
+    await add_entities(
+        conn,
+        story_id,
+        [_entity_spec(member) for member in found.members],
+        operation_id=operation_id,
+    )
+
+
+def _entity_spec(member: Member) -> EntitySpec:
+    """A cast member's entity (FR-PROP-6; #139): the catalog version's aliases and appearance,
+    the role's name overrides, the persona's name and gender."""
+    overrides = member.role.name_overrides
+    return character_spec(
+        member.id,
+        member.name,
+        catalog_content=None if member.version is None else member.version.content,
+        name_overrides=None if overrides is None else overrides.model_dump(mode="json"),
+        persona=None if member.persona is None else member.persona.model_dump(mode="json"),
+    )
 
 
 async def insert_deferred(
@@ -1504,7 +1529,7 @@ async def genesis(
             )
             await op.begin_in(conn)
             started.append(op)
-            await insert_cast(conn, story_id, found)
+            await insert_cast(conn, story_id, found, op.operation_id)
             await write_policies(conn, story_id, found.draft.story_settings_defaults.policies)
             for player in sorted({m.principal for m in found.members if m.principal}):
                 await ownership.relate_in(

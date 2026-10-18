@@ -118,6 +118,10 @@ jobs:
     # files exactly once, and `rest` is `tests/` minus the directories the others name, so a new
     # directory runs without an edit here (tests/test_workflows.py guards both). `rest` keeps
     # tests/scenario and tests/perf together: P-05 gates the turn census of the S-tests it ran with.
+    # #153: `rest` reached 23m52s of its 25 minutes once the scale suite's smoke joined it, so
+    # tests/property and tests/chaos (about 10.5 min of tests on the runner) and the scale
+    # smoke (P-01, P-02, P-06 on the 1k fixture, about 5 min; no census) run in shards of their
+    # own, leaving `rest` at about 7.5 min of tests.
     name: test (${{ matrix.shard.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -133,8 +137,12 @@ jobs:
             paths: tests/integration --ignore-glob=tests/integration/test_[!a-h]*
           - name: integration-i-z
             paths: tests/integration --ignore-glob=tests/integration/test_[a-h]*
+          - name: property-chaos
+            paths: tests/property tests/chaos
+          - name: perf-scale
+            paths: tests/perf/test_p_01.py tests/perf/test_p_02.py tests/perf/test_p_06.py
           - name: rest
-            paths: tests --ignore=tests/conformance --ignore=tests/integration
+            paths: tests --ignore=tests/conformance --ignore=tests/integration --ignore=tests/property --ignore=tests/chaos --ignore=tests/perf/test_p_01.py --ignore=tests/perf/test_p_02.py --ignore=tests/perf/test_p_06.py
     steps:
       - uses: actions/checkout@v7
         with:

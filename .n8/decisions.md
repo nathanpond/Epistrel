@@ -7604,3 +7604,7 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Change:** M4's scope grows by 18 issues (#427–#444), including #441's rules extension. FR-PROP-10 (docs/03) is to be amended with an ADR, and #131's closed-set model gains key-set closed sets (a schema change).
   **Why:** Owner decisions above (#151 option (a); "Triage — add all to M4").
   **Affects:** M4 (the remaining work and the order of #154–#158); later milestones that build on closed sets or contradiction semantics, including M5 (character knowledge: closed sets and verification per holder), M6 (the world: states and rules), and M7 (portability: export and import of closed sets). Their plans may assume the old closed-set shape, so a `/n8-replan M5,M6,M7` after #441 lands is advised.
+- **Decision (owner, 2026-10-18):** #437 is resolved with options 2 and 3: `smoke.instruction_followed` accepts inflected forms of the requested word, and the smoke set grows to 60 cases per seed. The floors and the rate rule are unchanged, and a fresh local run on the reference model is committed as the evidence.
+  **Issue:** #437
+- **Decision (owner, 2026-10-18):** #443's repo setting is enabled. The agent verified `can_approve_pull_request_reviews: true` with the default token still `read`. `needs-owner-action` is removed, and #443 closes with M4's PR. The first weekly `perf.yml` run on `main` proves it end to end.
+  **Issue:** #443

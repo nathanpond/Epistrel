@@ -167,7 +167,7 @@ from epistrel.core.verify.normalize import ClaimSketch, Unnormalizable, normaliz
 from epistrel.core.verify.rules import Record, VerdictKind, check
 from epistrel.core.viewpoint import character_viewpoint, resolve_viewpoint, try_resolve
 from epistrel.observability.logging import get_logger
-from epistrel.observability.metrics import REPAIRS
+from epistrel.observability.metrics import count_repair
 from epistrel.orchestrator.budget import GUARDRAIL_OUTPUT, TurnBudget, counted_embedder
 from epistrel.orchestrator.commit import salience
 from epistrel.orchestrator.lite import pipeline as lite
@@ -1994,7 +1994,7 @@ async def play(
             report["repairs"] = repairs_report(checked)
         extraction.record_metrics(checked.outcomes, checked.checked)
         for repaired in checked.repairs:
-            REPAIRS.labels(rung=str(repaired.rung), **{"class": repaired.repair_class.value}).inc()
+            count_repair(repaired.rung, repaired.repair_class.value)
         await conn.execute(
             update(operations)
             .where(operations.c.operation_id == op.operation_id)

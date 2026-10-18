@@ -33,7 +33,9 @@ The registry holds:
   ``epistrel_claims_checked_total{verdict,category}``: #148's claim detection, two separate
   series (FR-VERIFY-13: detection and checking are reported apart), counted at a turn's commit;
 - ``epistrel_repairs_total{rung,class}``: #151's repair ladder, one per corrected beat, counted
-  at a turn's commit.
+  at a turn's commit (``count_repair``): ``rung`` names the rung accepted (``narrowing``,
+  ``substitution``, ``regeneration``, ``safe_fallback``) and ``class`` its FR-REPAIR-4 class
+  (``cosmetic``, ``substitution``, ``cascade``), both bounded enums.
 
 Label values are enums, ULIDs, route names, HTTP statuses or sanitised model names (#44's rule),
 never content. prometheus-client's default process, platform and GC collectors are removed.
@@ -130,10 +132,29 @@ CLAIMS_CHECKED = Counter(
 )
 REPAIRS = Counter(
     "epistrel_repairs",
-    "Beats the repair ladder corrected, by the rung accepted (1 narrowing, 2 substitution, "
-    "3 regeneration, 4 safe fallback) and FR-REPAIR-4 class (cosmetic, substitution, cascade).",
+    "Beats the repair ladder corrected, by the rung accepted (narrowing, substitution, "
+    "regeneration, safe_fallback) and FR-REPAIR-4 class (cosmetic, substitution, cascade).",
     ("rung", "class"),
 )
+REPAIR_RUNGS: dict[int, str] = {
+    1: "narrowing",
+    2: "substitution",
+    3: "regeneration",
+    4: "safe_fallback",
+}
+"""The ``rung`` label of ``epistrel_repairs_total``: each rung's name (label values are enums,
+#44's rule)."""
+REPAIR_CLASSES = frozenset({"cosmetic", "substitution", "cascade"})
+
+
+def count_repair(rung: int, repair_class: str) -> None:
+    """Count one corrected beat (``epistrel_repairs_total{rung,class}``); a rung or class
+    outside the ladder's is a programming error."""
+    if rung not in REPAIR_RUNGS or repair_class not in REPAIR_CLASSES:
+        raise ValueError(f"unknown repair rung {rung} or class {repair_class}")
+    REPAIRS.labels(rung=REPAIR_RUNGS[rung], **{"class": repair_class}).inc()
+
+
 HOT_SCOPES = ("character", "story")
 
 _GAUGES_SQL = text(
@@ -297,11 +318,15 @@ __all__ = [
     "MINIMAL_COMMITS",
     "OPERATIONS",
     "QUARANTINES",
+    "REPAIRS",
+    "REPAIR_CLASSES",
+    "REPAIR_RUNGS",
     "REQUEST_BUCKETS",
     "RETIREMENTS",
     "SANITIZES",
     "THUNKS",
     "SchedulerGauges",
+    "count_repair",
     "render_metrics",
     "router",
 ]

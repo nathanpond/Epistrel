@@ -7419,3 +7419,6 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision (scope):** Filed #440: the movement detector reads "left the orchard" as an affirmed `located_at(orchard)`.
   **Why:** Found while choosing seeds for I-27 M4; #148's detector tables, outside this story.
   **Issue:** #149, #440
+- **Decision (Rule 1):** `test_i_01__structured_rebuild`'s steps pick people, places and latent characters by name, not by id, and its always-run `@example` ends with a regeneration that places Cal, the player; the example alone now makes every kind the coverage check names occur (verified 10/10 with the explicit phase only). The random strategy, the byte-equality and the coverage assertion are unchanged.
+  **Why:** The flake was not Hypothesis's draws: ids are fresh per story, so the id order decided whether the example ever placed the player, and without that no `scene_state` row existed (`scene: 0` in about half the explicit-only runs).
+  **Issue:** #137

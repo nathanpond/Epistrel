@@ -360,8 +360,10 @@ async def _perform(
     engine: AsyncEngine, w: World, things: dict[str, str], written: list[str], step: str, n: int
 ) -> None:
     story = w.story_id
-    people = sorted(w.people.values())
-    places = sorted(w.places.values())
+    # By name, not by id: ids are fresh per story, and an id order would make which person a step
+    # touches (whether it is the player, Cal, whose placement makes the scene) vary run to run.
+    people = [w.people[name] for name in sorted(w.people)]
+    places = [w.places[name] for name in sorted(w.places)]
     person = people[n % len(people)]
     other = people[(n + 1) % len(people)]
     place = places[n % len(places)]
@@ -371,7 +373,7 @@ async def _perform(
         options: dict[str, Any] = {}
         if step == "latent":
             options["visibility"] = canon.Visibility(
-                scope="characters", characters=(sorted(w.characters.values())[n % 3],)
+                scope="characters", characters=(w.characters[sorted(w.characters)[n % 3]],)
             )
         kind = OperationKind.CONTROL if step == "seed" else OperationKind.TURN
         fact = await commit(engine, story, at(person, place, lo, None), kind=kind, **options)
@@ -497,7 +499,9 @@ async def _scenario(url: str, steps: list[tuple[str, int]]) -> None:
     suppress_health_check=[HealthCheck.function_scoped_fixture, HealthCheck.too_slow],
 )
 @given(steps=histories)
-# Always run once: the example makes every kind the occurrence check names occur.
+# Always run once: the example alone makes every kind the occurrence check names occur, whatever
+# the random draws do (#137). Steps pick people and places by name, so the example touches the
+# same entities in every run; its last step places the player, so its last turn has a scene.
 @example(
     steps=[
         ("place", 0),
@@ -512,7 +516,7 @@ async def _scenario(url: str, steps: list[tuple[str, int]]) -> None:
         ("truncate", 1),
         ("untruncate", 0),
         ("rewind_play_and_swap", 1),
-        ("regenerate", 0),
+        ("regenerate", 2),  # step 12, so person 14 % 3: Cal, the player, makes the last scene
     ]
 )
 def _every_history(pg_url: str, steps: list[tuple[str, int]]) -> None:

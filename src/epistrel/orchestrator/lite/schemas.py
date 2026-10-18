@@ -13,7 +13,7 @@ in it has been checked (FR-RESP-1).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -174,11 +174,15 @@ class RegenerateRequest(BaseModel):
 @dataclass(frozen=True, slots=True)
 class FinishedMessage:
     """The finished reply: the ``message_rendered`` event's id and its text; for a structured
-    turn (#152), how it was composed (``polished`` or ``deterministic``)."""
+    turn (#152), how it was composed (``polished`` or ``deterministic``). ``mode`` is left out
+    of the stored result when unset, so a Lite turn's stored and replayed message has exactly
+    its pre-#152 shape."""
 
     message_id: str
     text: str
-    mode: Literal["polished", "deterministic"] | None = None
+    mode: Annotated[
+        Literal["polished", "deterministic"] | None, Field(exclude_if=lambda v: v is None)
+    ] = None
 
 
 AudienceFilter = Literal["none", "co_location", "full"]

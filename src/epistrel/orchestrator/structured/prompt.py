@@ -133,8 +133,10 @@ def narrator_inputs(
     say: str | None,
     do: str | None,
     budget: int,
+    open_references: Sequence[str] = (),
 ) -> GenerationInputs:
-    """The narrator's ``generation`` inputs (``narrator_generation.j2``)."""
+    """The narrator's ``generation`` inputs (``narrator_generation.j2``); a follow-up render's
+    (#146, FR-COMMIT-7) name the salient references it must settle."""
     s = capped(sections, budget)
     return GenerationInputs(
         rating_guidance=s.guidance,
@@ -148,6 +150,7 @@ def narrator_inputs(
         working_memory=list(s.working_memory),
         retrieved_memories=list(s.retrieved),
         canon_facts=list(s.canon),
+        open_references=list(open_references),
     )
 
 

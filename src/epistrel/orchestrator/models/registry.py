@@ -195,6 +195,9 @@ class GenerationInputs(InputSchema):
     """A structured render's ``## Retrieved``: #141's assembled context."""
     canon_facts: Annotated[list[str], C.CANON_FACTS] = Field(default_factory=list)
     """A structured render's ``## Canon``: the facts retrieval found."""
+    open_references: Annotated[list[str], C.SCENE] = Field(default_factory=list)
+    """A follow-up narrator render (#146's FR-COMMIT-7, #150): the salient references this turn
+    left open, which it must settle."""
     introductions: list[AgeClue] = Field(default_factory=list)
     """The age repair (#150): each character a render introduced without an age, with the
     render's clue."""

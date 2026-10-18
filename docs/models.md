@@ -65,6 +65,7 @@ Writes the reply of a Lite turn from the story's prompt sections; in a structure
 | `working_memory` | `working_memory` |
 | `retrieved_memories` | `retrieved_memories` |
 | `canon_facts` | `canon_facts` |
+| `open_references` | `scene` |
 | `introductions.name` | `scene` |
 | `introductions.clue` | `scene` |
 

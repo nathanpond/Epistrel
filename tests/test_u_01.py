@@ -7,6 +7,8 @@ fact and the fact lifecycle's moves."""
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
@@ -37,7 +39,10 @@ from epistrel.orchestrator.models.registry import (
     SceneContext,
 )
 from tests import commit_support as c
+from tests import structured_turn_support as structured
+from tests.auth_support import auth_settings
 from tests.canon_support import commit
+from tests.respond_support import body, respond, respond_client
 from tests.verify_support import stub_models
 
 pytestmark = pytest.mark.integration
@@ -320,3 +325,94 @@ async def test_u_01__rules_and_degradation() -> None:
     outside = await detect_salience(beats, SCENE, models=mal, budget=TurnBudget(max_calls=4))
     assert outside.salient == ()
     assert [t.beat for t in outside.texture] == [1]
+
+
+@pytest.mark.integration
+@pytest.mark.part("M4", "FR-COMMIT-7")
+async def test_u_01__follow_up(
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """A turn cannot close with a salient reference it made still open (FR-COMMIT-7; #146's AC,
+    #150's pipeline). Bobby's ``do`` "Someone knocks at the door." is made salient (who
+    knocked is open); the turn's budget can pay for one more render, so the narrator renders
+    once more, told to settle it, and its narration names the mailman: the settling fact is
+    committed, its beat is the turn's next beat, and no minimal commit is made. Complements:
+    with the budget spent before the follow-up, the minimal commit settles the reference and
+    the turn reports ``follow_up_skipped_budget``; a follow-up that settles one of two open
+    references leaves the minimal commit for the other alone."""
+    settings = auth_settings(pg_url, model_adapter="stub")
+    knock_text = "Someone knocks at the door."
+    async with respond_client(settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+
+        async def play(
+            k: c.Knock, spans: list[Any], settle: bool = True, **fields: Any
+        ) -> dict[str, Any]:
+            stub.reset()
+            renders = [structured.render(structured.beat("do", knock_text))]
+            if settle:
+                renders.append(
+                    structured.render(
+                        structured.beat(
+                            "narration",
+                            "The mailman knocked at the door.",
+                            propositions=[structured.claim("mailman", "knocked_at", "door")],
+                        )
+                    )
+                )
+            stub.script("generation", renders)
+            stub.script("salience_detection", [c.salience_answer(*spans)])
+            response = await respond(
+                client,
+                k.story_id,
+                body(k.cal, "Did you hear that?", render_character_ids=[k.bobby], **fields),
+            )
+            assert response.status_code == 200, response.text
+            played: dict[str, Any] = response.json()
+            return played
+
+        async def knockers(k: c.Knock) -> list[Any]:
+            async with engine.connect() as conn:
+                found = await canon.canon(
+                    conn, k.story_id, predicate=k.knocked_at, viewpoint="omniscient"
+                )
+            return [f.proposition.subject_id for f in found]
+
+        # -- the follow-up settles the reference
+        k = await c.knock_story(engine)
+        played = await play(k, [(2, 0, len(knock_text), c.KNOCK)])
+        commit_report = (await structured.turn_report(engine, k.story_id))["commit"]
+        assert commit_report["follow_up"]["path"] == "follow_up"
+        assert commit_report["follow_up"]["settled"] == 1
+        assert commit_report["minimal_commits"] == 0
+        follow = [b for b in played["beats"] if b["kind"] == "beat_narration"]
+        assert [(b["beat"], b["actor_character_id"]) for b in follow] == [(3, None)]
+        assert k.mailman in await knockers(k)
+        assert "follow_up_skipped_budget" not in played["degradation"]
+        narrator = [cl for cl in stub.calls if cl.response_schema == "NarratorRender"]
+        assert len(narrator) == 1
+        assert "## Settle now" in narrator[0].messages[0].content
+        # The calls the turn made before its follow-up render (the second ``generation``).
+        purposes = [call["purpose"] for call in played["model_calls"]]
+        before = [n for n, p in enumerate(purposes) if p == "generation"][1]
+
+        # -- complement: no budget left for the follow-up, so the minimal commit settles it
+        k = await c.knock_story(engine)
+        played = await play(
+            k, [(2, 0, len(knock_text), c.KNOCK)], settle=False, budget={"max_calls": before}
+        )
+        assert "follow_up_skipped_budget" in played["degradation"]
+        commit_report = (await structured.turn_report(engine, k.story_id))["commit"]
+        assert commit_report["follow_up"]["skipped"] == "budget"
+        assert commit_report["follow_up"]["path"] == "minimal"
+        assert commit_report["minimal_commits"] == 1
+        assert not [cl for cl in stub.calls if cl.response_schema == "NarratorRender"]
+
+        # -- the follow-up settles one of two: the minimal commit is for the other only
+        k = await c.knock_story(engine)
+        await play(k, [(2, 0, len(knock_text), c.KNOCK), (2, 0, len(knock_text), c.WHY)])
+        commit_report = (await structured.turn_report(engine, k.story_id))["commit"]
+        assert commit_report["follow_up"]["path"] == "follow_up_and_minimal"
+        assert (commit_report["follow_up"]["settled"], commit_report["follow_up"]["open"]) == (1, 1)
+        assert commit_report["minimal_commits"] == 1
+        assert k.mailman in await knockers(k)

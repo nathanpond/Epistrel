@@ -62,6 +62,14 @@ guardrail regeneration, the constraint lines (#68). The ``user`` block is the pl
 {% endfor %}
 
 {% endif %}
+{% if open_references %}
+## Settle now
+This turn left these open; narrate what settles each one, naming who or what it is, and declare it as a proposition:
+{% for reference in open_references %}
+- {{ reference }}
+{% endfor %}
+
+{% endif %}
 ## Your part
 You are the narrator. Never speak, think or act for {{ player_input.name }} or for any character.
 Answer with typed beats in order: `narration` (what the scene shows: places, arrivals, what happens) and `latent` (a fact of the world that is true but not shown, with who may know it).

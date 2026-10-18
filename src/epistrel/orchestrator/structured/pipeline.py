@@ -89,7 +89,8 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import idempotency, pause, turn_gate
 from epistrel.core.canon.canonize import CanonRequest, canonize_all
-from epistrel.core.commit import lifecycle
+from epistrel.core.commit import lifecycle, matching
+from epistrel.core.commit.sketch import ThunkSketch, fills, open_sketch
 from epistrel.core.concurrency import check_expected_revision, run_with_revalidation
 from epistrel.core.config_changes import read_section
 from epistrel.core.context import RequestContext
@@ -110,6 +111,7 @@ from epistrel.core.propositions.model import Polarity, Proposition
 from epistrel.core.propositions.registry import Registry
 from epistrel.core.propositions.registry import load as load_registry
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
+from epistrel.core.resolution.context import load_context
 from epistrel.core.resolution.entities import NARRATOR, PLAYER
 from epistrel.core.resolution.types import Mention
 from epistrel.core.retrieval.lexical import LexicalSearch
@@ -171,6 +173,7 @@ from epistrel.orchestrator.lite.schemas import (
 from epistrel.orchestrator.models.access import ModelAccessLayer
 from epistrel.orchestrator.models.adapter import ModelParams
 from epistrel.orchestrator.models.config import routes_of
+from epistrel.orchestrator.models.errors import ModelError
 from epistrel.orchestrator.models.facts import runtime_facts
 from epistrel.orchestrator.models.metrics import CallLog, recording
 from epistrel.orchestrator.models.registry import GenerationInputs, SceneContext
@@ -184,7 +187,7 @@ from epistrel.orchestrator.policies.output_gate import (
     regeneration_cost,
     rejected_event,
 )
-from epistrel.orchestrator.policies.rebase import output_recheck
+from epistrel.orchestrator.policies.rebase import output_passes, output_recheck
 from epistrel.orchestrator.policies.store import guard_context
 from epistrel.orchestrator.structured import prompt as prompts
 from epistrel.orchestrator.structured.render import (
@@ -782,6 +785,14 @@ class Checked:
     verifier: Verifier | None
     salient: list[tuple[salience.Beat, Any, tuple[int, int] | None]]
     degradation: list[tuple[str, str]] = field(default_factory=list)
+    staged: list[Record] = field(default_factory=list)
+    """The overlay's staged claims after this check (a follow-up's check starts from them)."""
+    follow_up: dict[str, Any] = field(default_factory=dict)
+    """``turn_report.commit.follow_up``: whether the follow-up render ran, why not, and how
+    many owed references it settled and left open."""
+    follow_up_beats: frozenset[int] = frozenset()
+    """The follow-up render's beat numbers."""
+    follow_up_verifier: Verifier | None = None
 
 
 def _verdict_of(result: CheckedClaim) -> str | None:
@@ -830,9 +841,13 @@ async def check_turn(
     read_set: StructuredReadSet,
     configuration: StoryProfile,
     budget: TurnBudget,
+    staged_before: Sequence[Record] = (),
+    first_claim: int = 0,
+    with_salience: bool = True,
 ) -> Checked:
     """Detect and verify the player's input and every render's beats (see the module
-    docstring)."""
+    docstring). A follow-up render's check (``first_claim``: where its claim ids start) sees
+    the claims the turn's earlier beats staged (``staged_before``) and reads no salience."""
     settings = configuration.settings
     routes = routes_of(settings)
     turn = read.turn
@@ -915,6 +930,7 @@ async def check_turn(
     async with db.connect() as conn:
         verifier = await story_verifier(conn, read_set, story_id, models=models, budget=budget)
         staged = StagedSource(verifier.source)
+        staged.staged.extend(staged_before)
         verifier.source = staged
         by_beat: dict[int | None, list[DetectedClaim]] = {}
         for outcome in outcomes:
@@ -940,7 +956,7 @@ async def check_turn(
                 operation_id=operation_id,
                 player_id=read.player_id,
                 scope_of=scope_of,
-                start=len(checked),
+                start=first_claim + len(checked),
             )
             # The same-turn overlay: what this beat may establish, later beats see.
             for request in verifier.canon_requests()[before:]:
@@ -977,7 +993,7 @@ async def check_turn(
             degradation.append((CONTRADICTED_LATENT, "latent"))
     # Salience (#146): every render's observable beats.
     salient: list[tuple[salience.Beat, Any, tuple[int, int] | None]] = []
-    mode = salience.salience_mode(settings)
+    mode = salience.salience_mode(settings) if with_salience else None
     if mode is not None:
         for render_group in (narrator_beats, character_beats):
             sal_beats = [
@@ -1022,7 +1038,231 @@ async def check_turn(
         verifier=verifier,
         salient=salient,
         degradation=degradation,
+        staged=list(staged.staged),
     )
+
+
+# -- the follow-up render ------------------------------------------------------------------------
+
+
+FOLLOW_UP_SKIPPED_BUDGET = "follow_up_skipped_budget"
+"""Degradation: a salient reference was open and the turn's budget could not pay for the
+follow-up render, so the minimal commit settles it."""
+FOLLOW_UP_FAILED = "follow_up_failed"
+"""Degradation: the follow-up render failed (the model, its structure or an output policy), so
+the minimal commit settles what it would have."""
+
+
+def _thunk_line(sketch: ThunkSketch) -> str:
+    return " ".join(p for p in (sketch.subject_text, sketch.relation_text, sketch.object_text) if p)
+
+
+def _settled_by(claims: Sequence[CheckedClaim], sketch: ThunkSketch) -> bool:
+    """Whether a beat's surviving claim fills ``sketch``'s open slot (a dependence)."""
+    return any(
+        c.claim.proposition is not None
+        and c.claim.channel in lifecycle.DEPENDENCE_CHANNELS
+        and (c.result is None or not c.result.needs_repair)
+        and fills(sketch, c.claim.proposition)
+        for c in claims
+    )
+
+
+async def owed_references(
+    db: AsyncEngine,
+    story_id: str,
+    read: TurnRead,
+    checked: Checked,
+    *,
+    read_set: StructuredReadSet,
+) -> list[ThunkSketch]:
+    """The salient references this turn's renders made that would owe a ledger entry at the
+    commit (#146's ``record_salience``, without writing): an open argument canon does not
+    already settle, each once."""
+    if not checked.salient:
+        return []
+    found: list[ThunkSketch] = []
+    del read_set  # advisory: the commit's record_salience reads (and keys) these again
+    async with db.connect() as conn:
+        registry = await load_registry(conn, story_id)
+        lookup = KeyedLookup(conn, StructuredReadSet())
+        for beat_, sketch, span in checked.salient:
+            speaker = beat_.speaker_entity or NARRATOR
+            context = await load_context(
+                conn, story_id, position=(read.turn, 0), speaker=speaker, lookup=lookup
+            )
+            opened = open_sketch(
+                salience._claim_of(sketch),
+                speaker,
+                registry=registry,
+                context=context,
+                span=None if span is None else (beat_.index, span[0], span[1]),
+            )
+            if not isinstance(opened, ThunkSketch) or opened in found:
+                continue
+            if await matching.settled(lookup, story_id, opened):
+                continue
+            found.append(opened)
+    return found
+
+
+async def follow_up(
+    db: AsyncEngine,
+    models: ModelAccessLayer,
+    story_id: str,
+    read: TurnRead,
+    rendered: Rendered,
+    checked: Checked,
+    *,
+    operation_id: str,
+    read_set: StructuredReadSet,
+    configuration: StoryProfile,
+    budget: TurnBudget,
+    sections: prompts.RenderSections,
+    context: Any,
+    render_ids: Sequence[str],
+) -> Checked:
+    """FR-COMMIT-7's follow-up (#146's AC, #150's pipeline): when a salient reference this turn
+    made is still open after its beats were verified, and the turn's budget can pay for one
+    more render, the narrator renders once more, told to settle exactly those references; its
+    beats are detected and verified like any render's (over the turn's overlay) and are the
+    turn's next beats. What it settles is committed by the dependence at the commit; what is
+    left (or every open one, when the budget cannot pay: ``follow_up_skipped_budget``) is
+    discharged there by the minimal commit. Before any commit transaction opens."""
+    owed = await owed_references(db, story_id, read, checked, read_set=read_set)
+    still = [s for s in owed if not _settled_by(checked.checked, s)]
+    report: dict[str, Any] = {"owed": len(owed), "open": len(still), "ran": False}
+    if not still:
+        checked.follow_up = report
+        return checked
+    if budget.expired() or not budget.can_afford_unreserved():
+        checked.degradation.append((FOLLOW_UP_SKIPPED_BUDGET, "budget"))
+        checked.follow_up = {**report, "skipped": "budget"}
+        return checked
+    start = max((b.beat for b in checked.beats), default=1) + 1
+    settings = configuration.settings
+    params = render_params(
+        ModelParams(temperature=read.resolved.temperature, top_p=read.resolved.top_p),
+        read.resolved.max_tokens,
+    )
+    try:
+        narr, _ = await render_beats(
+            models,
+            prompts.narrator_inputs(
+                sections,
+                read.actor,
+                say=None,
+                do=None,
+                budget=settings.render.prompt_token_budget,
+                open_references=[_thunk_line(s) for s in still],
+            ),
+            render_schema(
+                actor_id=None,
+                player_id=read.player_id,
+                cast_ids=list(read.names),
+                max_beats=settings.render.max_beats,
+            ),
+            variant=NARRATOR_VARIANT,
+            params=params,
+            budget=budget,
+        )
+        made, sketches = _beats_of(narr, start=start, actor=None, narrator=True)
+        passed = await output_passes(
+            models, ["\n".join(b.text for b in made)], context, budget=budget, render_ids=render_ids
+        )
+    except ModelError:
+        passed, made, sketches = False, [], {}
+    if not passed:
+        checked.degradation.append((FOLLOW_UP_FAILED, "follow_up"))
+        checked.follow_up = {**report, "ran": True, "failed": True}
+        return checked
+    extra = await check_turn(
+        db,
+        models,
+        story_id,
+        read,
+        Rendered(beats=made, sketches=sketches, introductions=[], retrievals=[]),
+        say=None,
+        do=None,
+        operation_id=operation_id,
+        read_set=read_set,
+        configuration=configuration,
+        budget=budget,
+        staged_before=checked.staged,
+        first_claim=len(checked.checked),
+        with_salience=False,
+    )
+    left = [s for s in still if not _settled_by(extra.checked, s)]
+    checked.beats += extra.beats
+    checked.checked += extra.checked
+    checked.outcomes += extra.outcomes
+    checked.requests += extra.requests
+    checked.latent += extra.latent
+    checked.mentions.update(extra.mentions)
+    checked.degradation += extra.degradation
+    checked.staged = extra.staged
+    checked.follow_up_beats = frozenset(b.beat for b in extra.beats)
+    checked.follow_up_verifier = extra.verifier
+    checked.follow_up = {
+        **report,
+        "ran": True,
+        "settled": len(still) - len(left),
+        "open": len(left),
+        "beats": sorted(checked.follow_up_beats),
+    }
+    log.debug("follow-up render: %d settled, %d left", len(still) - len(left), len(left))
+    return checked
+
+
+async def settle_follow_up(
+    conn: AsyncConnection,
+    op: Operation,
+    checked: Checked,
+    *,
+    read_set: StructuredReadSet,
+    registry: Registry,
+) -> int:
+    """At the commit, after the turn's salient references are recorded: each surviving claim of
+    the follow-up render that fills one of their (now introduced) thunks is the dependence
+    that settles it (``lifecycle.depend``); answers how many."""
+    if not checked.follow_up_beats:
+        return 0
+    lookup = KeyedLookup(conn, read_set)
+    settled = 0
+    for c in checked.checked:
+        proposition = c.claim.proposition
+        if (
+            c.claim.beat not in checked.follow_up_beats
+            or proposition is None
+            or c.claim.channel not in lifecycle.DEPENDENCE_CHANNELS
+            or (c.result is not None and c.result.needs_repair)
+        ):
+            continue
+        target = await matching.dependence_target(lookup, str(op.story_id), proposition)
+        if target is None:
+            continue
+        await lifecycle.depend(
+            conn,
+            op,
+            target.id,
+            proposition,
+            beat=c.claim.beat,
+            channel=cast(lifecycle.Channel, c.claim.channel),
+            provenance=RecordProvenance.DIRECTOR,
+            registry=registry,
+        )
+        settled += 1
+    return settled
+
+
+def _close_path(follow: Mapping[str, Any], minimal: int) -> str:
+    """Which way the turn's salient references were settled: ``none`` owed, ``follow_up``,
+    ``follow_up_and_minimal``, or ``minimal`` (budget exhaustion or a failed follow-up)."""
+    if not follow.get("owed") and not minimal:
+        return "none"
+    if follow.get("ran") and not follow.get("failed"):
+        return "follow_up_and_minimal" if minimal else "follow_up"
+    return "minimal" if minimal else "none"
 
 
 # -- the turn ------------------------------------------------------------------------------------
@@ -1295,6 +1535,23 @@ async def play(
             configuration=configuration,
             budget=budget,
         )
+        checked = await follow_up(
+            db,
+            models,
+            story_id,
+            read,
+            rendered,
+            checked,
+            operation_id=op.operation_id,
+            read_set=read_set,
+            configuration=configuration,
+            budget=budget,
+            sections=replace(
+                base, director_notes=read.director, working_memory=read.narrator_memory
+            ),
+            context=context,
+            render_ids=cast_.render_ids,
+        )
         found[:] = [checked]
         stage(op, read, rendered, checked, outcome)
 
@@ -1426,6 +1683,8 @@ async def play(
             await extraction.apply_dependences(
                 conn, op, checked.checked, read_set=read_set, registry=registry
             )
+            await settle_follow_up(conn, op, checked, read_set=read_set, registry=registry)
+            # What the follow-up render did not settle is discharged by the minimal commit.
             closed = await lifecycle.close_turn(conn, op, follow_up=None, on=True)
             commit_report = {
                 **closed.model_dump(mode="json"),
@@ -1438,6 +1697,10 @@ async def play(
                     "degradation": list(sal.degradation),
                 },
                 "canonized": len(canonized),
+                "follow_up": {
+                    **checked.follow_up,
+                    "path": _close_path(checked.follow_up, closed.minimal_commits),
+                },
             }
             for step in closed.degradation:
                 checked.degradation.append((step, "commitment"))
@@ -1471,6 +1734,8 @@ async def play(
         if checked.verifier is not None:
             report["verify"] = checked.verifier.report()
             report["uncertain_claims"] = checked.verifier.uncertain_claims()
+        if checked.follow_up_verifier is not None:
+            report["verify_follow_up"] = checked.follow_up_verifier.report()
         report["commit"] = fixed.get("commit", {})
         extraction.record_metrics(checked.outcomes, checked.checked)
         await conn.execute(
@@ -1647,6 +1912,8 @@ def _participants(found: Sequence[str], actor: str | None) -> tuple[str, ...]:
 
 
 __all__ = [
+    "FOLLOW_UP_FAILED",
+    "FOLLOW_UP_SKIPPED_BUDGET",
     "INTRODUCTION_DENIED",
     "OPEN_REFERENCE",
     "SCENE_CHANGED",
@@ -1656,7 +1923,9 @@ __all__ = [
     "StagedSource",
     "TurnRead",
     "compose",
+    "follow_up",
     "is_structured",
+    "owed_references",
     "play",
     "read_turn",
     "resolve_structured_cast",

@@ -192,6 +192,8 @@ class SettingsPatch(BaseModel):
     feedback_regen_window_s: StrictInt | None = None
     erasure_shared_media: ErasureSharedMedia | None = None
     memory_importance_half_life_turns: StrictInt | None = None
+    max_pinned_per_character: StrictInt | None = None
+    max_pinned_per_story: StrictInt | None = None
     embedding_batch_max: StrictInt | None = None
     reembed_batch_size: StrictInt | None = None
     embedding_hnsw_m: StrictInt | None = None

@@ -46,7 +46,8 @@ read from its row and returned without changing its ``retrieval_tier``, up to
 ``retrieval_rehydrate_max_rows`` (20) a query. When the vector arm ran, the lexically found ones
 are compared with the query too: by their stored vector when it is in the pinned version, else
 re-embedded in one batched call (counted in ``model_calls``), the vector used for this query
-only and never stored (#147's ``retain_retired_vectors`` decides storage).
+only and never stored, unless the story's ``memory.hot_set.retain_retired_vectors`` is on
+(#147): then a touching retrieval stores it on the retired row, which stays retired.
 
 **Quarantine** (#145, FR-GUARD-4,5): a quarantined memory is no candidate of any stage (the
 occasion and assessment reads, the vector, lexical and alias arms, rehydration), so it is in no
@@ -637,6 +638,28 @@ async def _stored_similarity(
     return {str(r.id): 1.0 - float(r.distance) for r in found}
 
 
+async def _retain(
+    conn: AsyncConnection, story_id: str, vectors: Mapping[str, Sequence[float]], version: str
+) -> None:
+    """Store the vectors a rehydration computed (``memory.hot_set.retain_retired_vectors``,
+    #147): on the retired rows that still have none, stamped with the pinned version; a vector
+    of another dimension is not stored. The rows stay retired."""
+    pin = await embeddings.read_pin(conn)
+    for memory_id, vector in sorted(vectors.items()):
+        if pin.dimension is not None and len(vector) != pin.dimension:
+            continue
+        await conn.execute(
+            update(memories)
+            .where(
+                memories.c.story_id == story_id,
+                memories.c.id == memory_id,
+                memories.c.retrieval_tier == RetrievalTier.RETIRED.value,
+                memories.c.embedding.is_(None),
+            )
+            .values(embedding=list(vector), embedding_model_version=version)
+        )
+
+
 def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
     dot = sum(x * y for x, y in zip(a, b, strict=True))
     na = math.sqrt(sum(x * x for x in a))
@@ -919,10 +942,11 @@ async def retrieve(
             try:
                 model_calls += 1
                 vectors = await embed_batch(texts)
-                for memory_id, vector in zip(
-                    [i for i in missing if i in rows], vectors, strict=True
-                ):
+                computed = dict(zip([i for i in missing if i in rows], vectors, strict=True))
+                for memory_id, vector in computed.items():
                     similar[memory_id] = _cosine(query_vector, vector)
+                if touch and settings.memory.hot_set.retain_retired_vectors:
+                    await _retain(conn, story_id, computed, version)
             except Exception as exc:  # a failed rehydration embedding leaves them lexical
                 log.info(
                     "rehydration embedding failed story=%s error=%s", story_id, type(exc).__name__
@@ -1180,6 +1204,7 @@ __all__ = [
     "turn_window",
 ]
 
-# #146's ``## Open threads`` registers itself on ``CONTEXT_SOURCES`` (after everything above is
-# defined, so the import cycle is harmless).
+# #146's ``## Open threads`` and #147's pins register themselves on ``CONTEXT_SOURCES`` (after
+# everything above is defined, so the import cycle is harmless), the ledger first.
 from epistrel.core.commit import threads as _threads  # noqa: E402, F401 - registers a source
+from epistrel.core.memory import pins as _pins  # noqa: E402, F401 - registers a source

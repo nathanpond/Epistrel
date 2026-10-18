@@ -963,6 +963,16 @@
       "requirement": "FR-LITE-3"
     },
     {
+      "method": "POST",
+      "path": "/stories/{story_id}/memories/{memory_id}/pin",
+      "requirement": "FR-MEM-8"
+    },
+    {
+      "method": "DELETE",
+      "path": "/stories/{story_id}/memories/{memory_id}/pin",
+      "requirement": "FR-MEM-8"
+    },
+    {
       "method": "GET",
       "path": "/stories/{story_id}/settings",
       "requirement": "FR-ADMIN-1"
@@ -1001,6 +1011,11 @@
       "method": "POST",
       "path": "/admin/stories/{story_id}/consolidate",
       "requirement": "FR-MEM-3"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/stories/{story_id}/hot-set",
+      "requirement": "FR-MEM-8"
     },
     {
       "method": "POST",

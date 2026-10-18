@@ -240,6 +240,7 @@ markers = [
     "perf_quick: the performance tests PR CI runs (P-03's quick subset; #76); the nightly perf.yml runs them with the perf_long ones",
     "perf_long: long performance tests (P-03 on the 20,000-event reference story; #76); deselected unless -m names the marker, run nightly by perf.yml. P-04's reference workload itself is `python -m perf.lite_smoke`, not a test",
     "smoke: the deployment smoke (C-10, #77): every test under tests/smoke/ (auto-marked), run against a live compose stack at EPISTREL_SMOKE_BASE_URL; deselected unless -m names it, and fails when that is unset. publish-edge.yml and release.yml run it before publishing",
+    "soak: long-horizon soak tests (docs/04 §12, X-01's 20,000 turns; #147); deselected unless -m names the marker, run weekly by soak.yml",
     "part(milestone, requirements, interim_until=None): milestone part (docs/04 §13) — gates from <milestone>, covers <requirements>; see tests/README.md",
 ]
 # tests/gates/fixtures holds deliberately broken test trees for the gate checks; pytest must not collect them.

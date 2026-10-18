@@ -277,6 +277,7 @@ ERROR_STATUS: dict[str, int] = {
     "rating_retired": 422,
     "scope_mismatch": 422,
     "span_not_found": 422,
+    "pin_limit_exceeded": 422,
     "key_mismatch": 422,
     "unknown_predicate": 422,
     "slot_required": 422,
@@ -414,7 +415,7 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     # A predicate proposal's decision (#131): an archived story's registry is read-only.
     "approve_predicate": ("story_archived",),
     "reject_predicate": ("story_archived",),
-    "set_pinned_memories": (*_GATED, *_TEXT_EDIT),
+    "set_pinned_memories": (*_GATED, *_TEXT_EDIT, "pin_limit_exceeded"),
     "set_custom_instructions": (*_GATED, *_TEXT_EDIT),
     "truncate": ("story_archived", "story_paused", "story_busy"),
     "untruncate": ("story_archived", "story_paused", "story_busy", "nothing_to_undo"),
@@ -448,6 +449,9 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     # The mutation primitives and the low-level fact calls (#145).
     "quarantine_memory": (*_MUTATION, "module_off"),
     "unquarantine_memory": (*_MUTATION, "module_off"),
+    # Author pins (#147): any profile; the ceilings refuse a pin past them.
+    "pin_memory": (*_MUTATION, "pin_limit_exceeded"),
+    "unpin_memory": _MUTATION,
     "sanitize_memory": (*_MUTATION, "module_off", "span_not_found", "guardrail_violation"),
     "commit_fact": (*_MUTATION, "module_off", "unknown_predicate"),
     "supersede_fact": (*_FACT_VERSION, "unknown_predicate", "key_mismatch"),

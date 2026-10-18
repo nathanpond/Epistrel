@@ -50,13 +50,23 @@ One row is one memory record:
   column and creates the HNSW cosine index; ``NULL`` until the embed job runs) and
   ``embedding_model_version``; ``created_at`` and ``last_accessed_at`` (``NULL`` until #141's
   first retrieval).
+- **the hot set** (#147, migration 0061; FR-MEM-8): ``pinned`` (an author pin: outside the
+  budgets, never retired, admission-limited; a pinned row is always ``hot``, CHECK) and
+  ``pinned_by`` (the principal); on a retired row, ``retired_reason`` (``RETIRED_REASONS``:
+  ``covered`` by an active hot consolidation output, below the importance ``floor``, or
+  ``uncovered``: forced at an overflow episode's deadline, reverting to ``covered`` when
+  consolidation later covers it), ``retired_at`` and ``retired_turn`` (the head turn then).
+  Two partial indexes make the counters' exact recount an index-only read of the hot set
+  (``ix_memories_hot_unpinned``, ``ix_memories_hot_vectors``), and one the pins'
+  (``ix_memories_pinned``). ``core.memory.retirement`` and ``core.memory.pins`` write these.
 
 Guarded (``epistrel_memories_guard``): an UPDATE may change only ``MUTABLE_MEMORY_COLUMNS``; an
 erasure (``epistrel.erasure = on``) may also rewrite ``text`` and ``quarantine_reason``, and a
 sanitize (``epistrel.sanitize`` = the memory's id, #145) that one row's ``text`` and
 ``inputs_hash``. A DELETE passes only under an
 erasure or the story's deletion (``epistrel.allow_story_delete``); TRUNCATE is refused.
-``core.memory.records`` is the only writer of rows; ``core.mutation`` updates them.
+``core.memory.records`` is the only writer of rows; ``core.mutation``, ``core.memory.retirement``
+and ``core.memory.pins`` update them.
 """
 
 from __future__ import annotations
@@ -67,6 +77,7 @@ from typing import Any
 from sqlalchemy import (
     REAL,
     TIMESTAMP,
+    Boolean,
     CheckConstraint,
     Column,
     Computed,
@@ -84,6 +95,7 @@ from sqlalchemy.types import UserDefinedType
 from epistrel.core.enums import MemoryKind, MemoryTrustTier, RecordProvenance, RetrievalTier
 from epistrel.core.membership import (
     DerivedTable,
+    active_only_predicate,
     derived_columns,
     derived_indexes,
     register_derived,
@@ -101,6 +113,13 @@ EVENT_TYPE_MAX = 64
 QUARANTINE_REASON_MAX = 500
 """The longest ``quarantine_reason`` (CHECK)."""
 """The longest ``event_type`` (CHECK)."""
+
+RETIRED_REASONS: tuple[str, ...] = ("covered", "floor", "uncovered")
+"""Why a memory was retired (``retired_reason``, CHECK; FR-MEM-8, #147)."""
+HOT_UNPINNED_WHERE = f"retrieval_tier = 'hot' AND NOT pinned AND {active_only_predicate()}"
+"""The rows the hot-set budgets count (``ix_memories_hot_unpinned``)."""
+HOT_VECTORS_WHERE = f"{HOT_UNPINNED_WHERE} AND embedding IS NOT NULL"
+"""The rows the story's vector budget counts (``ix_memories_hot_vectors``)."""
 
 MODALITIES: tuple[str, ...] = ("objective", "attributed_claim", "observation")
 """The epistemic types a consolidation output carries (``modality``, CHECK; FR-MEM-9)."""
@@ -122,6 +141,11 @@ MUTABLE_MEMORY_COLUMNS: tuple[str, ...] = (
     "quarantine_reason",
     "quarantined_by",
     "implication_count",
+    "pinned",
+    "pinned_by",
+    "retired_reason",
+    "retired_at",
+    "retired_turn",
 )
 """The columns an UPDATE of ``memories`` may change outside an erasure. (The generated
 ``search`` column is also let through by the guard, since a BEFORE trigger cannot read its new
@@ -214,7 +238,19 @@ memories = Table(
     Column("quarantine_reason", Text, nullable=True),
     Column("quarantined_by", Text, nullable=True),
     Column("implication_count", Integer, nullable=False, server_default=text("0")),
+    Column("pinned", Boolean, nullable=False, server_default=text("false")),
+    Column("pinned_by", Text, nullable=True),
+    Column("retired_reason", Text, nullable=True),
+    Column("retired_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("retired_turn", Integer, nullable=True),
     CheckConstraint(f"char_length(text) <= {TEXT_MAX}", name="text_length"),
+    CheckConstraint("NOT pinned OR retrieval_tier = 'hot'", name="pinned_hot"),
+    CheckConstraint(
+        "retired_reason IS NULL OR retired_reason IN ("
+        + ", ".join(f"'{r}'" for r in RETIRED_REASONS)
+        + ")",
+        name="retired_reason",
+    ),
     CheckConstraint(
         "(quarantined_at IS NULL) = (quarantine_reason IS NULL) "
         "AND (quarantined_at IS NULL) = (quarantined_by IS NULL) "
@@ -253,6 +289,23 @@ Index(
     "ix_memories_story_kind_turn", memories.c.story_id, memories.c.kind, memories.c.narrative_turn
 )
 Index(
+    "ix_memories_hot_unpinned",
+    memories.c.story_id,
+    memories.c.holder_character_id,
+    postgresql_where=text(HOT_UNPINNED_WHERE),
+)
+Index(
+    "ix_memories_hot_vectors",
+    memories.c.story_id,
+    postgresql_where=text(HOT_VECTORS_WHERE),
+)
+Index(
+    "ix_memories_pinned",
+    memories.c.story_id,
+    memories.c.holder_character_id,
+    postgresql_where=text("pinned"),
+)
+Index(
     "ix_memories_story_occasion",
     memories.c.story_id,
     memories.c.event_type,
@@ -266,10 +319,13 @@ neither valid-time nor transaction-time columns."""
 
 __all__ = [
     "EVENT_TYPE_MAX",
+    "HOT_UNPINNED_WHERE",
+    "HOT_VECTORS_WHERE",
     "MEMORIES",
     "MODALITIES",
     "MUTABLE_MEMORY_COLUMNS",
     "QUARANTINE_REASON_MAX",
+    "RETIRED_REASONS",
     "SEARCH_CONFIGURATION",
     "SEARCH_EXPRESSION",
     "TEXT_MAX",

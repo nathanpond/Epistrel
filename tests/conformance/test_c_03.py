@@ -47,6 +47,7 @@ from epistrel.api.routes.admin.ratings import RatingDetailBody, RatingList, Rati
 from epistrel.api.routes.admin.settings import SettingsBody
 from epistrel.api.routes.admin.stories import (
     ConsolidationQueuedResponse,
+    HotSetBody,
     RebuildQueuedResponse,
     RebuildResponse,
 )
@@ -341,6 +342,9 @@ MUTATION_ANSWERS = [
     ("inspect_ledger", 200),
     ("quarantine_memory", 200),
     ("unquarantine_memory", 200),
+    ("pin_memory", 200),
+    ("unpin_memory", 200),
+    ("hot_set", 200),
     ("sanitize_memory", 200),
     ("supersede_fact", 201),
 ]
@@ -389,6 +393,10 @@ async def _fact_written(call: Awaitable[Any]) -> dict[str, Any]:
 
 async def _memory_written(call: Awaitable[Any]) -> dict[str, Any]:
     return dump(MemoryWritten.of(await call))
+
+
+async def _hot_set(engine: Engine, story_id: str) -> dict[str, Any]:
+    return dump(HotSetBody.of(await engine.hot_set(CTX, story_id)))
 
 
 async def _fact_list(engine: Engine, story_id: str) -> dict[str, Any]:
@@ -1116,6 +1124,25 @@ def _steps() -> list[Step]:
             lambda e, ids: _memory_written(
                 e.unquarantine_memory(CTX, ids["fork"], ids["fork_memory"])
             ),
+            group=MUTATION_GROUP,
+        ),
+        # Author pins and the hot set (#147), on the structured fork's author memory.
+        Step(
+            "pin_memory",
+            lambda ids: Rest("POST", "/stories/{fork}/memories/{fork_memory}/pin"),
+            lambda e, ids: _memory_written(e.pin_memory(CTX, ids["fork"], ids["fork_memory"])),
+            group=MUTATION_GROUP,
+        ),
+        Step(
+            "unpin_memory",
+            lambda ids: Rest("DELETE", "/stories/{fork}/memories/{fork_memory}/pin"),
+            lambda e, ids: _memory_written(e.unpin_memory(CTX, ids["fork"], ids["fork_memory"])),
+            group=MUTATION_GROUP,
+        ),
+        Step(
+            "hot_set",
+            lambda ids: Rest("GET", "/admin/stories/{fork}/hot-set"),
+            lambda e, ids: _hot_set(e, ids["fork"]),
             group=MUTATION_GROUP,
         ),
         Step(

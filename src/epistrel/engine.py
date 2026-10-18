@@ -100,6 +100,7 @@ from epistrel.core.media.signing import Signer
 from epistrel.core.media.store import BlobStore
 from epistrel.core.media.stores import make_store
 from epistrel.core.memory import consolidation as consolidation_core
+from epistrel.core.memory import pins as memory_pins
 from epistrel.core.memory.consolidation import ConsolidateRequest
 from epistrel.core.policies.model import Policy, Scope
 from epistrel.core.ports import Ports
@@ -207,6 +208,9 @@ CODECS: dict[str, ResultCodec[Any]] = {
     # The mutation primitives and the low-level fact calls (#145): story-scoped control writes.
     "quarantine_memory": ResultCodec.of(mutation.MemoryWrite),
     "unquarantine_memory": ResultCodec.of(mutation.MemoryWrite),
+    # Author pins (#147): story-scoped control writes.
+    "pin_memory": ResultCodec.of(mutation.MemoryWrite),
+    "unpin_memory": ResultCodec.of(mutation.MemoryWrite),
     "sanitize_memory": ResultCodec.of(mutation.MemoryWrite),
     "commit_fact": ResultCodec.of(mutation.FactWrite, status=201),
     "supersede_fact": ResultCodec.of(mutation.FactWrite, status=201),
@@ -1075,6 +1079,66 @@ class Engine:
             story_id=story_id,
             material={"story_id": story_id, "memory_id": memory_id},
         )
+
+    async def pin_memory(
+        self, ctx: RequestContext, story_id: str, memory_id: str
+    ) -> mutation.MemoryWrite:
+        """Pin a memory (FR-MEM-8; #147): outside the hot-set budgets and never retired (a
+        retired memory is rehydrated to the hot set), in every structured render's context. A
+        ``control`` operation that bumps the revision; a pinned memory answers unchanged. 422
+        ``pin_limit_exceeded`` past ``max_pinned_per_character`` or ``max_pinned_per_story``
+        (the story's text pins count too); 404 for an unknown memory."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> mutation.MemoryWrite:
+            return await memory_pins.pin(
+                self.db,
+                story_id,
+                memory_id,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+                expected_revision=ctx.expected_revision,
+            )
+
+        return await self._keyed(
+            ctx,
+            "pin_memory",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "memory_id": memory_id},
+        )
+
+    async def unpin_memory(
+        self, ctx: RequestContext, story_id: str, memory_id: str
+    ) -> mutation.MemoryWrite:
+        """Remove a memory's pin (#147): it counts toward the hot-set budgets again, so an
+        unpin above budget opens an overflow episode (unchanged when it is not pinned)."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> mutation.MemoryWrite:
+            return await memory_pins.unpin(
+                self.db,
+                story_id,
+                memory_id,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+                expected_revision=ctx.expected_revision,
+            )
+
+        return await self._keyed(
+            ctx,
+            "unpin_memory",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "memory_id": memory_id},
+        )
+
+    @refuses_nul()
+    async def hot_set(self, ctx: RequestContext, story_id: str) -> memory_pins.HotSetView:
+        """The story's hot set (FR-MEM-8; #147): its counters (recounted now, and as stored),
+        budgets, pin ceilings and pins, its open overflow episodes and its latest retirements.
+        A read; 404 for an unknown story."""
+        return await memory_pins.hot_set_view(self.db, story_id)
 
     async def sanitize_memory(
         self,

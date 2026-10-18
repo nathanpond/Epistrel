@@ -33,7 +33,8 @@ one transaction that does all of the following:
    within its budget first) before they are indexed;
 5. finalises the operation (``committed``, ``membership_tx`` = the commit's ``tx_time``, the
    story's resulting ``timeline_revision``), refreshes a turn's structured scene and what the
-   operations it made dormant project (``projections.structured.after_turn``, #137), bumps
+   operations it made dormant project (``projections.structured.after_turn``, #137), runs the
+   ``TURN_HOOKS`` (#147's hot-set deadline), bumps
    ``stories.timeline_revision`` by one when the
    operation ``bumps_revision`` (FR-CONC-1), records a control action on the story, and checks
    the active variants are one chain (FR-STORE-28, ``ChainBroken``): at the chain's head, by
@@ -144,6 +145,22 @@ Origin = Literal["generated", "ingested"]
 
 CommitStep = Callable[[AsyncConnection], Awaitable[None]]
 """Extra work run inside the commit transaction, under the story lock, after the events."""
+
+TurnHook = Callable[[AsyncConnection, str, int, tuple[str, ...]], Awaitable[None]]
+"""``hook(conn, story_id, turn, made_dormant)``: run inside a committed ``turn`` operation's
+transaction, after it is finalised (``turn`` is the story's head now), with the operations it
+made ``dormant`` (a regenerated variant, a shelved tail). #147's hot set registers its deadline
+check here."""
+
+TURN_HOOKS: list[TurnHook] = []
+
+
+def register_turn_hook(hook: TurnHook) -> TurnHook:
+    """Run ``hook`` in every turn commit (once per hook)."""
+    if hook not in TURN_HOOKS:
+        TURN_HOOKS.append(hook)
+    return hook
+
 
 Database = AsyncEngine | AsyncConnection
 
@@ -889,6 +906,8 @@ class Operation:
             await projections.structured.after_turn(
                 conn, self.story_id, self.narrative_turn, self._followed
             )
+            for hook in list(TURN_HOOKS):
+                await hook(conn, self.story_id, self.narrative_turn, tuple(self._followed))
         if self.story_id is not None and self.kind is OperationKind.TURN:
             # The guardrail set the turn variant passed (FR-RATE-7, #118), in force now.
             await conn.execute(

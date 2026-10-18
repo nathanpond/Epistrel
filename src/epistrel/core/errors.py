@@ -1102,6 +1102,17 @@ class MemoryNotFound(EpistrelError):
     http_status = 404
 
 
+class PinLimitExceeded(EpistrelError):
+    """A pin would take a character or the story past its pin ceiling (FR-MEM-8; #147):
+    ``max_pinned_per_character`` or ``max_pinned_per_story`` (a story's pinned memories and its
+    text pins together). ``details``: ``scope`` (``character`` or ``story``: the first limit the
+    pin hits), ``limit``, ``actual`` (what the story would hold) and, for a character,
+    ``character_id``. Nothing is written; unpinning admits again."""
+
+    code = "pin_limit_exceeded"
+    http_status = 422
+
+
 class SpanNotFound(EpistrelError):
     """A sanitize's ``span`` does not occur in the memory's text (FR-GUARD-4; #145): it is an
     exact substring, every occurrence of which is replaced. ``details``: ``memory_id``.

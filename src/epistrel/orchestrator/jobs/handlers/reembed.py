@@ -18,7 +18,8 @@ reads the pin when it runs); a running job finishes its batch and re-checks the 
 writing. Until a story's job finishes, the story's searches are lexical-only
 (``embedding_pending``). A run takes the story's hot active memories whose vector is missing or
 in another version; retired and dormant rows are not re-embedded (their vectors were nulled;
-they re-embed on rehydration, #147).
+they re-embed on rehydration, #147). A reactivation that brings memories back without vectors
+enqueues the story's ``embed`` job (``on_vectors_needed``, #147's vector hook).
 
 **A run** (both kinds) does nothing unless the story's ``episodic`` module is on. In one
 snapshot it reads the pin and up to ``reembed_batch_size`` (500) memories, oldest first,
@@ -67,7 +68,7 @@ from epistrel.core.config_changes import (
 from epistrel.core.enums import OperationKind
 from epistrel.core.events.operation import Operation
 from epistrel.core.membership import active_only_sql
-from epistrel.core.memory import records
+from epistrel.core.memory import records, retirement
 from epistrel.core.settings_schema import EmbeddingSettings
 from epistrel.core.tables import model_config, stories
 from epistrel.orchestrator.embeddings.adapter import EMBEDDING, EmbeddingIdentity, EmbeddingProbe
@@ -278,6 +279,17 @@ REEMBED_HANDLER = JobHandler(
 records.register_memory_hook(on_memories_written)
 
 
+async def on_vectors_needed(conn: AsyncConnection, story_id: str) -> None:
+    """``core.memory.retirement``'s vector hook: memories brought back to the active hot set
+    without a vector (a swap or an undo reactivating a continuation whose vectors were dropped,
+    a pin rehydrating a retired memory) are embedded by the story's ``embed`` job, in the
+    pinned version (FR-STORE-30, #147)."""
+    await schedule(conn, EMBED, story_id)
+
+
+retirement.register_vector_hook(on_vectors_needed)
+
+
 # -- status and retry ---------------------------------------------------------------------------
 
 
@@ -417,6 +429,7 @@ __all__ = [
     "coalesce_key",
     "on_embedding_model_changed",
     "on_memories_written",
+    "on_vectors_needed",
     "retry",
     "schedule",
     "status",

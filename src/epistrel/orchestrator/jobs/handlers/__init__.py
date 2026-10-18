@@ -7,7 +7,8 @@ sweeps ``retention_sweep`` / ``idempotency_purge`` (``retention``) and ``turn_qu
 recurring ``media_sweep`` (#105), ``offboarding`` (#117), ``rating_check`` (#118) and the
 recurring ``erasure_reconcile_retry`` (#125). M4 adds ``importance_scoring`` (#135, with its daily
 recurring safety net), the embedding port's ``embed`` and ``reembed`` (#138) and
-``consolidation`` (#143). A kind
+``consolidation`` (#143), and the hot set's ``hot_set_retirement`` and its daily
+``hot_counts_reconcile`` (#147). A kind
 no handler is registered for is refused at enqueue and ends ``failed`` if a worker claims one
 (a row a newer version wrote). Tests register their own handlers through ``register`` /
 ``unregister``.
@@ -38,6 +39,11 @@ from epistrel.orchestrator.jobs.handlers.retention import (
     IDEMPOTENCY_TASK,
     RETENTION_HANDLER,
     RETENTION_TASK,
+)
+from epistrel.orchestrator.jobs.handlers.retirement import (
+    RECONCILE_HANDLER,
+    RECONCILE_TASK,
+    RETIREMENT_HANDLER,
 )
 from epistrel.orchestrator.jobs.handlers.turn_queue import TURN_QUEUE_HANDLER, TURN_QUEUE_TASK
 from epistrel.orchestrator.jobs.recurring import register_recurring
@@ -78,6 +84,8 @@ for _handler in (
     EMBED_HANDLER,
     REEMBED_HANDLER,
     CONSOLIDATION_HANDLER,
+    RETIREMENT_HANDLER,
+    RECONCILE_HANDLER,
 ):
     register(_handler)
 for _task in (
@@ -88,6 +96,7 @@ for _task in (
     MEDIA_SWEEP_TASK_DEFINITION,
     ERASURE_RECONCILE_TASK,
     IMPORTANCE_TASK,
+    RECONCILE_TASK,
 ):
     register_recurring(_task)
 

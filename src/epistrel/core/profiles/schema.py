@@ -224,14 +224,35 @@ class Consolidation(ProfileModel):
 
 
 class HotSet(ProfileModel):
-    """The hot-set budgets of the structured pipeline's memories (FR-MEM-8)."""
+    """The hot set of the structured pipeline's memories (FR-MEM-8, NFR-SCALE-2; #147): the
+    unpinned budgets, how retirement ranks and how long an overflow may last, and which vectors
+    are kept off the hot set."""
 
     memories_per_character: Annotated[int, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
         default=2_000, ge=1, le=100_000
     )
+    """A character's unpinned hot memories (``hot_memory_budget_per_character``)."""
     vectors_per_story: Annotated[int, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
         default=50_000, ge=1, le=10_000_000
     )
+    """The story's unpinned hot vectors (``hot_vector_budget_per_story``)."""
+    importance_floor: Annotated[float, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
+        default=0.2, ge=0.0, le=1.0
+    )
+    """A memory whose decayed importance is below it is retired first, with those already
+    covered by consolidation."""
+    retirement_max_lag: Annotated[int, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
+        default=50, ge=1, le=100_000
+    )
+    """The committed turns an overflow episode may last: at its deadline the lowest-ranked
+    uncovered memories are retired anyway (``retired_uncovered``)."""
+    retain_retired_vectors: Annotated[bool, BEHAVIORAL, PROSPECTIVE, RELEVANT] = False
+    """Keep a retired memory's vector (and store the one its rehydration computes) instead of
+    dropping it; off, a retired memory is re-embedded each time it is rehydrated."""
+    retain_dormant_vectors: Annotated[bool, BEHAVIORAL, PROSPECTIVE, RELEVANT] = False
+    """Keep the vectors of a dormant or discarded continuation's memories, so a swap or an
+    undo that reactivates it restores byte-identical vectors (FR-STORE-30); off, they are
+    dropped and re-embedded with the story's pinned embedding model on reactivation."""
 
 
 class Memory(ProfileModel):

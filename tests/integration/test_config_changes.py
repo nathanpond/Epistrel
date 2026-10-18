@@ -125,6 +125,7 @@ STORED: dict[str, Any] = {
     "feedback_text_max_chars": 1999,
     "erasure_shared_media": "retire",
     "memory_importance_half_life_turns": 150,
+    "max_pinned_per_story": 1_999,
     "reembed_batch_size": 400,
     "retrieval_rrf_k": 61,
     "neighborhood_max_facts": 40,

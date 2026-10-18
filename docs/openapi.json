@@ -3944,17 +3944,47 @@
                   },
                   "hot_set": {
                     "additionalProperties": false,
-                    "description": "The hot-set budgets of the structured pipeline's memories (FR-MEM-8).",
+                    "description": "The hot set of the structured pipeline's memories (FR-MEM-8, NFR-SCALE-2; #147): the\nunpinned budgets, how retirement ranks and how long an overflow may last, and which vectors\nare kept off the hot set.",
                     "properties": {
+                      "importance_floor": {
+                        "default": 0.2,
+                        "description": "A memory whose decayed importance is below it is retired first, with those already\ncovered by consolidation.",
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "title": "Importance Floor",
+                        "type": "number"
+                      },
                       "memories_per_character": {
                         "default": 2000,
+                        "description": "A character's unpinned hot memories (``hot_memory_budget_per_character``).",
                         "maximum": 100000.0,
                         "minimum": 1.0,
                         "title": "Memories Per Character",
                         "type": "integer"
                       },
+                      "retain_dormant_vectors": {
+                        "default": false,
+                        "description": "Keep the vectors of a dormant or discarded continuation's memories, so a swap or an\nundo that reactivates it restores byte-identical vectors (FR-STORE-30); off, they are\ndropped and re-embedded with the story's pinned embedding model on reactivation.",
+                        "title": "Retain Dormant Vectors",
+                        "type": "boolean"
+                      },
+                      "retain_retired_vectors": {
+                        "default": false,
+                        "description": "Keep a retired memory's vector (and store the one its rehydration computes) instead of\ndropping it; off, a retired memory is re-embedded each time it is rehydrated.",
+                        "title": "Retain Retired Vectors",
+                        "type": "boolean"
+                      },
+                      "retirement_max_lag": {
+                        "default": 50,
+                        "description": "The committed turns an overflow episode may last: at its deadline the lowest-ranked\nuncovered memories are retired anyway (``retired_uncovered``).",
+                        "maximum": 100000.0,
+                        "minimum": 1.0,
+                        "title": "Retirement Max Lag",
+                        "type": "integer"
+                      },
                       "vectors_per_story": {
                         "default": 50000,
+                        "description": "The story's unpinned hot vectors (``hot_vector_budget_per_story``).",
                         "maximum": 10000000.0,
                         "minimum": 1.0,
                         "title": "Vectors Per Story",
@@ -4459,17 +4489,47 @@
                   },
                   "hot_set": {
                     "additionalProperties": false,
-                    "description": "The hot-set budgets of the structured pipeline's memories (FR-MEM-8).",
+                    "description": "The hot set of the structured pipeline's memories (FR-MEM-8, NFR-SCALE-2; #147): the\nunpinned budgets, how retirement ranks and how long an overflow may last, and which vectors\nare kept off the hot set.",
                     "properties": {
+                      "importance_floor": {
+                        "default": 0.2,
+                        "description": "A memory whose decayed importance is below it is retired first, with those already\ncovered by consolidation.",
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "title": "Importance Floor",
+                        "type": "number"
+                      },
                       "memories_per_character": {
                         "default": 2000,
+                        "description": "A character's unpinned hot memories (``hot_memory_budget_per_character``).",
                         "maximum": 100000.0,
                         "minimum": 1.0,
                         "title": "Memories Per Character",
                         "type": "integer"
                       },
+                      "retain_dormant_vectors": {
+                        "default": false,
+                        "description": "Keep the vectors of a dormant or discarded continuation's memories, so a swap or an\nundo that reactivates it restores byte-identical vectors (FR-STORE-30); off, they are\ndropped and re-embedded with the story's pinned embedding model on reactivation.",
+                        "title": "Retain Dormant Vectors",
+                        "type": "boolean"
+                      },
+                      "retain_retired_vectors": {
+                        "default": false,
+                        "description": "Keep a retired memory's vector (and store the one its rehydration computes) instead of\ndropping it; off, a retired memory is re-embedded each time it is rehydrated.",
+                        "title": "Retain Retired Vectors",
+                        "type": "boolean"
+                      },
+                      "retirement_max_lag": {
+                        "default": 50,
+                        "description": "The committed turns an overflow episode may last: at its deadline the lowest-ranked\nuncovered memories are retired anyway (``retired_uncovered``).",
+                        "maximum": 100000.0,
+                        "minimum": 1.0,
+                        "title": "Retirement Max Lag",
+                        "type": "integer"
+                      },
                       "vectors_per_story": {
                         "default": 50000,
+                        "description": "The story's unpinned hot vectors (``hot_vector_budget_per_story``).",
                         "maximum": 10000000.0,
                         "minimum": 1.0,
                         "title": "Vectors Per Story",
@@ -5215,17 +5275,47 @@
                   },
                   "hot_set": {
                     "additionalProperties": false,
-                    "description": "The hot-set budgets of the structured pipeline's memories (FR-MEM-8).",
+                    "description": "The hot set of the structured pipeline's memories (FR-MEM-8, NFR-SCALE-2; #147): the\nunpinned budgets, how retirement ranks and how long an overflow may last, and which vectors\nare kept off the hot set.",
                     "properties": {
+                      "importance_floor": {
+                        "default": 0.2,
+                        "description": "A memory whose decayed importance is below it is retired first, with those already\ncovered by consolidation.",
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "title": "Importance Floor",
+                        "type": "number"
+                      },
                       "memories_per_character": {
                         "default": 2000,
+                        "description": "A character's unpinned hot memories (``hot_memory_budget_per_character``).",
                         "maximum": 100000.0,
                         "minimum": 1.0,
                         "title": "Memories Per Character",
                         "type": "integer"
                       },
+                      "retain_dormant_vectors": {
+                        "default": false,
+                        "description": "Keep the vectors of a dormant or discarded continuation's memories, so a swap or an\nundo that reactivates it restores byte-identical vectors (FR-STORE-30); off, they are\ndropped and re-embedded with the story's pinned embedding model on reactivation.",
+                        "title": "Retain Dormant Vectors",
+                        "type": "boolean"
+                      },
+                      "retain_retired_vectors": {
+                        "default": false,
+                        "description": "Keep a retired memory's vector (and store the one its rehydration computes) instead of\ndropping it; off, a retired memory is re-embedded each time it is rehydrated.",
+                        "title": "Retain Retired Vectors",
+                        "type": "boolean"
+                      },
+                      "retirement_max_lag": {
+                        "default": 50,
+                        "description": "The committed turns an overflow episode may last: at its deadline the lowest-ranked\nuncovered memories are retired anyway (``retired_uncovered``).",
+                        "maximum": 100000.0,
+                        "minimum": 1.0,
+                        "title": "Retirement Max Lag",
+                        "type": "integer"
+                      },
                       "vectors_per_story": {
                         "default": 50000,
+                        "description": "The story's unpinned hot vectors (``hot_vector_budget_per_story``).",
                         "maximum": 10000000.0,
                         "minimum": 1.0,
                         "title": "Vectors Per Story",
@@ -5869,6 +5959,50 @@
         ],
         "title": "EntryStatus",
         "type": "string"
+      },
+      "EpisodeBody": {
+        "description": "One open overflow episode: its set, when it opened, its fixed deadline and its excess.",
+        "properties": {
+          "deadline_turn": {
+            "title": "Deadline Turn",
+            "type": "integer"
+          },
+          "excess": {
+            "title": "Excess",
+            "type": "integer"
+          },
+          "excess_at_open": {
+            "title": "Excess At Open",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "opened_turn": {
+            "title": "Opened Turn",
+            "type": "integer"
+          },
+          "scope": {
+            "title": "Scope",
+            "type": "string"
+          },
+          "scope_id": {
+            "title": "Scope Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "scope",
+          "scope_id",
+          "opened_turn",
+          "deadline_turn",
+          "excess_at_open",
+          "excess"
+        ],
+        "title": "EpisodeBody",
+        "type": "object"
       },
       "ErasureBody": {
         "description": "What the erasure did, or (``dry_run``) would do.",
@@ -8650,6 +8784,172 @@
         "title": "HonestyDispositionPatch",
         "type": "object"
       },
+      "HotCountsBody": {
+        "description": "Each character's unpinned hot memories (characters with none left out) and the story's\nunpinned hot vectors.",
+        "properties": {
+          "characters": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Characters",
+            "type": "object"
+          },
+          "story_vectors": {
+            "title": "Story Vectors",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "characters",
+          "story_vectors"
+        ],
+        "title": "HotCountsBody",
+        "type": "object"
+      },
+      "HotSetBody": {
+        "description": "``GET /admin/stories/{id}/hot-set``.",
+        "properties": {
+          "budgets": {
+            "$ref": "#/components/schemas/HotSetBudgets"
+          },
+          "counters": {
+            "$ref": "#/components/schemas/HotCountsBody"
+          },
+          "episodic": {
+            "title": "Episodic",
+            "type": "boolean"
+          },
+          "head_turn": {
+            "title": "Head Turn",
+            "type": "integer"
+          },
+          "open_episodes": {
+            "items": {
+              "$ref": "#/components/schemas/EpisodeBody"
+            },
+            "title": "Open Episodes",
+            "type": "array"
+          },
+          "pins": {
+            "$ref": "#/components/schemas/HotSetPins"
+          },
+          "recent_retirements": {
+            "items": {
+              "$ref": "#/components/schemas/RetirementBody"
+            },
+            "title": "Recent Retirements",
+            "type": "array"
+          },
+          "stored_counters": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HotCountsBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "story_id": {
+            "title": "Story Id",
+            "type": "string"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "story_id",
+          "episodic",
+          "counters",
+          "stored_counters",
+          "budgets",
+          "pins",
+          "head_turn",
+          "open_episodes",
+          "recent_retirements",
+          "timeline_revision"
+        ],
+        "title": "HotSetBody",
+        "type": "object"
+      },
+      "HotSetBudgets": {
+        "description": "The story's ``memory.hot_set.*`` dials and the deployment's pin ceilings.",
+        "properties": {
+          "importance_floor": {
+            "title": "Importance Floor",
+            "type": "number"
+          },
+          "max_pinned_per_character": {
+            "title": "Max Pinned Per Character",
+            "type": "integer"
+          },
+          "max_pinned_per_story": {
+            "title": "Max Pinned Per Story",
+            "type": "integer"
+          },
+          "memories_per_character": {
+            "title": "Memories Per Character",
+            "type": "integer"
+          },
+          "retain_dormant_vectors": {
+            "title": "Retain Dormant Vectors",
+            "type": "boolean"
+          },
+          "retain_retired_vectors": {
+            "title": "Retain Retired Vectors",
+            "type": "boolean"
+          },
+          "retirement_max_lag": {
+            "title": "Retirement Max Lag",
+            "type": "integer"
+          },
+          "vectors_per_story": {
+            "title": "Vectors Per Story",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "memories_per_character",
+          "vectors_per_story",
+          "importance_floor",
+          "retirement_max_lag",
+          "retain_retired_vectors",
+          "retain_dormant_vectors",
+          "max_pinned_per_character",
+          "max_pinned_per_story"
+        ],
+        "title": "HotSetBudgets",
+        "type": "object"
+      },
+      "HotSetPins": {
+        "description": "The story's pinned memories (all, and per holding character) and its text pins: the\nstory ceiling counts both.",
+        "properties": {
+          "by_character": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "By Character",
+            "type": "object"
+          },
+          "memory_pins": {
+            "title": "Memory Pins",
+            "type": "integer"
+          },
+          "text_pins": {
+            "title": "Text Pins",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "memory_pins",
+          "text_pins",
+          "by_character"
+        ],
+        "title": "HotSetPins",
+        "type": "object"
+      },
       "ImpactPreviewRequest": {
         "additionalProperties": false,
         "description": "``POST /stories/{id}/impact-preview``: the change to preview, a profile to assign\n(``profile_id``), a change of the story's overrides (``overrides``: a JSON merge patch over\nthem, as ``PATCH /stories/{id}/profile-overrides`` takes its ``settings``, so ``null``\nremoves an override), or both at once. Nothing is written.",
@@ -8976,15 +9276,72 @@
                             "anyOf": [
                               {
                                 "additionalProperties": false,
-                                "description": "The hot-set budgets of the structured pipeline's memories (FR-MEM-8).",
+                                "description": "The hot set of the structured pipeline's memories (FR-MEM-8, NFR-SCALE-2; #147): the\nunpinned budgets, how retirement ranks and how long an overflow may last, and which vectors\nare kept off the hot set.",
                                 "properties": {
+                                  "importance_floor": {
+                                    "anyOf": [
+                                      {
+                                        "default": 0.2,
+                                        "description": "A memory whose decayed importance is below it is retired first, with those already\ncovered by consolidation.",
+                                        "maximum": 1.0,
+                                        "minimum": 0.0,
+                                        "title": "Importance Floor",
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
                                   "memories_per_character": {
                                     "anyOf": [
                                       {
                                         "default": 2000,
+                                        "description": "A character's unpinned hot memories (``hot_memory_budget_per_character``).",
                                         "maximum": 100000.0,
                                         "minimum": 1.0,
                                         "title": "Memories Per Character",
+                                        "type": "integer"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "retain_dormant_vectors": {
+                                    "anyOf": [
+                                      {
+                                        "default": false,
+                                        "description": "Keep the vectors of a dormant or discarded continuation's memories, so a swap or an\nundo that reactivates it restores byte-identical vectors (FR-STORE-30); off, they are\ndropped and re-embedded with the story's pinned embedding model on reactivation.",
+                                        "title": "Retain Dormant Vectors",
+                                        "type": "boolean"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "retain_retired_vectors": {
+                                    "anyOf": [
+                                      {
+                                        "default": false,
+                                        "description": "Keep a retired memory's vector (and store the one its rehydration computes) instead of\ndropping it; off, a retired memory is re-embedded each time it is rehydrated.",
+                                        "title": "Retain Retired Vectors",
+                                        "type": "boolean"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "retirement_max_lag": {
+                                    "anyOf": [
+                                      {
+                                        "default": 50,
+                                        "description": "The committed turns an overflow episode may last: at its deadline the lowest-ranked\nuncovered memories are retired anyway (``retired_uncovered``).",
+                                        "maximum": 100000.0,
+                                        "minimum": 1.0,
+                                        "title": "Retirement Max Lag",
                                         "type": "integer"
                                       },
                                       {
@@ -8996,6 +9353,7 @@
                                     "anyOf": [
                                       {
                                         "default": 50000,
+                                        "description": "The story's unpinned hot vectors (``hot_vector_budget_per_story``).",
                                         "maximum": 10000000.0,
                                         "minimum": 1.0,
                                         "title": "Vectors Per Story",
@@ -11041,7 +11399,7 @@
         "type": "string"
       },
       "MemoryView": {
-        "description": "A memory as the omniscient admin reads it, its quarantine state included.",
+        "description": "A memory as the omniscient admin reads it, its quarantine state, its retrieval tier (and\nwhy it was retired) and its pin included (#147).",
         "properties": {
           "beat": {
             "anyOf": [
@@ -11107,6 +11465,22 @@
             ],
             "title": "Narrative Turn"
           },
+          "pinned": {
+            "default": false,
+            "title": "Pinned",
+            "type": "boolean"
+          },
+          "pinned_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pinned By"
+          },
           "provenance": {
             "$ref": "#/components/schemas/RecordProvenance"
           },
@@ -11148,6 +11522,21 @@
               }
             ],
             "title": "Quarantined By"
+          },
+          "retired_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retired Reason"
+          },
+          "retrieval_tier": {
+            "$ref": "#/components/schemas/RetrievalTier",
+            "default": "hot"
           },
           "text": {
             "title": "Text",
@@ -12893,17 +13282,47 @@
                   },
                   "hot_set": {
                     "additionalProperties": false,
-                    "description": "The hot-set budgets of the structured pipeline's memories (FR-MEM-8).",
+                    "description": "The hot set of the structured pipeline's memories (FR-MEM-8, NFR-SCALE-2; #147): the\nunpinned budgets, how retirement ranks and how long an overflow may last, and which vectors\nare kept off the hot set.",
                     "properties": {
+                      "importance_floor": {
+                        "default": 0.2,
+                        "description": "A memory whose decayed importance is below it is retired first, with those already\ncovered by consolidation.",
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "title": "Importance Floor",
+                        "type": "number"
+                      },
                       "memories_per_character": {
                         "default": 2000,
+                        "description": "A character's unpinned hot memories (``hot_memory_budget_per_character``).",
                         "maximum": 100000.0,
                         "minimum": 1.0,
                         "title": "Memories Per Character",
                         "type": "integer"
                       },
+                      "retain_dormant_vectors": {
+                        "default": false,
+                        "description": "Keep the vectors of a dormant or discarded continuation's memories, so a swap or an\nundo that reactivates it restores byte-identical vectors (FR-STORE-30); off, they are\ndropped and re-embedded with the story's pinned embedding model on reactivation.",
+                        "title": "Retain Dormant Vectors",
+                        "type": "boolean"
+                      },
+                      "retain_retired_vectors": {
+                        "default": false,
+                        "description": "Keep a retired memory's vector (and store the one its rehydration computes) instead of\ndropping it; off, a retired memory is re-embedded each time it is rehydrated.",
+                        "title": "Retain Retired Vectors",
+                        "type": "boolean"
+                      },
+                      "retirement_max_lag": {
+                        "default": 50,
+                        "description": "The committed turns an overflow episode may last: at its deadline the lowest-ranked\nuncovered memories are retired anyway (``retired_uncovered``).",
+                        "maximum": 100000.0,
+                        "minimum": 1.0,
+                        "title": "Retirement Max Lag",
+                        "type": "integer"
+                      },
                       "vectors_per_story": {
                         "default": 50000,
+                        "description": "The story's unpinned hot vectors (``hot_vector_budget_per_story``).",
                         "maximum": 10000000.0,
                         "minimum": 1.0,
                         "title": "Vectors Per Story",
@@ -15373,17 +15792,47 @@
                   },
                   "hot_set": {
                     "additionalProperties": false,
-                    "description": "The hot-set budgets of the structured pipeline's memories (FR-MEM-8).",
+                    "description": "The hot set of the structured pipeline's memories (FR-MEM-8, NFR-SCALE-2; #147): the\nunpinned budgets, how retirement ranks and how long an overflow may last, and which vectors\nare kept off the hot set.",
                     "properties": {
+                      "importance_floor": {
+                        "default": 0.2,
+                        "description": "A memory whose decayed importance is below it is retired first, with those already\ncovered by consolidation.",
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "title": "Importance Floor",
+                        "type": "number"
+                      },
                       "memories_per_character": {
                         "default": 2000,
+                        "description": "A character's unpinned hot memories (``hot_memory_budget_per_character``).",
                         "maximum": 100000.0,
                         "minimum": 1.0,
                         "title": "Memories Per Character",
                         "type": "integer"
                       },
+                      "retain_dormant_vectors": {
+                        "default": false,
+                        "description": "Keep the vectors of a dormant or discarded continuation's memories, so a swap or an\nundo that reactivates it restores byte-identical vectors (FR-STORE-30); off, they are\ndropped and re-embedded with the story's pinned embedding model on reactivation.",
+                        "title": "Retain Dormant Vectors",
+                        "type": "boolean"
+                      },
+                      "retain_retired_vectors": {
+                        "default": false,
+                        "description": "Keep a retired memory's vector (and store the one its rehydration computes) instead of\ndropping it; off, a retired memory is re-embedded each time it is rehydrated.",
+                        "title": "Retain Retired Vectors",
+                        "type": "boolean"
+                      },
+                      "retirement_max_lag": {
+                        "default": 50,
+                        "description": "The committed turns an overflow episode may last: at its deadline the lowest-ranked\nuncovered memories are retired anyway (``retired_uncovered``).",
+                        "maximum": 100000.0,
+                        "minimum": 1.0,
+                        "title": "Retirement Max Lag",
+                        "type": "integer"
+                      },
                       "vectors_per_story": {
                         "default": 50000,
+                        "description": "The story's unpinned hot vectors (``hot_vector_budget_per_story``).",
                         "maximum": 10000000.0,
                         "minimum": 1.0,
                         "title": "Vectors Per Story",
@@ -15990,17 +16439,47 @@
                   },
                   "hot_set": {
                     "additionalProperties": false,
-                    "description": "The hot-set budgets of the structured pipeline's memories (FR-MEM-8).",
+                    "description": "The hot set of the structured pipeline's memories (FR-MEM-8, NFR-SCALE-2; #147): the\nunpinned budgets, how retirement ranks and how long an overflow may last, and which vectors\nare kept off the hot set.",
                     "properties": {
+                      "importance_floor": {
+                        "default": 0.2,
+                        "description": "A memory whose decayed importance is below it is retired first, with those already\ncovered by consolidation.",
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "title": "Importance Floor",
+                        "type": "number"
+                      },
                       "memories_per_character": {
                         "default": 2000,
+                        "description": "A character's unpinned hot memories (``hot_memory_budget_per_character``).",
                         "maximum": 100000.0,
                         "minimum": 1.0,
                         "title": "Memories Per Character",
                         "type": "integer"
                       },
+                      "retain_dormant_vectors": {
+                        "default": false,
+                        "description": "Keep the vectors of a dormant or discarded continuation's memories, so a swap or an\nundo that reactivates it restores byte-identical vectors (FR-STORE-30); off, they are\ndropped and re-embedded with the story's pinned embedding model on reactivation.",
+                        "title": "Retain Dormant Vectors",
+                        "type": "boolean"
+                      },
+                      "retain_retired_vectors": {
+                        "default": false,
+                        "description": "Keep a retired memory's vector (and store the one its rehydration computes) instead of\ndropping it; off, a retired memory is re-embedded each time it is rehydrated.",
+                        "title": "Retain Retired Vectors",
+                        "type": "boolean"
+                      },
+                      "retirement_max_lag": {
+                        "default": 50,
+                        "description": "The committed turns an overflow episode may last: at its deadline the lowest-ranked\nuncovered memories are retired anyway (``retired_uncovered``).",
+                        "maximum": 100000.0,
+                        "minimum": 1.0,
+                        "title": "Retirement Max Lag",
+                        "type": "integer"
+                      },
                       "vectors_per_story": {
                         "default": 50000,
+                        "description": "The story's unpinned hot vectors (``hot_vector_budget_per_story``).",
                         "maximum": 10000000.0,
                         "minimum": 1.0,
                         "title": "Vectors Per Story",
@@ -16829,15 +17308,72 @@
                         "anyOf": [
                           {
                             "additionalProperties": false,
-                            "description": "The hot-set budgets of the structured pipeline's memories (FR-MEM-8).",
+                            "description": "The hot set of the structured pipeline's memories (FR-MEM-8, NFR-SCALE-2; #147): the\nunpinned budgets, how retirement ranks and how long an overflow may last, and which vectors\nare kept off the hot set.",
                             "properties": {
+                              "importance_floor": {
+                                "anyOf": [
+                                  {
+                                    "default": 0.2,
+                                    "description": "A memory whose decayed importance is below it is retired first, with those already\ncovered by consolidation.",
+                                    "maximum": 1.0,
+                                    "minimum": 0.0,
+                                    "title": "Importance Floor",
+                                    "type": "number"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
                               "memories_per_character": {
                                 "anyOf": [
                                   {
                                     "default": 2000,
+                                    "description": "A character's unpinned hot memories (``hot_memory_budget_per_character``).",
                                     "maximum": 100000.0,
                                     "minimum": 1.0,
                                     "title": "Memories Per Character",
+                                    "type": "integer"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "retain_dormant_vectors": {
+                                "anyOf": [
+                                  {
+                                    "default": false,
+                                    "description": "Keep the vectors of a dormant or discarded continuation's memories, so a swap or an\nundo that reactivates it restores byte-identical vectors (FR-STORE-30); off, they are\ndropped and re-embedded with the story's pinned embedding model on reactivation.",
+                                    "title": "Retain Dormant Vectors",
+                                    "type": "boolean"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "retain_retired_vectors": {
+                                "anyOf": [
+                                  {
+                                    "default": false,
+                                    "description": "Keep a retired memory's vector (and store the one its rehydration computes) instead of\ndropping it; off, a retired memory is re-embedded each time it is rehydrated.",
+                                    "title": "Retain Retired Vectors",
+                                    "type": "boolean"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "retirement_max_lag": {
+                                "anyOf": [
+                                  {
+                                    "default": 50,
+                                    "description": "The committed turns an overflow episode may last: at its deadline the lowest-ranked\nuncovered memories are retired anyway (``retired_uncovered``).",
+                                    "maximum": 100000.0,
+                                    "minimum": 1.0,
+                                    "title": "Retirement Max Lag",
                                     "type": "integer"
                                   },
                                   {
@@ -16849,6 +17385,7 @@
                                 "anyOf": [
                                   {
                                     "default": 50000,
+                                    "description": "The story's unpinned hot vectors (``hot_vector_budget_per_story``).",
                                     "maximum": 10000000.0,
                                     "minimum": 1.0,
                                     "title": "Vectors Per Story",
@@ -17705,17 +18242,47 @@
                   },
                   "hot_set": {
                     "additionalProperties": false,
-                    "description": "The hot-set budgets of the structured pipeline's memories (FR-MEM-8).",
+                    "description": "The hot set of the structured pipeline's memories (FR-MEM-8, NFR-SCALE-2; #147): the\nunpinned budgets, how retirement ranks and how long an overflow may last, and which vectors\nare kept off the hot set.",
                     "properties": {
+                      "importance_floor": {
+                        "default": 0.2,
+                        "description": "A memory whose decayed importance is below it is retired first, with those already\ncovered by consolidation.",
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "title": "Importance Floor",
+                        "type": "number"
+                      },
                       "memories_per_character": {
                         "default": 2000,
+                        "description": "A character's unpinned hot memories (``hot_memory_budget_per_character``).",
                         "maximum": 100000.0,
                         "minimum": 1.0,
                         "title": "Memories Per Character",
                         "type": "integer"
                       },
+                      "retain_dormant_vectors": {
+                        "default": false,
+                        "description": "Keep the vectors of a dormant or discarded continuation's memories, so a swap or an\nundo that reactivates it restores byte-identical vectors (FR-STORE-30); off, they are\ndropped and re-embedded with the story's pinned embedding model on reactivation.",
+                        "title": "Retain Dormant Vectors",
+                        "type": "boolean"
+                      },
+                      "retain_retired_vectors": {
+                        "default": false,
+                        "description": "Keep a retired memory's vector (and store the one its rehydration computes) instead of\ndropping it; off, a retired memory is re-embedded each time it is rehydrated.",
+                        "title": "Retain Retired Vectors",
+                        "type": "boolean"
+                      },
+                      "retirement_max_lag": {
+                        "default": 50,
+                        "description": "The committed turns an overflow episode may last: at its deadline the lowest-ranked\nuncovered memories are retired anyway (``retired_uncovered``).",
+                        "maximum": 100000.0,
+                        "minimum": 1.0,
+                        "title": "Retirement Max Lag",
+                        "type": "integer"
+                      },
                       "vectors_per_story": {
                         "default": 50000,
+                        "description": "The story's unpinned hot vectors (``hot_vector_budget_per_story``).",
                         "maximum": 10000000.0,
                         "minimum": 1.0,
                         "title": "Vectors Per Story",
@@ -18253,17 +18820,47 @@
                       },
                       "hot_set": {
                         "additionalProperties": false,
-                        "description": "The hot-set budgets of the structured pipeline's memories (FR-MEM-8).",
+                        "description": "The hot set of the structured pipeline's memories (FR-MEM-8, NFR-SCALE-2; #147): the\nunpinned budgets, how retirement ranks and how long an overflow may last, and which vectors\nare kept off the hot set.",
                         "properties": {
+                          "importance_floor": {
+                            "default": 0.2,
+                            "description": "A memory whose decayed importance is below it is retired first, with those already\ncovered by consolidation.",
+                            "maximum": 1.0,
+                            "minimum": 0.0,
+                            "title": "Importance Floor",
+                            "type": "number"
+                          },
                           "memories_per_character": {
                             "default": 2000,
+                            "description": "A character's unpinned hot memories (``hot_memory_budget_per_character``).",
                             "maximum": 100000.0,
                             "minimum": 1.0,
                             "title": "Memories Per Character",
                             "type": "integer"
                           },
+                          "retain_dormant_vectors": {
+                            "default": false,
+                            "description": "Keep the vectors of a dormant or discarded continuation's memories, so a swap or an\nundo that reactivates it restores byte-identical vectors (FR-STORE-30); off, they are\ndropped and re-embedded with the story's pinned embedding model on reactivation.",
+                            "title": "Retain Dormant Vectors",
+                            "type": "boolean"
+                          },
+                          "retain_retired_vectors": {
+                            "default": false,
+                            "description": "Keep a retired memory's vector (and store the one its rehydration computes) instead of\ndropping it; off, a retired memory is re-embedded each time it is rehydrated.",
+                            "title": "Retain Retired Vectors",
+                            "type": "boolean"
+                          },
+                          "retirement_max_lag": {
+                            "default": 50,
+                            "description": "The committed turns an overflow episode may last: at its deadline the lowest-ranked\nuncovered memories are retired anyway (``retired_uncovered``).",
+                            "maximum": 100000.0,
+                            "minimum": 1.0,
+                            "title": "Retirement Max Lag",
+                            "type": "integer"
+                          },
                           "vectors_per_story": {
                             "default": 50000,
+                            "description": "The story's unpinned hot vectors (``hot_vector_budget_per_story``).",
                             "maximum": 10000000.0,
                             "minimum": 1.0,
                             "title": "Vectors Per Story",
@@ -21409,6 +22006,69 @@
         "title": "RespondResponse",
         "type": "object"
       },
+      "RetirementBody": {
+        "description": "One retired memory (identifiers only).",
+        "properties": {
+          "holder_character_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Holder Character Id"
+          },
+          "memory_id": {
+            "title": "Memory Id",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "retired_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retired At"
+          },
+          "retired_turn": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retired Turn"
+          }
+        },
+        "required": [
+          "memory_id",
+          "reason",
+          "retired_turn",
+          "retired_at",
+          "holder_character_id"
+        ],
+        "title": "RetirementBody",
+        "type": "object"
+      },
       "RetrievalBody": {
         "description": "What a structured render's context would retrieve for the query (FR-RET-2..7).",
         "properties": {
@@ -21530,6 +22190,15 @@
         ],
         "title": "RetrievalBody",
         "type": "object"
+      },
+      "RetrievalTier": {
+        "description": "Whether a memory is searched (FR-MEM-8; #135 creates it, #147 retires): ``hot`` or\n``retired``, independent of timeline membership. Postgres enum ``retrieval_tier``.",
+        "enum": [
+          "hot",
+          "retired"
+        ],
+        "title": "RetrievalTier",
+        "type": "string"
       },
       "RetrievedMemoryBody": {
         "description": "One returned memory: its id, kind, text and position, its actor, occasion and\nparticipants, its retrieval tier (``retired``: rehydrated for this query, its tier\nunchanged), its importance, the arms that found it and, for a ranked memory, its score and\nthe terms it came from (fused similarity, recency, decayed importance).",
@@ -24254,6 +24923,20 @@
             "title": "Max Pinned Memories",
             "type": "integer"
           },
+          "max_pinned_per_character": {
+            "default": 200,
+            "maximum": 10000.0,
+            "minimum": 1.0,
+            "title": "Max Pinned Per Character",
+            "type": "integer"
+          },
+          "max_pinned_per_story": {
+            "default": 2000,
+            "maximum": 100000.0,
+            "minimum": 1.0,
+            "title": "Max Pinned Per Story",
+            "type": "integer"
+          },
           "media_allowed_types": {
             "items": {
               "pattern": "^[a-z0-9][a-z0-9!#$&^_.+-]{0,62}/[a-z0-9][a-z0-9!#$&^_.+-]{0,62}$",
@@ -24510,17 +25193,47 @@
                   },
                   "hot_set": {
                     "additionalProperties": false,
-                    "description": "The hot-set budgets of the structured pipeline's memories (FR-MEM-8).",
+                    "description": "The hot set of the structured pipeline's memories (FR-MEM-8, NFR-SCALE-2; #147): the\nunpinned budgets, how retirement ranks and how long an overflow may last, and which vectors\nare kept off the hot set.",
                     "properties": {
+                      "importance_floor": {
+                        "default": 0.2,
+                        "description": "A memory whose decayed importance is below it is retired first, with those already\ncovered by consolidation.",
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "title": "Importance Floor",
+                        "type": "number"
+                      },
                       "memories_per_character": {
                         "default": 2000,
+                        "description": "A character's unpinned hot memories (``hot_memory_budget_per_character``).",
                         "maximum": 100000.0,
                         "minimum": 1.0,
                         "title": "Memories Per Character",
                         "type": "integer"
                       },
+                      "retain_dormant_vectors": {
+                        "default": false,
+                        "description": "Keep the vectors of a dormant or discarded continuation's memories, so a swap or an\nundo that reactivates it restores byte-identical vectors (FR-STORE-30); off, they are\ndropped and re-embedded with the story's pinned embedding model on reactivation.",
+                        "title": "Retain Dormant Vectors",
+                        "type": "boolean"
+                      },
+                      "retain_retired_vectors": {
+                        "default": false,
+                        "description": "Keep a retired memory's vector (and store the one its rehydration computes) instead of\ndropping it; off, a retired memory is re-embedded each time it is rehydrated.",
+                        "title": "Retain Retired Vectors",
+                        "type": "boolean"
+                      },
+                      "retirement_max_lag": {
+                        "default": 50,
+                        "description": "The committed turns an overflow episode may last: at its deadline the lowest-ranked\nuncovered memories are retired anyway (``retired_uncovered``).",
+                        "maximum": 100000.0,
+                        "minimum": 1.0,
+                        "title": "Retirement Max Lag",
+                        "type": "integer"
+                      },
                       "vectors_per_story": {
                         "default": 50000,
+                        "description": "The story's unpinned hot vectors (``hot_vector_budget_per_story``).",
                         "maximum": 10000000.0,
                         "minimum": 1.0,
                         "title": "Vectors Per Story",
@@ -25278,6 +25991,28 @@
             ],
             "title": "Max Pinned Memories"
           },
+          "max_pinned_per_character": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Pinned Per Character"
+          },
+          "max_pinned_per_story": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Pinned Per Story"
+          },
           "media_allowed_types": {
             "anyOf": [
               {
@@ -25579,17 +26314,47 @@
                       },
                       "hot_set": {
                         "additionalProperties": false,
-                        "description": "The hot-set budgets of the structured pipeline's memories (FR-MEM-8).",
+                        "description": "The hot set of the structured pipeline's memories (FR-MEM-8, NFR-SCALE-2; #147): the\nunpinned budgets, how retirement ranks and how long an overflow may last, and which vectors\nare kept off the hot set.",
                         "properties": {
+                          "importance_floor": {
+                            "default": 0.2,
+                            "description": "A memory whose decayed importance is below it is retired first, with those already\ncovered by consolidation.",
+                            "maximum": 1.0,
+                            "minimum": 0.0,
+                            "title": "Importance Floor",
+                            "type": "number"
+                          },
                           "memories_per_character": {
                             "default": 2000,
+                            "description": "A character's unpinned hot memories (``hot_memory_budget_per_character``).",
                             "maximum": 100000.0,
                             "minimum": 1.0,
                             "title": "Memories Per Character",
                             "type": "integer"
                           },
+                          "retain_dormant_vectors": {
+                            "default": false,
+                            "description": "Keep the vectors of a dormant or discarded continuation's memories, so a swap or an\nundo that reactivates it restores byte-identical vectors (FR-STORE-30); off, they are\ndropped and re-embedded with the story's pinned embedding model on reactivation.",
+                            "title": "Retain Dormant Vectors",
+                            "type": "boolean"
+                          },
+                          "retain_retired_vectors": {
+                            "default": false,
+                            "description": "Keep a retired memory's vector (and store the one its rehydration computes) instead of\ndropping it; off, a retired memory is re-embedded each time it is rehydrated.",
+                            "title": "Retain Retired Vectors",
+                            "type": "boolean"
+                          },
+                          "retirement_max_lag": {
+                            "default": 50,
+                            "description": "The committed turns an overflow episode may last: at its deadline the lowest-ranked\nuncovered memories are retired anyway (``retired_uncovered``).",
+                            "maximum": 100000.0,
+                            "minimum": 1.0,
+                            "title": "Retirement Max Lag",
+                            "type": "integer"
+                          },
                           "vectors_per_story": {
                             "default": 50000,
+                            "description": "The story's unpinned hot vectors (``hot_vector_budget_per_story``).",
                             "maximum": 10000000.0,
                             "minimum": 1.0,
                             "title": "Vectors Per Story",
@@ -29655,6 +30420,8 @@
                           "max_custom_instructions_chars",
                           "max_model_calls_per_turn",
                           "max_pinned_memories",
+                          "max_pinned_per_character",
+                          "max_pinned_per_story",
                           "media_allowed_types",
                           "media_max_bytes",
                           "media_moderation_timeout_ms",
@@ -29701,7 +30468,11 @@
                           "profile_defaults.memory.episodic.weight_recency",
                           "profile_defaults.memory.episodic.weight_similarity",
                           "profile_defaults.memory.hot_set",
+                          "profile_defaults.memory.hot_set.importance_floor",
                           "profile_defaults.memory.hot_set.memories_per_character",
+                          "profile_defaults.memory.hot_set.retain_dormant_vectors",
+                          "profile_defaults.memory.hot_set.retain_retired_vectors",
+                          "profile_defaults.memory.hot_set.retirement_max_lag",
                           "profile_defaults.memory.hot_set.vectors_per_story",
                           "profile_defaults.memory.rolling_summary",
                           "profile_defaults.memory.rolling_summary.compress_threshold_tokens",
@@ -34979,6 +35750,106 @@
           }
         ],
         "summary": "Supersede a fact version",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/stories/{story_id}/hot-set": {
+      "get": {
+        "description": "The story's retrieval-eligible memories at a glance (FR-MEM-8, NFR-SCALE-2): each character's unpinned hot memories and the story's unpinned hot vectors (recounted now, and as stored), the `memory.hot_set.*` budgets and the deployment's pin ceilings, the story's pins, its open overflow episodes (each with its fixed deadline turn and its excess) and its latest 20 retirements. Identifiers and counts only. A read: nothing is written.",
+        "operationId": "hot_set",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HotSetBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read a story's hot set",
         "tags": [
           "admin"
         ]
@@ -48844,7 +49715,11 @@
                           "profile_overrides.memory.episodic.weight_recency",
                           "profile_overrides.memory.episodic.weight_similarity",
                           "profile_overrides.memory.hot_set",
+                          "profile_overrides.memory.hot_set.importance_floor",
                           "profile_overrides.memory.hot_set.memories_per_character",
+                          "profile_overrides.memory.hot_set.retain_dormant_vectors",
+                          "profile_overrides.memory.hot_set.retain_retired_vectors",
+                          "profile_overrides.memory.hot_set.retirement_max_lag",
                           "profile_overrides.memory.hot_set.vectors_per_story",
                           "profile_overrides.memory.rolling_summary",
                           "profile_overrides.memory.rolling_summary.compress_threshold_tokens",
@@ -51163,6 +52038,366 @@
         ]
       }
     },
+    "/stories/{story_id}/memories/{memory_id}/pin": {
+      "delete": {
+        "description": "Remove the pin: the memory counts toward the story's hot-set budgets again, so an unpin above budget starts an overflow episode (FR-MEM-8). A memory that is not pinned answers unchanged.\n\nA position-less `control` operation that bumps the story's timeline revision, so a turn generating meanwhile revalidates before it commits. 404 for an unknown memory. `Idempotency-Key` and `X-Epistrel-Expected-Revision` are optional.",
+        "operationId": "unpin_memory",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The memory's id (a ULID).",
+            "in": "path",
+            "name": "memory_id",
+            "required": true,
+            "schema": {
+              "description": "The memory's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C4"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Memory Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryWritten"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Remove a memory's pin",
+        "tags": [
+          "stories"
+        ]
+      },
+      "post": {
+        "description": "Pin the memory (FR-MEM-8): it is outside the story's hot-set budgets and never retired (a retired memory returns to the hot set), and every structured render's context carries it unless it is quarantined. A character may hold at most `max_pinned_per_character` pinned memories and a story `max_pinned_per_story` (its text pins included), deployment settings: past either, 422 `pin_limit_exceeded` with `details.scope` (`character` or `story`), `limit` and `actual`. A pinned memory answers unchanged.\n\nA position-less `control` operation that bumps the story's timeline revision, so a turn generating meanwhile revalidates before it commits. 404 for an unknown memory. `Idempotency-Key` and `X-Epistrel-Expected-Revision` are optional.",
+        "operationId": "pin_memory",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The memory's id (a ULID).",
+            "in": "path",
+            "name": "memory_id",
+            "required": true,
+            "schema": {
+              "description": "The memory's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C4"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Memory Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryWritten"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `pin_limit_exceeded`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Pin a memory",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
     "/stories/{story_id}/messages/{message_id}/feedback": {
       "delete": {
         "description": "Retract the requesting principal's rating of the message: it is removed and its final value stays in the history. 204 also when there is no rating to retract; 404 for an unknown message. A rating after a retraction is a new one (201). The call takes no `Idempotency-Key`. Feedback is an audit record that changes nothing in the story: no view, prompt, retrieval or summary reads it, and no amount of it changes how the next message is generated.",
@@ -51996,7 +53231,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `guardrail_violation`, `validation_error`."
+            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `guardrail_violation`, `pin_limit_exceeded`, `validation_error`."
           },
           "503": {
             "content": {

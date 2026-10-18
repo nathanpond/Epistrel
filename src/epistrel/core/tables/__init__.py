@@ -23,6 +23,7 @@ from epistrel.core.tables.erasure import erasure_ledger
 from epistrel.core.tables.events import events
 from epistrel.core.tables.facts import facts
 from epistrel.core.tables.genesis import genesis_deferred
+from epistrel.core.tables.hot_set import overflow_episodes
 from epistrel.core.tables.idempotency import idempotency_keys
 from epistrel.core.tables.jobs import jobs
 from epistrel.core.tables.media import media_assets, subject_references
@@ -94,6 +95,7 @@ __all__ = [
     "model_config",
     "offboarding_jobs",
     "operations",
+    "overflow_episodes",
     "ownership_events",
     "personas",
     "placement",

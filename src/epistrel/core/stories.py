@@ -150,6 +150,7 @@ from epistrel.core.tables.commitments import promissory_ledger, thunks
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 from epistrel.core.tables.facts import facts
 from epistrel.core.tables.feedback import feedback_history, message_feedback
+from epistrel.core.tables.hot_set import overflow_episodes
 from epistrel.core.tables.media import MediaKind
 from epistrel.core.tables.memories import memories
 from epistrel.core.tables.ownership import EntityType
@@ -205,6 +206,8 @@ STORY_TABLES: tuple[Table, ...] = (
     facts,
     # Memory records (#135): a derived table, before the operations it references.
     memories,
+    # The hot set's overflow episodes (#147): maintenance state, no foreign key.
+    overflow_episodes,
     # The structured read set's change index (#136), before the operations it references.
     proposition_changes,
     # The structured stores (#131): story rows only (core predicates have no story).
@@ -237,6 +240,7 @@ STORY_TABLES_NOT_COPIED: frozenset[str] = frozenset(
         rating_check_jobs.name,
         guardrail_check_results.name,
         proposition_changes.name,
+        overflow_episodes.name,
     }
 )
 """Story-scoped tables a fork (#67) leaves behind: work in progress (``jobs``, the turn queue,
@@ -246,8 +250,10 @@ records, idempotency keys (a fork answers its own requests), the subject-referen
 (#112: a rating belongs to the message it rated, FR-FB-2; the fork's copy of a message is a
 new message that starts unrated, and copying would count one rating twice), and a rating
 change's check and verdict cache (#118: a check is the source's work, and the cache's record
-keys name the source's events), and the read set's change index (#136: it records what changed
-under the source's turns; the fork's turns begin from its own revision). Every other table
+keys name the source's events), the read set's change index (#136: it records what changed
+under the source's turns; the fork's turns begin from its own revision), and the hot set's
+overflow episodes (#147: maintenance state; the fork recounts its counters and its next commit
+opens the episodes it needs). Every other table
 in ``STORY_TABLES`` is copied by ``core.fork``, so a new story-scoped table is copied unless it
 is named here."""
 

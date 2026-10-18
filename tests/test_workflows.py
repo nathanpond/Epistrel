@@ -257,6 +257,28 @@ def test_redteam_runs_nightly_and_on_dispatch_and_reports_a_red_run() -> None:
     assert "redteam_long" not in pytest_step["run"]
 
 
+def test_soak_runs_weekly_and_on_dispatch_and_reports_a_red_run() -> None:
+    """#147: X-01's soak every Sunday (05:00 UTC) and on dispatch, under a two-hour budget, with
+    the log uploaded; a red run files or comments on an issue. PR CI names no `soak`, so the
+    conftest deselects it there (the complement)."""
+    wf = _workflow("soak.yml")
+    triggers = _on(wf)
+    assert triggers["schedule"] == [{"cron": "0 5 * * 0"}]
+    assert "workflow_dispatch" in triggers
+    assert wf["permissions"] == {"contents": "read"}
+    job = wf["jobs"]["soak"]
+    assert job["permissions"] == {"contents": "read", "issues": "write"}
+    assert job["timeout-minutes"] == 120
+    run = next(s for s in _steps(wf, "soak") if s.get("id") == "soak")
+    assert "-m soak" in run["run"]
+    report = next(s for s in _steps(wf, "soak") if s.get("name") == "Report a red run")
+    assert "Weekly soak run failed" in report["run"]
+    (pytest_step,) = [
+        s for s in _steps(_workflow("ci.yml"), "test") if "pytest" in s.get("run", "")
+    ]
+    assert "soak" not in pytest_step["run"]
+
+
 def test_pr_ci_runs_only_the_quick_chaos_tests() -> None:
     """Complement of the weekly run: the gate deselects `chaos` tests not marked `chaos_quick`,
     and (#76) `perf_long` tests not marked `perf_quick`."""

@@ -911,3 +911,70 @@ def test_the_commitment_tables_and_lifecycle_guard(scratch_database: str) -> Non
         assert "commit_state" not in guard()
     finally:
         engine.dispose()
+
+
+def test_the_hot_set_columns_table_and_dials(scratch_database: str) -> None:
+    """0061 (#147): ``memories`` gains the pin and retirement columns (a pinned row is always
+    hot, CHECK) and the guard lets them change, ``stories`` gains ``hot_counts`` (``NULL``:
+    computed when first needed), ``overflow_episodes`` is created, and the four new
+    ``memory.hot_set`` dials join ``profile_defaults`` at the schema's defaults; the downgrade
+    removes all of it and restores 0059's guard."""
+    cfg = alembic_config(scratch_database)
+    command.upgrade(cfg, "0060")
+    engine = make_sync_engine(scratch_database)
+
+    def columns(table: str) -> set[str]:
+        with engine.connect() as conn:
+            return set(
+                conn.scalars(
+                    text(
+                        "SELECT column_name FROM information_schema.columns WHERE table_name = :t"
+                    ),
+                    {"t": table},
+                )
+            )
+
+    def guard() -> str:
+        with engine.connect() as conn:
+            return str(
+                conn.scalar(
+                    text("SELECT prosrc FROM pg_proc WHERE proname = 'epistrel_memories_guard'")
+                )
+            )
+
+    def hot_set_defaults() -> dict[str, Any]:
+        with engine.connect() as conn:
+            found = conn.scalar(text("SELECT profile_defaults FROM deployment_state"))
+        return dict((found or {}).get("memory", {}).get("hot_set", {}))
+
+    added = {"pinned", "pinned_by", "retired_reason", "retired_at", "retired_turn"}
+    try:
+        assert not added & columns("memories")
+        assert "hot_counts" not in columns("stories")
+        assert columns("overflow_episodes") == set()
+        assert set(hot_set_defaults()) == {"memories_per_character", "vectors_per_story"}
+        command.upgrade(cfg, "0061")
+        assert added <= columns("memories")
+        assert "hot_counts" in columns("stories")
+        assert {"opened_turn", "deadline_turn", "closed_turn", "excess"} <= columns(
+            "overflow_episodes"
+        )
+        assert "'retired_reason'" in guard()
+        assert "'pinned'" in guard()
+        assert hot_set_defaults() == {
+            "memories_per_character": 2_000,
+            "vectors_per_story": 50_000,
+            "importance_floor": 0.2,
+            "retirement_max_lag": 50,
+            "retain_retired_vectors": False,
+            "retain_dormant_vectors": False,
+        }
+        command.downgrade(cfg, "0060")
+        assert not added & columns("memories")
+        assert "hot_counts" not in columns("stories")
+        assert columns("overflow_episodes") == set()
+        assert "'retired_reason'" not in guard()
+        assert "'implication_count'" in guard()
+        assert set(hot_set_defaults()) == {"memories_per_character", "vectors_per_story"}
+    finally:
+        engine.dispose()

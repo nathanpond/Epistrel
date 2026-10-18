@@ -188,6 +188,8 @@ ORDER: dict[str, str] = {
         f"{_STORY_RANK}, t.narrative_turn NULLS FIRST, t.turn_variant NULLS FIRST, "
         f"t.beat NULLS FIRST, t.kind, t.discharged_mode NULLS FIRST, {_ENTRY_THUNK_RANK}"
     ),
+    # The hot set's overflow episodes (#147): by the turn each opened, then the set.
+    "overflow_episodes": f"{_STORY_RANK}, t.opened_turn, t.scope, t.closed_turn NULLS LAST",
     # The read set's change index (#136): by revision, then valid window and change kind.
     "proposition_changes": (
         f"{_STORY_RANK}, t.timeline_revision, t.tx_time, t.valid_window, t.change, t.holder"

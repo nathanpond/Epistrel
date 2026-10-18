@@ -758,6 +758,8 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "modes; the thunk it names is indexed",
     "proposition_changes": "the read set's change index: ids, hashes, windows and visibility "
     "scopes of committed proposition changes (#136)",
+    "overflow_episodes": "the hot set's overflow episodes (#147): scope kinds, ids and turn "
+    "numbers",
     "relationships": "a projection of facts, which are erased; refolded by erasure's rebuilt "
     "stage (#137)",
     "placement": "a projection of facts, which are erased; refolded by erasure's rebuilt stage "

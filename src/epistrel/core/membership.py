@@ -372,6 +372,12 @@ def active_as_of(table: FromClause, record_time: Any) -> ColumnElement[bool]:
 _ALIAS = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+def active_only_predicate() -> str:
+    """``active_only`` as an unqualified SQL predicate, for the ``WHERE`` of a partial index over
+    a registered derived table (#147's hot-set indexes on ``memories``)."""
+    return f"membership = '{Membership.ACTIVE.value}'"
+
+
 def active_only_sql(alias: str) -> str:
     """``active_only`` as a SQL fragment for raw queries (#141's pgvector search), over the
     derived row aliased ``alias``."""
@@ -406,6 +412,7 @@ __all__ = [
     "DerivedTable",
     "active_as_of",
     "active_only",
+    "active_only_predicate",
     "active_only_sql",
     "active_operation",
     "derived_columns",

@@ -23,7 +23,12 @@ The registry holds:
   ``epistrel_sanitizes_total``: #145's mutation primitives (``core.mutation``);
 - ``epistrel_thunks_total{event}`` (``introduced``, ``resolved``, ``expired``),
   ``epistrel_ledger_total{event}`` (``created``, ``discharged``) and
-  ``epistrel_minimal_commits_total``: #146's commitment lifecycle (``core.commit.lifecycle``).
+  ``epistrel_minimal_commits_total``: #146's commitment lifecycle (``core.commit.lifecycle``);
+- #147's hot set (FR-MEM-8): the scrape-time gauges ``epistrel_hot_overflow{scope}`` (the
+  summed excess of the open overflow episodes, ``character`` or ``story``; 0 when none is open)
+  and ``epistrel_hot_overflow_episodes_open{scope}``, and the counters
+  ``epistrel_hot_retirements_total{reason}`` (``covered``, ``floor``, ``uncovered``) and
+  ``epistrel_hot_counts_corrected_total`` (the daily reconcile).
 
 Label values are enums, ULIDs, route names, HTTP statuses or sanitised model names (#44's rule),
 never content. prometheus-client's default process, platform and GC collectors are removed.
@@ -97,6 +102,16 @@ MINIMAL_COMMITS = Counter(
     "epistrel_minimal_commits",
     "Salient references discharged by the deterministic minimal commit.",
 )
+RETIREMENTS = Counter(
+    "epistrel_hot_retirements",
+    "Memories retired from the hot set, by reason (covered, floor, uncovered).",
+    ("reason",),
+)
+HOT_COUNTS_CORRECTED = Counter(
+    "epistrel_hot_counts_corrected",
+    "Stories whose stored hot-set counters the daily reconcile found wrong and corrected.",
+)
+HOT_SCOPES = ("character", "story")
 
 _GAUGES_SQL = text(
     """
@@ -113,6 +128,10 @@ _GAUGES_SQL = text(
     """
 )
 _QUEUED_SQL = text("SELECT kind, count(*) AS n FROM jobs WHERE status = 'queued' GROUP BY kind")
+_OVERFLOW_SQL = text(
+    "SELECT scope, count(*) AS n, coalesce(sum(excess), 0) AS excess FROM overflow_episodes "
+    "WHERE closed_turn IS NULL GROUP BY scope"
+)
 _TURN_QUEUE_SQL = text(
     """
     SELECT q.story_id, count(*) AS n FROM turn_queue q
@@ -170,8 +189,26 @@ class SchedulerGauges(Collector):
                 ).one()
                 queued = conn.execute(_QUEUED_SQL).all()
                 waiting = conn.execute(_TURN_QUEUE_SQL).all()
+                overflowing = {str(r.scope): r for r in conn.execute(_OVERFLOW_SQL)}
         except Exception:
             return
+        excess = GaugeMetricFamily(
+            "epistrel_hot_overflow",
+            "How far the hot sets with an open overflow episode are over their budgets, summed "
+            "over the stories (0: no episode open), by scope (character, story).",
+            labels=["scope"],
+        )
+        episodes = GaugeMetricFamily(
+            "epistrel_hot_overflow_episodes_open",
+            "Open hot-set overflow episodes, by scope (character, story).",
+            labels=["scope"],
+        )
+        for scope in HOT_SCOPES:
+            found = overflowing.get(scope)
+            excess.add_metric([scope], float(found.excess) if found is not None else 0.0)
+            episodes.add_metric([scope], float(found.n) if found is not None else 0.0)
+        yield excess
+        yield episodes
         family = GaugeMetricFamily(
             "epistrel_jobs_queued", "Queued background jobs by kind.", labels=["kind"]
         )
@@ -230,12 +267,15 @@ async def metrics() -> Response:
 
 __all__ = [
     "GAUGES",
+    "HOT_COUNTS_CORRECTED",
+    "HOT_SCOPES",
     "HTTP_DURATION",
     "LEDGER",
     "MINIMAL_COMMITS",
     "OPERATIONS",
     "QUARANTINES",
     "REQUEST_BUCKETS",
+    "RETIREMENTS",
     "SANITIZES",
     "THUNKS",
     "SchedulerGauges",

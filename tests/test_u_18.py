@@ -80,6 +80,8 @@ EXPECTED: dict[type[BaseModel], dict[str, ConfigClass]] = {
         "readset_change_retention_days": ConfigClass.prospective,
         "erasure_shared_media": ConfigClass.interpretive,
         "memory_importance_half_life_turns": ConfigClass.prospective,
+        "max_pinned_per_character": ConfigClass.prospective,
+        "max_pinned_per_story": ConfigClass.prospective,
         "embedding_batch_max": ConfigClass.prospective,
         "reembed_batch_size": ConfigClass.prospective,
         "embedding_hnsw_m": ConfigClass.prospective,

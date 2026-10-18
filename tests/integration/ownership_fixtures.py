@@ -485,6 +485,53 @@ async def _profiled(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> di
     return {"entity_id": str(found)}
 
 
+async def _a_memory(entity: Entity, client: httpx.AsyncClient, *, pinned: bool) -> str:
+    """A fresh memory of the story (#147's pin calls), written straight into ``memories`` on the
+    app's own database against the story's first operation."""
+    from epistrel.core.enums import MemoryKind, MemoryTrustTier, RecordProvenance
+    from epistrel.core.membership import insert_derived
+    from epistrel.core.tables.memories import memories
+
+    db = client._transport.app.state.epistrel.db  # type: ignore[attr-defined]
+    memory_id = new_ulid()
+    async with db.begin() as conn:
+        operation_id = await conn.scalar(
+            text(
+                "SELECT operation_id FROM operations WHERE story_id = :s "
+                "ORDER BY started_at LIMIT 1"
+            ),
+            {"s": entity.id},
+        )
+        await insert_derived(
+            conn,
+            memories,
+            [
+                {
+                    "id": memory_id,
+                    "story_id": entity.id,
+                    "kind": MemoryKind.SEMANTIC.value,
+                    "text": "Wren keeps the inn's ledger.",
+                    "provenance": RecordProvenance.AUTHOR.value,
+                    "trust_tier": MemoryTrustTier.AUTHOR.value,
+                    "operation_id": str(operation_id),
+                    "pinned": pinned,
+                    "pinned_by": OWNER if pinned else None,
+                }
+            ],
+        )
+    return memory_id
+
+
+async def _memory(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """A fresh memory for one pin (#147)."""
+    return {"memory_id": await _a_memory(entity, client, pinned=False)}
+
+
+async def _pinned_memory(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """A fresh pinned memory for one unpin (#147)."""
+    return {"memory_id": await _a_memory(entity, client, pinned=True)}
+
+
 @dataclass(frozen=True)
 class Call:
     """A request that succeeds (``expected``) when the entity's owner sends it. ``json`` is the
@@ -582,6 +629,9 @@ CALLS: dict[tuple[str, str], Call] = {
     ),
     # Commitments (#146): the thunks and the promissory ledger, omniscient.
     ("GET", f"{S}/inspect/ledger"): Call(200, queries=(OMNISCIENT,), prepare=_committing),
+    # Author pins (#147): a fresh memory pinned, a fresh pinned memory unpinned.
+    ("POST", f"{S}/memories/{{memory_id}}/pin"): Call(200, prepare=_memory),
+    ("DELETE", f"{S}/memories/{{memory_id}}/pin"): Call(200, prepare=_pinned_memory),
     # Retrieval (#141): the debugging read, omniscient.
     ("GET", f"{S}/retrieve"): Call(200, queries=({"q": "the game", **OMNISCIENT},)),
     # -- stories: message ratings (#112). Each requester rates a fresh story's reply, retracts

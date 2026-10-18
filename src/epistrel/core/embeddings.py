@@ -274,6 +274,10 @@ async def change_model(
             .where(memories.c.embedding.is_not(None))
             .values(embedding=None, embedding_model_version=None)
         )
+        # Every story's hot-vector counter lost its vectors: recounted when next read (#147).
+        await conn.execute(
+            update(stories).where(stories.c.hot_counts.is_not(None)).values(hot_counts=None)
+        )
         await retype(conn, target)
     at = clock.now()
     await conn.execute(
@@ -363,11 +367,16 @@ async def stamp(
 ) -> int:
     """Write each memory's vector stamped with the pin's version, only while it is hot and
     active; answers the rows written. Any vector of another dimension refuses the whole write
-    (``EmbeddingDimensionMismatch``, nothing stored)."""
+    (``EmbeddingDimensionMismatch``, nothing stored). A counted memory that had no vector adds
+    to the story's hot-vector counter, and the hot-set budgets are evaluated in the same
+    transaction (#147, ``core.memory.retirement.after_vectors``)."""
+    from epistrel.core.memory import retirement  # here: it imports the commit machinery
+
     if not pin.pinned:
         raise RuntimeError("vectors are written only into a pinned deployment")
     for vector in vectors.values():
         check_dimension(pin, len(vector), model=str(pin.version))
+    newly = await retirement.counted_without_vectors(conn, story_id, vectors)
     written = 0
     for memory_id in sorted(vectors):
         result = await conn.execute(
@@ -381,6 +390,7 @@ async def stamp(
             .values(embedding=list(vectors[memory_id]), embedding_model_version=pin.version)
         )
         written += int(result.rowcount)
+    await retirement.after_vectors(conn, story_id, newly)
     return written
 
 
@@ -434,7 +444,11 @@ async def _memory_version(conn: AsyncConnection, memory_id: str) -> Version | No
 
 
 def _memory_active(version: Version) -> bool:
-    return bool(version) and version[0] is True and version[2] == RetrievalTier.HOT.value
+    # Active on the timeline. A tier change moves the version itself (so a job that read a hot
+    # memory drops its output when it was retired meanwhile), and a memory retired before the
+    # read is a legitimate input of consolidation, which covers what a deadline retired
+    # uncovered (#147).
+    return bool(version) and version[0] is True
 
 
 register_version_reader(memories.name, _memory_version, active=_memory_active)

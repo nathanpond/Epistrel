@@ -200,6 +200,17 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
     )
     # Memory records (#135): a memory of the story, written by its own operation.
     await memory_support.derived_memory(engine, story_id, "Ann sails at dawn.", [])
+    # The hot set (#147): an overflow episode of the story's vectors, planted (one needs a
+    # story over its budget).
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO overflow_episodes (id, story_id, scope, scope_id, opened_turn, "
+                "deadline_turn, excess_at_open, excess) VALUES (:id, :s, 'story', :s, 1, 51, "
+                "1, 1)"
+            ),
+            {"id": new_ulid(), "s": story_id},
+        )
     # Commitments (#146): a salient thunk (someone sails with Ann) and its ledger entry.
     sketch = ThunkSketch(
         subject_text="someone",

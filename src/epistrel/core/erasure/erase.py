@@ -164,6 +164,7 @@ from epistrel.core.errors import (
 )
 from epistrel.core.events.registry import validate
 from epistrel.core.ids import Ulid, new_ulid
+from epistrel.core.memory import retirement
 from epistrel.core.ports import SummaryCompressor
 from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX, ErasureSettings
 from epistrel.core.tables import (
@@ -1450,6 +1451,9 @@ async def _erase_memories(
             str(memory_id),
             delete(memories).where(m.id == memory_id),
         )
+    if owned and run.write:
+        # The hot set's counters lost rows: the next reader recounts them (#147).
+        await retirement.invalidate(conn, story_id)
     wanted = sorted(set(refs.get(memories.name, set())) - {str(i) for i in owned})
     if not wanted:
         return
@@ -1475,6 +1479,8 @@ async def _erase_memories(
             values: dict[str, Any] = {"quarantine_reason": reason}
             if new != row.text:
                 values.update(text=new, embedding=None, embedding_model_version=None)
+                # A dropped vector leaves the story's vector counter (#147).
+                await retirement.invalidate(conn, story_id)
             await conn.execute(update(memories).where(m.id == row.id).values(**values))
 
 

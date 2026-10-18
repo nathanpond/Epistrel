@@ -43,7 +43,8 @@ operation's commit (``core.memory.consolidation`` builds the rows): ``semantic``
 ``inputs_hash``, ``model``, ``model_version`` and ``prompt_hash``. It runs the resurrection
 guard over their texts and speakers, indexes them for erasure, adds their ids to the
 ``covered_by`` of the inputs they compress, and runs ``MEMORY_HOOKS`` (embedding, importance).
-``EPISODIC_HOOKS`` run only after an episodic write (consolidation's scheduler).
+``EPISODIC_HOOKS`` run only after an episodic write (consolidation's scheduler). An input
+retired ``uncovered`` at an overflow deadline (#147) reads ``covered`` from then on.
 
 **Author memories** (#145). ``write_author(conn, operation, fact, text)`` writes the memory of
 an author fact (``core.mutation``'s ``commit_fact``): a position-less ``semantic`` row,
@@ -231,6 +232,11 @@ class Memory(BaseModel):
     quarantine_reason: str | None = None
     quarantined_by: str | None = None
     implication_count: int = 0
+    pinned: bool = False
+    pinned_by: str | None = None
+    retired_reason: str | None = None
+    retired_at: datetime | None = None
+    retired_turn: int | None = None
 
 
 def _memory(row: Any) -> Memory:
@@ -274,6 +280,11 @@ def _memory(row: Any) -> Memory:
         quarantine_reason=row.quarantine_reason,
         quarantined_by=row.quarantined_by,
         implication_count=int(row.implication_count or 0),
+        pinned=bool(row.pinned),
+        pinned_by=row.pinned_by,
+        retired_reason=row.retired_reason,
+        retired_at=row.retired_at,
+        retired_turn=row.retired_turn,
     )
 
 
@@ -557,7 +568,12 @@ async def write_consolidated(
                 covered_by=func.array_cat(
                     memories.c.covered_by,
                     bindparam("covering", list(ids), type_=ARRAY(ulid_type())),
-                )
+                ),
+                # A record retired uncovered at an overflow deadline is covered now (#147).
+                retired_reason=case(
+                    (memories.c.retired_reason == "uncovered", "covered"),
+                    else_=memories.c.retired_reason,
+                ),
             )
         )
     for hook in list(MEMORY_HOOKS):
@@ -1017,3 +1033,7 @@ __all__ = [
     "write_author",
     "write_consolidated",
 ]
+
+# #147's hot-set counters register their hooks (after everything above is defined, so the
+# import cycle is harmless).
+from epistrel.core.memory import retirement as _retirement  # noqa: E402, F401 - registers hooks

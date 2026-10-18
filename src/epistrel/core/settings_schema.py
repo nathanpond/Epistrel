@@ -749,6 +749,32 @@ class MemorySettings(BaseModel):
     )
 
 
+DEFAULT_MAX_PINNED_PER_CHARACTER = 200
+DEFAULT_MAX_PINNED_PER_STORY = 2_000
+MAX_PINNED_PER_CHARACTER_LIMIT = 10_000
+MAX_PINNED_PER_STORY_LIMIT = 100_000
+
+
+class HotSetSettings(BaseModel):
+    """The ceilings on author pins (FR-MEM-8; #147), stored under ``deployment_state.settings``:
+    a character may hold at most ``max_pinned_per_character`` pinned memories and a story at
+    most ``max_pinned_per_story`` (its pinned memories and its Lite text pins together, #60).
+    Pins are outside the hot-set budgets (``memory.hot_set.*``), so these bound the hot set:
+    hot memories per character ≤ the character budget + ``max_pinned_per_character``, and hot
+    vectors per story ≤ the vector budget + ``max_pinned_per_story``. Prospective: a pin is
+    admitted against the ceilings in force when it commits, and a lowered ceiling unpins
+    nothing."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    max_pinned_per_character: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_MAX_PINNED_PER_CHARACTER, ge=1, le=MAX_PINNED_PER_CHARACTER_LIMIT
+    )
+    max_pinned_per_story: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_MAX_PINNED_PER_STORY, ge=1, le=MAX_PINNED_PER_STORY_LIMIT
+    )
+
+
 DEFAULT_EMBEDDING_BATCH_MAX = 64
 """The most texts one ``/embeddings`` request carries (FR-EMBED-1; #138)."""
 EMBEDDING_BATCH_CEILING = 256
@@ -955,6 +981,7 @@ class DeploymentSettings(
     FeedbackSettings,
     ErasureSettings,
     MemorySettings,
+    HotSetSettings,
     CommitmentSettings,
     EmbeddingSettings,
     RetrievalSettings,

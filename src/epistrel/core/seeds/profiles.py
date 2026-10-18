@@ -182,6 +182,23 @@ RETRIEVAL_DEFAULTS: MappingProxyType[str, Any] = MappingProxyType(
 yet."""
 
 
+HOT_SET_DEFAULTS: MappingProxyType[str, Any] = MappingProxyType(
+    {
+        "memory": {
+            "hot_set": {
+                "importance_floor": 0.2,
+                "retirement_max_lag": 50,
+                "retain_retired_vectors": False,
+                "retain_dormant_vectors": False,
+            }
+        }
+    }
+)
+"""The hot set's retirement dials (#147), at the schema's defaults: migration
+``0061_retrieval_tier`` adds them to a deployment's ``profile_defaults`` that does not name them
+yet."""
+
+
 ESCALATION_DEFAULTS: MappingProxyType[str, Any] = MappingProxyType(
     {"verification": {"entailment_min_confidence": 0.6, "safe_disposition": "repair"}}
 )
@@ -214,17 +231,18 @@ it yet."""
 def profile_defaults() -> dict[str, Any]:
     """A deployment's seeded ``profile_defaults``: Lite's settings with ``M4_PROFILE_DEFAULTS``,
     ``VERIFY_DEPTH_DEFAULTS``, ``RETRIEVAL_DEFAULTS``, ``ESCALATION_DEFAULTS``,
-    ``CONSOLIDATION_DEFAULTS`` and ``IMPLICATION_DEFAULTS`` under them (a complete document of
-    every delivered setting)."""
+    ``CONSOLIDATION_DEFAULTS``, ``IMPLICATION_DEFAULTS`` and ``HOT_SET_DEFAULTS`` under them (a
+    complete document of every delivered setting)."""
     base = _merged(_merged(_thaw(M4_PROFILE_DEFAULTS), VERIFY_DEPTH_DEFAULTS), RETRIEVAL_DEFAULTS)
     base = _merged(_merged(base, ESCALATION_DEFAULTS), CONSOLIDATION_DEFAULTS)
-    base = _merged(base, IMPLICATION_DEFAULTS)
+    base = _merged(_merged(base, IMPLICATION_DEFAULTS), HOT_SET_DEFAULTS)
     return _merged(base, LITE_SETTINGS)
 
 
 __all__ = [
     "CONSOLIDATION_DEFAULTS",
     "ESCALATION_DEFAULTS",
+    "HOT_SET_DEFAULTS",
     "IMPLICATION_DEFAULTS",
     "LITE_NAME",
     "LITE_PRESET_ID",

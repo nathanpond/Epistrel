@@ -37,7 +37,10 @@ revision whose ``proposition_changes`` rows the retention sweep removed (``core.
 #138 adds ``embedding_model_version``: the embedding-model version the story's vectors are in,
 set at its first embedding and advanced by the re-embed job; while it differs from the
 deployment's pin the story's searches are lexical-only (``core.embeddings``). A fork copies it
-with the vectors.
+with the vectors. #147 adds ``hot_counts``: the hot-set counters (FR-MEM-8), ``{characters: {id:
+n}, story_vectors: n}``, kept in the transactions that change them; ``NULL`` means "not computed
+yet" (a new or forked story, or one an erasure touched), and the next reader recomputes them
+exactly (``core.memory.retirement``).
 
 Nothing references ``stories`` from another story, and story deletion enumerates every table
 with a ``story_id`` (``epistrel.core.stories.STORY_TABLES``) instead of cascading.
@@ -172,6 +175,8 @@ stories = Table(
     Column("predicate_rules", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
     # FR-EMBED-3, FR-STORE-30 (#138): the embedding-model version the story's vectors are in.
     Column("embedding_model_version", Text, nullable=True),
+    # FR-MEM-8 (#147): the hot-set counters, ``NULL`` until computed (``core.memory.retirement``).
+    Column("hot_counts", JSONB, nullable=True),
     CheckConstraint(STATUS_CHECK, name="status"),
     CheckConstraint(STATUS_BEFORE_BLOCK_CHECK, name="status_before_block"),
     CheckConstraint(SCENARIO_SNAPSHOT_CHECK, name="scenario_snapshot"),

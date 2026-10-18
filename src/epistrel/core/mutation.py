@@ -74,6 +74,7 @@ from epistrel.core.enums import (
     OperationKind,
     Provenance,
     RecordProvenance,
+    RetrievalTier,
 )
 from epistrel.core.erasure import guard
 from epistrel.core.erasure.index import index_records
@@ -220,7 +221,8 @@ def _valid_time(valid_from: int | None, valid_to: int | None) -> Interval | None
 
 
 class MemoryView(BaseModel):
-    """A memory as the omniscient admin reads it, its quarantine state included."""
+    """A memory as the omniscient admin reads it, its quarantine state, its retrieval tier (and
+    why it was retired) and its pin included (#147)."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -240,6 +242,10 @@ class MemoryView(BaseModel):
     quarantine_reason: str | None = None
     quarantined_by: str | None = None
     implication_count: int = 0
+    retrieval_tier: RetrievalTier = RetrievalTier.HOT
+    retired_reason: str | None = None
+    pinned: bool = False
+    pinned_by: str | None = None
 
     @classmethod
     def of(cls, memory: Memory) -> MemoryView:
@@ -260,6 +266,10 @@ class MemoryView(BaseModel):
             quarantine_reason=memory.quarantine_reason,
             quarantined_by=memory.quarantined_by,
             implication_count=memory.implication_count,
+            retrieval_tier=memory.retrieval_tier,
+            retired_reason=memory.retired_reason,
+            pinned=memory.pinned,
+            pinned_by=memory.pinned_by,
         )
 
 

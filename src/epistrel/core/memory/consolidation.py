@@ -32,7 +32,8 @@ and #147's overflow) takes whatever is uncovered without waiting for a trigger. 
 (``next_level2``) folds every ``LEVEL2_EVERY`` (5) level-1 windows into reflections over their
 outputs.
 
-**Inputs** (``collect``). Level 1: the window's hot, active episodic memories in the scope and
+**Inputs** (``collect``). Level 1: the window's hot, active episodic memories in the scope
+(and those an overflow deadline retired uncovered, #147, so a later run covers them) and
 its canon facts (current versions positioned in it; the only objective-canon inputs); level 2:
 the window's active level-1 outputs. Each is declared by its version (``memories:<id>``, the
 memory's membership and text digest; ``operations:<id>`` for its operation), so a truncation or
@@ -568,7 +569,9 @@ async def collect(
         m.narrative_turn >= window.from_turn,
         m.narrative_turn <= window.to_turn,
         active_only(memories),
-        m.retrieval_tier == RetrievalTier.HOT.value,
+        # Hot records, and those an overflow deadline retired uncovered: consolidation is how
+        # they come to be covered later (FR-MEM-8, #147).
+        or_(m.retrieval_tier == RetrievalTier.HOT.value, m.retired_reason == "uncovered"),
         # A quarantined memory is in no input window (#145, FR-GUARD-4).
         m.quarantined_at.is_(None),
         _scope_clause(scope),

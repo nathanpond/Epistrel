@@ -753,6 +753,8 @@ async def _copy_story_row(
         "chain_unchecked": "true",
         # The fork's included segments are its own: its first scheduling computes them (#282).
         "summary_inclusion": "NULL",
+        # The fork's hot-set counters are recounted when first read (#147).
+        "hot_counts": "NULL",
     }
     await conn.execute(
         text(_insert_select(stories, overrides, "t.id = :source")),

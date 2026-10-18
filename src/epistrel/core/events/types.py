@@ -470,6 +470,25 @@ class MemoryUnquarantined(EventPayload):
     memory_id: str
 
 
+# -- the hot set (FR-MEM-8; #147) -----------------------------------------------------------------
+
+
+@register("memory_pinned", category=EventCategory.CONTROL)
+class MemoryPinned(EventPayload):
+    """An author pinned a memory (FR-MEM-8; #147): outside the hot-set budgets and never retired
+    from this operation on (a retired memory is rehydrated to the hot set). Written by a
+    position-less ``control`` operation, so a truncation never discards it. Identifiers only."""
+
+    memory_id: str
+
+
+@register("memory_unpinned", category=EventCategory.CONTROL)
+class MemoryUnpinned(EventPayload):
+    """A pin was removed (#147): the memory counts toward the hot-set budgets again."""
+
+    memory_id: str
+
+
 @register("sanitized", category=EventCategory.NARRATIVE_STATE)
 class Sanitized(EventPayload):
     """A memory's text had every occurrence of a span replaced by ``surrogate`` (FR-GUARD-4;

@@ -7507,6 +7507,14 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Why:** Delivering `regeneration` exposed the mismatch.
   **Issue:** #151
 
+## Blocker — 2026-10-18
+
+- **Blocker:** #151's AC line "S-TENNIS (all variants)". Three sub-assertions in docs/04 §7 expect contradiction verdicts that FR-PROP-10 and #140's rules don't produce: forward implication of an affirmed claim, a closed set over a key set, and a rule-free cross-predicate conflict → `uncertain`. Options are posted on #151: (a) extend the rules and amend FR-PROP-10, which includes a schema change for key-set closed sets; (b) narrow S-TENNIS to the spec as written; (c) do the two rule-only parts in M4 and defer key-set closed sets. #151 is labelled `blocked` + `needs-owner-action`. Technical detail is in #441.
+  **Why:** This changes verification semantics, and (a) amends a requirement and #131's closed-set schema. The cost of guessing wrong is high.
+- **Decision:** #151's dependents (#153, #154, #155, #156) are **not** blocked. They depend on the ladder (`RepairLadder`, `repair_turn`, `turn_report.repairs`), which is delivered and tested at `9dc7849`, not on the S-TENNIS verdicts.
+  **Why:** Blocking them would halt M4 over one scenario test's verdict expectations. #151 stays out of the PR's `Closes` list until the owner answers.
+  **Issue:** #151, #441
+
 ## /n8-exec M4 (cont.) — 2026-10-18
 
 - **Decision (Rule 3, at the orchestrator's request):** `epistrel_repairs_total{rung,class}` now labels the rung by name (`narrowing`, `substitution`, `regeneration`, `safe_fallback`) through `observability.metrics.count_repair`, which also bounds the class to cosmetic, substitution or cascade. A numeric rung broke #44's label grammar, so C-08 `test_metrics_labels` failed at `9dc7849`. Separate commit `0c08666`.

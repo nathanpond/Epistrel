@@ -51,6 +51,14 @@ rule's evidence lists every conflicting record it found.
    conflict (Columbus and Ohio). Two place or organization objects that no containment fact
    places in a hierarchy are ``uncertain(world_knowledge)``, and so are two quantities in
    different units: the answer is world knowledge the records do not hold.
+   **Through an inverse** (#439): when the claim's predicate has a registered inverse with
+   cardinality (``held_by``, functional, for ``holds``), the claim and the records with its
+   object are viewed in the inverse's direction (``holds(Linda, key)`` is ``held_by(key,
+   Linda)``) and this rule, and max cardinality below, apply to that view: the same subject and
+   predicate in the inverse's terms. Marcus holding the key contradicts Linda holding it over
+   overlapping time. A proposition with a qualifier the inverse does not declare (``holds``'s
+   ``quantity``: "10 silver" is a share of a stock) is not an inverse statement and takes no
+   part.
 4. **Closed set** (``closed_set``): an author's or canon's closed set for the claim's key over
    overlapping time does not list the claim's object, and no member contains it. Closed sets are
    never inferred.
@@ -87,6 +95,8 @@ FR-PROP-2). Belief holders arrive in M5, so a claim checked against one is
 - the subject's and object's ``same_as``;
 - the claim's predicate for the expanded subjects, windowed to the claim's possible span (not
   windowed for event and permanent predicates);
+- for an affirmed claim whose predicate has an inverse with cardinality, the claim's predicate
+  for each expanded object (any subject), windowed the same way: the item's other holders;
 - the predicate's containment predicate (any subject);
 - each excluding predicate;
 - for a negated claim, the antecedent and join predicates of the declared rules that reach it,
@@ -781,6 +791,60 @@ def _functional(
     return out
 
 
+def inverses_with_cardinality(registry: Registry, predicate_id: str) -> list[Predicate]:
+    """The registered inverses of ``predicate_id`` whose cardinality can contradict (functional,
+    or a declared maximum): ``held_by`` for ``holds`` (#439). Ordered by id."""
+    return sorted(
+        (
+            q
+            for q in registry.predicates.values()
+            if q.inverse_of == predicate_id and cardinality_may_contradict(q)
+        ),
+        key=lambda q: q.id,
+    )
+
+
+def _inverse_view(p: Proposition, inverse: Predicate) -> Proposition | None:
+    """``p`` (stored in the canonical direction) stated as ``inverse``: ``holds(Linda, key)`` as
+    ``held_by(key, Linda)``. ``None`` when it is not such a statement: no single entity object,
+    or a qualifier the inverse does not declare (``holds``'s ``quantity``: "10 silver" is a share
+    of a stock, not the item in one pair of hands)."""
+    if p.object_id is None:
+        return None
+    declared = inverse.qualifiers
+    if declared is not None and any(name not in declared for name in p.qualifiers):
+        return None
+    return p.model_copy(
+        update={"predicate_id": inverse.id, "subject_id": p.object_id, "object_id": p.subject_id}
+    )
+
+
+def _inverse_cardinality(
+    claim: Proposition, ctx: _Context, *, functional: bool
+) -> Iterable[_Outcome]:
+    """The functional-key (``functional``) or max-cardinality rule over each cardinality-bearing
+    inverse of the claim's predicate (#439): the claim and the records with its object, viewed
+    in the inverse's direction, share the inverse's subject and predicate, so FR-PROP-10's rule
+    applies to them as written. Evidence cites the stored records."""
+    if claim.polarity is Polarity.NEGATED or claim.object_id is None:
+        return
+    for inverse in inverses_with_cardinality(ctx.registry, claim.predicate_id):
+        view = _inverse_view(claim, inverse)
+        if view is None:
+            continue
+        same = [
+            (r, v)
+            for r, p in ctx.records
+            if p.predicate_id == claim.predicate_id
+            and p.object_id == claim.object_id
+            and (v := _inverse_view(p, inverse)) is not None
+        ]
+        if functional:
+            yield _functional(view, inverse, same, ctx)
+        else:
+            yield _max_cardinality(view, inverse, same)
+
+
 def _closed_set(claim: Proposition, predicate: Predicate, ctx: _Context) -> _Outcome:
     out = _Outcome()
     if claim.polarity is Polarity.NEGATED or claim.literal is not None:
@@ -1046,8 +1110,10 @@ def _contradictions(
     the implication rule also yields whether its closure was depth-capped."""
     yield _polarity(claim, predicate, same)
     yield _functional(claim, predicate, same, ctx)
+    yield from _inverse_cardinality(claim, ctx, functional=True)
     yield _closed_set(claim, predicate, ctx)
     yield _max_cardinality(claim, predicate, same)
+    yield from _inverse_cardinality(claim, ctx, functional=False)
     yield _exclusion(claim, predicate, ctx)
     found, capped = _implication(claim, ctx)
     yield capped
@@ -1161,11 +1227,13 @@ async def check_with(
         predicate_id: str,
         subjects: str | Sequence[str] | None,
         window: tuple[int | None, int | None] | None,
+        object_id: str | None = None,
     ) -> list[Record]:
         facts = await lookup.canon_at(
             story_id,
             predicate=predicate_id,
             subjects=subjects,
+            object=object_id,
             window=window,
             viewpoint=viewpoint,
             through_position=through_position,
@@ -1175,18 +1243,30 @@ async def check_with(
 
     records: list[Record] = []
     subjects = {c.subject_id}
+    objects = set() if c.object_id is None else {c.object_id}
     for entity in dict.fromkeys(x for x in (c.subject_id, c.object_id) if x is not None):
         same = await read(SAME_AS, entity, None)
         records += same
-        if entity == c.subject_id:
-            for r in same:
-                p = r.proposition
-                if p.polarity is Polarity.AFFIRMED and p.object_id is not None:
+        for r in same:
+            p = r.proposition
+            if p.polarity is Polarity.AFFIRMED and p.object_id is not None:
+                if entity == c.subject_id:
                     subjects |= {p.subject_id, p.object_id}
+                if entity == c.object_id:
+                    objects |= {p.subject_id, p.object_id}
     timeless = predicate.temporal_kind in (TemporalKind.EVENT, TemporalKind.PERMANENT)
     window = None if timeless else _window(c.valid_time)
     subject_set = sorted(subjects)
     records += await read(c.predicate_id, subject_set, window)
+    if (
+        options.contradictions
+        and c.polarity is Polarity.AFFIRMED
+        and inverses_with_cardinality(registry, c.predicate_id)
+    ):
+        # #439: the inverse's key is the claim's object, so the item's other holders are read
+        # by object (any subject); a concurrent change of its holder touches this key.
+        for o in sorted(objects):
+            records += await read(c.predicate_id, None, window, o)
     if predicate.containment_of is not None:
         records += await read(predicate.containment_of, None, None)
     closed = await closed_sets_for(lookup.conn, story_id, c.predicate_id)

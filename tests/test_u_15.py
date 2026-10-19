@@ -27,6 +27,7 @@ from epistrel.core.propositions.model import (
     Instant,
     Interval,
     InvalidValidTime,
+    Layer,
     Polarity,
     Predicate,
     Proposition,
@@ -441,6 +442,74 @@ def test_u_15__polarity_and_functional() -> None:
     # Non-overlapping fluent values (he moved) never contradict.
     moved = vs.prop(vs.BOBBY, vs.LOCATED_AT, vs.BOSTON, vs.years(2014, 2016))
     assert _check(moved, canon).kind is VerdictKind.NOVEL
+
+
+@pytest.mark.part("M4", "FR-PROP-3,10")
+def test_u_15__inverse_cardinality() -> None:
+    """#439: an inverse predicate's cardinality applies to the claim's predicate. ``held_by``
+    (the inverse of ``holds``, stored as ``holds``) is functional, so ``holds(Ann, key)`` while
+    canon has ``holds(Cal, key)`` over overlapping time is ``contradicted`` (``functional_key``),
+    citing Cal's record; so is the claim in its ``held_by`` form. An author's inverse with a
+    maximum of 2 riders makes a third rider ``contradicted`` (``max_cardinality``).
+    Complements: a holder after Cal gave the key up, Cal's own claim, a negated claim, a
+    share of a stock (``quantity``, which ``held_by`` does not declare) and an inverse without a
+    maximum (weak) never contradict."""
+    holds, held_by = CORE_BY_NAME["holds"].id, CORE_BY_NAME["held_by"].id
+    key = vs.DOOR  # any entity id serves as the item here
+    cal_has_it = vs.prop(vs.CAL, holds, key, vs.span(0, 100))
+    ann = vs.prop(vs.ANN, holds, key, vs.span(50, 60))
+    found = _check(ann, cal_has_it)
+    _cites(found, Rule.FUNCTIONAL_KEY)
+    (cited,) = found.evidence
+    assert cited.rule is Rule.FUNCTIONAL_KEY
+    _cites(_check(vs.prop(key, held_by, vs.ANN, vs.span(50, 60)), cal_has_it), Rule.FUNCTIONAL_KEY)
+    # She has it once he no longer does: no overlap, no conflict.
+    after = vs.prop(vs.ANN, holds, key, vs.span(100, 200))
+    assert _check(after, cal_has_it).kind is VerdictKind.NOVEL
+    assert _check(vs.prop(vs.CAL, holds, key, vs.span(10, 20)), cal_has_it).kind is (
+        VerdictKind.SUPPORTED
+    )
+    assert _check(ann.negation(), cal_has_it).kind is VerdictKind.NOVEL
+    # Another item of Cal's is no conflict either (the inverse's key is the item).
+    assert _check(vs.prop(vs.ANN, holds, vs.HOUSE, vs.span(50, 60)), cal_has_it).kind is (
+        VerdictKind.NOVEL
+    )
+    # Coins split between holders: a quantity is a share, not the item in one pair of hands.
+    coins = vs.prop(vs.CAL, holds, key, vs.span(0, 100), qualifiers={"quantity": "30 silver"})
+    share = vs.prop(vs.ANN, holds, key, vs.span(50, 60), qualifiers={"quantity": "10 silver"})
+    assert _check(share, coins).kind is VerdictKind.NOVEL
+    assert _check(share, cal_has_it).kind is VerdictKind.NOVEL
+    # An author's ``rides``/``ridden_by``: a horse carries at most two riders at a time.
+    rides, ridden_by, weak_by = (
+        "01JP000000000000000000000A",
+        "01JP000000000000000000000B",
+        "01JP000000000000000000000C",
+    )
+    extra = (
+        Predicate(id=rides, story_id=vs.STORY, name="rides", layer=Layer.AUTHOR),
+        Predicate(
+            id=ridden_by,
+            story_id=vs.STORY,
+            name="ridden_by",
+            layer=Layer.AUTHOR,
+            inverse_of=rides,
+            max_cardinality=2,
+        ),
+    )
+    reg = vs.registry_of(extra=extra)
+    horse = vs.HOUSE
+    riders = [vs.prop(r, rides, horse, vs.span(0, 10)) for r in (vs.ANN, vs.CAL)]
+    third = vs.prop(vs.SMITH, rides, horse, vs.span(5, 6))
+    assert _check(third, riders[0], reg=reg).kind is VerdictKind.NOVEL
+    _cites(_check(third, *riders, reg=reg), Rule.MAX_CARDINALITY)
+    # The same pair with a weak inverse (no maximum) says nothing about the count.
+    weak = (
+        extra[0],
+        Predicate(
+            id=weak_by, story_id=vs.STORY, name="ridden_by", layer=Layer.AUTHOR, inverse_of=rides
+        ),
+    )
+    assert _check(third, *riders, reg=vs.registry_of(extra=weak)).kind is VerdictKind.NOVEL
 
 
 @pytest.mark.part("M4", "FR-PROP-8,10")

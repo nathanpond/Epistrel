@@ -4,18 +4,17 @@ and the M6 part join it.
 
 Each render is structurally complete with empty or incomplete declarations. (a) Linda's ``do``
 "She pockets the key on her way out" declares no effect: the possession detector finds the claim
-that Linda holds the key, and since canon says she does not have it (Marcus keeps it from her)
-it is contradicted, so it goes to repair (#151 rewrites it; #439 tracks the variant where canon
-only says Marcus holds it). (e) A claim introduced only by the
-polish pass, "…the ring Marcus had bought her in Paris", is found in the final composed message
-(FR-VERIFY-14) by the extraction backstop; it names a relation and a place canon has no record
-of, so it cannot be decided and takes the safe disposition (repair, or the deterministic
-assembly, #152). The story runs once with ``extraction_mode = always`` (extraction reads every
-beat: everything is detected) and once with ``gated`` (extraction reads only the flagged beats;
-a shadow sample, forced with a rate of 1.0, runs the extraction after the commit over the beat
-gating skipped, and records the claim gating missed). The report states detection and checking
-separately: what was detected, what was checked, what the sample missed. Detection and checking
-are separate metric series."""
+that Linda holds the key, and since canon says Marcus holds it (an item has one holder at a
+time: ``held_by`` is functional, #439) it is contradicted, so it goes to repair (#151 rewrites
+it). (e) A claim introduced only by the polish pass, "…the ring Marcus had bought her in Paris",
+is found in the final composed message (FR-VERIFY-14) by the extraction backstop; it names a
+relation and a place canon has no record of, so it cannot be decided and takes the safe
+disposition (repair, or the deterministic assembly, #152). The story runs once with
+``extraction_mode = always`` (extraction reads every beat: everything is detected) and once with
+``gated`` (extraction reads only the flagged beats; a shadow sample, forced with a rate of 1.0,
+runs the extraction after the commit over the beat gating skipped, and records the claim gating
+missed). The report states detection and checking separately: what was detected, what was
+checked, what the sample missed. Detection and checking are separate metric series."""
 
 from __future__ import annotations
 
@@ -93,7 +92,7 @@ async def test_s_extract_adversarial__m4(engine: AsyncEngine, mode: str) -> None
     assert len(calls) == 2  # one per render (all its beats), one per composed message
 
     # (a) The pocketed key: detected (possession), and the extraction agrees (merged, not a
-    # second claim), contradicted by canon (she does not have it): repaired.
+    # second claim), contradicted by canon (Marcus holds it): repaired.
     (pocket,) = [c for c in found.checked if c.claim.beat == 1]
     assert (pocket.claim.layer, pocket.claim.category) == ("detector", "possession")
     assert pocket.claim.merged == ("extraction",)

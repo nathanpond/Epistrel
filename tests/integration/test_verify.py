@@ -26,9 +26,9 @@ from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.core.enums import OperationKind
-from epistrel.core.propositions import registry
+from epistrel.core.propositions import registry, store
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME
-from epistrel.core.readset import EMPTY_RESULT, KeyedLookup, StructuredReadSet
+from epistrel.core.readset import EMPTY_RESULT, KeyedLookup, StructuredReadSet, touched_keys
 from epistrel.core.resolution.context import load_context, load_index, load_time_basis
 from epistrel.core.resolution.entities import NARRATOR
 from epistrel.core.verify import rules
@@ -42,6 +42,7 @@ pytestmark = pytest.mark.integration
 
 SAME_AS = CORE_BY_NAME["same_as"].id
 LOCATED_IN = CORE_BY_NAME["located_in"].id
+HOLDS = CORE_BY_NAME["holds"].id
 
 
 async def _check(engine: AsyncEngine, w: World, claim: Any, **kw: Any) -> tuple[Any, Any]:
@@ -70,6 +71,48 @@ async def test_check_with_keys_every_fetch(engine: AsyncEngine) -> None:
     assert main.result_hash != EMPTY_RESULT
     assert sum(k.result_hash == EMPTY_RESULT for k in keys) == len(keys) - 1
     assert len(keys) == 4  # same_as twice, located_at, located_in
+
+
+async def test_an_inverse_cardinality_reads_by_object(engine: AsyncEngine) -> None:
+    """#439: ``held_by`` (the inverse of ``holds``) is functional, so Ann holding the key while
+    canon says Cal holds it is ``contradicted`` (``functional_key``), citing Cal's fact. The
+    item's holders are read by object (any subject, the claim's window), so a later change of
+    the key's holder touches the turn's read set. Complement: a change to another item touches
+    nothing."""
+    w = await world(engine)
+    async with engine.begin() as conn:
+        key = await store.add_entity(conn, w.story_id, "item", "key")
+        ring = await store.add_entity(conn, w.story_id, "item", "ring")
+    ann, bobby, cal = w.people["Ann"], w.people["Bobby"], w.people["Cal"]
+    fact = await commit(
+        engine, w.story_id, at(cal, key, 0, None, predicate=HOLDS), kind=OperationKind.CONTROL
+    )
+    verdict, source = await _check(engine, w, at(ann, key, 10, 20, predicate=HOLDS))
+    assert verdict.kind is VerdictKind.CONTRADICTED
+    assert [(e.rule, e.fact_id) for e in verdict.evidence] == [(Rule.FUNCTIONAL_KEY, fact.id)]
+    (by_object,) = [k for k in source.query_keys if k.predicate_id == HOLDS and k.subjects is None]
+    assert (by_object.object_id, by_object.valid_window) == (key, (10, 20))
+    assert by_object.result_hash != EMPTY_RESULT
+    async with engine.connect() as conn:
+        base = int(
+            await conn.scalar(
+                text("SELECT timeline_revision FROM stories WHERE id = :s"), {"s": w.story_id}
+            )
+            or 0
+        )
+    keys = source.query_keys
+    await commit(
+        engine, w.story_id, at(bobby, ring, 10, 20, predicate=HOLDS), kind=OperationKind.CONTROL
+    )
+    async with engine.connect() as conn:
+        assert await touched_keys(conn, w.story_id, base, keys) == []
+    await commit(
+        engine, w.story_id, at(bobby, key, 12, 18, predicate=HOLDS), kind=OperationKind.CONTROL
+    )
+    async with engine.connect() as conn:
+        assert f"query_key:{keys.index(by_object)}" in await touched_keys(
+            conn, w.story_id, base, keys
+        )
 
 
 async def test_dormant_facts_are_never_evidence(engine: AsyncEngine) -> None:

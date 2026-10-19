@@ -20,7 +20,7 @@ from epistrel.core import clock
 from epistrel.core.enums import OperationKind, Provenance
 from epistrel.core.events import Operation
 from epistrel.core.propositions import store
-from epistrel.core.propositions.model import Interval, Polarity, Proposition
+from epistrel.core.propositions.model import Interval, Proposition
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME
 from epistrel.core.readset import StructuredReadSet
 from epistrel.core.stories import CharacterSpec, StorySpec, create_story_from
@@ -58,7 +58,7 @@ class Tavern:
 
 async def tavern_story(engine: AsyncEngine, *, mode: str = "always") -> Tavern:
     """The fixture story on ``Structured (M4)`` (``extraction_mode`` overridden to ``mode``
-    when it is not the profile's ``always``), where Linda has not had the key since minute 0."""
+    when it is not the profile's ``always``), where Marcus has held the key since minute 0."""
     spec = StorySpec(
         name="tavern",
         characters=[
@@ -82,16 +82,15 @@ async def tavern_story(engine: AsyncEngine, *, mode: str = "always") -> Tavern:
     await use_structured(engine, story)
     if mode != "always":
         await store_overrides(engine, story, {"verification": {"extraction_mode": mode}})
-    # Marcus keeps the key from Linda: canon says she does not have it (#439: "Marcus holds
-    # it" alone would not contradict her holding it, the inverse's cardinality is unchecked).
+    # Marcus holds the key: an item has one holder at a time (``held_by`` is functional, #439),
+    # so Linda holding it contradicts canon.
     await commit(
         engine,
         story,
         Proposition(
-            subject_id=ids["Linda"],
+            subject_id=ids["Marcus"],
             predicate_id=HOLDS,
             object_id=key,
-            polarity=Polarity.NEGATED,
             valid_time=Interval.of(0, None),
         ),
     )

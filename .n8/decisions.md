@@ -7685,3 +7685,18 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Issue:** #438
 - **Decision:** #438 regression test `test_i_01__structured_now_is_the_turns_story_time` (`tests/integration/test_structured_projections.py`): `story_minute_zero` = 1000, and Cal is at the kitchen for [1000, 1015). His placement is in turn 1's scene and profile and is gone from turn 2's (story-time 1020), in both the omniscient and his own character viewpoint. The resolver's "now" at turn 2 equals `story_time_at(2)`, and a rebuild refolds the same rows. With the old `structured.py`, it fails on turn 2's scene, which still shows the kitchen.
   **Issue:** #438
+- **Decision (Discretion):** #439 applies an inverse's cardinality without amending FR-PROP-10. `holds(Linda, key)` and `holds(Marcus, key)`, viewed through the inverse (`held_by(key, Linda)`, `held_by(key, Marcus)`), have the same subject and predicate, so the existing `functional_key` and `max_cardinality` rules run on that view as written (`rules._inverse_cardinality`, right after each rule's own pass). The evidence cites the stored `holds` record. Only a registered inverse with cardinality takes part (functional, or a declared maximum: `cardinality_may_contradict`), so a weak inverse never contradicts. No schema change: `Predicate.inverse_of` already carries it.
+  **Why:** FR-PROP-3 lists symmetry and inverse as declared semantics, and docs/predicates.md declares `held_by` functional. Reusing the two rules keeps one implementation of each. #441's cross-predicate and closed-set scope is untouched.
+  **Issue:** #439
+- **Decision (Discretion):** a proposition with a qualifier the inverse does not declare is not an inverse statement and takes no part. `holds`'s `quantity` is the case: "10 silver" is a share of a stock, so Ann's 10 silver beside Cal's 30 never contradicts.
+  **Why:** `held_by` declares no `quantity`. Treating a split stack as two holders of one item would be a false contradiction, and repair would rewrite correct narration.
+  **Issue:** #439
+- **Decision (Discretion):** `check_with` adds one keyed read for an affirmed claim whose predicate has such an inverse: the claim's predicate by object (any subject), for each `same_as`-expanded object, in the main read's window. The query key is `(*, holds, key)`, so a concurrent change of the item's holder touches the turn's read set. Predicates without one read nothing new (I-12/verify key counts unchanged). The `same_as` read of the object now expands the object set the way the subject's already did.
+  **Why:** the issue's "the key fetches by object". `canon_at` filters the object in Python after a by-predicate read. That matches its existing inverse path and is fine at hobby scale.
+  **Issue:** #439
+- **Decision (Discretion):** #148's tavern fixture (`tests/detection_support.py`) now holds the scenario's own canon, `holds(Marcus, key)`, instead of Linda's explicit negation. S-EXTRACT-ADVERSARIAL (a) is then contradicted through the inverse, as docs/04 describes it. With the fix reverted, both modes of the scenario test fail (novel), along with the U-15 slice and the integration test.
+  **Why:** the workaround existed only because of this bug.
+  **Issue:** #439, #148
+- **Decision (Rule 3 → filed):** `test_i_12__neighborhood` fails at `7fb6e84` with #439's change reverted. It has no `placement` projection item, likely because #438 now uses the per-turn story-time as "now". Out of scope, so I filed #449 (`needs-triage`).
+  **Why:** the failure is not caused by #439.
+  **Issue:** #439, #449

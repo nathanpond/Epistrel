@@ -9,8 +9,9 @@ real code paths (``runner.CaseContext``: the in-process ``Engine``, scratch stor
 returns an ``Outcome``: per metric, good, bad or not observed. ``stub_answers`` scripts the
 stub adapter per case (``StubAdapter.case``), so a stub run exercises the harness end to end.
 
-Suites register with ``@register``; the CLI names them by ``name`` (``smoke``; #157's and
-#158's suites by their docs/04 ids: ``e01``, ``q01``, …).
+A suite may prepare deployment state its cases share (``setup``) and undo it (``teardown``,
+always run). Suites register with ``@register``; the CLI names them by ``name`` (``smoke``;
+#155's, #157's and #158's suites by their docs/04 ids: ``e02``, ``e01``, ``q01``, …).
 """
 
 from __future__ import annotations
@@ -26,6 +27,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from epistrel.evals.gate import Metric
 
 if TYPE_CHECKING:
+    from epistrel.core.context import RequestContext
+    from epistrel.engine import Engine
     from epistrel.evals.runner import CaseContext
 
 CASES_FILE = "cases.jsonl"
@@ -95,6 +98,13 @@ class Suite:
         """Purpose → the stub's answer for ``case`` (empty: the stub's default answers)."""
         return {}
 
+    async def setup(self, engine: Engine, ctx: RequestContext) -> None:
+        """Before the suite's first case (deployment state its cases share; #155's E-02
+        proposes a dedicated test shape's threshold); nothing by default."""
+
+    async def teardown(self, engine: Engine, ctx: RequestContext) -> None:
+        """After its last case, even when one failed: undo ``setup``; nothing by default."""
+
 
 SUITES: dict[str, Suite] = {}
 """Every registered suite by name, in registration order."""
@@ -116,6 +126,7 @@ def get_suites(names: Sequence[str] | None = None) -> list[Suite]:
 
 
 # The suites shipped with the engine register on import.
+from epistrel.evals.suites import e02_escalation as _e02  # noqa: E402, F401
 from epistrel.evals.suites import smoke as _smoke  # noqa: E402, F401
 
 __all__ = [

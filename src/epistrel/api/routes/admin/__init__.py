@@ -39,6 +39,7 @@ router.include_router(offboarding.router)
 router.include_router(erasure.router)
 router.include_router(feedback_export.router)
 router.include_router(verify.router)
+router.include_router(verify.gate_router)
 
 _SEGMENT = r"(?:^|/){}(?:/|$)"
 

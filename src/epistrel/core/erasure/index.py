@@ -766,6 +766,8 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "scopes of committed proposition changes (#136)",
     "extraction_shadow": "claim detection's shadow samples (#148): statuses, counts, spans, "
     "predicate ids and shape hashes; the beats the spans point into are indexed",
+    "escalations": "escalation records (#155): ids and verdicts only, no text: claim ids, gate "
+    "reasons, predicate shape keys, confidences, verdict codes and consequences",
     "utterances": "speech acts (#150): ids, proposition ids and three labels; the beat events "
     "they point at are indexed",
     "overflow_episodes": "the hot set's overflow episodes (#147): scope kinds, ids and turn "
@@ -780,6 +782,9 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "alembic_version": "the schema migration's revision id",
     "schema_meta": "schema bookkeeping keys and values",
     "deployment_state": "deployment settings, tag and listing-status sets, reconcile state",
+    "gate_thresholds": "per-shape gate thresholds (#155): predicate shape keys, numbers, modes",
+    "gate_threshold_history": "gate-threshold writes (#155): shape keys, actions, numbers and "
+    "the acting principal",
     "content_ratings": "operator-authored rating names and the retiring principal",
     "content_rating_versions": "operator-authored rating guidance and policy ids",
     "engine_profiles": "an engine profile's name and owner principal (configuration)",

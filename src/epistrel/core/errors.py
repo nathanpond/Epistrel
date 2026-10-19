@@ -1128,3 +1128,22 @@ class SpanNotFound(EpistrelError):
 
     code = "span_not_found"
     http_status = 422
+
+
+class GateNotPromotable(EpistrelError):
+    """A shape's proposed gate tightening cannot be promoted yet (FR-OBS-4, NFR-PERF-5; #155):
+    its shadow window holds fewer escalations than ``gate_promotion_min_cases``, or fewer than
+    ``gate_promotion_min_agreement`` of the would-have-skipped ones agreed with the model.
+    ``details``: ``shape``, ``cases``, ``required_cases``, ``agreement`` (``null`` with no
+    would-have-skipped case) and ``required_agreement``. Nothing is written."""
+
+    code = "gate_not_promotable"
+    http_status = 409
+
+
+class GateThresholdNotFound(EpistrelError):
+    """No gate threshold is proposed or in force for the shape a call names (#155).
+    ``details``: ``shape``."""
+
+    code = "not_found"
+    http_status = 404

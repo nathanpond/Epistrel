@@ -1,0 +1,83 @@
+{"id": "e02-esc-001", "kind": "escalation", "verdict": "contradicted", "confidence": 0.9}
+{"id": "e02-esc-002", "kind": "escalation", "verdict": "supported", "confidence": 0.9}
+{"id": "e02-esc-003", "kind": "escalation", "verdict": "novel", "confidence": 0.9}
+{"id": "e02-esc-004", "kind": "escalation", "verdict": "supported", "confidence": 0.55}
+{"id": "e02-esc-005", "kind": "escalation", "verdict": "contradicted", "confidence": 0.55}
+{"id": "e02-esc-006", "kind": "escalation", "verdict": "unparseable"}
+{"id": "e02-esc-007", "kind": "escalation", "verdict": "contradicted", "confidence": 0.9}
+{"id": "e02-esc-008", "kind": "escalation", "verdict": "supported", "confidence": 0.9}
+{"id": "e02-esc-009", "kind": "escalation", "verdict": "novel", "confidence": 0.9}
+{"id": "e02-esc-010", "kind": "escalation", "verdict": "supported", "confidence": 0.55}
+{"id": "e02-esc-011", "kind": "escalation", "verdict": "contradicted", "confidence": 0.55}
+{"id": "e02-esc-012", "kind": "escalation", "verdict": "unparseable"}
+{"id": "e02-esc-013", "kind": "escalation", "verdict": "contradicted", "confidence": 0.9}
+{"id": "e02-esc-014", "kind": "escalation", "verdict": "supported", "confidence": 0.9}
+{"id": "e02-esc-015", "kind": "escalation", "verdict": "novel", "confidence": 0.9}
+{"id": "e02-esc-016", "kind": "escalation", "verdict": "supported", "confidence": 0.55}
+{"id": "e02-esc-017", "kind": "escalation", "verdict": "contradicted", "confidence": 0.55}
+{"id": "e02-esc-018", "kind": "escalation", "verdict": "unparseable"}
+{"id": "e02-esc-019", "kind": "escalation", "verdict": "contradicted", "confidence": 0.9}
+{"id": "e02-esc-020", "kind": "escalation", "verdict": "supported", "confidence": 0.9}
+{"id": "e02-esc-021", "kind": "escalation", "verdict": "novel", "confidence": 0.9}
+{"id": "e02-esc-022", "kind": "escalation", "verdict": "supported", "confidence": 0.55}
+{"id": "e02-esc-023", "kind": "escalation", "verdict": "contradicted", "confidence": 0.55}
+{"id": "e02-esc-024", "kind": "escalation", "verdict": "unparseable"}
+{"id": "e02-esc-025", "kind": "escalation", "verdict": "contradicted", "confidence": 0.9}
+{"id": "e02-esc-026", "kind": "escalation", "verdict": "supported", "confidence": 0.9}
+{"id": "e02-esc-027", "kind": "escalation", "verdict": "novel", "confidence": 0.9}
+{"id": "e02-esc-028", "kind": "escalation", "verdict": "supported", "confidence": 0.55}
+{"id": "e02-esc-029", "kind": "escalation", "verdict": "contradicted", "confidence": 0.55}
+{"id": "e02-esc-030", "kind": "escalation", "verdict": "unparseable"}
+{"id": "e02-esc-031", "kind": "escalation", "verdict": "contradicted", "confidence": 0.9}
+{"id": "e02-esc-032", "kind": "escalation", "verdict": "supported", "confidence": 0.9}
+{"id": "e02-esc-033", "kind": "escalation", "verdict": "novel", "confidence": 0.9}
+{"id": "e02-esc-034", "kind": "escalation", "verdict": "supported", "confidence": 0.55}
+{"id": "e02-esc-035", "kind": "escalation", "verdict": "contradicted", "confidence": 0.55}
+{"id": "e02-esc-036", "kind": "escalation", "verdict": "unparseable"}
+{"id": "e02-esc-037", "kind": "escalation", "verdict": "contradicted", "confidence": 0.9}
+{"id": "e02-esc-038", "kind": "escalation", "verdict": "supported", "confidence": 0.9}
+{"id": "e02-esc-039", "kind": "escalation", "verdict": "novel", "confidence": 0.9}
+{"id": "e02-esc-040", "kind": "escalation", "verdict": "supported", "confidence": 0.55}
+{"id": "e02-esc-041", "kind": "escalation", "verdict": "contradicted", "confidence": 0.55}
+{"id": "e02-esc-042", "kind": "escalation", "verdict": "unparseable"}
+{"id": "e02-esc-043", "kind": "escalation", "verdict": "contradicted", "confidence": 0.9}
+{"id": "e02-esc-044", "kind": "escalation", "verdict": "supported", "confidence": 0.9}
+{"id": "e02-esc-045", "kind": "escalation", "verdict": "novel", "confidence": 0.9}
+{"id": "e02-esc-046", "kind": "escalation", "verdict": "supported", "confidence": 0.55}
+{"id": "e02-esc-047", "kind": "escalation", "verdict": "contradicted", "confidence": 0.55}
+{"id": "e02-esc-048", "kind": "escalation", "verdict": "unparseable"}
+{"id": "e02-esc-049", "kind": "escalation", "verdict": "contradicted", "confidence": 0.9}
+{"id": "e02-esc-050", "kind": "escalation", "verdict": "supported", "confidence": 0.9}
+{"id": "e02-esc-051", "kind": "escalation", "verdict": "novel", "confidence": 0.9}
+{"id": "e02-esc-052", "kind": "escalation", "verdict": "supported", "confidence": 0.55}
+{"id": "e02-esc-053", "kind": "escalation", "verdict": "contradicted", "confidence": 0.55}
+{"id": "e02-esc-054", "kind": "escalation", "verdict": "unparseable"}
+{"id": "e02-esc-055", "kind": "escalation", "verdict": "contradicted", "confidence": 0.9}
+{"id": "e02-esc-056", "kind": "escalation", "verdict": "supported", "confidence": 0.9}
+{"id": "e02-esc-057", "kind": "escalation", "verdict": "novel", "confidence": 0.9}
+{"id": "e02-esc-058", "kind": "escalation", "verdict": "supported", "confidence": 0.55}
+{"id": "e02-esc-059", "kind": "escalation", "verdict": "contradicted", "confidence": 0.55}
+{"id": "e02-esc-060", "kind": "escalation", "verdict": "unparseable"}
+{"id": "e02-esc-061", "kind": "escalation", "verdict": "contradicted", "confidence": 0.9}
+{"id": "e02-esc-062", "kind": "escalation", "verdict": "supported", "confidence": 0.9}
+{"id": "e02-esc-063", "kind": "escalation", "verdict": "novel", "confidence": 0.9}
+{"id": "e02-esc-064", "kind": "escalation", "verdict": "supported", "confidence": 0.55}
+{"id": "e02-esc-065", "kind": "escalation", "verdict": "contradicted", "confidence": 0.55}
+{"id": "e02-esc-066", "kind": "escalation", "verdict": "unparseable"}
+{"id": "e02-esc-067", "kind": "escalation", "verdict": "contradicted", "confidence": 0.9}
+{"id": "e02-esc-068", "kind": "escalation", "verdict": "supported", "confidence": 0.9}
+{"id": "e02-esc-069", "kind": "escalation", "verdict": "novel", "confidence": 0.9}
+{"id": "e02-esc-070", "kind": "escalation", "verdict": "supported", "confidence": 0.55}
+{"id": "e02-esc-071", "kind": "escalation", "verdict": "contradicted", "confidence": 0.55}
+{"id": "e02-esc-072", "kind": "escalation", "verdict": "unparseable"}
+{"id": "e02-esc-073", "kind": "escalation", "verdict": "contradicted", "confidence": 0.9}
+{"id": "e02-esc-074", "kind": "escalation", "verdict": "supported", "confidence": 0.9}
+{"id": "e02-esc-075", "kind": "escalation", "verdict": "novel", "confidence": 0.9}
+{"id": "e02-esc-076", "kind": "escalation", "verdict": "supported", "confidence": 0.55}
+{"id": "e02-esc-077", "kind": "escalation", "verdict": "contradicted", "confidence": 0.55}
+{"id": "e02-esc-078", "kind": "escalation", "verdict": "unparseable"}
+{"id": "e02-promote-1", "kind": "promotion", "cases": 200, "agreed": 200}
+{"id": "e02-promote-2", "kind": "promotion", "cases": 199, "agreed": 199}
+{"id": "e02-promote-3", "kind": "promotion", "cases": 250, "agreed": 240}
+{"id": "e02-promote-4", "kind": "promotion", "cases": 250, "agreed": 246}
+{"id": "e02-promote-5", "kind": "promotion", "cases": 0, "agreed": 0}

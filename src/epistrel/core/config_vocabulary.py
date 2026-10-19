@@ -80,7 +80,7 @@ def _superseded_names(names: Mapping[str, str], generation: str) -> tuple[str, .
 
 DeploymentSettingFilter = _setting_filter(
     DeploymentSettings,
-    ("model_config", "policy", "rating", PROFILE_FAMILY),
+    ("model_config", "policy", "rating", PROFILE_FAMILY, "verify_gate_threshold"),
     (
         *_setting_names(ProfileSettings, f"{PROFILE_DEFAULTS}."),
         *_superseded_names(SUPERSEDED_DEPLOYMENT_SETTINGS, "lite_generation_defaults"),
@@ -89,7 +89,7 @@ DeploymentSettingFilter = _setting_filter(
 """A deployment-scope ``setting`` filter: a deployment setting (one of the engine profiles'
 defaults, ``profile_defaults.<path>``, included), or a model configuration, global policy,
 rating or engine profile version (#113: ``engine_profile:<id>``, ``engine_profile:<id>.<path>``)
-row family."""
+row family, or a shape's live gate threshold (#155: ``verify_gate_threshold:<shape>``)."""
 
 StorySettingFilter = _setting_filter(
     StorySettings,

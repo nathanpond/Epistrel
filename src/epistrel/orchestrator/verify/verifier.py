@@ -58,7 +58,8 @@ reason, and its verdict entry carries the permission code.
 **Within one turn** a ``Verifier`` is built per turn: identical ``(claim, records)`` requests
 reuse the first validated answer (the structured call's deterministic step), escalations run one
 after the other, and every residual that reached the gate leaves an ``EscalationRecord`` in
-``escalations``: #155 writes them (its ``escalations`` table) in the turn's transaction.
+``escalations``: #155 writes them (its ``escalations`` table) in the turn's transaction, and
+``story_verifier``'s gate reads #155's live per-shape thresholds (``gate_thresholds``).
 ``report()`` is ``turn_report.verify`` (``{claims, deterministic, escalated, verdicts}``, the
 basis of P-05's escalation rate, plus ``denied``) and ``uncertain_claims()`` the surfaced
 claims. A model verdict
@@ -92,7 +93,7 @@ from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.settings_schema import OMNISCIENT, VerifySettings
 from epistrel.core.tables import entities
 from epistrel.core.verify import permission as permissions
-from epistrel.core.verify import rules
+from epistrel.core.verify import rules, yield_queries
 from epistrel.core.verify.neighborhood import Seed, fact_neighborhood
 from epistrel.core.verify.normalize import Unnormalizable
 from epistrel.core.verify.permission import (
@@ -130,6 +131,7 @@ from epistrel.orchestrator.models.structured import Uncertain
 from epistrel.orchestrator.verify.gate import (
     RESOLVED_IN_CORE,
     UNKNOWN,
+    FixedThresholds,
     Gate,
     GateDecision,
     PredicateShape,
@@ -350,6 +352,12 @@ class EscalationRecord:
     disposition: SafeDisposition | None
     degradation: tuple[str, ...]
     tentative_verdict: str = VerdictKind.UNCERTAIN.value
+    gate_outcome: str = "escalate"
+    """The gate's decision (``gate.Outcome``): ``escalate``, ``below_gate`` (a tightened or
+    lowered gate skipped the call), ``never_escalates`` or ``unnormalized``."""
+    escalation_on: bool = True
+    """Whether the profile's ``verification.level`` is ``entailment`` (#155 writes an
+    ``escalations`` row only then: below it no claim is ever escalated)."""
 
 
 type EscalationSink = Callable[[EscalationRecord], None]
@@ -688,6 +696,8 @@ class Verifier:
         self.escalations: list[EscalationRecord] = []
         self.rendered: dict[int, str | None] = {}
         self._answers: dict[str, EntailmentVerdict] = {}
+        self.entailment_s = 0.0
+        """Seconds spent in entailment calls (#155's ``latency_ms_by_stage.entailment``)."""
 
     async def verify(
         self,
@@ -934,6 +944,7 @@ class Verifier:
         reused = key in self._answers
         route = (self.routes or {}).get(ENTAILMENT.name)
         params = BUILT_IN_PARAMS.merged(route.params if route is not None else None)
+        asking = time.perf_counter()
         try:
             with routing(self.routes or {}):
                 answer = await self.models.structured_call(
@@ -952,6 +963,8 @@ class Verifier:
             return self._safe(
                 claim, verdict, decision, ref, called=True, degradation=(ENTAILMENT_UNAVAILABLE,)
             )
+        finally:
+            self.entailment_s += time.perf_counter() - asking
         if isinstance(answer, Uncertain):
             degradation = (ENTAILMENT_BUDGET,) if answer.reason == "budget_exhausted" else ()
             return self._safe(
@@ -1037,6 +1050,8 @@ class Verifier:
             final_kind=result.kind.value,
             disposition=result.disposition,
             degradation=result.degradation,
+            gate_outcome=decision.outcome,
+            escalation_on=self.config.escalation_on,
         )
         self.escalations.append(record)
         if self.on_escalation is not None:
@@ -1103,6 +1118,11 @@ async def story_verifier(
 
     settings = (await effective_configuration(conn, story_id)).settings
     config = VerifyConfig.of(settings, await read_section(conn, VerifySettings))
+    if gate is None and config.escalation_on:
+        # #155: the shapes an operator tightened (a promotion, or a ``live`` write), read
+        # per verifier: one small read per turn, so a change applies to the next turn.
+        tightened = await yield_queries.live_thresholds(conn)
+        gate = Gate(config.entailment_gate, FixedThresholds(tightened)) if tightened else None
     return Verifier(
         CanonSource(conn, read_set, story_id, remember=remember),
         config,

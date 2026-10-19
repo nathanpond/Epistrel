@@ -446,25 +446,16 @@ def _record_failure(job: SuiteRun, suite: Suite, played: _Played) -> None:
         handle.write(json.dumps(line, sort_keys=True, ensure_ascii=False) + "\n")
 
 
-async def run_suite(suite: Suite, job: SuiteRun) -> SuiteResult:
-    """Every seed of ``suite`` (module docstring)."""
-    started = time.perf_counter()
-    try:
-        loaded = job.cases.get(suite.name)
-        cases = _select(
-            loaded if loaded is not None else suite.load(job.sets_dir), job.sample, job.seed_base
-        )
-    except MalformedCase as exc:
-        return SuiteResult.errored(suite, [str(exc)], list(job.seeds))
-    if job.config.adapter == "stub":
-        stub = job.engine.models.stub
-        for case in cases:
-            for purpose, answer in suite.stub_answers(case).items():
-                stub.case(case.id, answer, purpose=purpose)
-    tallies: dict[str, dict[int, list[int]]] = defaultdict(dict)
-    errors: list[str] = []
-    latencies: list[int] = []
-    gate_slots = asyncio.Semaphore(max(1, job.concurrency))
+async def _play_seeds(
+    suite: Suite,
+    job: SuiteRun,
+    cases: Sequence[CaseModel],
+    tallies: dict[str, dict[int, list[int]]],
+    errors: list[str],
+    latencies: list[int],
+    gate_slots: asyncio.Semaphore,
+) -> None:
+    """Every seed's cases, in its shuffled order, tallied into ``tallies``."""
 
     async def bounded(case: CaseModel, seed: int) -> _Played:
         async with gate_slots:
@@ -486,6 +477,38 @@ async def run_suite(suite: Suite, job: SuiteRun) -> SuiteResult:
                 if seen is not None:
                     tallies[metric.id][seed][0 if seen else 1] += 1
             _record_failure(job, suite, played)
+
+
+async def run_suite(suite: Suite, job: SuiteRun) -> SuiteResult:
+    """Every seed of ``suite`` (module docstring)."""
+    started = time.perf_counter()
+    try:
+        loaded = job.cases.get(suite.name)
+        cases = _select(
+            loaded if loaded is not None else suite.load(job.sets_dir), job.sample, job.seed_base
+        )
+    except MalformedCase as exc:
+        return SuiteResult.errored(suite, [str(exc)], list(job.seeds))
+    if job.config.adapter == "stub":
+        stub = job.engine.models.stub
+        for case in cases:
+            for purpose, answer in suite.stub_answers(case).items():
+                stub.case(case.id, answer, purpose=purpose)
+    tallies: dict[str, dict[int, list[int]]] = defaultdict(dict)
+    errors: list[str] = []
+    latencies: list[int] = []
+    gate_slots = asyncio.Semaphore(max(1, job.concurrency))
+    try:
+        await suite.setup(job.engine, _ctx())
+    except Exception as exc:
+        return SuiteResult.errored(suite, [f"setup: {type(exc).__name__}: {exc}"], list(job.seeds))
+    try:
+        await _play_seeds(suite, job, cases, tallies, errors, latencies, gate_slots)
+    finally:
+        try:
+            await suite.teardown(job.engine, _ctx())
+        except Exception as exc:
+            errors.append(f"teardown: {type(exc).__name__}: {exc}")
     metrics = []
     for metric in suite.metrics:
         seed_tallies = [

@@ -6611,6 +6611,148 @@
         "title": "ErrorBody",
         "type": "object"
       },
+      "EscalationYieldBody": {
+        "additionalProperties": false,
+        "description": "Escalation yield over the window (see the module docstring).",
+        "properties": {
+          "by_gate_reason": {
+            "items": {
+              "$ref": "#/components/schemas/YieldClusterBody"
+            },
+            "title": "By Gate Reason",
+            "type": "array"
+          },
+          "by_gate_reason_shape": {
+            "items": {
+              "$ref": "#/components/schemas/YieldClusterBody"
+            },
+            "title": "By Gate Reason Shape",
+            "type": "array"
+          },
+          "by_shape": {
+            "items": {
+              "$ref": "#/components/schemas/YieldClusterBody"
+            },
+            "title": "By Shape",
+            "type": "array"
+          },
+          "claims": {
+            "description": "Claims verified by the window's turns.",
+            "title": "Claims",
+            "type": "integer"
+          },
+          "escalated": {
+            "description": "Of those, the claims escalated to the model.",
+            "title": "Escalated",
+            "type": "integer"
+          },
+          "escalation_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`escalated / claims`; `null` when no claim was verified.",
+            "title": "Escalation Rate"
+          },
+          "from": {
+            "format": "date-time",
+            "title": "From",
+            "type": "string"
+          },
+          "is_gate": {
+            "description": "Always `false`: the baseline is a reference, not a gate.",
+            "title": "Is Gate",
+            "type": "boolean"
+          },
+          "reference_baseline": {
+            "description": "NFR-PERF-5's reference rate, 0.2.",
+            "title": "Reference Baseline",
+            "type": "number"
+          },
+          "to": {
+            "format": "date-time",
+            "title": "To",
+            "type": "string"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/YieldClusterBody"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "by_gate_reason",
+          "by_shape",
+          "by_gate_reason_shape",
+          "totals",
+          "claims",
+          "escalated",
+          "escalation_rate",
+          "reference_baseline",
+          "is_gate"
+        ],
+        "title": "EscalationYieldBody",
+        "type": "object"
+      },
+      "EvalHooksBody": {
+        "description": "A structured turn's eval hooks (FR-OBS-2; #155): ids, codes and counts only.",
+        "properties": {
+          "latency_ms_by_stage": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "Wall time by stage: `plan`, `render`, `normalize`, `detection`, `verify`, `entailment`, `repair`, `composition`, `commit`.",
+            "title": "Latency Ms By Stage",
+            "type": "object"
+          },
+          "model_calls_by_purpose": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Model Calls By Purpose",
+            "type": "object"
+          },
+          "raw_render_event_ids": {
+            "description": "The events holding the raw render: each released beat's own event, and a repaired beat's original `render_rejected` event.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Raw Render Event Ids",
+            "type": "array"
+          },
+          "repair_rungs": {
+            "description": "Per repaired beat: `beat`, the `rung` accepted (4: the safe fallback) and whether a correction was `accepted`.",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Repair Rungs",
+            "type": "array"
+          },
+          "verdicts": {
+            "description": "The verification verdicts (`turn_report.verify` and `verify_follow_up`).",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Verdicts",
+            "type": "array"
+          }
+        },
+        "required": [
+          "raw_render_event_ids",
+          "verdicts",
+          "repair_rungs",
+          "model_calls_by_purpose",
+          "latency_ms_by_stage"
+        ],
+        "title": "EvalHooksBody",
+        "type": "object"
+      },
       "EvaluatedRating": {
         "additionalProperties": false,
         "description": "A rating the table evaluated, at the version it used (the version's id).",
@@ -8348,6 +8490,178 @@
           "variant_chain"
         ],
         "title": "ForkedFromBody",
+        "type": "object"
+      },
+      "GateBody": {
+        "additionalProperties": false,
+        "description": "A shape's gate threshold after the call (`null` values once removed).",
+        "properties": {
+          "applied": {
+            "description": "`false` for a `live` write without `ignore_warnings`: nothing was written.",
+            "title": "Applied",
+            "type": "boolean"
+          },
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "live_threshold": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The threshold the live gate applies.",
+            "title": "Live Threshold"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`shadow` (under evaluation) or `live`.",
+            "title": "Mode"
+          },
+          "promoted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promoted At"
+          },
+          "proposed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposed At"
+          },
+          "shape": {
+            "title": "Shape",
+            "type": "string"
+          },
+          "threshold": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The proposed threshold.",
+            "title": "Threshold"
+          },
+          "warnings": {
+            "description": "`unvalidated_tightening`: a `live` write skips the shadow window.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          },
+          "window_start": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The shadow window's start.",
+            "title": "Window Start"
+          }
+        },
+        "required": [
+          "config_revision",
+          "shape",
+          "applied",
+          "warnings",
+          "threshold",
+          "mode",
+          "live_threshold",
+          "window_start",
+          "proposed_at",
+          "promoted_at"
+        ],
+        "title": "GateBody",
+        "type": "object"
+      },
+      "GateRequest": {
+        "additionalProperties": false,
+        "description": "``PUT /admin/verify/gate``: a shape's proposed threshold and its mode. ``shadow`` records\nwhat the tightened gate would decide and changes nothing live; ``live`` applies it at once\n(an operator's cost ceiling, NFR-PERF-5), which, being unvalidated, needs\n``ignore_warnings``: without it the answer is the warning, nothing written.",
+        "examples": [
+          {
+            "mode": "shadow",
+            "shape": "core|functional|fluent|affirmed",
+            "threshold": 0.4
+          }
+        ],
+        "properties": {
+          "ignore_warnings": {
+            "default": false,
+            "title": "Ignore Warnings",
+            "type": "boolean"
+          },
+          "mode": {
+            "default": "shadow",
+            "enum": [
+              "shadow",
+              "live"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "shape": {
+            "description": "The predicate shape key: `layer|cardinality|temporal|polarity`.",
+            "maxLength": 170,
+            "pattern": "^[a-z0-9_]{1,40}(\\|[a-z0-9_]{1,40}){3}$",
+            "title": "Shape",
+            "type": "string"
+          },
+          "threshold": {
+            "description": "The proposed threshold: a claim of the shape escalates when its deterministic confidence is below the least of this and the profile's gate. 1.0 tightens nothing.",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Threshold",
+            "type": "number"
+          }
+        },
+        "required": [
+          "shape",
+          "threshold"
+        ],
+        "title": "GateRequest",
         "type": "object"
       },
       "GenerationMetadata": {
@@ -13511,6 +13825,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/CreationReport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "eval_hooks": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvalHooksBody"
               },
               {
                 "type": "null"
@@ -25696,6 +26020,13 @@
             "title": "Erasure Shared Media",
             "type": "string"
           },
+          "escalation_retention_days": {
+            "default": 90,
+            "maximum": 3650.0,
+            "minimum": 1.0,
+            "title": "Escalation Retention Days",
+            "type": "integer"
+          },
           "extraction_shadow_sample_rate": {
             "default": 0.1,
             "maximum": 1.0,
@@ -25746,6 +26077,20 @@
             "maximum": 20000.0,
             "minimum": 1.0,
             "title": "Feedback Text Max Chars",
+            "type": "integer"
+          },
+          "gate_promotion_min_agreement": {
+            "default": 0.98,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Gate Promotion Min Agreement",
+            "type": "number"
+          },
+          "gate_promotion_min_cases": {
+            "default": 200,
+            "maximum": 1000000.0,
+            "minimum": 1.0,
+            "title": "Gate Promotion Min Cases",
             "type": "integer"
           },
           "idempotency_key": {
@@ -26785,6 +27130,17 @@
             ],
             "title": "Erasure Shared Media"
           },
+          "escalation_retention_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Escalation Retention Days"
+          },
           "extraction_shadow_sample_rate": {
             "anyOf": [
               {
@@ -26861,6 +27217,28 @@
               }
             ],
             "title": "Feedback Text Max Chars"
+          },
+          "gate_promotion_min_agreement": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Promotion Min Agreement"
+          },
+          "gate_promotion_min_cases": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Promotion Min Cases"
           },
           "idempotency_result_window": {
             "anyOf": [
@@ -31405,6 +31783,88 @@
         "title": "WorkersCheck",
         "type": "object"
       },
+      "YieldClusterBody": {
+        "additionalProperties": false,
+        "description": "One cluster: a gate reason, a shape, or both.",
+        "properties": {
+          "escalations": {
+            "description": "Escalations the gate made (every verification pass).",
+            "title": "Escalations",
+            "type": "integer"
+          },
+          "flip_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`flips / valid`; `null` when `valid` is 0.",
+            "title": "Flip Rate"
+          },
+          "flips": {
+            "description": "Escalations whose model verdict was taken over `uncertain`.",
+            "title": "Flips",
+            "type": "integer"
+          },
+          "gate_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Reason"
+          },
+          "shape": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shape"
+          },
+          "skipped": {
+            "description": "Claims a live tightening skipped (no model call).",
+            "title": "Skipped",
+            "type": "integer"
+          },
+          "valid": {
+            "description": "Escalations with a valid model verdict.",
+            "title": "Valid",
+            "type": "integer"
+          },
+          "weighted_flip_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Each flip weighted by its consequence (`repair_kept` 1, `repair_discarded` 0.25, `none` 0), over `valid`.",
+            "title": "Weighted Flip Rate"
+          }
+        },
+        "required": [
+          "escalations",
+          "skipped",
+          "valid",
+          "flips",
+          "flip_rate",
+          "weighted_flip_rate"
+        ],
+        "title": "YieldClusterBody",
+        "type": "object"
+      },
       "epistrel__core__memory__consolidation__Scope": {
         "additionalProperties": false,
         "description": "One viewpoint scope: shared (``characters`` ``None``) or the characters named.",
@@ -31535,12 +31995,15 @@
                           "embedding_hnsw_m",
                           "entailment_max_records",
                           "erasure_shared_media",
+                          "escalation_retention_days",
                           "extraction_shadow_sample_rate",
                           "feedback_export",
                           "feedback_regen_window_s",
                           "feedback_retention",
                           "feedback_tags",
                           "feedback_text_max_chars",
+                          "gate_promotion_min_agreement",
+                          "gate_promotion_min_cases",
                           "idempotency_result_window",
                           "job_retention_days",
                           "listing_status_values",
@@ -31670,7 +32133,7 @@
                         "type": "string"
                       },
                       {
-                        "pattern": "^(model_config|policy|rating|engine_profile):\\S*$",
+                        "pattern": "^(model_config|policy|rating|engine_profile|verify_gate_threshold):\\S*$",
                         "type": "string"
                       }
                     ]
@@ -32959,6 +33422,118 @@
           }
         ],
         "summary": "Read the erasure ledger's reconciliation",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/evals/escalation-yield": {
+      "get": {
+        "operationId": "escalation_yield",
+        "parameters": [
+          {
+            "description": "An ISO 8601 date-time with its offset (`2026-10-17T12:00:00Z`).",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(?::\\d{2}(?:\\.\\d{1,6})?)?(?:Z|[+-]\\d{2}:\\d{2})$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "An ISO 8601 date-time with its offset (`2026-10-17T12:00:00Z`).",
+              "title": "From"
+            }
+          },
+          {
+            "description": "An ISO 8601 date-time with its offset (`2026-10-17T12:00:00Z`).",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(?::\\d{2}(?:\\.\\d{1,6})?)?(?:Z|[+-]\\d{2}:\\d{2})$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "An ISO 8601 date-time with its offset (`2026-10-17T12:00:00Z`).",
+              "title": "To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationYieldBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read escalation yield",
         "tags": [
           "admin"
         ]
@@ -37922,6 +38497,454 @@
           }
         ],
         "summary": "Rebuild a story's projections from its event log",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/verify/gate": {
+      "put": {
+        "operationId": "set_verify_gate",
+        "parameters": [
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GateBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Propose or apply a gate tightening for one predicate shape",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/verify/gate/{shape}": {
+      "delete": {
+        "operationId": "remove_verify_gate",
+        "parameters": [
+          {
+            "description": "The shape key with `|` written `~` (`core~functional~fluent~affirmed`).",
+            "in": "path",
+            "name": "shape",
+            "required": true,
+            "schema": {
+              "description": "The shape key with `|` written `~` (`core~functional~fluent~affirmed`).",
+              "maxLength": 170,
+              "minLength": 7,
+              "pattern": "^[a-z0-9_~]+$",
+              "title": "Shape",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GateBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Remove a gate tightening",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/verify/gate/{shape}/promote": {
+      "post": {
+        "operationId": "promote_verify_gate",
+        "parameters": [
+          {
+            "description": "The shape key with `|` written `~` (`core~functional~fluent~affirmed`).",
+            "in": "path",
+            "name": "shape",
+            "required": true,
+            "schema": {
+              "description": "The shape key with `|` written `~` (`core~functional~fluent~affirmed`).",
+              "maxLength": 170,
+              "minLength": 7,
+              "pattern": "^[a-z0-9_~]+$",
+              "title": "Shape",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GateBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `gate_not_promotable`, `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Promote a shadowed gate tightening",
         "tags": [
           "admin"
         ]
@@ -48005,7 +49028,7 @@
     },
     "/operations/{operation_id}": {
       "get": {
-        "description": "An operation's kind, status (`in_flight`, `committed`, `abandoned` or `failed`), position (`narrative_turn`, `turn_variant`), the story's `timeline_revision` once it committed, the requesting principal, its timestamps, revalidation `attempts`, `config_revisions`, `origin` (`generated` or `ingested`) and, for an ingested batch, `batch_operation_ids`. A committed Lite turn reports `queued_ms` (its wait in the story's turn queue, null when it was not queued) and `first_call_offset_ms` (from reaching the front to its first model call). A story's `genesis` operation from a scenario carries its full `creation_report` (every entry, deferred item and inactive setting) to a read with `?viewpoint=omniscient` only; otherwise it is null.\n\nA long-running operation names what it was for in `label` and lists its `stages`, each `{name, status, at}` with `status` one of `pending`, `running`, `done`, `failed`, `skipped` (or `partial`, for an erasure's summary regeneration that rewrote only some windows) and `at` null while pending: a story's `genesis` (`validated`, `snapshotted`, `skipped` for a blank story, `materialized`); a rating change's `rating_check` or an edit's `reactivation_check` (`checking`, then `applied`/`reactivated` or `refused`); an `offboarding` (one stage per entity type, in processing order); and an `erasure` (`redacted`, `ledger_written`, `regenerated`, `rebuilt`; a catalog erasure skips the last two). Every other operation has a null `label` and no stages.\n\nAn operation that captured a read set reports `read_set`: `keys_count` (the query keys a structured turn's verdict, precondition and blocker lookups recorded, empty results included; 0 for a Lite turn), `retrieved_count` (rows read as generation context only) and, with `?viewpoint=omniscient` only, the `keys` themselves (`subject`, `predicate`, `object`, `holder`, `window`, `result_hash`); otherwise `keys` is null. `read_set` is null for an operation with no read set.\n\nWithin the idempotency result window (default 24 hours) `result` holds the stored response (`status`, `body`) of the operation's `Idempotency-Key`. A result produced for an output viewpoint (a turn) is returned only when `?viewpoint=` names that viewpoint; another named viewpoint is 409 `idempotency_conflict`. After the window `result` is absent: the operation is the reference a retry receives. Unknown ids are 404.",
+        "description": "An operation's kind, status (`in_flight`, `committed`, `abandoned` or `failed`), position (`narrative_turn`, `turn_variant`), the story's `timeline_revision` once it committed, the requesting principal, its timestamps, revalidation `attempts`, `config_revisions`, `origin` (`generated` or `ingested`) and, for an ingested batch, `batch_operation_ids`. A committed Lite turn reports `queued_ms` (its wait in the story's turn queue, null when it was not queued) and `first_call_offset_ms` (from reaching the front to its first model call). A story's `genesis` operation from a scenario carries its full `creation_report` (every entry, deferred item and inactive setting) to a read with `?viewpoint=omniscient` only; otherwise it is null.\n\nA long-running operation names what it was for in `label` and lists its `stages`, each `{name, status, at}` with `status` one of `pending`, `running`, `done`, `failed`, `skipped` (or `partial`, for an erasure's summary regeneration that rewrote only some windows) and `at` null while pending: a story's `genesis` (`validated`, `snapshotted`, `skipped` for a blank story, `materialized`); a rating change's `rating_check` or an edit's `reactivation_check` (`checking`, then `applied`/`reactivated` or `refused`); an `offboarding` (one stage per entity type, in processing order); and an `erasure` (`redacted`, `ledger_written`, `regenerated`, `rebuilt`; a catalog erasure skips the last two). Every other operation has a null `label` and no stages.\n\nAn operation that captured a read set reports `read_set`: `keys_count` (the query keys a structured turn's verdict, precondition and blocker lookups recorded, empty results included; 0 for a Lite turn), `retrieved_count` (rows read as generation context only) and, with `?viewpoint=omniscient` only, the `keys` themselves (`subject`, `predicate`, `object`, `holder`, `window`, `result_hash`); otherwise `keys` is null. `read_set` is null for an operation with no read set.\n\nA committed structured turn reports `eval_hooks` to a read with `?viewpoint=omniscient` only (FR-OBS-2): `raw_render_event_ids`, the verification `verdicts`, the `repair_rungs`, `model_calls_by_purpose` and `latency_ms_by_stage`; otherwise it is null.\n\nWithin the idempotency result window (default 24 hours) `result` holds the stored response (`status`, `body`) of the operation's `Idempotency-Key`. A result produced for an output viewpoint (a turn) is returned only when `?viewpoint=` names that viewpoint; another named viewpoint is 409 `idempotency_conflict`. After the window `result` is absent: the operation is the reference a retry receives. Unknown ids are 404.",
         "operationId": "get_operation",
         "parameters": [
           {

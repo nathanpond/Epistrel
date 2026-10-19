@@ -884,6 +884,26 @@
       "method": "DELETE",
       "path": "/admin/feedback/exports/{export_id}",
       "why": "FR-FB-4: delete an export's file (#126)"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/evals/escalation-yield",
+      "why": "FR-OBS-2, NFR-PERF-5: escalation yield per gate reason and predicate shape (#155)"
+    },
+    {
+      "method": "PUT",
+      "path": "/admin/verify/gate",
+      "why": "FR-OBS-4: propose (shadow) or apply a per-shape gate tightening (#155)"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/verify/gate/{shape}/promote",
+      "why": "FR-OBS-4: promote a shadowed gate tightening (#155)"
+    },
+    {
+      "method": "DELETE",
+      "path": "/admin/verify/gate/{shape}",
+      "why": "FR-OBS-4: remove a gate tightening, the undo of its write (#155)"
     }
   ],
   "outside": [

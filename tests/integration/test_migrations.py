@@ -1019,3 +1019,54 @@ def test_the_extraction_shadow_table(scratch_database: str) -> None:
         assert indexes() == set()
     finally:
         engine.dispose()
+
+
+def test_the_escalation_tables(scratch_database: str) -> None:
+    """0065 (#155): ``escalations`` (its consequence CHECK and indexes), ``gate_thresholds``
+    (mode and threshold CHECKs) and ``gate_threshold_history`` are created; the downgrade drops
+    all three."""
+    cfg = alembic_config(scratch_database)
+    command.upgrade(cfg, "0064")
+    engine = make_sync_engine(scratch_database)
+
+    def tables() -> set[str]:
+        with engine.connect() as conn:
+            return set(
+                conn.scalars(
+                    text(
+                        "SELECT tablename FROM pg_tables WHERE tablename IN "
+                        "('escalations', 'gate_thresholds', 'gate_threshold_history')"
+                    )
+                )
+            )
+
+    def named(sql: str) -> set[str]:
+        with engine.connect() as conn:
+            return set(conn.scalars(text(sql)))
+
+    try:
+        assert tables() == set()
+        command.upgrade(cfg, "0065")
+        assert tables() == {"escalations", "gate_thresholds", "gate_threshold_history"}
+        assert named("SELECT indexname FROM pg_indexes WHERE tablename = 'escalations'") == {
+            "pk_escalations",
+            "ix_escalations_story_operation",
+            "ix_escalations_story_membership",
+            "ix_escalations_at",
+            "ix_escalations_shape_at",
+        }
+        checks = named(
+            "SELECT conname FROM pg_constraint WHERE contype = 'c' AND conrelid IN "
+            "('escalations'::regclass, 'gate_thresholds'::regclass, "
+            "'gate_threshold_history'::regclass)"
+        )
+        assert checks == {
+            "ck_escalations_consequence",
+            "ck_gate_thresholds_mode",
+            "ck_gate_thresholds_threshold",
+            "ck_gate_threshold_history_action",
+        }
+        command.downgrade(cfg, "0064")
+        assert tables() == set()
+    finally:
+        engine.dispose()

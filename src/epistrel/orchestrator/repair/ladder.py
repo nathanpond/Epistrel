@@ -188,9 +188,11 @@ class Recheck:
         return [c for c in self.claims if c.result is not None and c.result.needs_repair]
 
 
-Rechecker = Callable[[TurnBeat, Sequence[PropositionSketch], bool], Awaitable[Recheck]]
-"""``recheck(candidate, sketches, backstop)``: detect and verify the candidate beat again;
-``backstop`` ``False`` runs only the declared structure and the deterministic detectors."""
+Rechecker = Callable[[TurnBeat, Sequence[PropositionSketch], bool, int], Awaitable[Recheck]]
+"""``recheck(candidate, sketches, backstop, rung)``: detect and verify the candidate beat
+again; ``backstop`` ``False`` runs only the declared structure and the deterministic detectors;
+``rung`` is the rung that made the candidate (#155 records its re-verification as the pass
+``repair_<rung>``)."""
 OutputCheck = Callable[[str], Awaitable[bool]]
 """Whether a text passes the story's output policies (the output gate's check)."""
 InputsOf = Callable[[TurnBeat], GenerationInputs | None]
@@ -600,7 +602,7 @@ class RepairLadder:
             if not await self.output_ok(candidate.text):
                 reject()
                 return None
-            found = await self.recheck(candidate, chosen, backstop)
+            found = await self.recheck(candidate, chosen, backstop, rung)
             if found.violations:
                 reject(found.violations)
                 return None

@@ -36,6 +36,9 @@ FR-CONC-6, NFR-REL-5; #71).
   ``readset_change_retention_days`` (7): in the transaction that deletes a story's rows it moves
   the story's ``changes_pruned_through_revision`` to the highest revision deleted, so a turn
   whose base is below it conflicts rather than rebasing against a partial index.
+- the escalation records (``escalations``, #155) older than ``escalation_retention_days`` (90),
+  by when they were recorded: ids, codes and confidences of committed turns' entailment calls,
+  derived rows no story view reads, so they leave no marker.
 
 No M2 operation kind writes only audit events, so no operation row is deleted. Every delete
 runs in chunks of ``CHUNK`` rows, each its own transaction, at most ``MAX_CHUNKS`` per table and
@@ -91,6 +94,7 @@ from epistrel.core.profiles import store as profiles
 from epistrel.core.ratings import change as rating_change
 from epistrel.core.settings_schema import STORY_LIFETIME, FeedbackSettings, RetentionSettings
 from epistrel.core.tables import audit_log, events, idempotency_keys, jobs, operations, stories
+from epistrel.core.tables.escalations import escalations
 from epistrel.core.tables.events import ALLOW_AUDIT_EXPIRY_GUC
 from epistrel.core.tables.feedback import feedback_history, message_feedback
 from epistrel.core.tables.readset import proposition_changes
@@ -318,7 +322,21 @@ async def sweep_retention(db: AsyncEngine, now: datetime | None = None) -> dict[
         "proposition_changes": await _prune_changes(
             db, moment - timedelta(days=settings.readset_change_retention_days)
         ),
+        "escalations": await _chunked(
+            db, escalations, _expired_escalations(moment, settings), audit=False
+        ),
     }
+
+
+def _expired_escalations(moment: datetime, settings: RetentionSettings) -> Any:
+    """Escalation records (#155) older than ``escalation_retention_days``."""
+    before = moment - timedelta(days=settings.escalation_retention_days)
+    return (
+        select(escalations.c.id)
+        .where(escalations.c.at < before)
+        .limit(CHUNK)
+        .with_for_update(skip_locked=True)
+    )
 
 
 async def purge_idempotency(db: AsyncEngine, now: datetime | None = None) -> dict[str, int]:

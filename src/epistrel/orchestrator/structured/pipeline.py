@@ -173,7 +173,7 @@ from epistrel.core.settings_schema import (
     VerifySettings,
     resolve_generation,
 )
-from epistrel.core.tables import entity_aliases, operations, stories
+from epistrel.core.tables import entity_aliases, events, operations, stories
 from epistrel.core.tables.commitments import thunks
 from epistrel.core.tables.operations import REGENERATED_VARIANT
 from epistrel.core.tables.propositions import entities
@@ -254,6 +254,7 @@ from epistrel.orchestrator.policies.rebase import output_passes, output_recheck
 from epistrel.orchestrator.policies.store import guard_context
 from epistrel.orchestrator.repair.ladder import Recheck, RepairLadder, RepairResult
 from epistrel.orchestrator.structured import prompt as prompts
+from epistrel.orchestrator.structured.eval_hooks import StageClock, eval_hooks
 from epistrel.orchestrator.structured.render import (
     NARRATOR as NARRATOR_VARIANT,
 )
@@ -268,7 +269,7 @@ from epistrel.orchestrator.structured.render import (
     render_schema,
     repair_ages,
 )
-from epistrel.orchestrator.verify import extraction
+from epistrel.orchestrator.verify import extraction, yields
 from epistrel.orchestrator.verify.extraction import (
     CheckedClaim,
     ClaimDetector,
@@ -973,6 +974,9 @@ class Checked:
     """What the repair ladder made of each beat it corrected (#151), in beat order."""
     rejected_bindings: list[resolution.RejectedBinding] = field(default_factory=list)
     """The bindings of open thunks reconciliation rejected (#154), in claim order."""
+    repair_verifiers: list[tuple[int, Verifier]] = field(default_factory=list)
+    """The verifier of each repair re-check (#151) with the rung whose candidate it checked:
+    #155 records their escalations as the pass ``repair_<rung>``."""
 
 
 def _verdict_of(result: CheckedClaim) -> str | None:
@@ -1027,12 +1031,17 @@ async def check_turn(
     with_salience: bool = True,
     backstop: bool = True,
     answers_from: Sequence[Verifier | None] = (),
+    clock: StageClock | None = None,
 ) -> Checked:
     """Detect and verify the player's input and every render's beats (see the module
     docstring). A follow-up render's check (``first_claim``: where its claim ids start) sees
     the claims the turn's earlier beats staged (``staged_before``) and reads no salience. A
     repair's re-check (#151) runs without the model backstop when ``backstop`` is off (layers
-    a and b only) and reuses the entailment answers of ``answers_from``, the turn's verifiers."""
+    a and b only) and reuses the entailment answers of ``answers_from``, the turn's verifiers.
+    ``clock`` (#155) takes the time of its normalize, detection, verify and entailment
+    stages."""
+    clock = clock or StageClock()
+    detecting = time.perf_counter()
     settings = configuration.settings
     routes = routes_of(settings)
     turn = read.turn
@@ -1045,9 +1054,11 @@ async def check_turn(
         env = await extraction.load_env(
             conn, story_id, read_set, position=(turn, 0), speakers=speakers, config=config
         )
+    clock.add("detection", time.perf_counter() - detecting)
     # The declared propositions, normalized (an unregistered relation registers, in a short
     # transaction of its own).
     declared: dict[int, tuple[DeclaredClaim, ...]] = {}
+    normalizing = time.perf_counter()
     async with db.begin() as conn:
         for beat in rendered.beats:
             found: list[DeclaredClaim] = []
@@ -1070,6 +1081,8 @@ async def check_turn(
                 else:
                     found.append(DeclaredClaim(claim_id, proposition=normalized))
             declared[beat.beat] = tuple(found)
+    clock.add("normalize", time.perf_counter() - normalizing)
+    detecting = time.perf_counter()
     scene_context = SceneContext(
         present_entities=list(read.present)[:100], last_beats=list(read.last_beats)
     )
@@ -1111,9 +1124,11 @@ async def check_turn(
         for detected in outcome.detection.beats:
             if detected.beat is not None:
                 mentions[detected.beat] = (*mentions.get(detected.beat, ()), *detected.mentions)
+    clock.add("detection", time.perf_counter() - detecting)
     checked: list[CheckedClaim] = []
     verifier: Verifier | None = None
     requests: list[CanonRequest] = []
+    verifying = time.perf_counter()
     async with db.connect() as conn:
         verifier = await story_verifier(conn, read_set, story_id, models=models, budget=budget)
         for earlier in answers_from:
@@ -1166,6 +1181,10 @@ async def check_turn(
                 c.claim_id for c in resolution.candidates(checked)
             }
             requests = [r for r in requests if r.claim_id is None or r.claim_id not in refused]
+    entailment_s = 0.0 if verifier is None else verifier.entailment_s
+    clock.add("verify", time.perf_counter() - verifying - entailment_s)
+    clock.add("entailment", entailment_s)
+    detecting = time.perf_counter()
     by_claim: dict[int, list[CheckedClaim]] = {}
     for c in checked:
         if c.claim.beat is not None:
@@ -1232,6 +1251,7 @@ async def check_turn(
                 salient.append((at, claim_sketch, None))
     input_checked = [c for c in checked if c.claim.beat == 1]
     input_mentions = [m.as_payload() for m in mentions.get(1, ())]
+    clock.add("detection", time.perf_counter() - detecting)
     return Checked(
         beats=beats,
         input_claims=[_asserted(c) for c in input_checked],
@@ -1328,6 +1348,7 @@ async def follow_up(
     sections: prompts.RenderSections,
     context: Any,
     render_ids: Sequence[str],
+    clock: StageClock | None = None,
 ) -> Checked:
     """FR-COMMIT-7's follow-up (#146's AC, #150's pipeline): when a salient reference this turn
     made is still open after its beats were verified, and the turn's budget can pay for one
@@ -1398,6 +1419,7 @@ async def follow_up(
         staged_before=checked.staged,
         first_claim=len(checked.checked),
         with_salience=False,
+        clock=clock,
     )
     left = [s for s in still if not _settled_by(extra.checked, s)]
     checked.beats += extra.beats
@@ -1539,7 +1561,9 @@ async def repair_turn(
     sketches = dict(rendered.sketches)
     claims_made = [len(checked.checked)]
 
-    async def recheck(beat: TurnBeat, chosen: Sequence[PropositionSketch], backstop: bool) -> Any:
+    async def recheck(
+        beat: TurnBeat, chosen: Sequence[PropositionSketch], backstop: bool, rung: int
+    ) -> Any:
         own = {
             f"staged:{r.claim_id}" for r in checked.requests if r.beat == beat.beat and r.claim_id
         }
@@ -1564,6 +1588,8 @@ async def repair_turn(
             answers_from=(checked.verifier, checked.follow_up_verifier),
         )
         claims_made[0] += len(found.checked)
+        if found.verifier is not None:
+            checked.repair_verifiers.append((rung, found.verifier))
         (made,) = found.beats
         return Recheck(
             beat=made,
@@ -1662,6 +1688,43 @@ def _repair_events(checked: Checked) -> list[tuple[str, Any]]:
 def repairs_report(checked: Checked) -> list[dict[str, Any]]:
     """``turn_report.repairs``: one entry per repaired claim (ids, codes and counts)."""
     return [entry for result in checked.repairs for entry in result.report()]
+
+
+def _verify_passes(checked: Checked) -> list[yields.VerifyPass]:
+    """The turn's verifiers as #155's verification passes: the renders' (the follow-up's
+    included) and each repair re-check's."""
+    found = [
+        yields.VerifyPass(v, yields.RENDER)
+        for v in (checked.verifier, checked.follow_up_verifier)
+        if v is not None
+    ]
+    found += [
+        yields.VerifyPass(v, yields.repair_pass(rung)) for rung, v in checked.repair_verifiers
+    ]
+    return found
+
+
+async def _raw_render_ids(
+    conn: AsyncConnection, operation_id: str, ids: Mapping[int, str], checked: Checked
+) -> list[str]:
+    """``eval_hooks.raw_render_event_ids`` (#155): each rendered beat's event, and for a
+    repaired beat its original text's ``render_rejected`` event (attempt 0)."""
+    repaired = {r.original.beat for r in checked.repairs}
+    found = [ids[b] for b in sorted(ids) if b > 1 and b not in repaired]
+    if repaired:
+        rejected = await conn.execute(
+            select(events.c.id, events.c.payload).where(
+                events.c.operation_id == operation_id, events.c.type == "render_rejected"
+            )
+        )
+        found += sorted(
+            str(r.id)
+            for r in rejected
+            if isinstance(r.payload, dict)
+            and r.payload.get("attempt") == 0
+            and r.payload.get("beat") in repaired
+        )
+    return found
 
 
 # -- composition (#152) -----------------------------------------------------------------------
@@ -1827,8 +1890,10 @@ async def play(
     composed: list[composing.Composition] = []
     fixed: dict[str, Any] = {}
     rounds: list[int] = []
+    clock = StageClock()
 
     async def begin(conn: AsyncConnection) -> TurnRead:
+        clock.reset()
         reading = time.perf_counter()
         read = await read_turn(
             conn,
@@ -1841,6 +1906,7 @@ async def play(
             regenerating=None if regenerating is None else regenerating.turn,
         )
         timing.assemble_s += time.perf_counter() - reading
+        clock.add("plan", time.perf_counter() - reading)
         facts = await runtime_facts(conn)
         stamped[:] = [captured.stamp(facts)]
         op.config_revisions = {
@@ -2046,6 +2112,7 @@ async def play(
             ),
         )
         timing.policy_check_s += time.perf_counter() - gating
+        clock.add("render", time.perf_counter() - gating)
         gated[:] = [outcome]
         rendered = by_draft.get(id(outcome.draft))
         if rendered is None or outcome.fallback_used:
@@ -2074,6 +2141,7 @@ async def play(
             read_set=read_set,
             configuration=configuration,
             budget=budget,
+            clock=clock,
         )
         # The composed message's detection call (C): held before any optional work (#152).
         async with db.connect() as conn:
@@ -2083,6 +2151,8 @@ async def play(
         reserved = composing.reserve_detection(
             budget, composition_detection_calls(configuration, detection_config)
         )
+        following = time.perf_counter()
+        checked_s = clock.total(("normalize", "detection", "verify", "entailment"))
         checked = await follow_up(
             db,
             models,
@@ -2099,7 +2169,12 @@ async def play(
             ),
             context=context,
             render_ids=cast_.render_ids,
+            clock=clock,
         )
+        # The follow-up render's own time; its check's is in its stages already.
+        checked_s = clock.total(("normalize", "detection", "verify", "entailment")) - checked_s
+        clock.add("render", time.perf_counter() - following - checked_s)
+        repairing = time.perf_counter()
         checked = await repair_turn(
             db,
             models,
@@ -2122,7 +2197,9 @@ async def play(
                 budget=budget_tokens,
             ),
         )
+        clock.add("repair", time.perf_counter() - repairing)
         found[:] = [checked]
+        composing_at = time.perf_counter()
         composition = await compose_turn(
             db,
             models,
@@ -2138,6 +2215,7 @@ async def play(
             fallback=lite._fallback_lines(read.inputs, cast_),
             reserved=reserved,
         )
+        clock.add("composition", time.perf_counter() - composing_at)
         composed[:] = [composition]
         checked.degradation += _composition_degradation(composition)
         stage(op, read, rendered, checked, outcome, composition)
@@ -2246,6 +2324,7 @@ async def play(
     async def write_turn(
         conn: AsyncConnection, *, read: TurnRead, rendered: Rendered, checked: Checked
     ) -> None:
+        committing = time.perf_counter()
         ids = await beat_event_ids(conn, op.operation_id)
         await write_introductions(conn, op, rendered.introductions, base_revision=op.base_revision)
         registry = await load_registry(conn, story_id)
@@ -2339,6 +2418,22 @@ async def play(
         else:
             commit_report = {"canonized": len(canonized)}
         fixed["commit"] = commit_report
+        # #155: the turn's escalation records, in its commit.
+        await yields.write(
+            conn,
+            story_id=story_id,
+            operation_id=op.operation_id,
+            position=(op.narrative_turn, op.turn_variant),
+            passes=_verify_passes(checked),
+            repaired={
+                v.claim_id: result.accepted
+                for result in checked.repairs
+                for v in result.violations
+                if v.claim_id is not None
+            },
+        )
+        fixed["raw_render_event_ids"] = await _raw_render_ids(conn, op.operation_id, ids, checked)
+        clock.add("commit", time.perf_counter() - committing)
         await write_report(conn, rendered, checked)
 
     async def write_report(conn: AsyncConnection, rendered: Rendered, checked: Checked) -> None:
@@ -2385,6 +2480,15 @@ async def play(
         report["commit"] = fixed.get("commit", {})
         if checked.repairs:
             report["repairs"] = repairs_report(checked)
+        report["eval_hooks"] = eval_hooks(
+            report,
+            raw_render_event_ids=fixed.get("raw_render_event_ids", []),
+            repair_rungs=[
+                {"beat": r.original.beat, "rung": r.rung, "accepted": r.accepted}
+                for r in checked.repairs
+            ],
+            clock=clock,
+        )
         extraction.record_metrics([*checked.outcomes, *message_outcomes], checked.checked)
         for repaired in checked.repairs:
             count_repair(repaired.rung, repaired.repair_class.value)

@@ -149,6 +149,7 @@ from epistrel.core.tables.characters import DEFLECTION_STYLE_MAX, TRUE_AGE_MAX, 
 from epistrel.core.tables.commitments import promissory_ledger, thunks
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 from epistrel.core.tables.detection import extraction_shadow
+from epistrel.core.tables.escalations import escalations
 from epistrel.core.tables.facts import facts
 from epistrel.core.tables.feedback import feedback_history, message_feedback
 from epistrel.core.tables.hot_set import overflow_episodes
@@ -214,6 +215,8 @@ STORY_TABLES: tuple[Table, ...] = (
     overflow_episodes,
     # Claim detection's shadow samples (#148): a derived table, before the operations it names.
     extraction_shadow,
+    # Escalation records (#155): a derived table, before the operations it names.
+    escalations,
     # The structured read set's change index (#136), before the operations it references.
     proposition_changes,
     # The structured stores (#131): story rows only (core predicates have no story).
@@ -248,6 +251,7 @@ STORY_TABLES_NOT_COPIED: frozenset[str] = frozenset(
         proposition_changes.name,
         overflow_episodes.name,
         extraction_shadow.name,
+        escalations.name,
     }
 )
 """Story-scoped tables a fork (#67) leaves behind: work in progress (``jobs``, the turn queue,
@@ -261,7 +265,9 @@ keys name the source's events), the read set's change index (#136: it records wh
 under the source's turns; the fork's turns begin from its own revision), and the hot set's
 overflow episodes (#147: maintenance state; the fork recounts its counters and its next commit
 opens the episodes it needs), and claim detection's shadow samples (#148: an eval of the
-source's renders, which ``GET /admin/evals/extraction-shadow`` counts once). Every other table
+source's renders, which ``GET /admin/evals/extraction-shadow`` counts once), and the escalation
+records (#155: the source's turns' entailment calls, which ``GET /admin/evals/escalation-yield``
+counts once). Every other table
 in ``STORY_TABLES`` is copied by ``core.fork``, so a new story-scoped table is copied unless it
 is named here."""
 

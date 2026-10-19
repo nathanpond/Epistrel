@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from epistrel.api.deps import ContextDep, EngineDep, OperationId
 from epistrel.core.genesis.models import CreationReport
@@ -43,6 +43,10 @@ OPERATION_DESCRIPTION = (
     "only) and, with `?viewpoint=omniscient` only, the `keys` themselves (`subject`, "
     "`predicate`, `object`, `holder`, `window`, `result_hash`); otherwise `keys` is null. "
     "`read_set` is null for an operation with no read set."
+    "\n\nA committed structured turn reports `eval_hooks` to a read with "
+    "`?viewpoint=omniscient` only (FR-OBS-2): `raw_render_event_ids`, the verification "
+    "`verdicts`, the `repair_rungs`, `model_calls_by_purpose` and `latency_ms_by_stage`; "
+    "otherwise it is null."
     "\n\nWithin the idempotency result window (default 24 hours) `result` holds the stored "
     "response (`status`, `body`) of the operation's `Idempotency-Key`. A result produced for an "
     "output viewpoint (a turn) is returned only when `?viewpoint=` names that viewpoint; another "
@@ -91,6 +95,27 @@ class ReadSetBody(BaseModel):
     keys: list[QueryKeyBody] | None = None
 
 
+class EvalHooksBody(BaseModel):
+    """A structured turn's eval hooks (FR-OBS-2; #155): ids, codes and counts only."""
+
+    raw_render_event_ids: list[str] = Field(
+        description="The events holding the raw render: each released beat's own event, and a "
+        "repaired beat's original `render_rejected` event."
+    )
+    verdicts: list[dict[str, Any]] = Field(
+        description="The verification verdicts (`turn_report.verify` and `verify_follow_up`)."
+    )
+    repair_rungs: list[dict[str, Any]] = Field(
+        description="Per repaired beat: `beat`, the `rung` accepted (4: the safe fallback) and "
+        "whether a correction was `accepted`."
+    )
+    model_calls_by_purpose: dict[str, int]
+    latency_ms_by_stage: dict[str, int] = Field(
+        description="Wall time by stage: `plan`, `render`, `normalize`, `detection`, `verify`, "
+        "`entailment`, `repair`, `composition`, `commit`."
+    )
+
+
 class OperationBody(BaseModel):
     """One operation: kind, status, position, revision, attribution, timestamps, attempts,
     configuration revisions, origin, a turn's queue wait and first-call delay, a genesis
@@ -120,6 +145,7 @@ class OperationBody(BaseModel):
     label: OperationLabel | None = None
     stages: list[StageBody] = []
     read_set: ReadSetBody | None = None
+    eval_hooks: EvalHooksBody | None = None
 
     @classmethod
     def of(cls, view: OperationView) -> OperationBody:
@@ -156,6 +182,9 @@ class OperationBody(BaseModel):
                 if view.read_set.keys is None
                 else [QueryKeyBody.model_validate(k) for k in view.read_set.keys],
             ),
+            eval_hooks=None
+            if view.eval_hooks is None
+            else EvalHooksBody.model_validate(view.eval_hooks),
             result=(
                 StoredResultBody(status=view.result.status, body=view.result.body)
                 if view.result is not None

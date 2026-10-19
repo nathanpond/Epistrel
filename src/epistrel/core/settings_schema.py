@@ -415,6 +415,8 @@ DEFAULT_RATING_CHECK_RETENTION_DAYS = 30
 DEFAULT_READSET_CHANGE_RETENTION_DAYS = 7
 """How long the structured read set's change index keeps a row (#136): a turn whose base is older
 than that cannot rebase and conflicts instead."""
+DEFAULT_ESCALATION_RETENTION_DAYS = 90
+"""How long an ``escalations`` row is kept (#155)."""
 
 
 class RetentionSettings(BaseModel):
@@ -425,7 +427,8 @@ class RetentionSettings(BaseModel):
     offboarding's status and report (``offboarding_jobs``, #117) for
     ``offboarding_report_retention_days``, and a finished rating check's status and violations
     (``rating_check_jobs``, #118) for ``rating_check_retention_days``, and the structured read
-    set's change index (``proposition_changes``, #136) for ``readset_change_retention_days``.
+    set's change index (``proposition_changes``, #136) for ``readset_change_retention_days``, and
+    the escalation records (``escalations``, #155) for ``escalation_retention_days``.
     Prospective: each sweep applies the values in force when it runs; story history never
     expires."""
 
@@ -447,6 +450,9 @@ class RetentionSettings(BaseModel):
     )
     readset_change_retention_days: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_READSET_CHANGE_RETENTION_DAYS, ge=1, le=AUDIT_RETENTION_MAX_DAYS
+    )
+    escalation_retention_days: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_ESCALATION_RETENTION_DAYS, ge=1, le=AUDIT_RETENTION_MAX_DAYS
     )
 
 
@@ -864,6 +870,9 @@ PROTECTED_INDEX_MAX_LIMIT = 100_000
 
 DEFAULT_CASCADE_THRESHOLD = 5
 CASCADE_THRESHOLD_LIMIT = 1_000
+DEFAULT_GATE_PROMOTION_MIN_CASES = 200
+GATE_PROMOTION_MIN_CASES_LIMIT = 1_000_000
+DEFAULT_GATE_PROMOTION_MIN_AGREEMENT = 0.98
 
 
 class VerifySettings(BaseModel):
@@ -872,7 +881,10 @@ class VerifySettings(BaseModel):
     (``neighborhood_max_facts``) and the most holder records one entailment request carries
     (``entailment_max_records``), claim detection's shadow sample rate and protected-index
     cap (#148), and the neighborhood size above which a repair is a ``cascade``
-    (``cascade_threshold``, #151). The gate, the confidence floor, the safe disposition and
+    (``cascade_threshold``, #151), and when a shadowed gate tightening may be promoted
+    (``gate_promotion_min_cases`` escalations of the shape in its shadow window, of which a
+    share of at least ``gate_promotion_min_agreement`` agreed with the model; #155). The gate,
+    the confidence floor, the safe disposition and
     ``extraction_mode`` are engine-profile dials (``verification``). Prospective: a verify
     reads them when it runs."""
 
@@ -899,6 +911,16 @@ class VerifySettings(BaseModel):
     )
     """A repair whose neighborhood holds more facts than this is a ``cascade`` (FR-REPAIR-4;
     #151): a signal on ``turn_report.repairs``, which changes no render."""
+    gate_promotion_min_cases: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_GATE_PROMOTION_MIN_CASES, ge=1, le=GATE_PROMOTION_MIN_CASES_LIMIT
+    )
+    """The fewest escalations of a shape its shadow window must hold before its proposed
+    tightening may be promoted (FR-OBS-4, NFR-PERF-5; #155)."""
+    gate_promotion_min_agreement: Annotated[StrictFloat, PROSPECTIVE] = Field(
+        default=DEFAULT_GATE_PROMOTION_MIN_AGREEMENT, ge=0.0, le=1.0
+    )
+    """The least share of the shadow window's would-have-skipped escalations whose skip agreed
+    with the model, for a promotion (#155)."""
 
 
 DEFAULT_THUNKS_MAX_OPEN = 500

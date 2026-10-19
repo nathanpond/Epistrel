@@ -1768,6 +1768,37 @@ def _steps() -> list[Step]:
             lambda ids: Rest("POST", "/admin/reembed/retry"),
             lambda e, ids: _retry_reembed(e),
         ),
+        # -- escalation yield and gate tightening (#155): a dedicated shape, a fixed window
+        Step(
+            "set_verify_gate",
+            lambda ids: Rest("PUT", "/admin/verify/gate", GATE),
+            lambda e, ids: _set_gate(e, GATE),
+        ),
+        Step(
+            "escalation_yield",
+            lambda ids: Rest(
+                "GET",
+                "/admin/evals/escalation-yield",
+                params={"from": SHADOW_FROM.isoformat(), "to": SHADOW_TO.isoformat()},
+            ),
+            lambda e, ids: _escalation_yield(e),
+        ),
+        Step(  # an empty shadow window: 409 gate_not_promotable on both
+            "promote_verify_gate",
+            lambda ids: Rest("POST", f"/admin/verify/gate/{GATE_PATH}/promote"),
+            lambda e, ids: _promote_gate(e),
+        ),
+        Step(
+            "promote_verify_gate",
+            lambda ids: Rest("POST", f"/admin/verify/gate/{GATE_PATH}/promote"),
+            lambda e, ids: _promote_gate(e),
+            prepare=_gate_window,
+        ),
+        Step(
+            "remove_verify_gate",
+            lambda ids: Rest("DELETE", f"/admin/verify/gate/{GATE_PATH}"),
+            lambda e, ids: _remove_gate(e),
+        ),
         # -- media assets (#105)
         Step(
             "upload_media",
@@ -2536,6 +2567,46 @@ async def _extraction_shadow_report(engine: Engine) -> dict[str, Any]:
 
     found = await engine.extraction_shadow_report(CTX, window_from=SHADOW_FROM, window_to=SHADOW_TO)
     return dump(ExtractionShadowBody.of(found))
+
+
+GATE_SHAPE = "eval|c03|test|affirmed"
+GATE_PATH = GATE_SHAPE.replace("|", "~")
+GATE = {"shape": GATE_SHAPE, "threshold": 0.25, "mode": "shadow"}
+
+
+async def _escalation_yield(engine: Engine) -> dict[str, Any]:
+    from epistrel.api.routes.admin.verify import EscalationYieldBody
+
+    found = await engine.escalation_yield(CTX, window_from=SHADOW_FROM, window_to=SHADOW_TO)
+    return dump(EscalationYieldBody.of(found))
+
+
+async def _set_gate(engine: Engine, body: dict[str, Any]) -> dict[str, Any]:
+    from epistrel.api.routes.admin.verify import GateBody
+    from epistrel.core.verify.yield_queries import GateRequest
+
+    return dump(GateBody.of(await engine.set_verify_gate(CTX, GateRequest(**body))))
+
+
+async def _promote_gate(engine: Engine) -> dict[str, Any]:
+    from epistrel.api.routes.admin.verify import GateBody
+
+    return dump(GateBody.of(await engine.promote_verify_gate(CTX, GATE_SHAPE)))
+
+
+async def _remove_gate(engine: Engine) -> dict[str, Any]:
+    from epistrel.api.routes.admin.verify import GateBody
+
+    return dump(GateBody.of(await engine.remove_verify_gate(CTX, GATE_SHAPE)))
+
+
+async def _gate_window(engine: Engine, ids: Ids) -> None:
+    """A shadow window that meets the promotion rule (200 agreeing escalations of the shape),
+    written as the structured pipeline would at turns' commits (#155)."""
+    from tests.escalation_support import any_operation, window_rows
+
+    operation = await any_operation(engine.db, ids["story"])
+    await window_rows(engine.db, ids["story"], operation, GATE_SHAPE, cases=200, agreed=200)
 
 
 async def _reembed_status(engine: Engine) -> dict[str, Any]:

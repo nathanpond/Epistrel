@@ -21,6 +21,11 @@ from epistrel.core.tables.commitments import promissory_ledger, thunks
 from epistrel.core.tables.deployment import config_changes, deployment_state
 from epistrel.core.tables.detection import extraction_shadow
 from epistrel.core.tables.erasure import erasure_ledger
+from epistrel.core.tables.escalations import (
+    escalations,
+    gate_threshold_history,
+    gate_thresholds,
+)
 from epistrel.core.tables.events import events
 from epistrel.core.tables.facts import facts
 from epistrel.core.tables.genesis import genesis_deferred
@@ -84,9 +89,12 @@ __all__ = [
     "entity_aliases",
     "entity_relations",
     "erasure_ledger",
+    "escalations",
     "events",
     "extraction_shadow",
     "facts",
+    "gate_threshold_history",
+    "gate_thresholds",
     "genesis_deferred",
     "guardrail_check_results",
     "idempotency_keys",

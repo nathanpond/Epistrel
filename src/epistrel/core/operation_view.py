@@ -37,6 +37,11 @@ query keys of its structured lookups, FR-CONC-11; 0 for a Lite turn), ``retrieve
 read as generation context only) and, to a read naming the ``omniscient`` viewpoint only, the
 keys themselves (``{subject, predicate, object, holder, window, result_hash}``: ids and hashes);
 ``null`` for an operation with no read set.
+
+**Eval hooks (#155).** A committed structured turn's ``turn_report.eval_hooks`` (FR-OBS-2: the
+raw render's event ids, the verification verdicts, the repair rungs, the model calls by purpose
+and the latency by stage) is returned to a read naming the ``omniscient`` viewpoint only, its
+verdicts expanded from the report sections it names; ``null`` otherwise.
 """
 
 from __future__ import annotations
@@ -143,6 +148,9 @@ class OperationView:
     """A long-running operation's stages, in order (see the module docstring)."""
     read_set: ReadSetView | None = None
     """The operation's read set (#136), ``None`` when it captured none."""
+    eval_hooks: dict[str, Any] | None = None
+    """A structured turn's eval hooks (#155), its verdicts expanded, returned only to a read
+    naming the ``omniscient`` viewpoint."""
 
 
 INGESTED = "ingested"
@@ -207,7 +215,27 @@ async def read_operation(
         label=label,
         stages=stages,
         read_set=_read_set(row.read_set, viewpoint),
+        eval_hooks=expanded_eval_hooks(row.turn_report) if _omniscient(viewpoint) else None,
     )
+
+
+def expanded_eval_hooks(report: Any) -> dict[str, Any] | None:
+    """A turn report's ``eval_hooks`` (#155) with its ``verdicts`` expanded from the report
+    sections it names (``{"sections": ["verify", ...]}``: the hooks reference the verdicts
+    rather than copy them); ``None`` when the report has none."""
+    if not isinstance(report, dict):
+        return None
+    hooks = report.get("eval_hooks")
+    if not isinstance(hooks, dict):
+        return None
+    pointer = hooks.get("verdicts")
+    sections = pointer.get("sections", []) if isinstance(pointer, dict) else []
+    verdicts: list[Any] = []
+    for name in sections:
+        section = report.get(name)
+        if isinstance(section, dict):
+            verdicts += list(section.get("verdicts") or [])
+    return {**hooks, "verdicts": verdicts}
 
 
 def _omniscient(viewpoint: str | None) -> bool:

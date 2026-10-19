@@ -235,6 +235,7 @@ ERROR_STATUS: dict[str, int] = {
     "module_off": 409,
     "fact_superseded": 409,
     "fact_inactive": 409,
+    "gate_not_promotable": 409,
     "length_required": 411,
     "draft_too_large": 413,
     "media_too_large": 413,
@@ -388,6 +389,9 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "ledger_unavailable",
     ),
     "list_media": ("ledger_unavailable",),
+    # Gate tightening (#155): a promotion below the rule; an unknown shape's promote or delete.
+    "promote_verify_gate": ("gate_not_promotable", "not_found"),
+    "remove_verify_gate": ("not_found",),
     "respond": (
         *_GATED,
         *_TURN,

@@ -78,6 +78,7 @@ EXPECTED: dict[type[BaseModel], dict[str, ConfigClass]] = {
         "rating_check_model_calls_per_record": ConfigClass.prospective,
         "rating_check_retention_days": ConfigClass.prospective,
         "readset_change_retention_days": ConfigClass.prospective,
+        "escalation_retention_days": ConfigClass.prospective,
         "erasure_shared_media": ConfigClass.interpretive,
         "memory_importance_half_life_turns": ConfigClass.prospective,
         "max_pinned_per_character": ConfigClass.prospective,
@@ -96,6 +97,8 @@ EXPECTED: dict[type[BaseModel], dict[str, ConfigClass]] = {
         "extraction_shadow_sample_rate": ConfigClass.prospective,
         "protected_index_max": ConfigClass.prospective,
         "cascade_threshold": ConfigClass.prospective,
+        "gate_promotion_min_cases": ConfigClass.prospective,
+        "gate_promotion_min_agreement": ConfigClass.prospective,
         "thunks_max_open": ConfigClass.prospective,
     },
 }

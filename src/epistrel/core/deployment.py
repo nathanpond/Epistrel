@@ -24,7 +24,9 @@ and the embedding port's batches and HNSW index (``embedding_batch_max``,
 much the verifier reads around a claim (``neighborhood_max_facts``, ``entailment_max_records``;
 #142), claim detection's shadow sample and protected-index cap
 (``extraction_shadow_sample_rate``, ``protected_index_max``; #148), the repair classification's
-``cascade_threshold`` (#151), and how many open thunks a story keeps (``thunks_max_open``,
+``cascade_threshold`` (#151), a gate tightening's promotion rule and how long escalation records are
+kept (``gate_promotion_min_cases``, ``gate_promotion_min_agreement``,
+``escalation_retention_days``; #155), and how many open thunks a story keeps (``thunks_max_open``,
 #146).
 ``media_sweep_interval`` also moves its recurring task's ``recurring_tasks`` row
 (``RECURRING_INTERVAL_SETTINGS``).
@@ -173,6 +175,7 @@ class SettingsPatch(BaseModel):
     job_retention_days: StrictInt | None = None
     offboarding_report_retention_days: StrictInt | None = None
     rating_check_retention_days: StrictInt | None = None
+    escalation_retention_days: StrictInt | None = None
     readset_change_retention_days: StrictInt | None = None
     worker_heartbeat_timeout: StrictFloat | None = None
     timer_lag_alert: StrictFloat | None = None
@@ -211,6 +214,8 @@ class SettingsPatch(BaseModel):
     extraction_shadow_sample_rate: StrictFloat | None = None
     protected_index_max: StrictInt | None = None
     cascade_threshold: StrictInt | None = None
+    gate_promotion_min_cases: StrictInt | None = None
+    gate_promotion_min_agreement: StrictFloat | None = None
     thunks_max_open: StrictInt | None = None
     profile_defaults: SettingsDocument | None = None
 

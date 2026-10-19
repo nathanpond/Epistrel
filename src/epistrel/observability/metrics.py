@@ -35,7 +35,13 @@ The registry holds:
 - ``epistrel_repairs_total{rung,class}``: #151's repair ladder, one per corrected beat, counted
   at a turn's commit (``count_repair``): ``rung`` names the rung accepted (``narrowing``,
   ``substitution``, ``regeneration``, ``safe_fallback``) and ``class`` its FR-REPAIR-4 class
-  (``cosmetic``, ``substitution``, ``cascade``), both bounded enums.
+  (``cosmetic``, ``substitution``, ``cascade``), both bounded enums;
+- ``epistrel_verify_escalations_total{gate_reason,shape,flipped}`` and
+  ``epistrel_verify_shadow_total{shape,agreed}``: #155's escalation records, counted at a
+  turn's commit: the gate reason and the predicate shape (its four enum values joined by
+  ``__``, ``core__functional__fluent__affirmed``), whether the model flipped the tentative
+  verdict (``true``, ``false``, ``none``), and, for an escalation a proposed tightening would
+  have skipped, whether skipping agreed.
 
 Label values are enums, ULIDs, route names, HTTP statuses or sanitised model names (#44's rule),
 never content. prometheus-client's default process, platform and GC collectors are removed.
@@ -45,6 +51,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import threading
 from collections.abc import Iterator
 
@@ -146,6 +153,44 @@ REPAIR_RUNGS: dict[int, str] = {
 """The ``rung`` label of ``epistrel_repairs_total``: each rung's name (label values are enums,
 #44's rule)."""
 REPAIR_CLASSES = frozenset({"cosmetic", "substitution", "cascade"})
+
+
+VERIFY_ESCALATIONS = Counter(
+    "epistrel_verify_escalations",
+    "Entailment escalations recorded at a turn's commit, by gate reason, predicate shape "
+    "(layer|cardinality|temporal|polarity) and whether the model flipped the tentative verdict "
+    "(true, false, none: no valid answer).",
+    ("gate_reason", "shape", "flipped"),
+)
+VERIFY_SHADOW = Counter(
+    "epistrel_verify_shadow",
+    "Escalations a proposed gate tightening would have skipped, by predicate shape and whether "
+    "skipping agreed with the model.",
+    ("shape", "agreed"),
+)
+
+
+_SHAPE_LABEL = re.compile(r"^[a-z_]+$")
+
+
+def shape_label(shape: str) -> str:
+    """A predicate shape key as a label value: its four enum values joined by ``__`` (``|`` is
+    outside #44's label grammar); ``other`` for anything that is not four enum values."""
+    label = shape.replace("|", "__")
+    return label if shape.count("|") == 3 and _SHAPE_LABEL.match(label) else "other"
+
+
+def count_escalation(gate_reason: str, shape: str, flipped: bool | None) -> None:
+    """Count one recorded escalation (``epistrel_verify_escalations_total``; #155)."""
+    label = "none" if flipped is None else ("true" if flipped else "false")
+    VERIFY_ESCALATIONS.labels(
+        gate_reason=gate_reason, shape=shape_label(shape), flipped=label
+    ).inc()
+
+
+def count_shadow(shape: str, agreed: bool) -> None:
+    """Count one would-have-skipped escalation (``epistrel_verify_shadow_total``; #155)."""
+    VERIFY_SHADOW.labels(shape=shape_label(shape), agreed="true" if agreed else "false").inc()
 
 
 def count_repair(rung: int, repair_class: str) -> None:

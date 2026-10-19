@@ -250,7 +250,9 @@ async def test_harness_stub_run(pg_url: str, engine: AsyncEngine, tmp_path: Path
         assert suite.seeds == SEEDS
         for metric in suite.metrics:
             assert set(metric.model_dump()) >= METRIC_FIELDS
-            assert metric.sample_size == suite.cases
+            # A metric may be observed by some of a suite's cases only (#155's E-02: the
+            # escalation and promotion cases observe different metrics).
+            assert 0 < metric.sample_size <= suite.cases
             assert metric.seed_count == 2
         if suite.ci_gate:
             assert suite.verdict is Verdict.passed, suite

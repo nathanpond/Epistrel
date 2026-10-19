@@ -126,6 +126,7 @@ from epistrel.core.tables.media import MediaKind, MediaState
 from epistrel.core.tables.ownership import EntityType
 from epistrel.core.turn_gate import Concurrency, QueueItem
 from epistrel.core.verify import shadow as verify_shadow
+from epistrel.core.verify import yield_queries
 from epistrel.core.viewpoint import (
     is_omniscient,
     require_omniscient,
@@ -296,6 +297,10 @@ CODECS: dict[str, ResultCodec[Any]] = {
         model_config.ConfigWrite, status=204, revision_field=_CONFIG
     ),
     "retry_reembed": ResultCodec.of(ReembedRetry, revision_field=_CONFIG),
+    # Gate tightening (#155): deployment-scoped writes of a shape's threshold.
+    "set_verify_gate": ResultCodec.of(yield_queries.GateWrite, revision_field=_CONFIG),
+    "promote_verify_gate": ResultCodec.of(yield_queries.GateWrite, revision_field=_CONFIG),
+    "remove_verify_gate": ResultCodec.of(yield_queries.GateWrite, revision_field=_CONFIG),
     "create_character_draft": ResultCodec.of(
         catalog_characters.DraftWrite, status=201, revision_field=_CONFIG
     ),
@@ -2859,6 +2864,58 @@ class Engine:
                 limit=limit,
                 after=after,
             )
+
+    # -- escalation yield and gate tightening (FR-OBS-2,4, NFR-PERF-5; #155) -------------------
+
+    async def escalation_yield(
+        self,
+        ctx: RequestContext,
+        *,
+        window_from: datetime | None = None,
+        window_to: datetime | None = None,
+    ) -> yield_queries.YieldReport:
+        """Escalation yield over a window (the last 30 days by default): per gate reason, per
+        predicate shape and per both, the escalations, flips and rates, and the overall
+        escalation rate with its reference baseline."""
+        del ctx
+        async with self.db.connect() as conn:
+            return await yield_queries.yield_report(
+                conn, window_from=window_from, window_to=window_to
+            )
+
+    async def set_verify_gate(
+        self, ctx: RequestContext, request: yield_queries.GateRequest
+    ) -> yield_queries.GateWrite:
+        """Propose a shape's gate threshold in ``shadow``, or put it ``live`` (confirmed with
+        ``ignore_warnings``; without it nothing is written and the key is released)."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "set_verify_gate",
+            lambda _: yield_queries.set_gate(self.db, request, actor=principal),
+            material=request.model_dump(mode="json"),
+            keep=lambda written: written.applied,
+        )
+
+    async def promote_verify_gate(self, ctx: RequestContext, shape: str) -> yield_queries.GateWrite:
+        """Promote a shape's shadowed threshold (409 ``gate_not_promotable`` below the rule)."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "promote_verify_gate",
+            lambda _: yield_queries.promote_gate(self.db, shape, actor=principal),
+            material={"shape": shape},
+        )
+
+    async def remove_verify_gate(self, ctx: RequestContext, shape: str) -> yield_queries.GateWrite:
+        """Remove a shape's threshold: proposed or live, the shape is not tightened any more."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "remove_verify_gate",
+            lambda _: yield_queries.remove_gate(self.db, shape, actor=principal),
+            material={"shape": shape},
+        )
 
     # -- the re-embed run (FR-EMBED-3,4; #138) ------------------------------------------------
 

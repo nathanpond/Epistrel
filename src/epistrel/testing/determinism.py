@@ -52,7 +52,15 @@ OPERATIONAL_TABLES = frozenset(
 and a rating change's check and its verdict cache (#118)."""
 
 VOLATILE_KEYS = frozenset(
-    {"elapsed_ms", "latency_ms", "queued_ms", "first_call_offset_ms", "worker_id", "attempt"}
+    {
+        "elapsed_ms",
+        "latency_ms",
+        "latency_ms_by_stage",
+        "queued_ms",
+        "first_call_offset_ms",
+        "worker_id",
+        "attempt",
+    }
 )
 """Keys dropped wherever they appear (columns, ``jsonb`` and response bodies): wall-clock
 durations (a turn's queue wait and first-call delay too, #76) and which worker or attempt ran a
@@ -194,6 +202,11 @@ ORDER: dict[str, str] = {
     "extraction_shadow": (
         f"{_STORY_RANK}, t.narrative_turn NULLS FIRST, t.turn_variant NULLS FIRST, t.status, "
         "t.extraction_claims, t.missed_count, t.missed::text"
+    ),
+    # Escalation records (#155): by the turn, then the pass and the claim.
+    "escalations": (
+        f"{_STORY_RANK}, t.narrative_turn NULLS FIRST, t.turn_variant NULLS FIRST, t.pass, "
+        "t.claim_id NULLS FIRST, t.gate_reason, t.predicate_shape, t.final_kind"
     ),
     # Speech acts (#150): by the beat's position, then the labels.
     "utterances": (

@@ -32,7 +32,7 @@ from epistrel.orchestrator.jobs import timers
 from epistrel.orchestrator.jobs.handlers.rebuild import REBUILD_KIND
 from epistrel.orchestrator.policies.input_gate import EntryPoint, GateText
 from epistrel.orchestrator.policies.schemas import StoryPolicyItem
-from tests import canon_support, memory_support
+from tests import canon_support, escalation_support, memory_support
 from tests import erasure_support as erasure
 from tests import genesis_support as g
 from tests.event_support import interleave, play_turn, rows
@@ -238,6 +238,10 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
             missed=[shadow.Missed(beat=2, start=0, end=4, category="possession")],
         )
     assert written is not None
+    # Escalation records (#155): one entailment call of that turn.
+    await escalation_support.window_rows(
+        engine, story_id, sampled.operation_id, "core|functional|fluent|affirmed", cases=1, agreed=1
+    )
     # The structured turn (#150): an utterance of the input of a turn of its own.
     async with Operation(
         engine, story_id=story_id, kind=OperationKind.TURN, principal="p-test"

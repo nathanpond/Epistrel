@@ -7659,3 +7659,8 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Issue:** #431
 - **Decision:** #431 proven red with the four call sites reverted to `included_segments`: the new cost test fails on `included_segments` being called, and with that assertion removed, on rows read (7 against 4,095 for the segments, 11 against 6,143 for the memberships).
   **Issue:** #431
+- **Decision (Discretion):** #433 takes the issue's option 1 (triage gave only M4, no option). `FAMILY_NAMES`' EUPL pattern makes `Union` optional (`European Public Licence`), and a new `DEPRECATED_FAMILY_IDS` maps the stem `eCos` (alone or before a version) to the GPL in `denied_family`, so `eCos-2.0` and `LicenseRef-eCos-2.0` are denied; the bare exception id `eCos-exception-2.0` is not.
+  **Why:** a sweep of packaging 26.3's deprecated SPDX ids shows `eCos-2.0` is the only GPL-family one not starting with `GPL` (`wxWindows` is LGPL-family).
+  **Issue:** #433
+- **Decision (Discretion):** #433's accepted cost, as #320's: `LicenseRef-eCos-exception-2.0` reads as the GPL (its body's word `eCos`). A sweep of every SPDX license and exception id (bare, as `LicenseRef-<id>`, in an `AND`) shows only `eCos-2.0`'s three forms and that copy change, all to denied; `check-licenses` on the real closure is unchanged (63 judged, 1 excepted, 0 offending). 11 new deny rows fail without the fix.
+  **Issue:** #433

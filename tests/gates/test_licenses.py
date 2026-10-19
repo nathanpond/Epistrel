@@ -443,6 +443,20 @@ def test_classifier_values_are_read_per_classifier(raw: str, status: str, detail
         ("EUPLv.1.2", "EUPL"),
         ("GNU-GPLver.2", "GPL"),
         ("LicenseRef-GPLver3", "GPL"),
+        # The EUPL's long name without `Union`, and the deprecated SPDX id `eCos-2.0`
+        # (GPL-2.0-or-later WITH eCos-exception-2.0), bare and as a `LicenseRef-` copy (#433).
+        ("European Public License", "EUPL"),
+        ("European Public Licence 1.2", "EUPL"),
+        ("European-Public-Licence-v1.2", "EUPL"),
+        ("EuropeanPublicLicence1.2", "EUPL"),
+        ("MIT; European Public License", "EUPL"),
+        ("eCos-2.0", "GPL"),
+        ("ecos-2.0", "GPL"),
+        ("LicenseRef-eCos-2.0", "GPL"),
+        ("MIT AND eCos-2.0", "GPL"),
+        ("eCos License version 2.0", "GPL"),
+        # The cost, as #320's: the `LicenseRef-` copy of the exception id reads as the GPL.
+        ("LicenseRef-eCos-exception-2.0", "GPL"),
     ],
 )
 def test_an_exception_never_admits_a_denied_family_whatever_the_spelling(
@@ -527,6 +541,10 @@ NUMPY_TEXT = (
         ("LicenseRef-scancode-mit-old-style", "not allowed"),
         ("SMAIL-GPL", "not allowed"),
         ("Qt-GPL-exception-1.0", "not allowed"),
+        # #433's readings stop at the EUPL's name and the eCos license id: other `European`
+        # licenses and the eCos exception's own id are not denied.
+        ("European Space Agency Public License", "unknown"),
+        ("eCos-exception-2.0", "not allowed"),
         # `licensed` is not `license`.
         ("Free for the general public, licensed as MIT", "unknown"),
         # A value that names a specific GNU license other than the GPL is not a bare GNU (#313),

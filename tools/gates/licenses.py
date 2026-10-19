@@ -8,9 +8,10 @@ direction. An exception admits an UNKNOWN or not-allowed
 license, never one that names a deny family (#94): by an id that starts with the family, after
 any leading `LicenseRef-` or `GNU` (`GPL-3.0-only`, `GPLv3`, `GPLver.3`, `GNU-GPL`, `GPL.v3`,
 `LicenseRef-GPL-3.0`), by any word of a `LicenseRef-` id's body (`LicenseRef-KDE-Accepted-GPL`,
-`LicenseRef-scancode-gpl-2.0-classpath`; #320, the owner's decision), or by its long name
-with any separators or none (`GNU Public License`, `Server-Side Public License`,
-`EuropeanUnionPublicLicence`); any `Affero` is the AGPL. A GPL qualified as another license
+`LicenseRef-scancode-gpl-2.0-classpath`; #320, the owner's decision), by a deprecated SPDX id
+of the family (`eCos-2.0`, the GPL; #433), or by its long name with any separators or none
+(`GNU Public License`, `Server-Side Public License`, `EuropeanUnionPublicLicence`,
+`European Public Licence`; #433); any `Affero` is the AGPL. A GPL qualified as another license
 (`Lesser GPL`, `Library GPL`, `Nethack GPL`, `LicenseRef-Library-GPL`) is that license. A
 `LicenseRef-` copy of an SPDX id with `GPL` inside it (`LicenseRef-CNRI-Python-GPL-Compatible`)
 reads as the GPL, the cost of #320's reading; the bare SPDX id does not. A value that names
@@ -182,7 +183,8 @@ FAMILY_NAMES: tuple[tuple[str, re.Pattern[str]], ...] = (
             rf" (?:gnu ?(?:general ?)?|general ?){_PUBLIC_LICENSE}"
         ),
     ),
-    ("EUPL", re.compile(rf" (?:european ?union|eu) ?{_PUBLIC_LICENSE}")),
+    # `Union` is optional: `European Public Licence` names only the EUPL too (#433).
+    ("EUPL", re.compile(rf" (?:european ?(?:union ?)?|eu) ?{_PUBLIC_LICENSE}")),
     ("SSPL", re.compile(rf" server ?side ?{_PUBLIC_LICENSE}")),
 )
 # A bare GNU (#313): the word `gnu`, alone or joined to a version or `License` (`GNUv3`,
@@ -194,6 +196,13 @@ BARE_GNU_RE = re.compile(r" gnu(?:v?\d+|licen[cs]e)?(?= )")
 OTHER_GNU_LICENSE_RE = re.compile(
     r" (?:lesser|library|lgpl|affero|agpl|documentation|fdl|gfdl|permissive|allpermissive|nethack)"
 )
+# Deprecated SPDX ids in a deny family whose id does not start with the family (#433), as
+# (family, id stem): `eCos-2.0` is GPL-2.0-or-later WITH eCos-exception-2.0. The stem matches
+# alone or before a version (`eCos`, `eCos-2.0`, `LicenseRef-eCos-2.0`), not the exception id
+# `eCos-exception-2.0`; its `LicenseRef-` copy reads as the GPL, as #320's copies do. Every
+# other deprecated GPL-family id in packaging 26.3's SPDX list (`GPL-2.0-with-GCC-exception`, …)
+# starts with `GPL`; `wxWindows` is LGPL-family.
+DEPRECATED_FAMILY_IDS: tuple[tuple[str, str], ...] = (("GPL", "ECOS"),)
 # Runs of free text that may be ids (`GPL-3.0-only`, `GNU-GPL`, `GPL.v3`).
 TOKEN_RE = re.compile(r"[A-Za-z0-9.+-]+")
 # A PEP 639 `LicenseRef-` id, any case. Its body is free to put the family after a prefix, as
@@ -398,11 +407,15 @@ def denied_family(spdx: str, deny: tuple[str, ...]) -> str | None:
     `GPL3`, `GPLVersion3`, `GPLver3`, `GPLv.3` and `GPL.v3` spellings are GPL, after a leading
     `GNU` (`GNU-GPL`) or PEP 639 `LicenseRef-` (`LicenseRef-GPL-3.0`) too; `LGPL-2.1-only` and
     `AGPL-3.0` are not (each family on its own). Only a leading prefix is dropped: the SPDX id
-    `CNRI-Python-GPL-Compatible` names a permissive license. (`named_family` reads a
+    `CNRI-Python-GPL-Compatible` names a permissive license. A deprecated SPDX id listed in
+    `DEPRECATED_FAMILY_IDS` is its family (`eCos-2.0` is GPL; #433). (`named_family` reads a
     `LicenseRef-` id's body word by word, #320.)"""
     upper = re.sub(r"^(?:LICENSEREF-)?(?:GNU[-.+]?)?", "", spdx.upper())
     for fam in sorted(deny, key=len, reverse=True):  # LGPL before GPL
         if re.match(rf"{re.escape(fam)}(?:$|[-+.]|(?:V|VER|VERSION)?\.?\d)", upper):
+            return fam
+    for fam, alias in DEPRECATED_FAMILY_IDS:
+        if fam in deny and re.match(rf"{alias}(?:$|[-+.]?(?:V|VER|VERSION)?\.?\d)", upper):
             return fam
     return None
 

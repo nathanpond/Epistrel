@@ -47,8 +47,13 @@ def test_live_model_tests_run_only_when_selected(pytester: pytest.Pytester) -> N
     """``live_model`` tests (E-06, P-08) are deselected by default and collected when ``-m``
     names the marker (#54). The other tests there (P-05, P-09: #69) run by default."""
     default = _collected(pytester)
-    assert not any("test_e_06" in line or "test_p_08" in line for line in default)
+    assert not any("test_e_06" in line or _live_p_08(line) for line in default)
     assert any("test_p_05" in line for line in default)
     selected = _collected(pytester, "-m", "live_model")
     assert any("test_e_06" in line for line in selected)
-    assert any("test_p_08" in line for line in selected)
+    assert any(_live_p_08(line) for line in selected)
+
+
+def _live_p_08(line: str) -> bool:
+    """The live P-08 run itself, not #153's stub-driven ``test_p_08__structured``."""
+    return line.endswith("::test_p_08") or "::test_p_08[" in line

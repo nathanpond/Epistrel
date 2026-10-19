@@ -22,7 +22,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from epistrel.testing.perf import TURNS
-from perf.lite_smoke import FULL_MINUTES, REPO_ROOT, RESULTS_DIR, report
+from perf.lite_smoke import (
+    FULL_MINUTES,
+    REPO_ROOT,
+    RESULTS_DIR,
+    STRUCTURED_EVENTS,
+    STRUCTURED_MEMORIES,
+    report,
+)
 
 FRESH = timedelta(days=30)
 """A full-length report counts for the gate for 30 days from the run's start."""
@@ -30,22 +37,35 @@ WARN = timedelta(days=14)
 """The reminder is due once a report is 14 days or less from expiring."""
 
 
+def full_turns(scenario: str) -> int:
+    """The seeded turns of a full-size story: 10,000 for Lite; for the structured variant, the
+    scale spec of 10,000 memories and 20,000 events (5,000 turns, the rest canon's events)."""
+    if scenario == "structured":
+        from epistrel.testing.fixtures import scale
+
+        return scale.ScaleSpec.scaled(STRUCTURED_MEMORIES, events=STRUCTURED_EVENTS).turns
+    return TURNS
+
+
 def is_full(found: report.Header) -> bool:
-    """A full-length run: at least 30 minutes over the full-size (10,000-turn) stories."""
-    return found.minutes >= FULL_MINUTES and found.turns == TURNS
+    """A full-length run: at least 30 minutes over the full-size stories of its scenario."""
+    return found.minutes >= FULL_MINUTES and found.turns == full_turns(found.scenario)
 
 
-def newest_full(results_dir: Path = RESULTS_DIR) -> tuple[Path, report.Header] | None:
-    """The newest full-length report in ``results_dir`` (by its start time), or ``None``.
+def newest_full(
+    results_dir: Path = RESULTS_DIR, scenario: str = "lite"
+) -> tuple[Path, report.Header] | None:
+    """The newest full-length report of ``scenario`` in ``results_dir`` (by its start time),
+    or ``None``.
 
-    A file that is not a P-04 Lite report is skipped here; ``test_p_04`` is what refuses it."""
+    A file that is not a P-04 report is skipped here; ``test_p_04`` is what refuses it."""
     found: list[tuple[Path, report.Header]] = []
-    for path in sorted(results_dir.glob("*-lite.md")):
+    for path in sorted(results_dir.glob(f"*-{scenario}.md")):
         try:
             parsed = report.header(path.read_text())
         except ValueError:
             continue
-        if is_full(parsed):
+        if parsed.scenario == scenario and is_full(parsed):
             found.append((path, parsed))
     return max(found, key=lambda item: item[1].started, default=None)
 
@@ -73,8 +93,8 @@ class Status:
         return self.expires is None or self.now >= self.expires - WARN
 
 
-def status(now: datetime, results_dir: Path = RESULTS_DIR) -> Status:
-    newest = newest_full(results_dir)
+def status(now: datetime, results_dir: Path = RESULTS_DIR, scenario: str = "lite") -> Status:
+    newest = newest_full(results_dir, scenario)
     if newest is None:
         return Status(report=None, started=None, now=now)
     return Status(report=newest[0], started=newest[1].started, now=now)

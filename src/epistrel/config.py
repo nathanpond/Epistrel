@@ -14,7 +14,15 @@ import os
 from pathlib import Path
 from typing import Annotated, Literal, Self
 
-from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 ENV_PREFIX = "EPISTREL_"
@@ -46,6 +54,20 @@ class ConfigError(Exception):
         self.lines = lines
 
 
+class StubRenderClaim(BaseModel):
+    """A claim the stub's structured renders declare (P-04's structured variant, #153): on
+    ``share`` of the renders, chosen by the request's hash, the first ``say`` beat declares this
+    proposition sketch (``subject`` ``I`` is the rendering character)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    share: float = Field(gt=0.0, le=1.0)
+    subject: str = Field(min_length=1, max_length=200)
+    relation: str = Field(min_length=1, max_length=200)
+    object: str | None = Field(default=None, max_length=200)
+    negated: bool = False
+
+
 class Settings(BaseSettings):
     """The service's configuration boundary."""
 
@@ -69,6 +91,10 @@ class Settings(BaseSettings):
     model_adapter: Literal["openai", "stub"] = "openai"
     # Seconds the stub adapter waits before answering (load and latency tests); 0 answers at once.
     stub_latency_s: float = Field(default=0.0, ge=0.0, le=600.0)
+    # Claims the stub's structured renders declare, each on its share of the renders (JSON in
+    # the environment; #153's P-04 structured variant: 10% contradicted, 10% novel). The shares
+    # are stacked over the request's hash and sum to at most 1; empty declares none.
+    stub_render_claims: list[StubRenderClaim] = Field(default_factory=list)
     # Which adapter serves the embedding port (FR-EMBED-1, NFR-PORT-2; #138): `openai` calls the
     # `embedding` row's OpenAI-compatible `/embeddings` endpoint; `stub` derives a deterministic
     # vector from the text's SHA-256. Unset, it follows `model_adapter`.
@@ -150,6 +176,13 @@ class Settings(BaseSettings):
     def _must_be_psycopg_url(cls, value: SecretStr) -> SecretStr:
         if not value.get_secret_value().startswith(DATABASE_URL_SCHEME):
             raise ValueError(f"must be a {DATABASE_URL_SCHEME} URL")
+        return value
+
+    @field_validator("stub_render_claims")
+    @classmethod
+    def _shares_fit(cls, value: list[StubRenderClaim]) -> list[StubRenderClaim]:
+        if sum(c.share for c in value) > 1.0 + 1e-9:
+            raise ValueError("the claims' shares sum to at most 1")
         return value
 
     @field_validator("config_key")

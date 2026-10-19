@@ -15,6 +15,15 @@
 # red and files (or comments on) a "Weekly perf run failed" issue. `weekly-docs` then renders
 # docs/perf.md and docs/capacity.md from the results, red or green, and opens or updates the
 # rolling `perf/weekly` pull request (label `performance`) for the owner's review.
+#
+# `weekly-structured` runs P-04's structured variant on the same schedule (#153, NFR-PERF-4 M4):
+# `python -m perf.lite_smoke --scenario structured --minutes 30 --host-class ci`, ten structured
+# stories of 10,000 memories (the seed cached as a pg_dump keyed by the alembic head and the
+# builders' hash), one single-character turn every 60 s each against the stub at 2 s per call.
+# On the runner the gate is reported, not enforced (NFR-PERF-4: only the reference host is
+# gated): the job fails on an error, a failed request or a lost or duplicated turn. It uploads
+# the report, its sidecar and Locust's HTML report; `weekly-docs` commits the report under
+# perf/results/ and summarises it in docs/perf.md.
 name: Perf
 
 on:
@@ -178,8 +187,89 @@ jobs:
             gh issue create --title "Weekly perf run failed $(date -u +%F)" --label bug --label needs-triage --label performance --body "$body"
           fi
 
+  weekly-structured:
+    if: github.event.schedule == '0 3 * * 0' || (github.event_name == 'workflow_dispatch' && inputs.suite == 'weekly')
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v10.3.0  # exact: setup-uv publishes no floating major tag past v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.14"
+          enable-cache: true
+      # Locust is in the `perf` group.
+      - run: uv sync --frozen --group perf
+      - name: Structured seed cache key
+        id: seed
+        run: |
+          key=$(uv run python -c 'from perf.lite_smoke import structured; print(structured.cache_key(10))')
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        with:
+          path: build/perf/cache
+          key: p04-structured-${{ steps.seed.outputs.key }}
+      # The compose stack (perf/lite_smoke/compose.perf.yml + compose.structured.yml) builds the
+      # image from this checkout. Exit 0 on the `ci` host class whatever the verdict.
+      - name: P-04 structured workload
+        id: structured
+        run: |
+          mkdir -p build/perf/structured
+          set -o pipefail
+          uv run python -m perf.lite_smoke --scenario structured --minutes 30 --host-class ci --out build/perf/structured 2>&1 | tee build/perf/structured.log
+      # Reported, not gated on this host class; an error, a failed request or a lost or
+      # duplicated turn still fails the job.
+      - name: Check for failed, lost or duplicated turns
+        id: turns
+        run: |
+          sidecar=$(ls build/perf/structured/*-structured.json | tail -1)
+          cp "$sidecar" build/perf/p_04_structured.json
+          uv run python -c 'import json, sys; f = json.load(open(sys.argv[1]))["figures"]; print("failed", f["failed"], "lost", f["lost"], "duplicated", f["duplicated"]); sys.exit(1 if f["failed"] or f["lost"] or f["duplicated"] else 0)' build/perf/p_04_structured.json
+      - name: Summarise
+        if: always()
+        env:
+          OUTCOME: ${{ steps.structured.outcome }}/${{ steps.turns.outcome }}
+        run: |
+          {
+            printf '%s\n' "## P-04 structured: $OUTCOME (host class ci: reported, not gated)" ''
+            report=$(ls build/perf/structured/*-structured.md 2>/dev/null | tail -1)
+            if [ -n "$report" ]; then sed -n '1,/^## Per story/p' "$report"; else printf '%s\n' '(no report written)'; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep Locust's HTML report
+        if: always()
+        run: cp build/perf/run-*/locust.html build/perf/structured/ 2>/dev/null || true
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: perf-structured
+          path: |
+            build/perf/structured/
+            build/perf/p_04_structured.json
+            build/perf/structured.log
+          if-no-files-found: warn
+      - name: Report a red run
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          tail_log=$(tail -20 build/perf/structured.log 2>/dev/null || true)
+          body=$(printf '%s\n' "The weekly P-04 structured run failed (host: github-runner, not the reference host): $RUN_URL" '' '```' "$tail_log" '```' '' 'The report is in the run artifact `perf-structured`.')
+          open=$(gh issue list --state open --search 'in:title "Weekly perf run failed"' --json number --jq '.[0].number // empty')
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --body "$body"
+          else
+            gh issue create --title "Weekly perf run failed $(date -u +%F)" --label bug --label needs-triage --label performance --body "$body"
+          fi
+
   weekly-docs:
-    needs: weekly
+    needs: [weekly, weekly-structured]
     if: always() && (needs.weekly.result == 'success' || needs.weekly.result == 'failure')
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -200,6 +290,21 @@ jobs:
         with:
           name: perf-weekly
           path: build/perf
+      - uses: actions/download-artifact@v8
+        if: needs.weekly-structured.result == 'success' || needs.weekly-structured.result == 'failure'
+        continue-on-error: true
+        with:
+          name: perf-structured
+          path: build/perf
+      # The structured report and its JSON sidecar are committed beside the Lite ones
+      # (perf/results/; test_p_04__structured reads the newest).
+      - name: Keep the structured report
+        run: |
+          mkdir -p perf/results
+          for report in build/perf/structured/*-structured.md; do
+            [ -e "$report" ] || continue
+            cp "$report" "${report%.md}.json" perf/results/
+          done
       - name: Render docs/perf.md and docs/capacity.md
         run: uv run python -m epistrel.tools.perf_docs --results build/perf --docs docs
       # One rolling branch; a budget miss still opens the PR with the failing numbers (the
@@ -210,13 +315,16 @@ jobs:
           add-paths: |
             docs/perf.md
             docs/capacity.md
+            perf/results/*-structured.md
+            perf/results/*-structured.json
           commit-message: "docs: the weekly performance measurements (github-runner) (#153)"
           title: "docs: weekly performance measurements (github-runner, not the reference host)"
           labels: performance
           body: |
-            The weekly scale suite's measurements (P-01, P-02, P-06 and #147's retirement spike),
-            rendered by `python -m epistrel.tools.perf_docs` (#153). Host: github-runner (not the
-            reference host). Suite result: ${{ needs.weekly.result }}. Run:
+            The weekly scale suite's measurements (P-01, P-02, P-06 and #147's retirement spike)
+            and P-04's structured workload, rendered by `python -m epistrel.tools.perf_docs`
+            (#153). Host: github-runner (not the reference host). Suite result:
+            ${{ needs.weekly.result }}; structured workload: ${{ needs.weekly-structured.result }}. Run:
             ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
             A pull request opened with the workflow's token does not start `ci.yml`: close and

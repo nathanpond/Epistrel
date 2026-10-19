@@ -192,6 +192,7 @@ from epistrel.core.viewpoint import (
     resolve_viewpoint,
     try_resolve,
 )
+from epistrel.observability import stages
 from epistrel.observability.logging import get_logger
 from epistrel.observability.metrics import count_repair
 from epistrel.orchestrator.budget import GUARDRAIL_OUTPUT, TurnBudget, counted_embedder
@@ -1686,7 +1687,7 @@ async def play(
     async def retrieve_for(actor: str, viewpoint_: str, text: str) -> RetrievalResult:
         embeddings = models.embeddings
         async with db.begin() as conn:
-            return await retrieve(
+            found = await retrieve(
                 conn,
                 story_id,
                 RetrievalQuery(text=text[:2_000] or ".", actor=actor),
@@ -1697,6 +1698,9 @@ async def play(
                 lexical=lexical,
                 settings=settings,
             )
+        # NFR-PERF-1's span: the pipeline's own total, the query embedding left out (#153).
+        stages.observe("retrieve", found.timings.get("total", 0.0) / 1000)
+        return found
 
     async def generate(op: Operation, read: TurnRead) -> None:
         context = await guard_context(db, story_id)

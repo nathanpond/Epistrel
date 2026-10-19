@@ -17,7 +17,7 @@ The registry holds:
   recurring task, 0 when none), ``epistrel_workers_alive`` (heartbeats within
   ``worker_heartbeat_timeout``) and ``epistrel_turn_queue_depth{story_id}`` (turns waiting
   behind the running one, per story with any; #76);
-- ``epistrel_turn_stage_seconds{stage}`` (``observability.stages``, #76): Lite turn latency by
+- ``epistrel_turn_stage_seconds{stage}`` (``observability.stages``, #76, #153): turn latency by
   stage;
 - ``epistrel_quarantines_total{reason}`` (``author`` or ``repeated_implication``) and
   ``epistrel_sanitizes_total``: #145's mutation primitives (``core.mutation``);

@@ -475,6 +475,37 @@ def test_parser_purpose_model() -> None:
             mm.parser().parse_args(["--base-url", "u", "--model", "m", "--purpose-model", bad])
 
 
+def test_turn_kinds_key_label_and_parse() -> None:
+    """P-08 M4 (#153): a structured or repair-heavy row has its own key beside the Lite row of
+    the same tier, model and policies, its label names its turn kind, and the matrix explains
+    turn kinds once such a row exists; a live run measures Lite and structured turns by
+    default.
+
+    Complement asserted: a Lite row keeps its pre-M4 key and label (the committed matrix
+    re-renders unchanged), a row without ``turn_kind`` is the Lite row of its key, and
+    ``repair`` (stub only) or an unknown kind is refused on the command line."""
+    lite, structured = row(), row(turn_kind="structured")
+    assert lite.key == "local|m|off"
+    assert structured.key == "local|m|off|structured"
+    merged = mm.merge([asdict(lite)], [structured, row(turn_kind="repair")])
+    assert [r["turn_kind"] for r in merged] == ["lite", "repair", "structured"]
+    text = mm.render(merged)
+    assert "| local: m | policies off | ✓ |" in text
+    assert "| local: m (structured turns) | policies off | ✓ |" in text
+    assert "| local: m (repair-heavy turns) | policies off |" in text
+    assert "**Turn kinds (P-08 M4).**" in text
+    assert "**Turn kinds" not in mm.render(mm.merge([], [lite]))
+    legacy = {k: v for k, v in asdict(lite).items() if k != "turn_kind"}
+    assert mm.merge([legacy], [lite]) == [asdict(lite)]
+    args = mm.parser().parse_args(["--base-url", "u", "--model", "m"])
+    assert args.turn_kinds == ["lite", "structured"]
+    only = mm.parser().parse_args(["--base-url", "u", "--model", "m", "--turn-kinds", "structured"])
+    assert only.turn_kinds == ["structured"]
+    for bad in ("repair", "lite,nope", ""):
+        with pytest.raises(SystemExit):
+            mm.parser().parse_args(["--base-url", "u", "--model", "m", "--turn-kinds", bad])
+
+
 def test_turns_must_be_positive(capsys: pytest.CaptureFixture[str]) -> None:
     assert mm.main(["--base-url", "u", "--model", "m", "--turns", "0"]) == 2
     assert "--turns" in capsys.readouterr().err

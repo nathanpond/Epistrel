@@ -74,6 +74,7 @@ import dataclasses
 import hashlib
 import json
 import logging
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
@@ -113,6 +114,7 @@ from epistrel.core.verify.rules import (
     VerdictKind,
     VerdictReason,
 )
+from epistrel.observability import stages
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models.access import ModelAccessLayer, routing
 from epistrel.orchestrator.models.adapter import ModelParams
@@ -694,11 +696,14 @@ class Verifier:
         matched protected content, #148's detector) before it can be canonized or repaired."""
         if not self.config.on:
             return None
+        checking = time.perf_counter()
         found = await self.source.deterministic(
             claim, holder=holder, viewpoint=viewpoint, position=position
         )
         if found is None:
             return None
+        # NFR-PERF-2's span: the deterministic path alone, before any model fallback (#153).
+        stages.observe("verify", time.perf_counter() - checking)
         verdict, fetched = found
         where = ref or ClaimRef()
         at = _At(viewpoint, position, holder)

@@ -14,6 +14,11 @@ so the pages are never edited by hand.
   budget. Its **history** keeps one row per run (date, commit, host, runner image, Postgres and
   pgvector versions, vCPU/RAM and the three headline figures). The tool keeps the rows already
   in the file and appends the new one.
+- ``docs/perf.md`` also summarises P-04's structured variant (NFR-PERF-4 M4) when the run
+  has its sidecar as ``p_04_structured.json`` (``python -m perf.lite_smoke --scenario
+  structured``; ``perf.yml``'s ``weekly-structured`` job): the verdict with its host class, the
+  aggregate criteria (turn commit, retrieval and verify p95 budgets, failures, lost or
+  duplicated turns), every story's verdict, and the commit, retrieve and verify stages.
 - ``docs/capacity.md`` has P-06's curve: memories, HNSW build time, index size and retrieval
   percentiles at each step, which steps are gated, and the server settings the curve was
   measured under. It also states that capacity is claimed only for the measured range.
@@ -36,6 +41,8 @@ from pathlib import Path
 from typing import Any
 
 RESULTS = ("p_01", "p_02", "p_06", "p_06_retirement")
+STRUCTURED = "p_04_structured"
+"""P-04's structured variant: the run's JSON sidecar (perf.lite_smoke.report.sidecar)."""
 HISTORY_START = "<!-- history:start -->"
 HISTORY_END = "<!-- history:end -->"
 HISTORY_HEADER = (
@@ -80,11 +87,66 @@ def _host_note(host: Mapping[str, Any]) -> str:
 def load(results: Path) -> dict[str, dict[str, Any]]:
     """The run's result files that exist, by name."""
     found: dict[str, dict[str, Any]] = {}
-    for name in RESULTS:
+    for name in (*RESULTS, STRUCTURED):
         path = results / f"{name}.json"
         if path.exists():
             found[name] = json.loads(path.read_text())
     return found
+
+
+def _bucket(value: Any) -> str:
+    """A stage percentile read from the histogram: the upper edge of its bucket."""
+    if value is None:
+        return "-"
+    if value == float("inf"):
+        return "> 60 s"
+    return f"≤ {float(value) * 1000:g} ms"
+
+
+def structured_lines(run: Mapping[str, Any] | None) -> list[str]:
+    """P-04's structured variant, summarised from its sidecar (``NOT_MEASURED`` without one)."""
+    lines = ["", "## P-04: the structured reference workload (NFR-PERF-4, M4)", ""]
+    if not run:
+        return [*lines, NOT_MEASURED]
+    info = dict(run.get("info") or {})
+    verdict = "PASS" if run.get("passed") else "FAIL"
+    enforced = info.get("host_class") == "reference"
+    lines += [
+        f"**{verdict}** on host class `{info.get('host_class')}` "
+        f"({'gated' if enforced else 'reported, not gated'}): {info.get('host')}, engine "
+        f"`{info.get('engine_sha')}`, started {info.get('started')}. "
+        f"{info.get('stories')} structured stories of {int(info.get('memories') or 0):,} "
+        f"memories and {int(info.get('events') or 0):,} events, one single-character turn every "
+        f"{float(info.get('interval_s') or 0):g} s each for {float(info.get('minutes') or 0):g} "
+        f"minutes, open loop, `turn_concurrency = queue`, the stub at "
+        f"{float(info.get('stub_latency_s') or 0):g} s per call with 10% contradicted and 10% "
+        "novel claims. The full report is committed under `perf/results/`.",
+        "",
+        "| Criterion | Measured | Bound | Result |",
+        "|---|---|---|---|",
+    ]
+    for c in run.get("aggregate", []):
+        result = "PASS" if c.get("passed") else "**FAIL**"
+        lines.append(f"| {c.get('name')} | {c.get('measured')} | {c.get('bound')} | {result} |")
+    stories = list(run.get("stories", []))
+    passed = sum(1 for st in stories if all(c.get("passed") for c in st.get("criteria", [])))
+    lines += [
+        "",
+        f"Per story (queue keeps up, waits within one interval, front to first call p95 "
+        f"≤ 1 s): {passed} of {len(stories)} stories pass.",
+        "",
+        "| Stage | Observations | p50 | p95 | p99 |",
+        "|---|---|---|---|---|",
+    ]
+    stages = dict(run.get("stages") or {})
+    for stage in ("commit", "retrieve", "verify", "front_to_first_call", "queue_wait"):
+        q = stages.get(stage)
+        if q:
+            lines.append(
+                f"| {stage} | {int(q.get('count') or 0)} | {_bucket(q.get('p50'))} | "
+                f"{_bucket(q.get('p95'))} | {_bucket(q.get('p99'))} |"
+            )
+    return lines
 
 
 def _ms(value: Any) -> str:
@@ -224,7 +286,9 @@ def perf_page(found: Mapping[str, Mapping[str, Any]], existing: str = "") -> str
         ]
     else:
         lines.append(NOT_MEASURED)
-    rows = [*history_rows(existing), history_row(found)] if found else history_rows(existing)
+    lines += structured_lines(found.get(STRUCTURED))
+    measured = any(name in found for name in RESULTS)
+    rows = [*history_rows(existing), history_row(found)] if measured else history_rows(existing)
     lines += [
         "",
         "## History",

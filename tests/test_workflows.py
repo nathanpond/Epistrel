@@ -268,7 +268,7 @@ def test_perf_runs_the_scale_suite_weekly_and_opens_a_docs_pr() -> None:
         assert f"tests/perf/{name}" in run["run"]
     report = next(s for s in steps if s.get("name") == "Report a red run")
     assert "Weekly perf run failed" in report["run"]
-    assert docs["needs"] == "weekly"
+    assert docs["needs"] == ["weekly", "weekly-structured"]
     assert "failure" in docs["if"]
     assert docs["permissions"] == {"contents": "write", "pull-requests": "write"}
     others = {n: j.get("permissions", {}) for n, j in wf["jobs"].items() if n != "weekly-docs"}
@@ -279,11 +279,55 @@ def test_perf_runs_the_scale_suite_weekly_and_opens_a_docs_pr() -> None:
     (pr,) = [s for s in docs_steps if str(s.get("uses", "")).startswith("peter-evans/")]
     assert pr["with"]["branch"] == "perf/weekly"
     assert pr["with"]["labels"] == "performance"
-    assert set(pr["with"]["add-paths"].split()) == {"docs/perf.md", "docs/capacity.md"}
+    assert set(pr["with"]["add-paths"].split()) == {
+        "docs/perf.md",
+        "docs/capacity.md",
+        "perf/results/*-structured.md",
+        "perf/results/*-structured.json",
+    }
     (pytest_step,) = [
         s for s in _steps(_workflow("ci.yml"), "test") if "pytest" in s.get("run", "")
     ]
     assert "perf_weekly" not in pytest_step["run"]
+
+
+def test_perf_runs_the_structured_workload_weekly() -> None:
+    """#153 (P-04 M4): the structured variant runs on the weekly schedule and on dispatch, on the
+    GitHub-hosted runner as host class ``ci`` for 30 minutes, with Locust from the ``perf``
+    group and its seed cached by its key; it fails on failed, lost or duplicated turns (the
+    gate itself is reported there, not enforced), uploads the report, its sidecar and Locust's
+    HTML report, and files or comments on the weekly issue when red; the docs job commits the
+    report.
+
+    Complement asserted: it does not run on the nightly schedule, and it may not write
+    contents."""
+    wf = _workflow("perf.yml")
+    job = wf["jobs"]["weekly-structured"]
+    assert "'0 3 * * 0'" in job["if"]
+    assert "inputs.suite == 'weekly'" in job["if"]
+    assert "'0 3 * * *'" not in job["if"]
+    assert job["permissions"] == {"contents": "read", "issues": "write"}
+    assert job["timeout-minutes"] == 180
+    steps = _steps(wf, "weekly-structured")
+    assert any(s.get("run") == "uv sync --frozen --group perf" for s in steps)
+    (cache,) = [s for s in steps if str(s.get("uses", "")).startswith("actions/cache@")]
+    assert cache["with"]["path"] == "build/perf/cache"
+    assert "steps.seed.outputs.key" in cache["with"]["key"]
+    run = next(s for s in steps if s.get("id") == "structured")
+    assert (
+        "python -m perf.lite_smoke --scenario structured --minutes 30 --host-class ci" in run["run"]
+    )
+    check = next(s for s in steps if s.get("id") == "turns")
+    for field in ('f["failed"]', 'f["lost"]', 'f["duplicated"]', "sys.exit(1"):
+        assert field in check["run"]
+    (upload,) = [s for s in steps if str(s.get("uses", "")).startswith("actions/upload-artifact@")]
+    assert upload["with"]["name"] == "perf-structured"
+    assert any("locust.html" in s.get("run", "") for s in steps)
+    report = next(s for s in steps if s.get("name") == "Report a red run")
+    assert "Weekly perf run failed" in report["run"]
+    docs_steps = _steps(wf, "weekly-docs")
+    assert any(s.get("with", {}).get("name") == "perf-structured" for s in docs_steps)
+    assert any("perf/results/" in s.get("run", "") for s in docs_steps)
 
 
 def test_redteam_runs_nightly_and_on_dispatch_and_reports_a_red_run() -> None:

@@ -37,6 +37,8 @@ alembic head and the spec. ``cached_database`` restores a matching dump from ``c
 builds the fixture and dumps it there. The dump is made with ``pg_dump``/``pg_restore`` from
 PATH, or with the pgvector image's binaries through ``docker run`` when PATH has none.
 ``grow`` adds memories to a built story, which is P-06's 1k → 10k → 50k → 100k curve.
+``build_scale_stories`` builds several stories of one spec in one database, concurrently, with
+one index build after them all (P-04's structured variant: ten stories of 10,000 memories).
 
 The builder writes rows straight into ``memories`` (``core.membership.insert_derived``), so they
 are not indexed for erasure and they enqueue no job. The database is a scratch one, dropped with
@@ -45,6 +47,7 @@ the suite.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import json
@@ -646,7 +649,9 @@ def _timed(
         log(f"{step}: {timings[step]:.1f} s")
 
 
-async def _create(db: AsyncEngine, spec: ScaleSpec, name: str) -> ScaleStory:
+async def _create(
+    db: AsyncEngine, spec: ScaleSpec, name: str, principal: str = PRINCIPAL
+) -> ScaleStory:
     cast_names = person_names(spec.characters)
     created = await create_story_from(
         db,
@@ -662,7 +667,7 @@ async def _create(db: AsyncEngine, spec: ScaleSpec, name: str) -> ScaleStory:
                 for i, n in enumerate(cast_names)
             ],
         ),
-        principal=PRINCIPAL,
+        principal=principal,
     )
     story_id = created.story_id
     characters = {c.name: c.id for c in created.characters}
@@ -888,6 +893,65 @@ async def build_scale_fixture(
     return ScaleFixture(spec, story, version, timings, index)
 
 
+async def build_scale_stories(
+    db: AsyncEngine,
+    spec: ScaleSpec,
+    count: int,
+    *,
+    name: str = "Scale story",
+    principal: str = PRINCIPAL,
+    log: Callable[[str], None] | None = None,
+) -> list[ScaleFixture]:
+    """Build ``count`` stories of ``spec`` in ``db`` (P-04's structured variant, #153),
+    owned by ``principal``: the steps of ``build_scale_fixture`` for each story, concurrently,
+    story ``i`` drawn from seed ``spec.seed + i`` (its own canon, texts and holders), then one
+    index build and one ``ANALYZE`` over them all. Each fixture carries its own story's step
+    timings and the shared index build."""
+    version = version_of(spec.dimension)
+    async with db.begin() as conn:
+        await embeddings.pin_first(conn, version=version, dimension=spec.dimension)
+    await drop_index(db)
+
+    async def one(i: int) -> ScaleFixture:
+        own = ScaleSpec(
+            memories=spec.memories,
+            events=spec.events,
+            characters=spec.characters,
+            facts=spec.facts,
+            seed=spec.seed + i,
+            dimension=spec.dimension,
+        )
+        timings: dict[str, float] = {}
+        with _timed(timings, "story", None):
+            story = await _create(db, own, f"{name} {i + 1}", principal)
+        with _timed(timings, "turns_and_canon", None):
+            await _turns(db, own, story, None)
+        turn_ops = await turn_operations(db, story.story_id)
+        with _timed(timings, "memories", None):
+            rows = memory_plan(own, story, turn_ops)
+            story.memories = await insert_memories(db, rows)
+            await _cover_and_pin(db, story, rows)
+        with _timed(timings, "counters", None):
+            async with db.begin() as conn:
+                await conn.execute(
+                    update(stories)
+                    .where(stories.c.id == story.story_id)
+                    .values(embedding_model_version=version)
+                )
+                await retirement.reconcile(conn, story.story_id)
+        if log is not None:
+            log(f"story {i + 1}/{count}: {timings}")
+        return ScaleFixture(own, story, version, timings)
+
+    built = list(await asyncio.gather(*(one(i) for i in range(count))))
+    index = await rebuild_index(db, spec.dimension)
+    async with db.begin() as conn:
+        await conn.execute(text("ANALYZE"))
+    for fixture in built:
+        fixture.index = index
+    return built
+
+
 async def grow(
     db: AsyncEngine, fixture: ScaleFixture, to: int, *, rebuild: bool = True
 ) -> IndexStats | None:
@@ -1027,6 +1091,7 @@ __all__ = [
     "ScaleStory",
     "alembic_head",
     "build_scale_fixture",
+    "build_scale_stories",
     "cache_key",
     "cached_paths",
     "canon_plan",

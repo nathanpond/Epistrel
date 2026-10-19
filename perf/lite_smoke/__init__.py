@@ -1,4 +1,5 @@
-"""P-04's Lite variant: NFR-PERF-4's reference workload (docs/03, docs/04 §11; #76).
+"""P-04: NFR-PERF-4's reference workload (docs/03, docs/04 §11), the Lite variant (#76) and the
+structured variant (``--scenario structured``, #153; ``perf.lite_smoke.structured``).
 
 Ten stories of 20,000 events and 50 pinned memories (``epistrel.testing.perf``), each submitting
 one turn every 15 s on a fixed, open-loop schedule with ``turn_concurrency = queue``, for 30
@@ -14,6 +15,12 @@ the library (or restores the cached ``pg_dump`` of that seed), drives ``respond`
 (``report.py``): ``perf/results/<date>-<time>-lite.md`` with a raw JSON sidecar. The gate is
 enforced (exit 1 on FAIL) only with ``--host-class reference`` (NFR-PERF-4: other hosts are
 reported, not gated). A run shorter than 30 minutes is a demo and writes to ``build/perf/``.
+
+``--scenario structured`` runs ten structured stories of 10,000 memories and 20,000 events
+(the scale fixture's builder, #153), one single-character turn every 60 s each, against the
+stub at 2 s per call whose renders declare 10% contradicted and 10% novel claims, so
+verification, permission and repair run under load. It adds NFR-PERF-1's retrieval and
+NFR-PERF-2's verify p95 budgets to the gate and writes ``<date>-<time>-structured.md``.
 
 The target can be pointed elsewhere through ``EPISTREL_PERF_BASE_URL``,
 ``EPISTREL_PERF_CREDENTIAL``, ``EPISTREL_PERF_PRINCIPAL`` and ``EPISTREL_PERF_DSN``.
@@ -50,7 +57,17 @@ COMMIT_P95_BUDGET_S = 0.250
 """NFR-PERF-3, the turn-commit budget P-04 gates on (aggregate p95, server commit stage)."""
 FRONT_TO_FIRST_CALL_P95_S = 1.0
 MAX_WAITING = 1
+RETRIEVAL_P95_BUDGET_S = 0.150
+"""NFR-PERF-1, the retrieval budget the structured variant gates on (server ``retrieve`` stage)."""
+VERIFY_P95_BUDGET_S = 0.050
+"""NFR-PERF-2, the deterministic-verify budget the structured variant gates on (``verify``)."""
 HOST_CLASSES = ("mac", "reference", "ci")
+SCENARIOS = ("lite", "structured")
+STRUCTURED_INTERVAL_S = 60.0
+"""One single-character turn per structured story every 60 s (the structured variant)."""
+STRUCTURED_MEMORIES = 10_000
+STRUCTURED_EVENTS = 20_000
+"""Each structured story's size (docs/04 P-04 M4): 10,000 memories and 20,000 events."""
 ENFORCED_HOST_CLASS = "reference"
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8100"

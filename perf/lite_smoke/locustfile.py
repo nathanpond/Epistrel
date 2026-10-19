@@ -39,6 +39,9 @@ START = float(os.environ.get("EPISTREL_PERF_START", str(time.time())))
 """The run's start (epoch seconds), shared with the orchestrator's sampler."""
 SUBMIT_UNTIL = float(os.environ.get("EPISTREL_PERF_SUBMIT_UNTIL", "1680"))
 """Seconds after ``START`` past which no turn is submitted."""
+SCENARIO = os.environ.get("EPISTREL_PERF_SCENARIO", "lite")
+"""``structured`` (#153): each turn names one render character, the story's second
+(``other_id``): a single-character structured turn."""
 SETTLED = frozenset({"committed", "failed", "abandoned"})
 
 _stories: list[dict[str, Any]] = json.loads(open(STORIES_FILE).read())  # noqa: SIM115
@@ -96,10 +99,12 @@ class StoryPlayer(User):
             "submitted": round(_now(), 3),
         }
         _write({**record, "event": "submit"})
-        body = {
+        body: dict[str, Any] = {
             "actor_character_id": self.story["player_id"],
             "player_input": {"say": f"[tick {tick}] I set the lantern on the table and wait."},
         }
+        if SCENARIO == "structured":
+            body["render_character_ids"] = [self.story["other_id"]]
         headers = {
             **self.target.headers(),
             "Prefer": "respond-async",

@@ -45,7 +45,11 @@ alone. ``regeneration`` (#151) answers its ``RegeneratedBeat`` schema's ``stub_e
 text from the request's hash and no claims. A response schema with a
 ``stub_example(digest, messages)`` classmethod answers that (#150: a structured render's
 default is one ``think``, one ``say`` with intent ``sincere`` and one ``do``, their texts from
-the request's hash; the age repair answers 40 for each character it names).
+the request's hash; the age repair answers 40 for each character it names). With
+``render_claims`` (the ``stub_render_claims`` setting, #153's P-04 structured variant) a
+render's default ``say`` also declares one of those claims on its share of the renders, chosen
+by the request's hash (``with_render_claims``), so verification, permission and repair run
+under load.
 """
 
 from __future__ import annotations
@@ -58,7 +62,7 @@ import re
 import types
 import typing
 from collections import defaultdict, deque
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Annotated, Any, Literal
@@ -151,6 +155,31 @@ def digest_score(text: str) -> float:
     return round(value / 0xFFFFFFFF, 4)
 
 
+def with_render_claims(
+    example: dict[str, Any], digest: str, claims: Sequence[Mapping[str, Any]]
+) -> dict[str, Any]:
+    """``example`` with one of ``claims`` declared by its first ``say`` beat (#153's P-04
+    structured variant): the claims' ``share`` values are stacked over ``digest_score(digest)``,
+    so each claim lands on its share of the renders and the rest declare none. An answer with
+    no ``say`` beat (the narrator's, any other schema's) is returned unchanged."""
+    beats = example.get("beats")
+    if not isinstance(beats, list):
+        return example
+    say = next((b for b in beats if isinstance(b, dict) and b.get("kind") == "say"), None)
+    if say is None:
+        return example
+    score = digest_score(digest)
+    low = 0.0
+    for claim in claims:
+        high = low + float(claim["share"])
+        if low <= score < high:
+            sketch = {k: v for k, v in claim.items() if k != "share"}
+            say["propositions"] = [*say.get("propositions", []), sketch]
+            break
+        low = high
+    return example
+
+
 def _bound(metadata: list[Any], name: str, fallback: float) -> float:
     """The ``ge``/``le`` bound a field declares (pydantic keeps them as metadata objects)."""
     for item in metadata:
@@ -235,9 +264,17 @@ class StubAdapter:
 
     name = "stub"
 
-    def __init__(self, *, model_lookup: ModelLookup | None = None, latency_s: float = 0.0) -> None:
+    def __init__(
+        self,
+        *,
+        model_lookup: ModelLookup | None = None,
+        latency_s: float = 0.0,
+        render_claims: Sequence[Mapping[str, Any]] = (),
+    ) -> None:
         self._model_lookup = model_lookup
         self.latency_s = latency_s
+        self.render_claims = [dict(c) for c in render_claims]
+        """Claims a structured render's default answer declares (``with_render_claims``)."""
         self.nondeterministic = False
         self.calls: list[StubCall] = []
         self._scripts: defaultdict[str, deque[str]] = defaultdict(deque)
@@ -389,6 +426,8 @@ class StubAdapter:
             # do from the prompt's hash).
             hook = getattr(schema, STUB_EXAMPLE, None)
             example = hook(digest, messages) if callable(hook) else conformant_example(schema)
+            if self.render_claims:
+                example = with_render_claims(example, digest, self.render_claims)
             return json.dumps(example, sort_keys=True, separators=(",", ":"))
         return self._default_text(purpose, digest, messages)
 
@@ -476,4 +515,5 @@ __all__ = [
     "canonical_digest",
     "conformant_example",
     "digest_score",
+    "with_render_claims",
 ]

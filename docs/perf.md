@@ -8,8 +8,8 @@
 
 | Test | Requirement | Budget | Measured p95 | Result | Host |
 |---|---|---|---|---|---|
-| P-01 retrieval | NFR-PERF-1 | p95 ≤ 150 ms | 5531.7 ms | **over budget** | local-mac-loaded (not the reference host) |
-| P-02 deterministic verify | NFR-PERF-2 | p95 ≤ 50 ms | 38.3 ms | within budget | local-mac-loaded (not the reference host) |
+| P-01 retrieval | NFR-PERF-1 | p95 ≤ 150 ms | 542.3 ms | **over budget** | local-mac-loaded (not the reference host) |
+| P-02 deterministic verify | NFR-PERF-2 | p95 ≤ 50 ms | 41.4 ms | within budget | local-mac-loaded (not the reference host) |
 
 ## P-01: retrieval latency by stage (NFR-PERF-1)
 
@@ -17,14 +17,14 @@
 
 | Stage | p50 (ms) | p95 (ms) | p99 (ms) | max (ms) |
 |---|---|---|---|---|
-| assemble | 36.6 | 67.2 | 74.4 | 84.7 |
-| fuse | 8.4 | 11.2 | 11.7 | 17.1 |
-| lexical | 91.6 | 128.8 | 138.0 | 143.3 |
-| occasion | 0.0 | 16.2 | 22.5 | 27.4 |
-| profiles | 12.9 | 237.2 | 304.2 | 361.3 |
-| resolve | 4362.1 | 5294.2 | 5579.3 | 5762.0 |
-| total | 4578.5 | 5531.7 | 5790.6 | 6116.1 |
-| vector | 25.7 | 39.0 | 42.4 | 47.5 |
+| assemble | 29.2 | 36.5 | 42.9 | 134.3 |
+| fuse | 3.3 | 4.4 | 6.4 | 8.2 |
+| lexical | 83.2 | 135.1 | 142.7 | 146.5 |
+| occasion | 0.0 | 16.3 | 19.9 | 21.7 |
+| profiles | 10.5 | 142.8 | 176.4 | 235.4 |
+| resolve | 275.0 | 319.0 | 342.3 | 396.8 |
+| total | 432.1 | 542.3 | 579.2 | 632.4 |
+| vector | 18.0 | 22.8 | 23.8 | 28.1 |
 
 ## P-02: deterministic verify latency (NFR-PERF-2)
 
@@ -32,17 +32,39 @@
 
 | p50 (ms) | p95 (ms) | p99 (ms) | max (ms) |
 |---|---|---|---|
-| 30.0 | 38.3 | 43.8 | 167.7 |
+| 27.4 | 41.4 | 48.4 | 186.9 |
 
 Verdicts (built → found): contradicted->contradicted 600, novel->novel 400, supported->supported 800, uncertain->uncertain 200.
 
 ## The forced-retirement spike (#147, FR-MEM-8)
 
-This is the commit in which an overflow episode reaches its deadline. It ranks every counted vector of the story in Python and retires one batch inside the turn's transaction. No requirement budgets a single commit, so the spike is reported next to NFR-PERF-3's turn-commit p95 and P-03's 2 s single-commit bound. Host: local-mac-loaded (not the reference host).
+This is the commit in which an overflow episode reaches its deadline. It ranks every counted vector of the story in one statement that keeps only one batch (#444) and retires that batch inside the turn's transaction. No requirement budgets a single commit, so the spike is reported next to NFR-PERF-3's turn-commit p95 and P-03's 2 s single-commit bound. Host: local-mac-loaded (not the reference host).
 
 | Vectors ranked | Ranking (ms) | Forced run (ms) | Retired | vs 250 ms | vs 2 s |
 |---|---|---|---|---|---|
-| 49,760 | 358.6 | 315.8 | {"covered": 177, "floor": 323} | over | under |
+| 49,760 | 134.2 | 181.4 | {"covered": 177, "floor": 323} | under | under |
+
+## P-04: the structured reference workload (NFR-PERF-4, M4)
+
+**FAIL** on host class `mac` (reported, not gated): Darwin arm64, 16 CPUs, 128 GB RAM, engine `9f0662fdcc7f + uncommitted changes`, started 2026-10-19 19:15 UTC. 10 structured stories of 10,000 memories and 20,000 events, one single-character turn every 60 s each for 30 minutes, open loop, `turn_concurrency = queue`, the stub at 2 s per call with 10% contradicted and 10% novel claims. The full report is committed under `perf/results/`.
+
+| Criterion | Measured | Bound | Result |
+|---|---|---|---|
+| turn commit p95 (server commit stage) | 12.9% of 279 commits ≤ 250 ms | ≥ 95% ≤ 250 ms | **FAIL** |
+| failed requests | 2 | 0 | **FAIL** |
+| lost or duplicated turns | 2 lost, 0 duplicated | 0 | **FAIL** |
+| retrieval p95 (server retrieve stage) | 0.0% of 279 retrievals ≤ 150 ms | ≥ 95% ≤ 150 ms | **FAIL** |
+| deterministic verify p95 (server verify stage) | 61.5% of 52 claims checked ≤ 50 ms | ≥ 95% ≤ 50 ms | **FAIL** |
+
+Per story (queue keeps up, waits within one interval, front to first call p95 ≤ 1 s): 0 of 10 stories pass.
+
+| Stage | Observations | p50 | p95 | p99 |
+|---|---|---|---|---|
+| commit | 279 | ≤ 2000 ms | ≤ 5000 ms | ≤ 5000 ms |
+| retrieve | 279 | ≤ 2000 ms | ≤ 5000 ms | ≤ 5000 ms |
+| verify | 52 | ≤ 50 ms | ≤ 1000 ms | ≤ 1000 ms |
+| front_to_first_call | 279 | ≤ 2000 ms | ≤ 5000 ms | ≤ 10000 ms |
+| queue_wait | 2 | ≤ 5000 ms | ≤ 10000 ms | ≤ 10000 ms |
 
 ## History
 
@@ -52,4 +74,5 @@ One row per run, oldest first.
 | Date | Commit | Host | Runner image | Postgres | pgvector | vCPU / RAM | P-01 p95 (ms) | P-02 p95 (ms) | Retirement spike (ms) |
 |---|---|---|---|---|---|---|---|---|---|
 | 2026-10-18 | - | local-mac-loaded (not the reference host) | macOS-27.0.1-arm64-arm-64bit-Mach-O | 16.15 | 0.8.7 | 16 / 128.0 GB | 5531.7 | 38.3 | 315.8 |
+| 2026-10-19 | - | local-mac-loaded (not the reference host) | macOS-27.0.1-arm64-arm-64bit-Mach-O | 16.15 | 0.8.7 | 16 / 128.0 GB | 542.3 | 41.4 | 181.4 |
 <!-- history:end -->

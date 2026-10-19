@@ -18,7 +18,16 @@ into it. The tool then:
 3. for each row, *policies off* and *minors policy on*, runs one warm-up turn and then
    ``--turns`` (default 20) Lite turns with scripted, benign inputs, timing each one and
    counting its model calls by purpose (P-08) against the calls the turn was designed to make
-   (#303).
+   (#303); then the same for single-character structured turns (``--turn-kinds``, default
+   ``lite,structured``; P-08 M4, #153).
+
+**Turn kinds** (#153). A structured row plays ``StructuredDriver``'s turns on a two-character
+story on the seeded ``Structured (M4)`` profile, with planted canon (``testing.structured_load``:
+each character owns a brass lantern); the player acts and the other character renders. A
+repair-heavy row plays the same turns while half the stub's renders deny owning the lantern,
+so the repair ladder reaches rung 3 (a ``regeneration`` call). It needs the stub's scripted
+contradictions, so only ``run_matrix(turn_kinds=…)`` on a stub Engine makes it
+(``tests/perf/test_p_08.py::test_p_08__structured``); a row's key carries its kind unless Lite.
 
 **Embedding** (#138, C-07 M4). With ``--embedding-base-url`` and ``--embedding-model`` the run
 also measures that ``/embeddings`` endpoint through the embedding port
@@ -97,6 +106,7 @@ from epistrel.orchestrator.models.capability import (
 from epistrel.orchestrator.models.errors import ModelError
 from epistrel.orchestrator.models.metrics import CallLog, ModelCall, recording
 from epistrel.orchestrator.models.registry import GENERATION, GUARDRAIL_CHECK, STORY_PURPOSES
+from epistrel.orchestrator.models.stub import StubAdapter
 from epistrel.orchestrator.policies.output_gate import DEADLINE
 from epistrel.tools.generated import REPO_ROOT
 
@@ -117,6 +127,15 @@ EMBEDDING_TEXT = "The lighthouse keeper keeps a lamp lit through the storm."
 type PolicySet = Literal["off", "minors"]
 POLICY_SETS: tuple[PolicySet, ...] = ("off", "minors")
 POLICY_LABELS: Mapping[PolicySet, str] = {"off": "policies off", "minors": "minors policy on"}
+
+type TurnKind = Literal["lite", "structured", "repair"]
+TURN_KINDS: tuple[TurnKind, ...] = ("lite", "structured", "repair")
+TURN_KIND_LABELS: Mapping[TurnKind, str] = {
+    "lite": "Lite",
+    "structured": "structured",
+    "repair": "repair-heavy",
+}
+STRUCTURED_PATH = "structured respond (#150)"
 
 MINORS_PROMPT = (
     "Flag the text if it describes sexual content involving anyone under 18, or sexualises a "
@@ -269,6 +288,82 @@ class RespondDriver:
             [d.cause for d in result.degradation_details if d.step == SAFE_FALLBACK],
             result.budget.max_calls,
         )
+
+
+def _stub_of(engine: Engine) -> StubAdapter | None:
+    adapter = engine.models.adapter
+    return adapter if isinstance(adapter, StubAdapter) else None
+
+
+@dataclass
+class StructuredDriver:
+    """A single-character structured turn through ``Engine.respond`` (#150, P-08 M4): the
+    story is on the seeded ``Structured (M4)`` profile with ``structured_load``'s planted canon
+    (each character owns the brass lantern), and each turn renders the other character alone.
+
+    ``repair`` makes it P-08's repair-heavy row: on the stub adapter half the renders deny
+    owning the lantern (``structured_load.REPAIR_HEAVY_SHARE``), a contradiction of planted
+    canon that the repair ladder takes to rung 3 (a ``regeneration`` call). A live model is
+    not scripted: its repair-heavy row measures what the model's own claims set off. The
+    stub's claim mix is restored after the row."""
+
+    repair: bool = False
+    name: str = STRUCTURED_PATH
+    engine: Engine | None = None
+    story_id: str = ""
+    actor_id: str = ""
+    render_id: str = ""
+    _claims: list[dict[str, Any]] | None = None
+
+    async def prepare(self, engine: Engine, policies: PolicySet) -> None:
+        from epistrel.testing import structured_load  # lazy: test-only module
+
+        spec = StorySpec(name=f"model matrix ({policies}, structured)", characters=cast(policies))
+        created = await create_story_from(engine.db, spec, principal=PRINCIPAL)
+        self.engine, self.story_id = engine, created.story_id
+        ids = {c.name: c.id for c in created.characters}
+        self.actor_id = ids[spec.characters[0].name]
+        self.render_id = ids[spec.characters[1].name]
+        await structured_load.use_structured(engine.db, self.story_id)
+        await structured_load.plant(
+            engine, RequestContext(principal=PRINCIPAL), self.story_id, ids.values()
+        )
+        stub = _stub_of(engine)
+        if self.repair and stub is not None:
+            self._claims = list(stub.render_claims)
+            stub.render_claims = structured_load.render_claims(structured_load.REPAIR_HEAVY_SHARE)
+
+    def restore(self) -> None:
+        """Put back the stub's claim mix that ``prepare`` replaced."""
+        stub = _stub_of(self.engine) if self.engine is not None else None
+        if stub is not None and self._claims is not None:
+            stub.render_claims = self._claims
+            self._claims = None
+
+    async def turn(self, said: str) -> TurnCalls:
+        assert self.engine is not None  # noqa: S101 - prepare() ran
+        request = RespondRequest(
+            actor_character_id=self.actor_id,
+            player_input=PlayerInputBody(say=said),
+            render_character_ids=[self.render_id],
+        )
+        result = await self.engine.respond(
+            RequestContext(principal=PRINCIPAL), self.story_id, request
+        )
+        assert result.budget is not None  # noqa: S101 - a played turn reports its budget (#69)
+        return TurnCalls(
+            result.model_calls,
+            designed_calls(sum(result.budget.reserved.values())),
+            [d.cause for d in result.degradation_details if d.step == SAFE_FALLBACK],
+            result.budget.max_calls,
+        )
+
+
+def driver_for(kind: TurnKind) -> TurnDriver:
+    """The driver of a row's turn kind."""
+    if kind == "lite":
+        return RespondDriver()
+    return StructuredDriver(repair=kind == "repair")
 
 
 def guarded_checks(policies: Sequence[Policy]) -> int:
@@ -473,14 +568,20 @@ class Row:
     of ``latencies_ms``."""
     fallbacks: dict[str, int] | None = None
     """The turns whose reply is the safe fallback, by cause."""
+    turn_kind: TurnKind = "lite"
+    """What the row's turns are (P-08 M4, #153): ``lite``, ``structured`` (single-character
+    structured turns) or ``repair`` (structured turns whose renders contradict planted canon
+    half the time). A row measured before turn kinds is ``lite``."""
 
     @property
     def key(self) -> str:
-        return row_key(self.tier, self.model, self.policies)
+        return row_key(self.tier, self.model, self.policies, self.turn_kind)
 
 
-def row_key(tier: str, model: str, policies: str) -> str:
-    return f"{tier}|{model}|{policies}"
+def row_key(tier: str, model: str, policies: str, turn_kind: str = "lite") -> str:
+    """A row's key. A Lite row keeps the key it had before turn kinds."""
+    key = f"{tier}|{model}|{policies}"
+    return key if turn_kind == "lite" else f"{key}|{turn_kind}"
 
 
 def capability_cells(report: CapabilityReport) -> dict[str, dict[str, Any]]:
@@ -506,7 +607,10 @@ def e06_cell(result: PromptParamsResult) -> dict[str, Any]:
 
 def merge(existing: Iterable[Mapping[str, Any]], rows: Iterable[Row]) -> list[dict[str, Any]]:
     """``existing`` rows with every row of the same key replaced, sorted by key."""
-    merged = {row_key(r["tier"], r["model"], r["policies"]): dict(r) for r in existing}
+    merged = {
+        row_key(r["tier"], r["model"], r["policies"], r.get("turn_kind", "lite")): dict(r)
+        for r in existing
+    }
     for row in rows:
         merged[row.key] = asdict(row)
     return [merged[key] for key in sorted(merged)]
@@ -519,7 +623,7 @@ def load_rows(path: Path) -> list[dict[str, Any]]:
         return []
     data = json.loads(path.read_text(encoding="utf-8"))
     rows: list[dict[str, Any]] = data.get("rows", [])
-    return [{**dict.fromkeys(BREAKDOWN), **row} for row in rows]
+    return [{**dict.fromkeys(BREAKDOWN), "turn_kind": "lite", **row} for row in rows]
 
 
 def _mark(value: bool | None) -> str:
@@ -579,6 +683,13 @@ def _without_text(latencies: Sequence[int], faulted: Sequence[int]) -> str:
 
 
 NOT_RECORDED = "not recorded"
+
+
+def _label(row: Mapping[str, Any]) -> str:
+    """A row's first cell: its tier and model, and its turn kind unless Lite (#153)."""
+    label = f"{row['tier']}: {row['model']}"
+    kind = row.get("turn_kind", "lite")
+    return label if kind == "lite" else f"{label} ({TURN_KIND_LABELS.get(kind, kind)} turns)"
 
 
 def _breakdown_cells(row: Mapping[str, Any]) -> list[str]:
@@ -652,6 +763,16 @@ existed; a live re-run through `respond` (#57) is pending and will replace them.
 """
 
 
+TURN_KIND_NOTE = """\
+**Turn kinds (P-08 M4).** A row marked *structured turns* plays single-character structured
+turns (#150) on the `Structured (M4)` profile: render, detection, verification, composition and
+commit. One marked *repair-heavy turns* plays the same turns on a story with planted canon
+(each character owns a brass lantern), and on the stub half its renders deny it, so the repair
+ladder reaches rung 3 (a `regeneration` call). For these rows the **Designed per turn** column
+is the first render and the reserved guardrail calls, so **Extra calls** holds the stages a
+structured turn adds (salience, entailment, composition, regeneration) as well as retries.
+"""
+
 EMBEDDING_NOTE = """\
 The embedding endpoint (the `embedding` port, #138), measured when the run names one:
 **Protocol** is `GET /models` and one embedding; **Dimension** is what every vector of that
@@ -676,6 +797,8 @@ def render(
         lines.append(NOT_RECORDED_NOTE)
     if any(row["turn_path"] == GUARDED_REPLY_PATH for row in rows):
         lines.append(TURN_PATH_NOTE)
+    if any(row.get("turn_kind", "lite") != "lite" for row in rows):
+        lines.append(TURN_KIND_NOTE)
     lines += ["## Results", ""]
     if not rows:
         lines += ["No tier has been measured yet.", ""]
@@ -686,7 +809,7 @@ def render(
             if row.get("protocol_reason"):
                 protocol += f" ({row['protocol_reason']})"
             cells = [
-                f"{row['tier']}: {row['model']}",
+                _label(row),
                 POLICY_LABELS.get(row["policies"], row["policies"]),
                 protocol,
             ]
@@ -704,7 +827,7 @@ def render(
         lines += ["", "## Calls", ""]
         lines += ["| " + " | ".join(calls_header) + " |", "|" + "---|" * len(calls_header)]
         for row in rows:
-            label = f"{row['tier']}: {row['model']}"
+            label = _label(row)
             policies = POLICY_LABELS.get(row["policies"], row["policies"])
             lines.append("| " + " | ".join([label, policies, *_breakdown_cells(row)]) + " |")
         lines += ["", "## Runs", ""]
@@ -712,7 +835,7 @@ def render(
         lines += ["|---|---|---|---|---|---|---|"]
         for row in rows:
             lines.append(
-                f"| {row['tier']}: {row['model']} | "
+                f"| {_label(row)} | "
                 f"{POLICY_LABELS.get(row['policies'], row['policies'])} | {row['measured_at']} | "
                 f"`{row['sha']}` | {row['hardware'] or '—'} | {row['server_version'] or '—'} | "
                 f"{row['turn_path']} |"
@@ -938,9 +1061,12 @@ async def run_matrix(
     *,
     turns: int = DEFAULT_TURNS,
     driver_factory: Callable[[], TurnDriver] = RespondDriver,
+    turn_kinds: Sequence[TurnKind] = ("lite",),
     now: datetime | None = None,
 ) -> list[Row] | None:
-    """The rows for ``target``, or ``None`` when the endpoint fails the protocol probe."""
+    """The rows for ``target``, one per turn kind and policy set, or ``None`` when the endpoint
+    fails the protocol probe. ``driver_factory`` plays the Lite rows; the structured and
+    repair-heavy rows play ``StructuredDriver`` (#153)."""
     await configure(engine, target)
     report = await assess(engine.models)
     if not report.protocol.ok:
@@ -951,9 +1077,13 @@ async def run_matrix(
     measured_at = (now or datetime.now(UTC)).strftime("%Y-%m-%d")
     sha = engine_sha()
     rows: list[Row] = []
-    for policies in POLICY_SETS:
-        driver = driver_factory()
-        latencies, logs = await measure_turns(engine, driver, policies, turns)
+    for kind, policies in [(k, p) for k in turn_kinds for p in POLICY_SETS]:
+        driver = driver_factory() if kind == "lite" else driver_for(kind)
+        try:
+            latencies, logs = await measure_turns(engine, driver, policies, turns)
+        finally:
+            if isinstance(driver, StructuredDriver):
+                driver.restore()
         breakdown = call_breakdown(logs)
         rows.append(
             Row(
@@ -979,6 +1109,7 @@ async def run_matrix(
                 failed_calls=breakdown.failed_calls,
                 faulted_turns=breakdown.faulted_turns,
                 fallbacks=breakdown.fallbacks,
+                turn_kind=kind,
             )
         )
     return rows
@@ -1042,7 +1173,12 @@ async def _main(args: argparse.Namespace) -> int:
         db = make_engine(settings)
         engine = Engine(settings, db)
         try:
-            rows = await run_matrix(engine, target, turns=args.turns)
+            rows = await run_matrix(
+                engine,
+                target,
+                turns=args.turns,
+                turn_kinds=tuple(getattr(args, "turn_kinds", ("lite",))),
+            )
             if rows is not None and target.embedding_model:
                 embedded.append(
                     await embedding_row(
@@ -1067,6 +1203,21 @@ async def _main(args: argparse.Namespace) -> int:
     )
     print(f"wrote {args.output} and {args.raw} ({len(rows)} rows for {target.tier})")
     return 0
+
+
+LIVE_TURN_KINDS: tuple[TurnKind, ...] = ("lite", "structured")
+"""The turn kinds a live run measures: a repair-heavy row needs the stub's scripted
+contradictions (``test_p_08__structured`` generates it)."""
+
+
+def _turn_kinds(value: str) -> list[TurnKind]:
+    kinds = [k.strip() for k in value.split(",") if k.strip()]
+    wrong = [k for k in kinds if k not in LIVE_TURN_KINDS]
+    if not kinds or wrong:
+        raise argparse.ArgumentTypeError(
+            f"expected a comma-separated subset of {', '.join(LIVE_TURN_KINDS)}, got {value!r}"
+        )
+    return [k for k in LIVE_TURN_KINDS if k in kinds]
 
 
 def _purpose_model(value: str) -> tuple[str, str]:
@@ -1097,6 +1248,12 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--embedding-api-key", help="its API key (default: --api-key)")
     p.add_argument("--database-url", help="a scratch database instead of a testcontainer")
     p.add_argument("--turns", type=int, default=DEFAULT_TURNS, help="measured turns per row")
+    p.add_argument(
+        "--turn-kinds",
+        type=_turn_kinds,
+        default=list(LIVE_TURN_KINDS),
+        help="comma-separated: lite, structured (default both; repair-heavy rows are stub-only)",
+    )
     p.add_argument("--output", type=Path, default=MATRIX_PATH, help=argparse.SUPPRESS)
     p.add_argument("--raw", type=Path, default=RAW_PATH, help=argparse.SUPPRESS)
     return p

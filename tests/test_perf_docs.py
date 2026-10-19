@@ -133,6 +133,71 @@ def test_history_keeps_every_run(tmp_path: Path) -> None:
     assert perf_docs.NOT_MEASURED in page
 
 
+def test_the_structured_workload_is_summarised(tmp_path: Path) -> None:
+    """#153: P-04's structured run (its sidecar as ``p_04_structured.json``) is summarised in
+    docs/perf.md: the verdict with its host class, the aggregate criteria with the retrieval
+    and verify budgets, the stories that pass, and the commit, retrieve and verify stages.
+
+    Complement asserted: a failed budget reads **FAIL**, a run without the sidecar says *not
+    measured in this run* for P-04, and the structured run alone adds no history row."""
+    sidecar = {
+        "info": {
+            "host_class": "ci",
+            "host": "Linux x86_64, 4 CPUs",
+            "engine_sha": "abc123",
+            "started": "2026-10-18 03:00 UTC",
+            "stories": 10,
+            "memories": 10_000,
+            "events": 20_000,
+            "interval_s": 60.0,
+            "minutes": 30,
+            "stub_latency_s": 2.0,
+        },
+        "passed": False,
+        "aggregate": [
+            {
+                "name": "retrieval p95 (server retrieve stage)",
+                "measured": "99.0% of 900",
+                "bound": "≥ 95% ≤ 150 ms",
+                "passed": True,
+            },
+            {
+                "name": "deterministic verify p95 (server verify stage)",
+                "measured": "80.0% of 300",
+                "bound": "≥ 95% ≤ 50 ms",
+                "passed": False,
+            },
+        ],
+        "stories": [{"criteria": [{"passed": True}]}, {"criteria": [{"passed": False}]}],
+        "stages": {
+            "commit": {"count": 300, "p50": 0.05, "p95": 0.1, "p99": 0.2},
+            "retrieve": {"count": 900, "p50": 0.02, "p95": 0.15, "p99": 0.2},
+            "verify": {"count": 300, "p50": 0.01, "p95": 0.1, "p99": 0.2},
+        },
+    }
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    only = tmp_path / "only"
+    only.mkdir()
+    (only / "p_04_structured.json").write_text(json.dumps(sidecar))
+    perf_docs.render(only, docs)
+    page = (docs / "perf.md").read_text()
+    assert "## P-04: the structured reference workload (NFR-PERF-4, M4)" in page
+    assert "**FAIL** on host class `ci` (reported, not gated)" in page
+    assert (
+        "| retrieval p95 (server retrieve stage) | 99.0% of 900 | ≥ 95% ≤ 150 ms | PASS |" in page
+    )
+    assert (
+        "| deterministic verify p95 (server verify stage) | 80.0% of 300 | ≥ 95% ≤ 50 ms "
+        "| **FAIL** |" in page
+    )
+    assert "1 of 2 stories pass" in page
+    assert "| retrieve | 900 | ≤ 20 ms | ≤ 150 ms | ≤ 200 ms |" in page
+    assert perf_docs.history_rows(page) == []
+    perf_docs.render(_results(tmp_path), docs)
+    assert perf_docs.NOT_MEASURED in (docs / "perf.md").read_text().split("## P-04")[1]
+
+
 def test_capacity_reports_the_first_failing_budget(tmp_path: Path) -> None:
     """P-10's steps stay above the gated 50k and at most ``--up-to``; the report names the
     first step whose retrieval or commit budget failed.

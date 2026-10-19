@@ -281,7 +281,11 @@ class ModelAccessLayer:
     def _make_adapter(self, settings: Settings) -> ModelAdapter:
         if settings.model_adapter == "stub":
             return StubAdapter(
-                model_lookup=self._configured_model, latency_s=settings.stub_latency_s
+                model_lookup=self._configured_model,
+                latency_s=settings.stub_latency_s,
+                render_claims=[
+                    c.model_dump(exclude_none=True) for c in settings.stub_render_claims
+                ],
             )
         return OpenAICompatibleAdapter(self.resolve, self.keybox)
 

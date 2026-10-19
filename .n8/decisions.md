@@ -7883,3 +7883,6 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Issue:** #156, #106
 - **Decision (Rule 1, test expectations):** Two structured tests followed #156's freed call. #150's/#152's I-22 M4 now also sees the polish call (`ComposedMessage`), because the input no longer spends an extraction. #106's validate-route tests now expect `warnings: []`. The out-of-scope `test_openapi_calls_the_message_finished_never_verified` failure (#155's yield-route descriptions) is filed as #457.
   **Issue:** #156, #457
+- **Decision (Rule 1, orchestrator):** #155's escalation-yield field descriptions said "verified". FR-RESP-1's OpenAPI guard (`test_openapi_calls_the_message_finished_never_verified`) refuses that word in any API description. They now say "checked", and `docs/openapi.json` is regenerated. #456 also arrived from #156 as `needs-triage`; it covers the planner's notes #156 did not build, none of which are AC.
+  **Why:** it was a regression of #155 found by #156, so it was fixed under #155 (#457 is closed by this commit) rather than left for triage.
+  **Issue:** #155, #457, #456

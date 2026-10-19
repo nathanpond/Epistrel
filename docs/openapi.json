@@ -6637,7 +6637,7 @@
             "type": "array"
           },
           "claims": {
-            "description": "Claims verified by the window's turns.",
+            "description": "Claims checked by the window's turns.",
             "title": "Claims",
             "type": "integer"
           },
@@ -6655,7 +6655,7 @@
                 "type": "null"
               }
             ],
-            "description": "`escalated / claims`; `null` when no claim was verified.",
+            "description": "`escalated / claims`; `null` when no claim was checked.",
             "title": "Escalation Rate"
           },
           "from": {

@@ -209,10 +209,10 @@ class EscalationYieldBody(BaseModel):
     by_shape: list[YieldClusterBody]
     by_gate_reason_shape: list[YieldClusterBody]
     totals: YieldClusterBody
-    claims: int = Field(description="Claims verified by the window's turns.")
+    claims: int = Field(description="Claims checked by the window's turns.")
     escalated: int = Field(description="Of those, the claims escalated to the model.")
     escalation_rate: float | None = Field(
-        description="`escalated / claims`; `null` when no claim was verified."
+        description="`escalated / claims`; `null` when no claim was checked."
     )
     reference_baseline: float = Field(description="NFR-PERF-5's reference rate, 0.2.")
     is_gate: bool = Field(description="Always `false`: the baseline is a reference, not a gate.")

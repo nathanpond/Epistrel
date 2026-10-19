@@ -28,8 +28,8 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.config import ProcessMode, Settings
 from epistrel.core import config_changes as config_log
-from epistrel.core import control as control_ops
 from epistrel.core import (
+    config_vocabulary,
     deployment,
     feedback,
     feedback_export,
@@ -50,6 +50,7 @@ from epistrel.core import (
     turn_gate,
     variants,
 )
+from epistrel.core import control as control_ops
 from epistrel.core import story_settings as settings_store
 from epistrel.core.catalog import characters as catalog_characters
 from epistrel.core.catalog import companion as catalog_companion
@@ -432,6 +433,11 @@ def _body(model: Any) -> Any:
 
 
 _POLICY_ITEMS: TypeAdapter[list[StoryPolicyItem]] = TypeAdapter(list[StoryPolicyItem])
+_SETTING_FILTERS: dict[config_log.ConfigScope, TypeAdapter[list[str]]] = {
+    config_log.ConfigScope.DEPLOYMENT: TypeAdapter(list[config_vocabulary.DeploymentSettingFilter]),
+    config_log.ConfigScope.STORY: TypeAdapter(list[config_vocabulary.StorySettingFilter]),
+}
+"""The ``setting`` vocabulary per scope (#279), the one REST checks the query against (#435)."""
 
 
 def _policy_items(raw: Any) -> list[StoryPolicyItem]:
@@ -2616,7 +2622,13 @@ class Engine:
         limit: int = config_log.DEFAULT_PAGE,
     ) -> config_log.ConfigChangePage:
         """A page of the configuration log (FR-CONC-14, #64): the deployment's changes, or a
-        story's (404 for an unknown story), newest first."""
+        story's (404 for an unknown story), newest first. Each ``settings`` name is checked
+        against the scope's closed vocabulary, as REST checks ``setting`` (#279, #435): an
+        unknown name is 422 ``validation_error`` at ``query.setting``, never an empty page."""
+        try:
+            _SETTING_FILTERS[scope].validate_python(list(settings))
+        except ValidationError as exc:
+            raise InvalidRequest.from_errors(exc.errors(), prefix=("query", "setting")) from None
         if story_id is not None:
             await check_expected_revision(self.db, story_id, None)
         return await config_log.list_config_changes(

@@ -11,7 +11,14 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
-from epistrel.core.config_changes import SECTIONS, read_section, read_settings, redact
+from epistrel.core.config_changes import (
+    SECTIONS,
+    ConfigScope,
+    read_section,
+    read_settings,
+    redact,
+)
+from epistrel.core.context import RequestContext
 from epistrel.core.deployment import SettingsPatch, apply_settings
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.ids import new_ulid, ulid_after
@@ -310,6 +317,63 @@ async def test_setting_filter_refuses_unknown_names(
             f"/stories/{story}/config-changes", params={"setting": "rating:"}, headers=READ
         )
         assert on_story.status_code == 422, on_story.text
+
+
+LIBRARY_ACCEPTED: dict[ConfigScope, tuple[str, ...]] = {
+    ConfigScope.DEPLOYMENT: (
+        "turn_queue_max",
+        "profile_defaults",
+        "profile_defaults.models.generation.top_p",
+        "lite_generation_defaults.top_p",
+        "rating:",
+        "model_config:respond.model",
+        "engine_profile:01ARZ3NDEKTSV4RRFFQ69G5FAV.budgets.model_calls",
+    ),
+    ConfigScope.STORY: (
+        "turn_queue_max",
+        "engine_profile_id",
+        "profile_overrides.memory.rolling_summary.window_messages",
+        "generation_settings.temperature",
+        "policy:",
+    ),
+}
+LIBRARY_REFUSED = ("turn_queue_mx", "false", "AAA", "generation_settings.", "x:")
+
+
+async def test_library_setting_filter_refuses_unknown_names(
+    stub_settings: Settings, engine: AsyncEngine
+) -> None:
+    """``Engine.config_changes(settings=...)`` checks each name against the scope's closed
+    vocabulary, as REST checks ``setting`` (#279; FR-API-3, #435): a misspelt name is 422
+    ``validation_error`` at the same ``query.setting`` field REST reports, not an empty page.
+    Before #435 ``settings=["turn_queue_mx"]`` listed nothing, silently.
+
+    Complement asserted: every form REST accepts is accepted, a refused name is refused with a
+    valid one beside it, and ``rating:`` (a deployment family) is refused on a story."""
+    ctx = RequestContext(principal="p-reader")
+    async with respond_client(stub_settings, engine) as (client, lib):
+        story, _ = await new_story(client)
+        targets = {ConfigScope.DEPLOYMENT: None, ConfigScope.STORY: story}
+        for scope, story_id in targets.items():
+            for name in LIBRARY_ACCEPTED[scope]:
+                await lib.config_changes(ctx, scope=scope, story_id=story_id, settings=[name])
+            for name in [*LIBRARY_REFUSED, *(("rating:",) if story_id else ())]:
+                for settings in ([name], ["turn_queue_max", name]):
+                    with pytest.raises(InvalidRequest) as refused:
+                        await lib.config_changes(
+                            ctx, scope=scope, story_id=story_id, settings=settings
+                        )
+                    field = refused.value.details["field"]
+                    assert field.startswith("query.setting"), (scope, settings, field)
+        rest = await client.get(
+            f"/stories/{story}/config-changes", params={"setting": "turn_queue_mx"}, headers=READ
+        )
+        assert rest.status_code == 422, rest.text
+        with pytest.raises(InvalidRequest) as library:
+            await lib.config_changes(
+                ctx, scope=ConfigScope.STORY, story_id=story, settings="turn_queue_mx"
+            )
+        assert library.value.details["field"] == rest.json()["error"]["details"]["field"]
 
 
 async def test_rows_of_one_write_list_in_the_order_written(engine: AsyncEngine) -> None:

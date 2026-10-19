@@ -64,7 +64,7 @@ from tests.model_support import config_key
 from tests.projection_support import snapshot
 from tests.respond_support import FIRST as ADA
 from tests.respond_support import SECOND as BRANN
-from tests.respond_support import body, respond, respond_client
+from tests.respond_support import assert_kept, body, respond, respond_client
 from tests.respond_support import new_story as new_rest_story
 from tests.summary_support import run_due_jobs, segment_rows, summary_jobs, worker
 
@@ -705,10 +705,12 @@ async def test_s_erasure_boundary__resurrection(
         # The late worker result: two turns leave a window due, then a summary job whose model
         # output names her. With the guard off it would be written (shown first).
         stub.reset()
-        stub.script("generation", ["The rain stops.", "The kettle whistles."] * 2)
-        for n in range(2):
+        replies = ["The rain stops.", "The kettle whistles."]
+        stub.script("generation", replies * 2)
+        # Each turn commits its scripted reply on the first attempt (#428).
+        for n, reply in enumerate(replies):
             ok = await respond(client, sid, body(story.player, f"Anything else ({n})?"))
-            assert ok.status_code == 200, ok.text
+            assert_kept(ok, reply)
         segments = await segment_rows(engine, sid)
         stub.script("lite_summary", [LATE])
         token = guard.DISABLED.set(True)
@@ -720,9 +722,9 @@ async def test_s_erasure_boundary__resurrection(
         assert LATE in {s.text for s in await segment_rows(engine, sid)}
         assert segments != await segment_rows(engine, sid)
         # With the guard on, the next window's job naming her writes nothing.
-        for n in range(2):
+        for n, reply in enumerate(replies):
             ok = await respond(client, sid, body(story.player, f"And now ({n})?"))
-            assert ok.status_code == 200, ok.text
+            assert_kept(ok, reply)
         before = await segment_rows(engine, sid)
         stub.script("lite_summary", [LATE])
         (refused,) = await run_due_jobs(engine, lib.models, sid, limit=1)

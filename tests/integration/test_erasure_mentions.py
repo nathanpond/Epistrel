@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.config import Settings
 from tests import erasure_support as e
 from tests.event_support import execute_in_tx, rows, scalar
-from tests.respond_support import body, new_story, played, respond, respond_client
+from tests.respond_support import assert_kept, body, new_story, played, respond, respond_client
 
 pytestmark = pytest.mark.integration
 
@@ -47,16 +47,6 @@ async def _texts(engine: AsyncEngine, story_id: str) -> list[str]:
         s=story_id,
     )
     return [str(r.line) for r in found if r.line is not None]
-
-
-def _kept(response: httpx.Response, reply: str) -> None:
-    """The turn committed the scripted ``reply`` on its first attempt (#419). A 200 alone does
-    not prove the guard kept it: a refused reply is regenerated within the budget, the stub
-    falls back to its default text, and the turn still commits."""
-    assert response.status_code == 200, response.text
-    turn = response.json()
-    assert turn["message"]["text"] == reply, turn["message"]
-    assert turn["call_counts"].get("generation") == 1, turn["call_counts"]
 
 
 async def _will_black(client: httpx.AsyncClient, lib: Any) -> tuple[str, dict[str, str]]:
@@ -104,7 +94,7 @@ async def test_erasing_will_black_spares_the_words_will_and_black(
         lib.models.stub.reset()
         lib.models.stub.script("generation", [LATER])
         later = await respond(client, story, body(ids["Wren"], "And the weather?"))
-        _kept(later, LATER)
+        assert_kept(later, LATER)
 
         budget = int(
             await scalar(
@@ -278,7 +268,7 @@ async def test_the_guard_refuses_every_folded_or_dashed_form(
         lib.models.stub.reset()
         lib.models.stub.script("generation", ["Ty sees Mary Smith and Jane Doe."])
         kept = await respond(client, story, body(ids["Wren"], "Who is there?"))
-        _kept(kept, "Ty sees Mary Smith and Jane Doe.")
+        assert_kept(kept, "Ty sees Mary Smith and Jane Doe.")
 
 
 async def test_a_devanagari_name_word_matches_only_a_whole_word(
@@ -312,7 +302,7 @@ async def test_a_devanagari_name_word_matches_only_a_whole_word(
         lib.models.stub.reset()
         lib.models.stub.script("generation", ["Ty reads the रामायण again."])
         kept = await respond(client, story, body(ids["Wren"], "What now?"))
-        _kept(kept, "Ty reads the रामायण again.")
+        assert_kept(kept, "Ty reads the रामायण again.")
 
 
 async def test_an_erasure_re_indexes_the_story_before_it_redacts(

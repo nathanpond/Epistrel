@@ -57,7 +57,7 @@ from tests.auth_support import ERASURE_LEDGER_DIR
 from tests.conformance.conftest import migrated_database
 from tests.event_support import rows, scalar
 from tests.model_support import config_key
-from tests.respond_support import body, respond, respond_client
+from tests.respond_support import assert_kept, body, respond, respond_client
 from tests.summary_support import run_due_jobs, segment_rows, summary_jobs
 
 pytestmark = pytest.mark.integration
@@ -207,10 +207,12 @@ async def resurrection_clauses(erasure_settings: Settings, engine: AsyncEngine) 
         # does one whose player text names her (new consumer content is not refused).
         stub.reset()
         stub.script("generation", ["The kettle sings.", "The rain eases off."])
+        # Each commits its scripted reply on the first attempt: a 200 alone would pass an
+        # over-refusing guard, which regenerates into the stub's default text (#428).
         clean = await respond(client, sid, body(story.player, "Is the kettle on?"))
-        assert clean.status_code == 200, clean.text
+        assert_kept(clean, "The kettle sings.")
         typed = await respond(client, sid, body(story.player, f"Where did {e.NAME} go?"))
-        assert typed.status_code == 200, typed.text
+        assert_kept(typed, "The rain eases off.")
         assert e.NAME in typed.text
 
         # A model reply naming her, after the erasure: regenerated within the budget, then 409.
@@ -244,9 +246,9 @@ async def resurrection_clauses(erasure_settings: Settings, engine: AsyncEngine) 
         # A worker result built after the erasure that names her is refused (late result).
         stub.reset()
         stub.script("generation", ["The rain stops.", "The kettle whistles."])
-        for n in range(2):
+        for n, reply in enumerate(["The rain stops.", "The kettle whistles."]):
             ok = await respond(client, sid, body(story.player, f"Anything else ({n})?"))
-            assert ok.status_code == 200, ok.text
+            assert_kept(ok, reply)
         stub.script("lite_summary", [LATE])
         before = await segment_rows(engine, sid)
         (outcome,) = await run_due_jobs(engine, lib.models, sid, limit=1)

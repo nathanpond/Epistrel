@@ -90,6 +90,16 @@ async def played(
     return result
 
 
+def assert_kept(response: httpx.Response, reply: str) -> None:
+    """The turn committed the scripted ``reply`` on its first attempt (#419, #428). A 200 alone
+    does not prove an armed erasure guard kept it: a refused reply is regenerated within the
+    budget, the stub falls back to its default text, and the turn still commits."""
+    assert response.status_code == 200, response.text
+    turn = response.json()
+    assert turn["message"]["text"] == reply, turn["message"]
+    assert turn["call_counts"].get("generation") == 1, turn["call_counts"]
+
+
 def generation_calls(stub: StubAdapter) -> list[StubCall]:
     return [call for call in stub.calls if call.purpose == "generation"]
 

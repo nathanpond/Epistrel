@@ -363,14 +363,14 @@ class ModelAccessLayer:
         if budget is not None:
             if budget.expired():
                 raise ModelUnavailable(purpose, "deadline")
-            # A first attempt may spend a reserved slot; a retry only the unreserved remainder.
-            affordable = budget.can_afford() if first else budget.can_afford_unreserved()
-            if not affordable:
+            # A first attempt may spend a reserved slot (a named one only its owner, #156); a
+            # retry only the unreserved remainder.
+            if not budget.affordable(purpose, first=first):
                 raise BudgetExhausted(purpose, budget.used, budget.max_calls)
         limit, reason = await self._timeout(purpose, params), "timeout"
         if budget is not None:
             limit, reason = budget.clamp(limit)
-            budget.debit(claim=first)
+            budget.debit(claim=first, purpose=purpose)
         model = await self._model_name(purpose)
         call_started()
         started = time.perf_counter()
@@ -395,7 +395,7 @@ class ModelAccessLayer:
             if _attempted(mapped):
                 self._record_failure(purpose, model, attempt, started, mapped)
             elif budget is not None:
-                budget.refund()  # nothing was sent: the budget counts recorded calls only
+                budget.refund(purpose)  # nothing was sent: the budget counts recorded calls only
             # ``from None``: the provider's message can echo the prompt (invariant 3).
             raise mapped from None
         result = _without_nul(purpose, result)

@@ -13,7 +13,9 @@
    not met is reported in ``missing_dependencies``, with the requirements it lacks.
 
 ``require_valid`` raises 422 ``invalid_profile`` with both lists when either is non-empty and
-returns the document normalised (the settings it names, as stored). The same function validates
+returns the document normalised (the settings it names, as stored). A valid result may carry
+``warnings`` (#156): ``below_safety_minimum`` when the profile's call cap cannot cover a turn's
+safety reservation (``core.profiles.reservation``). The same function validates
 every profile version and, from #113, every story's effective configuration.
 """
 
@@ -27,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from epistrel.core.errors import InvalidProfile, InvalidRequest
 from epistrel.core.profiles import schema
+from epistrel.core.profiles.reservation import budget_warnings
 from epistrel.core.profiles.schema import ProfileSettings, Purposes
 
 
@@ -60,6 +63,19 @@ class UndeliveredSetting(BaseModel):
     setting: str
 
 
+class ProfileValidationWarning(BaseModel):
+    """A warning of the profile validator (#156): ``below_safety_minimum`` names the setting,
+    its value, the minimum a turn needs and the reservation that makes it up."""
+
+    model_config = ConfigDict(frozen=True)
+
+    code: str
+    setting: str
+    model_calls: int
+    minimum_required: int
+    reservation: dict[str, int]
+
+
 class ProfileValidation(BaseModel):
     """The outcome of validating a profile's settings: ``valid`` exactly when both lists are
     empty."""
@@ -69,6 +85,10 @@ class ProfileValidation(BaseModel):
     valid: bool
     missing_dependencies: list[MissingDependency]
     undelivered: list[UndeliveredSetting]
+    warnings: list[ProfileValidationWarning] = []
+    """What does not make the profile invalid but would refuse its turns (#156):
+    ``below_safety_minimum`` when ``budgets.model_calls`` is below the single-primary minimum
+    with the deployment's current model-assisted policies (FR-PROF-7)."""
 
 
 def parse_settings(
@@ -181,14 +201,24 @@ def validate_profile(
     *,
     purposes: Purposes | None = None,
     field: tuple[str, ...] = ("body", "settings"),
+    guardrail_calls: tuple[int, int] = (0, 0),
 ) -> ProfileValidation:
     """Validate a settings document (see the module docstring); a shape error raises 422
-    ``validation_error`` under ``field``, anything else is reported."""
+    ``validation_error`` under ``field``, anything else is reported. ``guardrail_calls``: the
+    deployment's model-assisted input and output policies (G), for the budget warning."""
     settings = parse_settings(document, field=field)
     undelivered = undelivered_settings(document, settings, purposes=purposes, field=field)
     missing = missing_dependencies(settings)
+    gi, go = guardrail_calls
+    warnings = [
+        ProfileValidationWarning.model_validate(w)
+        for w in budget_warnings(settings, guardrail_input=gi, guardrail_output=go)
+    ]
     return ProfileValidation(
-        valid=not (undelivered or missing), missing_dependencies=missing, undelivered=undelivered
+        valid=not (undelivered or missing),
+        missing_dependencies=missing,
+        undelivered=undelivered,
+        warnings=warnings,
     )
 
 
@@ -225,6 +255,7 @@ def require_valid(
 __all__ = [
     "MissingDependency",
     "ProfileValidation",
+    "ProfileValidationWarning",
     "RequiredModule",
     "UndeliveredSetting",
     "canonical",

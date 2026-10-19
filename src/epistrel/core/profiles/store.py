@@ -939,11 +939,13 @@ async def validate_stored(
     request: ProfileValidate | None = None,
     *,
     purposes: Purposes | None = None,
+    guardrail_calls: tuple[int, int] = (0, 0),
 ) -> ProfileValidation:
     """Validate ``request.settings`` (a dry run), or the profile's latest version: the result
-    when it is valid; 422 ``invalid_profile`` naming what is missing or undelivered, or
-    ``validation_error`` for the settings' shape, when it is not. 404 for an unknown
-    profile."""
+    when it is valid (with its ``warnings``, #156: ``guardrail_calls`` is the deployment's
+    model-assisted input and output policies); 422 ``invalid_profile`` naming what is missing
+    or undelivered, or ``validation_error`` for the settings' shape, when it is not. 404 for an
+    unknown profile."""
     async with db.connect() as conn:
         head = await _head(conn, profile_id)
         if request is not None and request.settings is not None:
@@ -954,7 +956,12 @@ async def validate_stored(
             field = ("settings",)
         defaults = await effective.profile_defaults(conn)
     effective.check_document(document, purposes=purposes, field=field)
-    result = validate_profile(effective.layered(defaults, document), purposes=purposes, field=field)
+    result = validate_profile(
+        effective.layered(defaults, document),
+        purposes=purposes,
+        field=field,
+        guardrail_calls=guardrail_calls,
+    )
     if not result.valid:
         raise refusal(result)
     return result

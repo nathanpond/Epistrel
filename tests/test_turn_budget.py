@@ -1,11 +1,20 @@
-"""``TurnBudget`` planning, reservation and clamping (NFR-PERF-6; #69)."""
+"""``TurnBudget`` planning, reservation and clamping (NFR-PERF-6; #69), and a structured turn's
+named reservations and optional work (#156)."""
 
 from __future__ import annotations
 
 import pytest
 
 from epistrel.core.errors import BudgetBelowSafetyMinimum, InvalidRequest
-from epistrel.orchestrator.budget import TurnBudget, lite_default_calls, plan_lite_budget
+from epistrel.core.profiles.reservation import reservation, safety_minimum
+from epistrel.core.profiles.schema import ProfileSettings
+from epistrel.orchestrator.budget import (
+    COMPOSED,
+    EXTRACTION,
+    TurnBudget,
+    lite_default_calls,
+    plan_lite_budget,
+)
 
 
 def _plan(**fields: object) -> TurnBudget:
@@ -95,3 +104,114 @@ async def test_embedding_calls_are_counted_apart_from_the_cap() -> None:
         await counted("boom")
     assert (budget.embedding_calls, budget.used) == (2, 0)
     assert "embedding_calls" not in budget.report()
+
+
+# -- #156: a structured turn's named reservations, optional work and plan ---------------------
+
+
+def _structured(**fields: object) -> TurnBudget:
+    from epistrel.core.seeds.profiles import structured_m4_settings
+    from epistrel.orchestrator.structured import planner
+
+    settings = ProfileSettings.model_validate(structured_m4_settings())
+    plan = planner.TurnPlan(
+        primaries=1,
+        beats_planned=6,
+        reservation=reservation(settings, guardrail_input=0, guardrail_output=1),
+        optional=planner.optional_work(settings),
+    )
+    values: dict[str, object] = {"story_max_calls": None, "turn_deadline": 45.0}
+    values.update(fields)
+    return planner.plan_budget(plan, **values)  # type: ignore[arg-type]
+
+
+def test_a_named_reservation_is_spent_only_by_its_owner() -> None:
+    """B and C (owner-only) are never spent by another call: a first ``entailment`` or
+    ``salience_detection`` attempt, or a guardrail check past the held pool, sees them as
+    spent; ``extraction_backstop`` spends B, and C only while ``charging(COMPOSED)``. A refund
+    gives the slot back; a released slot funds optional work."""
+    budget = _structured(story_max_calls=5)  # minimum 4: render, B, C, one output check
+    assert (budget.held, budget.named) == (2, {EXTRACTION: 1, COMPOSED: 1})
+    budget.debit(purpose="generation")
+    budget.debit(purpose="guardrail_check")
+    assert budget.held == 0
+    budget.settle_optional("salience")  # no salience to protect here
+    assert budget.affordable("entailment", first=True)  # the one free call
+    budget.debit(purpose="entailment")
+    assert not budget.affordable("entailment", first=True)
+    assert not budget.affordable("salience_detection", first=True)
+    assert not budget.can_afford(1)  # only the owners' slots are left
+    assert budget.affordable("extraction_backstop", first=True)
+    budget.debit(purpose="extraction_backstop")
+    assert budget.named == {EXTRACTION: 0, COMPOSED: 1}
+    assert not budget.affordable("extraction_backstop", first=True)  # C is not B's
+    with budget.charging(COMPOSED):
+        assert budget.affordable("extraction_backstop", first=True)
+        budget.debit(purpose="extraction_backstop")
+        budget.refund("extraction_backstop")  # nothing was sent: the slot comes back
+    assert budget.named[COMPOSED] == 1
+    assert budget.release_named(COMPOSED) == 1
+    assert budget.released == 1
+    assert budget.can_afford_unreserved(1)
+
+
+def test_optional_work_goes_in_priority_order() -> None:
+    """Salience's pre-allocation keeps an earlier entailment call from starving it, and once a
+    kind is refused no less important kind runs (polish before repairs before entailment)."""
+    budget = _structured(story_max_calls=6)
+    budget.debit(purpose="generation")
+    budget.debit(purpose="guardrail_check")
+    # 6 - 2 used - 2 named = 2 free: salience keeps one of them.
+    assert budget.pending == {"salience": 1}
+    assert budget.affordable("entailment", first=True)
+    budget.debit(purpose="entailment")
+    assert not budget.affordable("entailment", first=True)  # the last free call is salience's
+    assert budget.affordable("salience_detection", first=True)
+    budget.debit(purpose="salience_detection")
+    budget.settle_optional("salience")
+    budget.release_named(EXTRACTION)
+    assert budget.can_afford_unreserved(1)  # B's released slot
+    # Entailment was refused, so the repair and the polish are too, whatever is left.
+    assert not budget.try_optional("repair", 1)
+    assert not budget.try_optional("polish", 1)
+    assert budget.held == 0
+
+
+def test_the_plan_and_its_minimum() -> None:
+    """``1 + B + C + G``: one model-assisted policy on input and output makes 5; Lite, or a
+    structured story without extraction, reserves neither B nor C; a budget below the minimum
+    is refused with the reservation; #69's formula is the default cap."""
+    from epistrel.core.seeds.profiles import structured_m4_settings
+    from epistrel.orchestrator.structured import planner
+
+    settings = ProfileSettings.model_validate(structured_m4_settings())
+    assert safety_minimum(settings, guardrail_input=1, guardrail_output=1) == 5
+    lite = ProfileSettings()
+    assert safety_minimum(lite, guardrail_input=1, guardrail_output=1) == 3
+    declared = settings.model_copy(
+        update={"verification": settings.verification.model_copy(update={"level": "declared"})}
+    )
+    assert safety_minimum(declared, guardrail_input=1, guardrail_output=1) == 3
+    no_polish = settings.model_copy(
+        update={
+            "repair": settings.repair.model_copy(
+                update={"polish": settings.repair.polish.model_copy(update={"enabled": False})}
+            )
+        }
+    )
+    assert safety_minimum(no_polish, guardrail_input=0, guardrail_output=0) == 2
+    assert _structured().max_calls == 9 + 1
+    with pytest.raises(BudgetBelowSafetyMinimum) as refused:
+        _structured(story_max_calls=3)
+    assert refused.value.details["minimum_required"] == 4
+    assert refused.value.details["reservation"] == {"extraction": 1, "composed": 1, "guardrail": 1}
+    assert planner.optional_work(settings) == (
+        "salience",
+        "entailment",
+        "follow_up",
+        "repair",
+        "polish",
+    )
+    assert planner.ladder_steps(
+        ["entailment_safe_disposition", "salience_skipped", "skip_polish", "safe_fallback"]
+    ) == ["skip_polish", "safe_fallback", "entailment_safe_disposition"]

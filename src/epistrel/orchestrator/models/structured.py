@@ -203,8 +203,7 @@ async def structured_call[T: BaseModel](
                 raise ModelUnavailable(purpose, "deadline", attempts=attempts)
             # A retry comes from the unreserved remainder: it never spends a slot reserved
             # for another check or the generation (#69).
-            affordable = budget.can_afford() if attempts == 0 else budget.can_afford_unreserved()
-            if not affordable:
+            if not budget.affordable(purpose, first=attempts == 0):
                 return Uncertain("budget_exhausted", attempts)
             attempts += 1
             try:

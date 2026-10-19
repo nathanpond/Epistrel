@@ -89,7 +89,7 @@ from epistrel.core.verify.detect import DetectedClaim, shape_of
 from epistrel.core.verify.rules import Record, VerdictKind, check
 from epistrel.core.viewpoint import is_omniscient
 from epistrel.observability.logging import get_logger
-from epistrel.orchestrator.budget import TurnBudget
+from epistrel.orchestrator.budget import COMPOSED, POLISH, TurnBudget
 from epistrel.orchestrator.models.access import ModelAccessLayer
 from epistrel.orchestrator.models.adapter import Message, ModelParams
 from epistrel.orchestrator.models.errors import ModelError
@@ -746,10 +746,16 @@ async def polish(
 
 
 def reserve_detection(budget: TurnBudget, calls: int) -> bool:
-    """Hold the composed message's detection call (C) when the budget can, at planning."""
-    if calls <= 0 or not budget.can_afford_unreserved(calls):
+    """Whether the composed message's detection call (C) is reserved: #156's planner reserves
+    it as the owner-only ``composed`` slot before the turn's first call; a budget planned
+    without it (no planner) reserves it here when the unreserved remainder can."""
+    if calls <= 0:
         return False
-    budget.hold(calls)
+    if budget.named.get(COMPOSED, 0) >= calls:
+        return True
+    if not budget.can_afford_unreserved(calls):
+        return False
+    budget.reserve(COMPOSED, calls)
     return True
 
 
@@ -818,7 +824,8 @@ async def compose(
     def settle() -> None:
         # Composition is the turn's last model work: whatever it still holds (C when the
         # assembly is used, an unspent polish slot) goes back.
-        budget.release_to(max(0, before - held))
+        budget.release_to(before)
+        budget.release_named(COMPOSED)
 
     async def deterministic(
         degradation: tuple[str, ...] = (),
@@ -852,16 +859,16 @@ async def compose(
     if not composer.polish_on or len(shown) <= 1:
         return await deterministic()
     cost = 1 + composer.assisted_checks + (0 if reserved else composer.detection_calls)
-    if budget.expired() or not budget.can_afford_unreserved(cost):
+    if not budget.try_optional(POLISH, cost):
         return await deterministic((POLISH_SKIPPED_BUDGET,))
-    budget.hold(cost)
     try:
-        text = await polish(
-            composer.models,
-            polish_inputs(composer.inputs, shown, composer.names, draft, viewpoint),
-            params=polish_params(composer.params, draft),
-            budget=budget,
-        )
+        with budget.charging(POLISH):
+            text = await polish(
+                composer.models,
+                polish_inputs(composer.inputs, shown, composer.names, draft, viewpoint),
+                params=polish_params(composer.params, draft),
+                budget=budget,
+            )
     except ModelError:
         text = None
     fallback = (COMPOSITION_FALLBACK,)

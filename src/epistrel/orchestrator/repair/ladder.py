@@ -94,6 +94,7 @@ from epistrel.core.turns.beats import BEAT_TEXT_MAX, TurnBeat
 from epistrel.core.verify.neighborhood import Seed, fact_neighborhood
 from epistrel.core.verify.protected import viewpoint_of
 from epistrel.core.verify.rules import Rule, VerdictKind
+from epistrel.orchestrator.budget import REPAIR as BUDGET_REPAIR
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.lite.prompt import prompt_hash
 from epistrel.orchestrator.models.access import ModelAccessLayer
@@ -640,11 +641,11 @@ class RepairLadder:
                 degradation.append((REPAIR_DETERMINISTIC, "max_attempts"))
                 break
             cost = self.regeneration_cost
-            if budget.expired() or not budget.can_afford_unreserved(cost):
+            held = budget.held
+            # Optional work (#156): never a reserved call, and only while it could start.
+            if not budget.try_optional(BUDGET_REPAIR, cost):
                 degradation.append((REPAIR_DETERMINISTIC, "budget"))
                 break
-            held = budget.held
-            budget.hold(cost)
             self.attempts_used += 1
             attempts += 1
             try:

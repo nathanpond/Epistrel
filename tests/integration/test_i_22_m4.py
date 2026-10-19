@@ -55,9 +55,12 @@ async def test_i_22__structured_guidance(
         response = await respond(client, story, body(ids["Wren"], None, do="waits outside"))
         assert response.status_code == 200, response.text
         calls = [c for c in stub.calls if c.purpose == GENERATION]
+        # The two renders' beats are also polished (#156: the input's detection makes no
+        # extraction call, so the default budget pays for the polish too).
         assert sorted(c.response_schema or "" for c in calls) == [
             "AgeRepairAnswer",
             "CharacterRender",
+            "ComposedMessage",
             "NarratorRender",
         ]
         for call in calls:

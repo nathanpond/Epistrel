@@ -501,7 +501,12 @@ async def test_c_16__crud(scratch: Space) -> None:
         valid = await ok(
             await client.post(f"{PROFILES}/{profile}/validate", json={}, headers=headers(A))
         )
-        assert valid == {"valid": True, "missing_dependencies": [], "undelivered": []}
+        assert valid == {
+            "valid": True,
+            "missing_dependencies": [],
+            "undelivered": [],
+            "warnings": [],
+        }
         dry = await client.post(
             f"{PROFILES}/{profile}/validate",
             json={"settings": undelivered()},
@@ -1368,7 +1373,7 @@ async def test_validate_without_a_body_checks_the_latest_version(
     expected = [
         {"module": "pins", "level": "on", "requires": [{"module": "rolling_summary", "levels": []}]}
     ]
-    valid = {"valid": True, "missing_dependencies": [], "undelivered": []}
+    valid = {"valid": True, "missing_dependencies": [], "undelivered": [], "warnings": []}
     ctx = RequestContext(principal=A)
     async with respond_client(stub_settings, engine) as (client, lib):
         created = await ok(

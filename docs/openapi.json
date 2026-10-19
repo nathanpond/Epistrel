@@ -20394,6 +20394,14 @@
           "valid": {
             "title": "Valid",
             "type": "boolean"
+          },
+          "warnings": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ProfileValidationWarning"
+            },
+            "title": "Warnings",
+            "type": "array"
           }
         },
         "required": [
@@ -20402,6 +20410,43 @@
           "undelivered"
         ],
         "title": "ProfileValidation",
+        "type": "object"
+      },
+      "ProfileValidationWarning": {
+        "description": "A warning of the profile validator (#156): ``below_safety_minimum`` names the setting,\nits value, the minimum a turn needs and the reservation that makes it up.",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "minimum_required": {
+            "title": "Minimum Required",
+            "type": "integer"
+          },
+          "model_calls": {
+            "title": "Model Calls",
+            "type": "integer"
+          },
+          "reservation": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Reservation",
+            "type": "object"
+          },
+          "setting": {
+            "title": "Setting",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "setting",
+          "model_calls",
+          "minimum_required",
+          "reservation"
+        ],
+        "title": "ProfileValidationWarning",
         "type": "object"
       },
       "ProfileVersion": {

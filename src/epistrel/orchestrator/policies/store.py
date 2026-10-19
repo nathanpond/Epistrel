@@ -253,6 +253,13 @@ async def story_guardrails(db: AsyncEngine, story_id: str) -> StoryGuardrails:
     )
 
 
+async def deployment_guardrail_calls(db: AsyncEngine) -> tuple[int, int]:
+    """G as the deployment's global policies state it (the profile validator's budget warning,
+    #156): its active model-assisted policies applying to input and to output."""
+    found = await list_policies(db, scope=Scope.GLOBAL)
+    return _assisted_count(found, Target.TEXT_INPUT), _assisted_count(found, Target.TEXT_OUTPUT)
+
+
 async def rating_sources(db: AsyncEngine, story_id: str) -> dict[str, str]:
     """Per rating policy in the story's effective set, the rating that contributes it (the
     nearest in the closure, #48)."""

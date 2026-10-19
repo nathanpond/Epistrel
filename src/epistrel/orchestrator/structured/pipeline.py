@@ -69,8 +69,8 @@ call (``composition.j2``) and the polished text passes #68's output gate and the
 (#148's detection on the composed text, every claim traced to a beat, attribution, no private
 thought for a character viewpoint); otherwise, or when the polish is off, skipped under budget
 pressure or the turn has one beat, the message is the deterministic assembly of the beats. The
-composed message's detection call is held once the renders are checked (``reserve_detection``)
-and released when the assembly is used. A composition failure changes no beat: the events are
+composed message's detection call (C) is reserved at planning (#156) and released when the
+assembly is used. A composition failure changes no beat: the events are
 the same either way.
 
 **The result** is M3's ``RespondResult``: the composed message, the turn's beats for the
@@ -103,7 +103,23 @@ conflicts with recorded history is a contradiction the repair ladder steers away
 (``reconciliations``, ``rejected_bindings``); the renders carry the deferral bias while an
 earlier turn's thunk is open (``prompt.RESOLUTION_STEERING``).
 
-Not here (seam, #156): budget planning. Logs carry ids and counts only (invariant 3).
+**Budget** (#156, ``orchestrator.structured.planner``): the turn is planned before its first
+model call (``plan_structured``: one primary, B one extraction per planned render, C the
+composed message's detection, G the model-assisted guardrail calls; a cap below ``1 + B + C +
+G`` is 422 ``budget_below_safety_minimum`` with nothing recorded). B and C are owner-only
+(``TurnBudget.named``); the player's input is detected by layers (a) and (b) only; unused B is
+released once the renders are detected, C by the deterministic assembly. A triggered narrator
+reserves its render and extraction or is skipped (``narrator_skipped``); the age repair
+displaces optional work (503 ``age_unrepaired`` at the exact minimum); salience, entailment,
+the follow-up render, a model repair and the polish are optional work (``try_optional``), given
+up in NFR-PERF-7's order (``skip_polish``, ``repair_deterministic``,
+``entailment_safe_disposition``; ``salience_skipped`` leaves every beat texture); a render
+whose reserved extraction cannot start before the deadline is replaced by the safe fallback
+(``beat_replaced_safe_fallback``). No beat commits without a detection record
+(``undetected_beats``). ``turn_report.budget`` adds ``minimum``, ``reservation``, ``released``,
+``used_by_kind`` and ``plan``.
+
+Logs carry ids and counts only (invariant 3).
 """
 
 from __future__ import annotations
@@ -152,6 +168,7 @@ from epistrel.core.policies.model import ModelAssistedRule, Target
 from epistrel.core.profiles.capabilities import level_at_least, module_on
 from epistrel.core.profiles.effective import ProfileVersionRef, StoryProfile
 from epistrel.core.profiles.fingerprint import Stamp
+from epistrel.core.profiles.reservation import extraction_on
 from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Polarity, Proposition
 from epistrel.core.propositions.registry import Registry
@@ -216,8 +233,16 @@ from epistrel.core.viewpoint import (
 from epistrel.observability import stages
 from epistrel.observability.logging import get_logger
 from epistrel.observability.metrics import count_repair
-from epistrel.orchestrator.budget import GUARDRAIL_OUTPUT, TurnBudget, counted_embedder
+from epistrel.orchestrator.budget import (
+    EXTRACTION,
+    FOLLOW_UP,
+    GUARDRAIL_OUTPUT,
+    SALIENCE,
+    TurnBudget,
+    counted_embedder,
+)
 from epistrel.orchestrator.commit import resolution, salience
+from epistrel.orchestrator.commit.salience import SALIENCE_SKIPPED
 from epistrel.orchestrator.compose import compose as composing
 from epistrel.orchestrator.lite import pipeline as lite
 from epistrel.orchestrator.lite.cast import ResolvedCast, resolve_cast
@@ -234,7 +259,7 @@ from epistrel.orchestrator.lite.schemas import (
 from epistrel.orchestrator.models.access import ModelAccessLayer
 from epistrel.orchestrator.models.adapter import ModelParams
 from epistrel.orchestrator.models.config import routes_of
-from epistrel.orchestrator.models.errors import ModelError
+from epistrel.orchestrator.models.errors import ModelError, ModelUnavailable
 from epistrel.orchestrator.models.facts import runtime_facts
 from epistrel.orchestrator.models.metrics import CallLog, recording
 from epistrel.orchestrator.models.registry import GenerationInputs, SceneContext
@@ -253,12 +278,11 @@ from epistrel.orchestrator.policies.output_gate import (
 from epistrel.orchestrator.policies.rebase import output_passes, output_recheck
 from epistrel.orchestrator.policies.store import guard_context
 from epistrel.orchestrator.repair.ladder import Recheck, RepairLadder, RepairResult
+from epistrel.orchestrator.structured import planner
 from epistrel.orchestrator.structured import prompt as prompts
 from epistrel.orchestrator.structured.eval_hooks import StageClock, eval_hooks
 from epistrel.orchestrator.structured.render import (
-    NARRATOR as NARRATOR_VARIANT,
-)
-from epistrel.orchestrator.structured.render import (
+    AGE_UNREPAIRED,
     STRUCTURED,
     BeatDecl,
     IntroductionDecl,
@@ -269,6 +293,9 @@ from epistrel.orchestrator.structured.render import (
     render_schema,
     repair_ages,
 )
+from epistrel.orchestrator.structured.render import (
+    NARRATOR as NARRATOR_VARIANT,
+)
 from epistrel.orchestrator.verify import extraction, yields
 from epistrel.orchestrator.verify.extraction import (
     CheckedClaim,
@@ -276,7 +303,12 @@ from epistrel.orchestrator.verify.extraction import (
     DetectionConfig,
     DetectionOutcome,
 )
-from epistrel.orchestrator.verify.verifier import ClaimSource, Verifier, story_verifier
+from epistrel.orchestrator.verify.verifier import (
+    ENTAILMENT_BUDGET,
+    ClaimSource,
+    Verifier,
+    story_verifier,
+)
 
 log = get_logger(__name__)
 
@@ -381,12 +413,13 @@ async def respond(
     await check_expected_revision(db, story_id, ctx.expected_revision)
     viewpoint = resolution()
     concurrency = await turn_gate.read_concurrency(db, story_id)
-    budget = await lite.plan_budget(
+    plan, budget = await planner.plan_structured(
         db,
         story_id,
         resolved_cast,
+        request,
+        lite._captured(concurrency),
         story_max_calls=concurrency.max_model_calls_per_turn,
-        deployment_max_calls=None,
         turn_deadline=concurrency.turn_deadline,
         override=request.budget,
         started=started,
@@ -436,6 +469,7 @@ async def respond(
                     configuration=lite._captured(concurrency),
                     timing=timing,
                     lexical=lexical,
+                    plan=plan,
                 )
         finally:
             if op.status is None:  # took the slot but never began
@@ -476,14 +510,14 @@ async def run_queued(
     planned = planned or {}
     front = time.monotonic()
     timing = lite.TurnTiming(front=front, queued_ms=await lite.queued_ms(db, operation_id))
-    budget = await lite.plan_budget(
+    plan, budget = await planner.plan_structured(
         db,
         story_id,
         resolved_cast,
+        request,
+        lite._captured(concurrency),
         story_max_calls=planned.get("max_calls", concurrency.max_model_calls_per_turn),
-        deployment_max_calls=None,
         turn_deadline=planned.get("deadline_s") or concurrency.turn_deadline,
-        override=None,
         started=front,
     )
     budget.release_to(1 + budget.reserved.get(GUARDRAIL_OUTPUT, 0))
@@ -502,6 +536,7 @@ async def run_queued(
             configuration=lite._captured(concurrency),
             timing=timing,
             lexical=lexical,
+            plan=plan,
         )
 
 
@@ -540,12 +575,13 @@ async def regenerate(
         cast_ids=story.ids,
     )
     concurrency = await turn_gate.read_concurrency(db, story_id)
-    budget = await lite.plan_budget(
+    plan, budget = await planner.plan_structured(
         db,
         story_id,
         resolved_cast,
+        replay,
+        lite._captured(concurrency),
         story_max_calls=concurrency.max_model_calls_per_turn,
-        deployment_max_calls=None,
         turn_deadline=concurrency.turn_deadline,
         override=request.budget,
         started=started,
@@ -591,6 +627,7 @@ async def regenerate(
                     timing=timing,
                     lexical=lexical,
                     regenerating=recorded,
+                    plan=plan,
                 )
         finally:
             if op.status is None:  # took the slot but never began
@@ -874,14 +911,22 @@ async def _introductions(
     missing = {d.name.strip(): d.bounds() for d, _, _ in wanted if d.age is None}
     ages: dict[str, int] = {}
     if missing:
+        # #156: the age repair displaces optional work, never a reserved call; at the exact
+        # minimum an ageless introduction cannot be repaired (#150's 503).
+        if budget.expired() or not budget.can_afford_unreserved(1):
+            error = ModelUnavailable("generation", AGE_UNREPAIRED, attempts=0)
+            error.details["structural_errors"] = ["budget_exhausted"]
+            raise error
+        budget.hold(1)
         clues = [(d.name.strip(), _clue(d, bs)) for d, _, bs in wanted if d.age is None]
-        ages = await repair_ages(
-            models,
-            prompts.age_inputs(sections, read.actor, clues),
-            missing,
-            params=params,
-            budget=budget,
-        )
+        with budget.charging("age_repair"):
+            ages = await repair_ages(
+                models,
+                prompts.age_inputs(sections, read.actor, clues),
+                missing,
+                params=params,
+                budget=budget,
+            )
     intros = [
         Introduction(
             name=d.name.strip(),
@@ -1106,9 +1151,12 @@ async def check_turn(
                 ]
             )
     for group in groups:
+        # #156: the player's input is detected by layers (a) and (b) only; only a render's
+        # extraction is reserved (B).
+        is_input = bool(input_beats) and group is groups[0]
         async with db.begin() as conn:
             detector = ClaimDetector(
-                config,
+                replace(config, level=DECLARED_LEVEL) if is_input else config,
                 env,
                 models=models,
                 budget=budget,
@@ -1119,6 +1167,8 @@ async def check_turn(
             )
             outcomes.append(await detector.render(group, (turn, 0), operation_id=operation_id))
             env = detector.env
+    # Every planned render was detected: what B did not spend goes back (#156).
+    budget.release_named(EXTRACTION)
     mentions: dict[int, tuple[Mention, ...]] = {}
     for outcome in outcomes:
         for detected in outcome.detection.beats:
@@ -1206,7 +1256,12 @@ async def check_turn(
     for outcome in outcomes:
         degradation += [(d, "extraction") for d in outcome.degradation]
     if verifier is not None:
-        degradation += [(d, "verification") for d in verifier.degradation()]
+        found_steps = verifier.degradation()
+        degradation += [(d, "verification") for d in found_steps]
+        if ENTAILMENT_BUDGET in found_steps:
+            # NFR-PERF-7 step 4: an entailment question the budget could not pay for took the
+            # safe disposition (#156).
+            degradation.append((planner.ENTAILMENT_SAFE_DISPOSITION, "budget"))
     if rejected_bindings:
         degradation.append((resolution.BINDING_REJECTED, "commitment"))
     for b in beats:
@@ -1237,6 +1292,9 @@ async def check_turn(
                 sal_beats, scene_context, mode=mode, models=models, budget=budget, routes=routes
             )
             degradation += [(d, "salience") for d in verdict.degradation]
+            if SALIENCE_SKIPPED in verdict.degradation:
+                # #156: salience is optional work; unfunded, every beat is texture.
+                continue
             index = {b.index: b for b in sal_beats}
             for span in verdict.salient:
                 at = index.get(span.span.beat)
@@ -1249,6 +1307,7 @@ async def check_turn(
             ]
             for at, claim_sketch in salience.rules_salient(claims):
                 salient.append((at, claim_sketch, None))
+    budget.settle_optional(SALIENCE)
     input_checked = [c for c in checked if c.claim.beat == 1]
     input_mentions = [m.as_payload() for m in mentions.get(1, ())]
     clock.add("detection", time.perf_counter() - detecting)
@@ -1363,10 +1422,56 @@ async def follow_up(
     if not still:
         checked.follow_up = report
         return checked
-    if budget.expired() or not budget.can_afford_unreserved():
+    # Optional work (#156): the render, its output checks and its extraction, held together.
+    cost = regeneration_cost(output_policies(context, render_ids)) + (
+        1 if extraction_on(configuration.settings) else 0
+    )
+    held = budget.held
+    if not budget.try_optional(FOLLOW_UP, cost):
         checked.degradation.append((FOLLOW_UP_SKIPPED_BUDGET, "budget"))
         checked.follow_up = {**report, "skipped": "budget"}
         return checked
+    try:
+        return await _follow_up(
+            db,
+            models,
+            story_id,
+            read,
+            checked,
+            still,
+            report,
+            operation_id=operation_id,
+            read_set=read_set,
+            configuration=configuration,
+            budget=budget,
+            sections=sections,
+            context=context,
+            render_ids=render_ids,
+            clock=clock,
+        )
+    finally:
+        budget.release_to(min(budget.held, held))
+
+
+async def _follow_up(
+    db: AsyncEngine,
+    models: ModelAccessLayer,
+    story_id: str,
+    read: TurnRead,
+    checked: Checked,
+    still: Sequence[ThunkSketch],
+    report: dict[str, Any],
+    *,
+    operation_id: str,
+    read_set: StructuredReadSet,
+    configuration: StoryProfile,
+    budget: TurnBudget,
+    sections: prompts.RenderSections,
+    context: Any,
+    render_ids: Sequence[str],
+    clock: StageClock | None,
+) -> Checked:
+    """The follow-up render itself, its budget held (``follow_up``)."""
     start = max((b.beat for b in checked.beats), default=1) + 1
     settings = configuration.settings
     params = render_params(
@@ -1374,26 +1479,27 @@ async def follow_up(
         read.resolved.max_tokens,
     )
     try:
-        narr, _ = await render_beats(
-            models,
-            prompts.narrator_inputs(
-                sections,
-                read.actor,
-                say=None,
-                do=None,
-                budget=settings.render.prompt_token_budget,
-                open_references=[_thunk_line(s) for s in still],
-            ),
-            render_schema(
-                actor_id=None,
-                player_id=read.player_id,
-                cast_ids=list(read.names),
-                max_beats=settings.render.max_beats,
-            ),
-            variant=NARRATOR_VARIANT,
-            params=params,
-            budget=budget,
-        )
+        with budget.charging(FOLLOW_UP):
+            narr, _ = await render_beats(
+                models,
+                prompts.narrator_inputs(
+                    sections,
+                    read.actor,
+                    say=None,
+                    do=None,
+                    budget=settings.render.prompt_token_budget,
+                    open_references=[_thunk_line(s) for s in still],
+                ),
+                render_schema(
+                    actor_id=None,
+                    player_id=read.player_id,
+                    cast_ids=list(read.names),
+                    max_beats=settings.render.max_beats,
+                ),
+                variant=NARRATOR_VARIANT,
+                params=params,
+                budget=budget,
+            )
         made, sketches = _beats_of(narr, start=start, actor=None, narrator=True)
         passed = await output_passes(
             models, ["\n".join(b.text for b in made)], context, budget=budget, render_ids=render_ids
@@ -1847,13 +1953,45 @@ async def compose_turn(
 
 
 def _composition_degradation(composition: composing.Composition) -> list[tuple[str, str]]:
-    return [
-        (
-            step,
-            POLISH_BUDGET_CAUSE if step == composing.POLISH_SKIPPED_BUDGET else COMPOSITION_CAUSE,
-        )
-        for step in composition.degradation
-    ]
+    found: list[tuple[str, str]] = []
+    for step in composition.degradation:
+        if step == composing.POLISH_SKIPPED_BUDGET:
+            # NFR-PERF-7 step 1 (#156), beside #152's own label.
+            found.append((planner.SKIP_POLISH, POLISH_BUDGET_CAUSE))
+            found.append((step, POLISH_BUDGET_CAUSE))
+        else:
+            found.append((step, COMPOSITION_CAUSE))
+    return found
+
+
+def undetected_beats(checked: Checked) -> list[int]:
+    """The turn's beats (the player's input included) with no detection record: none, ever
+    (#156: a gated-off or level-off record counts; the pipeline refuses to commit otherwise)."""
+    recorded = {
+        b.beat
+        for outcome in checked.outcomes
+        for b in outcome.detection.beats
+        if b.beat is not None
+    }
+    return sorted(b.beat for b in checked.beats if b.beat > 1 and b.beat not in recorded)
+
+
+def _replaced_render(read: TurnRead, fallback: FallbackLines, policies: Sequence[Any]) -> Rendered:
+    """The render(s) a deadline left without their reserved extraction, replaced by one
+    ``say`` of the rendering character: the first safe-fallback line the deterministic output
+    policies pass (#68's lines; ``think``/``latent`` beats and introductions are dropped)."""
+    plain = [p for p in policies if not isinstance(p.rule, ModelAssistedRule)]
+    candidates = fallback.candidates()
+    line = next(
+        (t for _, t in candidates if not evaluate(t, plain, Target.TEXT_OUTPUT)), candidates[-1][1]
+    )
+    return Rendered(
+        beats=[TurnBeat(kind="say", beat=2, text=line, character_id=read.character.id)],
+        sketches={},
+        introductions=[],
+        retrievals=[],
+        finish_reason="fallback",
+    )
 
 
 # -- the turn ------------------------------------------------------------------------------------
@@ -1875,9 +2013,11 @@ async def play(
     timing: lite.TurnTiming | None = None,
     lexical: LexicalSearch | None = None,
     regenerating: RecordedTurn | None = None,
+    plan: planner.TurnPlan | None = None,
 ) -> RespondResult:
     """The structured turn itself (see the module docstring), under ``configuration``.
-    ``regenerating``: the head turn this one replaces (#154; ``regenerate``)."""
+    ``regenerating``: the head turn this one replaces (#154; ``regenerate``). ``plan``: the
+    turn's plan (#156; ``planner.plan_structured``), whose reservations ``budget`` holds."""
     timing = timing if timing is not None else lite.TurnTiming(front=budget.started)
     say, do = request.player_input.say_text, request.player_input.do_text
     settings = configuration.settings
@@ -1891,6 +2031,10 @@ async def play(
     fixed: dict[str, Any] = {}
     rounds: list[int] = []
     clock = StageClock()
+    narrating: list[bool] = []
+    """Whether the narrator renders (#156: its render and extraction reserved), once decided."""
+    planned: list[tuple[str, str]] = []
+    """The plan's own degradation (``narrator_skipped``, ``beat_replaced_safe_fallback``)."""
 
     async def begin(conn: AsyncConnection) -> TurnRead:
         clock.reset()
@@ -1939,8 +2083,19 @@ async def play(
         context = await guard_context(db, story_id)
         policies = output_policies(context, cast_.render_ids)
         rounds.append(1)
+        planned.clear()
+        if not narrating:
+            narrating.append(
+                bool(read.triggers) and (plan is None or planner.reserve_narrator(budget, plan))
+            )
+        if read.triggers and not narrating[0]:
+            planned.append((planner.NARRATOR_SKIPPED, "budget"))
+        narrate = narrating[0] and bool(read.triggers)
         if len(rounds) > 1:
-            cost = regeneration_cost(policies)
+            # A rebase re-renders: the renders and their extractions again (#156).
+            renders = 1 + (1 if narrate else 0)
+            extractions = renders if plan is not None and plan.reservation.extraction else 0
+            cost = regeneration_cost(policies) + (renders - 1) + extractions
             if budget.expired() or not budget.can_afford_unreserved(cost):
                 raise RevisionConflict(
                     "the story changed under the turn and its model budget cannot pay to "
@@ -1951,7 +2106,8 @@ async def play(
                         "reason": "budget",
                     },
                 )
-            budget.hold(cost)
+            budget.hold(cost - extractions)
+            budget.reserve(EXTRACTION, extractions)
         by_draft: dict[int, Rendered] = {}
         joined = joined_input(say, do)
         base = prompts.RenderSections(
@@ -1984,7 +2140,7 @@ async def play(
             narration: list[str] = []
             narrator_inputs: GenerationInputs | None = None
             next_beat = 2
-            if read.triggers:
+            if narrate:
                 narr_retrieval = await retrieve_for(NARRATOR, OMNISCIENT, joined)
                 retrievals.append(narr_retrieval)
                 retrieved, canon = _canon_lines(narr_retrieval, None)
@@ -2076,7 +2232,7 @@ async def play(
                 structure_retries=retries,
                 age_repairs=repairs,
                 denied_introductions=denied,
-                narrator=bool(read.triggers),
+                narrator=narrate,
                 model=calls.calls[-1].model if calls.calls else None,
                 prompt_hash=prompt_hash(messages),
                 finish_reason="stop",
@@ -2128,6 +2284,18 @@ async def play(
                 retrievals=[],
                 finish_reason="fallback",
             )
+        replaced = (
+            plan is not None
+            and plan.reservation.extraction > 0
+            and rendered.finish_reason != "fallback"
+            and not budget.can_start()
+        )
+        if replaced:
+            # NFR-PERF-7 step 7 (#156): the renders' reserved extraction cannot start before
+            # the deadline, so nothing they said is released: the safe fallback replaces them
+            # before detection (its own record is layers a and b).
+            rendered = _replaced_render(read, lite._fallback_lines(read.inputs, cast_), policies)
+            planned.append((planner.BEAT_REPLACED, "deadline"))
         released[:] = [rendered]
         checked = await check_turn(
             db,
@@ -2141,8 +2309,10 @@ async def play(
             read_set=read_set,
             configuration=configuration,
             budget=budget,
+            backstop=not replaced,
             clock=clock,
         )
+        checked.degradation[:0] = planned
         # The composed message's detection call (C): held before any optional work (#152).
         async with db.connect() as conn:
             detection_config = DetectionConfig.of(
@@ -2218,6 +2388,9 @@ async def play(
         clock.add("composition", time.perf_counter() - composing_at)
         composed[:] = [composition]
         checked.degradation += _composition_degradation(composition)
+        missing = undetected_beats(checked)
+        if missing:  # pragma: no cover - every path detects what it releases
+            raise RuntimeError(f"structured turn would commit beats without detection: {missing}")
         stage(op, read, rendered, checked, outcome, composition)
 
     def stage(
@@ -2446,6 +2619,7 @@ async def play(
             queued_ms=timing.queued_ms,
             first_call_offset_ms=timing.first_call_offset_ms(calls),
         )
+        report["budget"] = planner.budget_report(plan, budget)
         steps = _degradation(gated[0] if gated else None, rendered, checked)
         report["degradation"] = [s.step for s in steps]
         report["degradation_details"] = [{"step": s.step, "cause": s.cause} for s in steps]
@@ -2646,7 +2820,7 @@ def _degradation(
 ) -> list[DegradationStep]:
     """Every stage's degradation with its cause: the output gate's (``guardrail_fields``),
     retrieval's, detection's, verification's, the latent routing's, salience's and the
-    ledger's, each once."""
+    ledger's, each once; NFR-PERF-7's steps first, in its order (``planner.ladder_rank``)."""
     steps = list(lite._degradation_details(outcome))
     seen = {s.step for s in steps}
     extra: list[tuple[str, str]] = []
@@ -2661,7 +2835,8 @@ def _degradation(
         if step not in seen:
             seen.add(step)
             steps.append(DegradationStep(step=step, cause=cause))
-    return steps
+    # NFR-PERF-7's steps first, in its order; the rest as taken (#156).
+    return sorted(steps, key=lambda s: planner.ladder_rank(s.step))
 
 
 def _episodic(

@@ -28,12 +28,30 @@ A cap below ``1 + G`` is 422 ``budget_below_safety_minimum`` with ``minimum_requ
 **Embedding calls** (#141): a structured turn's retrieval embeds its query (and may re-embed
 rehydrated memories in one batch); ``counted_embedder`` wraps the injected embedder so each
 call is counted in ``TurnBudget.embedding_calls``, apart from the call cap.
+
+**Named reservations** (#156, a structured turn; ``orchestrator.structured.planner`` plans
+them). Beside the held pool, ``named`` holds owner-only slots: ``extraction`` (B, one per
+planned render) and ``composed`` (C). Only their owner may spend one: a first attempt whose
+purpose maps to that kind (``kind_of``: ``extraction_backstop`` is ``extraction``, or
+``composed`` while ``charging(COMPOSED)``), and every other call sees them as spent
+(``can_afford``, ``can_afford_unreserved``). A named slot the turn did not use is released
+(``release_named``) and may then fund optional work. Optional work (``salience``,
+``entailment``, ``follow_up``, ``repair``, ``polish``, in that priority) spends only what no
+reservation holds: the adapter refuses a first ``entailment`` or ``salience_detection``
+attempt that would dip below the line, and the pipeline asks ``try_optional(kind, cost)``
+before a follow-up render, a model repair or the polish. ``pending`` pre-allocates the
+higher-priority salience calls so an earlier entailment call cannot starve them, and
+``latency_estimate_s`` treats a call that could not start before ``deadline - estimate`` as
+unaffordable (``can_start``). Once an optional kind is refused, no less important kind runs
+after it in the turn (``denied``), so the degradation follows NFR-PERF-7's order. A Lite
+budget has no named slots and behaves as #69 planned it.
 """
 
 from __future__ import annotations
 
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -48,6 +66,28 @@ from epistrel.core.settings_schema import (
 
 GUARDRAIL_INPUT = "guardrail_input"
 GUARDRAIL_OUTPUT = "guardrail_output"
+
+EXTRACTION = "extraction"
+"""B: the planned renders' extraction calls (owner: ``extraction_backstop``)."""
+COMPOSED = "composed"
+"""C: the composed message's detection (owner: ``extraction_backstop`` while charging it)."""
+SALIENCE = "salience"
+ENTAILMENT = "entailment"
+FOLLOW_UP = "follow_up"
+REPAIR = "repair"
+POLISH = "polish"
+OPTIONAL_PRIORITY = (SALIENCE, ENTAILMENT, FOLLOW_UP, REPAIR, POLISH)
+"""Optional work, most important first: the pool is spent in this order (NFR-PERF-7 gives
+polish up first, then repairs, then entailment)."""
+PURPOSE_KINDS = {
+    "extraction_backstop": EXTRACTION,
+    "entailment": ENTAILMENT,
+    "salience_detection": SALIENCE,
+    "regeneration": REPAIR,
+    "guardrail_check": "guardrail",
+    "generation": "render",
+}
+"""What kind of call a purpose's call is, unless the caller is ``charging`` another kind."""
 
 
 def lite_default_calls(guardrail_calls: int) -> int:
@@ -73,6 +113,22 @@ class TurnBudget:
     Counted apart from ``used``: an embedding call is no model call of the cap (NFR-PERF-6
     counts generation-side calls), and it is reported under ``purpose=embedding`` and in
     ``model_calls`` like any other (#138)."""
+    named: dict[str, int] = field(default_factory=dict)
+    """Owner-only reservations not yet spent (#156): ``extraction`` (B), ``composed`` (C)."""
+    pending: dict[str, int] = field(default_factory=dict)
+    """Optional work pre-allocated by priority (#156): calls no lower-priority kind may take."""
+    latency_estimate_s: float = 0.0
+    """A call that could not start before ``deadline - this`` is unaffordable (#156)."""
+    stage: str | None = None
+    """The kind the current calls are charged to (``charging``), over ``PURPOSE_KINDS``."""
+    used_by_kind: dict[str, int] = field(default_factory=dict)
+    released: int = 0
+    """Named slots released unspent (#156)."""
+    denied: set[str] = field(default_factory=set)
+    """Optional kinds the budget or the deadline refused this turn: no less important kind
+    runs after one (NFR-PERF-7's order: polish goes before repairs, repairs before
+    entailment)."""
+    _claims: list[str | None] = field(default_factory=list, repr=False)
 
     def __post_init__(self) -> None:
         if self.max_calls is not None and self.max_calls < 0:
@@ -94,15 +150,72 @@ class TurnBudget:
         """One generation call plus G (the Lite safety minimum)."""
         return 1 + self.guardrail_calls
 
+    @property
+    def named_unspent(self) -> int:
+        return sum(self.named.values())
+
+    @property
+    def reserved_unspent(self) -> int:
+        """Every reserved slot not yet spent: the held pool and the named slots."""
+        return self.held + self.named_unspent
+
     def can_afford(self, calls: int = 1) -> bool:
-        """Whether ``calls`` more calls fit, reserved slots included (a first attempt)."""
+        """Whether ``calls`` more calls fit, held slots included (a first attempt); a named
+        slot is only its owner's (``affordable``)."""
         remaining = self.remaining_calls
-        return remaining is None or remaining >= calls
+        return remaining is None or remaining - self.named_unspent >= calls
 
     def can_afford_unreserved(self, calls: int = 1) -> bool:
-        """Whether ``calls`` more calls fit without touching a held reserved slot."""
+        """Whether ``calls`` more calls fit without touching any reserved slot."""
         remaining = self.remaining_calls
-        return remaining is None or remaining - self.held >= calls
+        return remaining is None or remaining - self.reserved_unspent >= calls
+
+    def kind_of(self, purpose: str | None) -> str | None:
+        """The kind a call of ``purpose`` is charged to."""
+        if self.stage is not None:
+            return self.stage
+        return None if purpose is None else PURPOSE_KINDS.get(purpose, purpose)
+
+    def _ahead_of(self, kind: str | None) -> int:
+        """The optional calls pre-allocated to kinds more important than ``kind``."""
+        if kind not in OPTIONAL_PRIORITY:
+            return 0
+        rank = OPTIONAL_PRIORITY.index(kind)
+        return sum(self.pending.get(k, 0) for k in OPTIONAL_PRIORITY[:rank])
+
+    def _denied_ahead(self, kind: str | None) -> bool:
+        if kind not in OPTIONAL_PRIORITY:
+            return False
+        rank = OPTIONAL_PRIORITY.index(kind)
+        return any(k in self.denied for k in OPTIONAL_PRIORITY[:rank])
+
+    def _deny(self, kind: str | None) -> bool:
+        if kind in OPTIONAL_PRIORITY:
+            self.denied.add(kind)
+        return False
+
+    def can_start(self) -> bool:
+        """Whether a call could still start and answer before the deadline (the latency
+        estimate, #156); always while the turn has no deadline."""
+        left = self.remaining_s()
+        return left is None or left > self.latency_estimate_s
+
+    def affordable(self, purpose: str | None, *, first: bool) -> bool:
+        """Whether a call of ``purpose`` fits (the Model Access Layer asks before sending): a
+        retry only from the unreserved remainder; a first attempt from its kind's named slot,
+        else what no named slot holds (an optional kind also leaves the more important kinds'
+        pre-allocation, and the latency estimate before the deadline)."""
+        if not first:
+            return self.can_afford_unreserved()
+        kind = self.kind_of(purpose)
+        remaining = self.remaining_calls
+        if kind is not None and self.named.get(kind, 0) > 0:
+            return remaining is None or remaining >= 1
+        if kind in OPTIONAL_PRIORITY and (self._denied_ahead(kind) or not self.can_start()):
+            return self._deny(kind)
+        if remaining is None or remaining - self.named_unspent - self._ahead_of(kind) >= 1:
+            return True
+        return self._deny(kind)
 
     def hold(self, calls: int) -> None:
         """Reserve ``calls`` more slots (unplanned work whose affordability was checked)."""
@@ -112,15 +225,80 @@ class TurnBudget:
         """Release held slots down to ``calls`` (a phase finished without spending them)."""
         self.held = min(self.held, max(0, calls))
 
-    def debit(self, *, claim: bool = True) -> None:
-        """Count one call; ``claim``: a first attempt, which spends a held slot if any."""
+    def debit(self, *, claim: bool = True, purpose: str | None = None) -> None:
+        """Count one call; ``claim``: a first attempt, which spends its kind's named slot, else
+        its kind's pre-allocation, else a held slot if any."""
         self.used += 1
-        if claim and self.held > 0:
+        kind = self.kind_of(purpose)
+        if kind is not None:
+            self.used_by_kind[kind] = self.used_by_kind.get(kind, 0) + 1
+        spent: str | None = None
+        if claim and kind is not None and self.named.get(kind, 0) > 0:
+            self.named[kind] -= 1
+            spent = f"named:{kind}"
+        elif claim and kind is not None and self.pending.get(kind, 0) > 0:
+            self.pending[kind] -= 1
+            spent = f"pending:{kind}"
+        elif claim and self.held > 0:
             self.held -= 1
+            spent = "held"
+        self._claims.append(spent)
 
-    def refund(self) -> None:
+    def refund(self, purpose: str | None = None) -> None:
         """Undo a debit for a call the adapter refused before sending anything."""
         self.used = max(0, self.used - 1)
+        kind = self.kind_of(purpose)
+        if kind is not None and self.used_by_kind.get(kind, 0) > 0:
+            self.used_by_kind[kind] -= 1
+        spent = self._claims.pop() if self._claims else None
+        if spent == "held":
+            self.held += 1
+        elif spent is not None:
+            pool, name = spent.split(":", 1)
+            target = self.named if pool == "named" else self.pending
+            target[name] = target.get(name, 0) + 1
+
+    def reserve(self, kind: str, calls: int) -> None:
+        """Add ``calls`` owner-only slots of ``kind`` (#156)."""
+        if calls > 0:
+            self.named[kind] = self.named.get(kind, 0) + calls
+
+    def release_named(self, kind: str, calls: int | None = None) -> int:
+        """Release up to ``calls`` (every one when ``None``) unspent ``kind`` slots; answers
+        how many were released."""
+        have = self.named.get(kind, 0)
+        dropped = have if calls is None else min(have, max(0, calls))
+        if dropped:
+            self.named[kind] = have - dropped
+            self.released += dropped
+        return dropped
+
+    def settle_optional(self, kind: str) -> None:
+        """``kind``'s optional work is done (or skipped): its pre-allocation goes back."""
+        self.pending.pop(kind, None)
+
+    def try_optional(self, kind: str, cost: int) -> bool:
+        """Optional work of ``kind`` costing ``cost`` calls: when the unreserved remainder, less
+        the more important kinds' pre-allocation, covers it and it could start before the
+        deadline, hold it and answer ``True`` (the caller releases what it leaves); else
+        ``False`` and nothing is held."""
+        if self.expired() or not self.can_start() or self._denied_ahead(kind):
+            return self._deny(kind)
+        if not self.can_afford_unreserved(cost + self._ahead_of(kind)):
+            return self._deny(kind)
+        self.pending.pop(kind, None)
+        self.hold(cost)
+        return True
+
+    @contextmanager
+    def charging(self, kind: str) -> Iterator[None]:
+        """Charge the calls made inside to ``kind`` (a stage the purpose does not name)."""
+        before = self.stage
+        self.stage = kind
+        try:
+            yield
+        finally:
+            self.stage = before
 
     def remaining_s(self) -> float | None:
         """Seconds until the deadline (negative once passed); ``None`` when unbounded."""
@@ -229,12 +407,21 @@ def plan_lite_budget(
 
 
 __all__ = [
+    "COMPOSED",
     "DEFAULT_TURN_DEADLINE_S",
+    "ENTAILMENT",
+    "EXTRACTION",
+    "FOLLOW_UP",
     "GUARDRAIL_INPUT",
     "GUARDRAIL_OUTPUT",
     "MAX_CALLS_PER_TURN",
     "MIN_CALLS_PER_TURN",
     "MIN_DEADLINE_S",
+    "OPTIONAL_PRIORITY",
+    "POLISH",
+    "PURPOSE_KINDS",
+    "REPAIR",
+    "SALIENCE",
     "TurnBudget",
     "counted_embedder",
     "effective_max_calls",

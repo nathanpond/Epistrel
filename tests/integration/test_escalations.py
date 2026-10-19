@@ -46,7 +46,7 @@ from tests.escalation_support import (
     yield_report,
 )
 from tests.respond_support import respond_client
-from tests.story_support import READ, create, story_body
+from tests.story_support import READ, create, override, story_body
 
 pytestmark = pytest.mark.integration
 
@@ -130,12 +130,17 @@ async def test_an_escalation_is_recorded_with_its_flip_and_consequence(
         assert plain.json()["eval_hooks"] is None
 
         # Complement: supported is a flip with no consequence; unparseable is no verdict.
-        for scripted, expected in (
-            ([entailment("supported")], ("supported", True, "supported", "none")),
-            # The parse retries spend what the regeneration needed: the safe fallback.
-            (["not json"] * 3, (None, None, "uncertain", "repair_discarded")),
+        for scripted, expected, cap in (
+            ([entailment("supported")], ("supported", True, "supported", "none"), None),
+            # The parse retries spend what the regeneration needed: the safe fallback. A cap of
+            # 7 leaves no room for it once render, extraction, salience and three entailment
+            # attempts are made with C reserved (#156: the player's input is detected without
+            # an extraction call, so the default cap would have one call to spare).
+            (["not json"] * 3, (None, None, "uncertain", "repair_discarded"), 7),
         ):
             edu = await camp_story(client, engine)
+            if cap is not None:
+                await override(client, edu.story_id, {"budgets": {"model_calls": cap}})
             stub.reset()
             stub.script("generation", [camp_render()])
             stub.script("entailment", scripted)

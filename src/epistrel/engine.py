@@ -111,6 +111,7 @@ from epistrel.core.profiles import store as profiles
 from epistrel.core.profiles import story as story_profile
 from epistrel.core.profiles.fingerprint import RuntimeFacts
 from epistrel.core.profiles.impact import ImpactPreviewRequest, ImpactReport, TwoStageResult
+from epistrel.core.profiles.reservation import safety_minimum
 from epistrel.core.profiles.schema import Purposes
 from epistrel.core.profiles.validate import ProfileValidation
 from epistrel.core.projections import structured as structured_projections
@@ -2039,7 +2040,9 @@ class Engine:
         overrides, ``profile``: its profile's version, ``deployment``: the deployment's
         ``profile_defaults``, or ``formula`` when the cap is ``null``), the turn deadline, the
         guardrail calls G it reserves (the input check of a turn whose actor has no
-        character-scoped input policy) and the safety minimum ``1 + G``."""
+        character-scoped input policy) and the safety minimum: ``1 + G`` for Lite, ``1 + B + C +
+        G`` for a structured story (#156: its render's extraction and its composed message's
+        detection, ``core.profiles.reservation``)."""
         concurrency = await turn_gate.read_concurrency(self.db, story_id)
         guardrails = await policy_store.story_guardrails(self.db, story_id)
         reserved = {
@@ -2056,7 +2059,15 @@ class Engine:
             source=source,
             turn_deadline=concurrency.turn_deadline,
             reserved=reserved,
-            minimum_required=1 + sum(reserved.values()),
+            minimum_required=(
+                1 + sum(reserved.values())
+                if concurrency.configuration is None
+                else safety_minimum(
+                    concurrency.configuration.settings,
+                    guardrail_input=guardrails.calls_input,
+                    guardrail_output=guardrails.calls_output,
+                )
+            ),
         )
 
     async def update_story_settings(
@@ -4385,8 +4396,16 @@ class Engine:
         """Validate ``request.settings`` (a dry run that writes nothing), or the profile's latest
         version, against the delivered modules and the dependency graph (FR-PROF-2,4): the
         result when valid, else 422 ``invalid_profile`` naming the missing dependencies and
-        undelivered settings. 404 for an unknown profile."""
-        return await profiles.validate_stored(self.db, profile_id, request, purposes=self.purposes)
+        undelivered settings. A valid result warns (``below_safety_minimum``, #156) when the
+        profile's call cap is below a turn's safety minimum with the deployment's global
+        model-assisted policies. 404 for an unknown profile."""
+        return await profiles.validate_stored(
+            self.db,
+            profile_id,
+            request,
+            purposes=self.purposes,
+            guardrail_calls=await policy_store.deployment_guardrail_calls(self.db),
+        )
 
     async def delete_profile(self, ctx: RequestContext, profile_id: str) -> profiles.DeletedProfile:
         """Delete the profile (FR-PROF-1): it leaves listings and new assignment, and every

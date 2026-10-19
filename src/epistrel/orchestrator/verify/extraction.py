@@ -9,7 +9,8 @@ Layer's ``structured_call`` (hot path, parse-validate-retry, ``extraction.j2``):
 scene_context}`` → ``{claims: [{beat, span, subject, predicate, object, time, polarity,
 confidence}]}``. ``ClaimDetector.message(text, …)`` does the same for the final composed message
 (FR-VERIFY-14; #152), as the output viewpoint's character. #156 reserves the calls: one per
-render (all its beats in one request) and one per composed message.
+render (all its beats in one request) and one per composed message: a render's call spends
+its B slot, the message's (``charging(COMPOSED)``) its C slot.
 
 - ``verification.level`` below ``extraction`` (``off``, ``declared``): layers (a) and (b) only,
   and no call is made (FR-PROF-2's ladder). A Lite story detects nothing (no structured turn).
@@ -110,7 +111,7 @@ from epistrel.core.verify.permission import Asserter
 from epistrel.core.verify.protected import ProtectedIndex, load_protected_index, viewpoint_of
 from epistrel.core.verify.rules import VerdictReason
 from epistrel.observability.metrics import CLAIMS_CHECKED, CLAIMS_DETECTED
-from epistrel.orchestrator.budget import TurnBudget
+from epistrel.orchestrator.budget import COMPOSED, TurnBudget
 from epistrel.orchestrator.jobs import queue
 from epistrel.orchestrator.jobs.types import JobContext, JobHandler, JobOutput
 from epistrel.orchestrator.models.access import ModelAccessLayer, routing
@@ -557,9 +558,11 @@ class ClaimDetector:
         """The composed message's detection (FR-VERIFY-14)."""
         detection = detect_message(text, position, self.env, speaker=speaker, declared=declared)
         beat = DetectBeat(0, MESSAGE, text, speaker, tuple(declared))
-        found = await self._layer_c(
-            detection, [beat], position, operation_id=operation_id, salt="message"
-        )
+        # The composed message's call spends C, never a render's B (#156).
+        with self.budget.charging(COMPOSED):
+            found = await self._layer_c(
+                detection, [beat], position, operation_id=operation_id, salt="message"
+            )
         found = replace(found, event_ids={} if event_id is None else {None: event_id})
         self.outcomes.append(found)
         return found

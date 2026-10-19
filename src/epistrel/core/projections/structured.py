@@ -26,7 +26,9 @@ is the fact's outer bounds (approximate bounds collapse to them).
 the earliest when several did; a position-less closer closes it at every position). A read as
 of turn N takes the rows written through N that no closer through N closed, exactly as
 ``canon(through_position=(N, 0))`` does, so a supersede or a retcon later than N leaves N's
-answer alone. "Now" is ``stories.story_minute_zero`` until the world clock lands (M6).
+answer alone. "Now" at turn N is N's story-time, ``story_time_at(N)`` (``stories.story_minute_zero``
+plus N story-turns; #139's rule, so the scene and profile reads agree with the resolver, #438)
+until the world clock lands (M6).
 
 **One fold, two paths.** ``derive`` is a pure, order-free function of a set of active fact
 versions; ``scene`` of the placement rows. The incremental path (``on_fact_change``, a
@@ -71,6 +73,7 @@ from epistrel.core.enums import HolderKind, OperationKind, OperationStatus
 from epistrel.core.errors import InvalidRequest, StoryEntityNotFound, StoryNotFound
 from epistrel.core.membership import active_only, active_operation
 from epistrel.core.projections.base import LogEvent, Projection, Row, Rows
+from epistrel.core.resolution.time import TimeBasis, story_time_at
 from epistrel.core.settings_schema import OMNISCIENT
 from epistrel.core.tables import (
     characters,
@@ -394,9 +397,10 @@ async def _stored(conn: AsyncConnection, story_id: str, subjects: Sequence[str] 
     )
 
 
-async def _now(conn: AsyncConnection, story_id: str) -> int:
+async def _basis(conn: AsyncConnection, story_id: str) -> TimeBasis:
+    """The story's time basis: "now" at turn N is ``story_time_at(N, basis)`` (#139, #438)."""
     found = await conn.scalar(select(stories.c.story_minute_zero).where(stories.c.id == story_id))
-    return int(found or 0)
+    return TimeBasis(minute_zero=int(found or 0))
 
 
 async def _actor(conn: AsyncConnection, story_id: str) -> str | None:
@@ -476,9 +480,10 @@ async def _scenes(
     if not turns:
         return {}
     actor = await _actor(conn, story_id)
-    now = await _now(conn, story_id)
+    basis = await _basis(conn, story_id)
     out: dict[tuple[Any, ...], Row] = {}
     for turn, variant, operation_id in turns:
+        now = story_time_at(turn, basis)
         found = scene(places, presences, actor, turn_position(turn), now)
         if found.empty:
             continue
@@ -819,9 +824,8 @@ async def _read_context(
             "as_of must be a turn of the story, from 0 to its head",
             {"field": "query.as_of", "head": head},
         )
-    return _ReadContext(head=head, now=int(row.story_minute_zero), viewpoint=resolved), (
-        through_turn
-    )
+    now = story_time_at(through_turn, TimeBasis(minute_zero=int(row.story_minute_zero)))
+    return _ReadContext(head=head, now=now, viewpoint=resolved), through_turn
 
 
 def _visible(viewpoint: str) -> Callable[[Mapping[str, Any]], bool]:

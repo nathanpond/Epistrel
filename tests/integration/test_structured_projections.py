@@ -257,6 +257,54 @@ async def test_i_01__structured_projections(
 
 
 @pytest.mark.part("M4", "FR-STORE-3")
+async def test_i_01__structured_now_is_the_turns_story_time(engine: AsyncEngine) -> None:
+    """Regression for #438: the projections' "now" at turn N is N's story-time
+    (``story_time_at(N)``, #139's rule), not ``story_minute_zero`` at every turn. A placement
+    whose valid-time ends between turn 1's and turn 2's story-time is in turn 1's scene and
+    profile and gone from turn 2's (stored and recomputed alike), the resolver's "now" at turn
+    2 is the projections' "now", and the rebuild refolds the same rows."""
+    from epistrel.core.resolution.context import load_time_basis
+    from epistrel.core.resolution.time import resolve_time, story_time_at
+    from epistrel.core.resolution.types import ResolvedTime
+
+    w = await world(engine)
+    story = w.story_id
+    cal, bobby, kitchen = w.people["Cal"], w.people["Bobby"], w.places["kitchen"]
+    await execute_in_tx(
+        engine, ("UPDATE stories SET story_minute_zero = 1000 WHERE id = :s", {"s": story})
+    )
+    async with engine.connect() as conn:
+        basis = await load_time_basis(conn, story)
+    one, two = story_time_at(1, basis), story_time_at(2, basis)
+    assert one < 1015 <= two  # turn 1 is inside Cal's stay, turn 2 after it
+
+    await commit(engine, story, at(cal, kitchen, 1000, 1015))  # turn 1
+    await commit(engine, story, at(bobby, kitchen, 1000, None))  # turn 2
+
+    for viewpoint in ("omniscient", f"character:{w.characters['Cal']}"):
+        then = await scene_of(engine, story, as_of=1, viewpoint=viewpoint)
+        assert then.location is not None
+        assert (then.location.entity_id, present(then)) == (kitchen, [cal])
+        later = await scene_of(engine, story, as_of=2, viewpoint=viewpoint)
+        assert (later.location, present(later)) == (None, [])
+
+    cal_then = await profile_of(engine, story, cal, as_of=1, viewpoint="omniscient")
+    assert cal_then.placement is not None
+    assert cal_then.placement.location is not None
+    assert cal_then.placement.location.entity_id == kitchen
+    cal_now = await profile_of(engine, story, cal, viewpoint="omniscient")
+    assert cal_now.placement is None
+
+    resolved = resolve_time("now", 2, basis=basis)
+    assert isinstance(resolved, ResolvedTime)
+    assert resolved.valid_time.definite()[0] == two
+
+    kept = await snapshot(engine, story)
+    await rebuild(engine, story, principal="p-operator")
+    assert await snapshot(engine, story) == kept
+
+
+@pytest.mark.part("M4", "FR-STORE-3")
 async def test_i_01__structured_viewpoint(engine: AsyncEngine, settings: Settings) -> None:
     """The scene and the profile are read for a viewpoint: Ann, placed in the kitchen by a
     ``latent`` fact only Bobby may read, is present in Bobby's scene and the omniscient one and

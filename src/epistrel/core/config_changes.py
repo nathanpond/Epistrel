@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -515,12 +515,14 @@ async def list_config_changes(
     since: datetime | None = None,
     after: str | None = None,
     limit: int = DEFAULT_PAGE,
+    excluded: Collection[str] = (),
 ) -> ConfigChangePage:
     """A page of the scope's changes, newest first (by revision, then row). ``settings`` keeps
     rows whose setting is one of them or a leaf under one of them (``profile_overrides``
     matches ``profile_overrides.models.generation.temperature``); a name ending in ``:`` is a
     prefix
-    (``rating:`` matches every rating's rows)."""
+    (``rating:`` matches every rating's rows). ``excluded`` change ids are left out (what a
+    pending catalog-scope erasure reaches, #429)."""
     if not 1 <= limit <= MAX_PAGE:
         raise InvalidRequest(f"limit must be 1 to {MAX_PAGE}", {"field": "limit"})
     c = config_changes.c
@@ -539,6 +541,8 @@ async def list_config_changes(
         )
     if change_class is not None:
         where.append(c["class"] == change_class.value)
+    if excluded:
+        where.append(c.change_id.not_in(sorted(excluded)))
     if since is not None:
         where.append(c.at >= since)
     if after is not None:

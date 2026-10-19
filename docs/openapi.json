@@ -31726,7 +31726,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -34805,7 +34805,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -35118,7 +35118,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -35216,7 +35216,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -35379,7 +35379,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",

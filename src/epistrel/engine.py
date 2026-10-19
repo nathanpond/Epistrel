@@ -2624,13 +2624,16 @@ class Engine:
         """A page of the configuration log (FR-CONC-14, #64): the deployment's changes, or a
         story's (404 for an unknown story), newest first. Each ``settings`` name is checked
         against the scope's closed vocabulary, as REST checks ``setting`` (#279, #435): an
-        unknown name is 422 ``validation_error`` at ``query.setting``, never an empty page."""
+        unknown name is 422 ``validation_error`` at ``query.setting``, never an empty page. A
+        deployment change whose values a pending catalog-scope erasure reaches is left out until
+        it has been reapplied (#429, as #346's lists)."""
         try:
             _SETTING_FILTERS[scope].validate_python(list(settings))
         except ValidationError as exc:
             raise InvalidRequest.from_errors(exc.errors(), prefix=("query", "setting")) from None
         if story_id is not None:
             await check_expected_revision(self.db, story_id, None)
+        block = await self._catalog_block()
         return await config_log.list_config_changes(
             self.db,
             scope=scope,
@@ -2640,6 +2643,7 @@ class Engine:
             since=since,
             after=after,
             limit=limit,
+            excluded=() if block is None else block.records(catalog_block.CONFIG_CHANGES),
         )
 
     # -- the policy store (FR-GUARD-1,8,9; NFR-SEC-1) ----------------------------------------
@@ -2657,26 +2661,32 @@ class Engine:
     ) -> list[Policy]:
         """Policies ordered by scope, scope id and name. The story and character policies of a
         story the erasure reconciler holds blocked are left out (they may still name the
-        subject); the ledger is compared first, as for ``list_stories`` (#363)."""
+        subject); the ledger is compared first, as for ``list_stories`` (#363). So is a policy
+        whose text a pending catalog-scope erasure reaches, until it has been reapplied (#429)."""
         if not self._erasure_marked:
             await self._mark_erasures()
-        return await policy_store.list_policies(
+        listed = await policy_store.list_policies(
             self.db,
             scope=scope,
             story_id=story_id,
             include_retired=include_retired,
             exclude_blocked=True,
         )
+        if (block := await self._catalog_block()) is None:
+            return listed
+        return [p for p in listed if not block.hides_record(catalog_block.POLICIES, p.id)]
 
     @refuses_nul()
     async def policies_get(self, ctx: RequestContext, policy_id: str) -> Policy:
         """One policy, retired or not. A policy of a blocked story is 503 ``erasure_pending``,
-        as every call naming the story is (#363)."""
+        as every call naming the story is (#363), and so is one whose text a pending
+        catalog-scope erasure reaches (#429)."""
         if not self._erasure_marked:
             await self._mark_erasures()
         policy = await policy_store.get_policy(self.db, policy_id)
         if policy.story_id is not None:
             await erasure_ledger.check_story(self.db, policy.story_id)
+        await self._policy_gate(policy_id)
         return policy
 
     @library_only("served as `effective_policies` in `GET /stories/{id}/settings`")
@@ -2701,7 +2711,10 @@ class Engine:
     async def policies_update(
         self, ctx: RequestContext, policy_id: str, fields: PolicyReplacement
     ) -> policy_admin.PolicyWrite:
+        """Replace a global or rating policy's content. 503 ``erasure_pending`` while a pending
+        catalog-scope erasure reaches its text (#429): the change would record it again."""
         principal = self.require_principal(ctx)
+        await self._policy_gate(policy_id)
         return await self._keyed(
             ctx,
             "policies_update",
@@ -2712,7 +2725,10 @@ class Engine:
     async def policies_retire(
         self, ctx: RequestContext, policy_id: str
     ) -> policy_admin.PolicyWrite:
+        """Retire a global or rating policy. 503 ``erasure_pending`` while a pending
+        catalog-scope erasure reaches its text (#429): the result carries it."""
         principal = self.require_principal(ctx)
+        await self._policy_gate(policy_id)
         return await self._keyed(
             ctx,
             "policies_retire",
@@ -3775,6 +3791,12 @@ class Engine:
             await self._mark_erasures()
         async with self.db.connect() as conn:
             return await catalog_block.read(conn)
+
+    async def _policy_gate(self, policy_id: str) -> None:
+        """A call naming a policy: 503 ``erasure_pending`` while a pending catalog-scope erasure
+        reaches its text (#429)."""
+        if (block := await self._catalog_block()) is not None:
+            block.check_records([(catalog_block.POLICIES, policy_id)])
 
     async def _catalog_gate(self, kind: str, entry_id: str) -> None:
         """Every call naming a catalog entry: 503 ``erasure_pending`` while a pending

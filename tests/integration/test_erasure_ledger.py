@@ -28,6 +28,7 @@ from epistrel import Engine
 from epistrel.cli import main
 from epistrel.config import ConfigError
 from epistrel.core import clock
+from epistrel.core.config_changes import ConfigScope
 from epistrel.core.context import RequestContext
 from epistrel.core.db import make_engine
 from epistrel.core.erasure import ledger as erasure_ledger
@@ -1382,6 +1383,108 @@ async def test_a_pending_catalog_erasure_of_a_persona_holds_it(
             assert gone.status_code == 404, gone.text
 
 
+async def test_a_pending_catalog_erasure_holds_the_policies_and_changes_naming_her(
+    ledger_server: ledger.Server, tmp_path: Path
+) -> None:
+    """#429 (ADR-157's reach outside the catalog): during the restore window of a catalog-scope
+    erasure of a catalog character, a global policy whose text names her is left out of ``GET
+    /admin/policies`` and its configuration change out of ``GET /admin/config-changes``, and
+    the policy's read, replacement and retirement are 503 ``erasure_pending``; a fresh library
+    Engine agrees as its first call. A policy that does not name her, and its change, are
+    served (complements). Once the reapply settles, both are served, redacted."""
+    url = ledger_server.fresh()
+    ledger_dir = tmp_path / "ledger"
+    held: dict[str, str] = {}
+    operator = {**e.WRITE, "X-Epistrel-Principal": "p-operator"}
+
+    def body(name: str, message: str) -> dict[str, Any]:
+        return {
+            "scope": "global",
+            "name": name,
+            "rule": {"type": "wordlist", "words": [f"zq{new_ulid().lower()}"]},
+            "message": message,
+        }
+
+    async def prepare(client: httpx.AsyncClient) -> tuple[str, str]:
+        subject = await scenarios.published_character(client, ledger.SUBJECT)
+        for label, name, message in (
+            ("plain", "Keep the quay quiet", f"{ledger.BYSTANDER} mends nets."),
+            ("named", f"Keep {ledger.SUBJECT} offstage", f"{ledger.SUBJECT} is not cursed."),
+        ):
+            made = await client.post("/admin/policies", json=body(name, message), headers=operator)
+            assert made.status_code == 201, made.text
+            held[label] = made.json()["id"]
+        return "catalog_character", subject
+
+    await _pending_catalog_erasure(url, ledger_dir, prepare)
+    named, plain = held["named"], held["plain"]
+    config = ledger.settings(url, ledger_dir)
+    db = make_engine(config)
+    try:
+        with pytest.raises(ErasurePending) as caught:
+            await _fresh(config, db).policies_get(CTX, named)
+        assert caught.value.details["story_id"] is None
+        listed = {p.id for p in await _fresh(config, db).policies_list(CTX)}
+        assert plain in listed
+        assert named not in listed
+        changes = await _fresh(config, db).config_changes(CTX, scope=ConfigScope.DEPLOYMENT)
+        settings = {c.setting for c in changes.items}
+        assert f"policy:{plain}" in settings
+        assert f"policy:{named}" not in settings
+        assert ledger.SUBJECT not in repr(changes)
+    finally:
+        await db.dispose()
+
+    with pauses.held(pauses.ERASURE_RECONCILE_BEFORE_REAPPLY) as hold:
+        async with ledger.started(config) as (client, lib):
+            await hold.arrived()
+            _pending(await client.get(f"/admin/policies/{named}", headers=e.WRITE))
+            replacement = {
+                "name": "Renamed",
+                "applies_to": ["text_input"],
+                "rule": {"type": "wordlist", "words": ["zq"]},
+                "age_condition": None,
+                "message": "Renamed.",
+            }
+            _pending(
+                await client.put(f"/admin/policies/{named}", json=replacement, headers=operator)
+            )
+            _pending(await client.delete(f"/admin/policies/{named}", headers=operator))
+            served = await client.get(f"/admin/policies/{plain}", headers=e.WRITE)
+            assert served.status_code == 200, served.text
+            for params in ({}, {"scope": "global"}, {"include_retired": "true"}):
+                found = await client.get("/admin/policies", params=params, headers=e.WRITE)
+                assert found.status_code == 200, found.text
+                assert ledger.SUBJECT not in found.text, params
+                ids = {p["id"] for p in found.json()["items"]}
+                assert plain in ids, params
+                assert named not in ids, params
+            history = await client.get("/admin/config-changes", headers=e.WRITE)
+            assert history.status_code == 200, history.text
+            assert ledger.SUBJECT not in history.text
+            settings = {i["setting"] for i in history.json()["items"]}
+            assert f"policy:{plain}" in settings
+            assert f"policy:{named}" not in settings
+            # Hers is the newest change; it is left out in the query, so a one-item page still
+            # holds one change (the plain policy's), not none.
+            paged = await client.get("/admin/config-changes", params={"limit": 1}, headers=e.WRITE)
+            assert [i["setting"] for i in paged.json()["items"]] == [f"policy:{plain}"]
+
+            hold.release()
+            assert lib._reconcile_task is not None
+            await lib._reconcile_task
+            after = await client.get(f"/admin/policies/{named}", headers=e.WRITE)
+            assert after.status_code == 200, after.text
+            assert after.json()["name"] == "Keep [erased] offstage"
+            found = await client.get("/admin/policies", headers=e.WRITE)
+            assert {named, plain} <= {p["id"] for p in found.json()["items"]}
+            history = await client.get("/admin/config-changes", headers=e.WRITE)
+            settings = {i["setting"] for i in history.json()["items"]}
+            assert {f"policy:{named}", f"policy:{plain}"} <= settings
+            for text in (found.text, history.text):
+                assert ledger.SUBJECT not in text
+
+
 def test_every_catalog_method_is_gated() -> None:
     """#346: every public Engine coroutine method that can name a catalog entry, persona, media
     asset or upload session (and no story) refuses one a pending catalog-scope erasure
@@ -1426,7 +1529,8 @@ def test_every_catalog_method_is_gated() -> None:
 def test_the_catalog_routes_state_the_pending_refusal() -> None:
     """#346: the committed ``docs/openapi.json`` lists 503 ``erasure_pending`` on the routes
     naming a catalog entry, persona or media asset, and ``POST /stories``; the lists that leave
-    reached entries out may answer ``ledger_unavailable``."""
+    reached entries out may answer ``ledger_unavailable``. #429: so do the routes naming a
+    policy, the policy list and the deployment's configuration history."""
     schema = json.loads((Path(__file__).parents[2] / "docs" / "openapi.json").read_text())
     for path, method in (
         ("/catalog/characters/{character_id}", "get"),
@@ -1437,9 +1541,19 @@ def test_the_catalog_routes_state_the_pending_refusal() -> None:
         ("/media/{media_id}/content", "get"),
         ("/stories", "post"),
         ("/admin/erasure", "post"),
+        ("/admin/policies/{policy_id}", "get"),
+        ("/admin/policies/{policy_id}", "put"),
+        ("/admin/policies/{policy_id}", "delete"),
     ):
         description = schema["paths"][path][method]["responses"]["503"]["description"]
         assert "`erasure_pending`" in description, (path, method)
-    for path in ("/catalog/characters", "/catalog/scenarios", "/personas", "/media"):
+    for path in (
+        "/catalog/characters",
+        "/catalog/scenarios",
+        "/personas",
+        "/media",
+        "/admin/policies",
+        "/admin/config-changes",
+    ):
         description = schema["paths"][path]["get"]["responses"]["503"]["description"]
         assert "`ledger_unavailable`" in description, path

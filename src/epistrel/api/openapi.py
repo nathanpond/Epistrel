@@ -483,8 +483,14 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "feedback_tag_in_use",
     ),
     "policies_create": (*_ADMIN_CONFIG, "cannot_relax"),
-    "policies_update": (*_ADMIN_CONFIG, "cannot_relax"),
-    "policies_retire": _ADMIN_CONFIG,
+    # A policy of a blocked story (#363), or one whose text a pending catalog-scope erasure
+    # reaches (#429), is refused by id and left out of the list until it is reapplied; so is a
+    # deployment configuration change, the ledger compared first.
+    "policies_list": ("ledger_unavailable",),
+    "policies_get": ("erasure_pending", "ledger_unavailable"),
+    "policies_update": (*_ADMIN_CONFIG, "cannot_relax", "erasure_pending", "ledger_unavailable"),
+    "policies_retire": (*_ADMIN_CONFIG, "erasure_pending", "ledger_unavailable"),
+    "config_changes_deployment": ("ledger_unavailable",),
     "replace_model_config": (*_ADMIN_CONFIG, "config_key_missing", "embedding_unreachable"),
     "remove_model_override": _ADMIN_CONFIG,
     "set_model_api_key": (*_ADMIN_CONFIG, "config_key_missing"),

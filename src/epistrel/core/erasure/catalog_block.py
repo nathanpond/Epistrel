@@ -17,7 +17,10 @@ that name it, and the creation reports that carry its public card) is **reached*
 - a list or search leaves reached entries out, and the principal lookup lists them with a
   ``null`` name, as it lists a blocked story (#359);
 - an operation read (``GET /operations/{id}``) or an idempotent replay whose stored result, or
-  whose creation report, is reached is refused.
+  whose creation report, is reached is refused;
+- outside the catalog, a deployment or rating policy whose text names the subject is refused by
+  id (``GET``, update and retire) and left out of ``GET /admin/policies``, and a deployment
+  configuration change whose values name it is left out of ``GET /admin/config-changes`` (#429).
 
 ``read`` answers ``None`` when nothing catalog-scope is pending (one query); otherwise it
 computes each pending entry's reach afresh, so a catalog write made during the window is seen.
@@ -40,10 +43,12 @@ from epistrel.core.errors import ErasurePending
 from epistrel.core.tables import (
     character_catalog,
     character_versions,
+    config_changes,
     idempotency_keys,
     media_assets,
     operations,
     personas,
+    policies,
     scenario_catalog,
     scenario_versions,
 )
@@ -66,6 +71,8 @@ ENTRY_TABLES: Mapping[str, tuple[str, ...]] = {
 }
 """The record tables of each kind of catalog entry: a version's record id is ``<id>@<n>``."""
 STORY_KEY_SCOPE = "story"
+POLICIES, CONFIG_CHANGES = policies.name, config_changes.name
+"""The deployment record tables outside the catalog that a list filters by record (#429)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +105,16 @@ class CatalogBlock:
     def hides(self, kind: str, entry_id: str) -> bool:
         """Whether a list leaves the entry out (a lookup lists it without its name)."""
         return any(reach.touches_entry(kind, entry_id) for reach in self.reaches)
+
+    def hides_record(self, table: str, record_id: str) -> bool:
+        """Whether a list leaves the record ``(table, record_id)`` out: a deployment policy or
+        configuration change outside the catalog that the reapply redacts (#429)."""
+        return any(reach.touches(table, record_id) for reach in self.reaches)
+
+    def records(self, table: str) -> frozenset[str]:
+        """Every record of ``table`` a pending erasure reaches (a paged list leaves them out in
+        its query, so its pages stay full: #429)."""
+        return frozenset().union(*(reach.records.get(table, frozenset()) for reach in self.reaches))
 
     def check_entry(self, kind: str, entry_id: str) -> None:
         """503 ``erasure_pending`` when a pending erasure reaches the entry."""
@@ -158,9 +175,11 @@ def key_record(scope: str, scope_id: str, key: str) -> tuple[str, str]:
 
 __all__ = [
     "CHARACTER",
+    "CONFIG_CHANGES",
     "ENTRY_TABLES",
     "MEDIA",
     "PERSONA",
+    "POLICIES",
     "SCENARIO",
     "UPLOAD",
     "CatalogBlock",

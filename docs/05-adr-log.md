@@ -35,7 +35,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-MULTI | §16 | 043, 126 |
 | FR-API | §17 | 092, 138 |
 | FR-AUTH | §17.1 | 078, 091, 093, 144, 149, 152 |
-| FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144, 153, 154, 155, 156, 157 |
+| FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144, 153, 154, 155, 156, 157, 159 |
 | FR-CAT | §18.1 | 081, 088, 089, 090, 091, 095, 097, 107, 108, 138, 144 |
 | FR-SCN | §18.2 | 081, 082, 087, 088, 091, 097, 107, 140, 141, 142 |
 | FR-PROF | §18.3 | 084, 086, 087, 107, 134, 138, 141, 142, 144, 158 |
@@ -51,7 +51,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 112, 114, 115, 158 |
 | NFR-REL | §20 | 045, 127 |
 | NFR-SEC | §20 | 138, 149, 152 |
-| NFR-PRIV | §20 | 077, 101, 154, 157 |
+| NFR-PRIV | §20 | 077, 101, 154, 157, 159 |
 | NFR-PORT | §20 | 150 |
 | NFR-OPS | §20 | 127, 148, 151 |
 | NFR-MAINT | §20 | 148 |
@@ -218,8 +218,9 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 154 | Erasure redacts only mentions attributed to the subject; ambiguous ones are reported, not guessed | Partly superseded | 155 |
 | 155 | Erasure matches a name in any case by full case-folding, and at any dash | Partly superseded | 156 |
 | 156 | The erasure fold is canonical caseless matching, `ı` is `i`, and a soft hyphen is no character | Current | — |
-| 157 | A pending catalog-scope erasure holds back what it reaches until it is reapplied | Current | — |
+| 157 | A pending catalog-scope erasure holds back what it reaches until it is reapplied | Partly superseded | 159 |
 | 158 | The extraction backstop is gated by default; a profile chooses `always` | Current | — |
+| 159 | A pending catalog-scope erasure also holds back the deployment policies and configuration changes naming its subject | Current | — |
 
 ---
 
@@ -1529,6 +1530,7 @@ The guard's normalisation is the same fold (FR-ADMIN-6, FR-ADMIN-9).
 
 ### ADR-157 — A pending catalog-scope erasure holds back what it reaches until it is reapplied
 **Status:** Accepted. Amends ADR-153 (what a pending erasure blocks).
+**Amended by:** ADR-159 — the deployment policies and configuration changes its reach names are held too.
 **Context:** After a restore, ADR-153 blocks the story a pending erasure was made in until the reconciler reapplies it. A catalog-scope erasure is made in no story, so its pending entry blocked nothing: until the background reapply ran, the restored catalog served the erased character or persona, the entries and media naming her, and the deployment-scoped stored results of `GET /operations/{id}` (#346). FR-ADMIN-7 named restored stories only, and NFR-PRIV-2's intent is that an erased person is not served again. The owner decided on 2026-10-16, at M4's triage, that while a catalog-scope erasure is pending, catalog reads that touch it are refused with 503 `erasure_pending`, or the entry is left out of lists, until the reapply finishes.
 **Decision:** While a catalog-scope ledger entry is pending, its **reach** is what its reapply would touch, computed the way the erasure finds it: the subject's own entry or persona, a catalog character's companion scenarios, every catalog record the subject-reference index names for the subject or the subject's terms (and the confirmed candidates, ADR-154) match, the media that depict or name her, the deployment-scoped stored results and events that name her, and the creation reports that carry her public card. In the Engine, so REST and the library agree:
 - every call naming a reached catalog character, scenario, persona, media asset or upload session is refused, reads and writes alike, with 503 `erasure_pending` (`Retry-After: 30`; `details.story_id` is null, with the first pending erasure that reaches it and how many do). Deletes are refused too: deleting the subject would take the terms the reapply redacts the other records by;
@@ -1541,7 +1543,7 @@ Nothing is persisted: the reach is computed afresh on each call while an entry i
 **Consequences:**
 - Restoring a backup cannot serve an erased catalog character or persona, or what names her, before the reapply; what does not name her is served throughout.
 - A catalog call during a restore window costs a scan of the catalog's records per pending catalog erasure. The window lasts until the reapply ends (minutes at hobby scale), and a deployment with no pending catalog erasure pays one query.
-- Deployment-scoped reads outside the catalog (policies, configuration history) are not held; #429 tracks them.
+- Deployment-scoped reads outside the catalog (policies, configuration history) are not held; #429 tracks them. *[superseded by ADR-159: a policy or configuration change the reach names is held too]*
 - Tests: `tests/integration/test_erasure_ledger.py` (the restore window for a catalog character and for a persona, held with the reapply's pause; every Engine method naming a catalog entry is gated; the OpenAPI document states the 503).
 
 ---
@@ -1554,6 +1556,22 @@ Nothing is persisted: the reach is computed afresh on each call while an entry i
 - A default structured story makes fewer model calls than ADR-065 assumed; the shadow sample measures what that costs in detection, per category, before an operator widens or narrows a story's mode.
 - docs/03 FR-VERIFY-13 and docs/02 §4.9 and the purpose table name `gated` as the default.
 - Tests: U-22 (the all-declared complement makes no extraction call under `gated`), S-EXTRACT-ADVERSARIAL M4 (both modes; the shadow sample records what gating missed).
+
+---
+
+### ADR-159 — A pending catalog-scope erasure also holds back the deployment policies and configuration changes naming its subject
+**Status:** Accepted. Amends ADR-157 (what a pending catalog-scope erasure holds outside the catalog).
+**Context:** ADR-157 holds back what a pending catalog-scope erasure reaches in the catalog. Its reapply also redacts deployment records outside the catalog that name the subject: global and rating policies (name, message and rule) and the deployment's configuration changes (old and new values; a policy write records its body as one). ADR-157 left their reads served (#429), so during a restore window `GET /admin/policies`, `GET /admin/policies/{id}` and `GET /admin/config-changes` could serve the erased subject's name. NFR-PRIV-2's intent, and ADR-157's own definition of the reach as what the reapply would touch, apply to them alike.
+**Decision:** While a catalog-scope ledger entry is pending, in the Engine so REST and the library agree:
+- a policy its reach names is refused by id with 503 `erasure_pending` (`details.story_id` null), reads and writes alike: `GET`, `PUT` and `DELETE /admin/policies/{id}` (`policies_get`, `policies_update`, `policies_retire`), because a replacement records the old text again and a retirement echoes it;
+- `GET /admin/policies` (`policies_list`) leaves such a policy out;
+- the deployment's configuration history (`GET /admin/config-changes`, `config_changes`) leaves out a change the reach names. It does so in its query, so a page stays full and its cursor is unaffected.
+
+A story's own policies and configuration changes are story records, which a catalog-scope erasure leaves alone; a blocked story's stay governed by #363 and ADR-153 (FR-ADMIN-7, NFR-PRIV-2).
+**Consequences:**
+- An operator cannot read, change or retire a policy naming the erased subject until the reapply finishes. The policy is still enforced on turns throughout, as before the restore.
+- A story's effective policies (`GET /stories/{id}/settings`) and a turn's policy violation are not covered here; #447 tracks them.
+- Tests: `tests/integration/test_erasure_ledger.py` (the restore window for a global policy naming the subject, with a complement policy, on REST and a fresh library Engine; the history's page stays full).
 
 ---
 

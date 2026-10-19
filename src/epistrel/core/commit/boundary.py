@@ -44,7 +44,7 @@ from sqlalchemy import Integer, and_, cast, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.enums import FactCommitState, Membership, OpenSlot
-from epistrel.core.membership import active_only, register_follower
+from epistrel.core.membership import active_only, active_operation, register_follower
 from epistrel.core.tables import operations
 from epistrel.core.tables.commitments import thunks
 from epistrel.core.tables.facts import facts
@@ -169,14 +169,14 @@ async def summary(conn: AsyncConnection, story_id: str, turn: int, variant: int)
             operations.c.story_id == story_id,
             operations.c.narrative_turn == turn,
             operations.c.turn_variant == variant,
-            operations.c.membership != Membership.ACTIVE.value,
+            ~active_operation(operations),
         )
         .scalar_subquery()
     )
     reopened = await conn.scalar(
         select(func.count()).where(
             thunks.c.story_id == story_id,
-            thunks.c.membership == Membership.ACTIVE.value,
+            active_only(thunks),
             thunks.c.resolution_operation_id.in_(retired),
         )
     )

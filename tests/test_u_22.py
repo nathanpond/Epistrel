@@ -307,3 +307,69 @@ async def test_u_22__seed() -> None:
     assert parse_number("three thousand") == 3_000
     assert len(tables().verbs) == 5
     assert all(len(t.lemmas) >= 25 for t in tables().verbs)
+
+
+TOM = "01JD0000000000000000000007"
+ORCHARD = "01JD0000000000000000000008"
+LOCATED_AT = CORE_BY_NAME["located_at"].id
+
+
+def _orchard_env() -> DetectionEnv:
+    index = EntityIndex(
+        [
+            EntityEntry(TOM, "person", "Tom Harrow", gender="masculine"),
+            EntityEntry(ORCHARD, "place", "The orchard", aliases=(("orchard", "detected"),)),
+        ]
+    )
+    context = ResolutionContext(index=index, present=frozenset({TOM}))
+    return env(context_for=lambda _speaker: context, scene_entity=ORCHARD, placement={})
+
+
+def _movement(text: str) -> list[tuple[str, str | None, Polarity]]:
+    detection = detect_seed(text, _orchard_env())
+    return [
+        (c.proposition.subject_id, c.proposition.object_id, c.proposition.polarity)
+        for c in detection.claims
+        if c.category == "movement"
+        and c.proposition is not None
+        and c.proposition.predicate_id == LOCATED_AT
+    ]
+
+
+@pytest.mark.part("M4", "FR-VERIFY-13")
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Tom Harrow left the orchard.",
+        "Tom Harrow fled the orchard.",
+        "Tom Harrow walked out of the orchard.",
+        "Tom Harrow ran away from the orchard.",
+    ],
+)
+async def test_u_22__departure_from_a_place(text: str) -> None:
+    """A departure that names its place (#440) is a negated ``located_at`` of that place, never
+    an affirmed one: "Tom Harrow left the orchard" says he is no longer there."""
+    assert _movement(text) == [(TOM, ORCHARD, Polarity.NEGATED)]
+
+
+@pytest.mark.part("M4", "FR-VERIFY-13")
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Tom Harrow arrived at the orchard.",
+        "Tom Harrow walked into the orchard.",
+        "Tom Harrow fled to the orchard.",
+        "Tom Harrow went out to the orchard.",
+    ],
+)
+async def test_u_22__arrival_at_a_place(text: str) -> None:
+    """The complement of #440: an arrival, or a departure toward a named destination, is an
+    affirmed ``located_at`` of the place reached."""
+    assert _movement(text) == [(TOM, ORCHARD, Polarity.AFFIRMED)]
+
+
+@pytest.mark.part("M4", "FR-VERIFY-13")
+async def test_u_22__negated_departure_from_a_place() -> None:
+    """A negated departure from a place ("Tom Harrow did not leave the orchard") asserts no
+    movement claim, like a negated placeless departure."""
+    assert _movement("Tom Harrow did not leave the orchard.") == []

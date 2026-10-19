@@ -21,7 +21,9 @@ its prose was declared. ``detect_render(beats, …)`` (once per render, every be
   #140 ``ClaimSketch`` and goes through ``normalize``: possession → ``holds``; transfer →
   ``holds`` for the recipient (and a negated ``holds`` for the giver); consumption →
   ``consumed``; injury → ``injured`` (its cause a qualifier); movement → ``located_at`` (a
-  departure with no place: a negated ``located_at`` of the current placement); a lone clock
+  departure from a named place, "left the orchard", "out of the orchard": a negated
+  ``located_at`` of it, #440; a departure with no place: a negated ``located_at`` of the
+  current placement; a negated departure asserts nothing); a lone clock
   time → ``time_is`` of the scene's place; an uncovered mention on an observable, non-speech beat
   → ``present_at`` of the scene. The subject is the nearest mention before the verb (on a
   ``do`` beat, a sentence-initial pronoun or none is the actor), the object the nearest one
@@ -703,6 +705,31 @@ def _sketch(
     )
 
 
+def _leaves_place(
+    beat: _Beat, table: VerbTable, lemma: Lemma, end: int, place: Mention
+) -> bool | None:
+    """Whether a movement verb leaves the place it names (#440): ``True`` after a source marker
+    ("out of the orchard") or as a departure verb's object ("left the orchard"); ``False`` when
+    the subject reaches it (any other movement, or a departure toward a destination marker,
+    "fled to the barn"); ``None`` when a departure verb's place follows another word ("fled
+    through the orchard"), which asserts nothing."""
+    articles = frozenset(table.options.get("articles", ()))
+    between = [
+        t.word
+        for t in beat.tokens
+        if t.start >= end and t.end <= place.span[0] and t.word not in articles
+    ]
+    if between and between[-1] in table.options.get("destination_markers", ()):
+        return False
+    for marker in table.options.get("source_markers", ()):
+        words = marker.split()
+        if between[-len(words) :] == words:
+            return True
+    if not lemma.options.get("departure"):
+        return False
+    return True if not between else None
+
+
 def _verb_claims(
     beat: _Beat,
     table: VerbTable,
@@ -743,8 +770,14 @@ def _verb_claims(
         places = _following(beat, end, token.clause, frozenset({"place"}), skip={subject})
         if places:
             place = str(places[0].entity_id)
+            leaving = _leaves_place(beat, table, lemma, end, places[0])
+            if leaving is None:
+                return False
+            if leaving and polarity is Polarity.NEGATED:
+                return False
+            located = Polarity.NEGATED if leaving else polarity
             beat.sketches.append(
-                (category, _sketch(subject, "located_at", place, polarity, span), span)
+                (category, _sketch(subject, "located_at", place, located, span), span)
             )
             beat.used |= {subject, place}
             return True

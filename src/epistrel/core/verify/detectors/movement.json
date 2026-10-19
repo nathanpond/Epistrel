@@ -1,7 +1,7 @@
 {
   "category": "movement",
   "language": "en",
-  "description": "Movement language: located_at(subject, place) for the nearest place mentioned after the verb; with no place, a departure verb or a departure cue after the verb ('on her way out') makes it not located_at the subject's current placement (it left); any other placeless movement is noise.",
+  "description": "Movement language: located_at(subject, place) for the nearest place mentioned after the verb. A departure from that place (a source marker before it, 'out of the orchard', 'away from the orchard', or a departure verb taking it as its object, 'left the orchard') makes it not located_at the place; a departure verb toward a destination marker ('fled to the barn') is located_at it, and with any other word before the place it asserts nothing. With no place, a departure verb or a departure cue after the verb ('on her way out') makes it not located_at the subject's current placement (it left); any other placeless movement is noise. A negated departure asserts nothing.",
   "predicate": "located_at",
   "roles": {
     "subject": "before",
@@ -12,6 +12,23 @@
     "away",
     "off",
     "outside"
+  ],
+  "articles": [
+    "the",
+    "a",
+    "an"
+  ],
+  "destination_markers": [
+    "to",
+    "into",
+    "onto",
+    "toward",
+    "towards"
+  ],
+  "source_markers": [
+    "from",
+    "out of",
+    "off of"
   ],
   "lemmas": [
     {

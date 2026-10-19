@@ -219,6 +219,9 @@ class Fact(BaseModel):
     anchored_to: str | None = None
     commit_state: FactCommitState = FactCommitState.COMMITTED
     thunk_id: str | None = None
+    resolution_level: str | None = None
+    """FR-COMMIT-9 (#154): ``consequential`` or ``incidental``; ``None`` reads as
+    ``consequential``."""
     superseded_ids: tuple[str, ...] = ()
     remainder_ids: tuple[str, ...] = Field(default=())
 
@@ -449,6 +452,7 @@ def _fact_of(row: Any, **extra: Any) -> Fact:
         anchored_to=None if m["anchored_to"] is None else str(m["anchored_to"]),
         commit_state=FactCommitState(m["commit_state"]),
         thunk_id=None if m["thunk_id"] is None else str(m["thunk_id"]),
+        resolution_level=m["resolution_level"],
         **extra,
     )
 
@@ -577,6 +581,7 @@ class _Write:
     commit_state: FactCommitState = FactCommitState.COMMITTED
     replaces: Fact | None = None
     thunk_id: str | None = None
+    resolution_level: str | None = None
 
 
 def _event_provenance(operation: FactOperation) -> Provenance:
@@ -783,6 +788,7 @@ async def _write(conn: AsyncConnection, w: _Write, registry: Registry | None) ->
             w.commit_state,
             position,
             thunk_id=w.thunk_id,
+            resolution_level=w.resolution_level,
         )
     )
     if old is not None:
@@ -862,6 +868,7 @@ def _row(
     position: dict[str, Any] | None,
     *,
     thunk_id: str | None = None,
+    resolution_level: str | None = None,
 ) -> dict[str, Any]:
     return {
         "id": fact_id,
@@ -888,6 +895,7 @@ def _row(
         "commit_state": commit_state.value,
         "committed_at_position": position,
         "thunk_id": thunk_id,
+        "resolution_level": resolution_level,
     }
 
 
@@ -915,6 +923,7 @@ async def commit_fact(
     commit_state: FactCommitState = FactCommitState.COMMITTED,
     registry: Registry | None = None,
     thunk_id: str | None = None,
+    resolution_level: str | None = None,
 ) -> Fact:
     """Write ``proposition`` as a new fact version in ``operation``'s commit transaction (see
     the module docstring); answers the version, with the versions it closed in
@@ -924,7 +933,8 @@ async def commit_fact(
     given, replaces the proposition's declared bounds; ``source_event_ids`` are the events that
     caused the fact (its own ``fact_committed`` event when none); ``beat`` and ``slot_k``
     refine its narrative position, which is the operation's; ``thunk_id`` names the thunk a
-    dependence resolved with it (#146's ``core.commit.lifecycle.depend``)."""
+    dependence resolved with it (#146's ``core.commit.lifecycle.depend``); ``resolution_level`` is
+    FR-COMMIT-9's level (#154; ``None`` reads as ``consequential``)."""
     return await _write(
         conn,
         _Write(
@@ -944,6 +954,7 @@ async def commit_fact(
             author_locked=author_locked,
             commit_state=commit_state,
             thunk_id=thunk_id,
+            resolution_level=resolution_level,
         ),
         registry,
     )

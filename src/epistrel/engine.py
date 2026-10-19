@@ -2348,7 +2348,8 @@ class Engine:
         #66); the old variant goes dormant in the same commit and can be swapped back. The
         input is re-gated (#56); a busy story is 423 ``story_busy``; queued turns fail with
         ``timeline_changed``. Omitted overrides reuse the recorded render set, viewpoint and
-        generation settings."""
+        generation settings. A structured story's regenerate (#154) reverts what the replaced
+        variant committed and reopens the thunks it resolved."""
         principal = self.require_principal(ctx)
         request = request or RegenerateRequest()
         ctx = with_requested(ctx, output_viewpoint, request.output_viewpoint)
@@ -2366,6 +2367,19 @@ class Engine:
             )
 
         async def run(ctx: RequestContext) -> RegenerateResult:
+            if await self._plays_structured(story_id):
+                # A structured story's regenerate (#154): the commit boundary reverts what the
+                # replaced variant committed.
+                return await structured_turn.regenerate(
+                    self.db,
+                    self.models,
+                    ctx,
+                    story_id,
+                    request,
+                    principal=principal,
+                    gate=gate,
+                    lexical=lexical_backend(self.settings.lexical_backend),
+                )
             return await lite.regenerate(
                 self.db, self.models, ctx, story_id, request, principal=principal, gate=gate
             )

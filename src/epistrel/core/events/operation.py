@@ -92,6 +92,7 @@ from epistrel.core import (
     summary_port,
     turn_gate,
 )
+from epistrel.core.commit import boundary as _boundary  # noqa: F401 - registers #154
 from epistrel.core.concurrency import (
     ERASED_SUBJECT,
     Abandon,
@@ -130,7 +131,7 @@ from epistrel.core.errors import (
 )
 from epistrel.core.events.registry import EventPayload, lookup, validate
 from epistrel.core.ids import new_ulid
-from epistrel.core.membership import flip_membership
+from epistrel.core.membership import follow
 from epistrel.core.ratings.stamp import guardrail_stamp
 from epistrel.core.settings_schema import StorySettings
 from epistrel.core.tables import events, operations, stories, turn_queue
@@ -1070,7 +1071,7 @@ class Operation:
     async def _derived_follow(self, conn: AsyncConnection, operation_ids: Sequence[str]) -> None:
         """The derived records of operations this commit made ``dormant`` follow them (#130):
         these changes run no ``core.timeline`` membership hook."""
-        await flip_membership(conn, operation_ids, Membership.DORMANT, story_id=self.story_id)
+        await follow(conn, operation_ids, Membership.DORMANT, story_id=self.story_id)
         self._followed.extend(operation_ids)
 
     async def _check_chain(self, conn: AsyncConnection) -> None:

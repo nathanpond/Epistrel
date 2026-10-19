@@ -95,14 +95,17 @@ async def vector_search(
     found = await conn.execute(
         text(
             "WITH nearest AS MATERIALIZED ("  # noqa: S608 - fixed fragments only
-            "SELECT m.id, m.embedding <=> CAST(:v AS vector) AS distance FROM memories m "
+            "SELECT m.id, m.narrative_turn, m.beat, "
+            "m.embedding <=> CAST(:v AS vector) AS distance FROM memories m "
             f"WHERE m.story_id = :story AND {active_only_sql('m')} "
             f"AND m.retrieval_tier = '{RetrievalTier.HOT.value}' "
             "AND m.embedding IS NOT NULL AND m.embedding_model_version = :version "
             f"AND {position_clause('m')} "
             f"AND {quarantine_clause('m')} "
             "ORDER BY distance LIMIT :k) "
-            "SELECT id, distance FROM nearest ORDER BY distance, id"
+            # Ties by position, newest first, then id (#154: deterministic across runs).
+            "SELECT id, distance FROM nearest "
+            "ORDER BY distance, narrative_turn DESC NULLS LAST, beat DESC NULLS LAST, id"
         ),
         {
             "v": _TO_VECTOR(list(vector)),

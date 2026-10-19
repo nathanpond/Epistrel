@@ -1,6 +1,7 @@
 """S-UNDO-SWAP, M2 part: undo a rewind after new turns were written (docs/04 §7; #66). One
 turn per message: player-only turns written through ``Operation``. M4's consolidation clause
-is ``test_s_undo_swap__consolidation`` (#143)."""
+is ``test_s_undo_swap__consolidation`` (#143), its resolution clause
+``test_s_undo_swap__resolutions`` (#154)."""
 
 from __future__ import annotations
 
@@ -10,15 +11,21 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.core import timeline, variants
-from epistrel.core.enums import OperationKind, Provenance
+from epistrel.core.commit import lifecycle
+from epistrel.core.commit.sketch import ThunkSketch
+from epistrel.core.enums import OpenSlot, OperationKind, Provenance
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.events import Operation
 from epistrel.core.memory.consolidation import Window
+from epistrel.core.propositions import store
+from epistrel.core.propositions.model import Granularity, Instant, Proposition
+from epistrel.core.propositions.registry import auto_register
 from epistrel.core.variants import ChainRef, SwapRequest
 from epistrel.orchestrator.jobs.handlers.consolidation import consolidate_window
 from epistrel.orchestrator.models.access import ModelAccessLayer
 from tests import consolidation_support as cs
 from tests.auth_support import auth_settings
+from tests.canon_support import run as canon_run
 from tests.concurrency_support import assert_single_chain, chain
 from tests.event_support import new_story, rows
 from tests.fork_support import fork, owned_rows
@@ -259,3 +266,112 @@ async def test_s_undo_swap__consolidation(
     assert await _active(engine, other) == {"First ten.", "Original five."}
     superseded = await cs.outputs(engine, other, membership="superseded")
     assert [r.text for r in superseded] == ["Rerun two."]
+
+
+async def _resolution_rows(engine: AsyncEngine, story: str) -> dict[str, dict[str, Any]]:
+    """The story's fact rows without ``membership_tx`` (a flip re-stamps it)."""
+    found = await rows(engine, "SELECT * FROM facts WHERE story_id = :s ORDER BY id", s=story)
+    return {r.id: {k: v for k, v in r._mapping.items() if k != "membership_tx"} for r in found}
+
+
+async def _thunk_states(engine: AsyncEngine, story: str, *ids: str) -> dict[str, tuple[Any, ...]]:
+    found: dict[str, tuple[Any, ...]] = {}
+    async with engine.connect() as conn:
+        for thunk_id in ids:
+            t = await lifecycle.read_thunk(conn, story, thunk_id)
+            assert t is not None
+            found[thunk_id] = (t.state.value, t.resolved_fact_id, t.resolution_operation_id)
+    return found
+
+
+@pytest.mark.part("M4", "FR-STORE-29")
+async def test_s_undo_swap__resolutions(engine: AsyncEngine, drained_embedding_jobs: None) -> None:
+    """S-UNDO-SWAP's M4 resolution clause (#154; docs/04 §7). Turn 1 narrates two deferred
+    thunks (who knocked, who rang); the original chain's turn 3 resolves "who rang" (Bobby).
+    Truncate to 2 (the ring is open again), write 3'-4', where 3' resolves the knock (Ann).
+    Undoing the truncation is a swap: the knock, resolved only in the newer chain, reverts to
+    unresolved (its fact ``revised`` and dormant), the original chain's own resolution of the
+    ring returns (its fact ``committed`` and active again), and consolidation reruns for the
+    restored chain (a queued job). Swapping back restores the exact prior state: every fact row
+    (but its membership stamp) and both thunks' effective states."""
+    quiet = cs.dials(window_memories=1_000, cadence_turns=1_000)
+    w = await cs.story(engine, quiet)
+    story, bobby, ann = w.story_id, w.people["Bobby"], w.people["Ann"]
+    async with engine.begin() as conn:
+        door = await store.add_entity(conn, story, "item", "the door")
+        knocked = (await auto_register(conn, story, "knocked_at")).id
+        rang = (await auto_register(conn, story, "rang_at")).id
+
+    def sketch(predicate: str, relation: str) -> ThunkSketch:
+        return ThunkSketch(
+            subject_text="someone",
+            relation_text=relation,
+            object_text="the door",
+            predicate_id=predicate,
+            object_id=door,
+            open_slot=OpenSlot.SUBJECT,
+        )
+
+    async def narrate(conn: Any, op: Operation) -> tuple[str, str]:
+        a = await lifecycle.introduce(conn, op, sketch(knocked, "knocked_at"), valid_time=10)
+        b = await lifecycle.introduce(conn, op, sketch(rang, "rang_at"), valid_time=10)
+        assert a is not None
+        assert b is not None
+        return a.id, b.id
+
+    knock, ring = await cs_turn(engine, story, narrate)
+
+    def resolve(thunk_id: str, predicate: str, who: str) -> Any:
+        async def step(conn: Any, op: Operation) -> lifecycle.Dependence:
+            claim = Proposition(
+                subject_id=who,
+                predicate_id=predicate,
+                object_id=door,
+                valid_time=Instant.of(10, Granularity.MINUTE),
+            )
+            return await lifecycle.depend(conn, op, thunk_id, claim, beat=2, channel="do")
+
+        return step
+
+    await cs.bulk_turns(engine, story, 1, actor=w.characters["Bobby"], name="Bobby", does=True)
+    original = await cs_turn(engine, story, resolve(ring, rang, bobby))  # turn 3
+    assert original.kind == "committed"
+    await cs.bulk_turns(engine, story, 2, actor=w.characters["Bobby"], name="Bobby", does=True)
+    await truncate(engine, story, 2)
+    assert (await _thunk_states(engine, story, ring))[ring][0] == "open"
+    newer = await cs_turn(engine, story, resolve(knock, knocked, ann))  # turn 3'
+    assert newer.kind == "committed"
+    await cs.bulk_turns(engine, story, 1, actor=w.characters["Ann"], name="Ann", does=True)
+    prior_rows = await _resolution_rows(engine, story)
+    prior_thunks = await _thunk_states(engine, story, knock, ring)
+    assert (prior_thunks[knock][0], prior_thunks[ring][0]) == ("resolved", "open")
+
+    queued = {j.id for j in await cs.jobs(engine, story, "queued")}
+    await untruncate(engine, story)  # new turns were written over the tail: a swap
+    states = await _thunk_states(engine, story, knock, ring)
+    assert states[knock][0] == "open"
+    assert states[ring] == ("resolved", original.fact.id, original.fact.operation_id)
+    after = await _resolution_rows(engine, story)
+    assert (str(after[newer.fact.id]["commit_state"]), after[newer.fact.id]["membership"]) == (
+        "revised",
+        "dormant",
+    )
+    assert (
+        str(after[original.fact.id]["commit_state"]),
+        after[original.fact.id]["membership"],
+    ) == (
+        "committed",
+        "active",
+    )
+    rerun = [j for j in await cs.jobs(engine, story, "queued") if j.id not in queued]
+    assert rerun  # consolidation reruns for the restored chain (#143)
+
+    await _swap(engine, story, 3, 2)  # back to the newer chain
+    assert await _resolution_rows(engine, story) == prior_rows
+    assert await _thunk_states(engine, story, knock, ring) == prior_thunks
+
+
+async def cs_turn(engine: AsyncEngine, story: str, step: Any) -> Any:
+    """Run ``step`` in a new turn's commit (#146's commit step)."""
+    _, found = await canon_run(engine, story, step)
+    return found

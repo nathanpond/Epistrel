@@ -83,6 +83,7 @@ Give at least one `say` or `do`. Declare each factual claim a beat makes as a pr
 {% for constraint in policy_constraints %}
 {{ constraint }}
 {% endfor %}
+{% include "steering_resolution.j2" %}
 {% endblock %}
 {% block user %}
 {{ player_input.name }}:{% if player_input.say %} "{{ player_input.say }}"{% endif %}{% if player_input.do %} *{{ player_input.do }}*{% endif %}

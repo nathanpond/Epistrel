@@ -40,11 +40,23 @@ class PositionBody(BaseModel):
     beat: int | None
 
 
+class RejectedBindingBody(BaseModel):
+    """A binding of the thunk that resolution reconciliation rejected (FR-COMMIT-14; #154): the
+    claim and beat that made it, the entity it bound and the records it conflicted with (ids)."""
+
+    claim_id: str | None = None
+    beat: int | None = None
+    bound_entity: str | None = None
+    conflicting_records: list[str] = []
+
+
 class ThunkBody(BaseModel):
     """One thunk: its proposition sketch (texts, the predicate and the known arguments by id,
     the open slot, the candidates), its effective ``state`` (``resolved`` only while the
     resolving turn is in the timeline), where it was introduced, whether it was made salient,
-    the story-minute it is about, and the fact that resolved it."""
+    the story-minute it is about, the fact that resolved it and its resolution level
+    (FR-COMMIT-9: ``consequential`` or ``incidental``), and the bindings reconciliation rejected
+    (#154)."""
 
     id: str
     sketch: dict[str, Any]
@@ -55,9 +67,11 @@ class ThunkBody(BaseModel):
     salient: bool
     valid_time: int | None
     resolved_fact_id: str | None
+    resolution_level: str | None = None
+    rejected_bindings: list[RejectedBindingBody] = []
 
     @classmethod
-    def of(cls, found: Thunk, names: dict[str, str]) -> ThunkBody:
+    def of(cls, found: Thunk, names: dict[str, str], page: LedgerPage | None = None) -> ThunkBody:
         return cls(
             id=found.id,
             sketch=found.sketch.document(),
@@ -70,6 +84,15 @@ class ThunkBody(BaseModel):
             salient=found.salient,
             valid_time=found.valid_time,
             resolved_fact_id=found.resolved_fact_id if found.state is ThunkState.RESOLVED else None,
+            resolution_level=None if page is None else page.levels.get(found.id),
+            rejected_bindings=[]
+            if page is None
+            else [
+                RejectedBindingBody.model_validate(
+                    {k: v for k, v in item.items() if k in RejectedBindingBody.model_fields}
+                )
+                for item in page.rejected.get(found.id, ())
+            ],
         )
 
 
@@ -114,7 +137,7 @@ class LedgerBody(BaseModel):
     def of(cls, page: LedgerPage) -> LedgerBody:
         names = dict(page.names)
         return cls(
-            thunks=[ThunkBody.of(t, names) for t in page.inspection.thunks],
+            thunks=[ThunkBody.of(t, names, page) for t in page.inspection.thunks],
             ledger=[LedgerItemBody.of(e) for e in page.inspection.ledger],
             revision=page.revision,
             next_after_id=page.inspection.next_after_id,

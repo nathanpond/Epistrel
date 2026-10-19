@@ -22120,6 +22120,54 @@
         "title": "RegexRule",
         "type": "object"
       },
+      "RejectedBindingBody": {
+        "description": "A binding of the thunk that resolution reconciliation rejected (FR-COMMIT-14; #154): the\nclaim and beat that made it, the entity it bound and the records it conflicted with (ids).",
+        "properties": {
+          "beat": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Beat"
+          },
+          "bound_entity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bound Entity"
+          },
+          "claim_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Id"
+          },
+          "conflicting_records": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Conflicting Records",
+            "type": "array"
+          }
+        },
+        "title": "RejectedBindingBody",
+        "type": "object"
+      },
       "RelatedEntities": {
         "additionalProperties": false,
         "description": "What the principal is related to, by type.",
@@ -29933,7 +29981,7 @@
         "type": "object"
       },
       "ThunkBody": {
-        "description": "One thunk: its proposition sketch (texts, the predicate and the known arguments by id,\nthe open slot, the candidates), its effective ``state`` (``resolved`` only while the\nresolving turn is in the timeline), where it was introduced, whether it was made salient,\nthe story-minute it is about, and the fact that resolved it.",
+        "description": "One thunk: its proposition sketch (texts, the predicate and the known arguments by id,\nthe open slot, the candidates), its effective ``state`` (``resolved`` only while the\nresolving turn is in the timeline), where it was introduced, whether it was made salient,\nthe story-minute it is about, the fact that resolved it and its resolution level\n(FR-COMMIT-9: ``consequential`` or ``incidental``), and the bindings reconciliation rejected\n(#154).",
         "properties": {
           "description": {
             "title": "Description",
@@ -29949,6 +29997,25 @@
           },
           "position": {
             "$ref": "#/components/schemas/PositionBody"
+          },
+          "rejected_bindings": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/RejectedBindingBody"
+            },
+            "title": "Rejected Bindings",
+            "type": "array"
+          },
+          "resolution_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution Level"
           },
           "resolved_fact_id": {
             "anyOf": [

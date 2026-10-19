@@ -37,7 +37,9 @@ are not registered; ``core.projections`` caches are rebuildable and are not deri
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -57,6 +59,7 @@ from sqlalchemy import (
     false,
     func,
     insert,
+    literal,
     or_,
     text,
     update,
@@ -84,6 +87,70 @@ FLIP_TARGETS: frozenset[Membership] = frozenset(
     {Membership.ACTIVE, Membership.DISCARDED, Membership.DORMANT}
 )
 """What a flip may set; ``superseded`` belongs to the table that supersedes its own rows."""
+
+Follower = Callable[[AsyncConnection, str | None, tuple[str, ...], Membership], Awaitable[None]]
+"""Run right after a flip of ``operation_ids`` to a membership, in its transaction (#154's commit
+boundary): ``(conn, story_id, operation_ids, to)``."""
+FOLLOWERS: list[Follower] = []
+"""What runs after every operation-membership flip of derived rows: the timeline edits' (through
+``follow_membership_change``) and the two ``core.events.operation`` makes itself."""
+
+
+def register_follower(follower: Follower) -> Follower:
+    """Register ``follower`` (once) to run after every flip of an operation's derived rows."""
+    if follower not in FOLLOWERS:
+        FOLLOWERS.append(follower)
+    return follower
+
+
+async def follow(
+    conn: AsyncConnection,
+    operation_ids: Iterable[str],
+    to: Membership,
+    *,
+    story_id: str | None = None,
+) -> int:
+    """Flip the derived rows of ``operation_ids`` to ``to`` (``flip_membership``), then run the
+    registered followers in the same transaction. Returns the rows the flip changed."""
+    ids = tuple(_ids(operation_ids))
+    changed = await flip_membership(conn, ids, to, story_id=story_id)
+    if ids:
+        for follower in list(FOLLOWERS):
+            await follower(conn, story_id, ids, Membership(to))
+    return changed
+
+
+_EXCLUDED: ContextVar[tuple[str, ...]] = ContextVar("epistrel_membership_excluded", default=())
+_ULID = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
+
+
+@contextmanager
+def excluding(operation_ids: Iterable[str]) -> Iterator[None]:
+    """Within the block (this task and the tasks it starts), every ``active_only``,
+    ``active_operation`` and ``active_only_sql`` read also leaves out the rows of
+    ``operation_ids``: a structured regenerate reads the story as it stood before the variant it
+    replaces (#154), which its own commit then retires."""
+    ids = tuple(_ids(operation_ids))
+    for i in ids:
+        if not _ULID.match(i):
+            raise ValueError(f"{i!r} is not an operation id")
+    token = _EXCLUDED.set(tuple(sorted({*_EXCLUDED.get(), *ids})))
+    try:
+        yield
+    finally:
+        _EXCLUDED.reset(token)
+
+
+def excluded_operations() -> tuple[str, ...]:
+    """The operations ``excluding`` leaves out of reads here (none outside it)."""
+    return _EXCLUDED.get()
+
+
+def _not_excluded(column: ColumnElement[Any]) -> ColumnElement[bool] | None:
+    ids = _EXCLUDED.get()
+    if not ids:
+        return None
+    return column.not_in([literal(i) for i in ids])
 
 
 @dataclass(frozen=True, slots=True)
@@ -338,8 +405,9 @@ async def supersede(
 
 async def follow_membership_change(conn: AsyncConnection, change: MembershipChange) -> None:
     """``core.timeline``'s first in-transaction membership hook: the derived rows of the
-    changed operations take their new membership in the edit's transaction."""
-    await flip_membership(conn, change.operation_ids, change.new, story_id=change.story_id)
+    changed operations take their new membership in the edit's transaction, then the followers
+    run (#154's commit boundary)."""
+    await follow(conn, change.operation_ids, change.new, story_id=change.story_id)
 
 
 # -- reads ------------------------------------------------------------------------------------
@@ -349,7 +417,9 @@ def active_only(table: FromClause) -> ColumnElement[bool]:
     """The predicate every view and retrieval query puts on registered derived ``table`` (or an
     alias of it): ``membership = 'active'``. Position bounds are the caller's."""
     derived_entry(table)
-    return table.c.membership == Membership.ACTIVE.value
+    active = table.c.membership == Membership.ACTIVE.value
+    kept = _not_excluded(table.c.operation_id)
+    return active if kept is None else and_(active, kept)
 
 
 def active_operation(table: FromClause) -> ColumnElement[bool]:
@@ -358,7 +428,9 @@ def active_operation(table: FromClause) -> ColumnElement[bool]:
     memory and view through N)."""
     if _base_table(table).name != "operations":
         raise TypeError(f"{table!r} is not the operations table")
-    return table.c.membership == Membership.ACTIVE.value
+    active = table.c.membership == Membership.ACTIVE.value
+    kept = _not_excluded(table.c.operation_id)
+    return active if kept is None else and_(active, kept)
 
 
 def active_as_of(table: FromClause, record_time: Any) -> ColumnElement[bool]:
@@ -383,7 +455,11 @@ def active_only_sql(alias: str) -> str:
     derived row aliased ``alias``."""
     if not _ALIAS.match(alias):
         raise ValueError(f"{alias!r} is not a SQL alias")
-    return f"{alias}.membership = '{Membership.ACTIVE.value}'"
+    found = f"{alias}.membership = '{Membership.ACTIVE.value}'"
+    ids = _EXCLUDED.get()
+    if ids:  # ULIDs only (``excluding`` checks), so they are safe to inline
+        found += f" AND {alias}.operation_id NOT IN ({', '.join(repr(i) for i in ids)})"
+    return found
 
 
 def position_of(table: FromClause) -> tuple[ColumnElement[Any], ColumnElement[Any]]:
@@ -409,7 +485,9 @@ __all__ = [
     "DERIVED_INDEX_COLUMNS",
     "DERIVED_TABLES",
     "FLIP_TARGETS",
+    "FOLLOWERS",
     "DerivedTable",
+    "Follower",
     "active_as_of",
     "active_only",
     "active_only_predicate",
@@ -419,12 +497,16 @@ __all__ = [
     "derived_entry",
     "derived_index_names",
     "derived_indexes",
+    "excluded_operations",
+    "excluding",
     "flip_by_sources",
     "flip_membership",
+    "follow",
     "follow_membership_change",
     "insert_derived",
     "position_of",
     "register_derived",
+    "register_follower",
     "supersede",
     "tx_time_of",
     "valid_time_of",

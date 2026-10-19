@@ -70,6 +70,7 @@ from pydantic import BaseModel
 from sqlalchemy import (
     ColumnElement,
     and_,
+    case,
     exists,
     func,
     insert,
@@ -81,6 +82,7 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.canon import facts as canon
+from epistrel.core.commit import reconcile as reconciling
 from epistrel.core.commit.sketch import ThunkSketch, fills
 from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.config_changes import section
@@ -250,8 +252,33 @@ def _discharger_active(e: Any) -> ColumnElement[bool]:
     return exists().where(o.c.operation_id == e.c.discharged_by_operation, active_operation(o))
 
 
+def _resolution(t: Any, column: str) -> Any:
+    """``column`` of thunk ``t``'s resolving fact in the timeline (its newest), as a scalar
+    subquery: the fact a dependence committed with ``thunk_id`` ``t`` on the thunk's own
+    predicate (#154; obligation facts carry the thunk id too, on other predicates)."""
+    f = facts.alias("resolution")
+    return (
+        select(f.c[column])
+        .where(
+            f.c.story_id == t.c.story_id,
+            f.c.thunk_id == t.c.id,
+            f.c.predicate_id == t.c.predicate_id,
+            active_only(f),
+        )
+        .order_by(f.c.id.desc())
+        .limit(1)
+        .scalar_subquery()
+    )
+
+
 def _effectively_resolved(t: Any) -> ColumnElement[bool]:
-    return and_(t.c.state == ThunkState.RESOLVED.value, _resolver_active(t))
+    """Thunk ``t`` has a resolution in the timeline: its stored resolver is active, or (#154)
+    another resolution of it is, after the timeline moved between variants that each resolved
+    it (a swap back restores the restored chain's own resolution; the row keeps the last)."""
+    return and_(
+        t.c.state == ThunkState.RESOLVED.value,
+        or_(_resolver_active(t), _resolution(t, "id").is_not(None)),
+    )
 
 
 def open_clause(t: Any) -> ColumnElement[bool]:
@@ -261,15 +288,34 @@ def open_clause(t: Any) -> ColumnElement[bool]:
     )
 
 
+def _thunk_resolved(e: Any) -> ColumnElement[bool]:
+    t = thunks.alias("owed")
+    return exists().where(t.c.id == e.c.thunk_id, _effectively_resolved(t))
+
+
 def undischarged_clause(e: Any) -> ColumnElement[bool]:
-    """Entry ``e`` is in the timeline and effectively undischarged."""
+    """Entry ``e`` is in the timeline and effectively undischarged: its discharging operation
+    is not active, and its thunk (when it has one) is not effectively resolved (a resolved
+    thunk owes nothing, whichever variant resolved it, #154)."""
     return and_(
-        active_only(e), or_(e.c.discharged_by_operation.is_(None), not_(_discharger_active(e)))
+        active_only(e),
+        or_(e.c.discharged_by_operation.is_(None), not_(_discharger_active(e))),
+        not_(and_(e.c.thunk_id.is_not(None), _thunk_resolved(e))),
     )
 
 
 def thunk_columns(t: Any) -> list[Any]:
-    return [t, _effectively_resolved(t).label("is_resolved")]
+    return [
+        t,
+        _effectively_resolved(t).label("is_resolved"),
+        case((_resolver_active(t), t.c.resolved_fact_id), else_=_resolution(t, "id")).label(
+            "effective_fact_id"
+        ),
+        case(
+            (_resolver_active(t), t.c.resolution_operation_id),
+            else_=_resolution(t, "operation_id"),
+        ).label("effective_operation_id"),
+    ]
 
 
 def thunk_of(row: Any) -> Thunk:
@@ -279,6 +325,10 @@ def thunk_of(row: Any) -> Thunk:
         state = ThunkState.EXPIRED
     else:
         state = ThunkState.RESOLVED if m["is_resolved"] else ThunkState.OPEN
+    fact_id, operation_id = m["resolved_fact_id"], m["resolution_operation_id"]
+    if state is ThunkState.RESOLVED and m.get("effective_fact_id") is not None:
+        # The resolution in the timeline (#154), which a swap may have restored.
+        fact_id, operation_id = m["effective_fact_id"], m["effective_operation_id"]
     return Thunk(
         id=str(m["id"]),
         story_id=str(m["story_id"]),
@@ -292,10 +342,8 @@ def thunk_of(row: Any) -> Thunk:
         narrative_turn=m["narrative_turn"],
         turn_variant=m["turn_variant"],
         beat=m["beat"],
-        resolved_fact_id=None if m["resolved_fact_id"] is None else str(m["resolved_fact_id"]),
-        resolution_operation_id=None
-        if m["resolution_operation_id"] is None
-        else str(m["resolution_operation_id"]),
+        resolved_fact_id=None if fact_id is None else str(fact_id),
+        resolution_operation_id=None if operation_id is None else str(operation_id),
         introduced_event_id=None
         if m["introduced_event_id"] is None
         else str(m["introduced_event_id"]),
@@ -305,7 +353,10 @@ def thunk_of(row: Any) -> Thunk:
 def _entry_columns(e: Any) -> list[Any]:
     return [
         e,
-        and_(e.c.discharged_by_operation.is_not(None), _discharger_active(e)).label("is_done"),
+        or_(
+            and_(e.c.discharged_by_operation.is_not(None), _discharger_active(e)),
+            and_(e.c.thunk_id.is_not(None), _thunk_resolved(e)),
+        ).label("is_done"),
     ]
 
 
@@ -714,7 +765,14 @@ async def discharge_hidden(
 # -- dependence --------------------------------------------------------------------------------
 
 DependenceKind = Literal[
-    "committed", "settled", "contradicted", "mention", "mismatch", "ignored", "inert"
+    "committed",
+    "settled",
+    "contradicted",
+    "rejected",
+    "mention",
+    "mismatch",
+    "ignored",
+    "inert",
 ]
 
 
@@ -722,20 +780,24 @@ DependenceKind = Literal[
 class Dependence:
     """What ``depend`` did: ``committed`` (it resolved the thunk with ``fact``), ``settled``
     (already resolved with the same value: ``fact`` is the committed one), ``contradicted``
-    (already resolved with another value), ``mention`` (a ``say``: nothing written),
-    ``mismatch`` (the claim does not fill the thunk), ``ignored`` (an expired thunk: a later
-    matching claim is plain novelty) or ``inert`` (commitment off)."""
+    (already resolved with another value), ``rejected`` (#154: the binding conflicts with
+    recorded history, ``reconciliation`` says how; nothing written, the thunk stays open),
+    ``mention`` (a ``say``: nothing written), ``mismatch`` (the claim does not fill the thunk),
+    ``ignored`` (an expired thunk: a later matching claim is plain novelty) or ``inert``
+    (commitment off). ``obligations`` are the obligation facts committed with a resolution."""
 
     kind: DependenceKind
     thunk_id: str
     fact: canon.Fact | None = None
     discharged: tuple[str, ...] = ()
+    reconciliation: reconciling.Reconciliation | None = None
+    obligations: tuple[str, ...] = ()
 
 
 BeforeResolve = Callable[[AsyncConnection, Thunk, Proposition], Awaitable[None]]
 BEFORE_RESOLVE: list[BeforeResolve] = []
-"""Run before a dependence commits a thunk's resolution, in its transaction: #154's
-reconciliation (FR-COMMIT-14) registers here; an exception aborts the commit."""
+"""Run before a dependence commits a thunk's resolution, in its transaction (after #154's
+reconciliation, which ``depend`` asks itself); an exception aborts the commit."""
 
 
 def _resolution_time(claim: Proposition, valid_time: int | None) -> Interval | Instant | None:
@@ -750,6 +812,13 @@ def _resolution_time(claim: Proposition, valid_time: int | None) -> Interval | I
     return Interval.of(valid_time, end if end is not None and end > valid_time else None)
 
 
+def binding_of(thunk: Thunk, claim: Proposition) -> Proposition:
+    """The binding a dependence's ``claim`` makes of ``thunk`` (#154): the claim at the time the
+    resolution's fact takes, the thunk's original ``valid_time`` (``_resolution_time``)."""
+    resolved_at = _resolution_time(claim, thunk.valid_time)
+    return claim if resolved_at is None else claim.model_copy(update={"valid_time": resolved_at})
+
+
 async def depend(
     conn: AsyncConnection,
     operation: canon.FactOperation,
@@ -758,13 +827,17 @@ async def depend(
     *,
     beat: int | None,
     channel: Channel,
-    provenance: RecordProvenance = RecordProvenance.RENDER,
+    provenance: RecordProvenance = RecordProvenance.RESOLUTION,
     source_event_ids: Sequence[str] = (),
     registry: Registry | None = None,
     on: bool | None = None,
+    resolution_level: str = "consequential",
 ) -> Dependence:
     """Beat ``beat`` (of ``channel``) depends on thunk ``thunk_id`` with ``claim`` (#148's
-    detected claim, after the beat survived verification): see the module docstring."""
+    detected claim, after the beat survived verification): see the module docstring. No
+    resolution commits without #154's reconciliation (``core.commit.reconcile``): a conflict is
+    ``rejected``; otherwise the resolution's fact (``provenance = resolution`` by default, at
+    ``resolution_level``) and its novel obligations commit together, anchored to the thunk."""
     story_id = _story_of(operation)
     if not await resolve_on(conn, story_id, on):
         return Dependence("inert", thunk_id)
@@ -789,21 +862,47 @@ async def depend(
         return Dependence("settled" if same else "contradicted", thunk_id, fact)
     if not fills(thunk.sketch, claim):
         return Dependence("mismatch", thunk_id)
+    resolved_at = _resolution_time(claim, thunk.valid_time)
+    binding = binding_of(thunk, claim)
+    registry = registry or await load(conn, story_id)
+    reconciled = await reconciling.reconcile(conn, story_id, thunk, binding, registry=registry)
+    if isinstance(reconciled, reconciling.Conflict):
+        THUNKS.labels(event="rejected").inc()
+        return Dependence("rejected", thunk_id, reconciliation=reconciled)
     for hook in list(BEFORE_RESOLVE):
         await hook(conn, thunk, claim)
+    # Read before the resolution commits: once it has, the thunk's entries read as discharged.
+    owed = await entries_of(conn, story_id, thunk.id, undischarged=True)
     fact = await canon.commit_fact(
         conn,
         story_id,
         claim,
         provenance=provenance,
         operation=operation,
-        valid_time=_resolution_time(claim, thunk.valid_time),
+        valid_time=resolved_at,
         source_event_ids=source_event_ids,
         beat=beat,
         commit_state=FactCommitState.COMMITTED,
         registry=registry,
         thunk_id=thunk.id,
+        resolution_level=resolution_level,
     )
+    obligations: list[str] = []
+    for implied in reconciled.to_commit:
+        written = await canon.commit_fact(
+            conn,
+            story_id,
+            implied,
+            provenance=RecordProvenance.RESOLUTION,
+            operation=operation,
+            source_event_ids=source_event_ids,
+            beat=beat,
+            commit_state=FactCommitState.COMMITTED,
+            registry=registry,
+            thunk_id=thunk.id,
+            resolution_level=resolution_level,
+        )
+        obligations.append(written.id)
     await conn.execute(
         update(thunks)
         .where(thunks.c.id == thunk.id)
@@ -823,10 +922,17 @@ async def depend(
     )
     THUNKS.labels(event="resolved").inc()
     discharged = []
-    for entry in await entries_of(conn, story_id, thunk.id, undischarged=True):
+    for entry in owed:
         await discharge(conn, operation, entry.id, DischargeMode.DEPENDENCE, beat=beat)
         discharged.append(entry.id)
-    return Dependence("committed", thunk.id, fact, tuple(discharged))
+    return Dependence(
+        "committed",
+        thunk.id,
+        fact,
+        tuple(discharged),
+        reconciliation=reconciled,
+        obligations=tuple(obligations),
+    )
 
 
 # -- closing a turn ----------------------------------------------------------------------------
@@ -1044,11 +1150,16 @@ async def settle_fact(
     if channel not in DEPENDENCE_CHANNELS:
         return False
     current = await conn.scalar(
-        select(facts.c.commit_state).where(facts.c.story_id == story_id, facts.c.id == fact_id)
+        select(facts.c.commit_state).where(
+            facts.c.story_id == story_id, facts.c.id == fact_id, active_only(facts)
+        )
     )
+    # A fact a regeneration reverted (#154: ``revised``, still in the timeline because an earlier
+    # turn introduced it) commits again at the dependence that forces it now.
     if current is None or FactCommitState(current) not in (
         FactCommitState.INTRODUCED,
         FactCommitState.PENDING,
+        FactCommitState.REVISED,
     ):
         return False
     await transition(
@@ -1145,6 +1256,11 @@ class LedgerPage:
     revision: int
     names: Mapping[str, str]
     """Entity and predicate names by id, for the page's thunks (their sketches name ids)."""
+    levels: Mapping[str, str] = field(default_factory=dict)
+    """#154: each resolved thunk's resolution level (FR-COMMIT-9), by thunk id."""
+    rejected: Mapping[str, tuple[Mapping[str, Any], ...]] = field(default_factory=dict)
+    """#154: the bindings of each thunk reconciliation rejected in the timeline's turns
+    (``turn_report.commit.rejected_bindings``: ids only), by thunk id."""
 
 
 async def inspect_ledger(
@@ -1182,7 +1298,42 @@ async def inspect_ledger(
             )
         }
         names.update(await predicate_names(conn, [t.sketch.predicate_id for t in found.thunks]))
-    return LedgerPage(found, revision, names)
+        levels, rejected = await _resolutions(conn, story_id, found.thunks)
+    return LedgerPage(found, revision, names, levels, rejected)
+
+
+async def _resolutions(
+    conn: AsyncConnection, story_id: str, page: Sequence[Thunk]
+) -> tuple[dict[str, str], dict[str, tuple[Mapping[str, Any], ...]]]:
+    """The page's resolution levels and rejected bindings (#154; see ``LedgerPage``)."""
+    resolved = {t.resolved_fact_id: t.id for t in page if t.open is False and t.resolved_fact_id}
+    levels: dict[str, str] = {}
+    if resolved:
+        rows = await conn.execute(
+            select(facts.c.id, facts.c.resolution_level).where(
+                facts.c.story_id == story_id, facts.c.id.in_(list(resolved))
+            )
+        )
+        for r in rows:
+            levels[resolved[str(r.id)]] = r.resolution_level or "consequential"
+    ids = {t.id for t in page}
+    rejected: dict[str, list[Mapping[str, Any]]] = {}
+    if ids:
+        o = operations.alias("o")
+        found = await conn.scalars(
+            select(o.c.turn_report["commit"]["rejected_bindings"])
+            .where(
+                o.c.story_id == story_id,
+                active_operation(o),
+                o.c.turn_report["commit"]["rejected_bindings"].is_not(None),
+            )
+            .order_by(o.c.narrative_turn, o.c.operation_id)
+        )
+        for items in found:
+            for item in items or ():
+                if isinstance(item, dict) and item.get("thunk_id") in ids:
+                    rejected.setdefault(str(item["thunk_id"]), []).append(item)
+    return levels, {k: tuple(v) for k, v in rejected.items()}
 
 
 async def predicate_names(conn: AsyncConnection, ids: Sequence[str]) -> dict[str, str]:
@@ -1218,6 +1369,7 @@ __all__ = [
     "LedgerPage",
     "LedgerUnsettled",
     "Thunk",
+    "binding_of",
     "blockers",
     "close_turn",
     "commitment_enabled",

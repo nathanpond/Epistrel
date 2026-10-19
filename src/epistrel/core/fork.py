@@ -610,6 +610,12 @@ OVERRIDES: dict[str, dict[str, str]] = {
     # closed by one the fork does not copy (after N) keeps its tx_to but loses the link, and is
     # current in the fork, since no copied row closes it.
     "facts": {
+        # #154: a version a regeneration reverted (``revised``, out of the timeline) that the
+        # fork copies into its active timeline is committed there again, as a swap back would.
+        "commit_state": (
+            f"CASE WHEN t.commit_state = 'revised' AND t.membership <> {_ACTIVE} "
+            "THEN 'committed' ELSE t.commit_state END"
+        ),
         "superseded_by": _mapped_or_null("superseded_by"),
         "anchored_to": _mapped_or_null("anchored_to"),
         "supersedes": (

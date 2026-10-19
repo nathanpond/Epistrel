@@ -147,6 +147,9 @@ UNCERTAIN_SURFACED = "uncertain_surfaced"
 ENTAILMENT_RULE = "entailment"
 """The ``rule`` of a verdict the entailment model decided (it cites no record)."""
 UNPERMITTED = "unpermitted"
+RESOLUTION_CONFLICT = "resolution_conflict"
+"""#154: a dependence's binding of an open thunk that conflicts with recorded history
+(``core.commit.reconcile``): ``contradicted``, repaired with an ``avoid_binding`` constraint."""
 """The repair tag of a novel claim its asserter may not introduce (#151's ladder)."""
 NEVER_CANONIZES = frozenset({"think"})
 """Beat channels whose claims never canonize."""
@@ -249,6 +252,10 @@ class VerifyResult:
     asserter named)."""
     anchored_to: str | None = None
     """The fact a permitted claim's canonization anchors to (its neighborhood's)."""
+    resolution_conflict: bool = False
+    """#154: the claim binds an open thunk against recorded history (``reconcile``'s
+    ``Conflict``); ``avoid`` is the entity it bound, when one."""
+    avoid: str | None = None
 
     @property
     def reason(self) -> VerdictReason | None:
@@ -284,7 +291,10 @@ class VerifyResult:
 
     @property
     def repair_tag(self) -> str | None:
-        """``unpermitted`` for a denied novel claim #151 repairs (FR-VERIFY-12)."""
+        """``unpermitted`` for a denied novel claim #151 repairs (FR-VERIFY-12);
+        ``resolution_conflict`` for a binding reconciliation rejected (#154)."""
+        if self.resolution_conflict:
+            return RESOLUTION_CONFLICT
         denied = self.denied
         return UNPERMITTED if denied is not None and denied.repaired else None
 
@@ -316,7 +326,7 @@ class VerifyResult:
             "escalated": self.escalated,
             "disposition": self.disposition,
             "permission": None if self.permission is None else self.permission.code(),
-        }
+        } | ({"cause": RESOLUTION_CONFLICT} if self.resolution_conflict else {})
 
 
 @dataclass(frozen=True, slots=True)
@@ -1108,6 +1118,7 @@ __all__ = [
     "ENTAILMENT_BUDGET",
     "ENTAILMENT_RULE",
     "ENTAILMENT_UNAVAILABLE",
+    "RESOLUTION_CONFLICT",
     "UNCERTAIN_SURFACED",
     "UNPERMITTED",
     "CanonSource",

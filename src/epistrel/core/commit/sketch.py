@@ -112,6 +112,9 @@ class ThunkSketch(BaseModel):
     open_slot: OpenSlot
     candidates: tuple[Candidate, ...] = ()
     span: tuple[int, int, int] | None = None
+    parent_fact_id: str | None = None
+    """An incidental detail's thunk (FR-COMMIT-9, #154): the consequential fact whose object's
+    attribute it leaves open (``core.commit.boundary.depend_on_detail``)."""
 
     def document(self) -> dict[str, object]:
         """The stored ``proposition_sketch``."""

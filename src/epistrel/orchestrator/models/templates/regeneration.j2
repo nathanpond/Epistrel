@@ -103,6 +103,7 @@ Rewrite only this beat, as a `{{ beat_kind }}` beat in the same voice, so that i
 {% for constraint in policy_constraints %}
 {{ constraint }}
 {% endfor %}
+{% include "steering_resolution.j2" %}
 {% endblock %}
 {% block user %}
 {{ player_input.name }}:{% if player_input.say %} "{{ player_input.say }}"{% endif %}{% if player_input.do %} *{{ player_input.do }}*{% endif %}

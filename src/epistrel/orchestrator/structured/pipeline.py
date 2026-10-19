@@ -92,8 +92,18 @@ stages each repaired beat's ``verify_verdict`` and every rejected text as ``rend
 (both ``audit``), with ``turn_report.repairs`` and ``epistrel_repairs_total``. With the module
 off a contradicted beat stands, labelled.
 
-Not here (seams, #154/#156): regeneration of a structured turn, budget planning. Logs carry ids
-and counts only (invariant 3).
+**Regenerate** (#154, ``regenerate``): the head turn's recorded input is played again as a new
+variant. Its reads leave the replaced variant's records out (``core.membership.excluding``), so
+the render, retrieval, verification and the thunk reads see the story as it stood before the
+turn; the commit retires the old variant (``dormant``) and ``core.commit.boundary`` reverts what
+it committed. ``turn_report.regenerated_variant`` names the variant replaced (FR-FB-3) and
+``turn_report.commit`` counts ``reverted_facts`` and ``reopened_thunks``. The turn's check runs
+#154's resolution screen (``orchestrator.commit.resolution``): a binding of an open thunk that
+conflicts with recorded history is a contradiction the repair ladder steers away from
+(``reconciliations``, ``rejected_bindings``); the renders carry the deferral bias while an
+earlier turn's thunk is open (``prompt.RESOLUTION_STEERING``).
+
+Not here (seam, #156): budget planning. Logs carry ids and counts only (invariant 3).
 """
 
 from __future__ import annotations
@@ -110,15 +120,21 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import idempotency, pause, turn_gate
 from epistrel.core.canon.canonize import CanonRequest, canonize_all
-from epistrel.core.commit import lifecycle, matching
+from epistrel.core.commit import boundary, lifecycle, matching
 from epistrel.core.commit.sketch import ThunkSketch, fills, open_sketch
 from epistrel.core.concurrency import check_expected_revision, run_with_revalidation
 from epistrel.core.config_changes import read_section
 from epistrel.core.context import RequestContext
-from epistrel.core.enums import OperationKind, Provenance, RecordProvenance, StoryStatus
+from epistrel.core.enums import (
+    OperationKind,
+    OperationStatus,
+    Provenance,
+    RecordProvenance,
+    StoryStatus,
+)
 from epistrel.core.erasure.index import index_records
 from epistrel.core.erasure.records import operation_record
-from epistrel.core.errors import InvalidRequest, RevisionConflict, StoryArchived
+from epistrel.core.errors import InvalidRequest, RevisionConflict, StoryArchived, TimelineChanged
 from epistrel.core.events import Operation
 from epistrel.core.events.types import (
     BeatLabels,
@@ -129,6 +145,7 @@ from epistrel.core.events.types import (
 )
 from epistrel.core.genesis.structured import deferred_items
 from epistrel.core.history import turn_beats
+from epistrel.core.membership import active_operation, excluding
 from epistrel.core.memory import records
 from epistrel.core.policies.evaluate import evaluate
 from epistrel.core.policies.model import ModelAssistedRule, Target
@@ -157,13 +174,17 @@ from epistrel.core.settings_schema import (
     resolve_generation,
 )
 from epistrel.core.tables import entity_aliases, operations, stories
+from epistrel.core.tables.commitments import thunks
+from epistrel.core.tables.operations import REGENERATED_VARIANT
 from epistrel.core.tables.propositions import entities
 from epistrel.core.turn_gate import Concurrency
 from epistrel.core.turns import (
     CastEntry,
+    RecordedTurn,
     StoryCast,
     TurnInputs,
     joined_input,
+    read_regenerable,
     read_story_cast,
     read_turn_inputs,
 )
@@ -196,7 +217,7 @@ from epistrel.observability import stages
 from epistrel.observability.logging import get_logger
 from epistrel.observability.metrics import count_repair
 from epistrel.orchestrator.budget import GUARDRAIL_OUTPUT, TurnBudget, counted_embedder
-from epistrel.orchestrator.commit import salience
+from epistrel.orchestrator.commit import resolution, salience
 from epistrel.orchestrator.compose import compose as composing
 from epistrel.orchestrator.lite import pipeline as lite
 from epistrel.orchestrator.lite.cast import ResolvedCast, resolve_cast
@@ -205,6 +226,8 @@ from epistrel.orchestrator.lite.schemas import (
     BudgetReport,
     DegradationStep,
     FinishedMessage,
+    RegenerateRequest,
+    RegenerateResult,
     RespondRequest,
     RespondResult,
 )
@@ -481,6 +504,100 @@ async def run_queued(
         )
 
 
+async def regenerate(
+    db: AsyncEngine,
+    models: ModelAccessLayer,
+    ctx: RequestContext,
+    story_id: str,
+    request: RegenerateRequest,
+    *,
+    principal: str,
+    gate: lite.Gate,
+    lexical: LexicalSearch | None = None,
+) -> RegenerateResult:
+    """Regenerate a structured story's head turn (FR-COMMIT-8, FR-STORE-12; #66, #154): the
+    recorded input played again as a new variant, reading the story as it stood before the turn
+    (``core.membership.excluding``); the commit retires the old variant to ``dormant``, and
+    ``core.commit.boundary`` reverts what it committed (its facts ``revised``, the thunks it
+    resolved open again) in the same transaction. The prechecks are Lite's
+    (``lite.regenerate``)."""
+    started = ctx.received_at if ctx.received_at is not None else time.monotonic()
+    story = await read_story_cast(db, story_id)
+    if story.status == StoryStatus.ARCHIVED.value:
+        raise StoryArchived(
+            f"story {story_id} is archived; unarchive it to change it", {"story_id": story_id}
+        )
+    await pause.refuse(db, story_id, story.status)
+    recorded = await read_regenerable(db, story_id, request.turn)
+    replay = lite._replayed_request(recorded, request)
+    resolved_cast = resolve_structured_cast(story, replay)
+    await check_expected_revision(db, story_id, ctx.expected_revision)
+    viewpoint = resolve_viewpoint(
+        ctx.viewpoint or recorded.viewpoint,
+        actor_character_id=resolved_cast.actor.id,
+        story_default=story.settings.default_output_viewpoint,
+        cast_ids=story.ids,
+    )
+    concurrency = await turn_gate.read_concurrency(db, story_id)
+    budget = await lite.plan_budget(
+        db,
+        story_id,
+        resolved_cast,
+        story_max_calls=concurrency.max_model_calls_per_turn,
+        deployment_max_calls=None,
+        turn_deadline=concurrency.turn_deadline,
+        override=request.budget,
+        started=started,
+    )
+    timing = lite.TurnTiming(front=started)
+    with recording() as calls, lite.reporting_costs(calls, budget), lite._routed(concurrency):
+        gating = time.perf_counter()
+        await gate(
+            budget,
+            joined_input(recorded.say, recorded.do),
+            resolved_cast.actor.id,
+            resolved_cast.render_ids,
+        )
+        timing.policy_check_s += time.perf_counter() - gating
+        budget.release_to(1 + budget.reserved.get(GUARDRAIL_OUTPUT, 0))
+        op = Operation(
+            db,
+            story_id=story_id,
+            kind=OperationKind.TURN,
+            principal=principal,
+            turn=recorded.turn,
+            idempotency_key=ctx.idempotency_key,
+            viewpoint=viewpoint,
+        )
+        held = await turn_gate.acquire(db, story_id, op.operation_id, lease_s=concurrency.lease_s)
+        if held is not None:
+            raise held.busy(story_id)
+        op.holds_turn_slot = True
+        try:
+            async with turn_gate.renewing(db, story_id, op.operation_id, concurrency.lease_s):
+                played = await play(
+                    db,
+                    models,
+                    story_id,
+                    replay,
+                    resolved_cast,
+                    viewpoint,
+                    op,
+                    budget,
+                    calls,
+                    story=story,
+                    configuration=lite._captured(concurrency),
+                    timing=timing,
+                    lexical=lexical,
+                    regenerating=recorded,
+                )
+        finally:
+            if op.status is None:  # took the slot but never began
+                await turn_gate.release_now(db, story_id, op.operation_id)
+    assert isinstance(played, RegenerateResult)  # noqa: S101 - play built it for a regenerate
+    return played
+
+
 # -- what the turn reads -------------------------------------------------------------------------
 
 
@@ -503,6 +620,25 @@ class TurnRead:
     director: str
     triggers: tuple[str, ...]
     allow_new_arrivals: bool
+    deferred: bool = False
+    """#154 (FR-COMMIT-11): an open thunk an earlier turn introduced is in the context, so the
+    renders carry the deferral bias (``prompts.RESOLUTION_STEERING``)."""
+
+
+async def _deferred(conn: AsyncConnection, story_id: str, turn: int) -> bool:
+    """Whether the story has an open thunk introduced before ``turn``."""
+    t = thunks.alias("t")
+    found = await conn.scalar(
+        select(t.c.id)
+        .where(
+            t.c.story_id == story_id,
+            lifecycle.open_clause(t),
+            t.c.narrative_turn.is_not(None),
+            t.c.narrative_turn < turn,
+        )
+        .limit(1)
+    )
+    return found is not None
 
 
 async def _aliases(conn: AsyncConnection, story_id: str, ids: Sequence[str]) -> list[str]:
@@ -540,14 +676,21 @@ async def read_turn(
     configuration: StoryProfile,
     read_set: StructuredReadSet,
     story: StoryCast,
+    regenerating: int | None = None,
 ) -> TurnRead:
-    """The structured turn's inputs, read in its snapshot (see the module docstring)."""
+    """The structured turn's inputs, read in its snapshot (see the module docstring); for a
+    regenerate of turn ``regenerating`` (#154), what is positioned before it (its variant's own
+    records are left out of every derived read by ``core.membership.excluding``)."""
     settings = configuration.settings
-    inputs = await read_turn_inputs(conn, story_id, configuration=configuration)
+    inputs = await read_turn_inputs(
+        conn, story_id, before_turn=regenerating, configuration=configuration
+    )
     resolved = resolve_generation(inputs.generation, request.prompt_params)
     head = int(
         await conn.scalar(select(stories.c.next_turn_index).where(stories.c.id == story_id)) or 1
     )
+    if regenerating is not None:
+        head = regenerating
     turn = head
     current = {c.id: c for c in inputs.cast}
     character = current.get(cast_.render[0].id, cast_.render[0])
@@ -572,7 +715,8 @@ async def read_turn(
     lookup = KeyedLookup(conn, read_set)
     location, scene = await _scene(lookup, story_id, head - 1)
     before, _ = await _scene(lookup, story_id, head - 2)
-    present = tuple(e.name for e in scene.present) if scene is not None else ()
+    # By name: the scene lists them by id, which is random across runs (#154, NFR-DETERM-1).
+    present = tuple(sorted(e.name for e in scene.present)) if scene is not None else ()
     scene_text = ""
     if scene is not None and (scene.location is not None or present):
         where = scene.location.name if scene.location is not None else "an unnamed place"
@@ -612,6 +756,7 @@ async def read_turn(
         director="\n\n".join(director),
         triggers=tuple(triggers),
         allow_new_arrivals=story.settings.allow_new_arrivals,
+        deferred=lifecycle.commitment_enabled(settings) and await _deferred(conn, story_id, turn),
     )
 
 
@@ -826,6 +971,8 @@ class Checked:
     follow_up_verifier: Verifier | None = None
     repairs: list[RepairResult] = field(default_factory=list)
     """What the repair ladder made of each beat it corrected (#151), in beat order."""
+    rejected_bindings: list[resolution.RejectedBinding] = field(default_factory=list)
+    """The bindings of open thunks reconciliation rejected (#154), in claim order."""
 
 
 def _verdict_of(result: CheckedClaim) -> str | None:
@@ -1005,6 +1152,20 @@ async def check_turn(
             for request in verifier.canon_requests()[before:]:
                 staged.stage(request.claim, request.claim_id or f"{number}")
         requests = verifier.canon_requests()
+        rejected_bindings: list[resolution.RejectedBinding] = []
+        if lifecycle.commitment_enabled(settings):
+            # #154: a binding of an open thunk that conflicts with recorded history is a
+            # contradiction the repair ladder steers away from (never committed).
+            checked, rejected_bindings = await resolution.screen(
+                conn, story_id, checked, read_set=read_set, registry=env.registry
+            )
+            # A claim that resolves an open thunk commits through its dependence (#146's
+            # ``depend``, reconciled), never as a second, unreconciled canon write; a rejected
+            # binding commits nowhere.
+            refused = {r.claim_id for r in rejected_bindings} | {
+                c.claim_id for c in resolution.candidates(checked)
+            }
+            requests = [r for r in requests if r.claim_id is None or r.claim_id not in refused]
     by_claim: dict[int, list[CheckedClaim]] = {}
     for c in checked:
         if c.claim.beat is not None:
@@ -1027,6 +1188,8 @@ async def check_turn(
         degradation += [(d, "extraction") for d in outcome.degradation]
     if verifier is not None:
         degradation += [(d, "verification") for d in verifier.degradation()]
+    if rejected_bindings:
+        degradation.append((resolution.BINDING_REJECTED, "commitment"))
     for b in beats:
         if b.kind == LATENT and not any(c.proposition is not None for c in b.claims):
             degradation.append((LATENT_UNNORMALIZED, "latent"))
@@ -1082,6 +1245,7 @@ async def check_turn(
         salient=salient,
         degradation=degradation,
         staged=list(staged.staged),
+        rejected_bindings=rejected_bindings,
     )
 
 
@@ -1647,8 +1811,10 @@ async def play(
     configuration: StoryProfile,
     timing: lite.TurnTiming | None = None,
     lexical: LexicalSearch | None = None,
+    regenerating: RecordedTurn | None = None,
 ) -> RespondResult:
-    """The structured turn itself (see the module docstring), under ``configuration``."""
+    """The structured turn itself (see the module docstring), under ``configuration``.
+    ``regenerating``: the head turn this one replaces (#154; ``regenerate``)."""
     timing = timing if timing is not None else lite.TurnTiming(front=budget.started)
     say, do = request.player_input.say_text, request.player_input.do_text
     settings = configuration.settings
@@ -1672,6 +1838,7 @@ async def play(
             configuration=configuration,
             read_set=read_set,
             story=story,
+            regenerating=None if regenerating is None else regenerating.turn,
         )
         timing.assemble_s += time.perf_counter() - reading
         facts = await runtime_facts(conn)
@@ -1728,6 +1895,7 @@ async def play(
             pins=read.inputs.pins,
             segments=read.inputs.segments,
             scene=read.scene,
+            resolution_steering=prompts.RESOLUTION_STEERING if read.deferred else "",
         )
         budget_tokens = settings.render.prompt_token_budget
         max_beats = settings.render.max_beats
@@ -2056,6 +2224,24 @@ async def play(
             beat=last + 1,
         )
         op.add_commit_step(partial(write_turn, read=read, rendered=rendered, checked=checked))
+        if regenerating is not None:
+            op.add_commit_step(fail_queue)
+
+    failed_queue: list[str] = []
+
+    async def fail_queue(conn: AsyncConnection) -> None:
+        # A regenerate is a control action: the story's queued turns fail with it (#66).
+        failed_queue[:] = await turn_gate.fail_queued(
+            conn,
+            story_id,
+            TimelineChanged(
+                "a regenerate changed the timeline before the queued turn started",
+                {
+                    "current_revision": int(op.base_revision or 0) + 1,
+                    "control_operation_id": op.operation_id,
+                },
+            ),
+        )
 
     async def write_turn(
         conn: AsyncConnection, *, read: TurnRead, rendered: Rendered, checked: Checked
@@ -2125,7 +2311,7 @@ async def play(
                 registry=registry,
                 on=True,
             )
-            await extraction.apply_dependences(
+            depended = await extraction.apply_dependences(
                 conn, op, checked.checked, read_set=read_set, registry=registry
             )
             await settle_follow_up(conn, op, checked, read_set=read_set, registry=registry)
@@ -2146,6 +2332,7 @@ async def play(
                     **checked.follow_up,
                     "path": _close_path(checked.follow_up, closed.minimal_commits),
                 },
+                **(await _boundary_report(conn, story_id, regenerating, depended, checked)),
             }
             for step in closed.degradation:
                 checked.degradation.append((step, "commitment"))
@@ -2167,6 +2354,10 @@ async def play(
         steps = _degradation(gated[0] if gated else None, rendered, checked)
         report["degradation"] = [s.step for s in steps]
         report["degradation_details"] = [{"step": s.step, "cause": s.cause} for s in steps]
+        if regenerating is not None:
+            # The variant this regenerate replaced (#126, #154): the feedback aggregates count a
+            # regeneration of that variant's message from it.
+            report[REGENERATED_VARIANT] = regenerating.variant
         report["render"] = {
             "attempts": rendered.attempts,
             "structure_retries": rendered.structure_retries,
@@ -2249,23 +2440,80 @@ async def play(
         )
         fields["degradation"] = [s.step for s in steps]
         fields["degradation_details"] = steps
+        if regenerating is not None:
+            return RegenerateResult(**fields, previous_variant=regenerating.variant)
         return RespondResult(**fields)
 
     call = idempotency.current_call()
     if call is not None:
         call.result_in_commit = result
-    await run_with_revalidation(
-        op,
-        begin=begin,
-        generate=generate,
-        read_set=read_set,
-        config_recheck=output_recheck(db, models, budget),
-    )
+    retiring = () if regenerating is None else await _retiring(db, story_id, regenerating.turn)
+    # A regenerate reads the story as it stood before the variant it replaces (#154): that
+    # variant's records are left out of every derived read; its own commit retires them.
+    with excluding(retiring):
+        await run_with_revalidation(
+            op,
+            begin=begin,
+            generate=generate,
+            read_set=read_set,
+            config_recheck=output_recheck(db, models, budget),
+        )
     timing.observe(calls)
     if call is not None and call.stored_in_commit:
         stored: RespondResult = call.committed_value
         return stored
     return await result(db, op)
+
+
+async def _retiring(db: AsyncEngine, story_id: str, turn: int) -> tuple[str, ...]:
+    """The active operations a regenerate of ``turn`` retires (``Operation._retire_variant``'s
+    set, read before the turn so its reads can leave them out)."""
+    async with db.connect() as conn:
+        found = await conn.scalars(
+            select(operations.c.operation_id)
+            .where(
+                operations.c.story_id == story_id,
+                operations.c.narrative_turn >= turn,
+                operations.c.status == OperationStatus.COMMITTED.value,
+                active_operation(operations),
+            )
+            .order_by(operations.c.operation_id)
+        )
+        return tuple(str(i) for i in found)
+
+
+async def _boundary_report(
+    conn: AsyncConnection,
+    story_id: str,
+    regenerating: RecordedTurn | None,
+    depended: Sequence[lifecycle.Dependence],
+    checked: Checked,
+) -> dict[str, Any]:
+    """``turn_report.commit``'s commit-boundary counts (#154): what the regenerate reverted and
+    reopened, the reconciliations its dependences ran and the bindings it rejected."""
+    reverted = reopened = 0
+    if regenerating is not None:
+        found = await boundary.summary(conn, story_id, regenerating.turn, regenerating.variant)
+        reverted, reopened = found.reverted_facts, found.reopened_thunks
+    rejected = [r.as_payload() for r in checked.rejected_bindings]
+    rejected += [
+        {
+            "claim_id": None,
+            "beat": None,
+            "thunk_id": d.thunk_id,
+            "bound_entity": getattr(d.reconciliation, "bound_entity", None),
+            "conflicting_records": list(getattr(d.reconciliation, "conflicting_records", ())),
+        }
+        for d in depended
+        if d.kind == "rejected"
+    ]
+    return {
+        "reverted_facts": reverted,
+        "reopened_thunks": reopened,
+        "reconciliations": len(checked.rejected_bindings)
+        + sum(1 for d in depended if d.reconciliation is not None),
+        "rejected_bindings": rejected,
+    }
 
 
 def _with_context(draft: Draft, retrieval: RetrievalResult) -> Draft:
@@ -2391,6 +2639,7 @@ __all__ = [
     "owed_references",
     "play",
     "read_turn",
+    "regenerate",
     "resolve_structured_cast",
     "respond",
     "run_queued",

@@ -23,6 +23,7 @@ bodies and in the stored state alike.
 from __future__ import annotations
 
 import json
+import re
 import secrets
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,9 @@ import pytest
 from epistrel.core.db import make_engine
 from epistrel.engine import Engine
 from epistrel.testing.determinism import Normalizer, differences, state
+from tests import genesis_support as g
+from tests import scenario_support as scenarios
+from tests import structured_genesis_support as sg
 from tests.auth_support import auth_settings
 from tests.conformance.conftest import migrated_database
 from tests.idempotency_support import KEY
@@ -41,6 +45,7 @@ from tests.story_support import READ, WRITE, story_body
 from tests.summary_support import run_due_jobs
 
 SCRIPT = Path(__file__).with_name("script.json")
+STRUCTURED_SCRIPT = Path(__file__).with_name("script_structured.json")
 
 
 class Run:
@@ -153,3 +158,109 @@ async def test_determinism(pg_url: str) -> None:
     drift_answers, drift_state = await replay(pg_url, nondeterministic=True)
     assert differences(first_answers, drift_answers) != []
     assert differences(first_state, drift_state) != []
+
+
+_MARK = re.compile(r"«\d+»")
+_SHAPE = re.compile(r'"shape": "[0-9a-f]{32}"')
+"""A detected claim's shape (#148): a digest of its normalized form, which holds ids."""
+
+
+def masked(found: Any) -> dict[str, list[str]]:
+    """A normalised state with every id mark the same (``«id»``) and each table's rows sorted:
+    the structured story writes rows that differ only in their ids (two aliases of one name,
+    memories of one beat, …), which no natural order separates, so their first-met numbering
+    is not stable across runs. Every value but the ids (and the claim shapes digesting them, #148)
+    is still compared."""
+    return {
+        table: sorted(
+            _SHAPE.sub(
+                '"shape": "«hash»"',
+                _MARK.sub("«id»", json.dumps(row, sort_keys=True, default=str, ensure_ascii=False)),
+            )
+            for row in rows
+        )
+        for table, rows in found.items()
+    }
+
+
+async def replay_structured(pg_url: str, *, nondeterministic: bool = False) -> tuple[Any, Any]:
+    """Run the structured script on a fresh database: the Sunday Dinner scenario created as a
+    structured story (#149's genesis, the seeded ``Structured (M4)`` profile), then its steps
+    (``{op: respond, actor, input}``, regenerations, a truncation); the normalised answers
+    and the final state."""
+    script = json.loads(STRUCTURED_SCRIPT.read_text())
+    with migrated_database(pg_url, f"epistrel_det_{secrets.token_hex(4)}") as url:
+        settings = auth_settings(url, model_adapter="stub")
+        db = make_engine(settings)
+        try:
+            async with respond_client(settings, db) as (client, engine):
+                assert engine.models.stub is not None
+                engine.models.stub.nondeterministic = nondeterministic
+                normalize = Normalizer()
+                locked, default = await scenarios.cast_characters(client)
+                mother = await g.catalog_character_id(
+                    client, "June Harrow", age=60, labels=["warm"]
+                )
+                scenario_id, _ = await g.published_scenario(
+                    client, sg.structured_dinner(locked, default)
+                )
+                made = await g.create_from(client, sg.structured_request(scenario_id, mother))
+                answers: list[Any] = [normalize(made)]
+                story = made["story_id"]
+                roles = {c["role_id"]: c["id"] for c in made["characters"]}
+                headers = {**WRITE, "X-Epistrel-Principal": script["principal"]}
+                base = f"/stories/{story}"
+                for step in script["steps"]:
+                    op = step["op"]
+                    if op == "respond":
+                        path = f"{base}/respond"
+                        payload: dict[str, Any] = {
+                            "actor_character_id": roles[step["actor"]],
+                            "player_input": step["input"],
+                        }
+                    elif op == "regenerate":
+                        path, payload = f"{base}/regenerate", {}
+                    elif op == "truncate":
+                        path, payload = f"{base}/truncate", {"to_turn": step["to_turn"]}
+                    else:  # pragma: no cover - the script's own ops
+                        raise AssertionError(f"unknown script step {op!r}")
+                    response = await client.post(
+                        path, json=payload, headers={**headers, KEY: step["key"]}
+                    )
+                    assert response.status_code == 200, f"{step}: {response.text}"
+                    answers.append(normalize(response.json()))
+                return answers, await state(db)
+        finally:
+            await db.dispose()
+
+
+@pytest.mark.part("M4", "NFR-DETERM-1")
+async def test_determinism__structured(pg_url: str) -> None:
+    """DETERMINISM (M4): the structured script (a structured story from the Sunday Dinner
+    scenario, structured turns on the stub model and the stub embedder, two regenerations
+    through #154's commit boundary and a truncation) on two fresh databases gives identical
+    answers and identical Engine Core state after the normaliser (facts, thunks, the ledger,
+    memories and their vectors byte for byte).
+
+    Complement asserted: a nondeterministic stub's replay differs, in its answers and its
+    state, so the comparison detects drift."""
+    first_answers, first_state = await replay_structured(pg_url)
+    second_answers, second_state = await replay_structured(pg_url)
+    assert differences(first_answers, second_answers) == []
+    assert differences(masked(first_state), masked(second_state)) == []
+    script = json.loads(STRUCTURED_SCRIPT.read_text())
+    assert len(first_answers) == len(script["steps"]) + 1
+    counts = {name: len(rows) for name, rows in first_state.items()}
+    assert counts["facts"] > 0
+    assert counts["memories"] > 0
+    regenerated = [
+        r
+        for r in first_state["operations"]
+        if "regenerated_variant" in (r.get("turn_report") or {})
+    ]
+    assert len(regenerated) == 2  # both regenerations ran the structured path (#154)
+    assert any(r["membership"] == "dormant" for r in first_state["memories"])
+
+    drift_answers, drift_state = await replay_structured(pg_url, nondeterministic=True)
+    assert differences(first_answers, drift_answers) != []
+    assert differences(masked(first_state), masked(drift_state)) != []

@@ -117,6 +117,7 @@ from epistrel.orchestrator.structured.render import (
 )
 from epistrel.orchestrator.verify.extraction import EXTRACTION_DEGRADED, CheckedClaim
 from epistrel.orchestrator.verify.verifier import (
+    RESOLUTION_CONFLICT,
     UNPERMITTED,
     render_proposition,
     render_time,
@@ -490,6 +491,20 @@ class RepairLadder:
         cites = tuple(v.result.evidence_ids()) if v.result is not None else ()
         if claim is None:
             return Constraint("do_not_assert", "Do not assert what this beat could not support.")
+        if v.result is not None and v.result.repair_tag == RESOLUTION_CONFLICT:
+            # #154: the beat bound an open thunk against recorded history; steer the binding
+            # elsewhere (or leave it open).
+            avoid = v.result.avoid
+            name = names.get(avoid, avoid) if avoid is not None else None
+            rendered = render_proposition(claim, registry, names)
+            target = f"{name}" if name else "that value"
+            return Constraint(
+                "avoid_binding",
+                f"avoid_binding: {target}. Recorded history rules out that {rendered}: settle "
+                "it as something else, insignificant and with no history here, or leave it "
+                "open.",
+                cites,
+            )
         if v.result is not None and v.result.repair_tag == UNPERMITTED:
             denied = v.result.denied
             reason = "" if denied is None else f" ({denied.reason.value.replace('_', ' ')})"

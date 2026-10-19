@@ -204,6 +204,9 @@ class GenerationInputs(InputSchema):
     policy_constraints: Annotated[list[str], C.POLICY_TEXT] = Field(default_factory=list)
     """On a guardrail regeneration (FR-GUARD-6; #68): one line per output policy an earlier
     draft of this turn broke, naming the policy's message — never a subject or an age."""
+    resolution_steering: Annotated[str, C.CONSTRAINT] = Field(default="", max_length=1_000)
+    """A structured render's deferral bias (FR-COMMIT-11; #154, ``steering_resolution.j2``): a
+    fixed line, present when an open thunk an earlier turn introduced is in the context."""
     player_input: PlayerInput
     # -- the structured pipeline's sections (#150; empty, and so absent, in a Lite prompt) ------
     scene: Annotated[str, C.SCENE] = ""

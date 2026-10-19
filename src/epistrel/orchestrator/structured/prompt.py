@@ -53,6 +53,16 @@ class RenderSections:
     retrieved: tuple[str, ...] = ()
     canon: tuple[str, ...] = ()
     constraints: tuple[str, ...] = field(default_factory=tuple)
+    resolution_steering: str = ""
+    """#154 (FR-COMMIT-11): ``RESOLUTION_STEERING`` when an open thunk introduced in an earlier
+    turn is in the context, else empty."""
+
+
+RESOLUTION_STEERING = (
+    "If this turn settles something an earlier turn left open (who knocked, what was in the "
+    "box), resolve toward insignificance; prefer entities with no history here."
+)
+"""The deferral bias (FR-COMMIT-11, #154): generation steering, not a hard check."""
 
 
 def tokens(text: str) -> int:
@@ -118,6 +128,7 @@ def character_inputs(
         summary_segments=list(s.segments),
         voiced_characters=[character.name],
         policy_constraints=list(s.constraints),
+        resolution_steering=s.resolution_steering,
         player_input=_player(actor, say, do),
         scene=s.scene,
         working_memory=list(s.working_memory),
@@ -145,6 +156,7 @@ def narrator_inputs(
         director_notes=s.director_notes,
         pinned_memories=list(s.pins),
         policy_constraints=list(s.constraints),
+        resolution_steering=s.resolution_steering,
         player_input=_player(actor, say, do),
         scene=s.scene,
         working_memory=list(s.working_memory),
@@ -187,6 +199,7 @@ def working_line(kind: str, name: str | None, text: str, *, own: bool) -> str:
 
 __all__ = [
     "PLAYER",
+    "RESOLUTION_STEERING",
     "RenderSections",
     "age_inputs",
     "capped",

@@ -97,7 +97,8 @@ QUARANTINES = Counter(
 SANITIZES = Counter("epistrel_sanitizes", "Memory texts sanitized by a surrogate.")
 THUNKS = Counter(
     "epistrel_thunks",
-    "Thunks by lifecycle event (introduced, resolved by a dependence, expired).",
+    "Thunks by lifecycle event (introduced, resolved by a dependence, a binding rejected by "
+    "reconciliation, expired).",
     ("event",),
 )
 LEDGER = Counter(

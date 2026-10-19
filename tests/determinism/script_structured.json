@@ -1,0 +1,15 @@
+{
+ "principal": "p-author",
+ "steps": [
+  {"op": "respond", "actor": "player", "input": {"say": "June, is supper ready?"}, "key": "dets-00"},
+  {"op": "respond", "actor": "player", "input": {"say": "Who has the deed now?", "do": "sets the table"}, "key": "dets-01"},
+  {"op": "respond", "actor": "player", "input": {"do": "walks out to the barn"}, "key": "dets-02"},
+  {"op": "regenerate", "key": "dets-03"},
+  {"op": "respond", "actor": "player", "input": {"say": "Someone knocked at the door, I think."}, "key": "dets-04"},
+  {"op": "respond", "actor": "player", "input": {"say": "June, tell me about the farm."}, "key": "dets-05"},
+  {"op": "truncate", "to_turn": 3, "key": "dets-06"},
+  {"op": "respond", "actor": "player", "input": {"say": "Let us eat before it gets cold."}, "key": "dets-07"},
+  {"op": "regenerate", "key": "dets-08"},
+  {"op": "respond", "actor": "player", "input": {"say": "Good night, June."}, "key": "dets-09"}
+ ]
+}

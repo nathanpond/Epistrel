@@ -18,6 +18,7 @@ from epistrel.core import turn_gate
 from epistrel.core.enums import OperationKind
 from epistrel.core.events import Operation
 from epistrel.core.ids import new_ulid
+from epistrel.orchestrator import queue_drainer
 from epistrel.orchestrator.models.stub import FaultKind
 from tests.auth_support import auth_settings
 from tests.event_support import rows
@@ -30,6 +31,7 @@ from tests.respond_support import (
     new_story,
     respond,
     respond_client,
+    until,
 )
 from tests.story_support import READ, WRITE
 
@@ -288,16 +290,40 @@ async def test_queued_ingest_is_one_turn(stub_settings: Settings, engine: AsyncE
         assert (await key_row(engine, f"batch-1-{RUN}")).operation_id == operation_id
 
 
-async def test_long_poll_then_202(stub_settings: Settings, engine: AsyncEngine) -> None:
+class _Clock:
+    """A ``time`` for ``queue_drainer`` whose ``monotonic()`` moves only when the test moves it
+    (#432); ``reads`` counts the long-poll's looks at it."""
+
+    def __init__(self) -> None:
+        self.start = 1000.0
+        self.now = self.start
+        self.reads = 0
+
+    def monotonic(self) -> float:
+        self.reads += 1
+        return self.now
+
+
+POLL_DEADLINE_MS = 30_000
+"""The story's turn deadline in the long-poll test: no stub turn misses it on a loaded host, and
+it differs from the 45 s default, so the wait is shown to be the story's own (#432)."""
+
+
+async def test_long_poll_then_202(
+    stub_settings: Settings, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A queued request waits up to the story's turn deadline (its ``budgets.deadline_ms``,
     #113) and is then answered 202 with the turn still queued; its key later replays the turn's
     result. Complement: on an idle ``queue`` story, ``respond-async`` plays at once (200, no
-    queue row)."""
+    queue row).
+
+    The wait runs on a clock the test moves (#432): still waiting just short of the deadline,
+    202 once it is reached. No step depends on how fast the host is."""
     async with respond_client(stub_settings, engine) as (client, epistrel):
         story, ids = await new_story(
             client,
             settings={"turn_concurrency": "queue"},
-            overrides={"budgets": {"deadline_ms": 500}},
+            overrides={"budgets": {"deadline_ms": POLL_DEADLINE_MS}},
         )
         idle = await respond(client, story, body(ids[PLAYER], "Quick."), headers=ASYNC)
         assert idle.status_code == 200, idle.text
@@ -306,7 +332,20 @@ async def test_long_poll_then_202(stub_settings: Settings, engine: AsyncEngine) 
         holder = "01" + "H" * 24
         assert await turn_gate.acquire(engine, story, holder, lease_s=60) is None
         request = body(ids[FIRST], "I'll wait.")
-        waited = await respond(client, story, request, headers={KEY: f"poll-1-{RUN}"})
+        clock = _Clock()
+        deadline = clock.start + POLL_DEADLINE_MS / 1000
+        with monkeypatch.context() as patched:
+            patched.setattr(queue_drainer, "time", clock)
+            waiting = asyncio.ensure_future(
+                respond(client, story, request, headers={KEY: f"poll-1-{RUN}"})
+            )
+            await until(lambda: clock.reads >= 1, "the queued request starts its long-poll")
+            clock.now = deadline - 0.001
+            seen = clock.reads
+            await until(lambda: clock.reads > seen, "the long-poll looks at the clock again")
+            assert not waiting.done()  # just short of the story's deadline: still waiting
+            clock.now = deadline
+            waited = await asyncio.wait_for(waiting, 30)
         assert waited.status_code == 202, waited.text
         assert waited.json()["position"] == 1
         assert len(await _queue(engine, story)) == 1

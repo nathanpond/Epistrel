@@ -1341,7 +1341,12 @@ class Operation:
                     )
                     .values(status=status.value)
                 )
-                if self.holds_turn_slot and self.story_id is not None:
+                # A queued turn that ended keeps the slot until its drainer records the error
+                # and drops its queue row (``fail_item``/``close_item``, one transaction):
+                # a slot free while the row is there means its drainer died, and another
+                # process's drainer would end the turn with ``turn_interrupted`` first (#436).
+                ended_in_queue = self.queued and status is not OperationStatus.QUEUED
+                if self.holds_turn_slot and self.story_id is not None and not ended_in_queue:
                     await turn_gate.release(conn, self.story_id, self.operation_id)
         except Exception as exc:
             if cause is None:

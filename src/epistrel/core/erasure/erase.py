@@ -2547,10 +2547,11 @@ async def _stop_in_flight(conn: AsyncConnection, story_id: str, run: _StoryRun) 
     """Nothing in flight writes the subject back (FR-ADMIN-9; #127). The erasure is a control
     action, so a turn generating meanwhile abandons at its commit (#47); here, in the erasure's
     own transaction: the turns waiting in the queue fail with ``timeline_changed``; the turn
-    slot's lease is cleared (the turn holding it abandons on its own); and the operations whose
-    events were redacted have their ``membership_tx`` moved, so a background job that read them
-    (#72's summary job declares its source turns, #70) drops its output at commit and is
-    requeued. Returns the failed queued turns."""
+    slot's lease is cleared (the turn holding it abandons on its own; a queued turn a drainer
+    already started keeps it, #436); and the operations whose events were redacted have their
+    ``membership_tx`` moved, so a background job that read them (#72's summary job declares its
+    source turns, #70) drops its output at commit and is requeued. Returns the failed queued
+    turns."""
     redacted = select(events.c.operation_id).where(
         events.c.story_id == story_id, events.c.redacted_at == run.now
     )
@@ -2576,11 +2577,7 @@ async def _stop_in_flight(conn: AsyncConnection, story_id: str, run: _StoryRun) 
             },
         ),
     )
-    await conn.execute(
-        update(stories)
-        .where(stories.c.id == story_id)
-        .values(in_flight_turn=None, in_flight_lease_until=None)
-    )
+    await turn_gate.clear_lease(conn, story_id)
     return failed
 
 

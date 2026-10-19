@@ -4,7 +4,8 @@
 Every story has one **turn slot**: ``stories.in_flight_turn`` names the turn holding it and
 ``stories.in_flight_lease_until`` its lease. A turn takes the slot in its own short transaction
 before its operation begins (``acquire``) and gives it back inside the transaction that commits
-or fails it (``Operation`` calls ``release``). No database lock is held across model calls
+or fails it (``Operation`` calls ``release``; a queued turn that fails keeps it until its
+drainer drops its queue row, #436). No database lock is held across model calls
 (FR-CONC-2): the slot is a durable marker, and a lease that ran out (a crash) is reclaimed by
 the next request, which marks the dead turn ``failed`` (or, for a queued turn, puts it back in
 the queue; after ``MAX_RUNS`` interrupted runs it fails). The lease is the turn's deadline (its
@@ -398,6 +399,29 @@ async def release(conn: AsyncConnection, story_id: str, operation_id: str) -> No
     await conn.execute(select(func.pg_notify(NOTIFY_CHANNEL, story_id)))
 
 
+async def clear_lease(conn: AsyncConnection, story_id: str) -> None:
+    """Free the slot for a control action (an erasure, #127), in the caller's transaction:
+    the turn holding it goes on and abandons at its commit through its own revalidation, and
+    the story's next turn need not wait for it.
+
+    A holder that is a queued turn a drainer already started (its ``turn_queue`` row is still
+    there; ``fail_queued`` dropped those still waiting) keeps its lease (#436). Newcomers wait
+    behind its queue row anyway, but a drainer of the story in another process could not tell
+    the running turn from one whose process died: it would find the slot free and end the turn
+    (``acquire(newcomer=False)``) while it still runs. If its process does die, the lease runs
+    out and ``_reclaim`` deals with it as before."""
+    await conn.execute(
+        update(stories)
+        .where(
+            stories.c.id == story_id,
+            ~select(turn_queue.c.operation_id)
+            .where(turn_queue.c.operation_id == stories.c.in_flight_turn)
+            .exists(),
+        )
+        .values(in_flight_turn=None, in_flight_lease_until=None)
+    )
+
+
 async def release_now(db: AsyncEngine, story_id: str, operation_id: str) -> None:
     """``release`` in its own transaction (a turn that took the slot but never began)."""
     try:
@@ -760,6 +784,7 @@ __all__ = [
     "TurnInterrupted",
     "Wakeups",
     "acquire",
+    "clear_lease",
     "close_item",
     "enqueue",
     "error_record",

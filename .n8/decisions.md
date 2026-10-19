@@ -7711,3 +7711,6 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Issue:** #440
 - **Decision (Rule 3 → filed):** C-11 fails on the branch because `check-lexicon` flags a function-local Python `import` in #438's `test_i_01__structured_now_is_the_turns_story_time` as the M7 "import" term. This predates #440 and is out of scope, so I filed #450 (`needs-triage`).
   **Issue:** #440, #450
+- **Decision (Rule 1, orchestrator):** C-11 was red from `7fb6e84` on. #438's new test imported inside its body, which `check-lexicon` reads as the M7 term "import" (#450), and #439's `test_u_15__inverse_cardinality` was marked `FR-PROP-3,10`, which has no §15 row. The imports moved to module level, and the marker is now `FR-PROP-10`, the rule it tests: cardinality through the inverse. Both agents had run the gates against a stale `build/parts.json`. From now on, the brief has every gate run start with `check-parts --json`.
+  **Why:** adding FR-PROP-3 to §15 would change the plan. The test proves an FR-PROP-10 rule.
+  **Issue:** #438, #439, #450

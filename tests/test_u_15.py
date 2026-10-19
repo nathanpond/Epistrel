@@ -444,7 +444,7 @@ def test_u_15__polarity_and_functional() -> None:
     assert _check(moved, canon).kind is VerdictKind.NOVEL
 
 
-@pytest.mark.part("M4", "FR-PROP-3,10")
+@pytest.mark.part("M4", "FR-PROP-10")
 def test_u_15__inverse_cardinality() -> None:
     """#439: an inverse predicate's cardinality applies to the claim's predicate. ``held_by``
     (the inverse of ``holds``, stored as ``holds``) is functional, so ``holds(Ann, key)`` while

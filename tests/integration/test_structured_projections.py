@@ -32,6 +32,9 @@ from epistrel.core.projections import STRUCTURED, fold, rebuild, structured
 from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Interval, Polarity, Proposition
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME
+from epistrel.core.resolution.context import load_time_basis
+from epistrel.core.resolution.time import resolve_time, story_time_at
+from epistrel.core.resolution.types import ResolvedTime
 from tests.auth_support import auth_settings, bearer
 from tests.canon_support import World, at, commit, run, world
 from tests.canon_support import supersede as supersede_fact
@@ -263,10 +266,6 @@ async def test_i_01__structured_now_is_the_turns_story_time(engine: AsyncEngine)
     whose valid-time ends between turn 1's and turn 2's story-time is in turn 1's scene and
     profile and gone from turn 2's (stored and recomputed alike), the resolver's "now" at turn
     2 is the projections' "now", and the rebuild refolds the same rows."""
-    from epistrel.core.resolution.context import load_time_basis
-    from epistrel.core.resolution.time import resolve_time, story_time_at
-    from epistrel.core.resolution.types import ResolvedTime
-
     w = await world(engine)
     story = w.story_id
     cal, bobby, kitchen = w.people["Cal"], w.people["Bobby"], w.places["kitchen"]

@@ -208,8 +208,9 @@ def perf_page(found: Mapping[str, Mapping[str, Any]], existing: str = "") -> str
     if spike:
         lines += [
             "This is the commit in which an overflow episode reaches its deadline. It ranks "
-            "every counted vector of the story in Python and retires one batch inside the "
-            "turn's transaction. No requirement budgets a single commit, so the spike is "
+            "every counted vector of the story in one statement that keeps only one batch "
+            "(#444) and retires that batch inside the turn's transaction. No requirement "
+            "budgets a single commit, so the spike is "
             "reported next to NFR-PERF-3's turn-commit p95 and P-03's 2 s single-commit bound. "
             f"Host: {label}.",
             "",

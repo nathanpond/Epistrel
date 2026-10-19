@@ -15,15 +15,17 @@ in PR CI with no timing bound (#430, #432).
 
 ``test_p_06__retirement`` measures #147's forced story-scope retirement spike on the 50k
 fixture (``perf_weekly``). This is the commit in which an overflow episode reaches its deadline.
-It ranks every unpinned hot vector-bearing row of the story in Python (about 50k) and retires
-one batch (``RETIREMENT_BATCH_SIZE``) inside the turn's transaction. The story's vector budget
-is set 500 under its count, so one forced run has exactly one batch to retire. The episode's
-deadline is set to the head, and ``on_turn_committed`` runs as the deadline turn's commit runs
-it. Everything is rolled back, so the shared fixture is unchanged. The spike is reported beside
-NFR-PERF-3's 250 ms turn-commit budget and P-03's 2 s single-commit bound. No requirement
-budgets a single commit, so the spike is not gated (#147's carried obligation: measure and
-report it, and file it if it breaks a stated budget). ``test_p_06__retirement_smoke`` runs the
-same measurement on the 1k fixture in PR CI.
+It ranks the story's unpinned hot vector-bearing rows (about 50k) and retires one batch
+(``RETIREMENT_BATCH_SIZE``) inside the turn's transaction. Since #444 the ranking is one
+statement that brings only the batch into Python (it ranked all of them in Python before:
+316 ms at 50k). The story's vector budget is set 500 under its count, so one forced run has
+exactly one batch to retire. The episode's deadline is set to the head, and
+``on_turn_committed`` runs as the deadline turn's commit runs it. Everything is rolled back, so
+the shared fixture is unchanged. The spike is reported beside NFR-PERF-3's 250 ms turn-commit
+budget and P-03's 2 s single-commit bound. No requirement budgets a single commit, so the spike
+is not gated (#147's carried obligation: measure and report it, and file it if it breaks a
+stated budget). ``test_p_06__retirement_smoke`` runs the same measurement on the 1k fixture in
+PR CI.
 """
 
 from __future__ import annotations
@@ -189,6 +191,7 @@ async def _forced_run(run: ScaleRun) -> dict[str, Any]:
                 budgets,
                 now=head,
                 half_life=half_life,
+                limit=retirement.RETIREMENT_BATCH_SIZE,
             )
             ranking_ms = (time.perf_counter() - started) * 1000.0
             started = time.perf_counter()
@@ -208,7 +211,8 @@ async def _forced_run(run: ScaleRun) -> dict[str, Any]:
         "test": "P-06 retirement spike",
         "requirement": "NFR-SCALE-1",
         "obligation": "#147",
-        "vectors_ranked": len(candidates),
+        "vectors_ranked": exact.story_vectors,
+        "candidates_fetched": len(candidates),
         "story_vectors": exact.story_vectors,
         "budget_set": budget,
         "episodes": len(episodes),
@@ -224,10 +228,11 @@ async def _forced_run(run: ScaleRun) -> dict[str, Any]:
 
 
 def _forced_as_designed(found: dict[str, Any], vectors: int) -> None:
-    """One story-scope episode was forced and retired exactly one batch, after ranking every
-    counted vector."""
+    """One story-scope episode was forced over the story's counted vectors and retired exactly
+    one batch, and the ranking brought only that batch into Python (#444)."""
     assert found["episodes"] == 1, found
     assert found["vectors_ranked"] == found["story_vectors"] >= vectors // 2, found
+    assert found["candidates_fetched"] == retirement.RETIREMENT_BATCH_SIZE, found
     assert sum(found["retired"].values()) == retirement.RETIREMENT_BATCH_SIZE, found
 
 
@@ -237,7 +242,7 @@ async def test_p_06__retirement(scale_50k: ScaleRun) -> None:
     """#147's forced story-scope retirement on the 50k fixture: measured, reported beside the
     turn-commit budget, and rolled back.
 
-    Complement asserted: the run ranked all of the story's ~50k counted vectors and retired
+    Complement asserted: the run ranked the story's ~50k counted vectors, fetched and retired
     exactly one batch, so the figure is the spike's worst case for one run, and the fixture is
     unchanged afterwards (nothing retired)."""
     found = await _forced_run(scale_50k)
@@ -255,8 +260,8 @@ async def test_p_06__retirement(scale_50k: ScaleRun) -> None:
 async def test_p_06__retirement_smoke(scale_1k: ScaleRun) -> None:
     """PR CI's subset: the same forced run on the 1k fixture, with no timing bound.
 
-    Complement asserted: as the weekly run, one episode, one batch retired after ranking every
-    counted vector, and nothing left retired after the rollback."""
+    Complement asserted: as the weekly run, one episode, one batch fetched and retired,
+    and nothing left retired after the rollback."""
     found = await _forced_run(scale_1k)
     record("p_06_retirement_smoke", found)
     _forced_as_designed(found, scale_1k.fixture.story.memories)

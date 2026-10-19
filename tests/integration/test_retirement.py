@@ -32,7 +32,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import event, text
 
 from epistrel.core import mutation
 from epistrel.core.commit import lifecycle
@@ -41,6 +41,7 @@ from epistrel.core.db import database_url
 from epistrel.core.enums import OpenSlot
 from epistrel.core.history import read_history
 from epistrel.core.memory import pins, records, retirement
+from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.propositions import registry as predicate_registry
 from epistrel.core.propositions.model import Interval, Proposition
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
@@ -963,3 +964,156 @@ async def test_pins_reach_the_context_unless_quarantined(s: Scratch) -> None:
     assert body["counters"]["characters"] == {bobby: 1}
     assert body["budgets"]["memories_per_character"] == 1
     assert body["recent_retirements"] == []
+
+
+# -- ranking in SQL (#444) -------------------------------------------------------------------------
+
+
+async def _reference_ranking(
+    conn: Any,
+    story: str,
+    scope: str,
+    scope_id: str,
+    budgets: retirement.Budgets,
+    *,
+    now: int,
+    half_life: int,
+) -> list[tuple[str, str | None, float]]:
+    """#147's ranking as it was built, the reference the SQL ranking must equal: every
+    candidate fetched and ranked in Python. Answers ``(id, retirable, decayed)`` in order."""
+    where = (
+        "m.holder_character_id = :x" if scope == retirement.CHARACTER else "m.embedding IS NOT NULL"
+    )
+    found = await conn.execute(
+        text(
+            "SELECT m.id, m.importance, m.importance_at, "  # noqa: S608
+            "coalesce(m.last_accessed_at, m.created_at) AS accessed, EXISTS (SELECT 1 FROM "
+            "memories o WHERE o.id = ANY(m.covered_by) AND o.membership = 'active' "
+            "AND o.retrieval_tier = 'hot') AS covered FROM memories m WHERE m.story_id = :s "
+            "AND m.retrieval_tier = 'hot' AND NOT m.pinned AND m.membership = 'active' "
+            f"AND {where}"
+        ),
+        {"s": story, "x": scope_id},
+    )
+    keyed: list[tuple[tuple[int, float, datetime, str], str | None]] = []
+    for row in found:
+        decayed = records.decayed_importance(row.importance, row.importance_at, now, half_life)
+        floor = decayed < budgets.importance_floor
+        reason = retirement.COVERED if row.covered else retirement.FLOOR if floor else None
+        keyed.append(((0 if reason else 1, decayed, row.accessed, str(row.id)), reason))
+    keyed.sort(key=lambda k: k[0])
+    return [(key[3], reason, key[1]) for key, reason in keyed]
+
+
+async def test_the_sql_ranking_equals_the_python_ranking(s: Scratch) -> None:
+    """#444: ``ranked`` computes the order in Postgres and keeps the first ``limit`` rows. On a
+    story mixing covered records, records below the floor, unscored ones (``NULL``
+    importance), ones with no ``importance_at`` or one after ``now`` (as after a truncation),
+    and exact ties broken by the last access and then by id, the order, the reasons and the
+    decayed importances equal #147's Python ranking, for the character's set and for the
+    story's vector set, at several ``now``s; every ``limit`` answers a prefix of the whole.
+    Complement: the order is not trivial (covered, below-floor and non-retirable records all
+    occur, and a tie is broken by access)."""
+    db = s.db
+    w = await h.story(db, importance_floor=0.2)
+    story, bobby, ann = w.story_id, w.characters["Bobby"], w.characters["Ann"]
+    scores: list[float | None] = [0.9, 0.9, 0.9, 0.1, 0.25, None, None, 0.6, 0.4, 0.4, 0.05]
+    _, ids = await h.held(db, story, bobby, len(scores), importance=scores)
+    await h.held(db, story, bobby, 0, covering=ids[7:9])
+    _, others = await h.held(db, story, ann, 4, importance=[0.3, 0.9, None, 0.15])
+    await h.fake_vectors(db, story, [*ids[:10], *others[:3]])
+    await _set_access(s, {ids[1]: "2026-01-01T00:00:00Z", ids[2]: "2026-03-01T00:00:00Z"})
+    async with db.connect() as conn:
+        await conn.execute(
+            text(
+                "UPDATE memories SET importance_at = CASE id WHEN :a THEN NULL WHEN :b THEN 400 "
+                "WHEN :c THEN 0 WHEN :d THEN 7 END WHERE id IN (:a, :b, :c, :d)"
+            ),
+            {"a": ids[3], "b": ids[4], "c": ids[9], "d": others[0]},
+        )
+        settings = await effective_configuration(conn, story, validate=False)
+        budgets = retirement.Budgets.of(settings.settings)
+        half_life = await records.half_life_turns(conn)
+        reasons: set[str | None] = set()
+        for scope, scope_id in ((retirement.CHARACTER, bobby), (retirement.STORY, story)):
+            for now in (1, 40, 300, 1_000):
+                expected = await _reference_ranking(
+                    conn, story, scope, scope_id, budgets, now=now, half_life=half_life
+                )
+                got = await retirement.ranked(
+                    conn, story, scope, scope_id, budgets, now=now, half_life=half_life
+                )
+                assert [(c.id, c.retirable) for c in got] == [e[:2] for e in expected]
+                assert [c.decayed for c in got] == pytest.approx([e[2] for e in expected])
+                for k in (0, 1, 3, len(expected) + 5):
+                    first = await retirement.ranked(
+                        conn,
+                        story,
+                        scope,
+                        scope_id,
+                        budgets,
+                        now=now,
+                        half_life=half_life,
+                        limit=k,
+                    )
+                    assert [(c.id, c.retirable) for c in first] == [e[:2] for e in expected[:k]]
+                reasons |= {e[1] for e in expected}
+        whole = await _reference_ranking(
+            conn, story, retirement.CHARACTER, bobby, budgets, now=1, half_life=half_life
+        )
+        await conn.rollback()
+    assert reasons == {retirement.COVERED, retirement.FLOOR, None}
+    order = [e[0] for e in whole]
+    assert order.index(ids[1]) < order.index(ids[2]) < order.index(ids[0])  # a tie, by access
+
+
+async def _forced_story_run(db: Any, story: str) -> tuple[int, int, dict[str, int]]:
+    """The story-scope episode forced at the head as the deadline turn's commit forces it
+    (#153's measurement, rolled back): the statements the run issued, the rows its reads
+    brought into Python, and what it retired."""
+    statements: list[str] = []
+    fetched: list[int] = []
+
+    def after(conn: Any, cursor: Any, statement: str, *args: Any) -> None:
+        del conn, args
+        statements.append(statement)
+        if statement.lstrip().upper().startswith(("SELECT", "WITH")):
+            fetched.append(max(0, int(cursor.rowcount)))
+
+    async with db.connect() as conn:
+        await retirement.reconcile(conn, story)
+        await conn.execute(
+            text(
+                "UPDATE overflow_episodes SET deadline_turn = opened_turn "
+                "WHERE story_id = :s AND closed_turn IS NULL AND scope = 'story'"
+            ),
+            {"s": story},
+        )
+        (ep,) = [e for e in await retirement.open_episodes(conn, story) if e.scope == "story"]
+        event.listen(db.sync_engine, "after_cursor_execute", after)
+        try:
+            run = await retirement.run_episode(conn, story, ep.id)
+        finally:
+            event.remove(db.sync_engine, "after_cursor_execute", after)
+        await conn.rollback()
+    assert run.forced
+    return len(statements), sum(fetched), dict(run.retired)
+
+
+async def test_forced_retirement_cost_does_not_grow_with_the_vectors(s: Scratch) -> None:
+    """#444 (NFR-PERF-3, NFR-SCALE-2), proven by counting, never by timing: a forced
+    story-scope run that retires 5 records issues the same statements and brings the same
+    number of rows into Python on a story with 25 vectors as on one with 605 (each 5 over its
+    vector budget). Complement: both runs retire exactly the 5 (``uncovered``), so the equal
+    counts are not two runs that did nothing."""
+    db = s.db
+    found = []
+    for n in (25, 605):
+        w = await h.story(db, vectors_per_story=n - 5)
+        await h.held(db, w.story_id, w.characters["Bobby"], n)
+        await h.fake_vectors(db, w.story_id)
+        found.append(await _forced_story_run(db, w.story_id))
+    (small_statements, small_rows, small_retired), (large_statements, large_rows, large) = found
+    assert small_retired == large == {retirement.UNCOVERED: 5}
+    assert small_statements == large_statements
+    assert small_rows == large_rows

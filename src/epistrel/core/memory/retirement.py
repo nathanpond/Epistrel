@@ -42,7 +42,9 @@ one. Each open episode's current ``excess`` is what ``epistrel_hot_overflow{scop
 whether they are **retirable now** — covered by an active hot consolidation output
 (``covered_by``, #143) or with ``decayed_importance()`` (#135) below
 ``memory.hot_set.importance_floor`` (0.2) — then lowest decayed importance, then oldest last
-access (``last_accessed_at``, else ``created_at``), then id. Before the deadline a run retires
+access (``last_accessed_at``, else ``created_at``), then id. The ranking is one statement that
+keeps only the batch a run may retire (#444): Postgres computes the order, so a run's cost in
+Python does not grow with the set. Before the deadline a run retires
 only retirable records, as many as the excess, and leaves the episode open while it is still
 over. In the commit whose turn reaches the deadline (``on_turn_committed``, a ``TURN_HOOKS``
 hook, synchronously) the run also retires the lowest-ranked uncovered records,
@@ -79,7 +81,21 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
-from sqlalchemy import any_, exists, func, insert, select, text, update
+from sqlalchemy import (
+    Integer,
+    any_,
+    case,
+    cast,
+    exists,
+    func,
+    insert,
+    literal,
+    null,
+    select,
+    text,
+    update,
+)
+from sqlalchemy.dialects.postgresql import DOUBLE_PRECISION
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core import timeline
@@ -529,41 +545,75 @@ async def ranked(
     *,
     now: int,
     half_life: float,
+    limit: int | None = None,
 ) -> list[Candidate]:
-    """The set's candidates in retirement order (see the module docstring)."""
+    """The set's candidates in retirement order (see the module docstring), the first ``limit``
+    of them (all with ``None``).
+
+    The ranking is one statement (#444): the decayed importance (``records.decayed_importance``
+    as an expression), the reason a record is retirable now and the order are computed by
+    Postgres, which keeps only the first ``limit`` rows (a bounded top-N sort over the set's
+    rows, read through its partial index), so a run brings no more rows into Python than it
+    may retire."""
+    if half_life <= 0:
+        raise ValueError("an importance half-life is a positive number of turns")
     m = memories.c
     where: list[Any] = [m.story_id == story_id, _COUNTED]
     if scope == CHARACTER:
         where.append(m.holder_character_id == scope_id)
     else:
         where.append(m.embedding.is_not(None))
-    found = await conn.execute(
+    value = func.coalesce(cast(m.importance, DOUBLE_PRECISION), records.DEFAULT_IMPORTANCE)
+    age = func.greatest(0, literal(now, Integer) - func.coalesce(m.importance_at, now))
+    decayed = value * func.power(
+        literal(0.5, DOUBLE_PRECISION),
+        cast(age, DOUBLE_PRECISION) / literal(float(half_life), DOUBLE_PRECISION),
+    )
+    rows = (
         select(
             m.id,
-            m.holder_character_id,
+            m.holder_character_id.label("holder"),
             m.embedding.is_not(None).label("has_vector"),
-            m.importance,
-            m.importance_at,
+            decayed.label("decayed"),
             func.coalesce(m.last_accessed_at, m.created_at).label("accessed"),
             _covered(m).label("covered"),
-        ).where(*where)
-    )
-    candidates: list[Candidate] = []
-    for r in found:
-        decayed = records.decayed_importance(r.importance, r.importance_at, now, half_life)
-        retirable = COVERED if r.covered else FLOOR if decayed < budgets.importance_floor else None
-        candidates.append(
-            Candidate(
-                id=str(r.id),
-                holder=None if r.holder_character_id is None else str(r.holder_character_id),
-                has_vector=bool(r.has_vector),
-                retirable=retirable,
-                decayed=decayed,
-                accessed=r.accessed,
-            )
         )
-    candidates.sort(key=lambda c: c.key)
-    return candidates
+        .where(*where)
+        .subquery("candidates")
+    )
+    retirable = case(
+        (rows.c.covered, COVERED),
+        (rows.c.decayed < literal(budgets.importance_floor, DOUBLE_PRECISION), FLOOR),
+        else_=null(),
+    )
+    query = (
+        select(
+            rows.c.id,
+            rows.c.holder,
+            rows.c.has_vector,
+            rows.c.decayed,
+            rows.c.accessed,
+            retirable.label("retirable"),
+        )
+        .order_by(
+            retirable.is_(None),
+            rows.c.decayed,
+            rows.c.accessed,
+            rows.c.id.collate("C"),
+        )
+        .limit(limit)
+    )
+    return [
+        Candidate(
+            id=str(r.id),
+            holder=None if r.holder is None else str(r.holder),
+            has_vector=bool(r.has_vector),
+            retirable=r.retirable,
+            decayed=float(r.decayed),
+            accessed=r.accessed,
+        )
+        for r in await conn.execute(query)
+    ]
 
 
 async def retire(
@@ -657,10 +707,17 @@ async def run_episode(
     picks: list[tuple[Candidate, str]] = []
     if excess > 0:
         half_life = await records.half_life_turns(conn)
-        candidates = await ranked(
-            conn, story_id, ep.scope, ep.scope_id, budgets, now=turn, half_life=half_life
-        )
         wanted = min(excess, limit)
+        candidates = await ranked(
+            conn,
+            story_id,
+            ep.scope,
+            ep.scope_id,
+            budgets,
+            now=turn,
+            half_life=half_life,
+            limit=wanted,
+        )
         picks = [(c, c.retirable) for c in candidates if c.retirable][:wanted]
         if forced and len(picks) < wanted:
             uncovered = [c for c in candidates if not c.retirable][: wanted - len(picks)]

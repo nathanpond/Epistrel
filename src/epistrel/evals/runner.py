@@ -505,6 +505,7 @@ async def run_suite(suite: Suite, job: SuiteRun) -> SuiteResult:
         verdict=verdict,
         duration_s=round(time.perf_counter() - started, 1),
         mean_case_ms=round(sum(latencies) / len(latencies)) if latencies else None,
+        notes=list(suite.reading_notes),
     )
 
 

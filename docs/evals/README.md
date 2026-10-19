@@ -69,7 +69,7 @@ one-sided 95% upper bound.
 
 | Suite | What it measures | Ships with |
 |---|---|---|
-| `smoke` | Lite turns end to end: the turn completes on its designed calls, and the reply follows a one-word instruction. Harness smoke, no NFR-QUAL floor. | #134 |
+| `smoke` | Lite turns end to end: the turn completes on its designed calls, and the reply follows a one-word instruction (an inflected form of the word counts; #437). 60 cases per seed. Harness smoke, no NFR-QUAL floor. | #134, #437 |
 | named by their docs/04 ids (`e01`, `q01`, …) | NFR-QUAL-2..7, 10 on labeled sets | #157 |
 | `e12`, `e13` | The prose floor (NFR-QUAL-14) and the text-quality signals (NFR-QUAL-15), with the calibrated `quality_judge` | #158 |
 

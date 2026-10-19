@@ -62,6 +62,8 @@ class Suite:
     metrics: ClassVar[tuple[Metric, ...]]
     guarantees: ClassVar[tuple[str, ...]] = ()
     ci_gate: ClassVar[bool] = False
+    reading_notes: ClassVar[tuple[str, ...]] = ()
+    """Suite-specific scoring notes for the report's "How to read" section (#437)."""
     case_model: ClassVar[type[CaseModel]] = CaseModel
 
     def load(self, sets_dir: Path) -> list[CaseModel]:

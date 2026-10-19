@@ -264,6 +264,10 @@ async def test_harness_stub_run(pg_url: str, engine: AsyncEngine, tmp_path: Path
     for suite in report.suites:
         for metric in suite.metrics:
             assert f"`{metric.id}`" in markdown
+        # A suite's reading notes reach the report's "How to read" section (#437).
+        assert suite.notes == list(SUITES[suite.name].reading_notes)
+        how_to_read = markdown.split("## How to read this report", 1)[1]
+        assert all(f"- {note}" in how_to_read for note in suite.notes)
     assert "verified" not in markdown.lower()
     assert_no_machine_name(markdown, json.dumps(report.as_json()))
     assert not (tmp_path / "f.jsonl").exists()  # the stub floors held: no failed case

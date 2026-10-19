@@ -7,7 +7,8 @@ and ``model_version`` (the completion's own ``model`` field; ``null`` when it re
 ``fingerprint`` (FR-PROF-16, #109), ``host`` (``ci`` or ``local``, with #54's hardware and
 server-version fields and the endpoint; never the machine's name), and per suite, per metric:
 ``mean``, ``stdev``, ``floor``, ``rule``, ``direction``, ``sample_size``, ``seed_count``,
-``verdict``, and for a zero-tolerance metric its ``violations`` and ``upper_bound_95``.
+``verdict``, and for a zero-tolerance metric its ``violations`` and ``upper_bound_95``; per
+suite, its ``notes`` (the suite's scoring notes, rendered under "How to read"; #437).
 Values are fractions 0-1.
 
 **Markdown** (``docs/evals/<fingerprint[:12]>-<YYYY-MM-DD>.md`` for a real model, committed
@@ -119,6 +120,7 @@ class SuiteResult(BaseModel):
     verdict: Verdict
     duration_s: float | None = None
     mean_case_ms: int | None = None
+    notes: list[str] = Field(default_factory=list)
 
     @classmethod
     def errored(cls, suite: Suite, errors: list[str], seeds: list[int]) -> SuiteResult:
@@ -131,6 +133,7 @@ class SuiteResult(BaseModel):
             seeds=seeds,
             errors=errors,
             verdict=Verdict.error,
+            notes=list(suite.reading_notes),
         )
 
 
@@ -349,6 +352,7 @@ def render_markdown(report: Report) -> str:
                 lines.append("")
                 lines += [f"- `{m.id}`: {m.description}" for m in described]
     lines += ["", HOW_TO_READ.rstrip()]
+    lines += [f"- {note}" for suite in report.suites for note in suite.notes]
     return "\n".join(lines) + "\n"
 
 

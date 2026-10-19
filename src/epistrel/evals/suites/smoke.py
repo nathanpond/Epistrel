@@ -9,7 +9,9 @@ and scores them. The quality suites are #157's and #158's.
 - ``smoke.turn_completed`` (rate, ≥ 95 %): the turn released a non-empty reply that is not the
   safe fallback, and kept its design (``tools.model_matrix.design_problems``: one generation
   call, no call outside it, within the turn's call cap).
-- ``smoke.instruction_followed`` (rate, ≥ 80 %): the reply contains the requested word.
+- ``smoke.instruction_followed`` (rate, ≥ 80 %): the reply contains the requested word or a
+  regular inflection of it ("candles" for "candle"; the owner's decision on #437, made before
+  the re-run, not tuned to it). A compound ("candlestick") or another word does not count.
 
 Its stub answers are scripted per case (the word included), so CI gates on its stub run.
 """
@@ -51,8 +53,36 @@ class SmokeCase(CaseModel):
     keyword: str = Field(pattern=r"^[a-z]{3,20}$")
 
 
+VOWELS = frozenset("aeiou")
+
+
+def inflections(word: str) -> frozenset[str]:
+    """``word`` and its regular English inflections (#437): plural or third person (-s, -es,
+    -ies, -ves) and past or participle (-ed, -d, -ing, with the final e dropped and the final
+    consonant doubled). Deterministic and dependency-free; it may name a form that is not a
+    real word, which costs nothing, since only the reply's words are matched against it."""
+    w = word.lower()
+    forms = {w, w + "s", w + "es", w + "ed", w + "ing"}
+    if w.endswith("e"):
+        forms |= {w + "d", w[:-1] + "ing"}
+    if w.endswith("y") and len(w) > 1 and w[-2] not in VOWELS:
+        forms |= {w[:-1] + "ies", w[:-1] + "ied"}
+    if w.endswith("fe"):
+        forms.add(w[:-2] + "ves")
+    elif w.endswith("f"):
+        forms.add(w[:-1] + "ves")
+    consonant_vowel_consonant = (
+        len(w) >= 3 and w[-3] not in VOWELS and w[-2] in VOWELS and w[-1] not in VOWELS | set("wxy")
+    )
+    if consonant_vowel_consonant:
+        forms |= {w + w[-1] + "ed", w + w[-1] + "ing"}
+    return frozenset(forms)
+
+
 def contains_word(text: str, word: str) -> bool:
-    return re.search(rf"\b{re.escape(word)}\b", text, re.IGNORECASE) is not None
+    """``text`` uses ``word`` or one of its ``inflections`` as a whole word, in any case."""
+    alternatives = "|".join(re.escape(f) for f in sorted(inflections(word), key=len, reverse=True))
+    return re.search(rf"\b(?:{alternatives})\b", text, re.IGNORECASE) is not None
 
 
 @register
@@ -72,8 +102,14 @@ class SmokeSuite(Suite):
             Rule.rate,
             0.80,
             Direction.at_least,
-            "the reply uses the word the player asked for",
+            "the reply uses the word the player asked for, or an inflection of it "
+            '("candles" for "candle")',
         ),
+    )
+    reading_notes = (
+        "`smoke.instruction_followed` counts an inflected form of the requested word (plural "
+        '-s/-es/-ies/-ves, -ed/-d/-ing: "candles" for "candle") as following the instruction; '
+        'a compound ("candlestick"), another word, or no use of the word fails (#437).',
     )
     ci_gate = True
     case_model = SmokeCase
@@ -114,4 +150,12 @@ class SmokeSuite(Suite):
         return {GENERATION.name: f'{INNKEEPER} nods. "Of course: {case.keyword}, as you asked."'}
 
 
-__all__ = ["CAST", "INSTRUCTION_FOLLOWED", "TURN_COMPLETED", "SmokeCase", "SmokeSuite"]
+__all__ = [
+    "CAST",
+    "INSTRUCTION_FOLLOWED",
+    "TURN_COMPLETED",
+    "SmokeCase",
+    "SmokeSuite",
+    "contains_word",
+    "inflections",
+]

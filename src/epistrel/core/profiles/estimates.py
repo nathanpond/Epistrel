@@ -26,7 +26,7 @@ CHUNK_MESSAGES = 30
 """Transcript messages one backfill call reads (FR-PROF-9's scene-sized chunks)."""
 CHARS_PER_TOKEN = 4
 """Characters per token, the usual rough rule for English text."""
-CALL_LATENCY_MS = 13_398
+CALL_LATENCY_MS = 11_868
 """One model call's latency, in milliseconds (see the module docstring)."""
 
 

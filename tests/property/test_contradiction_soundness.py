@@ -410,6 +410,17 @@ def implied_examples(
     return claim, vs.records(*joins, *enrollments), closed, draw(st.booleans())
 
 
+def _negated_enrollment() -> tuple[Proposition, list[Record], tuple[ClosedSetRecord, ...], bool]:
+    """A conflict the rule must find on every seed: the team is OSU's and canon negates Bobby's
+    OSU enrollment over the claim's own time. Random draws rarely line up three intervals, so
+    the completeness assertion would otherwise depend on the seed."""
+    when = Interval.of(0, 4 * STEP)
+    claim = vs.prop(vs.BOBBY, vs.MEMBER_OF, vs.TEAM, when)
+    join = vs.prop(vs.TEAM, vs.PART_OF, vs.OSU, when)
+    negated = vs.prop(vs.BOBBY, vs.ENROLLED_AT, vs.OSU, when, negated=True)
+    return claim, vs.records(join, negated), (), True
+
+
 def _meets_exactly(a: Interval, b: Interval) -> bool:
     (a_lo, a_hi), (b_lo, b_hi) = a.definite(), b.definite()
     return max(a_lo or 0, b_lo or 0) < min(a_hi or HORIZON * 2, b_hi or HORIZON * 2)
@@ -465,6 +476,7 @@ def test_contradiction_soundness__implied() -> None:
         suppress_health_check=[HealthCheck.too_slow, HealthCheck.filter_too_much],
     )
     @given(example=implied_examples())
+    @example(example=_negated_enrollment())
     def run(example: tuple[Proposition, list[Record], tuple[ClosedSetRecord, ...], bool]) -> None:
         claim, records, closed, ruled = example
         reg = vs.registry_of(vs.VARSITY_RULE) if ruled else vs.REGISTRY

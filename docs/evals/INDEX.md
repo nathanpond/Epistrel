@@ -8,4 +8,5 @@ the procedure.
 
 | Date (UTC) | Model | Fingerprint | Host | Suites | Run |
 |---|---|---|---|---|---|
+| 2026-10-19 | `cydonia-24b-v4.3` | `bafbf3d71ae7` | local | `smoke` pass | [pass](bafbf3d71ae7-2026-10-19.md) |
 | 2026-10-17 | `cydonia-24b-v4.3` | `9dbec729a92f` | local | `smoke` fail | [fail](9dbec729a92f-2026-10-17.md) |

@@ -407,14 +407,33 @@ class ClosedSetDecl(_Decl):
     """An author's closed set (FR-PROP-8): the listed ``members`` are all the objects of
     ``predicate`` for the key — the ``subject`` and the ``key`` qualifiers the predicate names —
     over ``[valid_from, valid_to)`` (story-minutes; open when omitted). Subjects and members are
-    scenario references (a role or entity id) structured genesis resolves to entity ids."""
+    scenario references (a role or entity id) structured genesis resolves to entity ids.
+
+    With ``key_set`` (one of the predicate's key qualifiers, #441) the set closes that
+    qualifier's values for the subject instead, and ``members`` are those values, never
+    resolved: "Bobby's only undergraduate degree is ``bobby_ba``" is ``{predicate:
+    degree_awarded, subject: bobby, key_set: degree_id, key: {level: bachelor}, members:
+    [bobby_ba]}``; ``key`` then names any of the predicate's other qualifiers."""
 
     predicate: str = Field(min_length=1, max_length=NAME_MAX)
     subject: str = Field(min_length=1)
     key: dict[str, str | int | bool] = Field(default_factory=dict)
-    members: tuple[str, ...] = Field(min_length=1)
+    members: tuple[str | int, ...] = Field(min_length=1)
     valid_from: int | None = None
     valid_to: int | None = None
+    key_set: str | None = Field(default=None, min_length=1, max_length=NAME_MAX)
+
+    def entity_refs(self) -> tuple[str, ...]:
+        """The references genesis resolves: the subject, and an object set's members."""
+        if self.key_set is not None:
+            return (self.subject,)
+        return (self.subject, *(str(m) for m in self.members))
+
+    def resolved_members(self, resolve: Callable[[str], str]) -> tuple[Any, ...]:
+        """The members as stored: entity ids for an object set, the values for a key set."""
+        if self.key_set is not None:
+            return self.members
+        return tuple(resolve(str(m)) for m in self.members)
 
 
 class ImplicationRule(_Decl):
@@ -709,9 +728,10 @@ async def register_author(
                 predicate_id=predicate.id,
                 subject_id=resolved(closed.subject),
                 key=closed.key,
-                members=tuple(resolved(m) for m in closed.members),
+                members=closed.resolved_members(resolved),
                 valid_from=closed.valid_from,
                 valid_to=closed.valid_to,
+                key_set=closed.key_set,
             ),
             registry,
             asserted_by="author",

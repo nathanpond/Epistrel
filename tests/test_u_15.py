@@ -8,18 +8,21 @@ negations and the bounded implication closure (FR-PROP-8,11); #139's
 novel, uncertain) run ``core.verify.rules.check`` over records built in memory (it is pure), one
 function per docs/04 clause group, each with its complement: coverage, granularity, polarity and
 the functional key, key scoping, closed sets and cardinality, exclusion and implication, weak
-predicates, approximate bounds, normalization and holders.
+predicates, approximate bounds, normalization and holders. #441 adds the forward implication of
+an affirmed claim, closed sets over a key set, and the rule-free cross-predicate conflict.
 """
 
 from __future__ import annotations
 
 import itertools
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.core.errors import InvalidRequest
 from epistrel.core.propositions import registry, store
 from epistrel.core.propositions.model import (
     Granularity,
@@ -181,7 +184,9 @@ async def test_u_15__registry(engine: AsyncEngine) -> None:
     none has none, however many single-valued facts it holds), and an explicit negation is
     stored as a negated proposition. The implication closure applies declared rules only and
     stops at its depth. Complement: the declared closed set is stored, and the declared rule
-    derives what the undeclared one cannot."""
+    derives what the undeclared one cannot. A closed set over a key set (#441) is stored with
+    its ``key_set`` and its values unresolved; one that names no key qualifier, or narrows by
+    the closed qualifier itself, is refused (422)."""
     story = await new_story(engine)
     async with engine.begin() as conn:
         bobby = await store.add_entity(conn, story, "person", "Bobby")
@@ -235,6 +240,41 @@ async def test_u_15__registry(engine: AsyncEngine) -> None:
     assert declared.members == [osu]
     assert declared.asserted_by == "author"
     assert (declared.valid_from, declared.valid_to) == (year(2010), year(2014))
+    assert declared.key_set is None
+    only_bachelor = {
+        "predicate": "degree_awarded",
+        "subject": "bobby",
+        "key_set": "degree_id",
+        "key": {"level": "bachelor"},
+        "members": ["bobby_ba"],
+    }
+    async with engine.begin() as conn:
+        await registry.register_author(
+            conn,
+            story,
+            registry.ScenarioRules.parse({"closed_sets": [only_bachelor]}),
+            resolve={"bobby": bobby}.__getitem__,
+        )
+    (degrees,) = await rows(
+        engine,
+        "SELECT * FROM closed_sets WHERE story_id = :s AND key_set IS NOT NULL",
+        s=story,
+    )
+    assert (degrees.key_set, degrees.members, degrees.key) == (
+        "degree_id",
+        ["bobby_ba"],
+        {"subject_id": bobby, "level": "bachelor"},
+    )
+    for bad in ({"key_set": "level"}, {"key": {"degree_id": "x"}}):
+        with pytest.raises(InvalidRequest) as refused:
+            async with engine.begin() as conn:
+                await registry.register_author(
+                    conn,
+                    story,
+                    registry.ScenarioRules.parse({"closed_sets": [{**only_bachelor, **bad}]}),
+                    resolve={"bobby": bobby}.__getitem__,
+                )
+        assert refused.value.details["reason"] == "closed_set_key"
     # The closure: declared rules only, bounded depth.
     member = CORE_BY_NAME["member_of"].id
     part_of = "01JB0000000000000000000002"
@@ -605,6 +645,158 @@ def test_u_15__exclusion_and_implication() -> None:
     deep = _check(denied, start, reg=chain, implication_max_depth=3)
     _cites(deep, Rule.IMPLICATION)
     assert not deep.depth_capped
+
+
+UF = vs.FLORIDA
+"""The University of Florida (an organization) in #441's slices."""
+PENINSULA = "01JA000000000000000000000H"
+"""The Florida peninsula (a place)."""
+ATTENDED = CORE_BY_NAME["attended_program"].id
+PRESENCE_RULE = Implication(when=ATTENDED, then=vs.LOCATED_AT)
+"""Variant 4's author rule: attending a program at a place implies being there."""
+
+
+@pytest.mark.part("M4", "FR-PROP-10,11")
+def test_u_15__forward_implication() -> None:
+    """An affirmed claim's consequences under the declared rules are checked (#441): Bobby's
+    varsity membership of a team ``part_of`` Florida implies his enrollment at Florida, a new
+    member of the closed set "only OSU" → ``contradicted``, citing the rule's join and the set;
+    against canon's "never enrolled at Florida" it is ``contradicted`` by polarity. A rule
+    without a join: attending a program at the University of Florida implies being there, which
+    canon's "never in Florida" negates through the containment fact (citing both). Complements:
+    without the rule, the join, the closed set, or over disjoint time, the claim is ``novel``;
+    the closure's depth stop is flagged."""
+    member = vs.prop(vs.BOBBY, vs.MEMBER_OF, vs.TEAM, vs.years(2010, 2014))
+    part = vs.prop(vs.TEAM, vs.PART_OF, UF)
+    part_record = vs.record(part)
+    only_osu = ClosedSetRecord("01JC0000000000000000000002", vs.ENROLLED_AT, vs.BOBBY, (vs.OSU,))
+    ruled = vs.registry_of(vs.VARSITY_RULE)
+    found = check(member, [part_record], registry=ruled, closed_sets=(only_osu,))
+    assert found.kind is VerdictKind.CONTRADICTED, found
+    assert found.rules == {Rule.IMPLICATION, Rule.CLOSED_SET}
+    assert found.cited() == (part_record.proposition_id, only_osu.id)
+    assert check(member, [part_record], registry=vs.REGISTRY, closed_sets=(only_osu,)).kind is (
+        VerdictKind.NOVEL
+    )
+    assert check(member, [], registry=ruled, closed_sets=(only_osu,)).kind is VerdictKind.NOVEL
+    assert check(member, [part_record], registry=ruled).kind is VerdictKind.NOVEL
+    never = vs.record(vs.prop(vs.BOBBY, vs.ENROLLED_AT, UF, vs.years(2000, 2020), negated=True))
+    denied = check(member, [part_record, never], registry=ruled)
+    _cites(denied, Rule.POLARITY)
+    assert Rule.IMPLICATION in denied.rules
+    assert set(denied.cited()) == {part_record.proposition_id, never.proposition_id}
+    before = vs.record(vs.prop(vs.BOBBY, vs.ENROLLED_AT, UF, vs.years(2000, 2005), negated=True))
+    assert check(member, [part_record, before], registry=ruled).kind is VerdictKind.NOVEL
+    chain = vs.registry_of(
+        Implication(when=vs.MEMBER_OF, then=vs.STEP_A, via=vs.PART_OF),
+        Implication(when=vs.STEP_A, then=vs.STEP_B),
+        Implication(when=vs.STEP_B, then=vs.ENROLLED_AT),
+    )
+    capped = check(
+        member,
+        [part_record],
+        registry=chain,
+        closed_sets=(only_osu,),
+        options=Options(implication_max_depth=2),
+    )
+    assert (capped.kind, capped.depth_capped) == (VerdictKind.NOVEL, True)
+    deep = check(member, [part_record], registry=chain, closed_sets=(only_osu,))
+    assert deep.kind is VerdictKind.CONTRADICTED
+    assert not deep.depth_capped
+    # A rule without a join, through containment.
+    camp = vs.prop(vs.BOBBY, ATTENDED, UF, vs.years(2012, 2013))
+    inside = vs.record(vs.prop(UF, vs.LOCATED_IN, PENINSULA))
+    away = vs.record(vs.prop(vs.BOBBY, vs.LOCATED_AT, PENINSULA, negated=True))
+    present = vs.registry_of(PRESENCE_RULE)
+    there = check(camp, [inside, away], registry=present)
+    assert there.kind is VerdictKind.CONTRADICTED, there
+    assert there.rules == {Rule.IMPLICATION, Rule.POLARITY}
+    assert set(there.cited()) == {inside.proposition_id, away.proposition_id}
+    # Complement: a negation inside the claim's place says nothing about the place.
+    kitchen = vs.record(vs.prop(vs.BOBBY, vs.LOCATED_AT, vs.KITCHEN, negated=True))
+    in_house = vs.record(vs.prop(vs.KITCHEN, vs.LOCATED_IN, vs.HOUSE))
+    house = vs.prop(vs.BOBBY, ATTENDED, vs.HOUSE, vs.years(2012, 2013))
+    assert check(house, [kitchen, in_house], registry=present).kind is VerdictKind.NOVEL
+
+
+def _bachelor(degree_id: str, **extra: Any) -> Proposition:
+    return vs.prop(
+        vs.BOBBY,
+        vs.DEGREE,
+        object_set=(UF,),
+        when=Instant.of(vs.year(2018), Granularity.DAY),
+        qualifiers={"degree_id": degree_id, **extra},
+    )
+
+
+@pytest.mark.part("M4", "FR-PROP-8,10")
+def test_u_15__key_set_closed_sets() -> None:
+    """A closed set over a key set (#441): "Bobby's only undergraduate degree is ``bobby_ba``"
+    closes the ``degree_id``s of his ``degree_awarded`` with ``level = bachelor``. A second
+    bachelor's (a new degree id) is ``contradicted`` (``closed_set``, citing the set).
+    Complements: without the set it is ``novel``; a master's, a claim that names no level, the
+    listed degree itself and a claim outside the set's interval say nothing against it; an object
+    closed set keeps its meaning."""
+    only = ClosedSetRecord(
+        "01JC0000000000000000000003",
+        vs.DEGREE,
+        vs.BOBBY,
+        ("bobby_ba",),
+        {"level": "bachelor"},
+        vs.year(2010),
+        vs.year(2030),
+        key_set="degree_id",
+    )
+    ba = vs.prop(
+        vs.BOBBY,
+        vs.DEGREE,
+        object_set=(vs.OSU,),
+        when=Instant.of(vs.year(2014), Granularity.DAY),
+        qualifiers={"degree_id": "bobby_ba", "level": "bachelor"},
+    )
+    second = _check(_bachelor("second", level="bachelor"), ba, closed=(only,))
+    _cites(second, Rule.CLOSED_SET)
+    assert second.cited() == (only.id,)
+    assert _check(_bachelor("second", level="bachelor"), ba).kind is VerdictKind.NOVEL
+    assert _check(_bachelor("second", level="master"), ba, closed=(only,)).kind is (
+        VerdictKind.NOVEL
+    )
+    assert _check(_bachelor("second"), ba, closed=(only,)).kind is VerdictKind.NOVEL
+    same = _check(_bachelor("bobby_ba", level="bachelor"), ba, closed=(only,))
+    assert Rule.CLOSED_SET not in same.rules
+    late = _bachelor("second", level="bachelor").model_copy(
+        update={"valid_time": Instant.of(vs.year(2031), Granularity.DAY)}
+    )
+    assert _check(late, ba, closed=(only,)).kind is VerdictKind.NOVEL
+    objects = replace(only, key_set=None, members=(vs.OSU,), key={"degree_id": "second"})
+    _cites(_check(_bachelor("second"), ba, closed=(objects,)), Rule.CLOSED_SET)
+
+
+@pytest.mark.part("M4", "FR-PROP-10")
+def test_u_15__cross_predicate() -> None:
+    """A cross-predicate conflict with no declared rule (#441): attending a camp at the
+    University of Florida, against canon's "Bobby has never been to Florida" with the university
+    in the Florida peninsula, is ``uncertain(world_knowledge)`` (the model residual), never
+    ``novel``. Complements: with no negation, with the negation over disjoint time, or at a
+    place that does not contain the university, it is ``novel``; with the declared rule it is
+    ``contradicted``."""
+    camp = vs.prop(vs.BOBBY, ATTENDED, UF, vs.years(2012, 2013))
+    inside = vs.prop(UF, vs.LOCATED_IN, PENINSULA)
+    away = vs.prop(vs.BOBBY, vs.LOCATED_AT, PENINSULA, negated=True)
+    found = _check(camp, inside, away)
+    assert (found.kind, found.reason) == (VerdictKind.UNCERTAIN, VerdictReason.WORLD_KNOWLEDGE)
+    assert found.confidence < 1.0
+    at_uf = _check(camp, vs.prop(vs.BOBBY, vs.LOCATED_AT, UF, negated=True))
+    assert at_uf.reason is VerdictReason.WORLD_KNOWLEDGE
+    assert _check(camp, inside).kind is VerdictKind.NOVEL
+    earlier = vs.prop(vs.BOBBY, vs.LOCATED_AT, PENINSULA, vs.years(1990, 2000), negated=True)
+    assert _check(camp, inside, earlier).kind is VerdictKind.NOVEL
+    assert _check(camp, inside, vs.prop(vs.BOBBY, vs.LOCATED_AT, vs.OHIO, negated=True)).kind is (
+        VerdictKind.NOVEL
+    )
+    ruled = _check(camp, inside, away, reg=vs.registry_of(PRESENCE_RULE))
+    assert ruled.kind is VerdictKind.CONTRADICTED
+    assert ruled.rules == {Rule.IMPLICATION, Rule.POLARITY}
 
 
 @pytest.mark.part("M4", "FR-PROP-10")

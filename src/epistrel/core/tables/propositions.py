@@ -25,7 +25,10 @@
   of entity ids. Append-only: only an erasure (``epistrel.erasure = on``, rewriting ``literal``
   and ``qualifiers``) and a story's deletion change rows.
 - ``closed_sets``: an author's or canon's declaration that a set is exhaustive for a key and
-  interval (FR-PROP-8). Never inferred. #133 wraps them in bitemporal ``facts``.
+  interval (FR-PROP-8). Never inferred. #133 wraps them in bitemporal ``facts``. ``key_set``
+  (#441, migration 0064) names a key qualifier when the set closes that qualifier's values for
+  the subject ("Bobby's only undergraduate degree is ``bobby_ba``": ``degree_id``) rather than
+  the objects of one key; its ``members`` are then those values. ``NULL``: an object set.
 - ``predicate_proposals``: the engine's proposals to strengthen an auto predicate, inert until
   approved (FR-PROP-4); one pending proposal per predicate.
 
@@ -210,6 +213,7 @@ closed_sets = Table(
     Column("valid_to", BigInteger, nullable=True),
     Column("asserted_by", Text, nullable=False),
     _created(),
+    Column("key_set", Text, nullable=True),
     CheckConstraint("asserted_by IN ('author', 'canon')", name="asserted_by"),
     CheckConstraint(
         "valid_from IS NULL OR valid_to IS NULL OR valid_from < valid_to", name="interval"

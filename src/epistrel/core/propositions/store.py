@@ -14,8 +14,11 @@ it (FR-ADMIN-6,9).
   holds, declared qualifiers of the declared kinds, a set-valued object only where the
   predicate allows one. A negation is stored as such (``polarity = negated``) and takes part in
   #140's rules like any other proposition. Propositions are append-only.
-- ``declare_closed_set`` stores an author's or canon's closed set (FR-PROP-8): the key is the
-  subject plus exactly the predicate's key qualifiers. Only an assertion writes one (the
+- ``declare_closed_set`` stores an author's or canon's closed set (FR-PROP-8). An **object**
+  set's key is the subject plus exactly the predicate's key qualifiers. A **key-set** set
+  (``key_set``, #441) closes the values of one key qualifier for the subject: its members are
+  those values, and its key is the subject plus any of the predicate's other qualifiers (the
+  set it closes: "undergraduate" is ``level = bachelor``). Only an assertion writes one (the
   author's at structured genesis, ``registry.register_author``; canon through #145's facts
   route): there is no write path from observation.
 """
@@ -42,7 +45,7 @@ from epistrel.core.erasure.records import (
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.ids import new_ulid
 from epistrel.core.propositions.codec import proposition_row
-from epistrel.core.propositions.model import ENTITY_KINDS, GENDERS, NONE, Proposition
+from epistrel.core.propositions.model import ENTITY_KINDS, GENDERS, NONE, Predicate, Proposition
 from epistrel.core.propositions.registry import Registry, canonical
 from epistrel.core.tables import closed_sets, entities, entity_aliases, propositions
 from epistrel.core.tables.propositions import ALIAS_SOURCES
@@ -270,10 +273,44 @@ class ClosedSet:
 
     predicate_id: str
     subject_id: str
-    members: tuple[str, ...]
+    members: tuple[Any, ...]
     key: Mapping[str, Any] = field(default_factory=dict)
     valid_from: int | None = None
     valid_to: int | None = None
+    key_set: str | None = None
+    """A key qualifier of the predicate: the set closes its values (``members``) for the
+    subject, not the objects of one key (#441)."""
+
+
+def _check_key(closed: ClosedSet, predicate: Predicate, field_ref: str) -> None:
+    """422 unless the closed set's key fits its kind (see the module docstring)."""
+    if closed.key_set is None:
+        if set(closed.key) != set(predicate.key_qualifiers):
+            raise InvalidRequest(
+                f"a closed set of {predicate.name} is keyed by its key qualifiers "
+                f"{list(predicate.key_qualifiers)}",
+                {"field": f"{field_ref}.key", "reason": "closed_set_key"},
+            )
+        return
+    if closed.key_set not in predicate.key_qualifiers:
+        raise InvalidRequest(
+            f"a key-set closed set of {predicate.name} closes one of its key qualifiers "
+            f"{list(predicate.key_qualifiers)}",
+            {"field": f"{field_ref}.key_set", "reason": "closed_set_key"},
+        )
+    allowed = set(predicate.qualifiers or {}) | set(predicate.key_qualifiers)
+    extra = set(closed.key) - (allowed - {closed.key_set})
+    if extra:
+        raise InvalidRequest(
+            f"a key-set closed set of {predicate.name} is narrowed only by its other "
+            f"qualifiers, not {sorted(extra)}",
+            {"field": f"{field_ref}.key", "reason": "closed_set_key"},
+        )
+    if not all(isinstance(m, str | int) and not isinstance(m, bool) for m in closed.members):
+        raise InvalidRequest(
+            f"a key-set closed set lists {closed.key_set} values (strings or integers)",
+            {"field": f"{field_ref}.members", "reason": "closed_set_members"},
+        )
 
 
 async def declare_closed_set(
@@ -286,20 +323,16 @@ async def declare_closed_set(
     field_ref: str = "body",
 ) -> str:
     """Store an asserted closed set (see the module docstring); answers its id. 422 when its
-    key's qualifiers are not exactly the predicate's key qualifiers, it lists no member, or its
-    interval is empty."""
+    key does not fit its kind (an object set's qualifiers are exactly the predicate's key
+    qualifiers; a key-set set closes a key qualifier and is narrowed only by other declared
+    qualifiers), it lists no member, or its interval is empty."""
     predicate = registry.get(closed.predicate_id)
     if predicate is None:
         raise InvalidRequest(
             f"predicate {closed.predicate_id} is not registered for the story",
             {"field": f"{field_ref}.predicate", "reason": "unknown_predicate"},
         )
-    if set(closed.key) != set(predicate.key_qualifiers):
-        raise InvalidRequest(
-            f"a closed set of {predicate.name} is keyed by its key qualifiers "
-            f"{list(predicate.key_qualifiers)}",
-            {"field": f"{field_ref}.key", "reason": "closed_set_key"},
-        )
+    _check_key(closed, predicate, field_ref)
     if not closed.members:
         raise InvalidRequest("a closed set lists its members", {"field": f"{field_ref}.members"})
     if (
@@ -317,7 +350,8 @@ async def declare_closed_set(
         "story_id": story_id,
         "predicate_id": closed.predicate_id,
         "key": {"subject_id": closed.subject_id, **dict(closed.key)},
-        "members": sorted(set(closed.members)),
+        "members": sorted(set(closed.members), key=lambda m: (str(type(m)), m)),
+        "key_set": closed.key_set,
         "valid_from": closed.valid_from,
         "valid_to": closed.valid_to,
         "asserted_by": asserted_by,

@@ -7735,3 +7735,24 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision (Discretion):** P-06's spike measurement now ranks with `limit=RETIREMENT_BATCH_SIZE`, as the forced run does, and records `candidates_fetched` (asserted to be the batch). `vectors_ranked` is still the counted vectors, so `epistrel.tools.perf_docs` renders unchanged columns. Its spike prose no longer says "in Python". `docs/perf.md`'s seeded 316 ms row is left as measured: the next weekly render replaces it.
   **Why:** a measured figure is history; the renderer owns the page.
   **Issue:** #444, #153
+- **Decision (owner-approved schema change):** key-set closed sets are `closed_sets.key_set` (nullable text, migration 0064): a key qualifier whose values the set closes for the subject, narrowed by `key` (any of the predicate's other qualifiers); members are values, never resolved as entity refs. NULL rows are object closed sets, unchanged. Downgrade deletes key-set rows (an object set would misread them) and drops the column.
+  **Why:** #441 AC3 / owner decision 2026-10-18 (#151 option (a)); a separate column keeps old rows' meaning without a backfill.
+  **Issue:** #441
+- **Decision (Discretion):** a claim that leaves a key-set closed set's narrowing qualifier unnamed (a degree with no `level`) is not in the set, so it is never contradicted by it.
+  **Why:** soundness (CONTRADICTION-SOUNDNESS): the claim might be a master's.
+  **Issue:** #441
+- **Decision (Discretion):** forward implication checks each derived consequence with polarity, functional key, closed set, max cardinality and exclusion (not inverse cardinality, not instant identity); the derived set excludes what the joins imply alone; the cited joins are those chaining back from the conflicting consequence over its time; a join-less rule cites a bare `implication` evidence (no id).
+  **Why:** the rules whose inputs the fetch can bound per consequent predicate; citing only the chain keeps the soundness property's "cites only what conflicts".
+  **Issue:** #441
+- **Decision (Discretion):** forward implication runs for a structurally weak claim predicate (`member_of`) when a declared rule starts from it; ADR-160 says a declared rule is a semantic its author gave the predicate (consistent with ADR-050's "semantics the predicate was not given").
+  **Why:** S-TENNIS variant 1's `member_of` is `weak` by `Predicate.weak`'s structural test.
+  **Issue:** #441
+- **Decision (Discretion, needed by variant 4):** polarity also fires for an affirmed claim whose object lies inside a negated record's object through the predicate's containment ("at UF" vs "never in Florida"), citing the negation and the containment facts. Direct `located_at` claims inside a negated place change from `novel` to `contradicted` (listed in ADR-160's consequences).
+  **Why:** docs/04 variant 4 expects "contradicted (rule and containment cited)"; doing it only for derived consequences would leave the direct claim inconsistent with the derived one.
+  **Issue:** #441
+- **Decision (Discretion):** "a rule-free cross-predicate conflict" is narrowed to presence: a negated record of another predicate with `containment_of` (core: `located_at`) on the subject, at the claim's object or what contains it, time not disjoint, and no declared rule chain to it → `uncertain(world_knowledge)`. `check_with` reads each such predicate for the subject on every affirmed entity claim (one more keyed read; the containment only when a negation came back).
+  **Why:** a bounded, deterministic definition; "same subject and window" alone would make most affirmed claims uncertain. P-02 and the verify cost tests stay green.
+  **Issue:** #441
+- **Decision (Discretion):** the variant 4 place is "the Florida peninsula" in the fixtures (not "State of Florida"): `check-lexicon` reserves "State" for M6.
+  **Why:** gate.
+  **Issue:** #441

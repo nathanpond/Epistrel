@@ -60,8 +60,9 @@ rule's evidence lists every conflicting record it found.
    ``quantity``: "10 silver" is a share of a stock) is not an inverse statement and takes no
    part.
 4. **Closed set** (``closed_set``): an author's or canon's closed set for the claim's key over
-   overlapping time does not list the claim's object, and no member contains it. Closed sets are
-   never inferred.
+   overlapping time does not list the claim's object, and no member contains it. A closed set
+   over a key set (``key_set``, #441) contradicts a claim that names its narrowing ``key``
+   qualifiers and a ``key_set`` value it does not list. Closed sets are never inferred.
 5. **Max cardinality** (``max_cardinality``): a ``multi`` predicate with a declared maximum,
    when the claim's new object would be one too many at some instant of the overlap.
 6. **Exclusion** (``exclusion``): a declared exclusion, in either direction (``alive`` and
@@ -70,9 +71,17 @@ rule's evidence lists every conflicting record it found.
 7. **Implication** (``implication``): the claim negates what a holder record implies through
    declared rules (#131's ``imply``, to the profile's ``verification.implication_max_depth``).
    A closure the depth stopped is flagged in the verdict's evidence (``depth_capped``).
+   **Forward** (#441): an affirmed claim's own consequences under the declared rules are checked
+   by polarity, the functional key, closed sets, max cardinality and exclusion; a conflict
+   cites the rule's joins and the consequence's record or closed set. Polarity reads
+   containment for a negation: being inside a place the holder negates conflicts with it.
 8. **Instant identity** (``instant_identity``): two times on the same unique event (a shared
    ``event_id`` or the predicate's uniqueness key, ``registry.same_event``) that are not even
    coarsely compatible. Events without a shared identity never contradict and never merge.
+
+A negated presence (a predicate with containment) at the claim's object, or at what contains
+it, on a predicate no declared rule reaches from the claim's is ``uncertain(world_knowledge)``
+(#441's rule-free cross-predicate conflict), never ``novel``.
 
 Nothing else contradicts. A weak predicate (FR-PROP-4, ``Predicate.weak``) lacks every
 semantic the rules after polarity read, so it never yields ``contradicted`` from cardinality,
@@ -100,7 +109,11 @@ FR-PROP-2). Belief holders arrive in M5, so a claim checked against one is
 - the predicate's containment predicate (any subject);
 - each excluding predicate;
 - for a negated claim, the antecedent and join predicates of the declared rules that reach it,
-  to one level past the depth, so the closure can say it was stopped.
+  to one level past the depth, so the closure can say it was stopped;
+- for an affirmed claim (#441), the consequent and join predicates of the declared rules from
+  it, likewise, with each consequent's closed sets, containment and exclusions; and each
+  presence predicate no rule reaches, for the subject (its containment when a negation came
+  back).
 
 Canon reads take only active, current versions (#130, #133): a dormant fact is never evidence.
 Closed sets are read from ``closed_sets``. In M4 the author writes them at genesis, before any
@@ -299,15 +312,21 @@ class Record:
 class ClosedSetRecord:
     """An asserted closed set (FR-PROP-8): ``members`` are all the objects of ``predicate_id``
     for the key (``subject_id`` and the ``key`` qualifiers) over ``[valid_from, valid_to)``.
-    An empty set says there is none ("an only child")."""
+    An empty set says there is none ("an only child").
+
+    With ``key_set`` (a key qualifier, #441) ``members`` are instead all the values of that
+    qualifier for the subject among the propositions whose qualifiers include ``key`` ("Bobby's
+    only undergraduate degree is ``bobby_ba``": ``key_set = degree_id``, ``key = {level:
+    bachelor}``)."""
 
     id: str
     predicate_id: str
     subject_id: str
-    members: tuple[str, ...] = ()
+    members: tuple[Any, ...] = ()
     key: Mapping[str, Any] = field(default_factory=dict)
     valid_from: int | None = None
     valid_to: int | None = None
+    key_set: str | None = None
 
     def interval(self) -> Interval:
         return Interval.of(self.valid_from, self.valid_to)
@@ -544,6 +563,35 @@ class _Context:
             frontier = step
         return found
 
+    def path(self, predicate_id: str, inner: str, outer: str) -> list[Record]:
+        """The containment records of one shortest chain from ``inner`` up to ``outer`` through
+        ``predicate_id`` (within the containment depth); empty when there is none."""
+        edges = {
+            (p.subject_id, p.object_id): r
+            for r, p in self.records
+            if p.predicate_id == predicate_id
+            and p.polarity is Polarity.AFFIRMED
+            and p.object_id is not None
+        }
+        parents: dict[str, tuple[str, Record]] = {}
+        frontier = [inner]
+        for _ in range(self.options.containment_max_depth):
+            step: list[str] = []
+            for x in frontier:
+                for (a, b), r in edges.items():
+                    if a == x and b != inner and b not in parents:
+                        parents[b] = (x, r)
+                        step.append(b)
+            if outer in parents:
+                chain: list[Record] = []
+                at = outer
+                while at != inner:
+                    at, r = parents[at]
+                    chain.append(r)
+                return chain[::-1]
+            frontier = step
+        return []
+
     def related(self, predicate: Predicate, a: str, b: str) -> bool:
         """Whether ``a`` and ``b`` are related by ``predicate``'s containment either way."""
         via = predicate.containment_of
@@ -732,7 +780,10 @@ def _support_event(vt: Interval, matches: list[tuple[Record, Proposition]]) -> _
 
 
 def _polarity(
-    claim: Proposition, predicate: Predicate, same: list[tuple[Record, Proposition]]
+    claim: Proposition,
+    predicate: Predicate,
+    same: list[tuple[Record, Proposition]],
+    ctx: _Context | None = None,
 ) -> _Outcome:
     out = _Outcome()
     for r, p in same:
@@ -743,7 +794,41 @@ def _polarity(
             out.evidence.append(_ev(Rule.POLARITY, r))
         elif found is None:
             out.undecided = VerdictReason.APPROXIMATE_BOUNDS
+    if ctx is not None:
+        _polarity_contained(claim, predicate, same, ctx, out)
     return out
+
+
+def _polarity_contained(
+    claim: Proposition,
+    predicate: Predicate,
+    same: list[tuple[Record, Proposition]],
+    ctx: _Context,
+    out: _Outcome,
+) -> None:
+    """Being at a place is being in what contains it (#441): an affirmed claim with an object
+    inside a negated record's object, through the predicate's containment facts, negates that
+    record ("at the University of Florida" against "never in Florida"). Cites the negation and
+    the containment facts."""
+    via = predicate.containment_of
+    if via is None or claim.polarity is not Polarity.AFFIRMED or claim.object_id is None:
+        return
+    outer = ctx.outer_of(via, claim.object_id)
+    for r, p in same:
+        if (
+            p.polarity is not Polarity.NEGATED
+            or p.object_id not in outer
+            or not _qualifiers_equal(claim, p)
+        ):
+            continue
+        found = _overlap(predicate, claim.valid_time, p.valid_time)
+        if found:
+            out.evidence.append(_ev(Rule.POLARITY, r))
+            out.evidence += [
+                _ev(Rule.POLARITY, c) for c in ctx.path(via, claim.object_id, p.object_id)
+            ]
+        elif found is None:
+            out.undecided = out.undecided or VerdictReason.APPROXIMATE_BOUNDS
 
 
 def _quantity_units_differ(a: Proposition, b: Proposition) -> bool:
@@ -845,15 +930,39 @@ def _inverse_cardinality(
             yield _max_cardinality(view, inverse, same)
 
 
+def _key_set_outside(claim: Proposition, closed: ClosedSetRecord, ctx: _Context) -> bool:
+    """Whether the claim names a value of ``closed``'s key set that it does not list, for the
+    set's subject and narrowing qualifiers (a claim that leaves one unnamed is not in the set
+    it closes, so it says nothing against it)."""
+    if closed.key_set is None or ctx.rep(closed.subject_id) != claim.subject_id:
+        return False
+    if any(claim.qualifiers.get(k, _MISSING) != v for k, v in closed.key.items()):
+        return False
+    value = claim.qualifiers.get(closed.key_set, _MISSING)
+    return value is not _MISSING and value not in closed.members
+
+
 def _closed_set(claim: Proposition, predicate: Predicate, ctx: _Context) -> _Outcome:
     out = _Outcome()
-    if claim.polarity is Polarity.NEGATED or claim.literal is not None:
+    if claim.polarity is Polarity.NEGATED:
+        return out
+    for closed in ctx.closed:
+        if closed.key_set is None or closed.predicate_id != claim.predicate_id:
+            continue
+        if not _key_set_outside(claim, closed, ctx):
+            continue
+        found = _overlap(predicate, claim.valid_time, closed.interval())
+        if found:
+            out.evidence.append(Evidence(Rule.CLOSED_SET, closed_set_id=closed.id))
+        elif found is None:
+            out.undecided = VerdictReason.APPROXIMATE_BOUNDS
+    if claim.literal is not None:
         return out
     pairs = [(claim.subject_id, _objects(claim))]
     if predicate.symmetric and claim.object_id is not None:
         pairs.append((claim.object_id, (claim.subject_id,)))
     for closed in ctx.closed:
-        if closed.predicate_id != claim.predicate_id:
+        if closed.key_set is not None or closed.predicate_id != claim.predicate_id:
             continue
         if any(claim.qualifiers.get(k) != v for k, v in closed.key.items()):
             continue
@@ -995,6 +1104,139 @@ def _implication(claim: Proposition, ctx: _Context) -> tuple[_Outcome, bool]:
     return out, capped
 
 
+def _consequence_rules(
+    derived: Proposition, predicate: Predicate, ctx: _Context
+) -> Iterable[_Outcome]:
+    """The rules a derived consequence is checked by: polarity (with containment), the
+    functional key, closed sets, max cardinality and exclusion, over its own predicate."""
+    same = ctx.by(derived.predicate_id, derived.subject_id)
+    yield _polarity(derived, predicate, same, ctx)
+    yield _functional(derived, predicate, same, ctx)
+    yield _closed_set(derived, predicate, ctx)
+    yield _max_cardinality(derived, predicate, same)
+    yield _exclusion(derived, predicate, ctx)
+
+
+def _forward(claim: Proposition, predicate: Predicate, ctx: _Context) -> tuple[_Outcome, bool]:
+    """An affirmed claim's consequences under the declared rules (#441; a rule from the claim's
+    predicate is a semantic its author gave it, so a structurally weak ``member_of`` takes part,
+    ADR-050): the bounded closure of
+    the claim and the holder's ``via`` joins, less what the joins imply alone, each checked by
+    ``_consequence_rules``. A conflict cites the rule (``implication``: the joins the chain
+    used, or the rule alone when it has no join) and the consequence's own rule and record or
+    closed set. Also whether the closure was depth-capped."""
+    out = _Outcome()
+    rules = ctx.registry.rules()
+    if claim.polarity is not Polarity.AFFIRMED or not any(
+        rule.when == claim.predicate_id for rule in rules
+    ):
+        return out, False
+    depth = ctx.options.implication_max_depth
+    vias = {rule.via for rule in rules if rule.via is not None}
+    joins = [
+        (r, p) for r, p in ctx.records if p.predicate_id in vias and p.polarity is Polarity.AFFIRMED
+    ]
+    alone = {
+        (q.normalized_key(), q.valid_time)
+        for q in imply([p for _, p in joins], rules, depth).derived
+    }
+    closure = imply([claim, *(p for _, p in joins)], rules, depth)
+    reached = {claim.object_id} | {d.object_id for d in closure.derived}
+    for derived in closure.derived:
+        if (
+            derived.subject_id != claim.subject_id
+            or (
+                derived.normalized_key(),
+                derived.valid_time,
+            )
+            in alone
+        ):
+            continue
+        consequent = ctx.registry.get(derived.predicate_id)
+        if consequent is None:
+            continue
+        for found in _consequence_rules(ctx.norm(derived), consequent, ctx):
+            if found.evidence:
+                used = _joins_used(derived, joins, reached)
+                out.evidence = [*(used or [Evidence(Rule.IMPLICATION)]), *found.evidence]
+                return out, closure.truncated
+            out.undecided = out.undecided or found.undecided
+    return out, closure.truncated
+
+
+def _joins_used(
+    derived: Proposition, joins: list[tuple[Record, Proposition]], reached: set[str | None]
+) -> list[Evidence]:
+    """The joins behind ``derived``: those mapping into its object over its time, then into
+    their subjects, back towards the claim's object."""
+    used: list[Evidence] = []
+    targets = {derived.object_id}
+    seen: set[str] = set()
+    while targets:
+        step: set[str | None] = set()
+        for j, p in joins:
+            if (
+                j.proposition_id in seen
+                or p.object_id not in targets
+                or p.subject_id not in reached
+                or overlaps(p.valid_time, derived.valid_time) is False
+            ):
+                continue
+            seen.add(j.proposition_id)
+            used.append(_ev(Rule.IMPLICATION, j))
+            step.add(p.subject_id)
+        targets = step
+    return used
+
+
+def _reachable(registry: Registry, predicate_id: str) -> set[str]:
+    """The predicates the declared rules lead to from ``predicate_id``, at any depth."""
+    rules = registry.rules()
+    found: set[str] = set()
+    frontier = {predicate_id}
+    while frontier:
+        step = {r.then for r in rules if r.when in frontier} - found
+        found |= step
+        frontier = step
+    return found
+
+
+def presence_predicates(registry: Registry, predicate_id: str) -> list[Predicate]:
+    """The predicates a claim of ``predicate_id`` may conflict with across predicates when no
+    rule links them (#441): the others with a containment predicate (``located_at``) that the
+    declared rules do not reach from it. Ordered by id."""
+    reach = _reachable(registry, predicate_id)
+    return sorted(
+        (
+            q
+            for q in registry.predicates.values()
+            if q.id != predicate_id and q.containment_of is not None and q.id not in reach
+        ),
+        key=lambda q: q.id,
+    )
+
+
+def _cross_predicate(claim: Proposition, ctx: _Context) -> bool:
+    """A rule-free cross-predicate conflict (#441): the holder negates the subject's presence
+    (a predicate with containment) at the claim's object or at what contains it, over time
+    that may overlap, and no declared rule leads from the claim's predicate to that one. Being
+    somewhere is world knowledge here ("a camp at the University of Florida" against "never
+    been to Florida"), so the verdict is ``uncertain(world_knowledge)``, never ``novel``."""
+    if claim.polarity is not Polarity.AFFIRMED or claim.object_id is None:
+        return False
+    for q in presence_predicates(ctx.registry, claim.predicate_id):
+        assert q.containment_of is not None  # noqa: S101 - presence_predicates chose it
+        at = {claim.object_id} | ctx.outer_of(q.containment_of, claim.object_id)
+        for _, p in ctx.by(q.id, claim.subject_id):
+            if (
+                p.polarity is Polarity.NEGATED
+                and p.object_id in at
+                and overlaps(claim.valid_time, p.valid_time) is not False
+            ):
+                return True
+    return False
+
+
 def _instant_identity(
     claim: Proposition, predicate: Predicate, same: list[tuple[Record, Proposition]]
 ) -> _Outcome:
@@ -1091,6 +1333,8 @@ def _check(
             pending = pending or outcome.undecided
         if capped:
             flags.append(Evidence(Rule.IMPLICATION, depth_capped=True))
+        if pending is None and _cross_predicate(claim, ctx):
+            pending = VerdictReason.WORLD_KNOWLEDGE
         if pending is None and ctx.options.strict_weak and _weak_conflict(claim, predicate, same):
             pending = VerdictReason.WEAK_SEMANTICS
     if pending is not None:
@@ -1108,7 +1352,7 @@ def _contradictions(
 ) -> Iterable[_Outcome | bool]:
     """The contradiction rules in FR-PROP-10's order, lazily (the first conclusive one wins);
     the implication rule also yields whether its closure was depth-capped."""
-    yield _polarity(claim, predicate, same)
+    yield _polarity(claim, predicate, same, ctx)
     yield _functional(claim, predicate, same, ctx)
     yield from _inverse_cardinality(claim, ctx, functional=True)
     yield _closed_set(claim, predicate, ctx)
@@ -1118,6 +1362,9 @@ def _contradictions(
     found, capped = _implication(claim, ctx)
     yield capped
     yield found
+    forward, forward_capped = _forward(claim, predicate, ctx)
+    yield capped or forward_capped
+    yield forward
     yield _instant_identity(claim, predicate, same)
 
 
@@ -1151,6 +1398,23 @@ def _window(valid_time: Interval | Instant) -> tuple[int | None, int | None] | N
     return None if span == (None, None) else span
 
 
+def _consequents(registry: Registry, predicate_id: str, depth: int) -> tuple[set[str], set[str]]:
+    """The predicates the declared rules derive from ``predicate_id`` within ``depth`` + 1 rule
+    steps (one past the cap, as ``_antecedents``), and their join predicates."""
+    rules = registry.rules()
+    found: set[str] = set()
+    vias: set[str] = set()
+    frontier = {predicate_id}
+    for _ in range(depth + 1):
+        step = {r.then for r in rules if r.when in frontier} - found
+        vias |= {r.via for r in rules if r.when in frontier and r.via is not None}
+        if not step:
+            break
+        found |= step
+        frontier = step
+    return found, vias
+
+
 def _antecedents(registry: Registry, predicate_id: str, depth: int) -> tuple[set[str], set[str]]:
     """The predicates whose records can imply ``predicate_id`` within ``depth`` + 1 rule steps
     (one past the cap, so the closure can say it was stopped), and their join predicates."""
@@ -1175,7 +1439,7 @@ async def closed_sets_for(
     #142's ``fact_neighborhood``)."""
     t = closed_sets_table
     rows = await conn.execute(
-        select(t.c.id, t.c.key, t.c.members, t.c.valid_from, t.c.valid_to)
+        select(t.c.id, t.c.key, t.c.members, t.c.valid_from, t.c.valid_to, t.c.key_set)
         .where(t.c.story_id == story_id, t.c.predicate_id == predicate_id)
         .order_by(t.c.id)
     )
@@ -1188,10 +1452,11 @@ async def closed_sets_for(
                 id=str(row.id),
                 predicate_id=predicate_id,
                 subject_id=subject,
-                members=tuple(str(m) for m in row.members or ()),
+                members=tuple(m if row.key_set is not None else str(m) for m in row.members or ()),
                 key=key,
                 valid_from=row.valid_from,
                 valid_to=row.valid_to,
+                key_set=row.key_set,
             )
         )
     return found
@@ -1267,8 +1532,9 @@ async def check_with(
         # by object (any subject); a concurrent change of its holder touches this key.
         for o in sorted(objects):
             records += await read(c.predicate_id, None, window, o)
+    containment: set[str] = set()
     if predicate.containment_of is not None:
-        records += await read(predicate.containment_of, None, None)
+        containment.add(predicate.containment_of)
     closed = await closed_sets_for(lookup.conn, story_id, c.predicate_id)
     if options.contradictions:
         excluded = set(predicate.exclusions) | {
@@ -1282,6 +1548,38 @@ async def check_with(
                 records += await read(x, subject_set, _window(c.valid_time))
             for x in sorted(vias):
                 records += await read(x, None, _window(c.valid_time))
+        if c.polarity is Polarity.AFFIRMED and registry.rules():
+            # #441: the claim's own consequences, checked as the claim is: each consequent's
+            # records for the subject, its closed sets, containment and exclusions, and the
+            # joins that map the objects.
+            ends, vias = _consequents(registry, c.predicate_id, options.implication_max_depth)
+            for x in sorted(vias):
+                records += await read(x, None, _window(c.valid_time))
+            for x in sorted(ends - {c.predicate_id}):
+                then = registry.get(x)
+                if then is None:
+                    continue
+                records += await read(x, subject_set, _window(c.valid_time))
+                closed += await closed_sets_for(lookup.conn, story_id, x)
+                if then.containment_of is not None:
+                    containment.add(then.containment_of)
+                barred = set(then.exclusions) | {
+                    q.id for q in registry.predicates.values() if x in q.exclusions
+                }
+                for y in sorted(barred - excluded):
+                    records += await read(y, subject_set, _window(c.valid_time))
+        if c.polarity is Polarity.AFFIRMED and c.object_id is not None:
+            # #441: a negated presence elsewhere that no rule reaches (``uncertain``); the
+            # containment is read only when a negation came back.
+            for q in presence_predicates(registry, c.predicate_id):
+                found = await read(q.id, subject_set, _window(c.valid_time))
+                records += found
+                if q.containment_of is not None and any(
+                    r.proposition.polarity is Polarity.NEGATED for r in found
+                ):
+                    containment.add(q.containment_of)
+    for x in sorted(containment):
+        records += await read(x, None, None)
     unique = list({(r.fact_id, r.proposition_id): r for r in records}.values())
     if fetched is not None:
         fetched.extend(unique)

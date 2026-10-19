@@ -393,23 +393,24 @@ def _closed_sets(build: _Builder, layer: AuthorLayer) -> None:
     }
     for index, closed in enumerate(build.plan.rules.closed_sets):
         field_ref = f"starting_state.closed_sets[{index}]"
-        missing = [r for r in (closed.subject, *closed.members) if r not in refs]
+        missing = [r for r in closed.entity_refs() if r not in refs]
         if missing:
             build.error(
                 field_ref, build.location(field_ref=field_ref), "unresolved_entity", RULES_RULE
             )
             continue
-        for ref in (closed.subject, *closed.members):
+        for ref in closed.entity_refs():
             build.plan.references[ref] = refs[ref]
         key = f"closed:{field_ref}"
         record = ClosedSetRecord(
             id=key,
             predicate_id=layer.names.get(closed.predicate) or CORE_BY_NAME[closed.predicate].id,
             subject_id=refs[closed.subject],
-            members=tuple(refs[m] for m in closed.members),
+            members=closed.resolved_members(refs.__getitem__),
             key=dict(closed.key),
             valid_from=closed.valid_from,
             valid_to=closed.valid_to,
+            key_set=closed.key_set,
         )
         build.layers[SeedLayer.WORLD].append(SeedFact(key, SeedLayer.WORLD, closed_set=record))
 

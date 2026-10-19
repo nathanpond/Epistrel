@@ -11,7 +11,14 @@ school, the varsity rule's ``via`` join, #131) and ``climate``, the closed set a
 the declared implication ``varsity``: varsity ``member_of`` a college team implies
 ``enrolled_at`` its school (``{when: member_of, then: enrolled_at, via: team_of}``). The
 University of Florida (alias "Florida") and its varsity tennis team (``team_of`` it) are
-entities. (#441 adds variant 4's presence rule and the closed degree set.)
+entities.
+
+#441 adds, when asked: the author's closed degree set "Bobby's only undergraduate degree is
+``bobby_ba``" (a closed set over the key set ``degree_id``, narrowed by ``level = bachelor``);
+and variant 4's world: the Florida peninsula (a place), the University of Florida ``located_in``
+it, canon's explicit negation "Bobby has never been to Florida" (``located_at`` negated, always)
+and, when asked, the author's presence rule: ``attended_program`` at a place implies
+``located_at`` it over the program's interval (``{when: attended_program, then: located_at}``).
 
 No core implication links team membership, enrollment and degrees; the scenarios that need one
 declare it. The story's clock is unanchored, so the undergraduate years are open intervals here:
@@ -31,13 +38,20 @@ from tests.structured_turn_support import structured_story
 from epistrel.core.canon.facts import Fact
 from epistrel.core.enums import OperationKind
 from epistrel.core.propositions import registry, store
-from epistrel.core.propositions.model import Granularity, Instant, Interval, Proposition
+from epistrel.core.propositions.model import (
+    Granularity,
+    Instant,
+    Interval,
+    Polarity,
+    Proposition,
+)
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME
 from epistrel.core.resolution.time import STORY_MINUTES_PER_TURN
 
 ENROLLED_AT = CORE_BY_NAME["enrolled_at"].id
 DEGREE_AWARDED = CORE_BY_NAME["degree_awarded"].id
 LOCATED_IN = CORE_BY_NAME["located_in"].id
+LOCATED_AT = CORE_BY_NAME["located_at"].id
 MEMBER_OF = CORE_BY_NAME["member_of"].id
 ATTENDED = CORE_BY_NAME["attended_program"].id
 ALWAYS = Interval.of(None, None)
@@ -47,6 +61,15 @@ claim about an event is normalized at its turn's minute (``default_time``) and t
 clock has no calendar to date it by, so a first-turn claim about the degree meets it."""
 
 VARSITY = {"when": "member_of", "then": "enrolled_at", "via": "team_of"}
+PRESENCE = {"when": "attended_program", "then": "located_at"}
+ONLY_BACHELOR = {
+    "predicate": "degree_awarded",
+    "subject": "bobby",
+    "key_set": "degree_id",
+    "key": {"level": "bachelor"},
+    "members": ["bobby_ba"],
+}
+"""The closed degree set: "Bobby's only undergraduate degree is ``bobby_ba``"."""
 
 
 @dataclass(frozen=True)
@@ -67,6 +90,13 @@ class Education:
     degree: Fact
     osu_in_ohio: Fact
     winters: Fact
+    team_school: Fact
+    """``team_of(Florida varsity tennis, University of Florida)``: the varsity rule's join."""
+    peninsula: str | None = None
+    """The Florida peninsula, with ``never_in_florida``."""
+    never_there: Fact | None = None
+    """Canon's "Bobby has never been to Florida"."""
+    uf_on_peninsula: Fact | None = None
 
 
 async def _author(engine: AsyncEngine, story_id: str, proposition: Proposition) -> Fact:
@@ -92,9 +122,13 @@ async def bobby_education(
     varsity: bool = True,
     closed_enrollment: bool = True,
     joint_degree: bool = False,
+    closed_degrees: bool = False,
+    never_in_florida: bool = False,
+    presence_rule: bool = False,
 ) -> Education:
     """The fixture (see the module docstring); ``joint_degree``: ``bobby_ba`` was awarded by
-    {OSU, the University of Florida} jointly."""
+    {OSU, the University of Florida} jointly; ``closed_degrees``: the closed degree set;
+    ``never_in_florida``: variant 4's world; ``presence_rule``: its declared rule."""
     story, ids = await structured_story(client, "Cal", "Bobby")
     bobby = ids["Bobby"]
     async with engine.begin() as conn:
@@ -111,6 +145,11 @@ async def bobby_education(
         )
         ohio = await store.add_entity(conn, story, "place", "Ohio")
         cold = await store.add_entity(conn, story, "other", "cold winters")
+        peninsula = (
+            await store.add_entity(conn, story, "place", "the Florida peninsula")
+            if never_in_florida
+            else None
+        )
         rules = registry.ScenarioRules.parse(
             {
                 "predicates": [
@@ -129,12 +168,18 @@ async def bobby_education(
                         "docs": "A place's climate.",
                     },
                 ],
-                "closed_sets": (
-                    [{"predicate": "enrolled_at", "subject": "bobby", "members": ["osu"]}]
-                    if closed_enrollment
-                    else []
-                ),
-                "rules": [VARSITY] if varsity else [],
+                "closed_sets": [
+                    *(
+                        [{"predicate": "enrolled_at", "subject": "bobby", "members": ["osu"]}]
+                        if closed_enrollment
+                        else []
+                    ),
+                    *([ONLY_BACHELOR] if closed_degrees else []),
+                ],
+                "rules": [
+                    *([VARSITY] if varsity else []),
+                    *([PRESENCE] if presence_rule else []),
+                ],
             }
         )
         reg = await registry.register_author(
@@ -157,7 +202,13 @@ async def bobby_education(
     )
     osu_in_ohio = await _author(engine, story, _p(osu, LOCATED_IN, ohio))
     winters = await _author(engine, story, _p(ohio, climate.id, cold))
-    await _author(engine, story, _p(team, team_of.id, florida))
+    team_school = await _author(engine, story, _p(team, team_of.id, florida))
+    never_there = uf_on_peninsula = None
+    if peninsula is not None:
+        uf_on_peninsula = await _author(engine, story, _p(florida, LOCATED_IN, peninsula))
+        never_there = await _author(
+            engine, story, _p(bobby, LOCATED_AT, peninsula, polarity=Polarity.NEGATED)
+        )
     return Education(
         story_id=story,
         cal=ids["Cal"],
@@ -171,6 +222,10 @@ async def bobby_education(
         degree=degree,
         osu_in_ohio=osu_in_ohio,
         winters=winters,
+        team_school=team_school,
+        peninsula=peninsula,
+        never_there=never_there,
+        uf_on_peninsula=uf_on_peninsula,
     )
 
 
@@ -178,7 +233,10 @@ __all__ = [
     "ATTENDED",
     "DEGREE_AWARDED",
     "ENROLLED_AT",
+    "LOCATED_AT",
     "MEMBER_OF",
+    "ONLY_BACHELOR",
+    "PRESENCE",
     "VARSITY",
     "Education",
     "bobby_education",

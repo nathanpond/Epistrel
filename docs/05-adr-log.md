@@ -25,7 +25,8 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-TURN | §6 | 043 |
 | FR-COMMIT | §7 | 018, 022, 043, 053, 129 |
 | FR-RET | §8 | 129 |
-| FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158 |
+| FR-PROP | §8.1 | 160 |
+| FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160 |
 | FR-GUARD | §11 | 087, 095, 096, 114 |
 | FR-REWRITE | §12.1 | 144 |
 | FR-MODEL | §13 | 129, 136, 144, 150 |
@@ -110,7 +111,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 046 | Erasure is a control action, guarded at every write path, with a ledger that survives restores | Amended | 080, 128, 154 |
 | 047 | Explicit output viewpoint with an audience filter; disclosure is distinct from inference | Partly superseded | 059, 071, 091, 078, 145 |
 | 048 | Support requires coverage; instants are first-class | Partly superseded | 058 |
-| 049 | Functional uniqueness is over a declared key; distinct facts stay distinct; exhaustiveness only by declared closed sets | Current | — |
+| 049 | Functional uniqueness is over a declared key; distinct facts stay distinct; exhaustiveness only by declared closed sets | Amended | 160 |
 | 050 | Weak predicates forbid inferred exclusivity, not direct negation | Current | — |
 | 051 | External effects follow a staged, durable lifecycle with a recorded in-flight point | Amended | 054, 055, 062 |
 | 052 | Configuration is versioned per operation; interpretive changes revalidate, prospective changes don't | Amended | 057, 062, 072, 084 |
@@ -221,6 +222,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 157 | A pending catalog-scope erasure holds back what it reaches until it is reapplied | Partly superseded | 159 |
 | 158 | The extraction backstop is gated by default; a profile chooses `always` | Current | — |
 | 159 | A pending catalog-scope erasure also holds back the deployment policies and configuration changes naming its subject | Current | — |
+| 160 | Verification checks an affirmed claim's declared consequences, closed sets may close a key set, and a rule-free presence conflict is uncertain | Current | — |
 
 ---
 
@@ -608,6 +610,7 @@ Launch conservative (high continuity, more escalation), then **tighten data-driv
 
 ### ADR-049 — Functional uniqueness is over a declared key; distinct facts stay distinct; exhaustiveness only by declared closed sets
 **Status:** Accepted. Refines ADR-035.
+**Amended by:** ADR-160 — a closed set may also close the values of one key qualifier for a subject ("his only undergraduate degree"), and an affirmed claim's declared consequences are checked against closed sets.
 **Context:** The core vocabulary treated "undergraduate institution" as functional per person, and S-TENNIS normalized "played on Florida's college team as an undergrad" into it. Playing for a team does not establish enrollment or which institution awarded a degree, and people can hold several degrees or a jointly awarded one. The tests would have enforced the very false contradictions the verifier exists to prevent.
 **Decision:** Cardinality is declared over a **uniqueness key** (subject plus named key qualifiers); non-key qualifiers never participate; objects may be sets where the domain allows (joint awards). Education uses distinct core predicates — `enrolled_at`, `attended_program`, `member_of` (role), `degree_awarded` keyed by (person, degree ID) — with **no core implications** between them; authors may declare such rules where they hold. Exhaustiveness ("his only undergraduate degree", "enrolled only at OSU in those years") is expressed by explicit **closed sets**, never inferred; adding to a closed set over overlapping time is a contradiction.
 **Consequences:** The Florida/OSU case is contradicted only when the story actually says enough to make it so, and the reason is cited. Scenarios share a documented Bobby education fixture.
@@ -1572,6 +1575,24 @@ A story's own policies and configuration changes are story records, which a cata
 - An operator cannot read, change or retire a policy naming the erased subject until the reapply finishes. The policy is still enforced on turns throughout, as before the restore.
 - A story's effective policies (`GET /stories/{id}/settings`) and a turn's policy violation are not covered here; #447 tracks them.
 - Tests: `tests/integration/test_erasure_ledger.py` (the restore window for a global policy naming the subject, with a complement policy, on REST and a fresh library Engine; the history's page stays full).
+
+---
+
+### ADR-160 — Verification checks an affirmed claim's declared consequences, closed sets may close a key set, and a rule-free presence conflict is uncertain
+**Status:** Accepted. Refines ADR-049 (what a closed set may close) and ADR-050 (a declared rule is a semantic the author gave the predicate).
+**Context:** docs/04 §7's S-TENNIS expects three verdicts that FR-PROP-10 as written and #140's rules did not give (#441, raised on #151). (1) The implication rule fired only when a claim *negated* what canon implies; an affirmed claim's own consequences were never derived, so "I played on Florida's varsity team" under the author's rule "varsity membership implies enrollment at the team's school" and the closed set "Bobby's only enrollment is OSU" was `novel`, as was a camp at the University of Florida under "attending a program somewhere implies being there" against canon's "Bobby has never been to Florida". (2) A closed set's key had to be exactly the predicate's key qualifiers, so FR-PROP-8's own example, "Bobby's only undergraduate degree is `bobby_ba`", could not be declared: it closes the set of `degree_id`s, not one degree's awarding set. (3) With no declared rule, the camp claim and the negated presence share no predicate, so the verdict was a conclusive `novel` and never reached the model. The owner chose to extend the rules over narrowing the scenario (2026-10-18, #151 option (a)).
+**Decision:** In FR-PROP-10's deterministic rules (`core.verify.rules`):
+- **Forward implication.** For an affirmed claim, the bounded closure (FR-PROP-11, `verification.implication_max_depth`) of the claim and the holder's `via` joins, less what the joins imply alone, is derived; each consequence is checked by polarity, the functional key, closed sets, max cardinality and exclusion over its own predicate. A conflict is `contradicted`, citing `implication` (the joins the chain used) with the consequence's rule and record or closed set; a depth stop is flagged as before. A declared rule from a predicate is a semantic its author gave it, so a structurally weak predicate (`member_of`) takes part. The fetch reads each consequent predicate for the subject, its closed sets, containment and exclusions, and the joins, as query keys.
+- **Containment under negation.** An affirmed proposition whose object lies inside a negated one's object, through the predicate's containment facts, over overlapping time, is a polarity conflict ("at the University of Florida" against "never in Florida"), citing the negation and the containment facts. It follows from the containment ADR-049's functional rule already reads (Columbus and Ohio agree), applied to a negation.
+- **Closed sets over a key set.** A closed set may name `key_set`, one of the predicate's key qualifiers: its members are then all that qualifier's values for the subject among the propositions whose qualifiers include its `key` (any of the predicate's other qualifiers). A claim naming every narrowing qualifier and an unlisted value, over overlapping time, is `contradicted`; a claim that leaves a narrowing qualifier unnamed is not in the set. Stored as `closed_sets.key_set` (nullable; migration 0064): a row without it is an object closed set, unchanged. Declared in `starting_state.closed_sets` with `key_set`; its members are values, never resolved as entity references.
+- **Rule-free cross-predicate conflict.** When the holder negates the subject's presence (a predicate with containment, `located_at`) at the claim's object or at what contains it, over time that may overlap, on a predicate no declared rule reaches from the claim's, the verdict is `uncertain(world_knowledge)` (FR-VERIFY-3's world-knowledge escalation), never `novel`, unless a contradiction rule is conclusive. The presence predicates are read for the subject on every affirmed entity claim, their containment only when a negation comes back.
+
+Nothing is inferred beyond the declared rules and closed sets (FR-PROP-8,11); CONTRADICTION-SOUNDNESS is extended to the new rules (FR-PROP-3,8,10,11, FR-VERIFY-3).
+**Consequences:**
+- S-TENNIS's variants 1, 2 (the second degree under the closed degree set) and 4 (with and without its rule) get the verdicts docs/04 §7 states, deterministically or through the model residual.
+- A located claim inside a place the holder negates is now `contradicted` where it was `novel`; an affirmed entity claim against a negated presence elsewhere that no rule reaches is now `uncertain` where it was `novel`. Each affirmed entity claim makes one more keyed read per presence predicate, and each claim whose predicate starts a declared rule reads its consequents.
+- Later milestones that read or export closed sets (M5's per-holder verification, M7's portability) carry `key_set`.
+- Tests: U-15 (`test_u_15__forward_implication`, `__key_set_closed_sets`, `__cross_predicate`, and the registry slice's key-set declaration), CONTRADICTION-SOUNDNESS (`__implied`, `__key_set`, and the containment clause of the polarity citation), S-TENNIS (`__varsity`, `__degree`, `__presence`).
 
 ---
 

@@ -27,6 +27,8 @@ is dropped from the example.
   ``contradicted``.
 - A record whose object is containment-related to the claim's object is never cited as a
   functional conflict.
+- A polarity conflict cites the identical proposition negated or (#441) a negation of what
+  contains the claim's object, with the containment facts.
 - Every ``contradicted`` verdict cites a contradiction rule and a proposition or closed set.
 
 **SUPPORT-COVERAGE** (FR-PROP-1,10):
@@ -40,6 +42,10 @@ is dropped from the example.
 
 The complement: every verdict kind, and every contradiction rule these predicates can produce,
 is seen across the run (``_SEEN``).
+
+**#441** adds ``test_contradiction_soundness__implied`` (an affirmed claim's consequences under a
+declared rule, against the property's own oracle) and ``test_contradiction_soundness__key_set``
+(closed sets over a key set).
 """
 
 from __future__ import annotations
@@ -63,6 +69,7 @@ from epistrel.core.propositions.model import (
 )
 from epistrel.core.verify.rules import (
     CONTRADICTION_RULES,
+    ClosedSetRecord,
     Record,
     Rule,
     Verdict,
@@ -268,10 +275,17 @@ def test_contradiction_soundness() -> None:
         predicate = vs.REGISTRY.get(claim.predicate_id)
         assert predicate is not None
         for e in cited:
+            other = props[e.proposition_id or ""]
             if e.rule is Rule.FUNCTIONAL_KEY:
-                other = props[e.proposition_id or ""]
                 assert predicate.uniqueness_key(other) == predicate.uniqueness_key(claim)
                 assert not _related(claim.object_id, other.object_id, records)
+            if e.rule is Rule.POLARITY and not _identical(other.negation(), claim):
+                # #441: a negation of what contains the claim's object, or the containment.
+                assert other.predicate_id == vs.LOCATED_IN or (
+                    other.polarity.value == "negated"
+                    and claim.polarity.value == "affirmed"
+                    and _related(claim.object_id, other.object_id, records)
+                ), (claim, records, verdict)
         fluent = predicate.temporal_kind is TemporalKind.FLUENT
         if fluent and not any(
             overlaps(r.proposition.valid_time, claim.valid_time) is not False
@@ -353,3 +367,180 @@ def test_support_coverage() -> None:
     run()
     assert _SEEN[VerdictKind.SUPPORTED.value], _SEEN
     assert _SEEN["partial"], _SEEN
+
+
+# -- #441: forward implication and closed sets over a key set ---------------------------------
+
+ONLY = "01JC0000000000000000000009"
+
+
+@st.composite
+def exact_times(draw: Any) -> Interval:
+    lo = draw(st.integers(0, STEPS - 1)) * STEP
+    return Interval.of(lo, lo + draw(st.integers(1, 4)) * STEP)
+
+
+@st.composite
+def implied_examples(
+    draw: Any,
+) -> tuple[Proposition, list[Record], tuple[ClosedSetRecord, ...], bool]:
+    """A varsity membership claim, the teams' schools (``part_of`` joins), Bobby's enrollments
+    (either polarity), maybe a closed enrollment set, and whether the varsity rule is declared.
+    Times are exact, so the property's own oracle can decide every overlap."""
+    claim = vs.prop(vs.BOBBY, vs.MEMBER_OF, vs.TEAM, draw(exact_times()))
+    joins = [
+        vs.prop(vs.TEAM, vs.PART_OF, school, draw(exact_times()))
+        for school in draw(st.lists(st.sampled_from(SCHOOLS), max_size=2, unique=True))
+    ]
+    enrollments = [
+        vs.prop(
+            vs.BOBBY,
+            vs.ENROLLED_AT,
+            draw(st.sampled_from(SCHOOLS)),
+            draw(exact_times()),
+            negated=draw(st.booleans()),
+        )
+        for _ in range(draw(st.integers(0, 3)))
+    ]
+    closed: tuple[ClosedSetRecord, ...] = ()
+    if draw(st.booleans()):
+        when = draw(exact_times()).definite()
+        members = tuple(draw(st.lists(st.sampled_from(SCHOOLS), max_size=2, unique=True)))
+        closed = (ClosedSetRecord(ONLY, vs.ENROLLED_AT, vs.BOBBY, members, {}, *when),)
+    return claim, vs.records(*joins, *enrollments), closed, draw(st.booleans())
+
+
+def _meets_exactly(a: Interval, b: Interval) -> bool:
+    (a_lo, a_hi), (b_lo, b_hi) = a.definite(), b.definite()
+    return max(a_lo or 0, b_lo or 0) < min(a_hi or HORIZON * 2, b_hi or HORIZON * 2)
+
+
+def _implied_conflicts(
+    claim: Proposition, records: list[Record], closed: tuple[ClosedSetRecord, ...]
+) -> set[str]:
+    """The property's oracle: the ids (join, then conflicting record or closed set) of each
+    enrollment the rule derives that canon negates or a closed set leaves out, over time all
+    three share."""
+    found: set[str] = set()
+    for j in records:
+        p = j.proposition
+        if p.predicate_id != vs.PART_OF or p.object_id is None:
+            continue
+        assert isinstance(p.valid_time, Interval)
+        assert isinstance(claim.valid_time, Interval)
+        if not _meets_exactly(claim.valid_time, p.valid_time):
+            continue
+        lo = max(claim.valid_time.definite()[0] or 0, p.valid_time.definite()[0] or 0)
+        hi = min(claim.valid_time.definite()[1] or 0, p.valid_time.definite()[1] or 0)
+        derived = Interval.of(lo, hi)
+        for r in records:
+            q = r.proposition
+            if (
+                q.predicate_id == vs.ENROLLED_AT
+                and q.object_id == p.object_id
+                and q.polarity.value == "negated"
+                and isinstance(q.valid_time, Interval)
+                and _meets_exactly(derived, q.valid_time)
+            ):
+                found |= {j.proposition_id, r.proposition_id}
+        for c in closed:
+            if p.object_id not in c.members and _meets_exactly(derived, c.interval()):
+                found |= {j.proposition_id, c.id}
+    return found
+
+
+@pytest.mark.part("M4", "FR-PROP-3,8,10")
+def test_contradiction_soundness__implied() -> None:
+    """Forward implication (#441) is sound and complete against the property's own oracle:
+    without the declared rule a membership is never ``contradicted`` (team membership
+    establishes nothing about enrollment); with it, the claim is ``contradicted`` exactly when a
+    derived enrollment is negated by canon or left out of a closed set over shared time, and
+    the verdict cites the rule (a join) and only records or sets the oracle names. Complement:
+    both outcomes occur."""
+    seen: Counter[str] = Counter()
+
+    @settings(
+        max_examples=EXAMPLES,
+        deadline=None,
+        suppress_health_check=[HealthCheck.too_slow, HealthCheck.filter_too_much],
+    )
+    @given(example=implied_examples())
+    def run(example: tuple[Proposition, list[Record], tuple[ClosedSetRecord, ...], bool]) -> None:
+        claim, records, closed, ruled = example
+        reg = vs.registry_of(vs.VARSITY_RULE) if ruled else vs.REGISTRY
+        verdict = check(claim, records, registry=reg, closed_sets=closed)
+        expected = _implied_conflicts(claim, records, closed) if ruled else set()
+        if not expected:
+            assert verdict.kind is not VerdictKind.CONTRADICTED, (example, verdict)
+            return
+        seen["contradicted"] += 1
+        assert verdict.kind is VerdictKind.CONTRADICTED, (example, verdict)
+        assert Rule.IMPLICATION in verdict.rules
+        assert verdict.rules - {Rule.IMPLICATION} <= {Rule.POLARITY, Rule.CLOSED_SET}
+        assert set(verdict.cited()) <= expected, (example, verdict)
+
+    run()
+    assert seen["contradicted"], seen
+
+
+@st.composite
+def key_set_examples(draw: Any) -> tuple[Proposition, ClosedSetRecord]:
+    """A degree claim (its degree id, and its level or none) and a closed set over the key set
+    ``degree_id`` (some of the ids, narrowed to bachelor's degrees or not, over some time)."""
+    level = draw(st.sampled_from(("bachelor", "master", None)))
+    qualifiers = {"degree_id": draw(st.sampled_from(("a", "b", "c")))}
+    if level is not None:
+        qualifiers["level"] = level
+    claim = vs.prop(
+        vs.BOBBY,
+        vs.DEGREE,
+        object_set=(draw(st.sampled_from(SCHOOLS)),),
+        when=draw(valid_times(instant_only=True)),
+        qualifiers=qualifiers,
+    )
+    when = draw(exact_times()).definite()
+    closed = ClosedSetRecord(
+        ONLY,
+        vs.DEGREE,
+        vs.BOBBY,
+        tuple(draw(st.lists(st.sampled_from(("a", "b", "c")), min_size=1, unique=True))),
+        draw(st.sampled_from(({}, {"level": "bachelor"}))),
+        valid_from=when[0],
+        valid_to=when[1],
+        key_set="degree_id",
+    )
+    return claim, closed
+
+
+@pytest.mark.part("M4", "FR-PROP-8,10")
+def test_contradiction_soundness__key_set() -> None:
+    """A closed set over a key set (#441) contradicts a claim exactly when the claim names every
+    qualifier the set is narrowed by, with its values, names a degree id the set does not list,
+    and its instant lies in the set's interval; the verdict cites the set. Complement: both
+    outcomes occur."""
+    seen: Counter[str] = Counter()
+
+    @settings(max_examples=EXAMPLES, deadline=None)
+    @given(example=key_set_examples())
+    def run(example: tuple[Proposition, ClosedSetRecord]) -> None:
+        claim, closed = example
+        verdict = check(claim, [], registry=vs.REGISTRY, closed_sets=(closed,))
+        lo, hi = claim.valid_time.definite()
+        assert lo is not None
+        assert hi is not None
+        inside = overlaps(claim.valid_time, closed.interval())
+        outside = (
+            all(claim.qualifiers.get(k) == v for k, v in closed.key.items())
+            and claim.qualifiers["degree_id"] not in closed.members
+        )
+        if outside and inside is True:
+            seen["contradicted"] += 1
+            assert verdict.kind is VerdictKind.CONTRADICTED, (example, verdict)
+            assert verdict.cited() == (closed.id,)
+        elif not outside or inside is False:
+            seen["open"] += 1
+            assert verdict.kind is not VerdictKind.CONTRADICTED, (example, verdict)
+
+    run()
+    assert seen["contradicted"], seen
+    assert seen["open"], seen

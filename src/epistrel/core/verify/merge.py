@@ -101,7 +101,12 @@ def _record(seed: SeedFact) -> Record | None:
 
 
 def _closed_conflict(a: ClosedSetRecord, b: ClosedSetRecord) -> bool:
-    if (a.predicate_id, a.subject_id, dict(a.key)) != (b.predicate_id, b.subject_id, dict(b.key)):
+    if (a.predicate_id, a.subject_id, a.key_set, dict(a.key)) != (
+        b.predicate_id,
+        b.subject_id,
+        b.key_set,
+        dict(b.key),
+    ):
         return False
     if set(a.members) == set(b.members):
         return False

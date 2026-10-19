@@ -5,6 +5,12 @@ Every variant plays a structured turn end to end through ``respond`` (the stub a
 Bobby's render with its declared propositions and, where the ladder reaches rung 3, the
 regeneration) over the Bobby education fixture (``tests/fixtures/bobby_education.py``):
 
+- ``test_s_tennis__varsity`` (variant 1): the same line with the author's varsity rule and the
+  closed set "Bobby's only enrollment is OSU": the rule derives ``enrolled_at(Bobby, University
+  of Florida)`` through ``team_of``, a new member of the closed set, so the claim is
+  ``contradicted`` citing the rule's join and the closed set (#441's forward implication); the
+  repair reads the enrollment's neighborhood OSU → Ohio → cold winters and its regeneration is
+  coherent (a winter club in Ohio, scripted);
 - ``test_s_tennis`` (variant 1b): "I played on Florida's college team as an undergrad" declares
   ``member_of(Bobby, Florida varsity tennis, role = player)``, never a degree or an institution
   of degree; with no declared rule and no closed set it is ``novel`` (team membership
@@ -15,15 +21,18 @@ regeneration) over the Bobby education fixture (``tests/fixtures/bobby_education
   (``functional_key``) and accepted at rung 2 ("from OSU"); the same claim in prose that never
   names Florida reaches rung 3, whose regeneration reads the contradicted degree and its
   neighborhood OSU → Ohio → cold winters (depth 2) and is coherent (a winter club in Ohio,
-  scripted); a second bachelor's (a new degree id) is ``novel``; with ``bobby_ba`` jointly
-  awarded by {OSU, Florida}, "partly from Florida" is ``supported``;
+  scripted); a second bachelor's (a new degree id) is ``novel``, and ``contradicted`` only
+  under the closed degree set "Bobby's only undergraduate degree is ``bobby_ba``" (a closed set
+  over the key set ``degree_id``, #441); with ``bobby_ba`` jointly awarded by {OSU, Florida},
+  "partly from Florida" is ``supported``, the closed degree set notwithstanding;
 - ``test_s_tennis__camp`` (variant 3): a summer tennis camp at Florida is ``attended_program``
-  (multi-valued): ``novel``, permitted as his own minor backstory, canonized.
-
-Variant 1 with the varsity rule, variant 4 (with and without its rule) and the second degree
-under a closed degree set need verdicts #140's rules do not give yet (forward implication of a
-claim's consequences, a closed set over degree ids, a rule-free cross-predicate ``uncertain``):
-#441.
+  (multi-valued): ``novel``, permitted as his own minor backstory, canonized;
+- ``test_s_tennis__presence`` (variant 4): canon says "Bobby has never been to Florida" and
+  places the University of Florida in the Florida peninsula. With the author's rule
+  ``attended_program ⇒ located_at`` the camp claim is ``contradicted``, citing the negation and
+  the containment (#441's forward implication, through containment); without the rule it is
+  ``uncertain(world_knowledge)`` (#441's rule-free cross-predicate conflict) and goes to the
+  model residual (the entailment answer is scripted), which the ladder repairs.
 """
 
 from __future__ import annotations
@@ -66,8 +75,26 @@ def _say(text_: str, *props: dict[str, Any]) -> str:
     return render(beat("say", text_, intent="sincere", propositions=list(props)))
 
 
-def _degree(school: str, degree_id: str = "bobby_ba") -> dict[str, Any]:
-    return claim("I", "degree_awarded", school, qualifiers={"degree_id": degree_id})
+def _degree(school: str, degree_id: str = "bobby_ba", **extra: str) -> dict[str, Any]:
+    return claim("I", "degree_awarded", school, qualifiers={"degree_id": degree_id, **extra})
+
+
+def _member() -> dict[str, Any]:
+    return claim("I", "member_of", "Florida varsity tennis", qualifiers={"role": "player"})
+
+
+def _regenerated(text_: str) -> str:
+    return json.dumps({"text": text_, "propositions": []})
+
+
+async def _closed_set(engine: AsyncEngine, story_id: str, predicate: str) -> str:
+    (row,) = await rows(
+        engine,
+        "SELECT id FROM closed_sets WHERE story_id = :s AND predicate_id = :p",
+        s=story_id,
+        p=predicate,
+    )
+    return str(row.id)
 
 
 async def _play(client: Any, edu: Education, line: str) -> dict[str, Any]:
@@ -103,6 +130,32 @@ async def _declared(engine: AsyncEngine, story_id: str) -> list[dict[str, Any]]:
         s=story_id,
     )
     return [p["proposition"] for p in event.payload["propositions"]]
+
+
+@pytest.mark.part("M4", "FR-VERIFY-1,6; FR-REPAIR-1,2; FR-PROP-3,5,8,10")
+async def test_s_tennis__varsity(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """Variant 1 (see the module docstring). Complement: variant 1b (``test_s_tennis``), the
+    same line without the rule and the closed set, is ``novel``; here nothing from the
+    rejected render is canonized."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        edu = await bobby_education(client, engine)
+        stub = epistrel.models.stub
+        stub.script("generation", [_say(VARSITY_LINE, _member())])
+        stub.script("regeneration", [_regenerated(WINTER_CLUB)])
+        played = await _play(client, edu, "Did you play in college?")
+        verdict = await _verdict(engine, edu.story_id)
+        assert verdict["kind"] == "contradicted"
+        only_osu = await _closed_set(engine, edu.story_id, ENROLLED_AT)
+        assert {edu.team_school.proposition_id, only_osu} <= set(verdict["evidence_ids"])
+        (entry,) = (await turn_report(engine, edu.story_id))["repairs"]
+        assert (entry["rung"], entry["accepted"]) == (3, True)
+        reached = {i["id"] for c in entry["neighborhood"] for i in c["items"]}
+        assert {edu.enrollment.id, edu.osu_in_ohio.id, edu.winters.id} <= reached
+        assert played["message"]["text"] == f'Bobby: "{WINTER_CLUB}"'
+        assert await _facts(engine, edu.story_id, MEMBER_OF) == []
+        assert [r.object_id for r in await _facts(engine, edu.story_id, ENROLLED_AT)] == [edu.osu]
 
 
 @pytest.mark.part("M4", "FR-VERIFY-1,6; FR-REPAIR-1,2; FR-PROP-3,5,8,10")
@@ -182,18 +235,34 @@ async def test_s_tennis__degree(
         assert played["message"]["text"] == f'Bobby: "{WINTER_CLUB}"'
 
         # -- a second bachelor's: a new degree id is novel
+        second = _degree("Florida", "second", level="bachelor")
+        second_line = "I got a second bachelor's at Florida in 2018."
         stub.reset()
-        stub.script(
-            "generation",
-            [_say("I got a second bachelor's at Florida in 2018.", _degree("Florida", "second"))],
-        )
+        stub.script("generation", [_say(second_line, second)])
         await _play(client, edu, "Anything else?")
         assert (await _verdict(engine, edu.story_id))["kind"] == "novel"
 
-        # -- the joint degree: partly from Florida is supported
-        edu = await bobby_education(client, engine, joint_degree=True)
+        # -- ... and contradicted under the closed degree set
+        edu = await bobby_education(client, engine, closed_degrees=True)
         stub.reset()
-        stub.script("generation", [_say("My degree is partly from Florida.", _degree("Florida"))])
+        stub.script("generation", [_say(second_line, second)])
+        stub.script("regeneration", [_regenerated("I only have the one degree, from OSU.")])
+        await _play(client, edu, "Anything else?")
+        verdict = await _verdict(engine, edu.story_id)
+        assert (verdict["kind"], verdict["rule"]) == ("contradicted", "closed_set")
+        only_bachelor = await _closed_set(engine, edu.story_id, DEGREE_AWARDED)
+        assert verdict["evidence_ids"] == [only_bachelor]
+        assert [
+            r.qualifiers["degree_id"] for r in await _facts(engine, edu.story_id, DEGREE_AWARDED)
+        ] == ["bobby_ba"]
+
+        # -- the joint degree: partly from Florida is supported
+        edu = await bobby_education(client, engine, joint_degree=True, closed_degrees=True)
+        stub.reset()
+        stub.script(
+            "generation",
+            [_say("My degree is partly from Florida.", _degree("Florida", level="bachelor"))],
+        )
         played = await _play(client, edu, "Where did you graduate?")
         assert (await _verdict(engine, edu.story_id))["kind"] == "supported"
         assert "repairs" not in await turn_report(engine, edu.story_id)
@@ -217,3 +286,46 @@ async def test_s_tennis__camp(
         assert played["message"]["text"] == f'Bobby: "{CAMP_LINE}"'
         assert [r.object_id for r in await _facts(engine, edu.story_id, ATTENDED)] == [edu.florida]
         assert [r.object_id for r in await _facts(engine, edu.story_id, ENROLLED_AT)] == [edu.osu]
+
+
+@pytest.mark.part("M4", "FR-VERIFY-1,6; FR-REPAIR-1,2; FR-PROP-3,5,8,10")
+async def test_s_tennis__presence(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """Variant 4 (see the module docstring). Complement: variant 3 (``test_s_tennis__camp``),
+    with no negated presence, is ``novel``; the rule-free conflict is never ``novel`` and never
+    decided without the model; no camp is canonized either way."""
+    elsewhere = "I learned at a summer tennis camp back in Ohio."
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+
+        # -- with the presence rule: contradicted, citing the negation and the containment
+        edu = await bobby_education(client, engine, never_in_florida=True, presence_rule=True)
+        assert edu.never_there is not None
+        assert edu.uf_on_peninsula is not None
+        stub.script("generation", [_say(CAMP_LINE, claim("I", "attended_program", "Florida"))])
+        stub.script("regeneration", [_regenerated(elsewhere)])
+        played = await _play(client, edu, "Where did you learn tennis?")
+        verdict = await _verdict(engine, edu.story_id)
+        assert (verdict["kind"], verdict["escalated"]) == ("contradicted", False)
+        assert {edu.never_there.proposition_id, edu.uf_on_peninsula.proposition_id} <= set(
+            verdict["evidence_ids"]
+        )
+        assert (await turn_report(engine, edu.story_id))["repairs"]
+        assert played["message"]["text"] == f'Bobby: "{elsewhere}"'
+        assert await _facts(engine, edu.story_id, ATTENDED) == []
+
+        # -- without it: uncertain, so the model residual decides
+        edu = await bobby_education(client, engine, never_in_florida=True)
+        stub.reset()
+        stub.script("generation", [_say(CAMP_LINE, claim("I", "attended_program", "Florida"))])
+        stub.script("entailment", [json.dumps({"verdict": "contradicted", "confidence": 0.9})])
+        stub.script("regeneration", [_regenerated(elsewhere)])
+        played = await _play(client, edu, "Where did you learn tennis?")
+        verdict = await _verdict(engine, edu.story_id)
+        assert (verdict["kind"], verdict["escalated"]) == ("contradicted", True)
+        assert [c.purpose for c in stub.calls].count("entailment") == 1
+        assert (await turn_report(engine, edu.story_id))["verify"]["escalated"] == 1
+        assert (await turn_report(engine, edu.story_id))["repairs"]
+        assert played["message"]["text"] == f'Bobby: "{elsewhere}"'
+        assert await _facts(engine, edu.story_id, ATTENDED) == []

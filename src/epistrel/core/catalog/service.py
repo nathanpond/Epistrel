@@ -78,7 +78,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, Strict
 from sqlalchemy import Table, func, insert, select, update
 from sqlalchemy import delete as sql_delete
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
@@ -114,7 +114,7 @@ REVISION_MAX = 2**31 - 1
 """``draft_revision`` and ``version`` are ``INTEGER`` columns: a larger value is a 422 at the
 boundary, never a database error (#280's lesson)."""
 
-Revision = Annotated[int, Field(ge=1, le=REVISION_MAX)]
+Revision = Annotated[int, Strict(), Field(ge=1, le=REVISION_MAX)]
 
 
 # -- requests and reports ----------------------------------------------------------------------

@@ -45,7 +45,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -67,7 +67,7 @@ log = get_logger(__name__)
 
 ElementKind = Literal["field", "seed", "role", "reveal", "cast_character", "media_caption"]
 EntryType = Literal["character", "scenario"]
-VersionLabel = int | Literal["draft"]
+VersionLabel = StrictInt | Literal["draft"]
 RowError = Literal["model_unavailable", "deadline", "invalid_response"]
 
 DRAFT: Literal["draft"] = "draft"

@@ -79,7 +79,7 @@ LengthName = Literal["short", "medium", "long"]
 LENGTH_TOKENS: Mapping[str, int] = {"short": 150, "medium": 400, "long": 800}
 """``max_tokens`` of each named response length."""
 MAX_LENGTH_TOKENS = 4_000
-Length = LengthName | Annotated[int, Field(ge=1, le=MAX_LENGTH_TOKENS)]
+Length = LengthName | Annotated[StrictInt, Field(ge=1, le=MAX_LENGTH_TOKENS)]
 """A response length: a name (``short``/``medium``/``long``) or a token cap."""
 
 DEFAULT_LITE_WINDOW_MESSAGES = 30
@@ -104,8 +104,8 @@ class GenerationSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    temperature: Annotated[float | None, PROSPECTIVE] = Field(default=None, ge=0.0, le=2.0)
-    top_p: Annotated[float | None, PROSPECTIVE] = Field(default=None, ge=0.0, le=1.0)
+    temperature: Annotated[StrictFloat | None, PROSPECTIVE] = Field(default=None, ge=0.0, le=2.0)
+    top_p: Annotated[StrictFloat | None, PROSPECTIVE] = Field(default=None, ge=0.0, le=1.0)
     length: Annotated[Length | None, PROSPECTIVE] = None
 
 

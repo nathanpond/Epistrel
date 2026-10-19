@@ -55,7 +55,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -109,7 +109,7 @@ class TruncateRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid", json_schema_extra={"examples": [{"to_turn": 2}]})
 
-    to_turn: int = Field(description="The last turn to keep (0 to the head - 1).")
+    to_turn: StrictInt = Field(description="The last turn to keep (0 to the head - 1).")
 
 
 class UntruncateRequest(BaseModel):

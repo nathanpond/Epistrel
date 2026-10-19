@@ -58,7 +58,15 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    StringConstraints,
+)
 from sqlalchemy import and_, bindparam, func, select, update
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
@@ -184,10 +192,10 @@ class FactRequest(_Request):
 
     proposition: Proposition
     visibility: Visibility = Field(default_factory=Visibility)
-    valid_from: int | None = None
-    valid_to: int | None = None
+    valid_from: StrictInt | None = None
+    valid_to: StrictInt | None = None
     anchored_to: str | None = None
-    locked: bool = False
+    locked: StrictBool = False
 
 
 class SupersedeRequest(_Request):
@@ -203,9 +211,9 @@ class SupersedeRequest(_Request):
 
     proposition: Proposition
     visibility: Visibility | None = None
-    valid_from: int | None = None
-    valid_to: int | None = None
-    locked: bool | None = None
+    valid_from: StrictInt | None = None
+    valid_to: StrictInt | None = None
+    locked: StrictBool | None = None
 
 
 def _valid_time(valid_from: int | None, valid_to: int | None) -> Interval | None:

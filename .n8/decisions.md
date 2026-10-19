@@ -7608,3 +7608,13 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Issue:** #437
 - **Decision (owner, 2026-10-18):** #443's repo setting is enabled. The agent verified `can_approve_pull_request_reviews: true` with the default token still `read`. `needs-owner-action` is removed, and #443 closes with M4's PR. The first weekly `perf.yml` run on `main` proves it end to end.
   **Issue:** #443
+
+## /n8-exec M4 (resume) — 2026-10-19
+
+- **Decision (orchestrator):** the run resumes at `00bdae8` in the order the 2026-10-18 notes set: the M4-triaged issues (#427–#440, #442, #444; #443 is already done and closes with the PR), then #441 → #151 → #153, then #154, #155, #156, #157, #158. The method is unchanged: one implementer subagent per item in the main checkout, and a full suite per pushed SHA in a detached worktree before the AC are ticked. Closely related issues share one agent (each keeps its own commit).
+  **Why:** the dependency graph (#151 ← #441; #153 ← #442, #151; #154–#158 ← #151/#153), and the owner asked for M4-triaged bugs and #441/#442 first.
+- **Decision (Discretion):** #427 follows #322's approach (the issue's first option), not a strict validation step where library input enters the Engine. The library takes model instances that the caller builds, so the coercion happens before any Engine code runs. Each lax `int`/`float`/`bool` field of a model a public `Engine` coroutine takes (53 fields, found by walking the parameters' models and every model nested in them) is now `StrictInt`/`StrictFloat`/`StrictBool`. The shared aliases `Revision`, `Age`, `CastLimit` and `DisplayOrder` gain `Strict()`, and `Length`'s token cap and the rating suggestion's `VersionLabel` gain a strict int. Enums, literals and dates stay lax: in Python-mode strict they would refuse their string values. The JSON Schema and docs/openapi.json are unchanged.
+  **Why:** a model-wide `strict=True` breaks enums and dates, and a strict re-validation in the Engine comes too late, because `true` is already `1` by then. `FeedbackRetention` is skipped, because its plain validator already refuses booleans.
+  **Issue:** #427
+- **Decision (Discretion):** #427's guard (`tests/test_library_strict_inputs.py`) derives the model set from `Engine`'s signatures, as #324's guard does, so a new library input model with a lax scalar fails CI. `TypedLiteral.value` and proposition qualifiers did not coerce in practice: a smart-mode union matches the exact type first, and `_typed` already refuses a boolean int. They are made strict anyway so that the guard has no exceptions.
+  **Issue:** #427

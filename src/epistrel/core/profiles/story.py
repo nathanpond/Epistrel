@@ -54,7 +54,7 @@ import dataclasses
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, StrictInt
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -114,7 +114,7 @@ class ProfileOverridesPatch(TwoStageRequest):
     )
 
     settings: OverridesPatchDocument
-    expected_revision: int | None = Field(
+    expected_revision: StrictInt | None = Field(
         default=None,
         ge=0,
         le=2**31 - 1,

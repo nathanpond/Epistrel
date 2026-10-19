@@ -73,7 +73,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StrictBool
 from sqlalchemy import ColumnElement, func, insert, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -224,7 +224,7 @@ class OffboardingRequest(TwoStageRequest):
         description="The new owner for every `transfer` (required with one; never the "
         "offboarded principal or `system`).",
     )
-    dry_run: bool = Field(
+    dry_run: StrictBool = Field(
         default=False,
         description="Answer the counts and warnings and change nothing (it wins over "
         "`ignore_warnings`).",

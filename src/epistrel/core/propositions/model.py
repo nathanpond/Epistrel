@@ -54,7 +54,16 @@ from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+    StringConstraints,
+    model_validator,
+)
 
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.ids import ULID_PATTERN
@@ -136,8 +145,8 @@ class Bound(_Model):
     """One end of an interval: exact (``inner == outer``) or approximate (see the module
     docstring for which side is outer)."""
 
-    inner: int
-    outer: int
+    inner: StrictInt
+    outer: StrictInt
 
     @classmethod
     def at(cls, t: int) -> Bound:
@@ -209,9 +218,9 @@ class Instant(_Model):
     granule's end ``until``. Build one with ``Instant.of``."""
 
     kind: Literal["instant"] = "instant"
-    at: int
+    at: StrictInt
     granularity: Granularity
-    until: int
+    until: StrictInt
 
     @model_validator(mode="after")
     def _granule(self) -> Self:
@@ -355,7 +364,7 @@ class TypedLiteral(_Model):
     ``unit``; a ``date`` is an ISO date string; a ``duration`` is whole minutes."""
 
     kind: LiteralKind
-    value: int | float | str | bool
+    value: StrictInt | StrictFloat | str | StrictBool
     unit: str | None = None
 
     @model_validator(mode="after")
@@ -405,7 +414,7 @@ class Polarity(StrEnum):
     NEGATED = "negated"
 
 
-QualifierValue = str | int | float | bool | tuple[str, ...]
+QualifierValue = str | StrictInt | StrictFloat | StrictBool | tuple[str, ...]
 """A qualifier's value: a JSON scalar, or a list of ids (``scheduled``'s participants)."""
 
 

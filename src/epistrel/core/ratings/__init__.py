@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Any
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, Strict, StringConstraints
 from sqlalchemy import func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -70,7 +70,7 @@ Reference = Annotated[
     StringConstraints(strip_whitespace=True, min_length=1, max_length=REFERENCE_MAX),
     BeforeValidator(trim_as_sent(REFERENCE_MAX)),
 ]
-DisplayOrder = Annotated[int, Field(ge=DISPLAY_ORDER_MIN, le=DISPLAY_ORDER_MAX)]
+DisplayOrder = Annotated[int, Strict(), Field(ge=DISPLAY_ORDER_MIN, le=DISPLAY_ORDER_MAX)]
 
 
 class RatingFields(BaseModel):

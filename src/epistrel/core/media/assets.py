@@ -85,6 +85,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    StrictInt,
     TypeAdapter,
     ValidationError,
 )
@@ -217,7 +218,7 @@ class GenerationMetadata(BaseModel):
     model: str | None = Field(default=None, max_length=GENERATION_NAME_MAX)
     prompt: str | None = Field(default=None, max_length=PROMPT_MAX)
     negative_prompt: str | None = Field(default=None, max_length=PROMPT_MAX)
-    seed: int | None = Field(default=None, ge=0, le=SEED_MAX)
+    seed: StrictInt | None = Field(default=None, ge=0, le=SEED_MAX)
     parameters: Annotated[
         dict[str, Any] | None,
         AfterValidator(require_finite),  # a JSON dump would store a non-finite number as null

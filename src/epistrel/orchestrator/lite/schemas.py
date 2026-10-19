@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, model_validator
 
 from epistrel.core.history import HistoryItem
 from epistrel.core.ids import Ulid
@@ -90,8 +90,8 @@ class BudgetOverride(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    max_calls: int | None = Field(default=None, ge=MIN_CALLS_PER_TURN, le=MAX_CALLS_PER_TURN)
-    deadline_s: float | None = Field(default=None, ge=MIN_DEADLINE_S, le=MAX_TURN_DEADLINE_S)
+    max_calls: StrictInt | None = Field(default=None, ge=MIN_CALLS_PER_TURN, le=MAX_CALLS_PER_TURN)
+    deadline_s: StrictFloat | None = Field(default=None, ge=MIN_DEADLINE_S, le=MAX_TURN_DEADLINE_S)
 
 
 class RespondRequest(BaseModel):
@@ -162,7 +162,7 @@ class RegenerateRequest(BaseModel):
         },
     )
 
-    turn: int | None = Field(default=None, ge=1)
+    turn: StrictInt | None = Field(default=None, ge=1)
     render_character_ids: list[Ulid] | None = Field(
         default=None, min_length=1, max_length=MAX_RENDER_CHARACTERS
     )

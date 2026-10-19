@@ -61,6 +61,7 @@ from pydantic import (
     ConfigDict,
     Field,
     GetJsonSchemaHandler,
+    StrictBool,
     model_validator,
 )
 from pydantic.json_schema import JsonSchemaValue
@@ -459,7 +460,7 @@ class TwoStageRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    ignore_warnings: bool = Field(
+    ignore_warnings: StrictBool = Field(
         default=False,
         validation_alias=AliasChoices("ignore_warnings", CAMEL_CASE),
         description="Apply the change even when its impact report warns (FR-PROF-7). An invalid "

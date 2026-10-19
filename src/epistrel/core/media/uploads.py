@@ -55,7 +55,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, BinaryIO
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from sqlalchemy import delete, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -150,7 +150,7 @@ class UploadOpen(MediaUpload):
 
     model_config = ConfigDict(extra="forbid", json_schema_extra=_open_schema)
 
-    size: int = Field(
+    size: StrictInt = Field(
         ge=1,
         le=MEDIA_MAX_BYTES_LIMIT,
         description="The whole upload's size in bytes (at most `media_max_bytes`).",

@@ -17,7 +17,7 @@ from collections.abc import Sequence
 from contextvars import ContextVar
 from typing import Any, Literal, Protocol, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt
 
 from epistrel.core.errors import InvalidRequest
 from epistrel.orchestrator.models.errors import ModelError, ModelUnavailable
@@ -49,12 +49,12 @@ class ModelParams(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
-    top_p: float | None = Field(default=None, ge=0.0, le=1.0)
-    max_tokens: int | None = Field(default=None, ge=1, le=MAX_COMPLETION_TOKENS)
-    timeout: float | None = Field(default=None, gt=0.0, le=600.0)
+    temperature: StrictFloat | None = Field(default=None, ge=0.0, le=2.0)
+    top_p: StrictFloat | None = Field(default=None, ge=0.0, le=1.0)
+    max_tokens: StrictInt | None = Field(default=None, ge=1, le=MAX_COMPLETION_TOKENS)
+    timeout: StrictFloat | None = Field(default=None, gt=0.0, le=600.0)
     stop: tuple[str, ...] | None = Field(default=None, max_length=4)
-    seed: int | None = Field(default=None, ge=0, le=MAX_SEED)
+    seed: StrictInt | None = Field(default=None, ge=0, le=MAX_SEED)
     """The provider's sampling seed (OpenAI ``seed``), for reproducible runs; the eval harness
     sets one per run seed (#134). Providers treat it as best effort."""
 

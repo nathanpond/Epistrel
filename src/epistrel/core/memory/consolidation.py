@@ -68,7 +68,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
 from sqlalchemy import Text, and_, or_, select
 from sqlalchemy.dialects.postgresql import array
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -145,8 +145,8 @@ class ConsolidateRequest(BaseModel):
         json_schema_extra={"examples": [{"from_turn": 1, "to_turn": 20}]},
     )
 
-    from_turn: int = Field(ge=1, le=2_147_483_647, description="The window's first turn.")
-    to_turn: int = Field(
+    from_turn: StrictInt = Field(ge=1, le=2_147_483_647, description="The window's first turn.")
+    to_turn: StrictInt = Field(
         ge=1, le=2_147_483_647, description="The window's last turn (at or after `from_turn`)."
     )
     scope: Scope | None = Field(

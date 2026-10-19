@@ -59,7 +59,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from sqlalchemy import (
     Column,
     Table,
@@ -222,7 +222,7 @@ class ForkRequest(BaseModel):
         json_schema_extra={"examples": [{"at_turn": 4, "name": "What if she stayed"}]},
     )
 
-    at_turn: int | None = Field(
+    at_turn: StrictInt | None = Field(
         default=None, ge=0, description="The last turn to copy (0: only the story's setup)."
     )
     variant_chain: ChainSelector | None = Field(

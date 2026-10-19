@@ -48,7 +48,16 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Any, Final, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    Strict,
+    StrictBool,
+    StrictInt,
+    field_validator,
+)
 from pydantic.fields import FieldInfo
 
 from epistrel.core.catalog.service import CardRating, Revision
@@ -172,8 +181,8 @@ Slug = Annotated[str, Field(pattern=SLUG_PATTERN)]
 AudienceToken = Annotated[str, Field(pattern=AUDIENCE_PATTERN)]
 Caption = Annotated[str, Field(max_length=CAPTION_MAX)]
 Prompt = Annotated[str, Field(max_length=PROMPT_MAX)]
-Age = Annotated[int, Field(ge=0, le=AGE_MAX)]
-CastLimit = Annotated[int, Field(ge=CAST_LIMIT_MIN, le=CAST_LIMIT_MAX)]
+Age = Annotated[int, Strict(), Field(ge=0, le=AGE_MAX)]
+CastLimit = Annotated[int, Strict(), Field(ge=CAST_LIMIT_MIN, le=CAST_LIMIT_MAX)]
 Structure = Annotated[dict[str, Any], AfterValidator(require_finite)]
 """A State, the clock, a scheduled event, a predicate, a closed set or a rule (and a seed's
 valid time, a role's State values, the creation bounds): stored as given (a JSON object) in M3;
@@ -391,7 +400,7 @@ class ScenarioRole(ScenarioModel):
     public_label: Annotated[Name, FieldClass.public_card]
     setup_description: Annotated[Prose, FieldClass.public_card]
     kind: Annotated[RoleKind, FieldClass.configuration, Use.creation_only]
-    required: Annotated[bool, FieldClass.configuration, Use.creation_only] = True
+    required: Annotated[StrictBool, FieldClass.configuration, Use.creation_only] = True
     fill: Annotated[FillMode, FieldClass.configuration, Use.creation_only] = "open"
     character: RoleCharacter | None = None
     eligibility: RoleEligibility | None = None
@@ -539,10 +548,12 @@ class StorySettingsDefaults(ScenarioModel):
     backfill_conflict_policy: Annotated[
         BackfillConflictPolicy | None, FieldClass.configuration, Use.story_setting
     ] = None
-    audit_retention_days: Annotated[int | None, FieldClass.configuration, Use.story_setting] = (
-        Field(default=None, ge=AUDIT_RETENTION_MIN_DAYS, le=AUDIT_RETENTION_MAX_DAYS)
-    )
-    allow_new_arrivals: Annotated[bool | None, FieldClass.configuration, Use.story_setting] = None
+    audit_retention_days: Annotated[
+        StrictInt | None, FieldClass.configuration, Use.story_setting
+    ] = Field(default=None, ge=AUDIT_RETENTION_MIN_DAYS, le=AUDIT_RETENTION_MAX_DAYS)
+    allow_new_arrivals: Annotated[
+        StrictBool | None, FieldClass.configuration, Use.story_setting
+    ] = None
     """The scenario's arrival policy (FR-VERIFY-11; #144): whether a director pass may introduce
     new arrivals, and a render a new unmodeled person as scene texture. ``null`` leaves the
     story's default (true)."""

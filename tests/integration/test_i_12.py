@@ -39,6 +39,8 @@ from epistrel.core.propositions import registry, store
 from epistrel.core.propositions.model import Implication, Interval, Proposition
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
+from epistrel.core.resolution.context import load_time_basis
+from epistrel.core.resolution.time import story_time_at
 from epistrel.core.tables.memories import memories
 from epistrel.core.verify.neighborhood import Edge, Neighborhood, Seed, fact_neighborhood
 from epistrel.core.verify.rules import Rule, VerdictKind
@@ -102,7 +104,9 @@ async def _memory(conn: AsyncConnection, op: Operation, story_id: str, **links: 
 
 
 async def _cluster(engine: AsyncEngine) -> dict[str, Any]:
-    """Bobby in the kitchen (0-100) with two memories about it, and what hangs on it."""
+    """Bobby in the kitchen (0-200, until he is at the school) with two memories about it, and
+    what hangs on it. The kitchen window covers the head's story-time (``story_time_at``, the
+    projections' "now"; #438), so the head's profile still places him there."""
     w: World = await world(engine)
     sid = w.story_id
     await use_structured(engine, sid)
@@ -123,7 +127,7 @@ async def _cluster(engine: AsyncEngine) -> dict[str, Any]:
             fact = await canon.commit_fact(
                 conn,
                 sid,
-                at(bobby, kitchen, 0, 100),
+                at(bobby, kitchen, 0, 200),
                 provenance=RecordProvenance.RENDER,
                 operation=op,
                 source_event_ids=[event],
@@ -168,6 +172,12 @@ async def _cluster(engine: AsyncEngine) -> dict[str, Any]:
     found["discarded"] = await commit(engine, sid, _rel(bobby, FRIEND_OF, ann, 0, 100))
     await commit(engine, sid, at(dora, attic, 100, 200))
     assert await truncate(engine, sid, int(head) - 1) is not None
+    async with engine.connect() as conn:
+        kept = await conn.scalar(
+            text("SELECT next_turn_index FROM stories WHERE id = :s"), {"s": sid}
+        )
+        now = story_time_at(int(kept) - 1, await load_time_basis(conn, sid))
+    assert 0 <= now < 200, now  # the head's "now" is inside the kitchen window
     return found
 
 

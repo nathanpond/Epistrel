@@ -90,6 +90,7 @@ from epistrel.core.tables.facts import facts
 
 if TYPE_CHECKING:
     from epistrel.core.canon.facts import FactChange
+    from epistrel.core.propositions.registry import Registry
     from epistrel.core.timeline import MembershipChange
 
 RELATIONSHIPS = "relationships"
@@ -954,6 +955,109 @@ async def _within(
     return chain
 
 
+def _current(
+    registry: Registry, ctx: _ReadContext, turn: int
+) -> Callable[[Mapping[str, Any], str | None], bool]:
+    """Whether a projection row holds as of ``turn`` for ``ctx``'s viewpoint: in the record
+    through the turn, visible, and (unless its predicate is ``permanent``) valid at ``ctx.now``
+    (the turn's story-time, #438)."""
+    from epistrel.core.propositions.model import TemporalKind
+
+    visible = _visible(ctx.viewpoint)
+    position = turn_position(turn)
+
+    def current(row: Mapping[str, Any], predicate_id: str | None = None) -> bool:
+        if not (through(row, position) and visible(row)):
+            return False
+        predicate = registry.get(predicate_id) if predicate_id is not None else None
+        if predicate is not None and predicate.temporal_kind is TemporalKind.PERMANENT:
+            return True
+        return covers(row, ctx.now)
+
+    return current
+
+
+def _relationship_views(
+    entity_id: str,
+    rows: Iterable[Mapping[str, Any]],
+    registry: Registry,
+    refs: Mapping[str, EntityRef],
+    omniscient: bool,
+) -> tuple[RelationshipView, ...]:
+    """``entity_id``'s relationships as seen from it, from its current ``relationships`` rows
+    (either direction), in the profile's order."""
+    views = []
+    for row in rows:
+        predicate = registry.get(str(row["predicate_id"]))
+        outgoing = row["subject_id"] == entity_id
+        symmetric = predicate is not None and predicate.symmetric
+        other = str(row["object_id"]) if outgoing else str(row["subject_id"])
+        views.append(
+            RelationshipView(
+                predicate_id=str(row["predicate_id"]),
+                predicate="" if predicate is None else predicate.name,
+                direction="out" if outgoing or symmetric else "in",
+                other=_ref(refs, other),
+                qualifiers=dict(row["qualifiers"] or {}),
+                valid_from=row["valid_from"],
+                valid_to=row["valid_to"],
+                source_fact_id=str(row["source_fact_id"]) if omniscient else None,
+            )
+        )
+    views.sort(key=lambda v: (v.predicate, v.direction, v.other.entity_id, v.source_fact_id or ""))
+    return tuple(views)
+
+
+def _other(row: Mapping[str, Any], entity_id: str) -> str:
+    return str(row["object_id"]) if row["subject_id"] == entity_id else str(row["subject_id"])
+
+
+async def relationships_views(
+    conn: AsyncConnection,
+    story_id: str,
+    entity_ids: Sequence[str],
+    *,
+    as_of: int | None = None,
+    viewpoint: str | None = None,
+) -> tuple[int, dict[str, tuple[RelationshipView, ...]]]:
+    """The turn read (``as_of``, default the head) and, for each of ``entity_ids``, its
+    relationships exactly as ``profile_view`` answers them, in a fixed number of statements
+    whatever the number of entities (#442): the read context, the registry once, one keyed read
+    of the ``relationships`` rows touching any of them, and one read of the entity refs. The ids
+    are the story's entities (the caller's ``EntityIndex``); none is checked one by one."""
+    from epistrel.core.propositions.registry import load
+
+    ctx, turn = await _read_context(conn, story_id, as_of, viewpoint)
+    wanted = list(dict.fromkeys(entity_ids))
+    if not wanted:
+        return turn, {}
+    registry = await load(conn, story_id)
+    current = _current(registry, ctx, turn)
+    rows = [
+        dict(r._mapping)
+        for r in await conn.execute(
+            select(relationships).where(
+                relationships.c.story_id == story_id,
+                or_(relationships.c.subject_id.in_(wanted), relationships.c.object_id.in_(wanted)),
+            )
+        )
+    ]
+    rows = [r for r in rows if current(r, str(r["predicate_id"]))]
+    touching: dict[str, list[dict[str, Any]]] = {e: [] for e in wanted}
+    for row in rows:
+        for end in dict.fromkeys((str(row["subject_id"]), str(row["object_id"]))):
+            if end in touching:
+                touching[end].append(row)
+    refs = await _refs(
+        conn, story_id, [_other(r, e) for e, found in touching.items() for r in found]
+    )
+    omniscient = ctx.viewpoint == OMNISCIENT
+    return turn, {
+        e: _relationship_views(e, found, registry, refs, omniscient)
+        for e, found in touching.items()
+    }
+
+
 async def profile_view(
     conn: AsyncConnection,
     story_id: str,
@@ -965,7 +1069,6 @@ async def profile_view(
     """``entity_id``'s standing profile as of turn ``as_of`` for ``viewpoint``: its
     relationships in both directions, where it is, and what it holds. 404 ``not_found`` for an
     entity that is not the story's; a placement of ``null`` when it has none."""
-    from epistrel.core.propositions.model import TemporalKind
     from epistrel.core.propositions.registry import load
 
     ctx, turn = await _read_context(conn, story_id, as_of, viewpoint)
@@ -976,17 +1079,8 @@ async def profile_view(
             {"story_id": story_id, "entity_id": entity_id},
         )
     registry = await load(conn, story_id)
-    visible = _visible(ctx.viewpoint)
-    position = turn_position(turn)
     omniscient = ctx.viewpoint == OMNISCIENT
-
-    def current(row: Mapping[str, Any], predicate_id: str | None = None) -> bool:
-        if not (through(row, position) and visible(row)):
-            return False
-        predicate = registry.get(predicate_id) if predicate_id is not None else None
-        if predicate is not None and predicate.temporal_kind is TemporalKind.PERMANENT:
-            return True
-        return covers(row, ctx.now)
+    current = _current(registry, ctx, turn)
 
     rel_rows = [
         dict(r._mapping)
@@ -1009,7 +1103,7 @@ async def profile_view(
             )
         )
     ]
-    place_rows = [r for r in place_rows if current(r)]
+    place_rows = [r for r in place_rows if current(r, None)]
     own = _latest(r for r in place_rows if r["entity_id"] == entity_id)
     held = sorted(
         (r for r in place_rows if r["container_id"] == entity_id),
@@ -1020,10 +1114,7 @@ async def profile_view(
         if own is None or own["location_id"] is None
         else await _within(conn, story_id, str(own["location_id"]), turn, ctx)
     )
-    others = [
-        str(r["object_id"]) if r["subject_id"] == entity_id else str(r["subject_id"])
-        for r in rel_rows
-    ]
+    others = [_other(r, entity_id) for r in rel_rows]
     refs = await _refs(
         conn,
         story_id,
@@ -1034,25 +1125,6 @@ async def profile_view(
             *([] if own is None else [str(own["location_id"] or own["container_id"])]),
         ],
     )
-    views = []
-    for row in rel_rows:
-        predicate = registry.get(str(row["predicate_id"]))
-        outgoing = row["subject_id"] == entity_id
-        symmetric = predicate is not None and predicate.symmetric
-        other = str(row["object_id"]) if outgoing else str(row["subject_id"])
-        views.append(
-            RelationshipView(
-                predicate_id=str(row["predicate_id"]),
-                predicate="" if predicate is None else predicate.name,
-                direction="out" if outgoing or symmetric else "in",
-                other=_ref(refs, other),
-                qualifiers=dict(row["qualifiers"] or {}),
-                valid_from=row["valid_from"],
-                valid_to=row["valid_to"],
-                source_fact_id=str(row["source_fact_id"]) if omniscient else None,
-            )
-        )
-    views.sort(key=lambda v: (v.predicate, v.direction, v.other.entity_id, v.source_fact_id or ""))
     placed = None
     if own is not None:
         placed = PlacementView(
@@ -1066,7 +1138,7 @@ async def profile_view(
     return ProfileView(
         entity=entity,
         as_of=turn,
-        relationships=tuple(views),
+        relationships=_relationship_views(entity_id, rel_rows, registry, refs, omniscient),
         placement=placed,
         inventory=tuple(
             InventoryItem(
@@ -1102,6 +1174,7 @@ __all__ = [
     "on_fact_change",
     "profile_view",
     "refresh",
+    "relationships_views",
     "scene",
     "scene_view",
     "through",

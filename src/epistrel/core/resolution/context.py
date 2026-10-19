@@ -10,8 +10,9 @@ the operation's connection:
   position, #135's ``working_memory`` as the speaker perceives them), the player character,
   the scene's entities present and the relationships of the story's people (#137's
   projections, omniscient: no visibility filter on candidates in M4), read through
-  ``KeyedLookup.scene``/``profile`` (#137's carried rule: a turn-time projection read is
-  recorded in the read set, as context);
+  ``KeyedLookup.scene``/``relationships`` (#137's carried rule: a turn-time projection read is
+  recorded in the read set, as context). The relationships of every person are one keyed read
+  (#442), so the statements do not grow with the cast;
 - ``subject_timeline``: the subject's ``born`` and ``age`` canon through #136's
   ``KeyedLookup`` (so a verdict resting on "when he was seven" regenerates when they change).
   This module is a keyed reader (``core.readset.KEYED_READERS``): it never reads ``facts`` or
@@ -129,16 +130,19 @@ async def load_context(
             scene = None
         if scene is not None and scene.present:
             present = frozenset(e.entity_id for e in scene.present)
+        people = [e.id for e in index.entries.values() if e.kind == "person"]
+        found = (
+            await lookup.relationships(story_id, people, as_of=as_of, viewpoint=OMNISCIENT)
+            if people
+            else {}
+        )
         seen: set[tuple[str, str, str]] = set()
-        for entry in index.entries.values():
-            if entry.kind != "person":
-                continue
-            profile = await lookup.profile(story_id, entry.id, as_of=as_of, viewpoint=OMNISCIENT)
-            for rel in profile.relationships:
+        for person in people:
+            for rel in found.get(person, ()):
                 subject, obj = (
-                    (entry.id, rel.other.entity_id)
+                    (person, rel.other.entity_id)
                     if rel.direction == "out"
-                    else (rel.other.entity_id, entry.id)
+                    else (rel.other.entity_id, person)
                 )
                 key = (subject, rel.predicate, obj)
                 if key not in seen:

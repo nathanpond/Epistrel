@@ -66,7 +66,7 @@ from epistrel.core.tables.readset import proposition_changes
 if TYPE_CHECKING:
     from epistrel.core.canon.facts import Fact, FactChange, Reading
     from epistrel.core.events.operation import Operation
-    from epistrel.core.projections.structured import ProfileView, SceneView
+    from epistrel.core.projections.structured import ProfileView, RelationshipView, SceneView
 
 logger = logging.getLogger(__name__)
 
@@ -80,15 +80,16 @@ KEYED_READERS: tuple[str, ...] = (
     "epistrel.core.verify.permission",
     "epistrel.core.commit.matching",
 )
-"""Modules whose ``facts``/``propositions`` reads decide a verdict, a precondition or a blocker,
-or that read canon and the structured projections at turn time: each reads them only through
+"""Modules whose ``facts``/``propositions`` reads decide a verdict, a precondition or a blocker, or
+that read canon and the structured projections at turn time: each reads them only through
 ``KeyedLookup`` (``tools.gates check-keyed-readers``; the projections ``relationships``,
-``placement`` and ``scene_state`` through ``KeyedLookup.profile``/``scene``, #137/#141). #139's
-resolution context (a subject's ``born``/``age`` for "when he was seven", the scene and the
-relationships), #141's retrieval pipeline and #140's verify modules (``rules``, ``normalize``,
-``merge``) are listed, and #142's ``neighborhood`` (its canon through ``KeyedLookup.canon_rows``
-and its projections through ``KeyedLookup.profile``), and #144's permission check (its lock and
-placement reads); #146's thunk and ledger lookups (``core.commit.matching``)."""
+``placement`` and ``scene_state`` through ``KeyedLookup.profile``/``relationships``/``scene``,
+#137/#141/#442). #139's resolution context (a subject's ``born``/``age`` for "when he was seven",
+the scene and the relationships), #141's retrieval pipeline and #140's verify modules (``rules``,
+``normalize``, ``merge``) are listed, and #142's ``neighborhood`` (its canon through
+``KeyedLookup.canon_rows`` and its projections through ``KeyedLookup.profile``), and #144's
+permission check (its lock and placement reads); #146's thunk and ledger lookups
+(``core.commit.matching``)."""
 
 READSET_MAX_KEYS = 2_000
 """``readset_max_keys``: a turn recording more keys than this conflicts (409
@@ -574,6 +575,29 @@ class KeyedLookup:
         self.retrieved(PROFILE_TABLE, entity_id, _version_of(found.as_of, sources))
         return found
 
+    async def relationships(
+        self,
+        story_id: str,
+        entity_ids: Sequence[str],
+        *,
+        as_of: int | None = None,
+        viewpoint: str = OMNISCIENT,
+    ) -> dict[str, tuple[RelationshipView, ...]]:
+        """Each of ``entity_ids``' relationships (#137's ``relationships_views``: what its
+        ``profile`` answers as ``relationships``) as of turn ``as_of`` for ``viewpoint``, in a
+        fixed number of statements whatever their number (#442). Each entity is recorded as a
+        retrieved row (``relationships:<entity>``, versioned by the facts behind it), as
+        context, never keyed."""
+        from epistrel.core.projections.structured import relationships_views
+
+        turn, found = await relationships_views(
+            self.conn, story_id, entity_ids, as_of=as_of, viewpoint=viewpoint
+        )
+        for entity_id, views in found.items():
+            sources = [v.source_fact_id for v in views]
+            self.retrieved(RELATIONSHIPS_TABLE, entity_id, _version_of(turn, sources))
+        return found
+
     async def scene(
         self, story_id: str, *, as_of: int | None = None, viewpoint: str = OMNISCIENT
     ) -> SceneView:
@@ -591,6 +615,7 @@ class KeyedLookup:
 
 CANON_TABLE = "facts"
 PROFILE_TABLE = "profile"
+RELATIONSHIPS_TABLE = "relationships"
 SCENE_TABLE = "scene"
 """The ``Retrieved.table`` names of a canon or projection read made as context through
 ``KeyedLookup``."""
@@ -778,6 +803,7 @@ __all__ = [
     "PROFILE_TABLE",
     "READSET_MAX_KEYS",
     "REBASE_CHECKS",
+    "RELATIONSHIPS_TABLE",
     "SCENE_TABLE",
     "Change",
     "KeyedLookup",

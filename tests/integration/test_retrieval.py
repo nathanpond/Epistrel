@@ -31,16 +31,18 @@ from epistrel.core.context import RequestContext
 from epistrel.core.enums import MemoryKind, RetrievalTier
 from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.profiles.schema import ProfileSettings
+from epistrel.core.propositions import store
 from epistrel.core.propositions.model import (
     Granularity,
     Instant,
     Interval,
+    Polarity,
     Proposition,
 )
 from epistrel.core.propositions.vocabulary import BORN, CORE_BY_NAME
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.resolution import context as resolution
-from epistrel.core.resolution.entities import resolve_mentions
+from epistrel.core.resolution.entities import Relation, resolve_mentions
 from epistrel.core.resolution.events import resolve_event_type
 from epistrel.core.resolution.time import (
     SubjectTimeline,
@@ -600,3 +602,153 @@ async def test_context_sources_fill_tier_one(scratch: Scratch) -> None:
             await _retrieve(db, story.story_id, QUERY)
     finally:
         pipeline.remove_context_source(wrong)
+
+
+async def _with_people(db: AsyncEngine, story: r.Story, n: int) -> None:
+    """``n`` more person entities in ``story``, none named in ``QUERY``."""
+    async with db.begin() as conn:
+        for i in range(n):
+            await store.add_entity(conn, story.story_id, "person", f"Extra Person {i:03d}")
+
+
+async def _person_count(db: AsyncEngine, story_id: str) -> int:
+    async with db.connect() as conn:
+        found = await conn.scalar(
+            text("SELECT count(*) FROM entities WHERE story_id = :s AND kind = 'person'"),
+            {"s": story_id},
+        )
+    return int(found or 0)
+
+
+async def test_resolve_cost_does_not_grow_with_the_cast(scratch: Scratch) -> None:
+    """#442 (NFR-PERF-1): the resolve stage reads every person's relationships in one keyed read,
+    so the same query issues the same statements over a cast of 5 people and over one of 200,
+    both in ``load_context`` alone and in the whole retrieval. The registry is loaded once
+    (one full read of ``predicates``) and the people's relations are one read of ``relationships``
+    (the scene's ``present_at`` rows are the other), whatever the cast.
+
+    Complement asserted: the 200-person story really has 200 people, the extra people are in
+    ``load_context``'s index, and Bobby's sibling relation is still found in both."""
+    db = scratch.db
+    small = await r.build_story(db)
+    big = await r.build_story(db)
+    await _with_people(db, big, 195)
+    assert await _person_count(db, small.story_id) == 5
+    assert await _person_count(db, big.story_id) == 200
+    for story in (small, big):
+        await _plant_occasion(db, story)
+        await r.set_vectors(db, story.story_id, NEAR)
+
+    async def resolve(story: r.Story) -> tuple[r.Seen, Any]:
+        with r.statements(db) as seen:
+            async with db.connect() as conn:
+                found = await resolution.load_context(
+                    conn, story.story_id, position=(r.TURNS, 0), speaker=story.people["Cal"]
+                )
+        return seen, found
+
+    (few, few_context), (many, many_context) = await resolve(small), await resolve(big)
+    assert len(few) == len(many), (len(few), len(many))
+    # ``relationships`` is read twice: the scene's ``present_at`` rows and the people's relations.
+    assert len(many.reading("relationships")) == 2
+    # The registry is loaded once (the other ``predicates`` read is the scene's predicate ids).
+    loads = [q for q, _ in many.reading("predicates") if "predicates.projection =" not in q]
+    assert len(loads) == 1
+    assert sum(e.kind == "person" for e in many_context.index.entries.values()) == 200
+    for story, context in ((small, few_context), (big, many_context)):
+        bobby, ann = story.people["Bobby"], story.people["Ann"]
+        assert Relation(bobby, "sibling_of", ann) in context.relations
+        assert Relation(ann, "sibling_of", bobby) in context.relations
+
+    async def measure(story: r.Story) -> r.Seen:
+        with r.statements(db) as seen:
+            await _retrieve(db, story.story_id, QUERY, embed=_vector(), touch=False)
+        return seen
+
+    whole_few, whole_many = await measure(small), await measure(big)
+    assert len(whole_few) == len(whole_many), (len(whole_few), len(whole_many))
+
+
+async def _relations_per_profile(conn: Any, story_id: str, as_of: int) -> list[Relation]:
+    """The relations as ``load_context`` built them before #442: one standing profile per
+    person, in the index's order, deduplicated (the reference the keyed read must equal)."""
+    index = await resolution.load_index(conn, story_id)
+    lookup = KeyedLookup(conn, StructuredReadSet())
+    relations: list[Relation] = []
+    seen: set[tuple[str, str, str]] = set()
+    for entry in index.entries.values():
+        if entry.kind != "person":
+            continue
+        profile = await lookup.profile(story_id, entry.id, as_of=as_of, viewpoint="omniscient")
+        for rel in profile.relationships:
+            subject, obj = (
+                (entry.id, rel.other.entity_id)
+                if rel.direction == "out"
+                else (rel.other.entity_id, entry.id)
+            )
+            if (subject, rel.predicate, obj) not in seen:
+                seen.add((subject, rel.predicate, obj))
+                relations.append(Relation(subject, rel.predicate, obj))
+    return relations
+
+
+async def test_resolve_relations_equal_the_per_profile_read(engine: AsyncEngine) -> None:
+    """#442: ``load_context``'s one keyed read of the relationships answers, at every turn of
+    the story, exactly the relations (and their order) that one profile per person did: a
+    symmetric pair (both directions), an inverse stored as its canonical predicate, a person's
+    relation to an organization, an organization's relation to a person, a relation between
+    two non-people (in neither), a relation closed by a later negation (present before it,
+    gone after) and one whose valid time has ended.
+
+    Complement asserted: the comparison is not vacuous: the relations differ between turns and
+    hold each of the shapes above where expected."""
+    w = await c.world(engine)
+    story, bobby, ann, cal = w.story_id, w.people["Bobby"], w.people["Ann"], w.people["Cal"]
+    async with engine.begin() as conn:
+        dan = await store.add_entity(conn, story, "person", "Dan")
+        guild = await store.add_entity(conn, story, "organization", "the Guild")
+
+    def rel(subject: str, name: str, obj: str, lo: int | None = None, hi: int | None = None) -> Any:
+        return Proposition(
+            subject_id=subject,
+            predicate_id=CORE_BY_NAME[name].id,
+            object_id=obj,
+            valid_time=Interval.of(lo, hi),
+        )
+
+    await c.commit(engine, story, rel(bobby, "sibling_of", ann))
+    await c.commit(engine, story, rel(bobby, "child_of", ann))
+    await c.commit(engine, story, rel(dan, "member_of", guild))
+    await c.commit(engine, story, rel(guild, "enemy_of", cal))
+    await c.commit(engine, story, rel(guild, "enemy_of", w.places["kitchen"]))
+    await c.commit(engine, story, rel(cal, "knows", dan, None, -(10**9)))
+    friends = await c.commit(engine, story, rel(cal, "friend_of", bobby))
+    negated = rel(cal, "friend_of", bobby)
+    await c.supersede(
+        engine, story, friends.id, negated.model_copy(update={"polarity": Polarity.NEGATED})
+    )
+    async with engine.connect() as conn:
+        head = (
+            int(
+                await conn.scalar(
+                    text("SELECT next_turn_index FROM stories WHERE id = :s"), {"s": story}
+                )
+            )
+            - 1
+        )
+        by_turn: dict[int, list[Relation]] = {}
+        for turn in range(head + 1):
+            context = await resolution.load_context(conn, story, position=(turn, 0), speaker=cal)
+            assert list(context.relations) == await _relations_per_profile(conn, story, turn)
+            by_turn[turn] = list(context.relations)
+    at_head = by_turn[head]
+    assert Relation(bobby, "sibling_of", ann) in at_head
+    assert Relation(ann, "sibling_of", bobby) in at_head
+    assert Relation(ann, "parent_of", bobby) in at_head
+    assert Relation(dan, "member_of", guild) in at_head
+    assert Relation(guild, "enemy_of", cal) in at_head
+    assert all(w.places["kitchen"] not in (x.subject, x.object) for x in at_head)
+    assert all(x.predicate != "knows" for x in at_head)
+    assert all(x.predicate != "friend_of" for x in at_head)
+    assert any(x.predicate == "friend_of" for x in by_turn[head - 1])
+    assert len({tuple(v) for v in by_turn.values()}) > 2

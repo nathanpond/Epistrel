@@ -6,15 +6,16 @@ first one's generation is held by the stub. The roleplay story refuses the secon
 ``story_busy`` and generates nothing for it; the game story queues the second, starts it only
 after the first committed, generates it from the post-commit story, and commits both as
 consecutive turns; one turn more than ``turn_queue_max`` is refused busy. The two stories
-never block each other (asserted by timing: both turns finish within one stub latency), and a
-change of ``turn_concurrency`` through ``PATCH /stories/{id}/settings`` applies to the next
-request.
+never block each other (asserted by overlap: both stories' generation calls are in the stub at
+once while it holds them), and a change of ``turn_concurrency`` through
+``PATCH /stories/{id}/settings`` applies to the next request.
+
+No step asserts a wall-clock bound (#430): each waits on a condition with a generous timeout.
 """
 
 from __future__ import annotations
 
 import asyncio
-import time
 from typing import Any
 
 import httpx2 as httpx
@@ -32,13 +33,11 @@ from tests.respond_support import (
     new_story,
     respond,
     respond_client,
+    until,
 )
 from tests.story_support import READ, WRITE
 
 pytestmark = pytest.mark.integration
-
-STUB_LATENCY_S = 1.0
-"""The stub's per-call latency for the two-stories timing assertion."""
 
 
 @pytest.fixture
@@ -108,9 +107,12 @@ async def test_s_turn_concurrency(stub_settings: Settings, engine: AsyncEngine) 
         latch, first = await _held(stub, client, game, gids[PLAYER])
         calls = len(generation_calls(stub))
         second = asyncio.ensure_future(respond(client, game, body(gids[FIRST], "My move.")))
-        await asyncio.sleep(0.3)
+
+        async def behind_the_first() -> bool:
+            return [t.status for t in await _turns(engine, game)] == ["in_flight", "queued"]
+
+        await until(behind_the_first, "the second turn is queued behind the first")
         assert not second.done()
-        assert [t.status for t in await _turns(engine, game)] == ["in_flight", "queued"]
         assert len(generation_calls(stub)) == calls  # not started while the first runs
         latch.release()
         answered = [await first, await second]
@@ -145,20 +147,26 @@ async def test_s_turn_concurrency(stub_settings: Settings, engine: AsyncEngine) 
         statuses = [(t.status, t.narrative_turn) for t in await _turns(engine, game)]
         assert statuses == [("committed", n) for n in range(1, 5)]
 
-        # Two stories never block each other: both turns finish within one stub latency.
+        # Two stories never block each other: with the stub holding generation, both stories'
+        # turns reach it at once (a turn blocked by the other story's would never arrive while
+        # the first is held), and both play once it lets go.
         other, oids = await new_story(client)
-        stub.latency_s = STUB_LATENCY_S
+        latch = stub.hold("generation")
+        calls = len(generation_calls(stub))
+        sides = asyncio.gather(
+            respond(client, roleplay, body(rids[PLAYER], "Side A.")),
+            respond(client, other, body(oids[PLAYER], "Side B.")),
+        )
         try:
-            started = time.monotonic()
-            both = await asyncio.gather(
-                respond(client, roleplay, body(rids[PLAYER], "Side A.")),
-                respond(client, other, body(oids[PLAYER], "Side B.")),
+            await until(
+                lambda: len(generation_calls(stub)) == calls + 2,
+                "both stories' turns are generating at once",
             )
-            elapsed = time.monotonic() - started
+            assert not sides.done()
         finally:
-            stub.latency_s = 0.0
+            latch.release()
+        both = await sides
         assert [r.status_code for r in both] == [200, 200], [r.text for r in both]
-        assert elapsed < 2 * STUB_LATENCY_S * 0.9, elapsed
 
         # A runtime change applies to the next request: ``reject`` → ``queue`` → ``reject``.
         assert (await _settings(client, roleplay, turn_concurrency="queue"))[

@@ -1,11 +1,91 @@
 {
+  "embedding_rows": [
+    {
+      "dimension": 768,
+      "latencies_ms": [
+        12,
+        11,
+        10,
+        11,
+        10,
+        11,
+        11,
+        11,
+        11,
+        11
+      ],
+      "max_batch": 64,
+      "measured_at": "2026-10-19",
+      "model": "text-embedding-nomic-embed-text-v1.5",
+      "p50_ms": 11,
+      "protocol": true,
+      "protocol_reason": null,
+      "reported_model": "text-embedding-nomic-embed-text-v1.5",
+      "sha": "8c80f44",
+      "tier": "local"
+    }
+  ],
   "rows": [
     {
       "calls_per_turn": {
-        "generation": 1.1,
-        "guardrail_check": 2.05
+        "generation": 1.0,
+        "guardrail_check": 2.0
       },
       "capability": {
+        "consolidation": {
+          "capable": true,
+          "checks": [
+            {
+              "detail": "~8000 tokens: answered (16 tokens out)",
+              "name": "context",
+              "passed": true
+            },
+            {
+              "detail": "20/20 valid (json_schema)",
+              "mode": "json_schema",
+              "name": "structured_output",
+              "passed": true,
+              "total": 20,
+              "valid": 20
+            }
+          ]
+        },
+        "entailment": {
+          "capable": true,
+          "checks": [
+            {
+              "detail": "~8000 tokens: answered (16 tokens out)",
+              "name": "context",
+              "passed": true
+            },
+            {
+              "detail": "20/20 valid (json_schema)",
+              "mode": "json_schema",
+              "name": "structured_output",
+              "passed": true,
+              "total": 20,
+              "valid": 20
+            }
+          ]
+        },
+        "extraction_backstop": {
+          "capable": true,
+          "checks": [
+            {
+              "detail": "~8000 tokens: answered (16 tokens out)",
+              "name": "context",
+              "passed": true
+            },
+            {
+              "detail": "20/20 valid (json_schema)",
+              "mode": "json_schema",
+              "name": "structured_output",
+              "passed": true,
+              "total": 20,
+              "valid": 20
+            }
+          ]
+        },
         "generation": {
           "capable": true,
           "checks": [
@@ -38,6 +118,24 @@
             }
           ]
         },
+        "importance_scoring": {
+          "capable": true,
+          "checks": [
+            {
+              "detail": "~8000 tokens: answered (16 tokens out)",
+              "name": "context",
+              "passed": true
+            },
+            {
+              "detail": "20/20 valid (json_schema)",
+              "mode": "json_schema",
+              "name": "structured_output",
+              "passed": true,
+              "total": 20,
+              "valid": 20
+            }
+          ]
+        },
         "lite_summary": {
           "capable": true,
           "checks": [
@@ -51,9 +149,84 @@
               "name": "structured_output"
             }
           ]
+        },
+        "quality_judge": {
+          "capable": true,
+          "checks": [
+            {
+              "detail": "~8000 tokens: answered (16 tokens out)",
+              "name": "context",
+              "passed": true
+            },
+            {
+              "detail": "20/20 valid (json_schema)",
+              "mode": "json_schema",
+              "name": "structured_output",
+              "passed": true,
+              "total": 20,
+              "valid": 20
+            }
+          ]
+        },
+        "rating_suggestion": {
+          "capable": true,
+          "checks": [
+            {
+              "detail": "~8000 tokens: answered (16 tokens out)",
+              "name": "context",
+              "passed": true
+            },
+            {
+              "detail": "20/20 valid (json_schema)",
+              "mode": "json_schema",
+              "name": "structured_output",
+              "passed": true,
+              "total": 20,
+              "valid": 20
+            }
+          ]
+        },
+        "regeneration": {
+          "capable": true,
+          "checks": [
+            {
+              "detail": "~8000 tokens: answered (3 tokens out)",
+              "name": "context",
+              "passed": true
+            },
+            {
+              "detail": "20/20 valid (json_schema)",
+              "mode": "json_schema",
+              "name": "structured_output",
+              "passed": true,
+              "total": 20,
+              "valid": 20
+            }
+          ]
+        },
+        "salience_detection": {
+          "capable": true,
+          "checks": [
+            {
+              "detail": "~8000 tokens: answered (16 tokens out)",
+              "name": "context",
+              "passed": true
+            },
+            {
+              "detail": "20/20 valid (json_schema)",
+              "mode": "json_schema",
+              "name": "structured_output",
+              "passed": true,
+              "total": 20,
+              "valid": 20
+            }
+          ]
         }
       },
-      "designed_calls_per_turn": null,
+      "designed_calls_per_turn": {
+        "generation": 1.0,
+        "guardrail_check": 2.0
+      },
       "e06": {
         "identical": 10,
         "lengths": {
@@ -63,43 +236,44 @@
         "passed": true,
         "samples": 10
       },
-      "extra_calls": null,
-      "failed_calls": null,
-      "fallbacks": null,
-      "faulted_turns": null,
+      "extra_calls": {},
+      "failed_calls": {},
+      "fallbacks": {},
+      "faulted_turns": [],
       "hardware": "Apple M3 Max, 128 GB; context 16,384",
       "latencies_ms": [
-        15232,
-        16431,
-        17050,
-        16134,
-        17673,
-        18132,
-        19336,
-        17314,
-        17700,
-        22228,
-        20624,
-        17556,
-        18390,
-        22152,
-        18314,
-        45094,
-        19239,
-        22007,
-        21452,
-        45057
+        15055,
+        21218,
+        18031,
+        17585,
+        16269,
+        18194,
+        22180,
+        22548,
+        15969,
+        21743,
+        16966,
+        17622,
+        19788,
+        19693,
+        17849,
+        22096,
+        19412,
+        19257,
+        18844,
+        20872
       ],
-      "measured_at": "2026-10-12",
+      "measured_at": "2026-10-19",
       "model": "cydonia-24b-v4.3",
-      "p50_ms": 18314,
-      "p95_ms": 45057,
+      "p50_ms": 18844,
+      "p95_ms": 22180,
       "policies": "minors",
       "protocol": true,
       "protocol_reason": null,
       "server_version": "LM Studio 0.4.26",
-      "sha": "cd0261d",
+      "sha": "8c80f44",
       "tier": "local",
+      "turn_kind": "lite",
       "turn_path": "respond (#57)",
       "turns": 20
     },
@@ -108,6 +282,60 @@
         "generation": 1.0
       },
       "capability": {
+        "consolidation": {
+          "capable": true,
+          "checks": [
+            {
+              "detail": "~8000 tokens: answered (16 tokens out)",
+              "name": "context",
+              "passed": true
+            },
+            {
+              "detail": "20/20 valid (json_schema)",
+              "mode": "json_schema",
+              "name": "structured_output",
+              "passed": true,
+              "total": 20,
+              "valid": 20
+            }
+          ]
+        },
+        "entailment": {
+          "capable": true,
+          "checks": [
+            {
+              "detail": "~8000 tokens: answered (16 tokens out)",
+              "name": "context",
+              "passed": true
+            },
+            {
+              "detail": "20/20 valid (json_schema)",
+              "mode": "json_schema",
+              "name": "structured_output",
+              "passed": true,
+              "total": 20,
+              "valid": 20
+            }
+          ]
+        },
+        "extraction_backstop": {
+          "capable": true,
+          "checks": [
+            {
+              "detail": "~8000 tokens: answered (16 tokens out)",
+              "name": "context",
+              "passed": true
+            },
+            {
+              "detail": "20/20 valid (json_schema)",
+              "mode": "json_schema",
+              "name": "structured_output",
+              "passed": true,
+              "total": 20,
+              "valid": 20
+            }
+          ]
+        },
         "generation": {
           "capable": true,
           "checks": [
@@ -140,6 +368,24 @@
             }
           ]
         },
+        "importance_scoring": {
+          "capable": true,
+          "checks": [
+            {
+              "detail": "~8000 tokens: answered (16 tokens out)",
+              "name": "context",
+              "passed": true
+            },
+            {
+              "detail": "20/20 valid (json_schema)",
+              "mode": "json_schema",
+              "name": "structured_output",
+              "passed": true,
+              "total": 20,
+              "valid": 20
+            }
+          ]
+        },
         "lite_summary": {
           "capable": true,
           "checks": [
@@ -153,9 +399,83 @@
               "name": "structured_output"
             }
           ]
+        },
+        "quality_judge": {
+          "capable": true,
+          "checks": [
+            {
+              "detail": "~8000 tokens: answered (16 tokens out)",
+              "name": "context",
+              "passed": true
+            },
+            {
+              "detail": "20/20 valid (json_schema)",
+              "mode": "json_schema",
+              "name": "structured_output",
+              "passed": true,
+              "total": 20,
+              "valid": 20
+            }
+          ]
+        },
+        "rating_suggestion": {
+          "capable": true,
+          "checks": [
+            {
+              "detail": "~8000 tokens: answered (16 tokens out)",
+              "name": "context",
+              "passed": true
+            },
+            {
+              "detail": "20/20 valid (json_schema)",
+              "mode": "json_schema",
+              "name": "structured_output",
+              "passed": true,
+              "total": 20,
+              "valid": 20
+            }
+          ]
+        },
+        "regeneration": {
+          "capable": true,
+          "checks": [
+            {
+              "detail": "~8000 tokens: answered (3 tokens out)",
+              "name": "context",
+              "passed": true
+            },
+            {
+              "detail": "20/20 valid (json_schema)",
+              "mode": "json_schema",
+              "name": "structured_output",
+              "passed": true,
+              "total": 20,
+              "valid": 20
+            }
+          ]
+        },
+        "salience_detection": {
+          "capable": true,
+          "checks": [
+            {
+              "detail": "~8000 tokens: answered (16 tokens out)",
+              "name": "context",
+              "passed": true
+            },
+            {
+              "detail": "20/20 valid (json_schema)",
+              "mode": "json_schema",
+              "name": "structured_output",
+              "passed": true,
+              "total": 20,
+              "valid": 20
+            }
+          ]
         }
       },
-      "designed_calls_per_turn": null,
+      "designed_calls_per_turn": {
+        "generation": 1.0
+      },
       "e06": {
         "identical": 10,
         "lengths": {
@@ -165,43 +485,44 @@
         "passed": true,
         "samples": 10
       },
-      "extra_calls": null,
-      "failed_calls": null,
-      "fallbacks": null,
-      "faulted_turns": null,
+      "extra_calls": {},
+      "failed_calls": {},
+      "fallbacks": {},
+      "faulted_turns": [],
       "hardware": "Apple M3 Max, 128 GB; context 16,384",
       "latencies_ms": [
-        11831,
-        16621,
-        14235,
-        14003,
-        9465,
-        13398,
-        14357,
-        15059,
-        15338,
-        13313,
-        12250,
-        13344,
-        12718,
-        14927,
-        13348,
-        12828,
-        15216,
-        17103,
-        16874,
-        12882
+        9319,
+        11868,
+        13594,
+        11602,
+        9445,
+        9636,
+        12540,
+        14200,
+        9917,
+        11483,
+        14928,
+        15466,
+        13424,
+        10904,
+        13730,
+        12821,
+        12221,
+        11521,
+        13712,
+        9907
       ],
-      "measured_at": "2026-10-12",
+      "measured_at": "2026-10-19",
       "model": "cydonia-24b-v4.3",
-      "p50_ms": 13398,
-      "p95_ms": 16874,
+      "p50_ms": 11868,
+      "p95_ms": 14928,
       "policies": "off",
       "protocol": true,
       "protocol_reason": null,
       "server_version": "LM Studio 0.4.26",
-      "sha": "cd0261d",
+      "sha": "8c80f44",
       "tier": "local",
+      "turn_kind": "lite",
       "turn_path": "respond (#57)",
       "turns": 20
     }

@@ -38,30 +38,26 @@ A call the deadline cuts is never retried. If it is an output check or a regener
 releases the safe fallback. If it is the input check or the first generation, the turn fails and
 the run writes no row.
 
-**Not recorded.** Rows measured before the breakdown existed show *not recorded* in the
-**Calls** columns (`null` in the JSON). Those runs kept only the mean calls per turn, and
-nothing is derived from it. The next live run of the tier fills them.
-
 ## Results
 
 | Tier | Policies | Protocol | `generation` | `guardrail_check` | `consolidation` | `lite_summary` | `importance_scoring` | `entailment` | `salience_detection` | `extraction_backstop` | `regeneration` | E-06 | Turns | p50 | p95 | Calls per turn |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| local: cydonia-24b-v4.3 | minors policy on | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | not run | ✓ (context ✓) | not run | not run | not run | not run | not run | ✓ (tokens 32/32, 128/128; temp 0: 10/10 identical) | 20 | 18.31 s | 45.06 s | 3.15 (generation 1.1, guardrail_check 2.05) |
-| local: cydonia-24b-v4.3 | policies off | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | not run | ✓ (context ✓) | not run | not run | not run | not run | not run | ✓ (tokens 32/32, 128/128; temp 0: 10/10 identical) | 20 | 13.40 s | 16.87 s | 1 (generation 1) |
+| local: cydonia-24b-v4.3 | minors policy on | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (tokens 32/32, 128/128; temp 0: 10/10 identical) | 20 | 18.84 s | 22.18 s | 3 (generation 1, guardrail_check 2) |
+| local: cydonia-24b-v4.3 | policies off | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (tokens 32/32, 128/128; temp 0: 10/10 identical) | 20 | 11.87 s | 14.93 s | 1 (generation 1) |
 
 ## Calls
 
 | Tier | Policies | Designed per turn | Extra calls | Failed calls | Turns with a deadline or error | p50 / p95 without them | Safe fallbacks |
 |---|---|---|---|---|---|---|---|
-| local: cydonia-24b-v4.3 | minors policy on | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
-| local: cydonia-24b-v4.3 | policies off | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
+| local: cydonia-24b-v4.3 | minors policy on | 3 (generation 1, guardrail_check 2) | 0 | 0 | 0 of 20 | 18.84 s / 22.18 s | 0 |
+| local: cydonia-24b-v4.3 | policies off | 1 (generation 1) | 0 | 0 | 0 of 20 | 11.87 s / 14.93 s | 0 |
 
 ## Runs
 
 | Tier | Policies | Measured | Engine SHA | Hardware | Server | Turn path |
 |---|---|---|---|---|---|---|
-| local: cydonia-24b-v4.3 | minors policy on | 2026-10-12 | `cd0261d` | Apple M3 Max, 128 GB; context 16,384 | LM Studio 0.4.26 | respond (#57) |
-| local: cydonia-24b-v4.3 | policies off | 2026-10-12 | `cd0261d` | Apple M3 Max, 128 GB; context 16,384 | LM Studio 0.4.26 | respond (#57) |
+| local: cydonia-24b-v4.3 | minors policy on | 2026-10-19 | `8c80f44` | Apple M3 Max, 128 GB; context 16,384 | LM Studio 0.4.26 | respond (#57) |
+| local: cydonia-24b-v4.3 | policies off | 2026-10-19 | `8c80f44` | Apple M3 Max, 128 GB; context 16,384 | LM Studio 0.4.26 | respond (#57) |
 
 ## Embedding
 
@@ -70,6 +66,8 @@ The embedding endpoint (the `embedding` port, #138), measured when the run names
 model has (the deployment pins it at the first embedding); **Max batch** is the largest of 64,
 16 and 1 texts one request embeds; **p50** is over single-text calls.
 
-No embedding endpoint has been measured yet.
+| Tier | Protocol | Reported model | Dimension | Max batch | p50 | Measured | Engine SHA |
+|---|---|---|---|---|---|---|---|
+| local: text-embedding-nomic-embed-text-v1.5 | ✓ | text-embedding-nomic-embed-text-v1.5 | 768 | 64 | 0.01 s | 2026-10-19 | `8c80f44` |
 
 Raw timings for every row are in [model-matrix.json](model-matrix.json).

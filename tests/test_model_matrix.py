@@ -460,7 +460,9 @@ def test_committed_matrix_is_its_json_rendered() -> None:
     """``docs/model-matrix.md`` is generated, never hand-edited: it is ``render`` of the
     committed ``docs/model-matrix.json``. A header change therefore reaches the committed file,
     and so does a note that has stopped applying (#303)."""
-    assert mm.MATRIX_PATH.read_text("utf-8") == mm.render(mm.load_rows(mm.RAW_PATH))
+    assert mm.MATRIX_PATH.read_text("utf-8") == mm.render(
+        mm.load_rows(mm.RAW_PATH), mm.load_embedding_rows(mm.RAW_PATH)
+    )
 
 
 def test_parser_purpose_model() -> None:

@@ -146,7 +146,7 @@ async def test_s_tennis__varsity(
         stub.script("regeneration", [_regenerated(WINTER_CLUB)])
         played = await _play(client, edu, "Did you play in college?")
         verdict = await _verdict(engine, edu.story_id)
-        assert verdict["kind"] == "contradicted"
+        assert (verdict["kind"], verdict["rule"]) == ("contradicted", "closed_set")
         only_osu = await _closed_set(engine, edu.story_id, ENROLLED_AT)
         assert {edu.team_school.proposition_id, only_osu} <= set(verdict["evidence_ids"])
         (entry,) = (await turn_report(engine, edu.story_id))["repairs"]
@@ -307,7 +307,11 @@ async def test_s_tennis__presence(
         stub.script("regeneration", [_regenerated(elsewhere)])
         played = await _play(client, edu, "Where did you learn tennis?")
         verdict = await _verdict(engine, edu.story_id)
-        assert (verdict["kind"], verdict["escalated"]) == ("contradicted", False)
+        assert (verdict["kind"], verdict["rule"], verdict["escalated"]) == (
+            "contradicted",
+            "implication",
+            False,
+        )
         assert {edu.never_there.proposition_id, edu.uf_on_peninsula.proposition_id} <= set(
             verdict["evidence_ids"]
         )
@@ -323,7 +327,11 @@ async def test_s_tennis__presence(
         stub.script("regeneration", [_regenerated(elsewhere)])
         played = await _play(client, edu, "Where did you learn tennis?")
         verdict = await _verdict(engine, edu.story_id)
-        assert (verdict["kind"], verdict["escalated"]) == ("contradicted", True)
+        assert (verdict["kind"], verdict["reason"], verdict["escalated"]) == (
+            "contradicted",
+            "world_knowledge",
+            True,
+        )
         assert [c.purpose for c in stub.calls].count("entailment") == 1
         assert (await turn_report(engine, edu.story_id))["verify"]["escalated"] == 1
         assert (await turn_report(engine, edu.story_id))["repairs"]

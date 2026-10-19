@@ -7756,3 +7756,6 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision (Discretion):** the variant 4 place is "the Florida peninsula" in the fixtures (not "State of Florida"): `check-lexicon` reserves "State" for M6.
   **Why:** gate.
   **Issue:** #441
+- **Decision (Discretion):** #151 resumed after #441 as verification only: every AC is met at `c35292d` (S-TENNIS variants 1, 1b, 2, 3, 4 with and without its rule all pass), so no production code changed. S-TENNIS's assertions now pin the verdict's rule/reason the AC names: variant 1 `closed_set`, variant 4 with its rule `implication`, without it `world_knowledge` (escalated). They are red with `core/verify/rules.py` from before #441.
+  **Why:** the old asserts checked cited ids and escalation but not which rule or reason the verdict gave.
+  **Issue:** #151

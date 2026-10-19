@@ -55,7 +55,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from epistrel.core.enums import EventCategory, Membership, OperationStatus
 from epistrel.core.errors import InvalidRequest, StoryNotFound
 from epistrel.core.settings_schema import StorySettings
-from epistrel.core.summary import included_segments
+from epistrel.core.summary import read_included_segments
 from epistrel.core.tables import characters, events, operations, stories, transcript_messages
 from epistrel.core.turns.assembly import AssemblyBeat, deterministic_assembly
 from epistrel.core.variants import ChainRef, ChainSelection, chain_operations
@@ -205,7 +205,7 @@ async def read_history(
         summary = (
             [
                 SummaryItem(s.level, s.covers_from, s.covers_to, s.text, s.operation_id)
-                for s in await included_segments(conn, story_id, before_turn=through + 1)
+                for s in await read_included_segments(conn, story_id, before_turn=through + 1)
             ]
             if include_summary
             else None

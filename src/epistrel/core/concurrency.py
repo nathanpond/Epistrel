@@ -322,7 +322,7 @@ async def _segments(conn: AsyncConnection, story_id: str, spec: LiteReadSet) -> 
     the covered range also fixes where the verbatim window starts."""
     return [
         [s.segment_id, s.covers_from, s.covers_to]
-        for s in await summary.included_segments(conn, story_id)
+        for s in await summary.read_included_segments(conn, story_id)
     ]
 
 

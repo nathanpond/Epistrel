@@ -54,7 +54,7 @@ from epistrel.core.erasure.matcher import Mention, matcher, nfc, snippet
 from epistrel.core.erasure.records import event_record
 from epistrel.core.events.registry import validate
 from epistrel.core.ports import SummaryCompressor, SummaryWindow
-from epistrel.core.summary import included_segments
+from epistrel.core.summary import read_included_segments
 from epistrel.core.tables import events, lite_summary_segments
 from epistrel.core.tables.catalog import ERASURE_GUC
 
@@ -240,7 +240,7 @@ async def redacted_windows(conn: AsyncConnection, story_id: str) -> list[Summary
     ).all()
     if not rows:
         return []
-    by_end = {s.covers_to: s.label for s in await included_segments(conn, story_id)}
+    by_end = {s.covers_to: s.label for s in await read_included_segments(conn, story_id)}
     return [
         SummaryWindow(
             segment_id=str(r.segment_id),

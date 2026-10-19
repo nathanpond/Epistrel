@@ -121,7 +121,8 @@ stories = Table(
     # FR-LITE-2, NFR-PERF-3 (#282): bumped by the ``summary_inputs_changed_*`` triggers
     # (migration 0046) when a ``lite_summary_segments`` row, or an operation's committed and
     # active state, of the story changes; ``summary_inclusion`` is ``{epoch, covered_to, tokens,
-    # segments}`` of the included segments, valid while its epoch is the current one.
+    # segments, ids}`` of the included segments (``ids``, their segment ids in order: #431),
+    # valid while its epoch is the current one.
     Column("summary_epoch", BigInteger, nullable=False, server_default=text("0")),
     Column("summary_inclusion", JSONB, nullable=True),
     # FR-CONC-12 (#136): the highest timeline revision whose ``proposition_changes`` rows the

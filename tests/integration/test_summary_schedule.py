@@ -9,6 +9,10 @@ compares the shipped decision and stored ``Inclusion`` with that reference on th
 connection. The trigger tests pin down when migration 0046 bumps ``stories.summary_epoch`` and
 when a computed inclusion is not stored. The cost test counts statements and the rows the
 planner reads (``EXPLAIN ANALYZE``) on a short and a long story. It measures no time.
+
+#431 extends both to the read phase: at every scheduling point the segments read through the
+stored inclusion (``read_included_segments``) equal the computed ones, with and without
+``before_turn``, and a turn's read phase costs the same statements and rows on both stories.
 """
 
 from __future__ import annotations
@@ -24,12 +28,14 @@ from sqlalchemy import event, insert, text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import summary
+from epistrel.core.concurrency import LiteReadSet, member_loader
 from epistrel.core.enums import OperationKind
 from epistrel.core.events import Operation
 from epistrel.core.ids import new_ulid
 from epistrel.core.stories import delete_story
-from epistrel.core.summary import Inclusion, included_segments, summary_state
+from epistrel.core.summary import Inclusion, covered_to, included_segments, summary_state
 from epistrel.core.tables import lite_summary_segments, operations
+from epistrel.core.turns import read_turn_inputs
 from epistrel.orchestrator.jobs.handlers import lite_summary
 from epistrel.orchestrator.models.access import ModelAccessLayer
 from tests.auth_support import auth_settings
@@ -106,9 +112,22 @@ def _checked(
             seen.recomputed.append(seen.step)
         return await computing(conn, story_id, **kwargs)
 
+    async def read_as_computed(conn: AsyncConnection, story_id: str) -> None:
+        """#431: the read phase's segments equal the computed ones, with and without
+        ``before_turn`` (one inside the run, one at its end, one past every segment)."""
+        covered = covered_to(await computing(conn, story_id))
+        for before_turn in (None, 1, covered, covered + 1, 10**6):
+            read = await summary.read_included_segments(conn, story_id, before_turn=before_turn)
+            assert read == await computing(conn, story_id, before_turn=before_turn), (
+                seen.step,
+                story_id,
+                before_turn,
+            )
+
     async def needs_work(conn: AsyncConnection, story_id: str) -> bool:
         expected = (await summary_state(conn, story_id)).needs_work
         reference = Inclusion.of(await computing(conn, story_id))
+        await read_as_computed(conn, story_id)  # with what the last scheduling stored
         inside[0] = True
         try:
             decided = await shipped(conn, story_id)
@@ -117,6 +136,7 @@ def _checked(
             inside[0] = False
         assert decided == expected, (seen.step, story_id)
         assert stored == reference, (seen.step, story_id, stored, reference)
+        await read_as_computed(conn, story_id)  # with what this one stored
         seen.decisions.append((seen.step, story_id, decided))
         return decided
 
@@ -598,3 +618,84 @@ async def test_scheduling_cost_is_independent_of_story_length(
     assert sum(long_cost) < full[1], long_cost
     async with engine.connect() as conn:
         assert (await included_segments(conn, long))[-1].covers_to == 2_048
+
+
+# -- the read phase's cost (#431) --------------------------------------------------------------
+
+
+async def _read_phase_cost(
+    engine: AsyncEngine, story: str, before_turn: int | None
+) -> tuple[tuple[str, ...], list[int]]:
+    """A turn's read phase in one REPEATABLE READ snapshot, as ``Operation.begin`` runs it: the
+    prompt inputs (``read_turn_inputs``) and the read set's ``segments`` member. Returns the
+    prompt's summary lines and, per statement, the rows its plan reads."""
+    with _statements(engine) as seen:
+        async with engine.begin() as conn:
+            await conn.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
+            inputs = await read_turn_inputs(conn, story, before_turn=before_turn)
+            await member_loader("segments")(conn, story, LiteReadSet())
+    assert all(s.lstrip().upper().startswith(("SELECT", "SET")) for s, _ in seen)
+    return inputs.segments, [
+        await _explained_rows(engine, statement, parameters)
+        for statement, parameters in seen
+        if statement.lstrip().upper().startswith("SELECT")
+    ]
+
+
+async def test_read_phase_cost_is_independent_of_story_length(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NFR-PERF-3, FR-STORE-26 (#431): with the summary unchanged since the last scheduling, a
+    turn's read phase (the prompt inputs and the read set's summary member, for the next turn
+    and for regenerating the latest one) on a 2,052-turn story with 4,095 segments issues the
+    same statements as on an 8-turn story with 7 segments, each reading the same number of rows
+    (``EXPLAIN ANALYZE``, through indexes), and ``included_segments`` is never called; it
+    writes nothing. Complement: regenerating a turn the summary covers recomputes inclusion,
+    which reads every segment, and gets the same segments as computing them."""
+    for _ in range(20):
+        await _story(engine)
+    short = await _segmented(engine, 4)
+    others = [await _segmented(engine, 256) for _ in range(3)]
+    long = await _segmented(engine, 2_048)
+    for story in others:
+        await play_turn(engine, story, "elsewhere")
+    for story in (short, long):
+        for n in (1, 2, 3, 4):
+            await play_turn(engine, story, f"tail {n}")  # their scheduling stores inclusion
+    async with engine.connect() as conn:
+        for table in ("operations", "lite_summary_segments", "transcript_messages", "stories"):
+            await conn.execute(text(f"ANALYZE {table}"))
+        await conn.commit()
+
+    computed: list[tuple[str, int | None]] = []
+    computing = summary.included_segments
+
+    async def counted(conn: AsyncConnection, story_id: str, **kwargs: Any) -> Any:
+        computed.append((story_id, kwargs.get("before_turn")))
+        return await computing(conn, story_id, **kwargs)
+
+    monkeypatch.setattr(summary, "included_segments", counted)
+    short_latest = await scalar(
+        engine, "SELECT next_turn_index - 1 FROM stories WHERE id = :s", s=short
+    )
+    long_latest = await scalar(
+        engine, "SELECT next_turn_index - 1 FROM stories WHERE id = :s", s=long
+    )
+    for before_turn_of in (lambda latest: None, lambda latest: latest):
+        short_lines, short_cost = await _read_phase_cost(
+            engine, short, before_turn_of(short_latest)
+        )
+        long_lines, long_cost = await _read_phase_cost(engine, long, before_turn_of(long_latest))
+        assert computed == []
+        assert [line.split(".")[0] for line in short_lines] == ["Turns 1-4: Turns 1-4"]
+        assert [line.split(".")[0] for line in long_lines] == ["Turns 1-2048: Turns 1-2048"]
+        assert len(short_cost) == len(long_cost)
+        assert short_cost == long_cost
+        assert sum(long_cost) < 4_095, long_cost
+
+    # Complement: a regenerated turn inside the summary's run computes inclusion afresh.
+    async with engine.connect() as conn:
+        read = await summary.read_included_segments(conn, long, before_turn=2_000)
+        assert computed == [(long, 2_000)]
+        assert read == await computing(conn, long, before_turn=2_000)
+        assert read[-1].covers_to == 1_999

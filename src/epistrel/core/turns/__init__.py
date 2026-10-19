@@ -4,7 +4,8 @@
 the prompt is built from are exactly the ones the read set hashed (FR-CONC-2,4). Every input is
 the Engine's own record (FR-RESP-2): the story rating's current prompt guidance (FR-RATE-4),
 the custom instructions and pinned memories (the ``story_texts`` projection, #60), the
-rolling-summary segments a prompt includes (``core.summary.included_segments``, #72, each as a
+rolling-summary segments a prompt includes (``core.summary.included_segments``, #72, read
+through the stored inclusion, ``read_included_segments``, #431; each as a
 ``Turns a-b:`` line), the cast's definitions, a scenario story's scenario text and director
 notes (rendered from its snapshot on every turn, ``core.genesis.render``; #122), and every
 **verbatim** transcript row: each active
@@ -55,7 +56,7 @@ from epistrel.core.settings_schema import (
     GenerationSettings,
     StorySettings,
 )
-from epistrel.core.summary import PROMPT_CHANNELS, covered_to, included_segments
+from epistrel.core.summary import PROMPT_CHANNELS, covered_to, read_included_segments
 from epistrel.core.tables import (
     characters,
     events,
@@ -336,7 +337,7 @@ async def read_turn_inputs(
         )
     ).one_or_none()
     segments = (
-        await included_segments(conn, story_id, before_turn=before_turn)
+        await read_included_segments(conn, story_id, before_turn=before_turn)
         if settings.memory.rolling_summary.enabled
         else ()
     )

@@ -7650,3 +7650,12 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Issue:** #429, #363
 - **Decision (Out of scope → filed):** a reached policy's text is still served in a story's `effective_policies` (`GET /stories/{id}/settings`) and in `guardrail_violation` details on a refused turn; it needs a design call because the policy stays enforced. Filed #447 (`needs-triage`); ADR-159 names it.
   **Issue:** #429, #447
+- **Decision (Discretion):** #431 takes the issue's first direction. `stories.summary_inclusion` (#282's jsonb, no schema change) also stores `ids`, the included run's segment ids in order, written by `summary.inclusion` under the same epoch guard. New `core.summary.read_included_segments` loads only those rows by primary key while the epoch is current, else computes with the unchanged `included_segments`; the four callers the issue names (`core.turns`, the read set's `segments` member, `core.history`, `core.erasure.redact`) use it. A value stored by pre-#431 code (no `ids`) counts as a miss.
+  **Why:** the cost then follows the included run (bounded by the token cap), not the story; `included_segments` stays the reference definition, so #282's differential and trigger tests still hold.
+  **Issue:** #431
+- **Decision (Discretion):** #431's read never stores a computed inclusion; the next scheduling does. The read phase is a REPEATABLE READ snapshot (an UPDATE of a story row changed since the snapshot raises a serialization error) and jobs read in READ ONLY snapshots. A change to the summary therefore costs one full computation in the next read phase, as before.
+  **Issue:** #431
+- **Decision (Discretion):** #431's `before_turn` (a regenerated turn's inputs, history's `as_of`) uses the stored run only when no active or superseded segment row of the story has `covers_to >= before_turn` (one EXISTS on `ix_lite_summary_segments_story_covers`). Then the filter removes no row and the result equals the unfiltered one by construction, so no merge-walking argument is needed; otherwise it computes as before. Regenerating the latest turn and history at the tip take the stored path; an earlier regenerate recomputes.
+  **Issue:** #431
+- **Decision:** #431 proven red with the four call sites reverted to `included_segments`: the new cost test fails on `included_segments` being called, and with that assertion removed, on rows read (7 against 4,095 for the segments, 11 against 6,143 for the memberships).
+  **Issue:** #431

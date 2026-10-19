@@ -38,6 +38,14 @@ Orchestrator's ``lite_summary`` job.
   segment and every operation they name, so its cost follows the window, not the story; it
   recomputes them with ``included_segments`` otherwise. The decision is the same function of
   the same inputs as ``summary_state(...).needs_work``, which the job's run still uses.
+- **Reading** (``read_included_segments``, #431). The stored inclusion also names the included
+  run's segment ids, in order. The read phase (prompt assembly, the turn's declared summary
+  inputs), history and erasure read the included segments through it: while its epoch is
+  current, only those rows, by primary key, so the cost follows the run, not the story;
+  otherwise ``included_segments``, computed and not stored (the read may be in a read-only or
+  REPEATABLE READ snapshot; the next scheduling stores it). With ``before_turn`` the stored run
+  is used only when no candidate segment row covers ``before_turn`` or later: then the filter
+  removes no row and the result is the same by construction; otherwise it is computed.
 """
 
 from __future__ import annotations
@@ -68,6 +76,8 @@ RESPONSE_MAX_TOKENS = 600
 TEMPERATURE = 0.3
 
 ACTIVE = Membership.ACTIVE.value
+CANDIDATES = (ACTIVE, Membership.SUPERSEDED.value)
+"""The segment row memberships inclusion considers."""
 
 
 def estimate_tokens(text: str) -> int:
@@ -171,9 +181,7 @@ async def included_segments(
     """The segments a prompt of ``story_id`` includes, oldest first (see the module docstring);
     ``before_turn`` keeps only segments wholly before it (a regenerated turn's inputs)."""
     t = lite_summary_segments
-    query = select(t).where(
-        t.c.story_id == story_id, t.c.membership.in_((ACTIVE, Membership.SUPERSEDED.value))
-    )
+    query = select(t).where(t.c.story_id == story_id, t.c.membership.in_(CANDIDATES))
     if before_turn is not None:
         query = query.where(t.c.covers_to < before_turn)
     rows = [_segment(r) for r in (await conn.execute(query)).all()]
@@ -246,7 +254,8 @@ async def inclusion(conn: AsyncConnection, story_id: str) -> Inclusion:
     cached = found.summary_inclusion
     if isinstance(cached, dict) and cached.get("epoch") == epoch:
         return Inclusion(int(cached["covered_to"]), int(cached["tokens"]), int(cached["segments"]))
-    computed = Inclusion.of(await included_segments(conn, story_id))
+    segments = await included_segments(conn, story_id)
+    computed = Inclusion.of(segments)
     unchanged = (
         select(stories.c.id)
         .where(stories.c.id == story_id, stories.c.summary_epoch == epoch)
@@ -262,11 +271,60 @@ async def inclusion(conn: AsyncConnection, story_id: str) -> Inclusion:
                 "covered_to": computed.covered_to,
                 "tokens": computed.tokens,
                 "segments": computed.segments,
+                "ids": [s.segment_id for s in segments],
             }
         )
         .returning(func.set_config(INCLUSION_CHANGED_SETTING, "", True))
     )
     return computed
+
+
+async def read_included_segments(
+    conn: AsyncConnection, story_id: str, *, before_turn: int | None = None
+) -> tuple[Segment, ...]:
+    """``included_segments(conn, story_id, before_turn=...)``, read through the stored inclusion
+    (#431; see the module docstring's **Reading**). Never writes, so it runs in any snapshot,
+    read-only ones included."""
+    found = (
+        await conn.execute(
+            select(stories.c.summary_epoch, stories.c.summary_inclusion).where(
+                stories.c.id == story_id
+            )
+        )
+    ).one_or_none()
+    cached = found.summary_inclusion if found is not None else None
+    if (
+        found is None
+        or not isinstance(cached, dict)
+        or cached.get("epoch") != int(found.summary_epoch)
+        or not isinstance(cached.get("ids"), list)
+    ):
+        return await included_segments(conn, story_id, before_turn=before_turn)
+    t = lite_summary_segments
+    if before_turn is not None and await conn.scalar(
+        select(
+            select(t.c.segment_id)
+            .where(
+                t.c.story_id == story_id,
+                t.c.membership.in_(CANDIDATES),
+                t.c.covers_to >= before_turn,
+            )
+            .exists()
+        )
+    ):
+        return await included_segments(conn, story_id, before_turn=before_turn)
+    ids = [str(i) for i in cached["ids"]]
+    if not ids:
+        return ()
+    by_id = {
+        r.segment_id: _segment(r)
+        for r in await conn.execute(
+            select(t).where(t.c.story_id == story_id, t.c.segment_id.in_(ids))
+        )
+    }
+    if len(by_id) != len(ids):  # not reachable at a current epoch; computed, never guessed
+        return await included_segments(conn, story_id, before_turn=before_turn)
+    return tuple(by_id[i] for i in ids)
 
 
 @dataclass(frozen=True, slots=True)
@@ -420,6 +478,7 @@ __all__ = [
     "inclusion",
     "merge_pair",
     "needs_work",
+    "read_included_segments",
     "read_summary_settings",
     "summary_state",
 ]

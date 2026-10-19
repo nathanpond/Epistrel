@@ -162,6 +162,42 @@ def test_in_process_library_needs_no_credential() -> None:
         asyncio.run(engine.noop(RequestContext()))
 
 
+LIBRARY_REFUSED_PRINCIPALS = (
+    "",
+    " \t ",
+    "a\tb",
+    "a\x01b",
+    "p\x7f",
+    "p\x85a",
+    "\x9f",
+    "x" * 257,
+    "system",
+    " system\t",
+)
+
+
+def test_library_refuses_the_principals_rest_refuses() -> None:
+    """FR-AUTH-4, FR-API-3 (#434): the library applies the principal rule that REST applies to
+    ``X-Epistrel-Principal`` (``test_s_trust_boundary__auth``): 1 to 256 characters, no control
+    character (C0, DEL or C1), ``system`` reserved for background work, and the spaces and tabs
+    around it trimmed. Before #434 the library refused only a blank one, so it recorded
+    principals REST could never send, and ``system`` work could not be told from a caller's.
+
+    Complement asserted: the longest acceptable principal is taken, one padded with spaces and
+    tabs is recorded trimmed, and a principal that only starts with ``system`` is not reserved."""
+    engine = Engine.from_settings(auth_settings(DUMMY_DSN))
+    for principal in LIBRARY_REFUSED_PRINCIPALS:
+        with pytest.raises(PrincipalRequired):
+            asyncio.run(engine.noop(RequestContext(principal=principal)))
+    longest = "x" * 256
+    for given, recorded in (
+        (longest, longest),
+        (" \tp-9\t ", "p-9"),
+        ("system:evals", "system:evals"),
+    ):
+        assert asyncio.run(engine.noop(RequestContext(principal=given))) == recorded
+
+
 def test_exempt_routes_answer_without_credential(client: TestClient) -> None:
     for path in ("/health", "/openapi.json", "/docs", "/redoc"):
         assert client.get(path).status_code == 200, path

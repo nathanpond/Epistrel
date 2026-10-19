@@ -437,7 +437,9 @@ async def test_the_principal_is_required_and_keys_the_rating(
                 await retract(client, story, message, principal),
             ):
                 assert error_of(response)[:2] == (400, "principal_required"), principal
-        for ctx in (RequestContext(), RequestContext(principal=" ")):
+        # The library refuses what REST refuses (#434), on the read too.
+        for refused in (None, " ", "x" * 257, "system", "p\x85a"):
+            ctx = RequestContext(principal=refused)
             with pytest.raises(PrincipalRequired):
                 await lib.get_feedback(ctx, story, message)
             with pytest.raises(PrincipalRequired):
@@ -447,6 +449,13 @@ async def test_the_principal_is_required_and_keys_the_rating(
         assert [(r.principal, r.rating) for r in await feedback_rows(engine, story)] == [
             (RATER, 2),
             (OTHER_RATER, 5),
+        ]
+        # The spaces and tabs around a library principal are trimmed before it is recorded.
+        padded = RequestContext(principal=" \tp-padded\t ")
+        await lib.rate_message(padded, story, message, FeedbackRequest(rating=3))
+        assert (await lib.get_feedback(padded, story, message)).principal == "p-padded"
+        assert ("p-padded", 3) in [
+            (r.principal, r.rating) for r in await feedback_rows(engine, story)
         ]
 
 

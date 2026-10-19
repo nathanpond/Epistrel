@@ -63,7 +63,7 @@ from epistrel.core.catalog import search as catalog_search
 from epistrel.core.catalog.report import ValidationResult
 from epistrel.core.commit import lifecycle as commitment
 from epistrel.core.concurrency import check_expected_revision
-from epistrel.core.context import SYSTEM_PRINCIPAL, RequestContext
+from epistrel.core.context import SYSTEM_PRINCIPAL, RequestContext, requesting_principal
 from epistrel.core.enums import EntryStatus, StoryStatus, ThunkState
 from epistrel.core.erasure import boundary as erasure_boundary
 from epistrel.core.erasure import catalog_block
@@ -787,10 +787,14 @@ class Engine:
 
     @staticmethod
     def require_principal(ctx: RequestContext) -> str:
-        """Every mutation carries a requesting principal (FR-AUTH-4); the library checks too."""
-        if ctx.principal is None or not ctx.principal.strip():
-            raise PrincipalRequired("a mutating call needs a requesting principal")
-        return ctx.principal
+        """Every mutation carries a requesting principal (FR-AUTH-4), checked by the rule REST
+        applies to ``X-Epistrel-Principal`` (#434): 1 to 256 characters without a control
+        character, never the reserved ``system``. The spaces and tabs around it are trimmed, and
+        the trimmed value is the one recorded."""
+        value, problem = requesting_principal(ctx.principal)
+        if problem is not None or value is None:
+            raise PrincipalRequired(f"the requesting principal {problem}")
+        return value
 
     # -- the turn queue (FR-CONC-5; #63) ---------------------------------------------------------
 
@@ -4463,9 +4467,12 @@ class Engine:
         (``rating`` null when it has none). It needs the principal, whose rating it is (400
         ``principal_required``), and no viewpoint: a rating is never story content. 404 for an
         unknown story or message."""
-        if ctx.principal is None or not ctx.principal.strip():
-            raise PrincipalRequired("reading a rating needs the requesting principal: it is theirs")
-        return await feedback.read(self.db, story_id, message_id, principal=ctx.principal)
+        value, problem = requesting_principal(ctx.principal)
+        if problem is not None or value is None:
+            raise PrincipalRequired(
+                f"reading a rating needs the requesting principal: it is theirs ({problem})"
+            )
+        return await feedback.read(self.db, story_id, message_id, principal=value)
 
     # -- feedback reporting and export (FR-FB-3,4, FR-ADMIN-8; #126) -------------------------------
     # Flag-only: these read feedback for people to look at; nothing in a turn, a profile or a

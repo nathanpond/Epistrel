@@ -62,3 +62,18 @@ def principal_problem(value: str) -> str | None:
     if has_control(value):
         return "must not contain control characters"
     return None
+
+
+def requesting_principal(raw: str | None) -> tuple[str | None, str | None]:
+    """The principal ``raw`` names, trimmed of the spaces and tabs around it, and why it is not
+    acceptable (``None`` when it is): absent, blank, over 256 characters, holding a control
+    character, or the reserved ``system``. The one rule REST applies to
+    ``X-Epistrel-Principal`` and the library to ``RequestContext.principal`` (#434)."""
+    if raw is None:
+        return None, "is required"
+    # Only spaces and tabs (HTTP whitespace) are trimmed: any other control character refuses.
+    value = raw.strip(" \t")
+    problem = principal_problem(value)
+    if problem is None and value == SYSTEM_PRINCIPAL:
+        problem = f"`{SYSTEM_PRINCIPAL}` is reserved for background work"
+    return value, problem

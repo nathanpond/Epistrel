@@ -184,10 +184,13 @@ async def drain_embeddings(engine: Engine, story_id: str) -> int:
         ctx = JobContext(db=engine.db, job=job, payload=NoPayload())
         try:
             output = await reembed.EMBED_HANDLER.run(ctx)
+            await queue.commit_job(
+                engine.db, job, reembed.EMBED_HANDLER, output, ctx.input_versions
+            )
         except Exception as exc:
+            # A job left running would hold the story: the sweep could not delete it.
             await queue.fail_job(engine.db, job, type(exc).__name__, max_attempts=1, terminal=True)
             raise
-        await queue.commit_job(engine.db, job, reembed.EMBED_HANDLER, output, ctx.input_versions)
         runs += 1
     return runs
 

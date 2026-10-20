@@ -7,7 +7,8 @@ occasions' beats written in bulk through #153's memory row builder
 (``testing.fixtures.scale.memory_row``/``insert_memories``: building 5,000 turns through the
 pipeline would take far longer), and the head moved to turn 5,000, as #141's S-THOSEGUYS fixture
 does. When the deployment names an embedding model (``--embedding-model``), the story's
-vectors are then written by #138's ``embed`` job, run in process (``scenes.drain_embeddings``);
+vectors are written by #138's ``embed`` job, run in process before the head moves
+(``scenes.drain_embeddings``);
 without one (CI's stub run), retrieval runs its lexical and alias arms only.
 
 Each case asks one query through ``Engine.retrieve`` (the omniscient debugging read of what a
@@ -128,12 +129,14 @@ async def build_fixture(engine: Engine, ctx: RequestContext, scratch: Scratch) -
             rows.append(row)
             fixture.keys[str(row["id"])] = beat["key"]
     await scale.insert_memories(engine.db, rows)
+    if await scenes.embedding_configured(engine):
+        # Before the head moves: the embed job commits an operation, and none can commit once
+        # the head is past the story's last real turn (the chain would not hold).
+        await scenes.drain_embeddings(engine, story)
     async with engine.db.begin() as conn:
         await conn.execute(
             update(stories).where(stories.c.id == story).values(next_turn_index=content.TURNS + 1)
         )
-    if await scenes.embedding_configured(engine):
-        await scenes.drain_embeddings(engine, story)
     return fixture
 
 

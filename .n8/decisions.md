@@ -8014,3 +8014,23 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Issue:** #157, #158
 - **Open, to discuss with the owner:** how #158 ends (NFR-QUAL-14 unproven on the reference model), and whether M4 merges with #134's six floor misses and #153's perf misses. PR #426 is not merged until both are settled.
   **Issue:** #158, #134, #153
+- **Decision (owner):** fix every engine-side cause of M4's live misses now, in M4. Quality or speed that depends on the model is documented and deferred to a new milestone, **M9: Performance tuning**, placed before Bug fixes & testing. The GitHub milestones were renumbered: Bug fixes & testing is now M10 and Audit is M11. Only GitHub titles carried those numbers, since docs/03 §22 lists M0–M8.
+  **Issue:** #134, #153, #158
+- **Decision (owner):** a floor that still misses on the reference model after the engine fixes is reassigned to M9: Performance tuning. That means the requirement's §22 assignment, its §15 rows and its part markers move, with an ADR. M4 then closes with its engine work done. Invariant 7 holds: each requirement stays in exactly one milestone.
+  **Issue:** #134
+- **Decision (owner):** NFR-QUAL-5 measures only the model's structured-call validity: `invalid_output` attempts, the retry, and a valid final answer. A released safe fallback after a repair is not an invalid structure for this metric. This matches #437's decision for the smoke scorer.
+  **Issue:** #465
+- **Decision (owner):** NFR-QUAL-7's temperature-0 repeatability covers the render call's output only, not the whole structured turn.
+  **Issue:** #464
+- **Decision (orchestrator):** #454 takes option (a). The model matrix's structured driver measures under a recorded per-story deadline override. Whether the 45 s `Structured (M4)` default fits local tiers is a model-speed question for M9.
+  **Issue:** #454
+
+## Ad-hoc — 2026-10-20
+
+- **Change:** a new milestone, **M9: Performance tuning** (GitHub #12), sits between M8 and Bug fixes & testing, which is renumbered to M10 (Audit is now M11). It receives the NFR-QUAL floors and model-bound performance targets that still miss on the reference model after M4's engine fixes.
+  **Why:** the owner's instruction after the first live exit report (2026-10-20): engine problems are fixed in M4, and model problems are deferred.
+  **Affects:**
+  - M4: the requirement assignment of whichever NFR-QUAL floors still miss.
+  - docs/03 §22 and docs/04 §15: an M9 row.
+  - M10/M11: their titles only.
+  - Planning: `/n8-replan` for M9 when M8 closes.

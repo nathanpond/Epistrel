@@ -152,8 +152,9 @@ def _ci() -> dict[str, Any]:
 def test_c_11__ci_wires_every_gate_into_the_required_check() -> None:
     """Each of the six gates is a step of ``lint`` that runs even after an earlier step failed;
     every ``test`` shard measures core coverage and the ``coverage`` job gates the combined data
-    at 90 % (#331); the required ``gate`` job needs every job, ``coverage`` included, and fails
-    unless each succeeded. Complement: no gate step is allowed to fail (``continue-on-error``),
+    at 90 % (#331); the stub eval run is the ``evals`` job, gated on its floors (#157); the
+    required ``gate`` job needs every job, ``coverage`` and ``evals`` included, and fails unless
+    each succeeded. Complement: no gate step is allowed to fail (``continue-on-error``),
     and no shard applies a threshold of its own (a shard's partial coverage is not the gate)."""
     ci = _ci()
     jobs = ci["jobs"]
@@ -177,9 +178,12 @@ def test_c_11__ci_wires_every_gate_into_the_required_check() -> None:
     assert combine < report
     (threshold,) = [w for w in runs[report].split() if w.startswith("--fail-under=")]
     assert threshold == "--fail-under=90"
+    (stub_run,) = [s for s in jobs["evals"]["steps"] if "epistrel.evals run" in s.get("run", "")]
+    assert {"--adapter", "stub", "--all", "--fail-on-gate"} <= set(stub_run["run"].split())
+    assert stub_run.get("if") is None
     gate = jobs["gate"]
     assert gate["if"] == "always()"
-    assert set(gate["needs"]) == {"lint", "types", "test", "coverage", "docker"}
+    assert set(gate["needs"]) == {"lint", "types", "test", "evals", "coverage", "docker"}
     summary = gate["steps"][-1]
     assert '[ "$r" = "success" ] ||' in summary["run"]
     for need in gate["needs"]:

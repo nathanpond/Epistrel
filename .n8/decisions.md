@@ -8156,3 +8156,21 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Issue:** #459, #461
 - **Decision (owner):** #447 takes option (C). The effective-policies settings read, including the library's `policies_effective`, redacts a policy whose subject is pending catalog-scope erasure: `name: null`, no rule text. A turn that violates such a policy answers 503 `erasure_pending`. This is an ADR amending ADR-159 plus the OpenAPI change for the nullable name. #447 is unblocked.
   **Issue:** #447
+- **Decision (Discretion):** The library's redacted form is a separate type, `WithheldPolicy` (id, scope, scope_id, story_id, applies_to, kind, effect, age_condition, version; `name: None`), not a nullable `Policy.name`; `policies_effective` returns `tuple[Policy | WithheldPolicy, ...]` and `StoryGuardrails.active/inactive` hold either. Redaction happens in the Engine (`story_settings`, `policies_effective`), so REST and the library agree.
+  **Why:** a nullable `Policy.name` would ripple through every enforcement path that reads names; a separate type keeps enforcement on whole policies and makes the redaction explicit to library callers (the owner approved a library contract change).
+  **Issue:** #447
+- **Decision (Discretion):** A withheld violation at the input gate is refused before the `guardrail_input_rejected` audit row and metrics are written.
+  **Why:** the caller is told to retry, not that it was rejected; a retry after the reapply writes the real row, so writing one now would double-count the rejection.
+  **Issue:** #447
+- **Decision (Discretion):** The output gate refuses the turn (503, rolled back) whenever any draft or fallback line breaks a withheld policy, even if a later regeneration would pass, before the policy's message is used.
+  **Why:** otherwise the message naming the subject would be sent to the model as a constraint and stored on a `guardrail_output_rejected` story event, which a catalog-scope reapply never redacts (story records are left alone).
+  **Issue:** #447
+- **Decision (Discretion):** The catalog block is read only after a violation is found (`check.refuse_withheld`), never on a passing text.
+  **Why:** keeps the turn path's statement count unchanged when nothing is violated.
+  **Issue:** #447
+- **Decision (Discretion):** The new ADR is numbered ADR-161 (next after ADR-160 at `d38f20e`). If a parallel agent also appended an ADR-161, the orchestrator renumbers on cherry-pick.
+  **Why:** ADRs are append-only and numbered in order.
+  **Issue:** #447
+- **Decision (Rule 3 → filed):** The stale effective-policy cache after an erasure redacts a policy was filed as #469 rather than fixed inline; the #447 test clears the cache after the reapply.
+  **Why:** out of scope for #447 (it affects live erasures too, and the fix chooses a cache key).
+  **Issue:** #447, #469

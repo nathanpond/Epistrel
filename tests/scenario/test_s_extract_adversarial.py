@@ -53,14 +53,14 @@ async def test_s_extract_adversarial__m4(engine: AsyncEngine, mode: str) -> None
     ]
     mal = vs.stub_models()
     pocketing = {
-        "beat": 1,
+        "beat": 0,  # the request's markers are 0..n-1 (#459)
         "span": "pockets the key",
         "subject": "Linda",
         "predicate": "holds",
         "object": "key",
     }
     smiling = {
-        "beat": 2,
+        "beat": 1,
         "span": "smiles at Marcus",
         "subject": "Linda",
         "predicate": "smiled_at",

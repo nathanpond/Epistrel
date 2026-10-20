@@ -339,14 +339,15 @@ async def to_claims(
     """The model's claims as layer (c) claims: located, confident enough, normalized."""
     found: list[DetectedClaim] = []
     turn = position if isinstance(position, int) else position[0]
+    unknown = 0
     for item in answer.claims:
         if item.confidence < EXTRACTION_MIN_CONFIDENCE:
             continue
-        key = (by_index or {}).get(item.beat, item.beat)
-        beat = beats.get(key)
-        if beat is None:
+        located = _resolve(item, beats, by_index)
+        if located is None:
+            unknown += 1
             continue
-        span = locate_quote(beat.text, item.span)
+        key, beat, span = located
         if span is None:
             continue
         sketch = extraction_sketch(item, span)
@@ -366,7 +367,54 @@ async def to_claims(
                 confidence=item.confidence,
             )
         )
+    if unknown:
+        # #459: never a silent drop. Counts only: the claims' text is story content.
+        log.warning(
+            "extraction: %d of %d claims named a beat marker the request did not show "
+            "(markers %s); dropped",
+            unknown,
+            len(answer.claims),
+            sorted(by_index) if by_index is not None else sorted(k for k in beats if k is not None),
+        )
     return found
+
+
+def _resolve(
+    item: ExtractedClaim,
+    beats: Mapping[int | None, DetectBeat],
+    by_index: Mapping[int, int | None] | None,
+) -> tuple[int | None, DetectBeat, tuple[int, int] | None] | None:
+    """The beat a claim is on, and its span there (``None`` when the span is not found);
+    ``None`` when the marker names no beat the request showed.
+
+    The request numbers its beats ``0..n-1`` (#459), so the marker maps back through
+    ``by_index``. A request with one beat accepts any marker (a model that answers ``beat: 0``,
+    or the beat's turn index, still means that beat). When the marker is unknown, or its beat
+    does not hold the quoted span, the claim goes to the one shown beat that holds the span,
+    if exactly one does."""
+    shown = (
+        dict(beats)
+        if by_index is None
+        else {k: b for k, b in beats.items() if k in by_index.values()}
+    )
+    key: int | None
+    if by_index is None:
+        key = item.beat
+    elif item.beat in by_index:
+        key = by_index[item.beat]
+    elif len(shown) == 1:
+        key = next(iter(shown))
+    else:
+        key = -1  # unknown: only the span can place it
+    beat = shown.get(key)
+    if beat is not None:
+        span = locate_quote(beat.text, item.span)
+        if span is not None or len(shown) == 1:
+            return key, beat, span
+    hits = [(k, b, s) for k, b in shown.items() if (s := locate_quote(b.text, item.span)) is not None]
+    if len(hits) == 1:
+        return hits[0]
+    return None if beat is None else (key, beat, None)
 
 
 def _speaker_name(env: DetectionEnv, speaker: str) -> str | None:
@@ -379,17 +427,18 @@ def _speaker_name(env: DetectionEnv, speaker: str) -> str | None:
 def extraction_inputs(
     beats: Sequence[DetectBeat], env: DetectionEnv, scene_context: SceneContext
 ) -> tuple[ExtractionInputs, dict[int, int | None]]:
-    """The request: each beat with its ``[n]`` marker (the composed message is beat 0 of kind
-    ``message``), and the map from the marker back to the beat."""
+    """The request: each beat with its ``[n]`` marker, numbered ``0..n-1`` in request order
+    (#459: a render's beats start at turn index 2, and a model answers from 0; the composed
+    message is a beat of kind ``message``), and the map from the marker back to the beat (its
+    turn index, or ``None`` for the composed message)."""
     lines: list[ExtractionBeat] = []
     by_index: dict[int, int | None] = {}
     for n, beat in enumerate(beats[:EXTRACTION_MAX_BEATS]):
         kind = beat.channel if beat.channel in _KINDS else "narration"
-        marker = n if beat.channel == MESSAGE else beat.index
-        by_index[marker] = None if beat.channel == MESSAGE else beat.index
+        by_index[n] = None if beat.channel == MESSAGE else beat.index
         lines.append(
             ExtractionBeat(
-                index=marker,
+                index=n,
                 kind=cast(Any, kind),
                 speaker=_speaker_name(env, beat.speaker),
                 text=beat.text[:8_000],

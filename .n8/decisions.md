@@ -8154,3 +8154,5 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Issue:** #446
 - **Decision (Rule 3):** cherry-picking #459 onto #461 conflicted in `orchestrator/verify/extraction.py`, because #461 renamed `_locate` to `locate_quote`. Resolved by keeping #459's located-beat flow, with `locate_quote` at both call sites. The repo gates, the merged extraction, salience and length tests (31), and `tests/gates tests/test_*.py` (1531) pass.
   **Issue:** #459, #461
+- **Decision (owner):** #447 takes option (C). The effective-policies settings read, including the library's `policies_effective`, redacts a policy whose subject is pending catalog-scope erasure: `name: null`, no rule text. A turn that violates such a policy answers 503 `erasure_pending`. This is an ADR amending ADR-159 plus the OpenAPI change for the nullable name. #447 is unblocked.
+  **Issue:** #447

@@ -8,7 +8,8 @@ its field ``None`` and ``open_slot`` naming it (``subject``, ``object`` or ``lit
 no entity id for an open slot, so an undetermined value has none (no anonymous entity is ever
 made).
 
-**The open-argument lexicon** (``OPEN_PHRASES``, ``open_phrase``): indefinite pronouns
+**The open-argument lexicon** (``OPEN_PHRASES``, ``open_phrase``, defined beside
+``core.verify.normalize``, which refuses an open literal, #453): indefinite pronouns
 (``someone``, ``somebody``, ``something``, ``anyone`` …) and indefinite noun phrases (``a
 <noun>``, ``an <noun>``, ``some <noun>``, ``an unknown …``, ``a stranger``). It is applied to a
 sketch's argument texts only, before resolution: an indefinite says the speaker does not
@@ -25,7 +26,6 @@ apply; nothing here reads the database.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Sequence
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -38,48 +38,17 @@ from epistrel.core.resolution.time import Position, TimeBasis, resolve_time, sto
 from epistrel.core.resolution.types import ResolvedTime
 from epistrel.core.verify.normalize import (
     LITERAL_TYPES,
+    OPEN_PHRASES,
     ClaimSketch,
     Unnormalizable,
+    open_phrase,
     parse_literal,
     predicate_for,
 )
 from epistrel.core.verify.rules import VerdictReason
 
-OPEN_PHRASES: frozenset[str] = frozenset(
-    {
-        "someone",
-        "somebody",
-        "something",
-        "somewhere",
-        "anyone",
-        "anybody",
-        "anything",
-        "a stranger",
-        "a person",
-        "a figure",
-        "a voice",
-        "an unknown",
-    }
-)
-"""Indefinite pronouns and noun phrases that leave an argument open (see the module docstring);
-``open_phrase`` also takes any ``a``/``an``/``some`` + noun phrase."""
-
-_INDEFINITE = re.compile(r"^(?:a|an|some|an unknown|a mysterious|an unseen)\s+[^\W\d][\w' -]*$")
-
 TEXT_MAX = 500
 """The longest argument text a sketch keeps."""
-
-
-def _folded(text: str) -> str:
-    return " ".join(text.casefold().split())
-
-
-def open_phrase(text: str | None) -> bool:
-    """Whether ``text`` is an indefinite that leaves its argument open."""
-    if not text:
-        return False
-    folded = _folded(text).strip(".,;:!?\"'")
-    return folded in OPEN_PHRASES or bool(_INDEFINITE.match(folded))
 
 
 class Candidate(BaseModel):

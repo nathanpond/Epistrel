@@ -17,7 +17,10 @@ never guesses (FR-PROP-12):
 - **Argument types**: each entity's kind must be the predicate's subject or object type
   (``any`` admits every kind), a literal must parse to the object type, an object-less
   predicate takes no object, and the qualifiers must be the declared ones. Anything else is
-  ``argument_type``.
+  ``argument_type``. A literal object said as an indefinite (``open_phrase``: "something",
+  "some colour") is ``argument_type`` too (``open_literal``, #453): it leaves the value open
+  (FR-COMMIT-5), so it is never parsed into a literal. A salient one becomes a thunk through
+  ``core.commit.sketch.open_sketch``; otherwise it is texture.
 - **Time**: a time expression goes through #139's ``resolve_time`` against the claim's
   position, the story's ``TimeBasis`` and the subject's timeline. With no expression, the
   default comes from the predicate's temporal kind: an ``event`` is an instant at the position's
@@ -238,6 +241,39 @@ def parse_literal(text: str, kind: str) -> TypedLiteral | None:
 
 LITERAL_TYPES = frozenset(k.value for k in LiteralKind)
 
+OPEN_PHRASES: frozenset[str] = frozenset(
+    {
+        "someone",
+        "somebody",
+        "something",
+        "somewhere",
+        "anyone",
+        "anybody",
+        "anything",
+        "a stranger",
+        "a person",
+        "a figure",
+        "a voice",
+        "an unknown",
+    }
+)
+"""Indefinite pronouns and noun phrases that leave an argument open (see the module docstring);
+``open_phrase`` also takes any ``a``/``an``/``some`` + noun phrase."""
+
+_INDEFINITE = re.compile(r"^(?:a|an|some|an unknown|a mysterious|an unseen)\s+[^\W\d][\w' -]*$")
+
+
+def _folded(text: str) -> str:
+    return " ".join(text.casefold().split())
+
+
+def open_phrase(text: str | None) -> bool:
+    """Whether ``text`` is an indefinite that leaves its argument open."""
+    if not text:
+        return False
+    folded = _folded(text).strip(".,;:!?\"'")
+    return folded in OPEN_PHRASES or bool(_INDEFINITE.match(folded))
+
 
 def default_time(predicate: Predicate, position: Position, basis: TimeBasis) -> Interval | Instant:
     """The valid-time of a claim that states none (see the module docstring)."""
@@ -298,6 +334,8 @@ def normalize(
         if predicate.object_type not in (ANY, literal.kind.value):
             return Unnormalizable(VerdictReason.ARGUMENT_TYPE, "literal_type")
     elif predicate.object_type in LITERAL_TYPES:
+        if open_phrase(sketch.object_text):  # #453: an undetermined value has none
+            return Unnormalizable(VerdictReason.ARGUMENT_TYPE, "open_literal")
         literal = parse_literal(sketch.object_text or "", predicate.object_type)
         if literal is None:
             return Unnormalizable(VerdictReason.ARGUMENT_TYPE, "literal_unparsed")
@@ -398,6 +436,7 @@ async def normalize_declared(
 
 __all__ = [
     "LITERAL_TYPES",
+    "OPEN_PHRASES",
     "RELATION_ALIASES",
     "ClaimSketch",
     "Normalized",
@@ -406,6 +445,7 @@ __all__ = [
     "default_time",
     "normalize",
     "normalize_declared",
+    "open_phrase",
     "parse_literal",
     "predicate_for",
 ]

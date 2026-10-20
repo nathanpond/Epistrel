@@ -922,6 +922,33 @@ def test_u_15__normalization() -> None:
         assert found.reason is reason, (case, found)
         assert found.verdict().kind is VerdictKind.UNCERTAIN
         assert found.verdict().reason is reason
+    # #453: an indefinite literal object leaves the value open (FR-COMMIT-5): never a literal,
+    # declared or detected; a definite one still parses.
+    for said, declared_ in itertools.product(
+        ("something", "Some name.", "anything"), (False, True)
+    ):
+        open_ = normalize(
+            ClaimSketch(
+                subject_text="Bobby", relation_text="name", object_text=said, declared=declared_
+            ),
+            NARRATOR,
+            3,
+            registry=vs.REGISTRY,
+            context=ctx,
+            basis=basis,
+        )
+        assert open_ == Unnormalizable(VerdictReason.ARGUMENT_TYPE, "open_literal"), said
+    named = normalize(
+        ClaimSketch(subject_text="Bobby", relation_text="name", object_text="Robert"),
+        NARRATOR,
+        3,
+        registry=vs.REGISTRY,
+        context=ctx,
+        basis=basis,
+    )
+    assert isinstance(named, Proposition)
+    assert named.literal is not None
+    assert named.literal.value == "Robert"
     declared = normalize(
         ClaimSketch(
             subject_text="Bobby", relation_text="hums near", object_text="Ohio", declared=True

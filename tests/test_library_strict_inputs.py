@@ -1,4 +1,4 @@
-"""The library validates its inputs' JSON types as REST does (FR-API-3, FR-API-4; #427).
+"""The library validates its inputs' JSON types as REST does (FR-API-3, FR-API-4; #427, #445).
 
 Over REST, ``strict_json_body`` (#73) refuses ``true``, ``"7"`` and ``2048.0`` for an integer
 field. The in-process library has no such step: a caller builds the request models itself, in
@@ -7,12 +7,15 @@ field of a model the library takes is now strict, as #322 made the settings.
 
 The guard walks every model a public ``Engine`` coroutine takes (its parameters' models and the
 models nested in them) and fails on a lax ``int``, ``float`` or ``bool`` left anywhere in their
-fields' schemas.
+fields' schemas. Its scalar parameters (``limit``, ``as_of``, ``version``, ``discharged`` …) are
+plain arguments, not model fields: ``strict_scalar_methods`` checks them strictly (#445), and
+the guard here finds every one from its annotation's source text.
 """
 
 from __future__ import annotations
 
 import inspect
+import re
 import typing
 from collections.abc import Iterator
 from typing import Any
@@ -26,6 +29,8 @@ from epistrel.core.catalog.scenario_models import (
     StorySettingsDefaults,
 )
 from epistrel.core.catalog.service import PublishRequest
+from epistrel.core.context import RequestContext
+from epistrel.core.errors import InvalidRequest
 from epistrel.core.fork import ForkRequest
 from epistrel.core.memory.consolidation import ConsolidateRequest
 from epistrel.core.offboarding import OffboardingRequest
@@ -36,7 +41,12 @@ from epistrel.core.ratings.suggest import SuggestionRequest
 from epistrel.core.settings_schema import GenerationSettings
 from epistrel.core.timeline import TruncateRequest
 from epistrel.core.variants import ChainRef
-from epistrel.engine import Engine
+from epistrel.engine import (
+    STRICT_SCALARS_ATTRIBUTE,
+    Engine,
+    library_only_methods,
+    operations,
+)
 from epistrel.orchestrator.lite.schemas import BudgetOverride, RegenerateRequest
 from epistrel.orchestrator.models.adapter import ModelParams
 
@@ -175,3 +185,103 @@ def test_a_mistyped_value_is_refused_at_its_field(
             model.model_validate({**valid, name: value})
         locations = {error["loc"][0] for error in refused.value.errors()}
         assert locations == {name}, (model, name, value, locations)
+
+
+# -- scalar parameters (#445) ----------------------------------------------------------------
+
+SCALAR = re.compile(r"\b(int|float|bool)\b")
+"""A scalar annotation, read from its source text: independent of the engine's own
+``scalar_parameters``, so a form it misses fails here."""
+
+MISTYPED: dict[str, tuple[Any, ...]] = {
+    "int": (True, "7", 2.0),
+    "float": (True, "0.5"),
+    "bool": (1, "true"),
+}
+VALID: dict[str, Any] = {"int": 1, "float": 0.5, "bool": True}
+
+
+def _scalar_cases() -> list[tuple[str, str, str]]:
+    """``(method, parameter, scalar)`` for every scalar parameter of a public method."""
+    found: list[tuple[str, str, str]] = []
+    for name in operations() + sorted(library_only_methods()):
+        raw = inspect.unwrap(getattr(Engine, name))
+        for parameter in inspect.signature(raw).parameters.values():
+            match = SCALAR.search(str(parameter.annotation))
+            if match:
+                found.append((name, parameter.name, match.group(1)))
+    return found
+
+
+SCALAR_CASES = _scalar_cases()
+
+
+def test_every_scalar_parameter_is_strict() -> None:
+    """Every ``int``, ``float`` or ``bool`` parameter of a public ``Engine`` method is one
+    ``strict_scalar_methods`` checks (#445), the issue's examples among them: a new one fails
+    here until it is covered."""
+    assert {
+        ("history", "limit"),
+        ("inspect_ledger", "discharged"),
+        ("put_upload_part", "n"),
+        ("get_media_content", "exp"),
+    } <= {(n, p) for n, p, _ in SCALAR_CASES}
+    checked = {
+        (name, parameter)
+        for name in operations() + sorted(library_only_methods())
+        for parameter in getattr(getattr(Engine, name), STRICT_SCALARS_ATTRIBUTE, ())
+    }
+    assert checked == {(n, p) for n, p, _ in SCALAR_CASES}
+
+
+def _arguments(name: str, parameter: str, value: Any) -> tuple[list[Any], dict[str, Any]]:
+    """Arguments for ``name``: ``value`` for ``parameter``, a valid one for every other required
+    one (a plain string, or a valid scalar)."""
+    args: list[Any] = []
+    kwargs: dict[str, Any] = {}
+    for p in list(inspect.signature(getattr(Engine, name)).parameters.values())[2:]:
+        if p.name == parameter:
+            given = value
+        elif p.default is inspect.Parameter.empty:
+            scalar = SCALAR.search(str(p.annotation))
+            given = VALID[scalar.group(1)] if scalar else "x"
+        else:
+            continue
+        if p.kind is inspect.Parameter.KEYWORD_ONLY:
+            kwargs[p.name] = given
+        else:
+            args.append(given)
+    return args, kwargs
+
+
+async def _call(name: str, parameter: str, value: Any) -> Exception | None:
+    """What calling ``name`` on a bare ``self`` with ``value`` for ``parameter`` raised."""
+    args, kwargs = _arguments(name, parameter, value)
+    try:
+        await getattr(Engine, name)(object(), RequestContext(principal="p-reader"), *args, **kwargs)
+    except Exception as raised:
+        return raised
+    return None
+
+
+@pytest.mark.parametrize(
+    ("name", "parameter", "scalar"), SCALAR_CASES, ids=[f"{n}.{p}" for n, p, _ in SCALAR_CASES]
+)
+async def test_a_mistyped_scalar_is_refused_at_its_parameter(
+    name: str, parameter: str, scalar: str
+) -> None:
+    """``limit=True``, ``as_of="7"``, ``limit=2.0`` or ``discharged=1`` is 422
+    ``validation_error`` at ``query.<name>`` (``path.<name>`` for a positional parameter), as
+    REST refuses ``?limit=true``, before anything else runs (FR-API-3, FR-API-4; #445). Before
+    #445 ``limit=True`` was taken as ``1``. Complement: a valid value passes the check (the call
+    then fails on the bare ``self``, never at the parameter)."""
+    kind = inspect.signature(getattr(Engine, name)).parameters[parameter].kind
+    where = "query" if kind is inspect.Parameter.KEYWORD_ONLY else "path"
+    for value in MISTYPED[scalar]:
+        refused = await _call(name, parameter, value)
+        assert isinstance(refused, InvalidRequest), (name, parameter, value, refused)
+        assert refused.details["field"] == f"{where}.{parameter}", (value, refused.details)
+    passed = await _call(name, parameter, VALID[scalar])
+    assert not (
+        isinstance(passed, InvalidRequest) and passed.details.get("field") == f"{where}.{parameter}"
+    ), passed

@@ -5004,9 +5004,88 @@ def normalise_repeated_methods(engine_class: type) -> None:
             setattr(engine_class, name, _repeated_normalised(member, names))
 
 
+STRICT_SCALARS_ATTRIBUTE = "__epistrel_strict_scalars__"
+
+_SCALARS: tuple[type, ...] = (int, float, bool)
+
+
+def _union_members(annotation: Any) -> tuple[Any, ...]:
+    if isinstance(annotation, types.UnionType) or typing.get_origin(annotation) is typing.Union:
+        return tuple(m for a in typing.get_args(annotation) for m in _union_members(a))
+    return (annotation,)
+
+
+def scalar_parameters(method: Callable[..., Any]) -> dict[str, Any]:
+    """The parameters of ``method`` typed ``int``, ``float`` or ``bool`` (alone or in a union,
+    with ``None`` or not): their names and annotations, which ``strict_scalar_methods`` checks."""
+    hints = typing.get_type_hints(inspect.unwrap(method))
+    return {
+        name: hints[name]
+        for name in inspect.signature(method).parameters
+        if name in hints and any(m in _SCALARS for m in _union_members(hints[name]))
+    }
+
+
+def scalar_location_of(parameter: inspect.Parameter) -> tuple[str, str]:
+    """Where a mistyped scalar is refused: ``query.<name>`` for a keyword-only parameter (a
+    query parameter over REST), ``path.<name>`` for a positional one (a path parameter)."""
+    keyword = parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    return ("query" if keyword else "path", parameter.name)
+
+
+def _strict_scalars[F: Callable[..., Awaitable[Any]]](method: F, checked: Mapping[str, Any]) -> F:
+    signature = inspect.signature(method)
+    checks: list[tuple[str, bool, TypeAdapter[Any], tuple[str, str]]] = []
+    for name, annotation in checked.items():
+        members = _union_members(annotation)
+        optional = type(None) in members
+        kept = tuple(m for m in members if m is not type(None))
+        adapter: TypeAdapter[Any] = TypeAdapter(
+            kept[0] if len(kept) == 1 else typing.Union[kept]  # noqa: UP007 - built at runtime
+        )
+        checks.append((name, optional, adapter, scalar_location_of(signature.parameters[name])))
+
+    @functools.wraps(method)
+    async def strict(*args: Any, **kwargs: Any) -> Any:
+        try:
+            bound = signature.bind(*args, **kwargs)
+        except TypeError:
+            return await method(*args, **kwargs)  # the call's own TypeError
+        for name, optional, adapter, loc in checks:
+            if name not in bound.arguments:
+                continue
+            value = bound.arguments[name]
+            if value is None and optional:
+                continue
+            try:
+                adapter.validate_python(value, strict=True)
+            except ValidationError as refused:
+                errors = [{**error, "loc": ()} for error in refused.errors(include_url=False)]
+                raise InvalidRequest.from_errors(errors[:1], prefix=loc) from None
+        return await method(*args, **kwargs)
+
+    setattr(strict, STRICT_SCALARS_ATTRIBUTE, tuple(checked))
+    return strict  # type: ignore[return-value]
+
+
+def strict_scalar_methods(engine_class: type) -> None:
+    """Refuse a mistyped ``int``, ``float`` or ``bool`` argument of every public coroutine
+    method of ``engine_class`` (FR-API-3, FR-API-4; #445), as REST refuses ``?limit=true`` at
+    ``query.limit``: pydantic's strict mode, so ``True`` is no integer, ``"7"`` and ``2.0`` are
+    none either, and ``1`` is no boolean. 422 ``validation_error`` at ``query.<name>`` (or
+    ``path.<name>``). Run after the gates, so the check is in front of them (only the NUL guard,
+    run last, comes first)."""
+    for name, member in list(vars(engine_class).items()):
+        if name.startswith("_") or not inspect.iscoroutinefunction(member):
+            continue
+        if checked := scalar_parameters(member):
+            setattr(engine_class, name, _strict_scalars(member, checked))
+
+
 normalise_repeated_methods(Engine)
 gate_story_methods(Engine)
 gate_catalog_methods(Engine)
+strict_scalar_methods(Engine)
 guard_nul_methods(Engine)
 # One span, summary line and count per outermost call of every public coroutine method (#74).
 instrument.instrument_engine(Engine)

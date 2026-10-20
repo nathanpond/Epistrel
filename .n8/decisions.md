@@ -8174,3 +8174,31 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision (Rule 3 → filed):** The stale effective-policy cache after an erasure redacts a policy was filed as #469 rather than fixed inline; the #447 test clears the cache after the reapply.
   **Why:** out of scope for #447 (it affects live erasures too, and the fix chooses a cache key).
   **Issue:** #447, #469
+- **Decision (owner, applied):** #454 takes option (a). The model matrix's structured and repair-heavy rows run under a per-story `budgets.deadline_ms` override of `MEASUREMENT_DEADLINE_MS` (`TURN_DEADLINE_S` × 1000 = 300,000 ms). The row records it (`deadline_override_ms`), and the markdown shows it in the Runs turn path, with a note that appears only while it applies. The `Structured (M4)` profile default is unchanged.
+  **Why:** the matrix measures how long a structured turn takes. A profile deadline that a single render nearly fills on the reference tier would cut the turn, and the row would never be written.
+  **Issue:** #454
+- **Decision (Discretion):** the override is applied through `Engine.set_profile_overrides` (a recorded story override, as `test_model_matrix_run` and the evals do), not by writing the profile or the DB directly.
+  **Why:** it is the author-facing path, and the story's effective config shows it.
+  **Issue:** #454
+- **Decision (Discretion):** a row whose turn fails partway is marked in a separate `failed_rows` list ("Failed runs" in the md), keyed like rows. It is never written as a partial row and never replaces the key's earlier row. A later run that measures the key clears the mark. The tool still exits 1.
+  **Why:** the owner asked that finished rows not be lost. Partial timings would mislead, and a failure is not a measurement that should overwrite one.
+  **Issue:** #454
+- **Decision (Discretion):** only a `ModelError` from a row's turn (warm-up = turn 0) is treated as a row failure. A `ModelError` outside the turns (the protocol probe, the capability checks, the embedding row) still writes nothing, as before.
+  **Issue:** #454
+- **Deferred to M9 (model):** whether the `Structured (M4)` 45 s turn deadline fits local tiers (one cydonia-24b render took 43.8 s).
+  **Issue:** #454
+- **Decision (Discretion):** #463 takes the issue's option 1. E-13's correlation pools the judge's per-fingerprint voice means across the committed eval reports with the run's own, weighted by n, and correlates the pool with the run database's per-fingerprint mean ratings. The minimum of five fingerprints is unchanged, and E-13 stays report-only.
+  **Why:** one run judges two fingerprints, so a per-run correlation can never reach five (option 2 would multiply configurations per run, and option 3 defers it). The issue states the fingerprints already match across runs and deployments.
+  **Issue:** #463
+- **Decision (Discretion):** the per-fingerprint means travel in each report's embedded summary (`judged`: metric, fingerprint, mean, n), built from a new optional `MetricResult.fingerprint` that E-13 sets on its per-configuration judged rows. The report JSON stays `version: 1` (the field is additive), and `INDEX.md` ignores the key.
+  **Why:** the embedded summary is the only machine-readable part of a committed report (the JSON lives in `build/` and is not committed). Parsing the Markdown table and notes would be fragile.
+  **Issue:** #463
+- **Decision (Discretion):** the pooled mean of a fingerprint is the n-weighted mean of each report's row mean. A row's mean is the mean over seeds of the per-seed means, which equals the pooled mean when the seeds have equal n. The run's own contribution is the exact mean of its 0-1 scores. The run's means are now on the 0-1 scale rather than raw 1-5. Spearman is rank-based, so the value is unchanged.
+  **Issue:** #463
+- **Decision (Discretion):** reports committed before #463 (`775d2c4f43f3-2026-10-20-prose.md` and older) are not hand-edited to add `judged`. They contribute nothing to the pool.
+  **Why:** committed reports are the honest record of a run. Their means could be backfilled only by parsing their rendered tables.
+  **Issue:** #463
+- **Assumption:** pooling reads every committed report in `docs/evals`, including a stub run's (none are committed). A fingerprint's pooled mean mixes runs of the same configuration fingerprint across dates, which is the unit FR-FB-3 groups ratings by.
+  **Issue:** #463
+- **Not done (out of AC):** the Prometheus emission of the model-free signals at each turn's commit, which #463 records as a planner suggestion with no AC. Not filed separately, because #463's own text already records it.
+  **Issue:** #463

@@ -699,3 +699,35 @@ async def test_read_phase_cost_is_independent_of_story_length(
         assert computed == [(long, 2_000)]
         assert read == await computing(conn, long, before_turn=2_000)
         assert read[-1].covers_to == 1_999
+
+
+# -- cost: the verbatim window reads only its own rows (#452) --------------------------------
+
+
+async def test_verbatim_window_reads_only_its_rows(engine: AsyncEngine) -> None:
+    """NFR-PERF-4 (#452): without a rolling summary the prompt keeps the latest
+    ``window_messages`` rows, read as such (``LIMIT``), not sliced from the whole transcript
+    (a structured P-04 story has 10,000 rows). The window is the same rows in the same order
+    as the slice of every row, at each size."""
+    from epistrel.core.turns import transcript_rows
+    from tests.retrieval_support import statements
+
+    story = await new_story(engine)
+    for n in range(6):
+        await play_turn(engine, story, f"line {n}")
+    await store_overrides(
+        engine, story, {"memory": {"rolling_summary": {"enabled": False, "window_messages": 4}}}
+    )
+    async with engine.connect() as conn:
+        every = await transcript_rows(conn, story)
+        assert len(every) == 12
+        for n in (1, 4, 12, 20):
+            assert await transcript_rows(conn, story, last=n) == every[-n:]
+        before = await transcript_rows(conn, story, before_turn=4)
+        assert await transcript_rows(conn, story, before_turn=4, last=3) == before[-3:]
+        with statements(engine) as seen:
+            inputs = await read_turn_inputs(conn, story)
+    assert inputs.window == every[-4:]
+    window_reads = [s for s, _ in seen.statements if "FROM transcript_messages" in s]
+    assert len(window_reads) == 1
+    assert "LIMIT" in window_reads[0]

@@ -215,10 +215,13 @@ async def transcript_rows(
     after_turn: int = 0,
     through_turn: int | None = None,
     before_turn: int | None = None,
+    last: int | None = None,
 ) -> tuple[WindowRow, ...]:
     """The story's active prompt-channel transcript rows positioned after ``after_turn`` (and
     through ``through_turn`` / before ``before_turn`` when given), oldest first: a prompt's
-    verbatim window, or the rows a summary chunk is made from (#72)."""
+    verbatim window, or the rows a summary chunk is made from (#72). ``last`` keeps only the
+    latest ``last`` of them, read as such (the order is total: ``seq`` is unique in a story), not
+    sliced from the whole transcript (#452)."""
     t = transcript_messages
     query = (
         select(
@@ -235,19 +238,26 @@ async def transcript_rows(
             t.c.channel.in_(PROMPT_CHANNELS),
             _before(t.c.narrative_turn, before_turn),
         )
-        .order_by(
-            t.c.narrative_turn.nulls_first(),
-            t.c.turn_variant.nulls_first(),
-            t.c.seq,
-        )
     )
+    if last is None:
+        query = query.order_by(
+            t.c.narrative_turn.nulls_first(), t.c.turn_variant.nulls_first(), t.c.seq
+        )
+    else:
+        query = query.order_by(
+            t.c.narrative_turn.desc().nulls_last(),
+            t.c.turn_variant.desc().nulls_last(),
+            t.c.seq.desc(),
+        ).limit(last)
     if after_turn > 0:
         query = query.where(t.c.narrative_turn > after_turn)
     if through_turn is not None:
         query = query.where(t.c.narrative_turn <= through_turn)
-    found = await conn.execute(query)
+    found = list((await conn.execute(query)).all())
+    if last is not None:
+        found.reverse()
     rows: list[WindowRow] = []
-    for r in found.all():
+    for r in found:
         payload = r.payload or {}
         player = r.kind == "player_input"
         rows.append(
@@ -279,14 +289,14 @@ async def _verbatim(
     are still verbatim, even where a segment also covers them). Without a rolling summary
     (``summarised`` false, #113) the latest ``window_messages`` rows only: nothing summarises
     the older ones, and the prompt drops them."""
+    # ``rows[-n:]`` of the whole transcript, read as the latest n (#452); n = 0 keeps them all.
+    latest = window_messages if window_messages > 0 else None
     if not summarised:
-        every = await transcript_rows(conn, story_id, before_turn=before_turn)
-        return every[-window_messages:]
+        return await transcript_rows(conn, story_id, before_turn=before_turn, last=latest)
     uncovered = await transcript_rows(conn, story_id, after_turn=covered, before_turn=before_turn)
     if covered == 0 or len(uncovered) >= window_messages:
         return uncovered
-    every = await transcript_rows(conn, story_id, before_turn=before_turn)
-    return every[-window_messages:]
+    return await transcript_rows(conn, story_id, before_turn=before_turn, last=latest)
 
 
 GENERATION_PURPOSE = "generation"

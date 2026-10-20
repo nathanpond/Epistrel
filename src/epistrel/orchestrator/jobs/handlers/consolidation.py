@@ -483,11 +483,11 @@ async def _read(ctx: JobContext, story_id: str, payload: ConsolidationPayload) -
             if all(c.inputs_hash == planned.inputs_hash for c in exact):
                 return _noop("replayed")
             replaced = exact
+        keys: list[str] = []
         for i in planned.inputs:
-            await ctx.declare_input(conn, i.key)
-            await ctx.declare_input(conn, input_key(operations.name, i.operation_id))
-        for c in replaced:
-            await ctx.declare_input(conn, input_key(operations.name, c.operation_id))
+            keys += [i.key, input_key(operations.name, i.operation_id)]
+        keys += [input_key(operations.name, c.operation_id) for c in replaced]
+        await ctx.declare_inputs(conn, keys)
         superseded = await core.outputs_of(conn, story_id, [c.operation_id for c in replaced])
         names = await core.character_names(conn, story_id)
     return _Read(

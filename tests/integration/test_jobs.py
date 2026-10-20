@@ -37,6 +37,7 @@ from epistrel.core.input_versions import (
     check_key,
     input_key,
     read_version,
+    read_versions,
     stale_inputs,
 )
 from epistrel.core.stories import delete_story
@@ -566,3 +567,26 @@ async def test_input_versions_name_what_changed(engine: AsyncEngine) -> None:
     await play_turn(engine, story, "again")
     async with engine.connect() as conn:
         assert await stale_inputs(conn, declared) == tuple(sorted([keys[0], keys[1], keys[3]]))
+
+
+async def test_input_versions_read_one_statement_per_table(engine: AsyncEngine) -> None:
+    """NFR-PERF-4 (#452): a job's inputs are read back in one statement per table, not one
+    per input (a consolidation window declares and rechecks dozens of operations and
+    memories under the story lock). The versions are the ones the per-row reader answers,
+    a gone row reads as ``None``, and the recheck still names exactly what changed."""
+    from tests.retrieval_support import statements
+
+    story = await new_story(engine)
+    turns = [await play_turn(engine, story, f"line {n}") for n in range(4)]
+    keys = [input_key("operations", t.operation_id) for t in turns]
+    keys += [input_key("operations", "0" * 26), input_key("stories", story)]
+    async with engine.connect() as conn:
+        one_by_one = {key: await read_version(conn, key) for key in keys}
+        with statements(engine) as seen:
+            batched = await read_versions(conn, keys)
+            stale = await stale_inputs(conn, one_by_one)
+    assert batched == one_by_one
+    assert list(batched) == keys
+    assert stale == (keys[4],)
+    operation_reads = [s for s, _ in seen.statements if "FROM operations" in s]
+    assert len(operation_reads) == 2  # one for read_versions, one for stale_inputs

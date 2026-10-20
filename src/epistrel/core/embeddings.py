@@ -443,6 +443,27 @@ async def _memory_version(conn: AsyncConnection, memory_id: str) -> Version | No
     return [bool(row.active), row.membership_tx.isoformat(), str(row.retrieval_tier), row.digest]
 
 
+async def _memory_versions(conn: AsyncConnection, ids: Sequence[str]) -> dict[str, Version]:
+    rows = await conn.execute(
+        select(
+            memories.c.id,
+            active_only(memories).label("active"),
+            memories.c.membership_tx,
+            memories.c.retrieval_tier,
+            func.md5(memories.c.text).label("digest"),
+        ).where(memories.c.id.in_(list(ids)))
+    )
+    return {
+        str(row.id): [
+            bool(row.active),
+            row.membership_tx.isoformat(),
+            str(row.retrieval_tier),
+            row.digest,
+        ]
+        for row in rows
+    }
+
+
 def _memory_active(version: Version) -> bool:
     # Active on the timeline. A tier change moves the version itself (so a job that read a hot
     # memory drops its output when it was retired meanwhile), and a memory retired before the
@@ -451,7 +472,9 @@ def _memory_active(version: Version) -> bool:
     return bool(version) and version[0] is True
 
 
-register_version_reader(memories.name, _memory_version, active=_memory_active)
+register_version_reader(
+    memories.name, _memory_version, active=_memory_active, batch=_memory_versions
+)
 
 
 __all__ = [

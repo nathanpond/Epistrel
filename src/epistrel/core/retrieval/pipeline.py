@@ -18,15 +18,19 @@ embedding calls are excluded and counted in ``model_calls``):
 2. **occasion** (FR-RET-3): when the text gives a time window or an event type, the episode
    layer (episodic memories, ``event_type``/``participants``) is queried by
    ``(story-time window as turns, event_type, participants && the resolved entities)``, up to
-   ``MAX_EPISODES`` episodes, latest first. The located episodes' participants resolve the
-   group ("those guys"), and their **assessments** are the semantic memories and reflections
-   whose ``participants`` include one of them, formed from the window's start on. Neither a
-   window nor a type: the step is skipped (``skipped: ["occasion"]``).
+   ``MAX_EPISODES`` episodes, latest first; with no window, those best matching the text first
+   (``ts_rank``, any of its words), the latest first among equals (#458: "the runaway goose at
+   the wedding" is that wedding, not the latest one). The located episodes' participants
+   resolve the group ("those guys"), and their **assessments** are the semantic memories and
+   reflections whose ``participants`` include one of them, formed from the window's start on.
+   Neither a window nor a type: the step is skipped (``skipped: ["occasion"]``).
 3. **hybrid arms** (FR-RET-4): the **vector** arm (``search.vector_search`` over the HNSW
    index, ``SET LOCAL hnsw.ef_search`` and ``hnsw.iterative_scan = relaxed_order``, only
    vectors in the pinned version, #138's never-mix rule), the **lexical** arm (the
-   ``LexicalSearch`` backend over ``memories.search``) and the **alias** arm (the resolved
-   entities' aliases as exact phrases, any casing). The lexical and alias arms run when
+   ``LexicalSearch`` backend over ``memories.search``; a hit scoring under
+   ``LEXICAL_RELATIVE_FLOOR`` of the best hit is dropped, #458) and the **alias** arm (the
+   aliases of the entities the text names, as exact phrases, any casing; the speaker's own
+   "I"/"me" names no topic and is left out, #458). The lexical and alias arms run when
    ``memory.episodic.hybrid_search`` is on, and the lexical one also whenever the vector arm
    cannot (``degradation``: ``embedding_pending``/``embedding_unavailable``, #138). Each arm
    takes its top ``retrieval_vector_k``/``retrieval_lexical_k`` (50).
@@ -84,7 +88,8 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import and_, or_, select, text, update
+from sqlalchemy import Text, and_, cast, func, or_, select, text, update
+from sqlalchemy.dialects.postgresql import TSQUERY
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core import clock, embeddings
@@ -513,6 +518,7 @@ async def _episodes(
     event_type: str | None,
     entities: Sequence[str],
     include_quarantined: bool = False,
+    text_query: str | None = None,
 ) -> list[Any]:
     m = memories.c
     where = [
@@ -533,12 +539,19 @@ async def _episodes(
         where.append(m.event_type == event_type)
     if entities:
         where.append(m.participants.overlap(list(entities)))
-    found = await conn.execute(
-        select(*_COLUMNS)
-        .where(*where)
-        .order_by(m.narrative_turn.desc().nulls_last(), m.beat.desc().nulls_last(), m.id)
-        .limit(MAX_EPISODES)
-    )
+    latest = (m.narrative_turn.desc().nulls_last(), m.beat.desc().nulls_last(), m.id)
+    order: tuple[Any, ...] = latest
+    if turns is None and text_query is not None and text_query.strip():
+        # No window locates the occasion: the episodes that best match the text come first
+        # (#458), the latest first among equals.
+        words = cast(
+            func.replace(
+                cast(func.plainto_tsquery(SEARCH_CONFIGURATION, text_query), Text), " & ", " | "
+            ),
+            TSQUERY,
+        )
+        order = (func.ts_rank(m.search, words).desc(), *latest)
+    found = await conn.execute(select(*_COLUMNS).where(*where).order_by(*order).limit(MAX_EPISODES))
     return list(found)
 
 
@@ -661,6 +674,21 @@ async def _retain(
             )
             .values(embedding=list(vector), embedding_model_version=version)
         )
+
+
+LEXICAL_RELATIVE_FLOOR = 0.6
+"""A lexical hit ranks among the arm's hits only when its score is at least this share of the
+best hit's (#458)."""
+
+
+def _relevant_lexical(hits: Sequence[tuple[str, float]]) -> list[tuple[str, float]]:
+    """The lexical hits (best first) without those far weaker than the best (#458): a memory
+    sharing one common word with the query is no match beside one holding all its words, and
+    reciprocal-rank fusion would rank the two close enough for recency to reorder them."""
+    if not hits:
+        return []
+    best = max(score for _, score in hits)
+    return [(i, score) for i, score in hits if score >= best * LEXICAL_RELATIVE_FLOOR]
 
 
 def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
@@ -823,6 +851,7 @@ async def retrieve(
             event_type=resolved.event_type,
             entities=resolved.entities,
             include_quarantined=iq,
+            text_query=query.text,
         )
         participants = tuple(
             dict.fromkeys(
@@ -926,7 +955,14 @@ async def retrieve(
         skipped.append(ARM_LEXICAL)
     if params.hybrid:
         aliases: list[str] = []
-        for entity_id in resolved.entities:
+        # The speaker's "I"/"me" names no topic: every memory the speaker is in would match its
+        # name (#458). An entity the text names otherwise (a name, "you", "he") counts.
+        named = dict.fromkeys(
+            m.entity_id
+            for m in resolved.mentions
+            if m.entity_id is not None and m.kind is not MentionKind.FIRST_PERSON
+        )
+        for entity_id in named:
             entry = index.get(entity_id)
             if entry is None:
                 continue
@@ -964,6 +1000,7 @@ async def retrieve(
         vector_hits = sorted([*vector_hits, *similar.items()], key=lambda hit: (-hit[1], hit[0]))
     if retired_hits:
         lexical_hits = sorted([*lexical_hits, *retired_hits], key=lambda hit: (-hit[1], hit[0]))
+    lexical_hits = _relevant_lexical(lexical_hits)
 
     # 4. fuse and rank
     rankings: list[list[str]] = []

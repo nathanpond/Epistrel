@@ -8078,3 +8078,44 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Issue:** #462, #158
 - **Deferred to M9 (model):** the model's adherence to the consolidation template on the reference tier, and the self-judging judge's 93 % agreement. Whether NFR-QUAL-3 clears after this fix is the orchestrator's live re-measurement.
   **Issue:** #462
+- **Decision (Rule 1):** auto registration's `ON CONFLICT` arbiter and proposal filing's partial-index predicate are now spelled with literals (`literal_column`), exactly as the indexes are. With bound values they matched only on custom plans: after psycopg prepared the statement, the generic plan raised `InvalidColumnReference`. A regression test forces `plan_cache_mode = force_generic_plan`. The proposal arbiter was not named in the issue, but it had the same defect, which the test confirmed.
+  **Why:** a literal arbiter matches on every plan. A named constraint is not possible, because both are expression or partial unique indexes, not constraints.
+  **Issue:** #466
+- **Decision (Discretion):** #453 takes the issue's option (1). `normalize` refuses a literal object that `open_phrase` matches, as `argument_type` / `open_literal`. The option (2) routing is unnecessary, because a salient reference already reaches `open_sketch` through salience. The full lexicon applies, including `a`/`an`/`some` + noun, the same as `open_sketch`, so one lexicon decides "open" everywhere.
+  **Why:** FR-COMMIT-5: an undetermined value has no world value. `argument_type` is already in `NEVER_ESCALATES`, so no entailment call is spent on it. A new `VerdictReason` value would change an API enum.
+  **Issue:** #453
+- **Decision (Discretion):** `OPEN_PHRASES` and `open_phrase` moved to `core.verify.normalize`, and `core.commit.sketch` re-exports them.
+  **Why:** `sketch` imports `normalize`, so the reverse import would be circular.
+  **Issue:** #453
+- **Assumption:** a `str` literal said as an indefinite noun phrase ("a crown" as a coin's face) is now open, not a value, as `open_sketch` already treated it. If that proves too strict for author predicates, narrow `open_phrase` for literals in one place.
+  **Issue:** #453
+- **Decision (Discretion):** `extraction_shadow` gets a setting of its own, `extraction_shadow_retention_days`, a prospective deployment setting with a default of 90 and the same bounds as `escalation_retention_days`. It is not a shared name.
+  **Why:** #155 kept `escalation_retention_days` to `escalations`. Ninety days matches the other FR-STORE-30 audit-like records, and it exceeds the shadow report's 30-day default window, so a gate tightening's shadow validation (FR-OBS-4, NFR-PERF-5) can read a full window.
+  **Issue:** #455
+- **Decision (Discretion):** the prune is a plain chunked delete that leaves no marker, as for `escalations`.
+  **Why:** the rows hold ids, codes and spans, never story text, and only the shadow report reads them (FR-STORE-1's audit-retention exception).
+  **Issue:** #455
+- **Decision (Discretion):** the setting is not mentioned in `PUT /admin/settings`'s description text.
+  **Why:** #155's `escalation_retention_days` is not mentioned there either. The OpenAPI schema carries the field, its bounds and its default.
+  **Issue:** #455
+- **Decision (Discretion):** a mistyped scalar is refused at `query.<name>` for a keyword-only parameter and `path.<name>` for a positional one. Pydantic strict mode decides the type: no bool for an int, no numeric strings, and no integral floats for an int.
+  **Why:** this is the issue's expected location. Strict mode matches #427's strict model fields. Header-sourced parameters (`body_size`, `size`) are also named `query.<name>`, because the library has no headers.
+  **Issue:** #445
+- **Decision (Discretion):** the wrapper is applied after the gates and before the NUL guard. Order of checks: NUL guard, then strict scalars, then gates, then the body.
+  **Why:** a mistyped scalar must never reach a gate's SQL. #278's guard must still refuse a NUL in an id at that id first: `test_nul_text`'s gated-mutation cases pass placeholder strings for the other parameters.
+  **Issue:** #445
+- **Decision (Discretion):** X-06's outage moved inside its container. A supervisor shell as PID 1 restarts the server unless a down flag is set, and the kill is `kill -9 -1` as `postgres`. Docker-assigned ports and a retry-on-conflict were both rejected: a restarted container may get a different ephemeral port, and a restart cannot change its bindings.
+  **Why:** a container that never stops never releases its port, so no other process can take it mid-test. SIGKILL of every server process keeps the "no clean shutdown" semantics of `docker kill`.
+  **Issue:** #448
+- **Decision (Rule 3 → filed):** the same race for child-process ports is filed as #468, not fixed here.
+  **Issue:** #448, #468
+- **Blocker (Rule 4):** #447 needs the owner's design choice between redacting the policy (`name: null` in `effective_policies`, a nullable `EffectivePolicyBody.name`, a redacted library `policies_effective`, and a violation without `name`/`message`) and refusing for the window (503 `erasure_pending` on the settings read and on a violating turn). Each choice changes the API contract and needs an ADR amending ADR-159. The recommendation is (C): redact the settings read, and answer a violating turn 503.
+  **Why:** the issue asks for a design call, and the brief treats an API-contract change as Rule 4.
+  **Issue:** #447
+- **Blocker (Rule 4):** #447 needs an owner design decision. Every option changes the API contract and amends ADR-159, and the library's `policies_effective` returns whole `Policy` objects with their rule text. The options, posted on #447:
+  - (A) Redact the policy: `name: null`, and a violation carries no name or message.
+  - (B) Refuse with 503 `erasure_pending`: on the settings read and on a violating turn. Every story's settings read fails during the window.
+  - (C) Mixed (the agent's recommendation): redact the settings read, and answer a violating turn with 503.
+
+  #447 is labelled `blocked` + `needs-owner-action` and is not part of the PR's `Closes`.
+  **Issue:** #447

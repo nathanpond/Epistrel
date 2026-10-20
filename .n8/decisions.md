@@ -8202,3 +8202,20 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Issue:** #463
 - **Not done (out of AC):** the Prometheus emission of the model-free signals at each turn's commit, which #463 records as a planner suggestion with no AC. Not filed separately, because #463's own text already records it.
   **Issue:** #463
+- **Decision (Discretion):** The effective-policy cache is keyed on a new per-scope `policy_erasure_revision` (deployment row for catalog scope, story row for story scope), added by migration 0066 as columns, not a new table. The erasure does not bump the existing `config_revision`.
+  **Why:** Moving `config_revision` would mean a configuration change with no `config_changes` row and would trigger the FR-CONC-14..16 rebase. The new revision is read from the database in the cache read's own snapshot, so the fix holds across processes, as the issue requires. An in-process clear would not.
+  **Issue:** #469
+- **Decision (Rule 1):** A catalog-scope erasure now takes the deployment row `FOR UPDATE` at the start of its transaction.
+  **Why:** Bumping the deployment row after rewriting policy rows would invert the lock order that policy admin writes use (deployment lock, then policy row) and could deadlock. Taking the lock first matches every configuration write. Catalog erasures are rare, so serializing them against configuration writes costs nothing that matters.
+  **Issue:** #469
+- **Decision (Discretion):** A story-scope erasure bumps the story row's revision, not the deployment's.
+  **Why:** A story-scope erasure only reaches the story's own policies (the reference index is scoped by `story_id`). It already holds the story row, so it neither contends with nor inverts the deployment lock.
+  **Issue:** #469
+- **Decision (Discretion):** The revisions are counters (bigint), like `config_revision` and `timeline_revision`.
+  **Why:** They are consistent with the existing revisions. After a restore and reapply, a counter value maps back to the same erasure's redaction, so a pre-restore cached entry under that value already carries the redacted text. The general ABA risk of counters across a restore is the same one `config_revision` already has, and is not new here.
+  **Issue:** #469
+- **Decision (Discretion):** The cross-process regression is tested by restoring the pre-erasure `_EFFECTIVE` entries after the erasure (the state of a process that never observed it), not by spawning a second OS process.
+  **Why:** This proves that correctness comes from the key moving in the database rather than from any in-process invalidation, without adding subprocess orchestration to an integration test.
+  **Issue:** #469
+- **Note:** The migration is numbered 0066 (revises 0065). A parallel worktree that also adds a migration would collide on the number or on `down_revision`, and the orchestrator should renumber on cherry-pick if so.
+  **Issue:** #469

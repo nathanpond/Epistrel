@@ -8007,3 +8007,10 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision (orchestrator):** the six floor misses in the first live exit eval report (`docs/evals/775d2c4f43f3-2026-10-20.md`) are filed as `needs-triage` bugs (#459–#462, #464, #465). #157 delivers the sets, the suites and the report, and its AC do not require every floor to pass on the reference model. #134's AC3 (the exit eval report) is delivered as a report whose rows do not all pass, so #134 is reported partial until the owner triages those bugs.
   **Why:** a floor miss is a measurement of the engine and the model, not a gap in the harness. Whether M4 ships with the misses is the owner's call.
   **Issue:** #157, #134, #459–#462, #464, #465
+
+## Owner decisions — 2026-10-20
+
+- **Decision (owner):** the owner approved every labeled eval set as authored: claim_detection, consolidation, entailment, generation_conformance, importance, judge_calibration, retrieval, salience, scenarios and structured_output. The orchestrator recorded it on the owner's instruction in this session ("Approved: record it"): each `PROVENANCE.md` reads `approved by owner 2026-10-20`. `EPISTREL_REQUIRE_APPROVED_SETS=1 --check-sets` passes. This clears the 2026-10-20 blocker on #157, so #157 is unblocked and joins PR #426's `Closes`.
+  **Issue:** #157, #158
+- **Open, to discuss with the owner:** how #158 ends (NFR-QUAL-14 unproven on the reference model), and whether M4 merges with #134's six floor misses and #153's perf misses. PR #426 is not merged until both are settled.
+  **Issue:** #158, #134, #153

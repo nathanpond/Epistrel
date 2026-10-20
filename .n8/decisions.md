@@ -8119,3 +8119,38 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 
   #447 is labelled `blocked` + `needs-owner-action` and is not part of the PR's `Closes`.
   **Issue:** #447
+- **Decision (Discretion):** #459's fix numbers the extraction request's beats `0..n-1` (not their turn indexes) and maps markers back through `by_index`, with no fallback to the raw marker. A one-beat request accepts any marker. An unknown marker, or a marker whose beat does not hold the quoted span, goes to the single shown beat that holds the span; when none or several do, the claim is dropped with a `WARNING` carrying counts and the request's markers only (invariant 3: no claim text).
+  **Why:** the issue's three options combined: 0-based numbering matches how the model answers, the one-beat rule covers a model that still answers with another number, and the span rescue plus the warning means a correct claim is never silently dropped. A metric was not added (no new metric family for one log line).
+  **Issue:** #459
+- **Decision (Discretion):** `extraction.j2` now says the beat index is "the number in square brackets before the beat, starting at 0". Prompt/template tests stay green.
+  **Issue:** #459
+- **Decision (Discretion):** #464's length is enforced on the render, not on the composed message. Each validated render's trailing beats past the requested length are dropped before verification (`render.hold_length`), so canon and the message stay the same text. Trimming the composed message at a sentence boundary was rejected: it would commit beats, as canon, that the player never sees in the message.
+  **Why:** FR-RESP-3 (length honoured) and FR-RESP-8 (the message is built from the verified beats). Dropping whole beats is equivalent to the model answering fewer, so nothing unverified or unseen is committed.
+  **Issue:** #464
+- **Decision (Discretion):** the hold counts only the beats the output viewpoint receives (`think`/`latent` are free for a character viewpoint), at four characters a token and the requested budget ×1.0 (E-06's tolerance of ×1.25 absorbs the assembly's labels). A character render always keeps its beats up to its first `say`/`do` (FR-TURN-1); a narrator render keeps its first beat. It never cuts inside a beat, because declared propositions have no spans.
+  **Issue:** #464
+- **Decision (Discretion):** the render prompt gets a fixed length line (`GenerationInputs.length_target`, content class `constraint`, about 0.75 words a token, at least 10 words) in the character render only. The narrator template is unchanged.
+  **Issue:** #464
+- **Decision (Discretion):** the polish length guard is now `min(LENGTH_FACTOR × draft, max(draft, requested length))`. An over-long polish takes the existing `length` fallback (deterministic assembly, `composition_fallback`). Polish `max_tokens` is unchanged, so the JSON is not cut.
+  **Issue:** #464
+- **Decision (Rule 1):** the extraction call's built-in `max_tokens` went from 1,000 to `MAX_COMPLETION_TOKENS` (4,000). The schema allows `EXTRACTION_MAX_CLAIMS` = 50 claims (about 3,500 tokens pretty-printed), so a long render's full answer was cut at `length`, which is invalid structure, and that produced `extraction_degraded`. A route's own params still win. The evidence is indirect: the live run kept no per-call outcomes, and the re-run will confirm.
+  **Issue:** #464
+- **Decision (owner, applied):** E-06's temperature-0 repeat compares the render call's output (`structured_turns.render_output`: rendered beats, a repaired beat by its `render_rejected` attempt-0 text), not the composed message. docs/04's E-06 entry says so. The floor and the set are unchanged.
+  **Issue:** #464
+- **Deferred to M9 (model):** `composition_fallback` from the model's beat content (action prose in `say` beats), the repair ladder's remaining `repair_deterministic`/`safe_fallback` on the reference model, `latent_unnormalized`, `model_unavailable`, server-side temperature-0 nondeterminism, and a single over-long first action beat.
+  **Issue:** #464
+- **Decision (owner, applied):** E-07's `nfr_qual_5.valid_after_retry` is scored by `render_valid(model_calls)`: the render's own attempts (the turn's first `generation` call, from attempt 1 up to the next call's attempt 1) end in an `ok` attempt. This follows the owner's decision on #465 and matches #437's smoke-scorer decision. `structure_problems` stays E-06's check, and E-07 reports it in the case detail only.
+  **Why:** NFR-QUAL-5 measures the model's structured-call validity (invalid_output → retry → valid). Verification and repair outcomes are measured elsewhere.
+  **Issue:** #465
+- **Decision (Discretion):** a turn that raises `model_unavailable` for a reason other than `invalid_structure` (e.g. `age_unrepaired`, timeouts) stays a miss for `valid_after_retry`. No `model_calls` are available from the exception, and #134's rule is that a model error fails the case. This is the old behaviour, now stated in the docstring.
+  **Issue:** #465
+- **Decision (Discretion):** "the render" is the turn's first `generation` call, the same assumption `e07.first_attempt_valid` already made. The E-07 cases have the player speak, so no narrator renders first.
+  **Issue:** #465
+- **Decision (Rule 1):** the full suites at `3523b35` and `92aece4` each failed one test in code no fix had touched:
+  - `test_bitemp`'s complement (`discarded_then_back > 0`) drew no truncate/untruncate pair.
+  - The offboarding framework-timeout test's `max_runtime_s=1.0` ended the job before a loaded host had deleted the stories.
+
+  The fixes: an `@example` that always yields 3 discarded-then-back versions and covers every step kind (probed in process), and a 10 s cap. Both are #446's flake class.
+  **Issue:** #446
+- **Decision (Rule 3):** cherry-picking #459 onto #461 conflicted in `orchestrator/verify/extraction.py`, because #461 renamed `_locate` to `locate_quote`. Resolved by keeping #459's located-beat flow, with `locate_quote` at both call sites. The repo gates, the merged extraction, salience and length tests (31), and `tests/gates tests/test_*.py` (1531) pass.
+  **Issue:** #459, #461

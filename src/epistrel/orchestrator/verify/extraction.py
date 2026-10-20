@@ -415,7 +415,9 @@ def _resolve(
         span = locate_quote(beat.text, item.span)
         if span is not None or len(shown) == 1:
             return key, beat, span
-    hits = [(k, b, s) for k, b in shown.items() if (s := locate_quote(b.text, item.span)) is not None]
+    hits = [
+        (k, b, s) for k, b in shown.items() if (s := locate_quote(b.text, item.span)) is not None
+    ]
     if len(hits) == 1:
         return hits[0]
     return None if beat is None else (key, beat, None)

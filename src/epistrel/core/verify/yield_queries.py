@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, field_validator
 from sqlalchemy import Integer, and_, case, cast, delete, func, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
@@ -493,7 +493,7 @@ class GateRequest(BaseModel):
         max_length=170,
         description="The predicate shape key: `layer|cardinality|temporal|polarity`.",
     )
-    threshold: float = Field(
+    threshold: StrictFloat = Field(
         ge=0.0,
         le=1.0,
         description="The proposed threshold: a claim of the shape escalates when its "

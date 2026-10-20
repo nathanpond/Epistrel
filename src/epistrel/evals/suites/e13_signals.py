@@ -18,15 +18,24 @@ fingerprint (``structured``, ``gated``):
   rows state ``uncalibrated``;
 - ``nfr_qual_15.feedback_correlation``: where users' ratings exist for a fingerprint
   (``Engine.feedback_aggregates(group_by=fingerprint)``, read once in ``setup``; FR-FB-3), the
-  Spearman correlation (average ranks, no p-value) between the run's mean voice score and the
+  Spearman correlation (average ranks, no p-value) between the judge's mean voice score and the
   mean rating, over the fingerprints both have; below five fingerprints it is
   ``insufficient_data`` (no value). An eval's own scratch stories are never rated, so this reads
   the ratings of the database the run uses.
+
+  One run judges only two fingerprints, so the judge's means are **pooled across the committed
+  reports** (#463): each report's embedded summary lists its judge-based rows per fingerprint
+  (``report.judged_means``; E-13 tags its rows with their fingerprint), ``setup`` reads the
+  voice rows of every report in ``reports_dir`` (``docs/evals``, the files ``INDEX.md`` is built
+  from), and the correlation pools them with this run's own, weighted by n. A report committed
+  before #463 has no such list and adds nothing. The judge's voice scores are uncalibrated in
+  every run (no calibration set in M4), so the pooled means are too.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from epistrel.core.feedback_reporting import FeedbackGroupBy
@@ -34,6 +43,7 @@ from epistrel.core.quality import signals
 from epistrel.evals.gate import Direction, Metric, Rule
 from epistrel.evals.judging import script_score
 from epistrel.evals.metrics import mean_ci, spearman, wilson
+from epistrel.evals.report import read_summary, report_files
 from epistrel.evals.suites import (
     Aggregate,
     CaseModel,
@@ -78,6 +88,41 @@ def metric_id(config: str, signal: str) -> str:
 def unit(score: int) -> float:
     """A 1-5 score as 0-1."""
     return (score - 1) / 4
+
+
+type Pooled = dict[str, tuple[float, int]]
+"""Fingerprint -> (sum of the judge's 0-1 voice scores, how many)."""
+
+
+def pool(into: Pooled, fingerprint: str, mean: float, n: int) -> None:
+    """Add ``n`` scores of mean ``mean`` to ``fingerprint``'s pool."""
+    total, count = into.get(fingerprint, (0.0, 0))
+    into[fingerprint] = (total + mean * n, count + n)
+
+
+def committed_voice_means(reports_dir: Path) -> Pooled:
+    """The judge's voice-consistency means per fingerprint in the committed reports'
+    embedded summaries (#463), pooled by n; a report without them adds nothing."""
+    found: Pooled = {}
+    for path in report_files(reports_dir):
+        summary = read_summary(path) or {}
+        for row in _voice_rows(summary.get("judged") or []):
+            pool(found, row["fingerprint"], float(row["mean"]), int(row["n"]))
+    return found
+
+
+def _voice_rows(rows: Iterable[Mapping[str, Any]]) -> Iterable[Mapping[str, Any]]:
+    for row in rows:
+        metric = str(row.get("metric", ""))
+        if (
+            metric.startswith("nfr_qual_15.")
+            and metric.endswith(".voice_consistency")
+            and isinstance(row.get("fingerprint"), str)
+            and isinstance(row.get("mean"), int | float)
+            and isinstance(row.get("n"), int)
+            and row["n"] > 0
+        ):
+            yield row
 
 
 def feedback_correlation(judged: Mapping[str, float], ratings: Mapping[str, float]) -> Value:
@@ -151,17 +196,24 @@ class E13Suite(Suite):
         "calibration set in M4, so they are uncalibrated.",
     )
 
-    def __init__(self) -> None:
+    def __init__(self, reports_dir: Path | None = None) -> None:
+        from epistrel.evals.check import REPORTS_DIR
+
         self.ratings: dict[str, float] = {}
+        self.reports_dir = REPORTS_DIR if reports_dir is None else reports_dir
+        """Where the committed reports are, whose judge means the correlation pools (#463)."""
+        self.committed: Pooled = {}
 
     async def setup(self, engine: Engine, ctx: RequestContext) -> None:
-        """Read users' mean rating per fingerprint (FR-FB-3) for the correlation."""
+        """Read users' mean rating per fingerprint (FR-FB-3), and the committed reports'
+        judge means per fingerprint (#463), for the correlation."""
         found = await engine.feedback_aggregates(ctx, FeedbackGroupBy.FINGERPRINT)
         self.ratings = {
             g.key: g.mean_rating
             for g in found.groups
             if g.key is not None and g.mean_rating is not None
         }
+        self.committed = committed_voice_means(self.reports_dir)
 
     async def evaluate(self, ctx: CaseContext, case: CaseModel) -> Outcome:
         assert isinstance(case, ScenarioCase)  # noqa: S101 - load() validated it
@@ -212,19 +264,29 @@ class E13Suite(Suite):
                 )
         return found
 
-    def correlation(self, outcomes: Sequence[Outcome], model: str) -> Value:
-        """The Spearman correlation of the judge's mean voice score with users' mean rating, per
-        fingerprint both have (``Value(None, n)`` below ``MIN_FINGERPRINTS``)."""
-        from epistrel.evals.runner import run_fingerprint
-
+    def own_voice_means(self, outcomes: Sequence[Outcome], model: str) -> Pooled:
+        """This run's judge voice scores (0-1) per configuration fingerprint."""
         values = self._values(outcomes)
-        judged: dict[str, float] = {}
+        found: Pooled = {}
         for config in CONFIGS:
-            scores = values.get(metric_id(config, "voice_consistency")) or []
+            scores = [unit(v) for v in values.get(metric_id(config, "voice_consistency")) or []]
             if scores:
-                key = run_fingerprint(model, CONFIG_DIALS[config])
-                judged[key] = sum(scores) / len(scores)
-        return feedback_correlation(judged, self.ratings)
+                pool(found, _fingerprint(model, config), sum(scores) / len(scores), len(scores))
+        return found
+
+    def pooled_voice_means(self, outcomes: Sequence[Outcome], model: str) -> dict[str, float]:
+        """The judge's mean voice score per fingerprint: this run's pooled with the committed
+        reports' (#463), weighted by n."""
+        pooled = dict(self.committed)
+        for key, (total, n) in self.own_voice_means(outcomes, model).items():
+            pool(pooled, key, total / n, n)
+        return {key: total / n for key, (total, n) in pooled.items() if n}
+
+    def correlation(self, outcomes: Sequence[Outcome], model: str) -> Value:
+        """The Spearman correlation of the judge's mean voice score (pooled across the run and
+        the committed reports, #463) with users' mean rating, per fingerprint both have
+        (``Value(None, n)`` below ``MIN_FINGERPRINTS``)."""
+        return feedback_correlation(self.pooled_voice_means(outcomes, model), self.ratings)
 
     def aggregate(self, outcomes: Sequence[Outcome]) -> Mapping[str, Aggregate]:
         found: dict[str, Aggregate] = {}
@@ -268,17 +330,31 @@ class E13Suite(Suite):
                 interval = wilson(hits, len(seen))
             if interval is not None:
                 metrics[metric_key] = {"ci95": list(interval)}
+        for config in CONFIGS:
+            for signal in SCORED:
+                # #463: the judged rows name their fingerprint, so a later run can pool them.
+                fields = dict(metrics.get(metric_id(config, signal), {}))
+                fields["fingerprint"] = _fingerprint(model, config)
+                metrics[metric_id(config, signal)] = fields
         found = self.correlation(outcomes, model)
+        own = set(self.own_voice_means(outcomes, model))
+        rated = set(self.ratings)
+        from_run = len(own & rated)
+        from_reports = len((set(self.committed) - own) & rated)
         notes = [
             f"E-13 fingerprint `{config}`: `{_fingerprint(model, config)}`." for config in CONFIGS
         ]
+        sources = (
+            f"{from_run} from this run, {from_reports} more from {len(self.committed)} "
+            "fingerprint(s) judged in the committed reports"
+        )
         notes.append(
             "E-13 feedback correlation: "
             + (
-                f"Spearman {found.value:.2f} over {found.n} fingerprints."
+                f"Spearman {found.value:.2f} over {found.n} fingerprints ({sources})."
                 if found.value is not None
                 else f"insufficient data ({found.n} fingerprint(s) with both a judge score and "
-                f"users' ratings; {MIN_FINGERPRINTS} needed)."
+                f"users' ratings: {sources}; {MIN_FINGERPRINTS} needed)."
             )
         )
         return Summary(metrics=metrics, notes=notes)
@@ -302,7 +378,9 @@ __all__ = [
     "CORRELATION",
     "MIN_FINGERPRINTS",
     "E13Suite",
+    "committed_voice_means",
     "feedback_correlation",
     "metric_id",
+    "pool",
     "unit",
 ]

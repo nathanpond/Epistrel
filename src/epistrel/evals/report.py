@@ -92,6 +92,9 @@ class MetricResult(BaseModel):
     Wilson for a judge's preference rate, normal for a mean score); ``None`` when not given."""
     judge_based: bool = False
     """The value comes from the quality judge: an uncalibrated judge makes it ``report_only``."""
+    fingerprint: str | None = None
+    """The configuration fingerprint a per-configuration row measured (E-13's rows, #463);
+    ``None`` for a row of the run's own fingerprint or of no single configuration."""
 
     @classmethod
     def of(cls, metric: Metric, judgement: Judgement) -> MetricResult:
@@ -324,7 +327,25 @@ def summary(report: Report) -> dict[str, Any]:
         "verdict": report.verdict.value,
         "suites": {s.name: s.verdict.value for s in report.suites},
         "requirements": requirement_verdicts(report),
+        "judged": judged_means(report),
     }
+
+
+def judged_means(report: Report) -> list[dict[str, Any]]:
+    """Every judge-based row that measured a named configuration fingerprint, with its mean and
+    n (#463): what a later run pools across the committed reports, e.g. E-13's feedback
+    correlation, which needs more fingerprints than one run judges."""
+    return [
+        {
+            "metric": m.id,
+            "fingerprint": m.fingerprint,
+            "mean": m.mean,
+            "n": m.sample_size,
+        }
+        for s in report.suites
+        for m in s.metrics
+        if m.judge_based and m.fingerprint is not None and m.mean is not None
+    ]
 
 
 def requirement_verdicts(report: Report) -> dict[str, str]:

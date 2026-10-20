@@ -33,7 +33,7 @@ from datetime import datetime
 from typing import Any
 
 import pytest
-from hypothesis import HealthCheck, given, settings
+from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
@@ -309,6 +309,19 @@ def test_bitemp(pg_url: str) -> None:
         suppress_health_check=[HealthCheck.function_scoped_fixture, HealthCheck.too_slow],
     )
     @given(history=steps)
+    # The complement needs a version a truncation discarded and an untruncation brought back;
+    # a random draw does not guarantee one, so this example always does (#446's flake class).
+    @example(
+        history=[
+            ("commit", 0, 0, 1, 2, False),
+            ("commit", 1, 1, 3, 2, False),
+            ("supersede", 0, 2, False),
+            ("retcon", 0, 1),
+            ("double", 0, 0, 1, 5),
+            ("truncate", 0),
+            ("untruncate",),
+        ]
+    )
     def monotonic(history: list[tuple[Any, ...]]) -> None:
         asyncio.run(_example(pg_url, history, tally))
 

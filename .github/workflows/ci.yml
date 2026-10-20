@@ -131,6 +131,9 @@ jobs:
     # tests/property and tests/chaos (about 10.5 min of tests on the runner) and the scale
     # smoke (P-01, P-02, P-06 on the 1k fixture, about 5 min; no census) run in shards of their
     # own, leaving `rest` at about 7.5 min of tests.
+    # #157/#158: the eval suites' tests (tests/eval about 12 min, tests/evals about 4 min on the
+    # runner) took `rest` past its 25 minutes, so they run in an `eval` shard, and the stub eval
+    # run is a job of its own (`evals` below).
     name: test (${{ matrix.shard.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -150,8 +153,10 @@ jobs:
             paths: tests/property tests/chaos
           - name: perf-scale
             paths: tests/perf/test_p_01.py tests/perf/test_p_02.py tests/perf/test_p_06.py
+          - name: eval
+            paths: tests/eval tests/evals
           - name: rest
-            paths: tests --ignore=tests/conformance --ignore=tests/integration --ignore=tests/property --ignore=tests/chaos --ignore=tests/perf/test_p_01.py --ignore=tests/perf/test_p_02.py --ignore=tests/perf/test_p_06.py
+            paths: tests --ignore=tests/conformance --ignore=tests/integration --ignore=tests/property --ignore=tests/chaos --ignore=tests/perf/test_p_01.py --ignore=tests/perf/test_p_02.py --ignore=tests/perf/test_p_06.py --ignore=tests/eval --ignore=tests/evals
     steps:
       - uses: actions/checkout@v7
         with:
@@ -193,18 +198,32 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 1
+
+  evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || '' }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v10.2.0  # exact: setup-uv publishes no floating major tag past v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.14"
+          enable-cache: true
+      - run: uv sync --frozen
       # The eval harness on the stub (#134, NFR-QUAL-8): every registered suite, two seeds, scripted
       # per case, through scratch stories on a throwaway PostgreSQL (testcontainers, like the suite);
       # a seeded sample of 100 cases per suite (#157's full sets run locally) keeps it in budget.
       # No real model is ever called in CI (docs/evals/README.md). The step fails on a harness error
       # (a malformed labeled set, a suite that cannot run, a write outside its scratch stories) and,
       # with --fail-on-gate, when a suite marked ci_gate misses its deterministic stub floors. One
-      # shard runs it.
+      # job of its own, outside the test matrix (#157/#158 grew it past a shard's budget).
       - name: evals (stub)
-        if: matrix.shard.name == 'rest'
         run: uv run python -m epistrel.evals run --adapter stub --all --seeds 2 --sample 100 --fail-on-gate
       - name: upload the stub eval report
-        if: always() && matrix.shard.name == 'rest'
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: evals-stub-report
@@ -263,20 +282,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     if: always()
-    needs: [lint, types, test, coverage, docker]
+    needs: [lint, types, test, evals, coverage, docker]
     steps:
       - name: Summarise
         env:
           LINT: ${{ needs.lint.result }}
           TYPES: ${{ needs.types.result }}
           TEST: ${{ needs.test.result }}
+          EVALS: ${{ needs.evals.result }}
           COVERAGE: ${{ needs.coverage.result }}
           DOCKER: ${{ needs.docker.result }}
         run: |
           printf '%s\n' '| job | result |' '|---|---|' \
-            "| lint | $LINT |" "| types | $TYPES |" "| test | $TEST |" "| coverage | $COVERAGE |" \
+            "| lint | $LINT |" "| types | $TYPES |" "| test | $TEST |" "| evals | $EVALS |" \
+            "| coverage | $COVERAGE |" \
             "| docker | $DOCKER |" >> "$GITHUB_STEP_SUMMARY"
-          for r in "$LINT" "$TYPES" "$TEST" "$COVERAGE" "$DOCKER"; do
-            [ "$r" = "success" ] || { echo "gate: a job did not succeed ($LINT/$TYPES/$TEST/$COVERAGE/$DOCKER)"; exit 1; }
+          for r in "$LINT" "$TYPES" "$TEST" "$EVALS" "$COVERAGE" "$DOCKER"; do
+            [ "$r" = "success" ] || { echo "gate: a job did not succeed ($LINT/$TYPES/$TEST/$EVALS/$COVERAGE/$DOCKER)"; exit 1; }
           done
           echo "gate: all jobs succeeded"

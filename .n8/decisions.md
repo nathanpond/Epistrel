@@ -7989,6 +7989,12 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision (Rule 1):** the judge module is `epistrel.evals.judging`, not `judge`. Importing a submodule named `judge` replaced the package's re-exported `gate.judge` function, which broke `from epistrel.evals import judge` in `tests/evals/test_harness.py`.
   **Issue:** #158
 
+- **Decision (Rule 3):** CI's `test (rest)` shard was cancelled at its 25-minute timeout on every run from `301aeed` on. The runner log at `fe2d5a3` shows `tests/eval` taking about 12 minutes and `tests/evals` about 4 (#157's and #158's suite tests). The stub eval step after it went from about 40 s to over 6 minutes once #157's suites joined `--all`. `tests/eval` and `tests/evals` now run in a new `eval` shard. The stub eval run is a job of its own (`evals`, 30 minutes), and `gate` needs it. `tests/test_workflows.py`'s partition guard passes unchanged.
+  **Why:** a timed-out shard reads as red, and raising every shard's timeout would hide the next growth. A shard and a job keep the per-shard budget honest.
+  **Issue:** #157, #158, #331
+- **Decision (left to the owner):** CodeQL reports one new high alert, #3 (`py/clear-text-logging-sensitive-data`, `src/epistrel/cli.py:177`). It is the same `print(derive(key))` the owner dismissed as won't-fix on #332 (alert #2, line 168), re-raised because M4's `evals` dispatch in `main()` moved the line. Dismissing it was refused by this session's permission mode, so it stays open for the owner. CodeQL is not a required check (`main` requires only `gate`).
+  **Issue:** #332
+
 ## Blocker — 2026-10-20
 
 - **Blocker:** #157 is built, but its sets wait on the owner's approval. Its AC requires "owner-approved sets", recorded by a commit that turns each `PROVENANCE.md`'s `approved by owner: pending` into `approved by owner YYYY-MM-DD`. `--check-sets` allows `pending` on branches and fails on `main`, so merging M4 before that approval would turn `main`'s CI red. The owner reviews `docs/evals/sets-digest.md`. #157 is labelled `blocked` + `needs-owner-action` and stays out of the PR's `Closes` list. The **M4 merge waits** on it.

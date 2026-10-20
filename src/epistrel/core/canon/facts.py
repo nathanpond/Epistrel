@@ -1103,6 +1103,23 @@ class FactRef:
     entities: tuple[str, ...]
 
 
+def _visibility_key(raw: Any) -> Any:
+    """A hashable key equal for equal visibility documents: the usual ``{scope}`` /
+    ``{scope, characters}`` shapes as a tuple, anything else as its canonical JSON."""
+    if isinstance(raw, dict) and set(raw) <= {"scope", "characters"}:
+        characters = raw.get("characters", _ABSENT)
+        if isinstance(characters, list) and all(isinstance(c, str) for c in characters):
+            characters = tuple(characters)
+        if isinstance(raw.get("scope"), str) and (
+            characters is _ABSENT or characters is None or isinstance(characters, tuple)
+        ):
+            return (raw.get("scope"), characters)
+    return json.dumps(raw, sort_keys=True)
+
+
+_ABSENT = object()
+
+
 async def canon_refs(
     conn: AsyncConnection, story_id: str, *, through_position: tuple[int, int] | None = None
 ) -> list[FactRef]:
@@ -1127,11 +1144,11 @@ async def canon_refs(
         .where(f.c.story_id == story_id, *_open(f, None, through_position))
         .order_by(f.c.valid_from.nulls_first(), f.c.id)
     )
-    parsed: dict[str, Visibility] = {}
+    parsed: dict[Any, Visibility] = {}
     found: list[FactRef] = []
     for row in await conn.execute(query):
         raw = row.visibility
-        key = json.dumps(raw, sort_keys=True)
+        key = _visibility_key(raw)
         visibility = parsed.get(key)
         if visibility is None:
             visibility = parsed[key] = Visibility.model_validate(raw)

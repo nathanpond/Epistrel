@@ -308,3 +308,165 @@ async def test_shadow_samples_expire_after_their_retention(engine: AsyncEngine) 
         swept = await sweep_retention(engine)
         assert swept["extraction_shadow"] >= 1 - left
         assert await scalar(engine, count, s=t.story_id) == left
+
+
+# -- cost: the protected indexes read the canon once per snapshot (#452) ----------------------
+
+OBJECTIVE_FACTS = 6
+"""Shared facts every viewpoint reads: the canon the indexes must not decode per speaker."""
+
+
+async def _canon_story(engine: AsyncEngine) -> ds.Tavern:
+    """The tavern with ``OBJECTIVE_FACTS`` shared facts (Marcus holds each of as many items)
+    and one fact only Marcus may read (the ring)."""
+    t = await ds.tavern_story(engine)
+    async with engine.begin() as conn:
+        items = [
+            await _store_entity(conn, t.story_id, f"trinket {n}") for n in range(OBJECTIVE_FACTS)
+        ]
+    for item in items:
+        await commit(
+            engine,
+            t.story_id,
+            Proposition(
+                subject_id=t.marcus,
+                predicate_id=ds.HOLDS,
+                object_id=item,
+                valid_time=Interval.of(0, None),
+            ),
+        )
+    await commit(
+        engine,
+        t.story_id,
+        Proposition(
+            subject_id=t.marcus,
+            predicate_id=ds.HOLDS,
+            object_id=t.ring,
+            valid_time=Interval.of(0, None),
+        ),
+        visibility=Visibility(scope="characters", characters=(t.marcus,)),
+    )
+    return t
+
+
+async def _next_turn(engine: AsyncEngine, story_id: str) -> int:
+    """The position a turn played now reads through: ``(next_turn_index, 0)``."""
+    return int(
+        await scalar(engine, "SELECT next_turn_index FROM stories WHERE id = :s", s=story_id)
+    )
+
+
+async def _store_entity(conn: AsyncConnection, story_id: str, name: str) -> str:
+    from epistrel.core.propositions import store
+
+    return await store.add_entity(conn, story_id, "item", name)
+
+
+class _Counts:
+    """Calls counted through monkeypatched module functions."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from epistrel.core.canon import facts as canon
+        from epistrel.core.projections import structured as projections
+        from epistrel.core.resolution import context
+
+        self.decoded = 0
+        self.relationships = 0
+        self.indexes = 0
+        fact_of, views, load = canon._fact_of, projections.relationships_views, context.load_index
+
+        def counted_fact_of(row: Any, **extra: Any) -> Any:
+            self.decoded += 1
+            return fact_of(row, **extra)
+
+        async def counted_views(*args: Any, **kwargs: Any) -> Any:
+            self.relationships += 1
+            return await views(*args, **kwargs)
+
+        async def counted_load(*args: Any, **kwargs: Any) -> Any:
+            self.indexes += 1
+            return await load(*args, **kwargs)
+
+        monkeypatch.setattr(canon, "_fact_of", counted_fact_of)
+        monkeypatch.setattr(projections, "relationships_views", counted_views)
+        monkeypatch.setattr(context, "load_index", counted_load)
+
+
+async def test_detection_env_reads_canon_once_per_snapshot(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NFR-PERF-2, NFR-PERF-4 (#452): a turn's detection environment builds three speakers'
+    protected indexes (Linda, Marcus, the narrator) and resolution contexts from one snapshot.
+    Only the versions a speaker may not read are decoded in full (the ring, for Linda and for
+    the narrator: 2), never the shared canon per speaker (it was 2 x 8 versions per speaker),
+    and the people's relationships are read once, not once per speaker. Each index is the one
+    its own build answers (``load_protected_index`` alone, same terms)."""
+    t = await _canon_story(engine)
+    turn = await _next_turn(engine, t.story_id)
+    counts = _Counts(monkeypatch)
+    async with engine.connect() as conn:
+        env = await extraction.load_env(
+            conn,
+            t.story_id,
+            StructuredReadSet(),
+            position=(turn, 0),
+            speakers=[t.linda, t.marcus],
+        )
+    assert counts.decoded == 2
+    assert counts.relationships == 1
+    async with engine.connect() as conn:
+        index = await load_index(conn, t.story_id)
+        for speaker in (t.linda, t.marcus, NARRATOR):
+            alone = await load_protected_index(
+                conn, t.story_id, speaker, index=index, through_position=(turn, 0)
+            )
+            shared = env.protected_for(speaker)
+            assert alone is not None
+            assert shared is not None
+            assert shared.digest == alone.digest
+    linda = env.protected_for(t.linda)
+    marcus = env.protected_for(t.marcus)
+    assert linda is not None
+    assert marcus is not None
+    assert [term.folded for term in linda.terms] == ["ring"]
+    assert marcus.terms == ()
+
+
+async def test_rebase_recheck_rebuilds_each_index_once(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NFR-PERF-3 (#452): the rebase re-check runs under the story lock. A turn that built the
+    same indexes three times (its check, its composition, a repair re-check) is re-checked by
+    rebuilding each distinct index once from one canon read and one entity index: 2 decoded
+    versions (the ring, for Linda and the narrator), not 3 x 3 x 2 reads of the whole canon.
+    It still fails once one of them changed."""
+    t = await _canon_story(engine)
+    turn = await _next_turn(engine, t.story_id)
+    read_set = StructuredReadSet()
+    for _ in range(3):
+        async with engine.connect() as conn:
+            await extraction.load_env(
+                conn, t.story_id, read_set, position=(turn, 0), speakers=[t.linda, t.marcus]
+            )
+    assert len(protected.recorded(read_set)) == 9
+    op = SimpleNamespace(read_set_source=read_set)
+    counts = _Counts(monkeypatch)
+    async with engine.connect() as conn:
+        assert await protected.recheck(conn, op)  # type: ignore[arg-type]
+    assert counts.decoded == 2
+    assert counts.indexes == 1
+    async with engine.begin() as conn:
+        locket = await _hidden_entity(conn, t.story_id)
+    await commit(
+        engine,
+        t.story_id,
+        Proposition(
+            subject_id=t.marcus,
+            predicate_id=ds.HOLDS,
+            object_id=locket,
+            valid_time=Interval.of(0, None),
+        ),
+        visibility=Visibility(scope="characters", characters=(t.marcus,)),
+    )
+    async with engine.connect() as conn:
+        assert not await protected.recheck(conn, op)  # type: ignore[arg-type]

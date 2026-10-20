@@ -84,6 +84,12 @@ async def load_time_basis(conn: AsyncConnection, story_id: str) -> TimeBasis:
     return TimeBasis(minute_zero=int(row.story_minute_zero), epoch=row.story_epoch)
 
 
+SceneShare = tuple[frozenset[str] | None, tuple[Relation, ...]]
+SharedContext = dict[tuple[str, int], SceneShare]
+"""What every speaker's context at one turn shares (#452): ``(story_id, as_of)`` to the
+scene's entities present and the people's relationships, read once for a turn's speakers."""
+
+
 async def load_context(
     conn: AsyncConnection,
     story_id: str,
@@ -92,11 +98,14 @@ async def load_context(
     speaker: str,
     index: EntityIndex | None = None,
     lookup: KeyedLookup | None = None,
+    shared: SharedContext | None = None,
 ) -> ResolutionContext:
     """The ``ResolutionContext`` of a text spoken by ``speaker`` (an entity id, ``narrator`` or
     ``player``) at ``position`` (see the module docstring). The scene and the relationships are
     read through ``lookup`` (#136's ``KeyedLookup``: recorded in its read set as retrieved
-    rows), or through a lookup of a read set of its own when none is given."""
+    rows), or through a lookup of a read set of its own when none is given. They do not depend
+    on the speaker: ``shared`` keeps them for the other speakers of the same snapshot and
+    lookup (a turn's detection environment, #452), so they are read once, not per speaker."""
     lookup = lookup or KeyedLookup(conn, StructuredReadSet())
     index = index or await load_index(conn, story_id)
     player = await conn.scalar(
@@ -124,33 +133,49 @@ async def load_context(
     relations: list[Relation] = []
     if head >= 0:
         as_of = min(max(turn, 0), head)
-        try:
-            scene = await lookup.scene(story_id, as_of=as_of, viewpoint=OMNISCIENT)
-        except InvalidRequest:
-            scene = None
-        if scene is not None and scene.present:
-            present = frozenset(e.entity_id for e in scene.present)
-        people = [e.id for e in index.entries.values() if e.kind == "person"]
-        found = (
-            await lookup.relationships(story_id, people, as_of=as_of, viewpoint=OMNISCIENT)
-            if people
-            else {}
-        )
-        seen: set[tuple[str, str, str]] = set()
-        for person in people:
-            for rel in found.get(person, ()):
-                subject, obj = (
-                    (person, rel.other.entity_id)
-                    if rel.direction == "out"
-                    else (rel.other.entity_id, person)
-                )
-                key = (subject, rel.predicate, obj)
-                if key not in seen:
-                    seen.add(key)
-                    relations.append(Relation(subject, rel.predicate, obj))
+        known = None if shared is None else shared.get((story_id, as_of))
+        if known is None:
+            known = await _scene_share(lookup, story_id, as_of, index)
+            if shared is not None:
+                shared[(story_id, as_of)] = known
+        present, relations = known[0], list(known[1])
     return ResolutionContext(
         index=index, beats=beats, present=present, player_id=player_id, relations=relations
     )
+
+
+async def _scene_share(
+    lookup: KeyedLookup, story_id: str, as_of: int, index: EntityIndex
+) -> SceneShare:
+    """The scene's entities present and the relationships of the story's people as of
+    ``as_of`` (omniscient), in the order the people are indexed."""
+    present: frozenset[str] | None = None
+    try:
+        scene = await lookup.scene(story_id, as_of=as_of, viewpoint=OMNISCIENT)
+    except InvalidRequest:
+        scene = None
+    if scene is not None and scene.present:
+        present = frozenset(e.entity_id for e in scene.present)
+    people = [e.id for e in index.entries.values() if e.kind == "person"]
+    found = (
+        await lookup.relationships(story_id, people, as_of=as_of, viewpoint=OMNISCIENT)
+        if people
+        else {}
+    )
+    relations: list[Relation] = []
+    seen: set[tuple[str, str, str]] = set()
+    for person in people:
+        for rel in found.get(person, ()):
+            subject, obj = (
+                (person, rel.other.entity_id)
+                if rel.direction == "out"
+                else (rel.other.entity_id, person)
+            )
+            key = (subject, rel.predicate, obj)
+            if key not in seen:
+                seen.add(key)
+                relations.append(Relation(subject, rel.predicate, obj))
+    return present, tuple(relations)
 
 
 async def subject_timeline(
@@ -195,4 +220,11 @@ async def subject_timeline(
     return SubjectTimeline(born=born, ages=tuple(ages))
 
 
-__all__ = ["load_context", "load_index", "load_time_basis", "subject_timeline"]
+__all__ = [
+    "SceneShare",
+    "SharedContext",
+    "load_context",
+    "load_index",
+    "load_time_basis",
+    "subject_timeline",
+]

@@ -80,7 +80,12 @@ from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.propositions.model import Polarity, Proposition
 from epistrel.core.propositions.registry import Registry, load
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
-from epistrel.core.resolution.context import load_context, load_index, load_time_basis
+from epistrel.core.resolution.context import (
+    SharedContext,
+    load_context,
+    load_index,
+    load_time_basis,
+)
 from epistrel.core.resolution.entities import NARRATOR, PLAYER, ResolutionContext
 from epistrel.core.resolution.time import Position
 from epistrel.core.settings_schema import OMNISCIENT, VerifySettings
@@ -108,7 +113,12 @@ from epistrel.core.verify.normalize import (
     normalize_declared,
 )
 from epistrel.core.verify.permission import Asserter
-from epistrel.core.verify.protected import ProtectedIndex, load_protected_index, viewpoint_of
+from epistrel.core.verify.protected import (
+    CanonReads,
+    ProtectedIndex,
+    load_protected_index,
+    viewpoint_of,
+)
 from epistrel.core.verify.rules import VerdictReason
 from epistrel.observability.metrics import CLAIMS_CHECKED, CLAIMS_DETECTED
 from epistrel.orchestrator.budget import COMPOSED, TurnBudget
@@ -234,9 +244,18 @@ async def load_env(
     turn = position if isinstance(position, int) else position[0]
     contexts: dict[str, ResolutionContext] = {}
     protected: dict[str, ProtectedIndex | None] = {}
+    # The speakers share one canon read and one scene and relationships read (#452).
+    reads: CanonReads = {}
+    shared: SharedContext = {}
     for speaker in dict.fromkeys([*speakers, NARRATOR]):
         contexts[speaker] = await load_context(
-            conn, story_id, position=position, speaker=speaker, index=index, lookup=lookup
+            conn,
+            story_id,
+            position=position,
+            speaker=speaker,
+            index=index,
+            lookup=lookup,
+            shared=shared,
         )
         protected[speaker] = await load_protected_index(
             conn,
@@ -246,6 +265,7 @@ async def load_env(
             through_position=(turn, 0),
             max_terms=config.protected_index_max,
             read_set=read_set,
+            reads=reads,
         )
     scene_entity: str | None = None
     placement: dict[str, str] = {}

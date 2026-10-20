@@ -54,6 +54,7 @@ Log lines carry identifiers and counts only (invariant 3); this module logs noth
 
 from __future__ import annotations
 
+import json
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -366,7 +367,8 @@ async def _cast(conn: AsyncConnection, story_id: str) -> set[str]:
     }
 
 
-async def _check_viewpoint(conn: AsyncConnection, story_id: str, viewpoint: str) -> None:
+async def check_viewpoint(conn: AsyncConnection, story_id: str, viewpoint: str) -> None:
+    """422 ``viewpoint_unresolved`` unless ``viewpoint`` is one a canon read takes."""
     if viewpoint == OMNISCIENT or viewpoint in READER_VIEWPOINTS:
         return
     member = viewpoint.removeprefix(CHARACTER_VIEWPOINT_PREFIX)
@@ -1049,7 +1051,7 @@ async def canon(
     ``record_time`` (the record as it stood then; ``None``: the corrected record now) and
     ``through_position`` (``(turn, slot_k)``: written at or before it); ``ids`` keeps only those
     versions (#142's neighborhood seed). Ordered by ``valid_from``, then id."""
-    await _check_viewpoint(conn, story_id, viewpoint)
+    await check_viewpoint(conn, story_id, viewpoint)
     f = facts.alias("f")
     where: list[ColumnElement[bool]] = [
         f.c.story_id == story_id,
@@ -1082,6 +1084,59 @@ async def canon(
     if limit is not None:
         query = query.limit(limit)
     return [_fact_of(r) for r in await conn.execute(query)]
+
+
+@dataclass(frozen=True, slots=True)
+class FactRef:
+    """A fact version as the protected-content index needs it (#452): its id, record time,
+    visibility and the entities its proposition names (subject, object, object set and the
+    string qualifiers), without decoding the rest of the version."""
+
+    id: str
+    tx_from: datetime
+    visibility: Visibility
+    entities: tuple[str, ...]
+
+
+async def canon_refs(
+    conn: AsyncConnection, story_id: str, *, through_position: tuple[int, int] | None = None
+) -> list[FactRef]:
+    """``canon``'s omniscient read through ``through_position`` (the corrected record now), as
+    ``FactRef``s in the same order. The cost per version is a few columns, not a ``Fact``: a
+    turn reads the whole canon this way for its protected indexes (#452), and decodes in full
+    only the versions a viewpoint cannot read. Each distinct visibility document is validated
+    once."""
+    f = facts.alias("f")
+    p = propositions
+    query = (
+        select(
+            f.c.id,
+            f.c.tx_from,
+            f.c.visibility,
+            p.c.subject_id,
+            p.c.object_id,
+            p.c.object_set,
+            p.c.qualifiers,
+        )
+        .select_from(f.join(p, p.c.id == f.c.proposition_id))
+        .where(f.c.story_id == story_id, *_open(f, None, through_position))
+        .order_by(f.c.valid_from.nulls_first(), f.c.id)
+    )
+    parsed: dict[str, Visibility] = {}
+    found: list[FactRef] = []
+    for row in await conn.execute(query):
+        raw = row.visibility
+        key = json.dumps(raw, sort_keys=True)
+        visibility = parsed.get(key)
+        if visibility is None:
+            visibility = parsed[key] = Visibility.model_validate(raw)
+        entities = [str(row.subject_id)]
+        if row.object_id is not None:
+            entities.append(str(row.object_id))
+        entities += [str(x) for x in row.object_set or ()]
+        entities += [v for v in dict(row.qualifiers).values() if isinstance(v, str)]
+        found.append(FactRef(str(row.id), row.tx_from, visibility, tuple(entities)))
+    return found
 
 
 async def canon_at(
@@ -1200,11 +1255,14 @@ __all__ = [
     "FactChange",
     "FactHook",
     "FactOperation",
+    "FactRef",
     "Reading",
     "Visibility",
     "canon",
     "canon_as_recorded",
     "canon_at",
+    "canon_refs",
+    "check_viewpoint",
     "commit_fact",
     "default_authority",
     "hidden_from",

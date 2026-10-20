@@ -67,6 +67,7 @@ from epistrel.core.settings_schema import (
 )
 
 if TYPE_CHECKING:
+    from epistrel.core.canon.facts import FactRef
     from epistrel.core.events.operation import Operation
     from epistrel.core.resolution.entities import EntityIndex
 
@@ -321,6 +322,11 @@ def _names(index: EntityIndex, entity_id: str) -> list[str]:
     return [entry.canonical_name, *(alias for alias, _ in entry.aliases)]
 
 
+CanonReads = dict[tuple[str, tuple[int, int] | None], list["FactRef"]]
+"""Canon read once for several indexes (#452): ``(story_id, through_position)`` to the
+omniscient read every viewpoint's index is cut from (``canon.canon_refs``)."""
+
+
 async def load_protected_index(
     conn: AsyncConnection,
     story_id: str,
@@ -330,9 +336,17 @@ async def load_protected_index(
     through_position: tuple[int, int] | None = None,
     max_terms: int = DEFAULT_PROTECTED_INDEX_MAX,
     read_set: StructuredReadSet | None = None,
+    reads: CanonReads | None = None,
 ) -> ProtectedIndex | None:
     """``speaker``'s protected index (see the module docstring); ``None`` for an omniscient
-    speaker (nothing is hidden from it). Remembered for ``read_set``'s rebase re-check."""
+    speaker (nothing is hidden from it). Remembered for ``read_set``'s rebase re-check.
+
+    The story's canon is read once, omniscient through ``through_position``, as
+    ``canon.canon_refs`` (ids, visibility and the entities named, #452), and the viewpoint's
+    share of it kept with ``visible_to`` (``visible_clause``'s rule in Python, as
+    ``hidden_from``); only the versions hidden from the viewpoint are then read in full.
+    ``reads`` shares the first read between the indexes of one snapshot (a turn's speakers,
+    the rebase re-check's builds)."""
     from epistrel.core.canon import facts as canon
     from epistrel.core.commit.lifecycle import open_clause, thunk_columns, thunk_of
     from epistrel.core.tables import characters
@@ -346,8 +360,14 @@ async def load_protected_index(
     viewpoint = viewpoint_of(speaker, None if player is None else str(player))
     if viewpoint == OMNISCIENT:
         return None
-    every = await canon.canon(conn, story_id, through_position=through_position)
-    seen = await canon.canon(conn, story_id, through_position=through_position, viewpoint=viewpoint)
+    await canon.check_viewpoint(conn, story_id, viewpoint)
+    key = (story_id, through_position)
+    every = None if reads is None else reads.get(key)
+    if every is None:
+        every = await canon.canon_refs(conn, story_id, through_position=through_position)
+        if reads is not None:
+            reads[key] = every
+    seen = [f for f in every if canon.visible_to(f.visibility, viewpoint)]
     seen_ids = {f.id for f in seen}
     cast = {
         str(c)
@@ -355,14 +375,30 @@ async def load_protected_index(
             select(characters.c.id).where(characters.c.story_id == story_id)
         )
     }
-    known = cast | {e for f in seen for e in _entities_of(f.proposition)}
+    known = cast | {e for f in seen for e in f.entities}
     if viewpoint.startswith(CHARACTER_VIEWPOINT_PREFIX):
         known.add(viewpoint.removeprefix(CHARACTER_VIEWPOINT_PREFIX))
-    hidden_terms: list[ProtectedTerm] = []
-    hidden = sorted(
+    hidden_refs = sorted(
         (f for f in every if f.id not in seen_ids), key=lambda f: (f.tx_from, f.id), reverse=True
     )
-    for fact in hidden:
+    decoded = (
+        {
+            f.id: f
+            for f in await canon.canon(
+                conn,
+                story_id,
+                through_position=through_position,
+                ids=[f.id for f in hidden_refs],
+            )
+        }
+        if hidden_refs
+        else {}
+    )
+    hidden_terms: list[ProtectedTerm] = []
+    for ref in hidden_refs:
+        fact = decoded.get(ref.id)
+        if fact is None:  # closed between the two reads: no longer canon
+            continue
         p = fact.proposition
         texts: list[str] = []
         if p.literal is not None:
@@ -462,23 +498,38 @@ def recorded(read_set: StructuredReadSet) -> list[_Built]:
 async def recheck(conn: AsyncConnection, op: Operation) -> bool:
     """The rebase re-check (``core.readset.REBASE_CHECKS``): every protected index the turn's
     current attempt built, rebuilt against current state; ``False`` (regenerate) when one
-    changed."""
+    changed.
+
+    It runs under the story lock, so its cost is the lock's hold time (#452): each distinct
+    build (story, speaker, position, cap) is rebuilt once and compared with every digest the
+    attempt recorded for it (a turn builds the same index at its check, its composition and
+    its repair re-checks), the entity index is read once per story, and the canon once per
+    snapshot."""
     from epistrel.core.resolution.context import load_index
 
     source = op.read_set_source
     if not isinstance(source, StructuredReadSet):
         return True
+    wanted: dict[tuple[str, str, tuple[int, int] | None, int], set[str]] = {}
     for built in recorded(source):
+        key = (built.story_id, built.speaker, built.through_position, built.max_terms)
+        wanted.setdefault(key, set()).add(built.digest)
+    indexes: dict[str, EntityIndex] = {}
+    reads: CanonReads = {}
+    for (story_id, speaker, through_position, max_terms), digests in wanted.items():
+        if story_id not in indexes:
+            indexes[story_id] = await load_index(conn, story_id)
         again = await load_protected_index(
             conn,
-            built.story_id,
-            built.speaker,
-            index=await load_index(conn, built.story_id),
-            through_position=built.through_position,
-            max_terms=built.max_terms,
+            story_id,
+            speaker,
+            index=indexes[story_id],
+            through_position=through_position,
+            max_terms=max_terms,
+            reads=reads,
         )
         digest = None if again is None else again.digest
-        if digest != built.digest:
+        if digests != {digest}:
             log.debug("rebase re-check: a protected index changed")
             return False
     return True
@@ -489,6 +540,7 @@ register_rebase_check(recheck)
 
 __all__ = [
     "DEFAULT_PROTECTED_INDEX_MAX",
+    "CanonReads",
     "ProtectedIndex",
     "ProtectedTerm",
     "build_index",

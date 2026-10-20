@@ -65,10 +65,11 @@ from epistrel.core.profiles.story import ProfileOverridesPatch
 from epistrel.core.seeds import profiles as seeded_profiles
 from epistrel.core.stories import STORY_NAME_MAX, CreatedStory, StorySpec
 from epistrel.engine import Engine
-from epistrel.evals.gate import SeedTally, Verdict, gate, judge
+from epistrel.evals.gate import Rule, SeedTally, Verdict, gate, judge
 from epistrel.evals.report import Host, MetricResult, Report, SuiteResult
-from epistrel.evals.suites import CaseModel, MalformedCase, Outcome, Suite
+from epistrel.evals.suites import CaseModel, Counts, MalformedCase, Outcome, Suite
 from epistrel.orchestrator.budget import TurnBudget
+from epistrel.orchestrator.embeddings.adapter import EMBEDDING
 from epistrel.orchestrator.models import config as model_config
 from epistrel.orchestrator.models.access import ModelAccessLayer, eval_scope
 from epistrel.orchestrator.models.adapter import ModelParams
@@ -123,6 +124,9 @@ class AdapterConfig:
     base_url: str | None = None
     model: str | None = None
     api_key: str = "lm-studio"
+    embedding_model: str | None = None
+    """An embedding model at ``base_url`` (``model_config:embedding``): the retrieval suites
+    embed their stories with it; ``None``: their vector arm does not run."""
     database_url: str | None = None
     hardware: str = ""
     server_version: str = ""
@@ -361,6 +365,16 @@ async def preflight(engine: Engine, config: AdapterConfig) -> str | None:
             api_key=config.api_key,
             params=ModelParams(timeout=CALL_TIMEOUT_S),
         )
+        if config.embedding_model:
+            await model_config.write_config(
+                engine.db,
+                EMBEDDING,
+                keybox=engine.models.keybox,
+                principal=PRINCIPAL,
+                base_url=config.base_url,
+                model=config.embedding_model,
+                api_key=config.api_key,
+            )
     try:
         probe = await engine.models.probe(GENERATION.name)
     except ModelError as exc:
@@ -430,7 +444,11 @@ async def _play(suite: Suite, job: SuiteRun, case: CaseModel, seed: int) -> _Pla
 def _record_failure(job: SuiteRun, suite: Suite, played: _Played) -> None:
     if job.failures is None or played.outcome is None:
         return
-    if all(v is not False for v in played.outcome.observations.values()):
+    # A case failed when it missed a floored metric (a report-only cell such as #157's "found
+    # first by this layer" is not a failure); a suite with no floor counts every metric.
+    floored = {m.id for m in suite.metrics if m.rule is not Rule.informational}
+    watched = floored or {m.id for m in suite.metrics}
+    if all(played.outcome.observations.get(m) is not False for m in watched):
         return
     job.failures.parent.mkdir(parents=True, exist_ok=True)
     line = {
@@ -450,7 +468,7 @@ async def _play_seeds(
     suite: Suite,
     job: SuiteRun,
     cases: Sequence[CaseModel],
-    tallies: dict[str, dict[int, list[int]]],
+    tallies: dict[str, dict[int, SeedTally]],
     errors: list[str],
     latencies: list[int],
     gate_slots: asyncio.Semaphore,
@@ -465,18 +483,30 @@ async def _play_seeds(
         order = list(cases)
         random.Random(seed).shuffle(order)  # noqa: S311 - a reproducible order, not a secret
         for metric in suite.metrics:
-            tallies[metric.id][seed] = [0, 0]
+            tallies[metric.id][seed] = SeedTally(seed)
+        outcomes: list[Outcome] = []
         for played in await asyncio.gather(*(bounded(c, seed) for c in order)):
             latencies.append(played.latency_ms)
             if played.error is not None:
                 errors.append(played.error)
             if played.outcome is None:
                 continue
+            outcomes.append(played.outcome)
             for metric in suite.metrics:
                 seen = played.outcome.observations.get(metric.id)
                 if seen is not None:
-                    tallies[metric.id][seed][0 if seen else 1] += 1
+                    t = tallies[metric.id][seed]
+                    tallies[metric.id][seed] = SeedTally(
+                        seed, t.good + bool(seen), t.bad + (not seen)
+                    )
             _record_failure(job, suite, played)
+        for metric_id, found in suite.aggregate(outcomes).items():
+            if isinstance(found, Counts):
+                tallies[metric_id][seed] = SeedTally(seed, found.good, found.bad)
+            elif found.value is None:
+                tallies[metric_id][seed] = SeedTally(seed)
+            else:
+                tallies[metric_id][seed] = SeedTally(seed, found.n, 0, found.value)
 
 
 async def run_suite(suite: Suite, job: SuiteRun) -> SuiteResult:
@@ -492,9 +522,8 @@ async def run_suite(suite: Suite, job: SuiteRun) -> SuiteResult:
     if job.config.adapter == "stub":
         stub = job.engine.models.stub
         for case in cases:
-            for purpose, answer in suite.stub_answers(case).items():
-                stub.case(case.id, answer, purpose=purpose)
-    tallies: dict[str, dict[int, list[int]]] = defaultdict(dict)
+            suite.script_stub(case, stub)
+    tallies: dict[str, dict[int, SeedTally]] = defaultdict(dict)
     errors: list[str] = []
     latencies: list[int] = []
     gate_slots = asyncio.Semaphore(max(1, job.concurrency))
@@ -511,9 +540,7 @@ async def run_suite(suite: Suite, job: SuiteRun) -> SuiteResult:
             errors.append(f"teardown: {type(exc).__name__}: {exc}")
     metrics = []
     for metric in suite.metrics:
-        seed_tallies = [
-            SeedTally(seed, good, bad) for seed, (good, bad) in sorted(tallies[metric.id].items())
-        ]
+        seed_tallies = [tally for _, tally in sorted(tallies[metric.id].items())]
         metrics.append(MetricResult.of(metric, judge(metric, seed_tallies)))
     verdict = Verdict.error if errors else gate(m.verdict for m in metrics)
     return SuiteResult(

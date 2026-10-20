@@ -111,3 +111,22 @@ async def test_q_03(engine: AsyncEngine, pg_url: str, drained_embedding_jobs: No
     assert with_reflections > without
     concrete = {"Who walked past the kennel?": relevant["Who is afraid?"]}
     assert await recall((MemoryKind.EPISODIC,), concrete) == 1.0
+
+
+async def test_abstract_suite_stub_run(pg_url: str, engine: AsyncEngine) -> None:
+    """#157's ``q03`` suite over its labeled windows (``evals/sets/retrieval/abstract.jsonl``)
+    on the stub, scripted per window: with the reflection tier every abstract question finds a
+    relevant memory and the reflection itself; without it, recall is lower (the deeds rarely
+    share a word with the question). Report-only: docs/04 sets no floor for Q-03."""
+    from epistrel.evals import SUITES, Verdict
+    from epistrel.evals.suites.q03_abstract import REFLECTION_FOUND, WITH, WITHOUT
+    from tests.eval.suite_support import SETS, by_id, stub_run
+
+    suite = SUITES["q03"]
+    assert len(suite.load(SETS)) >= 60
+    result = await stub_run(pg_url, engine, suite, sample=20)
+    assert result.verdict is Verdict.report_only
+    metrics = by_id(result)
+    assert metrics[WITH].mean == 1.0
+    assert metrics[REFLECTION_FOUND].mean == 1.0
+    assert (metrics[WITHOUT].mean or 0.0) < 1.0

@@ -50,6 +50,8 @@ SUMMARY_PREFIX = "<!-- epistrel-eval-report "
 SUMMARY_RE = re.compile(r"^<!-- epistrel-eval-report (?P<json>\{.*\}) -->$", re.MULTILINE)
 INDEX_NAME = "INDEX.md"
 README_NAME = "README.md"
+DIGEST_NAME = "sets-digest.md"
+NOT_REPORTS = frozenset({INDEX_NAME, README_NAME, DIGEST_NAME})
 EM_DASH = "—"
 VERDICT_TEXT: Mapping[Verdict, str] = {
     Verdict.passed: "pass",
@@ -368,10 +370,11 @@ def read_summary(path: Path) -> dict[str, Any] | None:
 
 
 def report_files(reports_dir: Path) -> list[Path]:
-    """The committed reports: every Markdown file but the README and the index."""
+    """The committed reports: every Markdown file but the README, the index and the labeled
+    sets' review digest (#157)."""
     if not reports_dir.is_dir():
         return []
-    return sorted(p for p in reports_dir.glob("*.md") if p.name not in (INDEX_NAME, README_NAME))
+    return sorted(p for p in reports_dir.glob("*.md") if p.name not in NOT_REPORTS)
 
 
 INDEX_INTRO = """\

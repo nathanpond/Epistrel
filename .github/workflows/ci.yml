@@ -65,6 +65,15 @@ jobs:
       - name: evals-check
         run: uv run python -m epistrel.evals --check
         if: always()
+      # Labeled sets (#157): every set loads under its suite's schema and meets its size, matches
+      # its authoring module, has a PROVENANCE.md with the owner's review line, and the review
+      # digest is current. A set the owner has not approved yet passes on a branch and fails on
+      # main, so no unapproved set reaches a release.
+      - name: evals-check-sets
+        run: uv run python -m epistrel.evals --check-sets
+        if: always()
+        env:
+          EPISTREL_REQUIRE_APPROVED_SETS: ${{ github.ref == 'refs/heads/main' && '1' || '0' }}
       # Milestone gate (#37): every requirement in docs/03 is assigned to exactly one milestone in §22.
       - run: uv run python -m tools.gates check-assignment
         if: always()
@@ -185,14 +194,15 @@ jobs:
           if-no-files-found: error
           retention-days: 1
       # The eval harness on the stub (#134, NFR-QUAL-8): every registered suite, two seeds, scripted
-      # per case, through scratch stories on a throwaway PostgreSQL (testcontainers, like the suite).
+      # per case, through scratch stories on a throwaway PostgreSQL (testcontainers, like the suite);
+      # a seeded sample of 100 cases per suite (#157's full sets run locally) keeps it in budget.
       # No real model is ever called in CI (docs/evals/README.md). The step fails on a harness error
       # (a malformed labeled set, a suite that cannot run, a write outside its scratch stories) and,
       # with --fail-on-gate, when a suite marked ci_gate misses its deterministic stub floors. One
       # shard runs it.
       - name: evals (stub)
         if: matrix.shard.name == 'rest'
-        run: uv run python -m epistrel.evals run --adapter stub --all --seeds 2 --fail-on-gate
+        run: uv run python -m epistrel.evals run --adapter stub --all --seeds 2 --sample 100 --fail-on-gate
       - name: upload the stub eval report
         if: always() && matrix.shard.name == 'rest'
         uses: actions/upload-artifact@v7

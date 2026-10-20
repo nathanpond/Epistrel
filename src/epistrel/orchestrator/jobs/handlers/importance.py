@@ -124,6 +124,26 @@ def _blank(text: str) -> Any:
     return deterministic
 
 
+async def score(
+    models: ModelAccessLayer,
+    text: str,
+    kind: str,
+    *,
+    params: ModelParams = BUILT_IN_PARAMS,
+    budget: TurnBudget,
+) -> ImportanceScore | Uncertain:
+    """One memory's ``importance_scoring`` answer, exactly as the job asks for it (its inputs,
+    params and deterministic step); the caller sets the routing. #157's E-04 calls it."""
+    return await models.structured_call(
+        IMPORTANCE,
+        ImportanceScore,
+        ImportanceScoringInputs(text=text, kind=kind),
+        params=params,
+        deterministic_first=_blank(text),
+        budget=budget,
+    )
+
+
 async def _fan_out(ctx: JobContext) -> JobOutput:
     """The recurring run: enqueue the job of every story with unscored memories."""
     async with ctx.db.connect() as conn:
@@ -158,16 +178,10 @@ async def _run_story(ctx: JobContext, story_id: str) -> JobOutput:
     scores: dict[str, float] = {}
     uncertain = 0
     for memory in batch:
-        inputs = ImportanceScoringInputs(text=memory.text, kind=memory.kind.value)
         try:
             with routing(routes):
-                answer = await models.structured_call(
-                    IMPORTANCE,
-                    ImportanceScore,
-                    inputs,
-                    params=params,
-                    deterministic_first=_blank(memory.text),
-                    budget=budget,
+                answer = await score(
+                    models, memory.text, memory.kind.value, params=params, budget=budget
                 )
         except BudgetExhausted:
             break
@@ -224,6 +238,7 @@ records.register_memory_hook(on_memories_written)
 
 
 __all__ = [
+    "BUILT_IN_PARAMS",
     "IMPORTANCE",
     "IMPORTANCE_HANDLER",
     "IMPORTANCE_TASK",
@@ -235,4 +250,5 @@ __all__ = [
     "coalesce_key",
     "on_memories_written",
     "schedule_in",
+    "score",
 ]

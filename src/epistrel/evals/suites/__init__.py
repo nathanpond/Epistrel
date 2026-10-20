@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from epistrel.core.context import RequestContext
     from epistrel.engine import Engine
     from epistrel.evals.runner import CaseContext
+    from epistrel.orchestrator.models.stub import StubAdapter
 
 CASES_FILE = "cases.jsonl"
 CASE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$"
@@ -45,6 +46,26 @@ class CaseModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     id: str = Field(pattern=CASE_ID_PATTERN)
+
+
+@dataclass(frozen=True, slots=True)
+class Counts:
+    """A per-seed aggregate as good and bad observations (``Suite.aggregate``)."""
+
+    good: int
+    bad: int
+
+
+@dataclass(frozen=True, slots=True)
+class Value:
+    """A per-seed aggregate that is a value over ``n`` cases (``Suite.aggregate``); ``None``
+    when it is undefined on that seed (a constant side of a correlation)."""
+
+    value: float | None
+    n: int
+
+
+type Aggregate = Counts | Value
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,10 +89,20 @@ class Suite:
     reading_notes: ClassVar[tuple[str, ...]] = ()
     """Suite-specific scoring notes for the report's "How to read" section (#437)."""
     case_model: ClassVar[type[CaseModel]] = CaseModel
+    set_path: ClassVar[str | None] = None
+    """The labeled set's file under ``--sets-dir`` (default ``<name>/cases.jsonl``; #157's sets
+    are named by what they label: ``entailment/cases.jsonl``, ``retrieval/recall.jsonl``)."""
+    min_cases: ClassVar[int] = 1
+    """The fewest cases the committed set may hold (#157's sizes; ``--check-sets``)."""
+
+    @property
+    def set_file(self) -> str:
+        """``set_path``, else ``<name>/cases.jsonl``."""
+        return self.set_path or f"{self.name}/{CASES_FILE}"
 
     def load(self, sets_dir: Path) -> list[CaseModel]:
-        """The suite's cases from ``<sets_dir>/<name>/cases.jsonl``."""
-        path = sets_dir / self.name / CASES_FILE
+        """The suite's cases from ``<sets_dir>/<set_file>``."""
+        path = sets_dir / self.set_file
         if not path.is_file():
             raise MalformedCase(f"{self.name}: no labeled set at {path}")
         cases: list[CaseModel] = []
@@ -96,6 +127,21 @@ class Suite:
 
     def stub_answers(self, case: CaseModel) -> Mapping[str, str]:
         """Purpose → the stub's answer for ``case`` (empty: the stub's default answers)."""
+        return {}
+
+    def script_stub(self, case: CaseModel, stub: StubAdapter) -> None:
+        """Script the stub for ``case`` before a stub run: by default ``stub_answers`` through
+        ``StubAdapter.case``. A suite whose case makes several calls of one purpose with
+        different answers overrides it (``StubAdapter.when`` keyed on the case's
+        ``X-Eval-Case`` line and a needle of the request; #157)."""
+        for purpose, answer in self.stub_answers(case).items():
+            stub.case(case.id, answer, purpose=purpose)
+
+    def aggregate(self, outcomes: Sequence[Outcome]) -> Mapping[str, Aggregate]:
+        """Per-seed values of metrics that are not one boolean per case, from one seed's
+        outcomes: ``(good, bad)`` counts (micro recall over several relevant items a case) or
+        a value with the cases it covers (``(value, n)``: a rank correlation). A metric named
+        here takes this instead of the per-case tally; nothing by default."""
         return {}
 
     async def setup(self, engine: Engine, ctx: RequestContext) -> None:
@@ -126,16 +172,29 @@ def get_suites(names: Sequence[str] | None = None) -> list[Suite]:
 
 
 # The suites shipped with the engine register on import.
+from epistrel.evals.suites import e01_entailment as _e01  # noqa: E402, F401
 from epistrel.evals.suites import e02_escalation as _e02  # noqa: E402, F401
+from epistrel.evals.suites import e03_consolidation as _e03  # noqa: E402, F401
+from epistrel.evals.suites import e04_importance as _e04  # noqa: E402, F401
+from epistrel.evals.suites import e05_salience as _e05  # noqa: E402, F401
+from epistrel.evals.suites import e06_conformance as _e06  # noqa: E402, F401
+from epistrel.evals.suites import e07_structured_output as _e07  # noqa: E402, F401
+from epistrel.evals.suites import e10_claim_detection as _e10  # noqa: E402, F401
+from epistrel.evals.suites import q01_recall as _q01  # noqa: E402, F401
+from epistrel.evals.suites import q02_resolution as _q02  # noqa: E402, F401
+from epistrel.evals.suites import q03_abstract as _q03  # noqa: E402, F401
 from epistrel.evals.suites import smoke as _smoke  # noqa: E402, F401
 
 __all__ = [
     "CASES_FILE",
     "SUITES",
+    "Aggregate",
     "CaseModel",
+    "Counts",
     "MalformedCase",
     "Outcome",
     "Suite",
+    "Value",
     "get_suites",
     "register",
 ]

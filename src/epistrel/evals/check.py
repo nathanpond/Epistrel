@@ -30,18 +30,12 @@ REPORTS_DIR = REPO_ROOT / "docs" / "evals"
 
 PENDING: Mapping[str, str] = MappingProxyType(
     {
-        "NFR-QUAL-2": "#157",
-        "NFR-QUAL-3": "#157",
-        "NFR-QUAL-4": "#157",
-        "NFR-QUAL-6": "#157",
-        "NFR-QUAL-7": "#157",
-        "NFR-QUAL-10": "#157",
         "NFR-QUAL-14": "#158",
         "NFR-QUAL-9": "M6 (time estimation is delivered there)",
     }
 )
 """Model-dependent guarantee metrics whose suite a later story ships, with that story: the
-labeled sets and metric evals of NFR-QUAL-2..7,10 are #157's, the prose floor's #158's. Each
+prose floor's is #158's, time estimation's M6's (#157's suites measure NFR-QUAL-2..7,10). Each
 story removes its entries when its suites register."""
 
 

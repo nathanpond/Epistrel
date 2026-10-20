@@ -104,11 +104,14 @@ def metric_problems(metric: Metric) -> list[str]:
 
 @dataclass(frozen=True, slots=True)
 class SeedTally:
-    """One seed's observations of one metric."""
+    """One seed's observations of one metric. ``value`` overrides the share of good (or bad)
+    observations for a metric a suite aggregates as a value (``Suite.aggregate``: a rank
+    correlation over ``good`` cases); ``None`` keeps the share."""
 
     seed: int
     good: int = 0
     bad: int = 0
+    value: float | None = None
 
     @property
     def n(self) -> int:
@@ -141,6 +144,8 @@ class Judgement:
 
 
 def _value(metric: Metric, tally: SeedTally) -> float:
+    if tally.value is not None:
+        return tally.value
     count = tally.good if metric.direction is Direction.at_least else tally.bad
     return count / tally.n
 
@@ -181,6 +186,18 @@ def _zero_verdict(violations: int, sample: int, seeds: int) -> Verdict:
     return Verdict.passed
 
 
+def strict(metric: Metric, per_seed: Sequence[float]) -> Verdict:
+    """The stub-mode strict rule (#157's flipped-label complement): a floored metric passes only
+    when every seed's value is perfect (1 for ``at_least``, 0 for ``at_most``), so a single
+    mislabeled case fails it; an informational metric is ``report_only``."""
+    if metric.rule is Rule.informational or metric.floor is None:
+        return Verdict.report_only
+    if not per_seed:
+        return Verdict.insufficient_evidence
+    perfect = 1.0 if metric.direction is Direction.at_least else 0.0
+    return Verdict.passed if all(v == perfect for v in per_seed) else Verdict.failed
+
+
 def gate(verdicts: Iterable[Verdict]) -> Verdict:
     """The verdict of a suite or a run from its metrics' (or suites') verdicts."""
     seen = set(verdicts)
@@ -206,5 +223,6 @@ __all__ = [
     "gate",
     "judge",
     "metric_problems",
+    "strict",
     "upper_bound_95",
 ]

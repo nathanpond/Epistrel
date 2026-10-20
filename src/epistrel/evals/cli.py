@@ -8,6 +8,9 @@
     uv run python -m epistrel.evals run --suite smoke …     # rerun one suite into today's run
     uv run python -m epistrel.evals index                    # regenerate docs/evals/INDEX.md
     uv run python -m epistrel.evals --check                  # suites ↔ guarantees ↔ index
+    uv run python -m epistrel.evals --check-sets             # labeled sets (#157), lint job
+    uv run python -m epistrel.evals author                   # regenerate #157's sets
+    uv run python -m epistrel.evals digest                   # regenerate the review digest
 
 ``run`` needs PostgreSQL: ``--database-url`` (a scratch database; the run writes the endpoint
 into its model configuration and plays its turns there), else a throwaway one started through
@@ -38,8 +41,10 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
+from epistrel.evals import authoring
 from epistrel.evals import check as checks
 from epistrel.evals import report as reports
+from epistrel.evals import sets as labeled_sets
 from epistrel.evals.gate import Verdict
 from epistrel.evals.runner import (
     BUILD_DIR,
@@ -78,6 +83,11 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="check suites, the guarantee table and docs/evals/INDEX.md agree (exit 1 if not)",
     )
+    p.add_argument(
+        "--check-sets",
+        action="store_true",
+        help="check the labeled sets: schema, sizes, provenance, authoring, digest (exit 1)",
+    )
     sub = p.add_subparsers(dest="command")
     run = sub.add_parser("run", help="run eval suites against a model (or the stub)")
     which = run.add_mutually_exclusive_group(required=True)
@@ -96,6 +106,10 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--base-url", help="the OpenAI-compatible endpoint, e.g. LM Studio's /v1")
     run.add_argument("--model", help="the model every purpose uses")
     run.add_argument("--api-key", default="lm-studio", help="the endpoint's key (lm-studio)")
+    run.add_argument(
+        "--embedding-model",
+        help="an embedding model at --base-url: the retrieval suites embed their stories with it",
+    )
     run.add_argument("--seeds", type=_positive, default=DEFAULT_SEEDS, help="seeds (default 2)")
     run.add_argument("--seed-base", type=int, default=DEFAULT_SEED_BASE, help="the first seed")
     run.add_argument("--sample", type=_positive, help="a seeded subset of each set's cases")
@@ -119,6 +133,8 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--reports-dir", type=Path, default=checks.REPORTS_DIR, help=argparse.SUPPRESS)
     run.add_argument("--json-dir", type=Path, default=BUILD_DIR, help=argparse.SUPPRESS)
     run.add_argument("--markdown", type=Path, help="where the Markdown goes (see the docs)")
+    sub.add_parser("author", help="regenerate #157's labeled sets from their authoring modules")
+    sub.add_parser("digest", help="regenerate docs/evals/sets-digest.md")
     index = sub.add_parser("index", help="regenerate docs/evals/INDEX.md from the reports")
     index.add_argument(
         "--reports-dir", type=Path, default=checks.REPORTS_DIR, help=argparse.SUPPRESS
@@ -161,6 +177,7 @@ async def _run(args: argparse.Namespace) -> int:
         base_url=args.base_url.rstrip("/") if args.base_url else None,
         model=args.model,
         api_key=args.api_key,
+        embedding_model=args.embedding_model,
         database_url=args.database_url,
         hardware=args.hardware,
         server_version=args.server_version,
@@ -252,10 +269,29 @@ def check() -> int:
     return 0
 
 
+def check_sets() -> int:
+    found = labeled_sets.problems(DEFAULT_SETS_DIR)
+    for problem in found:
+        print(problem, file=sys.stderr)
+    if found:
+        return EX_FAILED
+    print(f"labeled sets: {len(labeled_sets.labeled_suites())} suites' sets check out")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parser().parse_args(argv)
     if args.check:
         return check()
+    if args.check_sets:
+        return check_sets()
+    if args.command == "author":
+        for path in authoring.write(DEFAULT_SETS_DIR):
+            print(f"wrote {path}")
+        return 0
+    if args.command == "digest":
+        print(f"wrote {labeled_sets.write_digest(DEFAULT_SETS_DIR)}")
+        return 0
     if args.command == "run":
         return asyncio.run(_run(args))
     if args.command == "index":

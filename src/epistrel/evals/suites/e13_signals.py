@@ -64,6 +64,9 @@ if TYPE_CHECKING:
 DRIVER_WINDOW = 10
 MIN_FINGERPRINTS = 5
 CORRELATION = "nfr_qual_15.feedback_correlation"
+COMPLETED = "e13.completed"
+"""The share of scenario cases that played to the end: a model error fails its case (#134's
+rule) and is counted here, never dropped silently."""
 COUNTED = ("repetition", "repeated_opening", "length_accuracy")
 SCORED = ("voice_consistency", "driver_adherence")
 
@@ -117,6 +120,15 @@ def _metrics() -> tuple[Metric, ...]:
             Direction.at_least,
             "Spearman correlation of the judge's mean voice score with users' mean rating per "
             "fingerprint (insufficient data below five fingerprints)",
+        )
+    )
+    found.append(
+        Metric(
+            COMPLETED,
+            Rule.informational,
+            None,
+            Direction.at_least,
+            "scenario cases that played to the end (a model error fails its case)",
         )
     )
     return tuple(found)
@@ -191,6 +203,8 @@ class E13Suite(Suite):
     def _values(self, outcomes: Sequence[Outcome]) -> dict[str, list[Any]]:
         found: dict[str, list[Any]] = {}
         for outcome in outcomes:
+            if outcome.detail.get("config") not in CONFIGS:
+                continue  # a model error failed the case: counted by ``COMPLETED``
             config = str(outcome.detail.get("config"))
             for signal in (*COUNTED, *SCORED):
                 found.setdefault(metric_id(config, signal), []).extend(
@@ -219,6 +233,10 @@ class E13Suite(Suite):
         for metric in self.metrics:
             if metric.id == CORRELATION:
                 found[metric.id] = self.correlation(outcomes, model)
+                continue
+            if metric.id == COMPLETED:
+                played = sum(o.detail.get("config") in CONFIGS for o in outcomes)
+                found[metric.id] = Counts(played, len(outcomes) - played)
                 continue
             seen = values.get(metric.id) or []
             signal = metric.id.rsplit(".", 1)[1]
@@ -280,6 +298,7 @@ def _fingerprint(model: str, config: str) -> str:
 
 
 __all__ = [
+    "COMPLETED",
     "CORRELATION",
     "MIN_FINGERPRINTS",
     "E13Suite",

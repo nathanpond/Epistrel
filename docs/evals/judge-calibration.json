@@ -1,0 +1,33 @@
+{
+  "cydonia-24b-v4.3": {
+    "agreed": 194,
+    "agreement": 0.8818181818181818,
+    "by_label": {
+      "a": {
+        "agreed": 83,
+        "pairs": 96
+      },
+      "b": {
+        "agreed": 79,
+        "pairs": 84
+      },
+      "tie": {
+        "agreed": 32,
+        "pairs": 40
+      }
+    },
+    "ci95": [
+      0.8324704913500492,
+      0.9180607144645744
+    ],
+    "date": "2026-10-20",
+    "engine_sha": "6d3e60e",
+    "excluded": 0,
+    "floor": 0.75,
+    "judge_model": "cydonia-24b-v4.3",
+    "min_pairs": 200,
+    "model_version": "cydonia-24b-v4.3",
+    "pairs": 220,
+    "status": "calibrated"
+  }
+}

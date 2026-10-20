@@ -71,6 +71,11 @@ def changed_id(config: str) -> str:
     return f"e12.{config}.changed"
 
 
+COMPLETED = "e12.completed"
+"""The share of scenario cases that played to the end: a model error fails its case (#134's
+rule), which then yields no pair of any type and is counted here, never dropped silently."""
+
+
 def _metrics() -> tuple[Metric, ...]:
     found: list[Metric] = []
     for config in CONFIGS:
@@ -93,6 +98,14 @@ def _metrics() -> tuple[Metric, ...]:
                 description=f"{config}: the share of turns whose final message changed its draft",
             )
         )
+    found.append(
+        Metric(
+            COMPLETED,
+            Rule.informational,
+            direction=Direction.at_least,
+            description="scenario cases that played to the end (a model error fails its case)",
+        )
+    )
     return tuple(found)
 
 
@@ -167,6 +180,11 @@ class E12Suite(Suite):
         preferred); per configuration, the turns that changed and those that did not."""
         prefer: dict[str, list[int]] = {m.id: [0, 0] for m in self.metrics}
         for outcome in outcomes:
+            if outcome.detail.get("config") not in CONFIGS:
+                # A model error failed this case before it played (no pairs to count).
+                prefer[COMPLETED][1] += 1
+                continue
+            prefer[COMPLETED][0] += 1
             config = str(outcome.detail.get("config"))
             changed = int(outcome.detail.get("changed") or 0)
             turns = int(outcome.detail.get("turns") or 0)
@@ -231,4 +249,4 @@ def _n(found: Aggregate) -> int:
     return found.good + found.bad if isinstance(found, Counts) else found.n
 
 
-__all__ = ["FLOOR", "E12Suite", "changed_id", "metric_id"]
+__all__ = ["COMPLETED", "FLOOR", "E12Suite", "changed_id", "metric_id"]

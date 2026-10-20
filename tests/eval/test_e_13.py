@@ -21,7 +21,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.core.quality import signals
 from epistrel.evals import SUITES, AdapterConfig, Verdict, run
+from epistrel.evals.suites import Counts, Outcome
+from epistrel.evals.suites.e12_interventions import COMPLETED as E12_COMPLETED
 from epistrel.evals.suites.e13_signals import (
+    COMPLETED,
     CORRELATION,
     MIN_FINGERPRINTS,
     feedback_correlation,
@@ -68,6 +71,19 @@ def test_e_13__signals() -> None:
     assert feedback_correlation(judged, reversed_ratings).value == pytest.approx(-1.0)
     few = feedback_correlation(judged, {"fp0": 1.0, "fp1": 2.0, "other": 3.0})
     assert (few.value, few.n) == (None, 2)
+
+
+def test_a_model_error_case_is_counted_never_crashed() -> None:
+    """A case a model error failed carries no configuration (the runner's failed-case outcome):
+    E-12 and E-13 count it as not completed and aggregate the rest. Regression: the first live
+    run crashed on it (``KeyError: 'e12.None.changed'``)."""
+    failed = Outcome({}, detail={"model_error": "model_unavailable"})
+    played = Outcome({}, detail={"config": "structured", "turns": 4, "changed": 1, "pairs": []})
+    e12 = SUITES["e12"].aggregate([failed, played])
+    assert e12[E12_COMPLETED] == Counts(1, 1)
+    assert e12["e12.structured.changed"] == Counts(1, 3)
+    e13 = SUITES["e13"].aggregate([failed])
+    assert e13[COMPLETED] == Counts(0, 1)
 
 
 @pytest.mark.integration

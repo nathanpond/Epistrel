@@ -7995,6 +7995,10 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision (left to the owner):** CodeQL reports one new high alert, #3 (`py/clear-text-logging-sensitive-data`, `src/epistrel/cli.py:177`). It is the same `print(derive(key))` the owner dismissed as won't-fix on #332 (alert #2, line 168), re-raised because M4's `evals` dispatch in `main()` moved the line. Dismissing it was refused by this session's permission mode, so it stays open for the owner. CodeQL is not a required check (`main` requires only `gate`).
   **Issue:** #332
 
+- **Decision (Rule 1):** CI's stub eval step had been red since #157 (`--fail-on-gate`, first seen at `5c3a749`). The cause was E-10's `nfr_qual_10.recall_gated` at exactly 95.00 % on a floor of ≥ 95 % ("on the floor is not clear of it"). The measured gap is 8 of 300 `identity-declared` cases: 97.3 % on the full set, which passes. The seeded 100-case sample drew 5 of them. `run` gains `--full SUITE` (repeatable): a named suite runs its full set despite `--sample`. CI runs `--all --sample 100 --full e10` (E-10 is about 0.1 s a case). Locally the CI command now exits 0 in 422 s, with E-10 passing. The floor, the gate rule and the set are unchanged. A regression test (`test_full_names_suites_that_ignore_the_sample`) covers the option.
+  **Why:** a sample that can land on the floor makes the merge gate depend on which cases the seed drew. The full set is the measurement #157's decision called cheap. Dropping E-10's `ci_gate` would weaken the gate.
+  **Issue:** #157, #134
+
 ## Blocker — 2026-10-20
 
 - **Blocker:** #157 is built, but its sets wait on the owner's approval. Its AC requires "owner-approved sets", recorded by a commit that turns each `PROVENANCE.md`'s `approved by owner: pending` into `approved by owner YYYY-MM-DD`. `--check-sets` allows `pending` on branches and fails on `main`, so merging M4 before that approval would turn `main`'s CI red. The owner reviews `docs/evals/sets-digest.md`. #157 is labelled `blocked` + `needs-owner-action` and stays out of the PR's `Closes` list. The **M4 merge waits** on it.

@@ -53,6 +53,7 @@ from epistrel.evals.runner import (
     Scratch,
     host_of,
     run_fingerprint,
+    sample_for,
     scratch_story_ids,
     story_rows,
     sweep,
@@ -516,6 +517,22 @@ def test_run_ids_take_a_suffix_on_the_same_day() -> None:
     taken = [Path("a-2026-10-17.json"), Path("a-2026-10-17-2.md")]
     assert unique_run_id("a-2026-10-18", taken) == "a-2026-10-18"
     assert unique_run_id("a-2026-10-17", taken) == "a-2026-10-17-3"
+
+
+def test_full_names_suites_that_ignore_the_sample() -> None:
+    """CI runs E-10's full set beside a 100-case sample of the rest (`--full e10`): a sample can
+    draw most of E-10's measured gap and sit on the floor. Complement asserted: an unnamed suite
+    keeps the sample, and no `--full` leaves every suite sampled."""
+    args = cli.parser().parse_args(
+        ["run", "--adapter", "stub", "--all", "--sample", "100", "--full", "e10"]
+    )
+    assert args.full == ["e10"]
+    assert sample_for("e10", args.sample, args.full) is None
+    assert sample_for("e01", args.sample, args.full) == 100
+    plain = cli.parser().parse_args(["run", "--adapter", "stub", "--all", "--sample", "100"])
+    assert sample_for("e10", plain.sample, plain.full) == 100
+    with pytest.raises(SystemExit):
+        cli.parser().parse_args(["run", "--adapter", "stub", "--all", "--full", "e99"])
 
 
 def test_check_cross_references_the_guarantee_table() -> None:

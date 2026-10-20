@@ -136,6 +136,13 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--seeds", type=_positive, default=DEFAULT_SEEDS, help="seeds (default 2)")
     run.add_argument("--seed-base", type=int, default=DEFAULT_SEED_BASE, help="the first seed")
     run.add_argument("--sample", type=_positive, help="a seeded subset of each set's cases")
+    run.add_argument(
+        "--full",
+        action="append",
+        default=[],
+        choices=sorted(SUITES),
+        help="a suite that runs its full set despite --sample (repeatable)",
+    )
     run.add_argument("--concurrency", type=_positive, default=1, help="cases at once (1)")
     run.add_argument("--run-id", help="the run to write or merge into")
     run.add_argument("--new-run", action="store_true", help="never merge into an earlier run")
@@ -265,6 +272,7 @@ async def _run(args: argparse.Namespace) -> int:
             seeds_from(args.seeds, args.seed_base),
             sets_dir=args.sets_dir,
             sample=args.sample,
+            full=args.full,
             seed_base=args.seed_base,
             concurrency=args.concurrency,
             run_id=run_id,

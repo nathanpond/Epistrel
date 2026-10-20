@@ -440,6 +440,9 @@ class SuiteRun:
     run_id: str
     sets_dir: Path = DEFAULT_SETS_DIR
     sample: int | None = None
+    full: frozenset[str] = frozenset()
+    """Suites that run their full set whatever ``sample`` says (CI's E-10: a sample can draw
+    most of its measured gap and land on the floor)."""
     seed_base: int = DEFAULT_SEED_BASE
     concurrency: int = 1
     failures: Path | None = None
@@ -448,6 +451,11 @@ class SuiteRun:
     calibration: judges.Calibration | None = None
     """The judge calibration of the run's judge model (#158): what a suite's judge rows run
     under."""
+
+
+def sample_for(suite_name: str, sample: int | None, full: Collection[str]) -> int | None:
+    """The sample size ``suite_name`` runs at: ``None`` (its full set) when ``full`` names it."""
+    return None if suite_name in full else sample
 
 
 def _select(cases: Sequence[CaseModel], sample: int | None, seed_base: int) -> list[CaseModel]:
@@ -559,7 +567,9 @@ async def run_suite(suite: Suite, job: SuiteRun) -> SuiteResult:
     try:
         loaded = job.cases.get(suite.name)
         cases = _select(
-            loaded if loaded is not None else suite.load(job.sets_dir), job.sample, job.seed_base
+            loaded if loaded is not None else suite.load(job.sets_dir),
+            sample_for(suite.name, job.sample, job.full),
+            job.seed_base,
         )
     except MalformedCase as exc:
         return SuiteResult.errored(suite, [str(exc)], list(job.seeds))
@@ -652,6 +662,7 @@ async def run_suites(
     engine: Engine | None = None,
     sets_dir: Path = DEFAULT_SETS_DIR,
     sample: int | None = None,
+    full: Collection[str] = (),
     seed_base: int = DEFAULT_SEED_BASE,
     concurrency: int = 1,
     run_id: str | None = None,
@@ -715,6 +726,7 @@ async def run_suites(
             run_id=report.run_id,
             sets_dir=sets_dir,
             sample=sample,
+            full=frozenset(full),
             seed_base=report.seed_base,
             concurrency=concurrency,
             failures=failures,

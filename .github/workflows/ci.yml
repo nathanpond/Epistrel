@@ -220,8 +220,10 @@ jobs:
       # (a malformed labeled set, a suite that cannot run, a write outside its scratch stories) and,
       # with --fail-on-gate, when a suite marked ci_gate misses its deterministic stub floors. One
       # job of its own, outside the test matrix (#157/#158 grew it past a shard's budget).
+      # E-10 runs its full set (`--full e10`, about 30 s): its measured gap is 8 of 300 cases, and
+      # a sample of 100 can draw 5 of them and sit exactly on the 95 % floor.
       - name: evals (stub)
-        run: uv run python -m epistrel.evals run --adapter stub --all --seeds 2 --sample 100 --fail-on-gate
+        run: uv run python -m epistrel.evals run --adapter stub --all --seeds 2 --sample 100 --full e10 --fail-on-gate
       - name: upload the stub eval report
         if: always()
         uses: actions/upload-artifact@v7

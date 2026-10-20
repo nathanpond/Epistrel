@@ -7927,3 +7927,16 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Issue:** #157, #134
 - **Decision (Rule 1):** `report_files` treated `docs/evals/sets-digest.md` as a report, so `--check` failed on it ("no embedded report summary"). It now skips that file (`NOT_REPORTS`). `tests/test_markers.py` asserted that no `test_e_06*` test is collected by default. It now names the live M2 part only, since `test_e_06__structured` is a stub test by design.
   **Issue:** #157
+- **Decision (Rule 1):** the live run's Q-01 setup failed with `ChainBroken`. The embed job commits an operation, and none can commit after the fixture has moved the head past its last real turn. The fixture is now embedded first. `scenes.drain_embeddings` also fails the job when its commit raises, so a job is never left running and the final sweep is never blocked (`StoryBusy`). The stub run never embeds, so CI could not catch this. Q-01 was rerun live and merged into the same run.
+  **Issue:** #157
+- **Decision (reported, not tuned):** #157's live exit run against `cydonia-24b-v4.3` on LM Studio (`:1235`, with `text-embedding-nomic-embed-text-v1.5`) is `docs/evals/775d2c4f43f3-2026-10-20.md`. It used 3 seeds and `--concurrency 3`. E-01, E-04, Q-01 and Q-02 ran their full sets. E-05 was sampled at 150, E-10 at 100, E-03 at 40, Q-03 at 30, E-06 at 40 and E-07 at 60: structured turns cost 150-210 s each, and a full run would take about 20 hours. Results:
+  - **Pass:** NFR-QUAL-6 (recall@10 100 %).
+  - **Fail:**
+    - NFR-QUAL-2 (false contradiction 8.5 %, false support 4.35 %; all misses are approximate-bound residuals) → #460.
+    - NFR-QUAL-3 (92.5 %) → #462.
+    - NFR-QUAL-4 (recall 88.2 %, precision 67.0 %) → #461.
+    - NFR-QUAL-7 (74.2 %) → #464.
+    - NFR-QUAL-5 (60.9 %; mostly safe fallbacks after repair, plus an owner question on the scorer) → #465.
+    - NFR-QUAL-10 (78 % in both modes) → #459, a pipeline defect: the model answers `beat: 0` for render beats marked 2 and up, and `to_claims` drops those claims.
+  - No set, scorer or floor was changed after a model result. The milestone stays open on these misses (the owner's round-one decision). The report's engine field reads `156aeba-dirty`: the tree held another agent's uncommitted log lines, and, for the Q-01 rerun, `5c3a749`'s fix.
+  **Issue:** #157, #134

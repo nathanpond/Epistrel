@@ -380,6 +380,7 @@ async def _chunk(run: _Run, chunk: Sequence[Input], window: Window) -> bool:
         run.derived.unsupported += derived.unsupported
         run.derived.downgraded += derived.downgraded
         run.derived.duplicates += derived.duplicates
+        run.derived.speculative += derived.speculative
         hashed = prompt_hash(messages)
         run.made.extend((o, model, hashed) for o in kept)
         return True
@@ -628,6 +629,7 @@ def _output(
             "unsupported": run.derived.unsupported,
             "downgraded": run.derived.downgraded,
             "duplicates": run.derived.duplicates,
+            "speculative": run.derived.speculative,
             "rejected": len(rejected),
             "superseded": len(read.superseded),
         },

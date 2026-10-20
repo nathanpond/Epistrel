@@ -69,7 +69,12 @@ async def test_s_consolidation_scope__type(
                     ("The wind rattles the shutters.", "objective", [2]),
                     ("Nothing supports this.", "objective", [7]),
                 ],
-                reflections=[("The way out is blocked.", "objective", [0, 1])],
+                reflections=[
+                    ("The way out is blocked.", "objective", [0, 1]),
+                    # #462: a guess beyond the records is no input's type, and is dropped.
+                    ("The wind suggests that a storm may be coming.", "observation", [2]),
+                    ("Cal seems to be avoiding the bridge.", "observation", [0, 1]),
+                ],
             )
         ],
     )
@@ -77,6 +82,7 @@ async def test_s_consolidation_scope__type(
     assert str(run.outcome) == "committed", run
     assert run.result["unsupported"] == 1
     assert run.result["downgraded"] == 3
+    assert run.result["speculative"] == 2
     made = {r.text: r for r in await cs.outputs(engine, story)}
     assert set(made) == {
         "Bobby said the bridge is out.",
@@ -106,6 +112,27 @@ async def test_s_consolidation_scope__type(
     assert [r.text for r in made.values() if r.modality == "objective"] == [
         "Cal is in the kitchen."
     ]
+    # #462's hedge rule, both ways: the issue's live misses are guesses; a literal deed or
+    # saying that shares a word with a hedge is kept, and so is a hedge the record itself makes.
+    episodes = ["sweeps the porch", "avoids the dog", "I might go to the market."]
+    for guess in (
+        "The avoidance pattern suggests Bobby may have been deliberately distancing himself.",
+        "There appears to be a division of labor between Raj and Linda.",
+        "Jenni's action of sweeping the porch seems unrelated to Marcus's cellar investigation.",
+        "Ann probably wanted to leave.",
+        "This suggests a quarrel.",
+        "Tom may be ill.",
+    ):
+        assert core.speculative(guess, episodes), guess
+    for plain in (
+        "Bobby appears at the door.",
+        "Ann suggests a walk to the river.",
+        "Raj pushes the cart with all his might.",
+        "Ada is working hard at school.",
+        "Linda said the harvest may come early.",
+        "Bobby said he might go to the market.",
+    ):
+        assert not core.speculative(plain, episodes), plain
 
     sources = [
         (await event_ids(engine, claim_op.operation_id))["player_input"],

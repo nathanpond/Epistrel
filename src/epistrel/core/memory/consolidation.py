@@ -48,7 +48,9 @@ is objective canon (or, at level 2, an objective output); a ``say`` beat (or an 
 claim) makes it an ``attributed_claim`` of that speaker, one statement per speaker, its text
 "<speaker> said …" ("Bobby said the bridge is out", never "the bridge is out"); anything else
 (a deed, narration, a mix) is an ``observation``. A statement that names no valid support is
-dropped (``Derived.unsupported``). Its visibility is the intersection of its supports'.
+dropped (``Derived.unsupported``), and so is one worded as a guess its supports do not make
+(``speculative``: "suggests that", "may have", "seems", "appears to"…; ``Derived.speculative``,
+#462), which states no input's epistemic type. Its visibility is the intersection of its supports'.
 
 **The cascade** (FR-STORE-13,26). An output's ``source_event_ids`` are every input's source
 events, so ``records.memories_through(N)`` includes it exactly when every source is active at or
@@ -64,6 +66,7 @@ Log lines carry identifiers and counts only (invariant 3); this module logs noth
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -685,6 +688,35 @@ class Derived:
     unsupported: int = 0
     downgraded: int = 0
     duplicates: int = 0
+    speculative: int = 0
+
+
+SPECULATIVE = re.compile(
+    r"\b(?:"
+    r"may (?:have|be|not)|(?<!his )(?<!her )(?<!its )(?<!their )might|could have|"
+    r"perhaps|possibly|probably|presumably|apparently|seemingly|likely|"
+    r"seems?|seemed|seeming|"
+    r"appears? (?:to|that)|appeared (?:to|that)|"
+    r"(?:suggest|indicate|impl(?:y|ie))(?:s|d|ing)? that|"
+    r"(?:this|which|it|pattern|behaviou?r) (?:suggests|indicates|implies)"
+    r")\b",
+    re.IGNORECASE,
+)
+"""Hedged or speculative wording (#462; English only in M4, like the time grammar). A literal
+deed or saying is not matched ("appears at the door", "suggests a walk")."""
+
+
+def speculative(text: str, sources: Iterable[str]) -> bool:
+    """Whether ``text`` hedges where its ``sources`` do not: a statement that needs "suggests
+    that", "may have", "seems" or "appears to" guesses beyond its records ("the avoidance
+    suggests Bobby may have been distancing himself"), so it is not the epistemic type of any
+    input (FR-MEM-9) and ``derive`` drops it (``Derived.speculative``). Hedging a record already
+    states is kept: "Bobby said he might go" rests on Bobby's "I might go"."""
+    hedges = {m.group(0).casefold() for m in SPECULATIVE.finditer(text)}
+    if not hedges:
+        return False
+    stated = {m.group(0).casefold() for s in sources for m in SPECULATIVE.finditer(s)}
+    return not hedges <= stated
 
 
 _LOWERED = frozenset(
@@ -754,6 +786,9 @@ def derive(
         text = statement.text.strip()
         if not supports or not text:
             derived.unsupported += 1
+            continue
+        if speculative(text, (s.text for s in supports)):
+            derived.speculative += 1
             continue
         speakers = sorted({s.speaker for s in supports if s.epistemic == "claim" and s.speaker})
         made: list[tuple[str, str, str | None, list[Input]]] = []

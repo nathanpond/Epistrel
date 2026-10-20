@@ -7947,6 +7947,48 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   - No set, scorer or floor was changed after a model result. The milestone stays open on these misses (the owner's round-one decision). The report's engine field reads `156aeba-dirty`: the tree held another agent's uncommitted log lines, and, for the Q-01 rerun, `5c3a749`'s fix.
   **Issue:** #157, #134
 
+- **Decision (Discretion, deviation from planner pass 1):** `quality_judge` keeps #134's one content category, `eval_text`, for every field. It does not use the planner's three categories (`eval_text_a`, `eval_text_b`, `eval_criteria`). It has one input schema with two shapes: `pair {a, b}` for the default template, and `message` + `reference` for the `score` variant (`quality_judge_score.j2`, answered by `QualityJudgeScore`). There is no model validator enforcing that only one shape is used: prompt checking fills every field with an example. `reasons` (≤ 1,000 characters) is the purpose's free text. It is never logged or written to a story.
+  **Why:** split categories would add no data-flow guarantee, since every field is eval text and every other purpose refuses `eval_text`. A purpose has one input schema, and `variants` carries the second template.
+  **Issue:** #158
+- **Decision (Discretion, deviation):** the sets follow #157's layout: `evals/sets/judge_calibration/cases.jsonl` (not the AC's flat `judge_calibration.jsonl`) and `evals/sets/scenarios/cases.jsonl` (not `scenarios/*.json`). Each has a `PROVENANCE.md`, an authoring module, a `--check-sets` entry and a digest section. E-12 and E-13 share the scenario set. `labeled_by: builder` is on every calibration row. The owner's approval line is `approved by owner: pending` until the owner commits it.
+  **Why:** one layout for every set (#157's decision), and the drift check covers both sets.
+  **Issue:** #158, #157
+- **Decision (Discretion):** the calibration labels come from how each pair is built. There are 180 pairs with a deliberate defect on one side: fallback line, mid-clause cut, self-repetition, jarring register and stock filler, 36 each. The good side is drawn to `a` or `b` by a seeded chooser. There are 40 one-word paraphrase ties. Character names are masked as in E-12. Agreement is an exact match of the combined both-order verdict. An `Uncertain` answer counts as a disagreement, never an exclusion. A judge is `calibrated` on ≥ 200 pairs with point-estimate agreement ≥ 75 %, and the Wilson 95 % CI is reported beside it. PROVENANCE states that the set checks visible defects, not subtle preferences.
+  **Why:** these are the planner's rules, with #134's rule that a model failure is never excluded. The planner's "stub-run intervention pairs" would be stub hash text, which a person cannot label meaningfully.
+  **Issue:** #158
+- **Decision (Discretion):** NFR-QUAL-14 gets its own gate rule, `relative`. It is on the `at_most` side and passes on mean + 1 SD **≤** floor (NFR-QUAL-14's "at most 55 %"). It needs ≥ 300 non-tied pairs on every seed (the smallest seed's count, as the harness's `sample_size`), else `insufficient_evidence`. A tie is never an observation.
+  **Why:** #134 left the inclusive reading of this floor to #158. A per-seed minimum matches the zero rule's 300.
+  **Issue:** #158, #134
+- **Decision (Discretion, deviation):** the E-12 intervention types are `repair_rung_1..4`, `composition_polished`, `composition_fallback` and `age_repair`. There is no `beats_truncated`, because no such pipeline step exists. A type counts only on a turn whose final message differs from its first draft after white space is collapsed. `age_repair` never changes the message text in M4, so it reports 0 pairs. A changed turn that no type names (for example, an output-policy regeneration) is counted in the case detail, never judged.
+  **Why:** a pair must be a real change, and the type list is what the turn report can attribute.
+  **Issue:** #158
+- **Decision (Discretion):** E-12/E-13 report per configuration (`structured`, and `gated` = `verification.extraction_mode: gated`). Each fingerprint is computed by `run_fingerprint(model, dials)` from the seeded settings, not from the scratch story's own fingerprint. The scratch story's fingerprint includes the runner's 300 s deadline override.
+  **Why:** a report must name the configuration a deployment would run, and the feedback aggregates group by that fingerprint.
+  **Issue:** #158
+- **Decision (Discretion, deviation):** repetition is the **largest** 3-gram Jaccard against each of the previous 3 messages, not the Jaccard against their union.
+  **Why:** against the union, a verbatim repeat of one message falls to about 0.5 when the other two differ, so the 0.5 threshold could never fire on the repeat it exists to catch. This was decided on a unit case, before any model run.
+  **Issue:** #158
+- **Decision (Discretion):** the scratch stories are blank, not created from a scenario. So E-13's drivers (hooks, objectives, planned reveals) are delivered as the story's custom instructions and are the judge's reference. C-25 proves the scenario path (`## Author notes (not facts)` in the narrator's context) separately. Masking uses the scenario's own cast, places and things, plus date and quantity patterns, rather than #139's resolver.
+  **Why:** a scenario-created story per case would need catalog publishing per case. The judge needs only the names it may see.
+  **Issue:** #158
+- **Decision (Discretion, not built):** these planner pass-1 items are not built. They are not AC.
+  - **Judgment cache.** No cache under `build/evals/judgments/`.
+  - **Prometheus metrics.** Repetition and length are not emitted as metrics at commit. Filed in #463.
+  - **Feedback correlation.** It is computed per run, so with 2 fingerprints it is always `insufficient_data` (#463).
+  - **Guarantee rows.** No `voice_fidelity`/`plot_adherence` rows with a new `not_guaranteed` kind. The NFR-QUAL-13 statement is a generated section of `docs/guarantees.md` instead.
+
+  **Why:** a new `Kind` value would change the guarantees API's enum, an API-contract change beyond the AC (brief Rule 4). The cache and the metrics are scope the AC do not require.
+  **Issue:** #158, #463
+- **Decision (Discretion):** `run --all` calibrates the judge first on the same engine and stores the result. `run --suite e12` reads the stored calibration for its judge model (the run's model). With none, it raises `CalibrationMissing` and exits 1 before any case. E-13's single-message scores are always `uncalibrated` in M4, so they need no stored calibration. E-12 is `ci_gate`: the stub run's `insufficient_evidence` never fails CI. Judge-based rows carry `judge_based: true`, and each suite result carries its `calibration`.
+  **Why:** these are the planner's rules, and the CI stub run (`--all --sample 100`) stays self-contained.
+  **Issue:** #158
+- **Decision (Rule 1):** E-12 and E-13 crashed on a case that a model error had failed: the runner's failed-case outcome has no `config` (`KeyError 'e12.None.changed'`, live run). Such a case is now counted in a report-only `e12.completed`/`e13.completed` row (#134: a model error fails its case, never an exclusion). It yields no pair. A regression test is added.
+  **Issue:** #158
+- **Decision (reported, not tuned):** the live run on `cydonia-24b-v4.3` uses `--sample 7`, 2 seeds (about 2 h). The judge calibrated at 88.18 %. E-12 is `insufficient_evidence` everywhere (≤ 2 non-tied pairs per seed). E-13 errored on #466. No floor, case or scorer was changed after seeing the results. NFR-QUAL-14 on the reference model stays unproven until enough local runs accumulate 300 pairs per type.
+  **Issue:** #158, #466
+- **Decision (Rule 1):** the judge module is `epistrel.evals.judging`, not `judge`. Importing a submodule named `judge` replaced the package's re-exported `gate.judge` function, which broke `from epistrel.evals import judge` in `tests/evals/test_harness.py`.
+  **Issue:** #158
+
 ## Blocker — 2026-10-20
 
 - **Blocker:** #157 is built, but its sets wait on the owner's approval. Its AC requires "owner-approved sets", recorded by a commit that turns each `PROVENANCE.md`'s `approved by owner: pending` into `approved by owner YYYY-MM-DD`. `--check-sets` allows `pending` on branches and fails on `main`, so merging M4 before that approval would turn `main`'s CI red. The owner reviews `docs/evals/sets-digest.md`. #157 is labelled `blocked` + `needs-owner-action` and stays out of the PR's `Closes` list. The **M4 merge waits** on it.

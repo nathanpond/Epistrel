@@ -35,8 +35,9 @@ turn** is the mean number of model calls by purpose, counting every attempt (fai
   `retry_budget` (every regeneration the story allows was flagged too) or `call_budget`.
 
 A call the deadline cuts is never retried. If it is an output check or a regeneration, the turn
-releases the safe fallback. If it is the input check or the first generation, the turn fails and
-the run writes no row.
+releases the safe fallback. If it is the input check or the first generation, the turn fails:
+the run writes no row for it, keeps the rows that finished, and lists the row under **Failed
+runs** (#454).
 
 ## Results
 

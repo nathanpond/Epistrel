@@ -9,16 +9,20 @@ The real measurement runs against LM Studio on the owner's machine (``test_p_08`
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.core.context import RequestContext
 from epistrel.core.profiles.story import ProfileOverridesPatch
+from epistrel.core.seeds.profiles import STRUCTURED_M4_PROFILE_ID
 from epistrel.engine import Engine
+from epistrel.orchestrator.models.errors import ModelUnavailable
 from epistrel.orchestrator.models.stub import FaultKind, StubAdapter
 from epistrel.tools import model_matrix as mm
 from tests.auth_support import auth_settings
@@ -342,3 +346,187 @@ async def test_unreachable_endpoint_writes_nothing(
         assert await mm._main(args) == mm.EX_UNAVAILABLE
     assert not args.output.exists()
     assert not args.raw.exists()
+
+
+async def test_structured_rows_run_under_a_recorded_deadline_override(
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#454 (the owner's option (a)): a structured row's story overrides ``budgets.deadline_ms``
+    with the matrix's measurement deadline (``TURN_DEADLINE_S``), so a slow tier's structured
+    turn is measured rather than cut by the ``Structured (M4)`` profile's 45 s, and the row
+    records the override.
+
+    Complement asserted: the Lite rows run under no override and record none, and the
+    structured story's profile is still ``Structured (M4)`` (only the deadline is overridden)."""
+    settings = auth_settings(pg_url, model_adapter="stub", config_key=config_key())
+    async with restored_model_config(engine):
+        epistrel = Engine(settings, db=engine)
+        try:
+            rows = await mm.run_matrix(
+                epistrel, STUB_TARGET, turns=1, turn_kinds=("lite", "structured")
+            )
+            driver = mm.StructuredDriver()
+            await mm.measure_turns(epistrel, driver, "off", 1)
+            config = await epistrel.get_effective_config(
+                RequestContext(principal=mm.PRINCIPAL), driver.story_id
+            )
+        finally:
+            await epistrel.models.aclose()
+    assert rows is not None
+    overrides = {(r.turn_kind, r.policies): r.deadline_override_ms for r in rows}
+    measured = mm.MEASUREMENT_DEADLINE_MS
+    assert measured == int(mm.TURN_DEADLINE_S * 1000) == 300_000
+    assert overrides == {
+        ("lite", "off"): None,
+        ("lite", "minors"): None,
+        ("structured", "off"): measured,
+        ("structured", "minors"): measured,
+    }
+    assert config.profile.id == STRUCTURED_M4_PROFILE_ID
+    assert config.overrides.settings == {"budgets": {"deadline_ms": measured}}
+    assert config.effective["budgets"]["deadline_ms"] == measured
+
+
+@dataclass
+class FailingDriver:
+    """``RespondDriver`` whose ``fail_at`` turn (0 = the warm-up) raises the deadline's
+    ``model_unavailable`` in the minors row, as #454's live structured turn did."""
+
+    fail_at: int
+    inner: mm.RespondDriver = field(default_factory=mm.RespondDriver)
+    name: str = mm.TURN_PATH
+    played: int = -1
+    faulty: bool = False
+
+    async def prepare(self, engine: Engine, policies: mm.PolicySet) -> None:
+        await self.inner.prepare(engine, policies)
+        self.faulty = policies == "minors"
+
+    async def turn(self, said: str) -> mm.TurnCalls:
+        self.played += 1
+        if self.faulty and self.played == self.fail_at:
+            raise ModelUnavailable("extraction_backstop", "deadline")
+        return await self.inner.turn(said)
+
+
+async def test_a_row_failing_partway_keeps_the_finished_rows(
+    pg_url: str, engine: AsyncEngine
+) -> None:
+    """#454: the minors row's second measured turn fails on the deadline. ``run_matrix``
+    raises ``MatrixInterrupted`` carrying the policies-off row, which finished, and the
+    minors row's failure: the turn reached, the error code, purpose and reason.
+
+    Complement asserted: no row for the failed minors row is in ``rows`` (no partial timings)."""
+    settings = auth_settings(pg_url, model_adapter="stub", config_key=config_key())
+    async with restored_model_config(engine):
+        epistrel = Engine(settings, db=engine)
+        try:
+            with pytest.raises(mm.MatrixInterrupted) as stopped:
+                await mm.run_matrix(
+                    epistrel, STUB_TARGET, turns=3, driver_factory=lambda: FailingDriver(2)
+                )
+        finally:
+            await epistrel.models.aclose()
+    assert [(r.policies, r.turns) for r in stopped.value.rows] == [("off", 3)]
+    failure = stopped.value.failure
+    assert (failure.policies, failure.turn_kind, failure.turn) == ("minors", "lite", 2)
+    assert (failure.code, failure.purpose, failure.reason) == (
+        "model_unavailable",
+        "extraction_backstop",
+        "deadline",
+    )
+    assert failure.deadline_override_ms is None
+
+
+def row_of(kind: mm.TurnKind, policies: mm.PolicySet, **changes: object) -> mm.Row:
+    values: dict[str, object] = {
+        "tier": "local",
+        "model": "m",
+        "policies": policies,
+        "measured_at": "2026-10-20",
+        "sha": "abc1234",
+        "hardware": "",
+        "server_version": "",
+        "turn_path": mm.TURN_PATH if kind == "lite" else mm.STRUCTURED_PATH,
+        "protocol": True,
+        "protocol_reason": None,
+        "capability": {},
+        "e06": {},
+        "turns": 1,
+        "p50_ms": 1000,
+        "p95_ms": 1000,
+        "calls_per_turn": {"generation": 1.0},
+        "latencies_ms": [1000],
+        "turn_kind": kind,
+    }
+    values.update(changes)
+    return mm.Row(**values)  # type: ignore[arg-type]
+
+
+async def test_main_writes_the_finished_rows_and_marks_the_failure(
+    pg_url: str, engine: AsyncEngine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#454: when a row fails partway, the tool writes the rows that finished, lists the
+    failed row under **Failed runs** (``failed_rows`` in the JSON), and exits 1. The tier's
+    earlier row of the failed key keeps its timings.
+
+    Complement asserted: a later run that measures the failed row clears its failure mark."""
+    finished = row_of("lite", "off")
+    earlier = row_of("structured", "minors", latencies_ms=[9000])
+    failure = mm.RowFailure(
+        tier="local",
+        model="m",
+        policies="minors",
+        turn_kind="structured",
+        measured_at="2026-10-20",
+        sha="abc1234",
+        turn_path=mm.STRUCTURED_PATH,
+        turn=3,
+        code="model_unavailable",
+        purpose="generation",
+        reason="deadline",
+        deadline_override_ms=mm.MEASUREMENT_DEADLINE_MS,
+    )
+    raw, markdown = tmp_path / "model-matrix.json", tmp_path / "model-matrix.md"
+    mm.write_matrix(mm.merge([], [earlier]), markdown, raw)
+
+    async def interrupted(*_: object, **__: object) -> list[mm.Row]:
+        raise mm.MatrixInterrupted([finished], failure)
+
+    monkeypatch.setattr(mm, "run_matrix", interrupted)
+    args = argparse.Namespace(
+        base_url="http://stub.invalid/v1",
+        model="m",
+        api_key="k",
+        tier="local",
+        hardware="",
+        server_version="",
+        purpose_model=[],
+        database_url=pg_url,
+        turns=1,
+        output=markdown,
+        raw=raw,
+    )
+    async with restored_model_config(engine):
+        assert await mm._main(args) == mm.EX_UNAVAILABLE
+    data = json.loads(raw.read_text("utf-8"))
+    # Sorted by key: the structured minors row (its earlier timings), then the Lite off row.
+    assert [r["latencies_ms"] for r in data["rows"]] == [[9000], [1000]]
+    assert data["failed_rows"] == [dataclasses.asdict(failure)]
+    text = markdown.read_text("utf-8")
+    assert "## Failed runs" in text
+    assert (
+        "| local: m (structured turns) | minors policy on | 2026-10-20 | `abc1234` | 3 | "
+        "model_unavailable, purpose `generation`, reason `deadline` | "
+        f"{mm.STRUCTURED_PATH}; turn deadline 300 s (override) |"
+    ) in text
+    assert "**Turn deadline override (#454).**" in text
+
+    async def remeasured(*_: object, **__: object) -> list[mm.Row]:
+        return [row_of("structured", "minors")]
+
+    monkeypatch.setattr(mm, "run_matrix", remeasured)
+    async with restored_model_config(engine):
+        assert await mm._main(args) == 0
+    assert "failed_rows" not in json.loads(raw.read_text("utf-8"))
+    assert "## Failed runs" not in markdown.read_text("utf-8")

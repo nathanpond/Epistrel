@@ -28,6 +28,8 @@ repair-heavy row plays the same turns while half the stub's renders deny owning 
 so the repair ladder reaches rung 3 (a ``regeneration`` call). It needs the stub's scripted
 contradictions, so only ``run_matrix(turn_kinds=…)`` on a stub Engine makes it
 (``tests/perf/test_p_08.py::test_p_08__structured``); a row's key carries its kind unless Lite.
+Structured and repair-heavy rows run under a recorded per-story turn deadline override of
+``TURN_DEADLINE_S`` (#454), so a slow tier is measured rather than cut by the profile's 45 s.
 
 **Embedding** (#138, C-07 M4). With ``--embedding-base-url`` and ``--embedding-model`` the run
 also measures that ``/embeddings`` endpoint through the embedding port
@@ -58,7 +60,9 @@ a model-call deadline or error, and the safe fallbacks by cause (``call_breakdow
 calls are structured retries, the empty-reply retry, output-gate regenerations with their
 re-checks, and revision regenerations. A call the deadline cuts is never retried. If it is an
 output check or a regeneration, the turn releases the safe fallback (cause ``deadline``). If it
-is the input check or the first generation, the turn fails and the run writes nothing. A row
+is the input check or the first generation, the turn fails: the run writes the rows that
+finished and marks that row failed (``RowFailure``, ``failed_rows`` in the JSON, #454), never a
+partial row. A row
 measured before the breakdown holds ``null`` in those fields, and the md shows them as *not
 recorded* until that tier's next live run. P-08 asserts each row's design with
 ``design_problems`` and reports the extra calls instead of failing on them (#308): they are
@@ -91,6 +95,7 @@ from epistrel.core.context import RequestContext
 from epistrel.core.db import make_engine
 from epistrel.core.policies.model import ModelAssistedRule, Policy
 from epistrel.core.policies.model import Target as PolicyTarget
+from epistrel.core.profiles.story import ProfileOverridesPatch
 from epistrel.core.stories import CharacterSpec, StorySpec, create_story_from
 from epistrel.engine import Engine
 from epistrel.orchestrator.budget import TurnBudget
@@ -117,6 +122,10 @@ PG_IMAGE = "pgvector/pgvector:pg16"
 PRINCIPAL = "model-matrix"
 DEFAULT_TURNS = 20
 TURN_DEADLINE_S = 300.0
+MEASUREMENT_DEADLINE_MS = int(TURN_DEADLINE_S * 1000)
+"""The per-story ``budgets.deadline_ms`` override a structured row's turns run under (#454):
+the matrix measures how long a structured turn takes, so the ``Structured (M4)`` profile's own
+45 s deadline must not cut it. The row records it (``Row.deadline_override_ms``)."""
 TURN_PATH = "respond (#57)"
 GUARDED_REPLY_PATH = "guarded reply (#53), until respond (#57)"
 EX_UNAVAILABLE = 1
@@ -305,9 +314,14 @@ class StructuredDriver:
     owning the lantern (``structured_load.REPAIR_HEAVY_SHARE``), a contradiction of planted
     canon that the repair ladder takes to rung 3 (a ``regeneration`` call). A live model is
     not scripted: its repair-heavy row measures what the model's own claims set off. The
-    stub's claim mix is restored after the row."""
+    stub's claim mix is restored after the row.
+
+    The story overrides ``budgets.deadline_ms`` with ``deadline_override_ms`` (#454, the
+    owner's option (a)): a measurement deadline, so a slow tier's turn is measured rather than
+    cut by the profile's 45 s default. The row records the override."""
 
     repair: bool = False
+    deadline_override_ms: int | None = MEASUREMENT_DEADLINE_MS
     name: str = STRUCTURED_PATH
     engine: Engine | None = None
     story_id: str = ""
@@ -325,6 +339,15 @@ class StructuredDriver:
         self.actor_id = ids[spec.characters[0].name]
         self.render_id = ids[spec.characters[1].name]
         await structured_load.use_structured(engine.db, self.story_id)
+        if self.deadline_override_ms is not None:
+            await engine.set_profile_overrides(
+                RequestContext(principal=PRINCIPAL),
+                self.story_id,
+                ProfileOverridesPatch(
+                    settings={"budgets": {"deadline_ms": self.deadline_override_ms}},
+                    ignore_warnings=True,
+                ),
+            )
         await structured_load.plant(
             engine, RequestContext(principal=PRINCIPAL), self.story_id, ids.values()
         )
@@ -572,6 +595,10 @@ class Row:
     """What the row's turns are (P-08 M4, #153): ``lite``, ``structured`` (single-character
     structured turns) or ``repair`` (structured turns whose renders contradict planted canon
     half the time). A row measured before turn kinds is ``lite``."""
+    deadline_override_ms: int | None = None
+    """The per-story ``budgets.deadline_ms`` override the row's turns ran under (#454), or
+    ``None`` when they ran under the profile's own deadline. A structured row sets one
+    (``MEASUREMENT_DEADLINE_MS``), so a reader knows the profile default was not used."""
 
     @property
     def key(self) -> str:
@@ -582,6 +609,66 @@ def row_key(tier: str, model: str, policies: str, turn_kind: str = "lite") -> st
     """A row's key. A Lite row keeps the key it had before turn kinds."""
     key = f"{tier}|{model}|{policies}"
     return key if turn_kind == "lite" else f"{key}|{turn_kind}"
+
+
+@dataclass(frozen=True)
+class RowFailure:
+    """A row whose turns stopped on a model failure partway (#454): the run writes the rows
+    that finished and marks this one failed, rather than dropping everything. The row's
+    previous measurement, if any, is kept: a failure replaces no timings."""
+
+    tier: str
+    model: str
+    policies: PolicySet
+    turn_kind: TurnKind
+    measured_at: str
+    sha: str
+    turn_path: str
+    turn: int
+    """The turn that failed: 0 is the warm-up turn, then the measured turns from 1."""
+    code: str
+    purpose: str | None
+    reason: str | None
+    deadline_override_ms: int | None = None
+
+    @property
+    def key(self) -> str:
+        return row_key(self.tier, self.model, self.policies, self.turn_kind)
+
+
+class TurnFailed(Exception):
+    """``measure_turns``: turn ``turn`` (0 = the warm-up) failed with ``error``."""
+
+    def __init__(self, turn: int, error: ModelError) -> None:
+        super().__init__(f"turn {turn}: {error.code}")
+        self.turn = turn
+        self.error = error
+
+
+class MatrixInterrupted(Exception):
+    """``run_matrix``: a row's turns failed partway. ``rows`` are the rows that finished
+    before it, ``failure`` the row that did not."""
+
+    def __init__(self, rows: list[Row], failure: RowFailure) -> None:
+        super().__init__(f"{failure.key}: turn {failure.turn} failed with {failure.code}")
+        self.rows = rows
+        self.failure = failure
+
+
+def merge_failures(
+    existing: Iterable[Mapping[str, Any]], rows: Iterable[Row], failure: RowFailure | None
+) -> list[dict[str, Any]]:
+    """``existing`` failure marks without those that ``rows`` (measured since) or ``failure``
+    replace, plus ``failure``; sorted by key."""
+    replaced = {row.key for row in rows}
+    kept = {
+        row_key(f["tier"], f["model"], f["policies"], f.get("turn_kind", "lite")): dict(f)
+        for f in existing
+    }
+    kept = {key: f for key, f in kept.items() if key not in replaced}
+    if failure is not None:
+        kept[failure.key] = asdict(failure)
+    return [kept[key] for key in sorted(kept)]
 
 
 def capability_cells(report: CapabilityReport) -> dict[str, dict[str, Any]]:
@@ -747,8 +834,9 @@ turn** is the mean number of model calls by purpose, counting every attempt (fai
   `retry_budget` (every regeneration the story allows was flagged too) or `call_budget`.
 
 A call the deadline cuts is never retried. If it is an output check or a regeneration, the turn
-releases the safe fallback. If it is the input check or the first generation, the turn fails and
-the run writes no row.
+releases the safe fallback. If it is the input check or the first generation, the turn fails:
+the run writes no row for it, keeps the rows that finished, and lists the row under **Failed
+runs** (#454).
 """
 
 NOT_RECORDED_NOTE = """\
@@ -773,6 +861,21 @@ is the first render and the reserved guardrail calls, so **Extra calls** holds t
 structured turn adds (salience, entailment, composition, regeneration) as well as retries.
 """
 
+DEADLINE_OVERRIDE_NOTE = """\
+**Turn deadline override (#454).** A row whose turn path says *turn deadline … s (override)*
+ran its turns under that per-story `budgets.deadline_ms` override, not its profile's own
+deadline (the `Structured (M4)` profile's is 45 s). The matrix measures how long a turn takes,
+so the profile's deadline must not cut it. Whether the profile's deadline fits a tier is read
+from the p50 / p95 against it.
+"""
+
+FAILED_NOTE = """\
+A row whose turns stopped on a model failure partway. The run wrote the rows that finished
+before it, and kept this row's previous measurement (if any) in the tables above. The turn is
+numbered from 1 in the measured turns; turn 0 is the warm-up. The next run that measures the
+row clears its entry.
+"""
+
 EMBEDDING_NOTE = """\
 The embedding endpoint (the `embedding` port, #138), measured when the run names one:
 **Protocol** is `GET /models` and one embedding; **Dimension** is what every vector of that
@@ -781,12 +884,39 @@ model has (the deployment pins it at the first embedding); **Max batch** is the 
 """
 
 
+def _turn_path_text(row: Mapping[str, Any]) -> str:
+    """A row's turn path, with its turn deadline override if it ran under one (#454)."""
+    override = row.get("deadline_override_ms")
+    path = str(row["turn_path"])
+    return path if override is None else f"{path}; turn deadline {override / 1000:g} s (override)"
+
+
+def _failed_lines(failed_rows: Sequence[Mapping[str, Any]]) -> list[str]:
+    if not failed_rows:
+        return []
+    lines = ["## Failed runs", "", FAILED_NOTE]
+    lines += ["| Tier | Policies | Measured | Engine SHA | Turn | Error | Turn path |"]
+    lines += ["|---|---|---|---|---|---|---|"]
+    for f in failed_rows:
+        error = f["code"] + "".join(
+            f", {name} `{f[name]}`" for name in ("purpose", "reason") if f.get(name)
+        )
+        lines.append(
+            f"| {_label(f)} | {POLICY_LABELS.get(f['policies'], f['policies'])} | "
+            f"{f['measured_at']} | `{f['sha']}` | {f['turn']} | {error} | {_turn_path_text(f)} |"
+        )
+    return [*lines, ""]
+
+
 def render(
-    rows: Sequence[Mapping[str, Any]], embedding_rows: Sequence[Mapping[str, Any]] = ()
+    rows: Sequence[Mapping[str, Any]],
+    embedding_rows: Sequence[Mapping[str, Any]] = (),
+    failed_rows: Sequence[Mapping[str, Any]] = (),
 ) -> str:
     """``docs/model-matrix.md`` for ``rows``. The notes appear only while they apply: *not
-    recorded* while a row lacks the call breakdown, and the turn-path note while a row was
-    measured on the guarded reply (#303)."""
+    recorded* while a row lacks the call breakdown, the turn-path note while a row was
+    measured on the guarded reply (#303), and the override note while a row ran under a turn
+    deadline override (#454). ``failed_rows`` are the rows a run could not finish (#454)."""
     purposes = list(STORY_PURPOSES)  # a turn's purposes: the matrix measures turns
     header = ["Tier", "Policies", "Protocol", *[f"`{p}`" for p in purposes]]
     header += ["E-06", "Turns", "p50", "p95", "Calls per turn"]
@@ -799,6 +929,8 @@ def render(
         lines.append(TURN_PATH_NOTE)
     if any(row.get("turn_kind", "lite") != "lite" for row in rows):
         lines.append(TURN_KIND_NOTE)
+    if any(row.get("deadline_override_ms") is not None for row in [*rows, *failed_rows]):
+        lines.append(DEADLINE_OVERRIDE_NOTE)
     lines += ["## Results", ""]
     if not rows:
         lines += ["No tier has been measured yet.", ""]
@@ -838,9 +970,10 @@ def render(
                 f"| {_label(row)} | "
                 f"{POLICY_LABELS.get(row['policies'], row['policies'])} | {row['measured_at']} | "
                 f"`{row['sha']}` | {row['hardware'] or '—'} | {row['server_version'] or '—'} | "
-                f"{row['turn_path']} |"
+                f"{_turn_path_text(row)} |"
             )
         lines.append("")
+    lines += _failed_lines(failed_rows)
     lines += _embedding_lines(embedding_rows)
     lines.append("Raw timings for every row are in [model-matrix.json](model-matrix.json).")
     return "\n".join(lines) + "\n"
@@ -851,10 +984,13 @@ def write_matrix(
     markdown: Path,
     raw: Path,
     embedding_rows: Sequence[Mapping[str, Any]] = (),
+    failed_rows: Sequence[Mapping[str, Any]] = (),
 ) -> None:
-    document = {"rows": list(rows), "embedding_rows": list(embedding_rows)}
+    document: dict[str, Any] = {"rows": list(rows), "embedding_rows": list(embedding_rows)}
+    if failed_rows:
+        document["failed_rows"] = list(failed_rows)
     raw.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", "utf-8")
-    markdown.write_text(render(rows, embedding_rows), encoding="utf-8")
+    markdown.write_text(render(rows, embedding_rows, failed_rows), encoding="utf-8")
 
 
 # -- the embedding row (#138) -------------------------------------------------------------------
@@ -935,6 +1071,15 @@ def merge_embedding(
     for row in rows:
         merged[row.key] = asdict(row)
     return [merged[key] for key in sorted(merged)]
+
+
+def load_failed_rows(path: Path) -> list[dict[str, Any]]:
+    """The failure marks of ``path`` (``failed_rows``, #454); none in a file written before."""
+    if not path.exists():
+        return []
+    data = json.loads(path.read_text(encoding="utf-8"))
+    found: list[dict[str, Any]] = data.get("failed_rows", [])
+    return found
 
 
 def load_embedding_rows(path: Path) -> list[dict[str, Any]]:
@@ -1045,14 +1190,25 @@ async def measure_turns(
     """One warm-up turn, then ``turns`` timed turns: latencies (ms) and each turn's calls."""
     await driver.prepare(engine, policies)
     script = [SCRIPT[i % len(SCRIPT)] for i in range(turns + 1)]
-    await driver.turn(script[0])
+    try:
+        await driver.turn(script[0])
+    except ModelError as exc:
+        raise TurnFailed(0, exc) from exc
     latencies: list[int] = []
     logs: list[TurnCalls] = []
-    for said in script[1:]:
+    for n, said in enumerate(script[1:], start=1):
         started = time.perf_counter()
-        logs.append(await driver.turn(said))
+        try:
+            logs.append(await driver.turn(said))
+        except ModelError as exc:
+            raise TurnFailed(n, exc) from exc
         latencies.append(round((time.perf_counter() - started) * 1000))
     return latencies, logs
+
+
+def _detail(error: ModelError, name: str) -> str | None:
+    value = error.details.get(name)
+    return None if value is None else str(value)
 
 
 async def run_matrix(
@@ -1066,7 +1222,8 @@ async def run_matrix(
 ) -> list[Row] | None:
     """The rows for ``target``, one per turn kind and policy set, or ``None`` when the endpoint
     fails the protocol probe. ``driver_factory`` plays the Lite rows; the structured and
-    repair-heavy rows play ``StructuredDriver`` (#153)."""
+    repair-heavy rows play ``StructuredDriver`` (#153). A row whose turn fails on a model
+    error raises ``MatrixInterrupted`` with the rows finished before it (#454)."""
     await configure(engine, target)
     report = await assess(engine.models)
     if not report.protocol.ok:
@@ -1079,8 +1236,25 @@ async def run_matrix(
     rows: list[Row] = []
     for kind, policies in [(k, p) for k in turn_kinds for p in POLICY_SETS]:
         driver = driver_factory() if kind == "lite" else driver_for(kind)
+        override = driver.deadline_override_ms if isinstance(driver, StructuredDriver) else None
         try:
             latencies, logs = await measure_turns(engine, driver, policies, turns)
+        except TurnFailed as failed:
+            failure = RowFailure(
+                tier=target.tier,
+                model=target.model,
+                policies=policies,
+                turn_kind=kind,
+                measured_at=measured_at,
+                sha=sha,
+                turn_path=driver.name,
+                turn=failed.turn,
+                code=failed.error.code,
+                purpose=_detail(failed.error, "purpose"),
+                reason=_detail(failed.error, "reason"),
+                deadline_override_ms=override,
+            )
+            raise MatrixInterrupted(rows, failure) from failed.error
         finally:
             if isinstance(driver, StructuredDriver):
                 driver.restore()
@@ -1110,6 +1284,7 @@ async def run_matrix(
                 faulted_turns=breakdown.faulted_turns,
                 fallbacks=breakdown.fallbacks,
                 turn_kind=kind,
+                deadline_override_ms=override,
             )
         )
     return rows
@@ -1168,6 +1343,7 @@ async def _main(args: argparse.Namespace) -> int:
         embedding_api_key=getattr(args, "embedding_api_key", None),
     )
     embedded: list[EmbeddingRow] = []
+    failure: RowFailure | None = None
     async with database(args.database_url) as dsn:
         settings = make_settings(dsn)
         db = make_engine(settings)
@@ -1185,8 +1361,18 @@ async def _main(args: argparse.Namespace) -> int:
                         engine.models.embeddings, tier=target.tier, model=target.embedding_model
                     )
                 )
+        except MatrixInterrupted as stopped:
+            # #454: the finished rows are written, and the failed row is marked failed. No
+            # partial row is written: its timings would mislead.
+            rows, failure = stopped.rows, stopped.failure
+            print(
+                f"model call failed in the {failure.turn_kind} {failure.policies} row at turn "
+                f"{failure.turn}: {failure.code} (purpose {failure.purpose}, reason "
+                f"{failure.reason}); writing {len(rows)} finished rows",
+                file=sys.stderr,
+            )
         except ModelError as exc:
-            # A failure part-way through writes nothing: a partial row would mislead.
+            # A failure outside the rows' turns writes nothing.
             print(f"model call failed: {exc.code} {exc.details}", file=sys.stderr)
             rows = None
         finally:
@@ -1200,9 +1386,10 @@ async def _main(args: argparse.Namespace) -> int:
         args.output,
         args.raw,
         merge_embedding(load_embedding_rows(args.raw), embedded),
+        merge_failures(load_failed_rows(args.raw), rows, failure),
     )
     print(f"wrote {args.output} and {args.raw} ({len(rows)} rows for {target.tier})")
-    return 0
+    return 0 if failure is None else EX_UNAVAILABLE
 
 
 LIVE_TURN_KINDS: tuple[TurnKind, ...] = ("lite", "structured")

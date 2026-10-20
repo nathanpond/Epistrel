@@ -456,12 +456,56 @@ def test_turn_path_note_only_while_a_guarded_reply_row_exists() -> None:
     assert "**Turn path.**" in mixed
 
 
+def test_a_deadline_override_is_reported() -> None:
+    """#454: a row measured under a turn deadline override says so in its **Runs** turn path,
+    and the override note explains it, so a reader knows the profile default was not used.
+
+    Complement asserted: rows without an override show neither."""
+    plain = mm.render(mm.merge([], [row()]))
+    assert "(override)" not in plain
+    assert "**Turn deadline override (#454).**" not in plain
+    structured = row(
+        turn_kind="structured",
+        turn_path=mm.STRUCTURED_PATH,
+        deadline_override_ms=mm.MEASUREMENT_DEADLINE_MS,
+    )
+    text = mm.render(mm.merge([], [row(), structured]))
+    assert "**Turn deadline override (#454).**" in text
+    assert f"| {mm.STRUCTURED_PATH}; turn deadline 300 s (override) |" in text
+    assert f"| {mm.TURN_PATH} |" in text
+
+
+def test_merge_failures_replaces_and_clears() -> None:
+    """#454: a failure mark replaces an earlier mark of its key, and a row measured since
+    clears its key's mark. Other keys' marks are kept."""
+    failure = mm.RowFailure(
+        tier="local",
+        model="m",
+        policies="off",
+        turn_kind="structured",
+        measured_at="2026-10-20",
+        sha="abc1234",
+        turn_path=mm.STRUCTURED_PATH,
+        turn=1,
+        code="model_unavailable",
+        purpose=None,
+        reason=None,
+    )
+    other = {**asdict(failure), "tier": "hosted"}
+    older = {**asdict(failure), "turn": 7}
+    assert mm.merge_failures([older, other], [], failure) == [other, asdict(failure)]
+    measured = row(turn_kind="structured")
+    assert mm.merge_failures([older, other], [measured], None) == [other]
+
+
 def test_committed_matrix_is_its_json_rendered() -> None:
     """``docs/model-matrix.md`` is generated, never hand-edited: it is ``render`` of the
     committed ``docs/model-matrix.json``. A header change therefore reaches the committed file,
     and so does a note that has stopped applying (#303)."""
     assert mm.MATRIX_PATH.read_text("utf-8") == mm.render(
-        mm.load_rows(mm.RAW_PATH), mm.load_embedding_rows(mm.RAW_PATH)
+        mm.load_rows(mm.RAW_PATH),
+        mm.load_embedding_rows(mm.RAW_PATH),
+        mm.load_failed_rows(mm.RAW_PATH),
     )
 
 

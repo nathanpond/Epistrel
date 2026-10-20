@@ -13,14 +13,17 @@ from typing import Any
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.core.canon import facts as canon
 from epistrel.core.context import RequestContext
 from epistrel.core.errors import ModuleOff
+from epistrel.core.memory import consolidation as core
 from epistrel.core.memory.consolidation import ConsolidateRequest, Window
 from epistrel.orchestrator.jobs.handlers import consolidation
 from epistrel.orchestrator.jobs.handlers.consolidation import consolidate_window
 from epistrel.orchestrator.models.access import ModelAccessLayer
 from epistrel.orchestrator.models.config import ConfigRow, KeyBox, describe
 from epistrel.orchestrator.models.registry import CONSOLIDATION, DELIVERED, LITE_SUMMARY, RESERVED
+from epistrel.testing.fixtures import scale
 from tests import consolidation_support as cs
 from tests.auth_support import auth_settings, bearer
 from tests.event_support import execute_in_tx, new_story, scalar
@@ -265,13 +268,9 @@ def test_lite_summary_resolves_through_the_consolidation_row() -> None:
 async def test_a_window_decodes_only_its_own_facts(
     engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """NFR-PERF-4 (#452): a consolidation window's fact inputs are read for the window's turns
+    """P-04 structured (#452): a consolidation window's fact inputs are read for the window's turns
     in the query, not filtered from the whole canon: collecting turns 3-6 of a story whose
     facts are spread over every turn decodes exactly the facts written in those turns."""
-    from epistrel.core.canon import facts as canon
-    from epistrel.core.memory import consolidation as core
-    from epistrel.testing.fixtures import scale
-
     fixture = await scale.build_scale_fixture(
         engine, scale.ScaleSpec.scaled(60, characters=3, dimension=8)
     )

@@ -395,7 +395,7 @@ class _Counts:
 async def test_detection_env_reads_canon_once_per_snapshot(
     engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """NFR-PERF-2, NFR-PERF-4 (#452): a turn's detection environment builds three speakers'
+    """P-04 structured (#452): a turn's detection environment builds three speakers'
     protected indexes (Linda, Marcus, the narrator) and resolution contexts from one snapshot.
     Only the versions a speaker may not read are decoded in full (the ring, for Linda and for
     the narrator: 2), never the shared canon per speaker (it was 2 x 8 versions per speaker),
@@ -435,7 +435,7 @@ async def test_detection_env_reads_canon_once_per_snapshot(
 async def test_rebase_recheck_rebuilds_each_index_once(
     engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """NFR-PERF-3 (#452): the rebase re-check runs under the story lock. A turn that built the
+    """P-04 structured (#452): the rebase re-check runs under the story lock. A turn that built the
     same indexes three times (its check, its composition, a repair re-check) is re-checked by
     rebuilding each distinct index once from one canon read and one entity index: 2 decoded
     versions (the ring, for Linda and the narrator), not 3 x 3 x 2 reads of the whole canon.

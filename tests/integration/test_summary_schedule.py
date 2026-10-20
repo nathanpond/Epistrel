@@ -35,7 +35,7 @@ from epistrel.core.ids import new_ulid
 from epistrel.core.stories import delete_story
 from epistrel.core.summary import Inclusion, covered_to, included_segments, summary_state
 from epistrel.core.tables import lite_summary_segments, operations
-from epistrel.core.turns import read_turn_inputs
+from epistrel.core.turns import read_turn_inputs, transcript_rows
 from epistrel.orchestrator.jobs.handlers import lite_summary
 from epistrel.orchestrator.models.access import ModelAccessLayer
 from tests.auth_support import auth_settings
@@ -44,6 +44,7 @@ from tests.event_support import execute_in_tx, new_story, play_turn, rows, scala
 from tests.fork_support import fork
 from tests.profile_support import store_overrides
 from tests.projection_support import swap, truncate, untruncate
+from tests.retrieval_support import statements
 from tests.summary_support import run_due_jobs, segment_rows, summary_jobs
 
 SETTINGS = {"lite_summary_chunk": 2}
@@ -705,13 +706,10 @@ async def test_read_phase_cost_is_independent_of_story_length(
 
 
 async def test_verbatim_window_reads_only_its_rows(engine: AsyncEngine) -> None:
-    """NFR-PERF-4 (#452): without a rolling summary the prompt keeps the latest
+    """P-04 structured (#452): without a rolling summary the prompt keeps the latest
     ``window_messages`` rows, read as such (``LIMIT``), not sliced from the whole transcript
     (a structured P-04 story has 10,000 rows). The window is the same rows in the same order
     as the slice of every row, at each size."""
-    from epistrel.core.turns import transcript_rows
-    from tests.retrieval_support import statements
-
     story = await new_story(engine)
     for n in range(6):
         await play_turn(engine, story, f"line {n}")

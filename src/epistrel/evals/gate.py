@@ -14,9 +14,14 @@ observations for an ``at_least`` floor (recall ≥ 95 %) and the share of bad on
   ``ZERO_MIN_CASES`` (300) cases per seed. The verdict reports the one-sided 95 % upper bound
   on the true rate, ``1 - 0.05^(1/n)`` (≈ 3/n): evidence of a low rate, never a claim of zero.
   One violation on any seed fails, and so does a clean run on fewer than 300 cases.
+- **Relative rule** (``relative``, NFR-QUAL-14's engine-intervention floor; #158): an aggregate
+  target on the ``at_most`` side, judged only on at least ``RELATIVE_MIN_PAIRS`` (300)
+  observations per seed (E-12's non-tied pairs of one intervention type); it passes when the mean
+  across seeds plus one sample standard deviation is **at most** the floor (NFR-QUAL-14 says "at
+  most 55 %"), and fewer observations are ``insufficient_evidence``, never a pass.
 - **Informational** (``informational``): no floor; the verdict is ``report_only``.
 
-Either floored rule is ``insufficient_evidence`` with no observations or fewer than two seeds
+Each floored rule is ``insufficient_evidence`` with no observations or fewer than two seeds
 (no standard deviation), unless the run already fails (a violation is evidence enough).
 ``gate`` folds verdicts: any ``fail`` or ``error`` fails, else any ``insufficient_evidence``
 leaves the whole ``insufficient_evidence``, else it passes; ``report_only`` never counts.
@@ -33,6 +38,9 @@ from enum import StrEnum
 
 ZERO_MIN_CASES = 300
 """NFR-QUAL-8's minimum labeled cases per metric (per seed) for a zero-tolerance pass."""
+RELATIVE_MIN_PAIRS = 300
+"""NFR-QUAL-14's minimum non-tied pairs of an intervention type (per seed) before its floor
+is judged (#158)."""
 CONFIDENCE = 0.95
 MIN_SEEDS = 2
 """A standard deviation needs two seeds; fewer is ``insufficient_evidence``."""
@@ -44,6 +52,7 @@ REQUIREMENT_PATTERN = re.compile(r"^nfr_qual_(\d+)(?:\.|$)")
 class Rule(StrEnum):
     rate = "rate"
     zero = "zero"
+    relative = "relative"
     informational = "informational"
 
 
@@ -99,6 +108,8 @@ def metric_problems(metric: Metric) -> list[str]:
         found.append(f"{metric.id}: floor {metric.floor} is not a fraction 0-1")
     if metric.rule is Rule.zero and (metric.floor != 0.0 or metric.direction is Direction.at_least):
         found.append(f"{metric.id}: a zero-tolerance metric has floor 0 on the at_most side")
+    if metric.rule is Rule.relative and metric.direction is not Direction.at_most:
+        found.append(f"{metric.id}: a relative metric's floor is on the at_most side")
     return found
 
 
@@ -167,6 +178,11 @@ def judge(metric: Metric, tallies: Sequence[SeedTally]) -> Judgement:
         verdict = Verdict.report_only
     elif sample == 0 or mean is None or stdev is None:
         verdict = Verdict.insufficient_evidence
+    elif metric.rule is Rule.relative:
+        if sample < RELATIVE_MIN_PAIRS:
+            verdict = Verdict.insufficient_evidence
+        else:
+            verdict = Verdict.passed if mean + stdev <= metric.floor else Verdict.failed
     elif metric.direction is Direction.at_least:
         verdict = Verdict.passed if mean - stdev > metric.floor else Verdict.failed
     else:
@@ -213,6 +229,7 @@ def gate(verdicts: Iterable[Verdict]) -> Verdict:
 __all__ = [
     "CONFIDENCE",
     "MIN_SEEDS",
+    "RELATIVE_MIN_PAIRS",
     "ZERO_MIN_CASES",
     "Direction",
     "Judgement",

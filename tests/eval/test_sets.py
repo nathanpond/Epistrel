@@ -16,6 +16,7 @@ import pytest
 from epistrel.evals import SUITES, MalformedCase
 from epistrel.evals import sets as labeled
 from epistrel.evals.authoring import GENERATORS, render
+from epistrel.evals.judging import CALIBRATION_MIN_PAIRS, load_pairs
 
 REPO = Path(__file__).resolve().parents[2]
 SETS = REPO / "evals" / "sets"
@@ -34,18 +35,23 @@ SIZES = {
     "q01": 100,
     "q02": 100,
     "q03": 50,
+    # #158's intervention scenarios, shared by E-12 and E-13.
+    "e12": 21,
+    "e13": 21,
 }
 
 
 def test_every_set_loads_meets_its_size_and_is_approved_or_pending() -> None:
-    """The ten NFR-QUAL suites' sets load under their schemas, meet #157's sizes, match their
-    authoring modules, carry a provenance line, and the review digest is current."""
+    """The NFR-QUAL suites' sets load under their schemas, meet #157's (and #158's) sizes,
+    match their authoring modules, carry a provenance line, and the review digest is current;
+    #158's judge calibration set holds at least 200 pairs."""
     suites = labeled.labeled_suites()
     assert {s.name for s in suites} == set(SIZES)
     for suite in suites:
         assert suite.min_cases >= SIZES[suite.name], suite.name
         assert len(suite.load(SETS)) >= suite.min_cases, suite.name
     assert labeled.problems(SETS, require_approved=False) == []
+    assert len(load_pairs(SETS)) >= CALIBRATION_MIN_PAIRS
     for relative, generate in GENERATORS.items():
         assert (SETS / relative).read_text(encoding="utf-8") == render(generate()), relative
 

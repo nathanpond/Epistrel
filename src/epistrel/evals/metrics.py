@@ -86,6 +86,37 @@ def reciprocal_rank(ranked: Sequence[str], relevant: Collection[str]) -> float:
     return 0.0
 
 
+Z_95 = 1.959963984540054
+"""The two-sided 95 % normal quantile."""
+
+
+def wilson(successes: int, n: int, z: float = Z_95) -> tuple[float, float] | None:
+    """The Wilson score interval (95 % by default) of ``successes`` in ``n`` trials; ``None``
+    with no trials (#158: every judge rate's confidence interval)."""
+    if n <= 0:
+        return None
+    p = successes / n
+    z2 = z * z
+    centre = (p + z2 / (2 * n)) / (1 + z2 / n)
+    half = z * math.sqrt(p * (1 - p) / n + z2 / (4 * n * n)) / (1 + z2 / n)
+    # At 0 or n successes the bound is exactly 0 or 1 (no rounding residue).
+    low = 0.0 if successes == 0 else max(0.0, centre - half)
+    high = 1.0 if successes == n else min(1.0, centre + half)
+    return low, high
+
+
+def mean_ci(values: Sequence[float], z: float = Z_95) -> tuple[float, float] | None:
+    """A normal-approximation 95 % interval of the mean of ``values`` (``None`` below two
+    values): E-13's judge scores per fingerprint (#158)."""
+    n = len(values)
+    if n < 2:
+        return None
+    mean = sum(values) / n
+    sd = math.sqrt(sum((v - mean) ** 2 for v in values) / (n - 1))
+    half = z * sd / math.sqrt(n)
+    return mean - half, mean + half
+
+
 def f_beta(precision: float, recall: float, beta: float = 2.0) -> float:
     """F-beta: recall counts ``beta`` times as much as precision (0 when both are 0)."""
     b2 = beta * beta
@@ -95,12 +126,15 @@ def f_beta(precision: float, recall: float, beta: float = 2.0) -> float:
 
 __all__ = [
     "HIT_OVERLAP",
+    "Z_95",
     "average_ranks",
     "f_beta",
     "hits",
+    "mean_ci",
     "pearson",
     "recall_at",
     "reciprocal_rank",
     "span_overlap",
     "spearman",
+    "wilson",
 ]

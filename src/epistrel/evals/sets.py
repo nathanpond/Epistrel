@@ -13,7 +13,13 @@ lint job) and ``python -m epistrel.evals digest``.
 - ``docs/evals/sets-digest.md`` is not what ``digest`` writes.
 
 The digest is what the owner reviews: per set its size, its counts by family and by label, and
-20 cases drawn by a fixed seed.
+20 cases drawn by a fixed seed (a scenario's turns shown by their lines and expected
+interventions; scripted stub answers left out).
+
+#158 adds the judge calibration set (``judge_calibration/cases.jsonl``: no suite loads it, the
+judge calibration does), under the same rules: it loads (``judging.load_pairs``), holds at least
+``judging.CALIBRATION_MIN_PAIRS`` pairs, has its ``PROVENANCE.md`` and is in the digest. E-12 and
+E-13 share one set (``scenarios/cases.jsonl``), shown once.
 """
 
 from __future__ import annotations
@@ -27,6 +33,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+import epistrel.evals.judging as judges
 from epistrel.evals import authoring
 from epistrel.evals.suites import SUITES, MalformedCase, Suite
 from epistrel.tools.generated import REPO_ROOT
@@ -62,6 +69,23 @@ def provenance_problem(directory: Path, *, require_approved: bool) -> str | None
     return f"{directory.name}: {PROVENANCE} has no 'approved by owner YYYY-MM-DD' line"
 
 
+def _shown(row: dict[str, Any]) -> dict[str, Any]:
+    """A row as the digest shows it: no id, family or scripted stub answer; a scenario's turns
+    by their line and expected interventions."""
+    shown = {
+        k: v
+        for k, v in row.items()
+        if k not in ("id", "family", "stub_answer") and not k.startswith("stub")
+    }
+    if isinstance(shown.get("turns"), list):
+        shown["turns"] = [
+            {"say": t.get("say"), "expected": t.get("expected")}
+            for t in shown["turns"]
+            if isinstance(t, dict)
+        ]
+    return shown
+
+
 def _label(value: Any) -> str:
     if isinstance(value, str):
         return value
@@ -82,24 +106,35 @@ def digest_text(sets_dir: Path) -> str:
         "`PROVENANCE.md` records how it was authored and the owner's approval.",
         "",
     ]
+    shown_sets: list[tuple[str, str]] = []
     for suite in labeled_suites():
-        path = sets_dir / suite.set_file
+        names = [n for f, n in shown_sets if f == suite.set_file]
+        if names:
+            continue
+        shown_sets.append((suite.set_file, suite.name))
+    for set_file in (judges.CALIBRATION_SET,):
+        shown_sets.append((set_file, "judge calibration"))
+    for set_file, owner in shown_sets:
+        sharing = [s.name for s in labeled_suites() if s.set_file == set_file]
+        owner = ", ".join(sharing) or owner
+        path = sets_dir / set_file
         rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
         families = Counter(str(r.get("family", "")) for r in rows)
-        labels = Counter(_label(r.get("expected")) for r in rows)
+        labels = Counter(_label(r.get("expected", r.get("label"))) for r in rows)
         lines += [
-            f"## `{suite.set_file}` ({suite.name}, {len(rows)} cases)",
+            f"## `{set_file}` ({owner}, {len(rows)} cases)",
             "",
             "Families: " + ", ".join(f"{k} {v}" for k, v in sorted(families.items())) + ".",
             "",
             "Labels: " + ", ".join(f"{k} {v}" for k, v in sorted(labels.items())) + ".",
             "",
         ]
-        picked = random.Random(f"{DIGEST_SEED}:{suite.name}").sample(  # noqa: S311 - a digest
+        seed_key = sharing[0] if sharing else owner
+        picked = random.Random(f"{DIGEST_SEED}:{seed_key}").sample(  # noqa: S311 - a digest
             rows, min(DIGEST_SAMPLES, len(rows))
         )
         for row in sorted(picked, key=lambda r: str(r["id"])):
-            shown = {k: v for k, v in row.items() if k not in ("id", "family", "stub_answer")}
+            shown = _shown(row)
             lines.append(f"- `{row['id']}`: `{json.dumps(shown, ensure_ascii=False)}`")
         lines.append("")
     return "\n".join(lines)
@@ -131,6 +166,16 @@ def problems(
         if len(cases) < suite.min_cases:
             found.append(f"{suite.name}: {len(cases)} cases, fewer than its {suite.min_cases}")
         directories.add((sets_dir / suite.set_file).parent)
+    try:
+        pairs = judges.load_pairs(sets_dir)
+    except MalformedCase as exc:
+        found.append(str(exc))
+    else:
+        if len(pairs) < judges.CALIBRATION_MIN_PAIRS:
+            found.append(
+                f"judge calibration: {len(pairs)} pairs, fewer than {judges.CALIBRATION_MIN_PAIRS}"
+            )
+        directories.add((sets_dir / judges.CALIBRATION_SET).parent)
     for directory in sorted(directories):
         problem = provenance_problem(directory, require_approved=require_approved)
         if problem is not None:

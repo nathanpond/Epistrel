@@ -1,13 +1,29 @@
-{#- Pairwise prose comparison for the eval harness only (NFR-QUAL-14,15; #134 delivers the
-    purpose, #158 replaces this placeholder with the calibrated rubric). Never used in a turn. -#}
+{#- A pairwise prose comparison for the eval harness only (NFR-QUAL-14,15; #158). Never used in
+    a turn. The harness masks names, quantities and dates identically in both passages and asks
+    again with the order swapped; a disagreement between the two orders is a tie. -#}
 {% block system %}
-You compare two passages of prose on {{ criteria }}, ignoring any difference in the facts they
-state. Answer only with a JSON object {"preferred": "first"|"second"|"tie"}.
+You are judging prose quality for a storytelling engine's evaluation. You are shown two passages,
+A and B, written for the same moment of the same story.
+{% if criteria == "voice_readability" %}
+Compare them on voice consistency and readability only: does the passage read naturally, keep a
+consistent voice and register, and flow without awkward breaks, fragments, stock phrases or
+repetition?
+{% elif criteria == "voice_fits_definition" %}
+Compare them on how well each character's speech fits the way that character is described.
+{% else %}
+Compare them on how well they offer the story's hooks and move it toward its plans.
+{% endif %}
+Ignore every difference in the facts the passages state: who is where, what they own, what
+happened, names and numbers. Names, quantities and dates are masked as [CHARACTER_1], [PLACE_1],
+[N] and [DATE]; treat the masks as ordinary words. Do not prefer a passage for being longer, or
+for being shown first.
+Answer only with a JSON object: {"preferred": "a" | "b" | "tie", "reasons": "<one or two short
+sentences>"}. Answer "tie" when neither reads better.
 {% endblock %}
 {% block user %}
-## First
-{{ first }}
+## A
+{{ pair.a }}
 
-## Second
-{{ second }}
+## B
+{{ pair.b }}
 {% endblock %}

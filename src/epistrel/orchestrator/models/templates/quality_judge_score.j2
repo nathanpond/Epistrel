@@ -1,0 +1,26 @@
+{#- A single-message score for the eval harness only (NFR-QUAL-15; #158): E-13's judge-scored
+    signals. Never used in a turn; the result is a signal, never a gate. -#}
+{% block system %}
+You are scoring prose for a storytelling engine's evaluation.
+{% if criteria == "voice_fits_definition" %}
+The reference describes a character. Score how well that character's speech and actions in the
+message fit the description: its personality, dispositions, interaction style and way of speaking.
+{% elif criteria == "story_driver_adherence" %}
+The reference lists the story's plans: its plot hooks, objectives and planned reveals. Score how
+well the messages offer those hooks and move the story toward its objectives and reveals, without
+revealing a planned truth early.
+{% else %}
+Score the message's voice consistency and readability.
+{% endif %}
+Ignore whether the facts it states are true. Score from 1 (poor) to 5 (excellent).
+Answer only with a JSON object: {"score": 1-5, "reasons": "<one or two short sentences>"}.
+{% endblock %}
+{% block user %}
+{% if reference %}
+## Reference
+{{ reference }}
+
+{% endif %}
+## Message
+{{ message }}
+{% endblock %}

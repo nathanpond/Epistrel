@@ -1,4 +1,5 @@
-"""#157's set authoring: the labeled sets of the NFR-QUAL suites, generated deterministically
+"""#157's set authoring (and #158's judge calibration pairs and intervention scenarios): the
+labeled sets of the NFR-QUAL suites, generated deterministically
 from hand-written templates (no model), one module per set.
 
 ``python -m epistrel.evals author`` writes every generated set under ``evals/sets/``;
@@ -21,8 +22,10 @@ from epistrel.evals.authoring import (
     consolidation,
     entailment,
     importance,
+    judge_calibration,
     retrieval,
     salience,
+    scenarios,
     structured_output,
 )
 
@@ -38,6 +41,8 @@ GENERATORS: Mapping[str, Callable[[], list[dict[str, Any]]]] = MappingProxyType(
         "retrieval/recall.jsonl": retrieval.recall_cases,
         "retrieval/resolution.jsonl": retrieval.resolution_cases,
         "retrieval/abstract.jsonl": retrieval.abstract_cases,
+        "judge_calibration/cases.jsonl": judge_calibration.cases,
+        "scenarios/cases.jsonl": scenarios.cases,
     }
 )
 """Each generated set's path under ``evals/sets`` and the function that authors it."""

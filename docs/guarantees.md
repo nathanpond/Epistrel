@@ -70,6 +70,18 @@ report's `guarantees_lost` names the deterministic rows a change would lose, by 
 - `rating_suggestion`: Advisory, outside stories (it reviews catalog entries), never a verdict.
 - `quality_judge`: Eval only, never in a turn.
 
+## Outside the guarantee: voice and plot
+
+**Voice fidelity and plot adherence are not guaranteed** (NFR-QUAL-13). The engine delivers
+them structurally: every character render's context carries that character's definition
+(personality, dispositions, interaction style, sample dialogue), and the director's context
+carries the story's hooks, objectives, guidance and planned reveals (C-25). How the output then
+reads is measured as signals only (E-13: repetition, length accuracy, judge-scored voice
+consistency and story-driver adherence, NFR-QUAL-15), never floored or gated. The only prose
+floor is NFR-QUAL-14 (E-12): an aggregate, relative target that the engine's own interventions
+(repairs, composition, polish) are not preferred less than the model's first draft, judged by a
+calibrated quality judge. Individual messages may still read worse than their drafts.
+
 ## Per profile
 
 ### Lite

@@ -30,6 +30,14 @@ the counts must match. A mismatch is a run error (``Report.errors``): the run wr
 it did not create. The harness never runs inside a turn: nothing in ``epistrel.core``, the
 Orchestrator, the API or the ``Engine`` imports it (``[tool.importlinter]``).
 
+**The quality judge** (#158; ``evals.judging``). ``CaseContext.judge``/``judge_score`` run the
+``quality_judge`` purpose on a case's own scratch stories only (``NotScratch`` otherwise), each
+call with its own budget, outside every turn. Before a suite with pairwise judge rows (E-12)
+the run reads the stored judge calibration of its judge model (``calibration_path``), or
+calibrates first (``calibrate``: ``run --all``); with none stored it raises
+``CalibrationMissing`` before any case. A suite's judge rows (``Suite.judge_metrics``) are
+``report_only`` unless that calibration is ``calibrated``, and each suite result names it.
+
 **Failures.** A ``ModelError`` during a case is a failed case — every metric of the suite
 observes it as bad — never an exclusion. Any other exception, or a malformed labeled set, is a
 **harness error**: the suite's verdict is ``error``. Each failed case's inputs and output go to
@@ -46,7 +54,7 @@ import random
 import secrets
 import time
 from collections import defaultdict
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -56,6 +64,7 @@ from cryptography.fernet import Fernet
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+import epistrel.evals.judging as judges
 from epistrel.config import Settings
 from epistrel.core.context import RequestContext
 from epistrel.core.db import make_engine
@@ -66,24 +75,20 @@ from epistrel.core.seeds import profiles as seeded_profiles
 from epistrel.core.stories import STORY_NAME_MAX, CreatedStory, StorySpec
 from epistrel.engine import Engine
 from epistrel.evals.gate import Rule, SeedTally, Verdict, gate, judge
-from epistrel.evals.report import Host, MetricResult, Report, SuiteResult
-from epistrel.evals.suites import CaseModel, Counts, MalformedCase, Outcome, Suite
-from epistrel.orchestrator.budget import TurnBudget
+from epistrel.evals.report import Host, JudgeCalibrationRef, MetricResult, Report, SuiteResult
+from epistrel.evals.suites import CaseModel, Counts, MalformedCase, Outcome, Suite, Summary
 from epistrel.orchestrator.embeddings.adapter import EMBEDDING
 from epistrel.orchestrator.models import config as model_config
-from epistrel.orchestrator.models.access import ModelAccessLayer, eval_scope
+from epistrel.orchestrator.models.access import EVAL_SCOPE, ModelAccessLayer, eval_scope
 from epistrel.orchestrator.models.adapter import ModelParams
 from epistrel.orchestrator.models.errors import ModelError
 from epistrel.orchestrator.models.facts import TEMPLATE_HASHES
 from epistrel.orchestrator.models.registry import (
     DEFAULT_MODEL_KEY,
     GENERATION,
-    QUALITY_JUDGE,
     STORY_PURPOSES,
-    QualityJudgeInputs,
-    QualityJudgeVerdict,
+    JudgeCriteria,
 )
-from epistrel.orchestrator.models.structured import Uncertain
 from epistrel.orchestrator.models.stub import STUB_MODEL
 from epistrel.tools import model_matrix
 from epistrel.tools.generated import REPO_ROOT
@@ -93,7 +98,6 @@ PRINCIPAL = "system:evals"
 SCRATCH_PREFIX = "scratch-eval-"
 SCRATCH_DEADLINE_MS = 300_000
 CALL_TIMEOUT_S = 120.0
-JUDGE_DEADLINE_S = 300.0
 DEFAULT_SEED_BASE = 20261008
 DEFAULT_SEEDS = 2
 DEFAULT_SETS_DIR = REPO_ROOT / "evals" / "sets"
@@ -113,6 +117,19 @@ class EndpointUnavailable(Exception):
 
 class NotScratch(Exception):
     """The quality judge was asked about a story that is not one of the eval's scratch stories."""
+
+
+class CalibrationMissing(Exception):
+    """A suite whose judge rows need the pairwise judge calibration was run with none stored for
+    the run's judge model (#158): ``calibrate-judge`` (or ``run --all``) first."""
+
+
+def calibration_path(config: AdapterConfig) -> Path:
+    """Where the run's judge calibration is stored: ``docs/evals/judge-calibration.json`` for a
+    real model (committed beside its reports), ``build/evals/`` for the stub."""
+    if config.adapter == "stub":
+        return BUILD_DIR / judges.CALIBRATION_FILE
+    return REPO_ROOT / "docs" / "evals" / judges.CALIBRATION_FILE
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,11 +157,12 @@ class AdapterConfig:
         return STUB_MODEL if self.adapter == "stub" else (self.model or "")
 
 
-def run_fingerprint(model: str) -> str:
+def run_fingerprint(model: str, dials: Mapping[str, Any] | None = None) -> str:
     """The fingerprint the run reports (``FINGERPRINT_VERSION``'s docstring): the seeded
-    profile over the deployment's seeded defaults, as a fresh deployment runs it."""
+    profile over the deployment's seeded defaults, as a fresh deployment runs it; with
+    ``dials`` (a settings merge patch) the variant they make (#158's ``gated`` configuration)."""
     settings = merged_settings(
-        seeded_profiles.profile_defaults(), seeded_profiles.STRUCTURED_M4_SETTINGS
+        seeded_profiles.profile_defaults(), seeded_profiles.STRUCTURED_M4_SETTINGS, dials
     )
     facts = RuntimeFacts(
         models={purpose: ModelIdentity(id=model) for purpose in STORY_PURPOSES},
@@ -228,6 +246,8 @@ class CaseContext:
     scratch: Scratch
     seed: int
     run_id: str
+    model: str = ""
+    """The run's model (``AdapterConfig.model_name``): what a suite's fingerprints name."""
 
     @property
     def models(self) -> ModelAccessLayer:
@@ -242,25 +262,43 @@ class CaseContext:
         return await self.scratch.create(spec)
 
     async def judge(
-        self, story_id: str, first: str, second: str, criteria: str | None = None
-    ) -> QualityJudgeVerdict | Uncertain:
-        """One ``quality_judge`` comparison of two passages from scratch story ``story_id``;
-        ``NotScratch`` for any other story (the judge never reads a live story)."""
+        self,
+        story_id: str,
+        a: str,
+        b: str,
+        criteria: JudgeCriteria = "voice_readability",
+        *,
+        key: str = "pair",
+    ) -> judges.PairJudgement:
+        """One ``quality_judge`` pairwise judgement, in both orders, of two passages from
+        scratch story ``story_id`` (``judging.compare``; ``key`` names the pair within the case:
+        its eval scope is ``<case>.<key>``); ``NotScratch`` for any other story (the judge never
+        reads a live story)."""
         self.scratch.require(story_id)
-        extra = {} if criteria is None else {"criteria": criteria}
-        inputs = QualityJudgeInputs(first=first, second=second, **extra)
+        return await judges.compare(self.models, a, b, criteria, case_id=self.scope_id(key))
 
-        def identical() -> QualityJudgeVerdict | None:
-            # FR-MODEL-5's deterministic step: the same passage twice is a tie, no call needed.
-            return QualityJudgeVerdict(preferred="tie") if first.strip() == second.strip() else None
-
-        return await self.models.structured_call(
-            QUALITY_JUDGE.name,
-            QualityJudgeVerdict,
-            inputs,
-            deterministic_first=identical,
-            budget=TurnBudget(deadline_s=JUDGE_DEADLINE_S),
+    async def judge_score(
+        self,
+        story_id: str,
+        message: str,
+        reference: str,
+        criteria: JudgeCriteria,
+        *,
+        key: str = "score",
+    ) -> int | None:
+        """One ``quality_judge`` score (1-5) of a message from scratch story ``story_id``
+        against ``reference`` (``judging.score``); ``NotScratch`` for any other story."""
+        self.scratch.require(story_id)
+        return await judges.score(
+            self.models, message, reference, criteria, case_id=self.scope_id(key)
         )
+
+    def scope_id(self, key: str) -> str:
+        """``<case>.<key>``: the eval scope of one judge call of this case (a stub run scripts
+        it by this id: ``judging.script_pair``/``script_score``)."""
+        scope = EVAL_SCOPE.get()
+        case = scope.case_id if scope is not None else self.run_id
+        return f"{case}.{key}"
 
 
 # -- isolation --------------------------------------------------------------------------------
@@ -407,6 +445,9 @@ class SuiteRun:
     failures: Path | None = None
     cases: Mapping[str, Sequence[CaseModel]] = field(default_factory=dict)
     """Cases given in memory by suite name, instead of its labeled set (tests)."""
+    calibration: judges.Calibration | None = None
+    """The judge calibration of the run's judge model (#158): what a suite's judge rows run
+    under."""
 
 
 def _select(cases: Sequence[CaseModel], sample: int | None, seed_base: int) -> list[CaseModel]:
@@ -418,7 +459,7 @@ def _select(cases: Sequence[CaseModel], sample: int | None, seed_base: int) -> l
 
 async def _play(suite: Suite, job: SuiteRun, case: CaseModel, seed: int) -> _Played:
     scratch = Scratch(job.engine, f"{job.run_id}-{case.id}-{seed}")
-    ctx = CaseContext(job.engine, scratch, seed, job.run_id)
+    ctx = CaseContext(job.engine, scratch, seed, job.run_id, job.config.model_name)
     started = time.perf_counter()
     outcome: Outcome | None = None
     error: str | None = None
@@ -472,8 +513,10 @@ async def _play_seeds(
     errors: list[str],
     latencies: list[int],
     gate_slots: asyncio.Semaphore,
+    every: list[Outcome],
 ) -> None:
-    """Every seed's cases, in its shuffled order, tallied into ``tallies``."""
+    """Every seed's cases, in its shuffled order, tallied into ``tallies`` (and every outcome
+    collected into ``every``, for ``Suite.summarize``)."""
 
     async def bounded(case: CaseModel, seed: int) -> _Played:
         async with gate_slots:
@@ -492,6 +535,7 @@ async def _play_seeds(
             if played.outcome is None:
                 continue
             outcomes.append(played.outcome)
+            every.append(played.outcome)
             for metric in suite.metrics:
                 seen = played.outcome.observations.get(metric.id)
                 if seen is not None:
@@ -527,21 +571,35 @@ async def run_suite(suite: Suite, job: SuiteRun) -> SuiteResult:
     errors: list[str] = []
     latencies: list[int] = []
     gate_slots = asyncio.Semaphore(max(1, job.concurrency))
+    every: list[Outcome] = []
     try:
         await suite.setup(job.engine, _ctx())
     except Exception as exc:
         return SuiteResult.errored(suite, [f"setup: {type(exc).__name__}: {exc}"], list(job.seeds))
     try:
-        await _play_seeds(suite, job, cases, tallies, errors, latencies, gate_slots)
+        await _play_seeds(suite, job, cases, tallies, errors, latencies, gate_slots, every)
     finally:
         try:
             await suite.teardown(job.engine, _ctx())
         except Exception as exc:
             errors.append(f"teardown: {type(exc).__name__}: {exc}")
+    summary = Summary()
+    try:
+        summary = suite.summarize(every, job.config.model_name)
+    except Exception as exc:
+        errors.append(f"summary: {type(exc).__name__}: {exc}")
+    calibration = calibration_ref(suite, job)
     metrics = []
     for metric in suite.metrics:
         seed_tallies = [tally for _, tally in sorted(tallies[metric.id].items())]
-        metrics.append(MetricResult.of(metric, judge(metric, seed_tallies)))
+        result = MetricResult.of(metric, judge(metric, seed_tallies))
+        added = dict(summary.metrics.get(metric.id, {}))
+        if metric.id in suite.judge_metrics:
+            added["judge_based"] = True
+            if calibration is None or calibration.status != "calibrated":
+                # An uncalibrated judge certifies nothing (#158): its rows are report-only.
+                added["verdict"] = Verdict.report_only
+        metrics.append(result.model_copy(update=added))
     verdict = Verdict.error if errors else gate(m.verdict for m in metrics)
     return SuiteResult(
         name=suite.name,
@@ -555,7 +613,29 @@ async def run_suite(suite: Suite, job: SuiteRun) -> SuiteResult:
         verdict=verdict,
         duration_s=round(time.perf_counter() - started, 1),
         mean_case_ms=round(sum(latencies) / len(latencies)) if latencies else None,
-        notes=list(suite.reading_notes),
+        notes=[*suite.reading_notes, *summary.notes],
+        calibration=calibration,
+    )
+
+
+def calibration_ref(suite: Suite, job: SuiteRun) -> JudgeCalibrationRef | None:
+    """The calibration a suite's judge rows run under (``None`` for a suite without any)."""
+    if not suite.judge_metrics:
+        return None
+    model = job.config.model_name
+    found = job.calibration
+    if suite.judge_calibration == "none":
+        return JudgeCalibrationRef(status="uncalibrated", judge_model=model)
+    if found is None:
+        return JudgeCalibrationRef(status="not_run", judge_model=model)
+    return JudgeCalibrationRef(
+        status=found.status,
+        judge_model=found.judge_model,
+        date=found.date,
+        pairs=found.pairs,
+        agreement=found.agreement,
+        ci95=found.ci95,
+        floor=found.floor,
     )
 
 
@@ -579,10 +659,28 @@ async def run_suites(
     cases: Mapping[str, Sequence[CaseModel]] | None = None,
     on_suite: Callable[[Report], Awaitable[None] | None] | None = None,
     now: datetime | None = None,
+    calibrate: bool = False,
+    calibration_file: Path | None = None,
+    calibration_flip: Collection[str] = (),
 ) -> Report:
     """One run of ``suites`` (module docstring); ``on_suite`` sees the report after each suite
-    (the CLI writes the JSON incrementally)."""
+    (the CLI writes the JSON incrementally).
+
+    **The judge calibration** (#158): with ``calibrate`` the judge is calibrated first, on the
+    same engine, and stored in ``calibration_file`` (default ``calibration_path``); otherwise a
+    suite with pairwise judge rows reads the stored calibration of the run's judge model, and
+    ``CalibrationMissing`` is raised before any case when there is none. ``calibration_flip``
+    (tests) names calibration pairs the stub answers wrongly."""
     started = now or datetime.now(UTC)
+    store = calibration_file or calibration_path(config)
+    stored: judges.Calibration | None = None
+    if not calibrate and any(s.judge_calibration == "pairwise" for s in suites):
+        stored = judges.lookup(store, config.model_name)
+        if stored is None:
+            raise CalibrationMissing(
+                f"no judge calibration for {config.model_name!r} in {store}: run "
+                "`calibrate-judge` (or `run --all`) first"
+            )
     fingerprint_value = run_fingerprint(config.model_name)
     report = Report(
         run_id=run_id or default_run_id(fingerprint_value, started),
@@ -598,6 +696,16 @@ async def run_suites(
     )
     async with engine_for(config, engine) as live:
         report.model_version = await preflight(live, config)
+        if calibrate:
+            stored = await calibrate_judge(
+                live,
+                config,
+                sets_dir=sets_dir,
+                model_version=report.model_version,
+                flip=calibration_flip,
+                seed=seed_base,
+            )
+            judges.save(store, stored)
         await sweep(live)
         before = await story_rows(live.db)
         job = SuiteRun(
@@ -611,6 +719,7 @@ async def run_suites(
             concurrency=concurrency,
             failures=failures,
             cases=cases or {},
+            calibration=stored,
         )
         try:
             for suite in suites:
@@ -625,6 +734,49 @@ async def run_suites(
     report.errors.extend(f"isolation: {p}" for p in problems)
     report.finish(datetime.now(UTC))
     return report
+
+
+async def calibrate_judge(
+    engine: Engine,
+    config: AdapterConfig,
+    *,
+    sets_dir: Path = DEFAULT_SETS_DIR,
+    model_version: str | None = None,
+    flip: Collection[str] = (),
+    seed: int | None = DEFAULT_SEED_BASE,
+) -> judges.Calibration:
+    """The judge calibration of the run's judge model on the labeled pairs under ``sets_dir``
+    (``judging`` module docstring); on the stub, its judge is scripted to every label but the
+    pairs in ``flip``. The judge's calls are outside every turn and story."""
+    pairs = judges.load_pairs(sets_dir)
+    if config.adapter == "stub":
+        judges.script_calibration(engine.models.stub, pairs, flip)
+    results = await judges.judge_pairs(engine.models, pairs, seed=seed)
+    return judges.summarize(
+        results,
+        judge_model=config.model_name,
+        model_version=model_version,
+        engine_sha=model_matrix.engine_sha(),
+    )
+
+
+async def run_calibration(
+    config: AdapterConfig,
+    *,
+    engine: Engine | None = None,
+    sets_dir: Path = DEFAULT_SETS_DIR,
+    calibration_file: Path | None = None,
+    flip: Collection[str] = (),
+) -> judges.Calibration:
+    """``calibrate-judge``: preflight the endpoint, calibrate its judge and store the result
+    (``calibration_path`` unless ``calibration_file``)."""
+    async with engine_for(config, engine) as live:
+        version = await preflight(live, config)
+        found = await calibrate_judge(
+            live, config, sets_dir=sets_dir, model_version=version, flip=flip
+        )
+    judges.save(calibration_file or calibration_path(config), found)
+    return found
 
 
 async def run(
@@ -645,14 +797,18 @@ __all__ = [
     "PRINCIPAL",
     "SCRATCH_PREFIX",
     "AdapterConfig",
+    "CalibrationMissing",
     "CaseContext",
     "EndpointUnavailable",
     "NotScratch",
     "Scratch",
+    "calibrate_judge",
+    "calibration_path",
     "default_run_id",
     "host_of",
     "isolation_problems",
     "run",
+    "run_calibration",
     "run_fingerprint",
     "run_suite",
     "run_suites",

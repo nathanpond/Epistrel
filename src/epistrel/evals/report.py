@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, Field
 
 from epistrel.evals.gate import (
+    RELATIVE_MIN_PAIRS,
     ZERO_MIN_CASES,
     Direction,
     Judgement,
@@ -86,6 +87,11 @@ class MetricResult(BaseModel):
     violations: int | None = None
     upper_bound_95: float | None = None
     verdict: Verdict
+    ci95: list[float] | None = None
+    """A 95 % confidence interval of the value over every seed's observations pooled (#158:
+    Wilson for a judge's preference rate, normal for a mean score); ``None`` when not given."""
+    judge_based: bool = False
+    """The value comes from the quality judge: an uncalibrated judge makes it ``report_only``."""
 
     @classmethod
     def of(cls, metric: Metric, judgement: Judgement) -> MetricResult:
@@ -110,6 +116,20 @@ class MetricResult(BaseModel):
         return Metric(self.id, self.rule).requirement
 
 
+class JudgeCalibrationRef(BaseModel):
+    """The judge calibration a suite's judge-based rows ran under (#158): ``calibrated``
+    (agreement with the human labels at least the floor, on enough pairs), ``uncalibrated``
+    (below it: those rows are ``report_only``) or ``not_run``; the judge model and when."""
+
+    status: Literal["calibrated", "uncalibrated", "not_run"]
+    judge_model: str
+    date: str | None = None
+    pairs: int = 0
+    agreement: float | None = None
+    ci95: list[float] | None = None
+    floor: float = 0.75
+
+
 class SuiteResult(BaseModel):
     name: str
     title: str
@@ -123,6 +143,8 @@ class SuiteResult(BaseModel):
     duration_s: float | None = None
     mean_case_ms: int | None = None
     notes: list[str] = Field(default_factory=list)
+    calibration: JudgeCalibrationRef | None = None
+    """For a suite with judge-based rows (#158): the calibration they were judged under."""
 
     @classmethod
     def errored(cls, suite: Suite, errors: list[str], seeds: list[int]) -> SuiteResult:
@@ -213,16 +235,54 @@ def _floor_text(metric: MetricResult) -> str:
         return "none"
     if metric.rule is Rule.zero:
         return f"0 observed (n ≥ {ZERO_MIN_CASES})"
+    if metric.rule is Rule.relative:
+        return f"mean + SD ≤ {percent(metric.floor)} (n ≥ {RELATIVE_MIN_PAIRS})"
     sign = "≥" if metric.direction is Direction.at_least else "≤"
     return f"{sign} {percent(metric.floor)}"
 
 
 def _measured_text(metric: MetricResult) -> str:
-    """The per-seed value's mean ± SD: the good rate for a ≥ floor, the bad rate otherwise."""
+    """The per-seed value's mean ± SD: the good rate for a ≥ floor, the bad rate otherwise;
+    with its pooled 95 % confidence interval when the suite gives one (#158)."""
     if metric.mean is None:
         return "no observations"
     spread = EM_DASH if metric.stdev is None else percent(metric.stdev)
-    return f"{percent(metric.mean)} ± {spread}"
+    ci = (
+        f" (95% CI {percent(metric.ci95[0])} to {percent(metric.ci95[1])})"
+        if metric.ci95 is not None
+        else ""
+    )
+    return f"{percent(metric.mean)} ± {spread}{ci}"
+
+
+def calibration_text(calibration: JudgeCalibrationRef) -> str:
+    """One line on the judge calibration a suite's judge-based rows ran under (#158)."""
+    if calibration.status == "uncalibrated" and calibration.agreement is None:
+        return (
+            f"Judge calibration: the single-message scores of `{calibration.judge_model}` have "
+            "no calibration set in M4, so they are **uncalibrated**; every judge-based row is "
+            "report only."
+        )
+    if calibration.status == "not_run" or calibration.agreement is None:
+        return (
+            f"Judge calibration: **not run** for `{calibration.judge_model}`; every judge-based "
+            "row is report only."
+        )
+    ci = (
+        f" (95% CI {percent(calibration.ci95[0])} to {percent(calibration.ci95[1])})"
+        if calibration.ci95
+        else ""
+    )
+    outcome = (
+        "calibrated"
+        if calibration.status == "calibrated"
+        else "**uncalibrated**: every judge-based row is report only"
+    )
+    return (
+        f"Judge calibration: `{calibration.judge_model}` agreed with the human labels on "
+        f"{percent(calibration.agreement)}{ci} of {calibration.pairs} pairs "
+        f"(floor {percent(calibration.floor)}, {calibration.date or EM_DASH}): {outcome}."
+    )
 
 
 def _bound_text(metric: MetricResult) -> str:
@@ -291,6 +351,13 @@ HOW_TO_READ = """\
 - **Observed-zero rule** (NFR-QUAL-8): a zero-tolerance metric passes only with no violation on any
   seed, over at least 300 labeled cases. The bound column gives the one-sided 95% upper bound on
   the true rate (≈ 3/n): a clean run is evidence of a low rate, not proof of a zero one.
+- **Relative rule** (NFR-QUAL-14): an engine-intervention type passes when its first-draft
+  preference rate's mean across seeds plus one SD is at most the floor, judged only on at least
+  300 non-tied pairs per seed; fewer is *insufficient evidence*, never a pass. It is an aggregate
+  target: individual messages may still read worse than their drafts.
+- A judge-based row is only as good as the judge: before such a run the quality judge is
+  calibrated against human-labeled pairs, and a judge whose agreement is below 75% makes every
+  judge-based row *report only*.
 - A model error during a case counts as a failed case; it is never excluded. Timings are
   informational: the model may share its machine with other work.
 - A floor applies to the configuration this fingerprint names (NFR-QUAL-11); any other
@@ -340,6 +407,8 @@ def render_markdown(report: Report) -> str:
             f"{len(suite.seeds)} seeds{timing}; {gated}. Guarantee rows measured: "
             f"{', '.join(f'`{g}`' for g in suite.guarantees) or EM_DASH}."
         )
+        if suite.calibration is not None:
+            lines += ["", calibration_text(suite.calibration)]
         if suite.errors:
             lines += ["", "Harness errors:", ""] + [f"- {error}" for error in suite.errors]
         if suite.metrics:
@@ -460,9 +529,11 @@ __all__ = [
     "INDEX_NAME",
     "REPORT_VERSION",
     "Host",
+    "JudgeCalibrationRef",
     "MetricResult",
     "Report",
     "SuiteResult",
+    "calibration_text",
     "index_text",
     "percent",
     "read_summary",

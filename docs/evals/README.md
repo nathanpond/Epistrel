@@ -62,6 +62,9 @@ one-sided 95% upper bound.
 - A **zero-tolerance** floor passes only with no violation on any seed over at least 300
   cases, and is reported as "0 observed in n cases, one-sided 95% upper bound ≈ x%" — evidence
   of a low rate, never a claim that the rate is zero.
+- A **relative** floor (E-12, NFR-QUAL-14) is judged only on at least 300 non-tied pairs per
+  seed and passes when the mean + SD is at most the floor; fewer pairs is *insufficient
+  evidence*, never a pass. A judge-based row also states the judge calibration it ran under.
 - One seed, or no observations, is *insufficient evidence*; a model error counts as a failed
   case. Timings are informational.
 
@@ -85,9 +88,35 @@ measures.
 | `q01` | Q-01: recall@10 and MRR over the 5,000-turn S-THOSEGUYS-style fixture (`Engine.retrieve`) | recall@10 ≥ 0.9 (rate) | `retrieval/recall.jsonl` (100) | #157 |
 | `q02` | Q-02: referential and temporal resolution (the retrieval pipeline's resolve stage) | report only | `retrieval/resolution.jsonl` (120) | #139, #157 |
 | `q03` | Q-03: abstract-query recall with vs without the reflection tier | report only | `retrieval/abstract.jsonl` (60) | #143, #157 |
-| `e12`, `e13` | The prose floor (NFR-QUAL-14) and the text-quality signals (NFR-QUAL-15), with the calibrated `quality_judge` | | | #158 |
+| `e12` | E-12 (M4): engine interventions and prose. Every turn where a repair rung, the composition or its polish changed the first draft is a pair; the masked pair is judged by `quality_judge` in both orders. First-draft preference rate per intervention type and fingerprint, with its Wilson 95 % interval. | mean + SD ≤ 55 % on ≥ 300 non-tied pairs per seed, else insufficient evidence (relative) | `scenarios/` (21 scenarios × 4 turns) | #158 |
+| `e13` | E-13 (M4): text-quality signals per fingerprint: repetition, repeated openings, length accuracy (model-free), voice consistency and story-driver adherence (judge scores, uncalibrated in M4), and the Spearman correlation with users' ratings | report only (no gate) | `scenarios/` | #158 |
 
-Until #158 lands, `--check` lists NFR-QUAL-14 as pending (NFR-QUAL-9 waits for M6).
+`--check` lists NFR-QUAL-9 as pending until M6 delivers time estimation.
+
+## The quality judge and its calibration (#158)
+
+E-12 is judged by the `quality_judge` purpose (the `default` model unless `/admin/model-config`
+routes it; never in a turn, never on a live story). Before its rows count, the judge is
+calibrated against human preference labels:
+
+```sh
+uv run epistrel evals calibrate-judge --base-url http://localhost:1234/v1 --model <loaded model>
+```
+
+It judges the 220 labeled pairs of `evals/sets/judge_calibration/` (builder-labeled,
+owner-approved; see its `PROVENANCE.md` for what the set does and does not measure) in both
+orders. It writes the agreement and its Wilson 95 % interval, by judge model, to
+[judge-calibration.json](judge-calibration.json); commit it with the run's report. A judge
+below 75 % agreement makes every E-12 row *report only*. `run --all` calibrates first;
+`run --suite e12` reads the stored calibration of its judge model and exits 1 before any case
+when there is none. Changing the judge model needs a new calibration: earlier reports keep the
+judge they recorded.
+
+Voice fidelity and plot adherence are outside the guarantee (NFR-QUAL-13): the engine delivers
+each character's definition and the director's drivers to the right contexts (C-25), and E-13
+reports how the output reads as signals, never as a floor or a gate. The only prose floor is
+E-12's NFR-QUAL-14, an aggregate, relative target for the engine's own interventions: individual
+messages may still read worse than their drafts.
 
 ## Labeled sets
 

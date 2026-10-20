@@ -412,22 +412,53 @@ class RatingSuggestionVerdict(BaseModel):
     concerns: list[SuggestedConcern] = Field(default_factory=list, max_length=200)
 
 
-class QualityJudgeInputs(InputSchema):
-    """One pairwise comparison (NFR-QUAL-14,15; #134): two passages from an eval's scratch
-    stories and what to compare them on. A placeholder schema: #158 replaces it with the
-    calibrated rubric's."""
+JudgeCriteria = Literal["voice_readability", "voice_fits_definition", "story_driver_adherence"]
+"""What a ``quality_judge`` call judges (#158): ``voice_readability`` (E-12's pairs: voice
+consistency and readability, factual differences excluded), ``voice_fits_definition`` (E-13: the
+speech fits the character's definition) and ``story_driver_adherence`` (E-13: the messages offer
+the story's hooks and move toward its planned reveals)."""
+JUDGE_TEXT_MAX = 12_000
+JUDGE_REASONS_MAX = 1_000
 
-    first: Annotated[str, C.EVAL_TEXT]
-    second: Annotated[str, C.EVAL_TEXT]
-    criteria: Annotated[str, C.EVAL_TEXT] = "voice consistency and readability"
+
+class JudgePair(InputSchema):
+    """The two passages a pairwise judgement compares, in the order shown (#158)."""
+
+    a: Annotated[str, C.EVAL_TEXT] = Field(min_length=1, max_length=JUDGE_TEXT_MAX)
+    b: Annotated[str, C.EVAL_TEXT] = Field(min_length=1, max_length=JUDGE_TEXT_MAX)
+
+
+class QualityJudgeInputs(InputSchema):
+    """One ``quality_judge`` call (NFR-QUAL-14,15; #158), of one of two shapes: a **pairwise**
+    comparison (``pair``, the default template, answered by ``QualityJudgeVerdict``) or a
+    **score** of one ``message`` against a ``reference`` (the ``score`` template variant,
+    answered by ``QualityJudgeScore``). Eval text only: masked passages from an eval's scratch
+    stories or its labeled calibration set, never a live story's content."""
+
+    pair: JudgePair | None = None
+    message: Annotated[str | None, C.EVAL_TEXT] = Field(default=None, max_length=JUDGE_TEXT_MAX)
+    reference: Annotated[str | None, C.EVAL_TEXT] = Field(default=None, max_length=JUDGE_TEXT_MAX)
+    criteria: Annotated[JudgeCriteria, C.EVAL_TEXT] = "voice_readability"
 
 
 class QualityJudgeVerdict(BaseModel):
-    """Which passage a ``quality_judge`` call prefers, or a tie; no free text."""
+    """Which passage a pairwise ``quality_judge`` call prefers (``a`` as shown first, ``b``
+    second), or a tie, with its short reasons (#158)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    preferred: Literal["first", "second", "tie"] = "tie"
+    preferred: Literal["a", "b", "tie"] = "tie"
+    reasons: str = Field(default="", max_length=JUDGE_REASONS_MAX)
+
+
+class QualityJudgeScore(BaseModel):
+    """A scored ``quality_judge`` call (``score`` variant, #158): 1 (poor) to 5 (excellent)
+    on its criteria, with its short reasons."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    score: int = Field(default=3, ge=1, le=5)
+    reasons: str = Field(default="", max_length=JUDGE_REASONS_MAX)
 
 
 class ImportanceScoringInputs(InputSchema):
@@ -871,7 +902,10 @@ RATING_SUGGESTION = Purpose(
 
 QUALITY_JUDGE = Purpose(
     name="quality_judge",
-    description="Pairwise prose comparisons (eval only, never in a turn; NFR-QUAL-14,15).",
+    description=(
+        "Pairwise prose comparisons and single-message scores for the eval harness "
+        "(NFR-QUAL-14,15; #158): never in a turn, never routed by a profile."
+    ),
     default_model_key=DEFAULT_MODEL_KEY,
     capability_floor=CapabilityFloor(structured_output=StructuredOutput.PARSE_VALIDATE_RETRY),
     input_schema=QualityJudgeInputs,
@@ -883,6 +917,9 @@ QUALITY_JUDGE = Purpose(
     never_receives=_EVERYTHING - {C.EVAL_TEXT},
     response_schema=QualityJudgeVerdict,
     story_scoped=False,
+    # The score of one message against a reference (E-13's voice and story-driver signals),
+    # answered by ``QualityJudgeScore``.
+    variants=types.MappingProxyType({"score": "quality_judge_score.j2"}),
 )
 
 IMPORTANCE_SCORING = Purpose(
@@ -1213,6 +1250,8 @@ __all__ = [
     "ImportanceScore",
     "ImportanceScoringInputs",
     "InputSchema",
+    "JudgeCriteria",
+    "JudgePair",
     "KnownHit",
     "LiteSummaryInputs",
     "Modality",
@@ -1221,6 +1260,7 @@ __all__ = [
     "Purpose",
     "PurposeStatus",
     "QualityJudgeInputs",
+    "QualityJudgeScore",
     "QualityJudgeVerdict",
     "RatingSuggestionInputs",
     "RatingSuggestionVerdict",

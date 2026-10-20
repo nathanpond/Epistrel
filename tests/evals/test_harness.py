@@ -35,6 +35,7 @@ from epistrel.evals import (
     upper_bound_95,
 )
 from epistrel.evals import check as checks
+from epistrel.evals.judging import PairJudgement
 from epistrel.evals.report import (
     INDEX_NAME,
     read_summary,
@@ -56,7 +57,6 @@ from epistrel.evals.runner import (
     story_rows,
     sweep,
 )
-from epistrel.orchestrator.models.registry import QualityJudgeVerdict
 from tests.evals.support import (
     LEAK,
     ZERO_METRIC,
@@ -243,6 +243,9 @@ async def test_harness_stub_run(pg_url: str, engine: AsyncEngine, tmp_path: Path
             engine=lib,
             failures=tmp_path / "f.jsonl",
             sample=STUB_RUN_SAMPLE,
+            # #158: --all calibrates the judge first, as the CLI does.
+            calibrate=True,
+            calibration_file=tmp_path / "judge-calibration.json",
         )
         # The turns' calls: not the preflight probe, which goes to the adapter directly.
         played = [
@@ -264,7 +267,7 @@ async def test_harness_stub_run(pg_url: str, engine: AsyncEngine, tmp_path: Path
             # report-only cell may see none), and an aggregated one counts what it counts
             # (#157's recall@10: relevant beats, several a query).
             assert metric.sample_size >= 0
-            if metric.rule is not Rule.informational:
+            if metric.rule not in (Rule.informational, Rule.relative):
                 assert metric.sample_size > 0, metric
             assert metric.seed_count == 2
         if suite.ci_gate:
@@ -272,7 +275,9 @@ async def test_harness_stub_run(pg_url: str, engine: AsyncEngine, tmp_path: Path
             # (identity claims no detector flags, #157) the sample drew; its full set passes.
             failing = {m.id for m in suite.metrics if m.verdict is Verdict.failed}
             assert failing <= {"nfr_qual_10.recall_gated"}, suite
-            assert suite.verdict is Verdict.passed or failing, suite
+            # E-12's stub set is far below NFR-QUAL-14's 300 pairs a type (#158).
+            proven = Verdict.insufficient_evidence if suite.name == "e12" else Verdict.passed
+            assert suite.verdict is proven or failing, suite
     # Every turn was a real one on a scratch story, under its case's eval scope and seed.
     assert played
     assert any("X-Eval-Case: smoke-" in c.messages[0].content for c in played)
@@ -285,7 +290,8 @@ async def test_harness_stub_run(pg_url: str, engine: AsyncEngine, tmp_path: Path
         for metric in suite.metrics:
             assert f"`{metric.id}`" in markdown
         # A suite's reading notes reach the report's "How to read" section (#437).
-        assert suite.notes == list(SUITES[suite.name].reading_notes)
+        declared = list(SUITES[suite.name].reading_notes)
+        assert suite.notes[: len(declared)] == declared  # then any summary notes (#158)
         how_to_read = markdown.split("## How to read this report", 1)[1]
         assert all(f"- {note}" in how_to_read for note in suite.notes)
     assert "verified" not in markdown.lower()
@@ -367,8 +373,9 @@ async def test_the_judge_refuses_any_story_that_is_not_the_case_s_own(
                 await ctx.judge(live.story_id, "A.", "B.")
             calls = len(lib.models.stub.calls)
             verdict = await ctx.judge(own.story_id, "A plain line.", "A plainer line.")
-            assert isinstance(verdict, QualityJudgeVerdict)
-            assert [c.purpose for c in lib.models.stub.calls[calls:]] == ["quality_judge"]
+            assert isinstance(verdict, PairJudgement)
+            # Both orders (#158), each its own call.
+            assert [c.purpose for c in lib.models.stub.calls[calls:]] == ["quality_judge"] * 2
             async with engine.connect() as conn:
                 owner = (
                     await conn.execute(
@@ -521,18 +528,21 @@ def test_check_cross_references_the_guarantee_table() -> None:
         "guarantee row time_estimation: its metric NFR-QUAL-9 is measured by no eval suite"
         in unmeasured
     )
+    without_e12 = [s for s in SUITES.values() if s.name != "e12"]
     assert (
         "guarantee row quality_judge: its metric NFR-QUAL-14 is measured by no eval suite"
-        in unmeasured
+        in checks.problems(suites=without_e12)
     )
 
     class Measures(SyntheticZeroSuite):
-        name = "measures_14"
-        guarantees = ("quality_judge",)
-        metrics = (Metric("nfr_qual_14.first_draft_preferred", Rule.rate, 0.55, Direction.at_most),)
+        name = "measures_9"
+        metrics = (Metric("nfr_qual_9.estimate_accuracy", Rule.rate, 0.9, Direction.at_least),)
 
     found = checks.problems(suites=[*SUITES.values(), Measures()])
-    assert found == ["NFR-QUAL-14 is measured now: remove it from PENDING (#158)"]
+    assert found == [
+        "NFR-QUAL-9 is measured now: remove it from PENDING "
+        "(M6 (time estimation is delivered there))"
+    ]
 
     class Wrong(SyntheticZeroSuite):
         name = "wrong_row"

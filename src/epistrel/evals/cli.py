@@ -11,6 +11,8 @@
     uv run python -m epistrel.evals --check-sets             # labeled sets (#157), lint job
     uv run python -m epistrel.evals author                   # regenerate #157's sets
     uv run python -m epistrel.evals digest                   # regenerate the review digest
+    uv run python -m epistrel.evals calibrate-judge --base-url … --model …  # #158
+    uv run python -m epistrel.evals calibrate-judge --adapter stub
 
 ``run`` needs PostgreSQL: ``--database-url`` (a scratch database; the run writes the endpoint
 into its model configuration and plays its turns there), else a throwaway one started through
@@ -26,8 +28,16 @@ that could not run, a run that touched a story it did not create) or, with ``--f
 A ``--suite`` rerun merges into the run ``--run-id`` names, by default the latest run of the
 same fingerprint on the same UTC day, replacing that suite's rows and rewriting the Markdown in
 place; ``--all`` (or ``--new-run``) starts a new run, suffixed ``-2``… when the day already has
-one. ``--all`` runs every registered suite; the judge calibration that #158's prose suites need
-runs first once they exist.
+one. ``--all`` runs every registered suite, after calibrating the quality judge on the same
+engine (#158).
+
+``calibrate-judge`` (#158) runs the quality judge over the labeled calibration pairs
+(``evals/sets/judge_calibration``) and stores its agreement, with its Wilson 95 % interval, by
+judge model: ``docs/evals/judge-calibration.json`` for a real model (commit it with the run's
+report), ``build/evals/judge-calibration.json`` for the stub. A ``run --suite e12`` reads the
+stored calibration of its judge model and exits 1 before any case when there is none. Below
+75 % agreement every judge-based row is ``report_only``. It exits 0 whatever the agreement,
+and 1 on an unreachable endpoint or a malformed set.
 """
 
 from __future__ import annotations
@@ -53,13 +63,16 @@ from epistrel.evals.runner import (
     DEFAULT_SETS_DIR,
     AdapterConfig,
     AdapterName,
+    CalibrationMissing,
     EndpointUnavailable,
+    calibration_path,
     default_run_id,
+    run_calibration,
     run_fingerprint,
     run_suites,
     seeds_from,
 )
-from epistrel.evals.suites import SUITES, get_suites
+from epistrel.evals.suites import SUITES, MalformedCase, get_suites
 
 EX_FAILED = 1
 EX_USAGE = 2
@@ -71,6 +84,23 @@ def _positive(value: str) -> int:
     if number < 1:
         raise argparse.ArgumentTypeError("must be at least 1")
     return number
+
+
+def _endpoint_options(command: argparse.ArgumentParser) -> None:
+    """The options a model run and a judge calibration share."""
+    command.add_argument(
+        "--adapter",
+        choices=("openai", "stub"),
+        help="the model adapter (default: EPISTREL_MODEL_ADAPTER, else openai)",
+    )
+    command.add_argument("--base-url", help="the OpenAI-compatible endpoint, e.g. LM Studio's /v1")
+    command.add_argument("--model", help="the model every purpose uses")
+    command.add_argument("--api-key", default="lm-studio", help="the endpoint's key (lm-studio)")
+    command.add_argument("--database-url", help="a scratch database (default: a testcontainer)")
+    command.add_argument("--sets-dir", type=Path, default=DEFAULT_SETS_DIR, help="labeled sets")
+    command.add_argument("--hardware", default="", help="where the model ran, e.g. 'Apple M3 Max'")
+    command.add_argument("--server-version", default="", help="the model server and its version")
+    command.add_argument("--calibration-file", type=Path, help=argparse.SUPPRESS)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -98,14 +128,7 @@ def parser() -> argparse.ArgumentParser:
         help="a suite to run (repeatable)",
     )
     which.add_argument("--all", action="store_true", help="every registered suite")
-    run.add_argument(
-        "--adapter",
-        choices=("openai", "stub"),
-        help="the model adapter (default: EPISTREL_MODEL_ADAPTER, else openai)",
-    )
-    run.add_argument("--base-url", help="the OpenAI-compatible endpoint, e.g. LM Studio's /v1")
-    run.add_argument("--model", help="the model every purpose uses")
-    run.add_argument("--api-key", default="lm-studio", help="the endpoint's key (lm-studio)")
+    _endpoint_options(run)
     run.add_argument(
         "--embedding-model",
         help="an embedding model at --base-url: the retrieval suites embed their stories with it",
@@ -114,12 +137,8 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--seed-base", type=int, default=DEFAULT_SEED_BASE, help="the first seed")
     run.add_argument("--sample", type=_positive, help="a seeded subset of each set's cases")
     run.add_argument("--concurrency", type=_positive, default=1, help="cases at once (1)")
-    run.add_argument("--database-url", help="a scratch database (default: a testcontainer)")
-    run.add_argument("--sets-dir", type=Path, default=DEFAULT_SETS_DIR, help="labeled sets")
     run.add_argument("--run-id", help="the run to write or merge into")
     run.add_argument("--new-run", action="store_true", help="never merge into an earlier run")
-    run.add_argument("--hardware", default="", help="where the model ran, e.g. 'Apple M3 Max'")
-    run.add_argument("--server-version", default="", help="the model server and its version")
     run.add_argument(
         "--host",
         choices=("ci", "local"),
@@ -133,6 +152,11 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--reports-dir", type=Path, default=checks.REPORTS_DIR, help=argparse.SUPPRESS)
     run.add_argument("--json-dir", type=Path, default=BUILD_DIR, help=argparse.SUPPRESS)
     run.add_argument("--markdown", type=Path, help="where the Markdown goes (see the docs)")
+    calibrate = sub.add_parser(
+        "calibrate-judge",
+        help="calibrate the quality judge on the labeled pairs and store its agreement (#158)",
+    )
+    _endpoint_options(calibrate)
     sub.add_parser("author", help="regenerate #157's labeled sets from their authoring modules")
     sub.add_parser("digest", help="regenerate docs/evals/sets-digest.md")
     index = sub.add_parser("index", help="regenerate docs/evals/INDEX.md from the reports")
@@ -167,22 +191,52 @@ def _run_id(args: argparse.Namespace, base: str) -> tuple[str, Path | None]:
     return reports.unique_run_id(base, taken), None
 
 
+def _config(args: argparse.Namespace, adapter: AdapterName) -> AdapterConfig:
+    return AdapterConfig(
+        adapter=adapter,
+        base_url=args.base_url.rstrip("/") if args.base_url else None,
+        model=args.model,
+        api_key=args.api_key,
+        embedding_model=getattr(args, "embedding_model", None),
+        database_url=args.database_url,
+        hardware=args.hardware,
+        server_version=args.server_version,
+        host=getattr(args, "host", None),
+    )
+
+
+async def _calibrate(args: argparse.Namespace) -> int:
+    adapter = _adapter(args)
+    if adapter == "openai" and not (args.base_url and args.model):
+        print("error: a real-model calibration needs --base-url and --model", file=sys.stderr)
+        return EX_USAGE
+    config = _config(args, adapter)
+    try:
+        found = await run_calibration(
+            config, sets_dir=args.sets_dir, calibration_file=args.calibration_file
+        )
+    except EndpointUnavailable as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EX_FAILED
+    except MalformedCase as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EX_FAILED
+    ci = f" (95% CI {found.ci95[0]:.2%}-{found.ci95[1]:.2%})" if found.ci95 else ""
+    agreement = f"{found.agreement:.2%}" if found.agreement is not None else "-"
+    print(
+        f"judge {found.judge_model}: agreement {agreement}{ci} on {found.pairs} pairs "
+        f"({found.excluded} excluded), floor {found.floor:.0%}: {found.status}; wrote "
+        f"{args.calibration_file or calibration_path(config)}"
+    )
+    return 0
+
+
 async def _run(args: argparse.Namespace) -> int:
     adapter = _adapter(args)
     if adapter == "openai" and not (args.base_url and args.model):
         print("error: a real-model run needs --base-url and --model", file=sys.stderr)
         return EX_USAGE
-    config = AdapterConfig(
-        adapter=adapter,
-        base_url=args.base_url.rstrip("/") if args.base_url else None,
-        model=args.model,
-        api_key=args.api_key,
-        embedding_model=args.embedding_model,
-        database_url=args.database_url,
-        hardware=args.hardware,
-        server_version=args.server_version,
-        host=args.host,
-    )
+    config = _config(args, adapter)
     now = datetime.now(UTC)
     run_id, merge_from = _run_id(args, default_run_id(run_fingerprint(config.model_name), now))
     prior = reports.Report.from_json(_load(merge_from)) if merge_from is not None else None
@@ -217,8 +271,10 @@ async def _run(args: argparse.Namespace) -> int:
             failures=failures,
             on_suite=partial,
             now=now,
+            calibrate=bool(args.all),
+            calibration_file=args.calibration_file,
         )
-    except EndpointUnavailable as exc:
+    except (EndpointUnavailable, CalibrationMissing) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EX_FAILED
     final = merged(report)
@@ -294,6 +350,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.command == "run":
         return asyncio.run(_run(args))
+    if args.command == "calibrate-judge":
+        return asyncio.run(_calibrate(args))
     if args.command == "index":
         path = reports.write_index(args.reports_dir)
         print(f"wrote {path}")

@@ -11,7 +11,10 @@ stub adapter per case (``StubAdapter.case``), so a stub run exercises the harnes
 
 A suite may prepare deployment state its cases share (``setup``) and undo it (``teardown``,
 always run). Suites register with ``@register``; the CLI names them by ``name`` (``smoke``;
-#155's, #157's and #158's suites by their docs/04 ids: ``e02``, ``e01``, ``q01``, …).
+#155's, #157's and #158's suites by their docs/04 ids: ``e02``, ``e01``, ``q01``, ``e12``, …).
+After every seed, ``summarize`` may add a pooled confidence interval per metric and report notes
+(#158). A suite whose rows come from the quality judge names them in ``judge_metrics``: the run
+makes them ``report_only`` unless the judge is calibrated (``judge_calibration``).
 """
 
 from __future__ import annotations
@@ -20,7 +23,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -69,6 +72,15 @@ type Aggregate = Counts | Value
 
 
 @dataclass(frozen=True, slots=True)
+class Summary:
+    """What a suite adds after every seed (``Suite.summarize``, #158): per metric id, fields of
+    its ``MetricResult`` (``ci95``: a pooled 95 % interval), and notes for the report."""
+
+    metrics: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    notes: Sequence[str] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class Outcome:
     """One case's observations: metric id → good (``True``), bad (``False``) or not observed
     (``None``, or absent), the output to keep for a failure's record, and its latency."""
@@ -94,6 +106,13 @@ class Suite:
     are named by what they label: ``entailment/cases.jsonl``, ``retrieval/recall.jsonl``)."""
     min_cases: ClassVar[int] = 1
     """The fewest cases the committed set may hold (#157's sizes; ``--check-sets``)."""
+    judge_metrics: ClassVar[frozenset[str]] = frozenset()
+    """The metrics whose values come from the quality judge (#158): an uncalibrated judge makes
+    them ``report_only``."""
+    judge_calibration: ClassVar[Literal["pairwise", "none"]] = "none"
+    """``pairwise``: the suite's judge rows are pairwise judgements, which the stored pairwise
+    calibration covers (a run fails fast without one for its judge model); ``none``: its judge
+    rows (single-message scores, E-13) have no calibration set in M4 and are ``uncalibrated``."""
 
     @property
     def set_file(self) -> str:
@@ -144,6 +163,11 @@ class Suite:
         here takes this instead of the per-case tally; nothing by default."""
         return {}
 
+    def summarize(self, outcomes: Sequence[Outcome], model: str) -> Summary:
+        """After every seed, from all their outcomes: per-metric additions (a pooled
+        confidence interval) and report notes for the run's ``model``; nothing by default."""
+        return Summary()
+
     async def setup(self, engine: Engine, ctx: RequestContext) -> None:
         """Before the suite's first case (deployment state its cases share; #155's E-02
         proposes a dedicated test shape's threshold); nothing by default."""
@@ -180,6 +204,8 @@ from epistrel.evals.suites import e05_salience as _e05  # noqa: E402, F401
 from epistrel.evals.suites import e06_conformance as _e06  # noqa: E402, F401
 from epistrel.evals.suites import e07_structured_output as _e07  # noqa: E402, F401
 from epistrel.evals.suites import e10_claim_detection as _e10  # noqa: E402, F401
+from epistrel.evals.suites import e12_interventions as _e12  # noqa: E402, F401
+from epistrel.evals.suites import e13_signals as _e13  # noqa: E402, F401
 from epistrel.evals.suites import q01_recall as _q01  # noqa: E402, F401
 from epistrel.evals.suites import q02_resolution as _q02  # noqa: E402, F401
 from epistrel.evals.suites import q03_abstract as _q03  # noqa: E402, F401
@@ -194,6 +220,7 @@ __all__ = [
     "MalformedCase",
     "Outcome",
     "Suite",
+    "Summary",
     "Value",
     "get_suites",
     "register",

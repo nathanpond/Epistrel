@@ -188,20 +188,22 @@ Reviews one catalog entry against one rating's content policy: its description, 
 
 ### `quality_judge`
 
-Pairwise prose comparisons (eval only, never in a turn; NFR-QUAL-14,15).
+Pairwise prose comparisons and single-message scores for the eval harness (NFR-QUAL-14,15; #158): never in a turn, never routed by a profile.
 
 - **Hot path:** no
 - **Default model:** the `default` row of `model_config`, unless the purpose has its own
-- **Template:** `quality_judge.j2`
+- **Template:** `quality_judge.j2`; variants: score `quality_judge_score.j2`
 - **Capability floor:** structured output: constrained `json_schema` decoding, or output reliable enough to parse, validate and retry; minimum context 8,192 tokens
-- **Returns:** `QualityJudgeVerdict` (`preferred`), validated strictly; no free-text field
+- **Returns:** `QualityJudgeVerdict` (`preferred`, `reasons`), validated strictly; its free text is author-facing
 
 **Receives**
 
 | Field | Content category |
 |---|---|
-| `first` | `eval_text` |
-| `second` | `eval_text` |
+| `pair.a` | `eval_text` |
+| `pair.b` | `eval_text` |
+| `message` | `eval_text` |
+| `reference` | `eval_text` |
 | `criteria` | `eval_text` |
 
 **Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`

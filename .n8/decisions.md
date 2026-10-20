@@ -8219,3 +8219,43 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Issue:** #469
 - **Note:** The migration is numbered 0066 (revises 0065). A parallel worktree that also adds a migration would collide on the number or on `down_revision`, and the orchestrator should renumber on cherry-pick if so.
   **Issue:** #469
+- **Decision (Discretion):** The protected index reads the canon as lean `FactRef`s (`canon.canon_refs`), applies `visible_to` (the existing Python twin of `visible_clause`, as `hidden_from` already does) and decodes only hidden versions. One read is shared per snapshot (`CanonReads`) across a `load_env`'s speakers and the rebase re-check's builds. The re-check rebuilds each distinct build once and compares it with every recorded digest.
+  **Why:** On the P-04 profile the loop spent 82% of its busy time decoding the whole canon twice per speaker. The output is identical; `canon.check_viewpoint` is made public so the index validates its viewpoint as the old read did.
+  **Issue:** #452
+- **Decision (Discretion):** `load_context(shared=…)` shares the scene and relationships read across one snapshot's speakers.
+  **Why:** They are speaker-independent (omniscient, same `as_of`). #451 owns the cost of that read itself; this only stops repeating it per speaker.
+  **Issue:** #452
+- **Decision (Discretion):** I did not share canon reads across separate `load_env` calls within one turn (check, composition detect, repair re-check).
+  **Why:** They run in separate transactions. Sharing would give a later check an older snapshot. The rebase re-check would catch it, but it changes snapshot semantics for a small remaining gain (canon_refs is about 12% of the remaining busy time).
+  **Issue:** #452
+- **Decision (Rule 1):** A consolidation window reads its facts with `canon(written_in=(from, to))`. Job input versions are read and rechecked in batches (`register_version_reader(batch=…)`, `read_versions`, `JobContext.declare_inputs`). The verbatim window is read with `transcript_rows(last=n)`.
+  **Why:** Algorithmic waste on the shared event loop (whole canon or transcript read to keep a slice, and N+1 reads under the story lock). The results are identical.
+  **Issue:** #452
+- **Decision (Rule 1):** `database_error_handler` disposes the pool only when the connection was lost (`connection_lost`). A SQLSTATE answered on a live connection (lock or statement timeout) keeps it. The response (503 `database_unavailable`, `details.reason` `connection`) is unchanged.
+  **Why:** Disposing healthy connections on a lock timeout turns one timeout into a reconnect storm under load.
+  **Issue:** #452
+- **Decision (Rule 4, reported, not built):** Whether a story-lock timeout should answer 503 `database_unavailable` with `details.reason` `connection` at all is a contract question. Options:
+  - (a) keep it (current);
+  - (b) the same code with `details.reason` `lock_timeout`;
+  - (c) map it to the existing 409/423 busy family with `Retry-After`;
+  - (d) retry the commit's lock once inside the engine before failing.
+
+  Any of these changes the documented error contract or the commit behaviour, so it is the owner's call.
+  **Why:** The engine-side cause, loop saturation holding locks for seconds, is fixed. What the client is told on a genuine lock timeout is API design.
+  **Issue:** #452
+- **Decision (Rule 4, reported, not built):** I did not split the background worker into its own process by default and did not move CPU work to threads. Option for the owner: run `serve --mode api` plus `serve --mode worker` as two processes (already supported) on the reference host.
+  **Why:** After the fixes the loop is busy about 7% of the time with lag p95 2.5 ms, so offloading has no measured need. Threads would add risk to NFR-DETERM-1 and to connection ownership. A default process split is an architectural change.
+  **Issue:** #452
+- **Decision (Discretion):** I left the DB pool at SQLAlchemy's defaults (5 + 10 overflow, `connect_timeout` 2 s, `pool_pre_ping`).
+  **Why:** Pool connects fell from 102 to 6 over 8 minutes once the loop stopped saturating, so there was no measured churn left to size against.
+  **Issue:** #452
+- **Decision (Discretion):** The cost tests are plain regression tests citing #452, not `NFR-PERF-n` parts.
+  **Why:** A docstring requirement ID makes a part of that requirement's milestone (M2 for NFR-PERF-3/4, which the lexicon gate refuses for M4 terms). P-04 (M4) is one part and already lives in `tests/perf/test_p_04.py`; a part lives in one file.
+  **Issue:** #452
+- **Decision (Discretion):** I profiled against the cached P-04 seed dump (`structured-0064-03fbf95f5fb9.dump`, migrated 0064 → head) on a private Postgres container, with the engine in process, not the compose harness. Runs were 8 minutes.
+  **Why:** Other agents share the host and the `epistrel-perf` compose project. Seeding fresh took more than 50 minutes and hit a container TOAST corruption on the first attempt.
+  **Issue:** #452
+- **Deferred to M9 (model):** Turn wall time is dominated by model calls (about 10 s of the 11.3 s p50 turn with the 2 s stub). Nothing engine-side remains for that part.
+  **Issue:** #452
+- **Deferred (#451 / #470, not M9):** Retrieval p95 under load (relationships read in `load_context`) stays with #451. The repair neighborhood's decode cost is filed as #470.
+  **Issue:** #452

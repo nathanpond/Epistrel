@@ -15,7 +15,14 @@ After an injected case the layer's memo of endpoints that ignore ``response_form
 cleared, so the injected parse error never changes how later cases call the model.
 
 - ``nfr_qual_5.valid_after_retry`` (rate, ≥ 99 %): over the cases not injected ``always``, the
-  render validated (on its first attempt or a retry) and the turn was released.
+  render's structured call ended in a valid answer, on its first attempt or a retry
+  (``render_valid``: its ``invalid_output`` attempts were retried to an ``ok`` one). Only the
+  model's structured-call validity counts (the owner's decision on #465, as #437 decided for
+  the smoke scorer): what verification, repair or the output gate did with a valid render
+  afterwards (a released safe fallback, a deterministic repair) is not an invalid structure
+  here; E-06 (``structure_problems``) still judges the released turn. A turn that fails
+  ``model_unavailable`` is a miss: ``invalid_structure`` means the render never validated, and
+  any other model error fails the case (#134).
 - ``e07.first_attempt_valid`` (report-only): over the cases not injected, the render's first
   attempt was valid — the model's own rate of invalid structured output is one minus this.
 - ``e07.no_silent_acceptance`` (report-only; #157's test asserts 100 %): an ``always`` case
@@ -37,6 +44,7 @@ from epistrel.evals.suites import CaseModel, Outcome, Suite, register
 from epistrel.evals.suites.structured_turns import play, structure_problems
 from epistrel.orchestrator.models.adapter import Message, ModelAdapter, ModelParams, ModelResult
 from epistrel.orchestrator.models.errors import ModelUnavailable
+from epistrel.orchestrator.models.metrics import ModelCall
 from epistrel.orchestrator.models.registry import GENERATION
 
 if TYPE_CHECKING:
@@ -51,6 +59,26 @@ GARBAGE = '<<injected garbage>> {"beats": [{"kind": "say", "text": '
 INVALID_STRUCTURE = "invalid_structure"
 
 Injection = Literal["none", "once", "always"]
+
+
+def render_calls(calls: Sequence[ModelCall]) -> list[ModelCall]:
+    """The attempts of the turn's render, its first ``generation`` call: from its attempt 1 up
+    to the next ``generation`` call's attempt 1 (module docstring)."""
+    found: list[ModelCall] = []
+    for call in calls:
+        if call.purpose != GENERATION.name:
+            continue
+        if call.attempt == 1 and found:
+            break
+        found.append(call)
+    return found
+
+
+def render_valid(calls: Sequence[ModelCall]) -> bool:
+    """The render's structured call ended in a valid answer (``nfr_qual_5.valid_after_retry``):
+    its last attempt is ``ok``."""
+    attempts = render_calls(calls)
+    return bool(attempts) and attempts[-1].outcome == "ok"
 
 
 class _Injecting:
@@ -137,7 +165,8 @@ class E07Suite(Suite):
             Rule.rate,
             0.99,
             Direction.at_least,
-            "the render validated, on its first attempt or a retry, and the turn was released",
+            "the render's structured call ended in a valid answer, on its first attempt or a "
+            "retry (what verification and repair did afterwards is not counted)",
         ),
         Metric(
             FIRST_ATTEMPT,
@@ -155,6 +184,10 @@ class E07Suite(Suite):
         "every attempt) by wrapping the model adapter for those cases only; "
         "`e07.no_silent_acceptance` must be 100 %: such a turn fails with `invalid_structure` "
         "and commits nothing.",
+        "`nfr_qual_5.valid_after_retry` counts only the render's structured-call validity "
+        "(`invalid_output` attempts retried to a valid answer); a safe fallback or "
+        "deterministic repair released after a valid render is not a miss (the owner's "
+        "decision on #465).",
     )
 
     def __init__(self) -> None:
@@ -196,13 +229,13 @@ class E07Suite(Suite):
             _CURRENT.reset(token)
             if injected != "none":
                 ctx.models.response_format.clear()
-        problems = structure_problems(result)
+        problems = structure_problems(result)  # report-only: E-06's check (#465)
         first = next((c for c in result.model_calls if c.purpose == GENERATION.name), None)
         observations = {}
         if mode == "always":
             observations[NO_SILENT] = False
         else:
-            observations[VALID_AFTER_RETRY] = not problems
+            observations[VALID_AFTER_RETRY] = render_valid(result.model_calls)
             if mode == "none":
                 observations[FIRST_ATTEMPT] = first is not None and first.outcome == "ok"
         return Outcome(
@@ -224,4 +257,6 @@ __all__ = [
     "GarbageInjector",
     "Injection",
     "OutputCase",
+    "render_calls",
+    "render_valid",
 ]

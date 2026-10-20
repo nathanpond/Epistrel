@@ -105,6 +105,9 @@ stories = Table(
     Column("archived_at", TIMESTAMP(timezone=True), nullable=True),
     Column("timeline_revision", BigInteger, nullable=False, server_default=text("0")),
     Column("config_revision", BigInteger, nullable=False, server_default=text("0")),
+    # Moved by each story-scope erasure that rewrites or deletes one of the story's policies
+    # (#469): the effective-policy cache keys on it, since an erasure moves no config revision.
+    Column("policy_erasure_revision", BigInteger, nullable=False, server_default=text("0")),
     Column(
         "next_turn_index",
         Integer,

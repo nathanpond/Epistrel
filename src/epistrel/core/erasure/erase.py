@@ -57,7 +57,9 @@ complete erasure:
    write them back (#127, ``_stop_in_flight``: queued turns fail ``timeline_changed``, the turn
    slot's lease is cleared, and the redacted events' operations have their ``membership_tx``
    moved so a background job that read them drops its output); the residue is scanned;
-   the ``erasure_ledger`` row and a deployment ``audit_log`` row are written. Stages
+   the ``erasure_ledger`` row and a deployment ``audit_log`` row are written; when a policy
+   of the story was rewritten or deleted, the story's ``policy_erasure_revision`` moves, so no
+   process's effective-policy cache serves its old text (#469). Stages
    ``redacted`` and ``ledger_written`` go to the operation's ``stage_log``.
 2. one ``consolidation`` operation regenerates the level-0 rolling-summary segments whose text
    was redacted (``redact.regenerate_summaries``: #72's compression over the redacted window,
@@ -77,7 +79,10 @@ the subject are rewritten (several subjects: the subject leaves ``depicted_subje
 and alt text are redacted) or, depicting only the subject, purged with their bytes once no other
 asset shares them, unless a record the erasure leaves untouched references them and the
 deployment's ``erasure_shared_media`` is ``retire`` (the asset is kept ``retired``, redacted);
-deployment-scoped stored results naming the subject are purged. Stories are otherwise never
+deployment-scoped stored results naming the subject are purged. The transaction takes the
+deployment row first (as configuration writes do) and, when a policy was rewritten, moves the
+deployment's ``policy_erasure_revision`` (#469: the effective-policy cache's key; the
+``config_revision`` stays, as for any catalog write). Stories are otherwise never
 touched (FR-STORE-14): ``referencing_stories`` lists those that reference the subject (with
 their characters), for the operator to erase separately. The one exception is the public card
 a catalog character's genesis creation report copied, which is public catalog data until this
@@ -531,6 +536,38 @@ async def config_revision(conn: AsyncConnection) -> int:
         select(deployment_state.c.config_revision).where(deployment_state.c.id == DEPLOYMENT_ROW_ID)
     )
     return int(found or 0)
+
+
+def _touched_policies(tally: _Tally) -> bool:
+    return bool(tally.records.get(policies.name))
+
+
+async def _lock_deployment_row(conn: AsyncConnection) -> None:
+    """Take the deployment row ``FOR UPDATE`` first, as every configuration write does, so a
+    catalog erasure's ``policy_erasure_revision`` bump cannot deadlock with a policy write."""
+    from epistrel.core.tables import deployment_state
+
+    await conn.execute(
+        select(deployment_state.c.id)
+        .where(deployment_state.c.id == DEPLOYMENT_ROW_ID)
+        .with_for_update()
+    )
+
+
+async def _bump_policy_erasure_revision(conn: AsyncConnection, story_id: str | None) -> None:
+    """Move the ``policy_erasure_revision`` of the story (story scope) or the deployment
+    (catalog scope) by one: the effective-policy cache keys on it, so no process serves a
+    policy's text from before the erasure once it commits (#469). The configuration revisions
+    stay where they are (an erasure records no configuration change)."""
+    from epistrel.core.tables import deployment_state
+
+    if story_id is None:
+        statement = update(deployment_state).where(deployment_state.c.id == DEPLOYMENT_ROW_ID)
+        column = deployment_state.c.policy_erasure_revision
+    else:
+        statement = update(stories).where(stories.c.id == story_id)
+        column = stories.c.policy_erasure_revision
+    await conn.execute(statement.values({column: column + 1}))
 
 
 # -- the subject ---------------------------------------------------------------------------------
@@ -2469,6 +2506,8 @@ async def _erase_story(
             tally = await _story_pass(conn, run)
             if strict:
                 check_confirmed(redactor)
+            if _touched_policies(tally):
+                await _bump_policy_erasure_revision(conn, story_id)
             await _insert_markers(conn, run)
             found["failed_queue"] = await _stop_in_flight(conn, story_id, run)
             await projections.replace_with_fold(conn, story_id)
@@ -2596,6 +2635,7 @@ async def _erase_catalog(
     strict: bool,
 ) -> ErasureResult:
     async with db.begin() as conn:
+        await _lock_deployment_row(conn)
         settings = await _settings(conn)
         referencing = await _referencing_stories(conn, subject)
         operation_id = await control.record_control_operation(conn, actor=principal)
@@ -2605,6 +2645,8 @@ async def _erase_catalog(
         tally = await _catalog_pass(conn, run)
         if strict:
             check_confirmed(redactor)
+        if _touched_policies(tally):
+            await _bump_policy_erasure_revision(conn, None)
         referencing = _merged(referencing, run.media_stories)
         residue = await verify(conn, None, redactor)
         counts = {**tally.counts(), "residue": residue.count, **_candidate_counts(redactor)}

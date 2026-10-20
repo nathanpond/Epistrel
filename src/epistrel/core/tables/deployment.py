@@ -52,6 +52,9 @@ deployment_state = Table(
     metadata,
     Column("id", SmallInteger, primary_key=True, server_default=text(str(DEPLOYMENT_ROW_ID))),
     Column("config_revision", BigInteger, nullable=False, server_default=text("0")),
+    # Moved by each catalog-scope erasure that rewrites or deletes a global or rating policy
+    # (#469): the effective-policy cache keys on it, since an erasure moves no config revision.
+    Column("policy_erasure_revision", BigInteger, nullable=False, server_default=text("0")),
     Column("default_content_rating_id", ulid_type(), nullable=False),
     Column("minor_age_threshold", Integer, nullable=False, server_default=text("18")),
     Column("max_characters_at_start_default", Integer, nullable=False, server_default=text("16")),

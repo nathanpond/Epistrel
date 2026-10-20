@@ -13,7 +13,11 @@ those whose age condition is false (``age.partition``).
 
 The set is cached in-process, keyed by the deployment ``config_revision`` (global and rating
 policy writes and rating edits move it), the story's ``config_revision`` (story-scoped writes
-move it), and the version ids of every rating in the story rating's closure.
+move it), the version ids of every rating in the story rating's closure, and the deployment's and
+the story's ``policy_erasure_revision`` (an erasure that rewrites or deletes a policy moves the
+one of its scope, and no configuration revision: #469). Every part of the key is read from the
+database in the read's own snapshot, so an entry cached in any process is never served after a
+write or an erasure that changes the set commits.
 """
 
 from __future__ import annotations
@@ -39,12 +43,15 @@ from epistrel.core.policies.model import (
 )
 from epistrel.core.policies.rows import policy_of, select_policies
 from epistrel.core.ratings import closure_versions, effective_guardrails, load_graph
-from epistrel.core.tables import characters, policies, stories
+from epistrel.core.tables import characters, deployment_state, policies, stories
+from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 from epistrel.orchestrator.policies.age import CastMember, partition
 
 CACHE_SIZE = 1_024
 
-type CacheKey = tuple[int, str, int, tuple[tuple[str, str], ...]]
+type CacheKey = tuple[int, int, str, int, int, tuple[tuple[str, str], ...]]
+"""``(deployment config_revision, deployment policy_erasure_revision, story_id, story
+config_revision, story policy_erasure_revision, closure version ids)``."""
 
 _EFFECTIVE: OrderedDict[CacheKey, tuple[Policy, ...]] = OrderedDict()
 
@@ -114,19 +121,30 @@ async def effective_policies(db: AsyncEngine, story_id: str) -> tuple[Policy, ..
         async with conn.begin():
             story = (
                 await conn.execute(
-                    select(stories.c.config_revision, stories.c.content_rating_id).where(
-                        stories.c.id == story_id
-                    )
+                    select(
+                        stories.c.config_revision,
+                        stories.c.policy_erasure_revision,
+                        stories.c.content_rating_id,
+                    ).where(stories.c.id == story_id)
                 )
             ).one_or_none()
             if story is None:
                 raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
-            deployment = await read_settings(conn)
+            deployment = (
+                await conn.execute(
+                    select(
+                        deployment_state.c.config_revision,
+                        deployment_state.c.policy_erasure_revision,
+                    ).where(deployment_state.c.id == DEPLOYMENT_ROW_ID)
+                )
+            ).one()
             graph = await load_graph(conn)
             key: CacheKey = (
-                deployment.config_revision,
+                int(deployment.config_revision),
+                int(deployment.policy_erasure_revision),
                 story_id,
                 int(story.config_revision),
+                int(story.policy_erasure_revision),
                 closure_versions(story.content_rating_id, graph),
             )
             cached = _EFFECTIVE.get(key)

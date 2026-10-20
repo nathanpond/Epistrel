@@ -44,7 +44,6 @@ from epistrel.core.story_texts import CustomInstructionsRequest
 from epistrel.engine import CATALOG_GATED_ATTRIBUTE, ERASURE_GATE_EXEMPT, ERASURE_GATED_ATTRIBUTE
 from epistrel.observability import logging as telemetry_logging
 from epistrel.orchestrator.jobs import queue as job_queue
-from epistrel.orchestrator.policies import store as policy_store
 from epistrel.testing import pauses
 from epistrel.tools import backup
 from tests import character_support as characters
@@ -1615,9 +1614,8 @@ async def test_a_pending_catalog_erasure_withholds_a_story_policy_naming_her(
             hold.release()
             assert lib._reconcile_task is not None
             await lib._reconcile_task
-            # The reapply's redaction moves no key of the in-process effective-policy cache
-            # (#469, filed from here): read as a process that has not cached the story does.
-            policy_store.clear_effective_cache()
+            # The reapply's redaction moves the deployment's ``policy_erasure_revision``, so the
+            # set this process cached during the window is not served (#469).
             shown = await client.get(f"/stories/{story}/settings", headers=WRITE)
             assert settings_names(shown.json())[named] == "Keep [erased] offstage"
             refused = violation(await instruct(client, named_word))

@@ -64,7 +64,7 @@ from epistrel.core.tables import stories
 from epistrel.core.tables.readset import proposition_changes
 
 if TYPE_CHECKING:
-    from epistrel.core.canon.facts import Fact, FactChange, Reading
+    from epistrel.core.canon.facts import Fact, FactChange, FactLink, Reading
     from epistrel.core.events.operation import Operation
     from epistrel.core.projections.structured import ProfileView, RelationshipView, SceneView
 
@@ -512,6 +512,33 @@ class KeyedLookup:
         )
         for fact in rows:
             self.retrieved(CANON_TABLE, fact.id, fact.tx_from)
+        return rows
+
+    async def canon_links(
+        self,
+        story_id: str,
+        *,
+        subject: str | None = None,
+        object: str | None = None,
+        viewpoint: str = OMNISCIENT,
+        through_position: tuple[int, int] | None = None,
+    ) -> list[FactLink]:
+        """``canon_rows``' read with ``subject`` or ``object`` (the same selection, order and
+        retrieved rows), as lean ``FactLink``s: a neighborhood ranks every neighbor this way
+        and decodes in full, through ``canon_rows(ids=...)``, only those it keeps (#470)."""
+        from epistrel.core.canon import facts as canon
+
+        await canon.check_viewpoint(self.conn, story_id, viewpoint)
+        rows = await canon.canon_links(
+            self.conn,
+            story_id,
+            through_position=through_position,
+            viewpoint=viewpoint,
+            subject=subject,
+            object=object,
+        )
+        for link in rows:
+            self.retrieved(CANON_TABLE, link.id, link.tx_from)
         return rows
 
     def retrieved(self, table: str, row_id: str, version: str | datetime) -> None:

@@ -1031,8 +1031,8 @@ async def supersede(
 Reading = Literal["every", "any"]
 
 
-async def canon(
-    conn: AsyncConnection,
+def _canon_where(
+    f: Any,
     story_id: str,
     *,
     story_time: int | None = None,
@@ -1043,19 +1043,11 @@ async def canon(
     predicate: str | None = None,
     object: str | None = None,
     reading: Reading = "every",
-    limit: int | None = None,
     ids: Sequence[str] | None = None,
     written_in: tuple[int, int] | None = None,
-) -> list[Fact]:
-    """Fact versions of ``story_id`` as ``viewpoint`` may read them; each coordinate filters
-    only when given (see the module docstring): ``story_time`` (valid-time covering it),
-    ``record_time`` (the record as it stood then; ``None``: the corrected record now) and
-    ``through_position`` (``(turn, slot_k)``: written at or before it); ``ids`` keeps only those
-    versions (#142's neighborhood seed); ``written_in`` (``(first, last)`` turns, inclusive)
-    keeps only versions written at a turn in that window (a consolidation window's facts, #452:
-    read in the query, not filtered from the whole canon). Ordered by ``valid_from``, then id."""
-    await check_viewpoint(conn, story_id, viewpoint)
-    f = facts.alias("f")
+) -> list[ColumnElement[bool]]:
+    """``canon``'s selection on ``f`` (a ``facts`` alias joined to ``propositions``), shared by
+    every read that must select exactly what ``canon`` does (``canon_links``, #470)."""
     where: list[ColumnElement[bool]] = [
         f.c.story_id == story_id,
         *_open(f, record_time, through_position),
@@ -1085,6 +1077,48 @@ async def canon(
         where.append(f.c.id.in_(list(ids)))
     if written_in is not None:
         where.append(f.c.narrative_turn.between(*written_in))
+    return where
+
+
+async def canon(
+    conn: AsyncConnection,
+    story_id: str,
+    *,
+    story_time: int | None = None,
+    record_time: datetime | None = None,
+    through_position: tuple[int, int] | None = None,
+    viewpoint: str = OMNISCIENT,
+    subject: str | None = None,
+    predicate: str | None = None,
+    object: str | None = None,
+    reading: Reading = "every",
+    limit: int | None = None,
+    ids: Sequence[str] | None = None,
+    written_in: tuple[int, int] | None = None,
+) -> list[Fact]:
+    """Fact versions of ``story_id`` as ``viewpoint`` may read them; each coordinate filters
+    only when given (see the module docstring): ``story_time`` (valid-time covering it),
+    ``record_time`` (the record as it stood then; ``None``: the corrected record now) and
+    ``through_position`` (``(turn, slot_k)``: written at or before it); ``ids`` keeps only those
+    versions (#142's neighborhood seed); ``written_in`` (``(first, last)`` turns, inclusive)
+    keeps only versions written at a turn in that window (a consolidation window's facts, #452:
+    read in the query, not filtered from the whole canon). Ordered by ``valid_from``, then id."""
+    await check_viewpoint(conn, story_id, viewpoint)
+    f = facts.alias("f")
+    where = _canon_where(
+        f,
+        story_id,
+        story_time=story_time,
+        record_time=record_time,
+        through_position=through_position,
+        viewpoint=viewpoint,
+        subject=subject,
+        predicate=predicate,
+        object=object,
+        reading=reading,
+        ids=ids,
+        written_in=written_in,
+    )
     query = _select(f).where(*where).order_by(f.c.valid_from.nulls_first(), f.c.id)
     if limit is not None:
         query = query.limit(limit)
@@ -1159,6 +1193,74 @@ async def canon_refs(
         entities += [v for v in dict(row.qualifiers).values() if isinstance(v, str)]
         found.append(FactRef(str(row.id), row.tx_from, visibility, tuple(entities)))
     return found
+
+
+@dataclass(frozen=True, slots=True)
+class FactLink:
+    """A fact version as a neighborhood ranks it (#470): its id, record time, subject,
+    predicate and proposition, the entities its object names and its source events, without
+    decoding the rest of the version."""
+
+    id: str
+    tx_from: datetime
+    subject_id: str
+    predicate_id: str
+    proposition_id: str
+    object_id: str | None
+    object_set: tuple[str, ...]
+    source_event_ids: tuple[str, ...]
+
+
+async def canon_links(
+    conn: AsyncConnection,
+    story_id: str,
+    *,
+    through_position: tuple[int, int] | None = None,
+    viewpoint: str = OMNISCIENT,
+    subject: str | None = None,
+    object: str | None = None,
+) -> list[FactLink]:
+    """``canon``'s read with these filters (the same selection, the same order), as
+    ``FactLink``s: a neighborhood (#142) ranks every neighbor this way and decodes in full only
+    the ones it keeps (#470). The caller has validated ``viewpoint`` (``check_viewpoint``)."""
+    f = facts.alias("f")
+    p = propositions
+    where = _canon_where(
+        f,
+        story_id,
+        through_position=through_position,
+        viewpoint=viewpoint,
+        subject=subject,
+        object=object,
+    )
+    query = (
+        select(
+            f.c.id,
+            f.c.tx_from,
+            f.c.subject_id,
+            f.c.predicate_id,
+            f.c.proposition_id,
+            f.c.source_event_ids,
+            p.c.object_id,
+            p.c.object_set,
+        )
+        .select_from(f.join(p, p.c.id == f.c.proposition_id))
+        .where(*where)
+        .order_by(f.c.valid_from.nulls_first(), f.c.id)
+    )
+    return [
+        FactLink(
+            str(row.id),
+            row.tx_from,
+            str(row.subject_id),
+            str(row.predicate_id),
+            str(row.proposition_id),
+            None if row.object_id is None else str(row.object_id),
+            tuple(sorted({str(x) for x in row.object_set or ()})),  # as ``Proposition`` holds it
+            tuple(str(e) for e in row.source_event_ids or ()),
+        )
+        for row in await conn.execute(query)
+    ]
 
 
 async def canon_at(
@@ -1276,6 +1378,7 @@ __all__ = [
     "Fact",
     "FactChange",
     "FactHook",
+    "FactLink",
     "FactOperation",
     "FactRef",
     "Reading",
@@ -1283,6 +1386,7 @@ __all__ = [
     "canon",
     "canon_as_recorded",
     "canon_at",
+    "canon_links",
     "canon_refs",
     "check_viewpoint",
     "commit_fact",

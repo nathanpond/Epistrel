@@ -8,7 +8,8 @@ permission check and #146's ledger lookups add themselves when they land). This 
 by AST (it never imports them) and reports, in each, every direct read of ``facts`` or
 ``propositions``:
 
-- an import of a canon read (``canon``, ``canon_at``, ``canon_as_recorded``, ``hidden_from``) or
+- an import of a canon read (``canon``, ``canon_at``, ``canon_as_recorded``, ``canon_links``,
+  ``hidden_from``) or
   of the ``core.canon.facts`` module;
 - an import of the ``facts`` or ``propositions`` table;
 - a ``facts.c`` or ``propositions.c`` reference;
@@ -45,7 +46,7 @@ EXEMPT: dict[str, str] = {
 """Modules that read the tables directly by design and are never keyed readers."""
 
 CANON_MODULE = "epistrel.core.canon.facts"
-CANON_READS = frozenset({"canon", "canon_at", "canon_as_recorded", "hidden_from"})
+CANON_READS = frozenset({"canon", "canon_at", "canon_as_recorded", "canon_links", "hidden_from"})
 PROJECTION_MODULE = "epistrel.core.projections.structured"
 PROJECTION_READS = frozenset({"profile_view", "scene_view"})
 TABLES = frozenset({"facts", "propositions", "relationships", "placement", "scene_state"})

@@ -559,7 +559,7 @@ async def test_the_pins_source_reads_the_pinned_index(
     """#451 (NFR-PERF-1): the pins context source (#147), which every retrieval runs, reaches
     the story's pinned memories through the partial index ``ix_memories_pinned`` (``WHERE
     pinned``), so it reads the pins, not every memory of the story. At 50k memories the
-    ``IS TRUE`` form was a 25 ms sequential scan on every retrieval.
+    ``IS TRUE`` form was a 25 ms scan of every row of the story on each retrieval.
 
     Complement asserted: the same statement with ``pinned IS true`` cannot use the index."""
     db = scratch.db
@@ -574,7 +574,7 @@ async def test_the_pins_source_reads_the_pinned_index(
     sql, params = pins[0]
 
     async def plan_of(statement: str) -> str:
-        """``EXPLAIN`` with fresh statistics and sequential scans priced out (sorts allowed:
+        """``EXPLAIN`` with fresh statistics and table scans priced out (sorts allowed:
         the statement orders by id, and pricing sorts out would pick the primary key)."""
         async with db.connect() as conn:
             await conn.execute(text("ANALYZE memories"))

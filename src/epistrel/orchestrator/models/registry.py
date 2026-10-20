@@ -615,8 +615,24 @@ class SalienceInputs(InputSchema):
     scene_context: SceneContext = Field(default_factory=SceneContext)
 
 
+SALIENCE_QUOTE_MAX = 2_000
+"""The longest quote one salience span may carry."""
+
+
+class SalienceQuote(BaseModel):
+    """A span of one beat as the model names it (#461): the beat's index and the span's exact
+    words, copied from the beat (``span``). The engine locates the quote in the beat's text, as
+    the extraction backstop does; small models place character offsets poorly."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    beat: int = Field(ge=0)
+    span: str = Field(min_length=1, max_length=SALIENCE_QUOTE_MAX)
+
+
 class SalienceSpan(BaseModel):
-    """A span of one beat: its index and ``[start, end)`` in the beat's text."""
+    """A located span of one beat: its index and ``[start, end)`` in the beat's text (the
+    engine's location of a ``SalienceQuote``)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -638,7 +654,8 @@ class SalienceSketch(BaseModel):
 
 
 class SalientSpan(BaseModel):
-    """Content placed to be noticed (FR-COMMIT-3): where, and the proposition it raises."""
+    """Content placed to be noticed (FR-COMMIT-3), located: where, and the proposition it
+    raises."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -646,14 +663,26 @@ class SalientSpan(BaseModel):
     proposition_sketch: SalienceSketch
 
 
-class SalienceResult(BaseModel):
-    """The structured result of one ``salience_detection`` call. The defaults (nothing
-    salient) are the safe answer: every beat is texture, and nothing is owed."""
+class SalientQuote(BaseModel):
+    """Content placed to be noticed (FR-COMMIT-3) as the model names it: the beat, the span's
+    exact words (``span``, located by search, #461) and the proposition it raises."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    salient: list[SalientSpan] = Field(default_factory=list, max_length=SALIENCE_MAX_SPANS)
-    texture: list[SalienceSpan] = Field(default_factory=list, max_length=SALIENCE_MAX_SPANS)
+    beat: int = Field(ge=0)
+    span: str = Field(min_length=1, max_length=SALIENCE_QUOTE_MAX)
+    proposition_sketch: SalienceSketch
+
+
+class SalienceResult(BaseModel):
+    """The structured result of one ``salience_detection`` call: salient and texture spans as
+    quotes. The defaults (nothing salient) are the safe answer: every beat is texture, and
+    nothing is owed."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    salient: list[SalientQuote] = Field(default_factory=list, max_length=SALIENCE_MAX_SPANS)
+    texture: list[SalienceQuote] = Field(default_factory=list, max_length=SALIENCE_MAX_SPANS)
 
 
 EXTRACTION_MAX_BEATS = 50
@@ -1223,6 +1252,7 @@ __all__ = [
     "SALIENCE_LAST_BEATS",
     "SALIENCE_MAX_BEATS",
     "SALIENCE_MAX_SPANS",
+    "SALIENCE_QUOTE_MAX",
     "STORY_PURPOSES",
     "SUBJECT_LABEL_PATTERN",
     "AgeClue",
@@ -1271,9 +1301,11 @@ __all__ = [
     "ReservedPurpose",
     "SalienceBeat",
     "SalienceInputs",
+    "SalienceQuote",
     "SalienceResult",
     "SalienceSketch",
     "SalienceSpan",
+    "SalientQuote",
     "SalientSpan",
     "SceneContext",
     "StructuredOutput",

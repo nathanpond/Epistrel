@@ -300,7 +300,10 @@ class DetectionOutcome:
         return self.detection.claims
 
 
-def _locate(text: str, span: str) -> tuple[int, int] | None:
+def locate_quote(text: str, span: str) -> tuple[int, int] | None:
+    """Where a model's verbatim quote ``span`` lies in ``text`` (``[start, end)``): its first
+    exact occurrence, else its first case-insensitive one, else ``None``. Shared by the
+    extraction backstop and salience detection (#461): models quote, the engine locates."""
     found = text.find(span)
     if found < 0:
         found = text.casefold().find(span.casefold())
@@ -343,7 +346,7 @@ async def to_claims(
         beat = beats.get(key)
         if beat is None:
             continue
-        span = _locate(beat.text, item.span)
+        span = locate_quote(beat.text, item.span)
         if span is None:
             continue
         sketch = extraction_sketch(item, span)
@@ -993,6 +996,7 @@ __all__ = [
     "extraction_inputs",
     "extraction_sketch",
     "load_env",
+    "locate_quote",
     "mentions_of",
     "missed_claims",
     "record_metrics",

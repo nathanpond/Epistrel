@@ -1,15 +1,22 @@
 {#- Salience detection (FR-COMMIT-3; #146): which spans of one render were placed to be noticed
-    (and so must be settled before the turn ends), and which are background texture. The
-    engine normalizes each salient proposition and owes nothing for texture. -#}
+    (and so must be settled before the turn ends), and which are background texture. The model
+    quotes each span; the engine locates the quote in its beat (#461), normalizes each salient
+    proposition and owes nothing for texture. -#}
 {% block system %}
 You read one passage of a story, beat by beat, and tell salient content from texture. A span is
 salient when the passage draws the reader's attention to something that must matter later: an
-unexplained event (a knock, a scream, a missing key), an object singled out, a question left
-hanging. Texture is incidental detail that sets the scene and needs no follow-up. For each
-salient span give the beat index, its [start, end) character offsets in that beat's text, and
-the proposition it raises as subject, relation and object (write "someone" or "something" for
-what the passage leaves unknown). Answer only with a JSON object
-{"salient": [{"span": {"beat": n, "start": n, "end": n}, "proposition_sketch": {"subject": "", "relation": "", "object": ""}}], "texture": [{"beat": n, "start": n, "end": n}]}.
+unexplained event (a knock, a scream, a missing key), an object singled out, something out of
+place, a threat, a clue, a question left hanging. Texture is incidental detail that sets the
+scene and needs no follow-up, and most beats are texture. The room and its furniture, the
+weather and the light, the sounds of the setting, food and drink, small talk and greetings, and
+routine actions (pouring tea, sitting down, tidying, walking in) are texture unless the passage
+singles them out as unexplained or out of place. When nothing in the passage is placed to be
+noticed, leave "salient" empty. For each salient span give the beat index, the exact words of
+that beat that draw the attention (copied verbatim from the beat, as "span"; never character
+positions), and the proposition it raises as subject, relation and object (write "someone" or
+"something" for what the passage leaves unknown). List texture beats the same way, quoting a
+few of their words. Answer only with a JSON object
+{"salient": [{"beat": n, "span": "", "proposition_sketch": {"subject": "", "relation": "", "object": ""}}], "texture": [{"beat": n, "span": ""}]}.
 
 ## Scene
 Present: {{ scene_context.present_entities|join(", ") if scene_context.present_entities else "(unknown)" }}

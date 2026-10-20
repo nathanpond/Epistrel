@@ -10,8 +10,11 @@ player's input) are read once per render:
   (``rules_salient``; #148's claims), and the model verdict is empty;
 - under ``rules_and_model`` the ``salience_detection`` purpose is called through the Model
   Access Layer's ``structured_call`` (hot path, parse-validate-retry), with only the beats and
-  the scene (the names present and the last ``SALIENCE_LAST_BEATS`` beats). Its spans are
-  checked against the beats (an out-of-range span is texture).
+  the scene (the names present and the last ``SALIENCE_LAST_BEATS`` beats). The model quotes
+  each span's words and the engine locates the quote in the beat it names (#461, with the
+  extraction backstop's ``locate_quote``): small models place character offsets poorly. A quote
+  not found in that beat (or naming a beat it was not shown) is never mapped to a guessed span:
+  it is dropped into the verdict's ``unlocated``, counted in the log.
 
 Salience is optional work (#156 reserves nothing for it): with no model, a spent budget, an
 unreachable model or an unparseable answer every beat is texture and the verdict says why in
@@ -62,13 +65,16 @@ from epistrel.orchestrator.models.registry import (
     SALIENCE_MAX_BEATS,
     SalienceBeat,
     SalienceInputs,
+    SalienceQuote,
     SalienceResult,
     SalienceSketch,
     SalienceSpan,
+    SalientQuote,
     SalientSpan,
     SceneContext,
 )
 from epistrel.orchestrator.models.structured import Uncertain
+from epistrel.orchestrator.verify.extraction import locate_quote
 
 log = logging.getLogger(__name__)
 
@@ -105,11 +111,14 @@ class Beat:
 
 @dataclass(frozen=True, slots=True)
 class SalienceVerdict:
-    """What one render's salience detection found: the salient spans (with the proposition
-    each raises), the texture spans, whether the model was called, and why not."""
+    """What one render's salience detection found: the located salient spans (with the
+    proposition each raises), the located texture spans, the model's quotes the engine could
+    not find in the beat they name (``unlocated``: dropped, never guessed; #461), whether the
+    model was called, and why not."""
 
     salient: tuple[SalientSpan, ...] = ()
     texture: tuple[SalienceSpan, ...] = ()
+    unlocated: tuple[SalientQuote | SalienceQuote, ...] = ()
     called: bool = False
     degradation: tuple[str, ...] = ()
 
@@ -133,18 +142,50 @@ def _inputs(beats: Sequence[Beat], scene_context: SceneContext) -> SalienceInput
     )
 
 
-def _checked(result: SalienceResult, beats: Sequence[Beat]) -> SalienceVerdict:
-    """The model's spans that lie inside a beat it was shown; any other is texture."""
+_QUOTE_MARKS = "\"'\u201c\u201d\u2018\u2019"
+
+
+def _locate(text: str, quote: str) -> tuple[int, int] | None:
+    """``quote`` located in ``text``; failing that, the quote without the surrounding spaces
+    or quotation marks a model may add."""
+    found = locate_quote(text, quote)
+    if found is None:
+        bare = quote.strip().strip(_QUOTE_MARKS).strip()
+        if bare and bare != quote:
+            found = locate_quote(text, bare)
+    return found
+
+
+def _located(result: SalienceResult, beats: Sequence[Beat]) -> SalienceVerdict:
+    """The model's quotes located in the beats it was shown; a quote not found in the beat it
+    names is ``unlocated``."""
     texts = {b.index: b.text for b in beats if b.kind in SALIENCE_KINDS}
 
-    def inside(span: SalienceSpan) -> bool:
-        text = texts.get(span.beat)
-        return text is not None and span.start < span.end <= len(text)
+    def where(quote: SalientQuote | SalienceQuote) -> SalienceSpan | None:
+        text = texts.get(quote.beat)
+        found = None if text is None else _locate(text, quote.span)
+        return (
+            None if found is None else SalienceSpan(beat=quote.beat, start=found[0], end=found[1])
+        )
 
-    salient = tuple(s for s in result.salient if inside(s.span))
-    texture = tuple(t for t in result.texture if inside(t))
-    texture += tuple(s.span for s in result.salient if not inside(s.span))
-    return SalienceVerdict(salient=salient, texture=texture, called=True)
+    salient: list[SalientSpan] = []
+    texture: list[SalienceSpan] = []
+    unlocated: list[SalientQuote | SalienceQuote] = []
+    for item in result.salient:
+        span = where(item)
+        if span is None:
+            unlocated.append(item)
+        else:
+            salient.append(SalientSpan(span=span, proposition_sketch=item.proposition_sketch))
+    for quote in result.texture:
+        span = where(quote)
+        if span is None:
+            unlocated.append(quote)
+        else:
+            texture.append(span)
+    return SalienceVerdict(
+        salient=tuple(salient), texture=tuple(texture), unlocated=tuple(unlocated), called=True
+    )
 
 
 async def detect_salience(
@@ -180,8 +221,13 @@ async def detect_salience(
     if isinstance(answer, Uncertain):
         reason = SALIENCE_SKIPPED if answer.reason == "budget_exhausted" else SALIENCE_FAILED
         return SalienceVerdict(called=answer.attempts > 0, degradation=(reason,))
-    found = _checked(answer, beats)
-    log.debug("salience: %d salient, %d texture", len(found.salient), len(found.texture))
+    found = _located(answer, beats)
+    log.debug(
+        "salience: %d salient, %d texture, %d unlocated",
+        len(found.salient),
+        len(found.texture),
+        len(found.unlocated),
+    )
     return found
 
 

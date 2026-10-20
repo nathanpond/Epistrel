@@ -97,19 +97,16 @@ WHY = SalienceSketch(subject="the door", relation="knocked_for", object="somethi
 """What the knock was for: the door's knock, its reason open."""
 
 
-def salience_answer(*spans: tuple[int, int, int, SalienceSketch], texture: Any = ()) -> str:
-    """A scripted ``salience_detection`` answer: salient ``(beat, start, end, sketch)`` spans
-    and texture ``(beat, start, end)`` spans."""
+def salience_answer(*spans: tuple[int, str, SalienceSketch], texture: Any = ()) -> str:
+    """A scripted ``salience_detection`` answer: salient ``(beat, quote, sketch)`` spans and
+    texture ``(beat, quote)`` spans, quoted as the model is asked to (#461)."""
     return json.dumps(
         {
             "salient": [
-                {
-                    "span": {"beat": b, "start": s, "end": e},
-                    "proposition_sketch": sketch.model_dump(mode="json"),
-                }
-                for b, s, e, sketch in spans
+                {"beat": b, "span": q, "proposition_sketch": sketch.model_dump(mode="json")}
+                for b, q, sketch in spans
             ],
-            "texture": [{"beat": b, "start": s, "end": e} for b, s, e in texture],
+            "texture": [{"beat": b, "span": q} for b, q in texture],
         }
     )
 

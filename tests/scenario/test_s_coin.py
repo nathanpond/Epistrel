@@ -88,8 +88,7 @@ HIDDEN = "Ada catches the coin and keeps its face hidden."
 UNSTATED = salience_answer(
     (
         2,
-        0,
-        len(HIDDEN),
+        HIDDEN,
         SalienceSketch(subject="the coin", relation="coin_face", object="something"),
     )
 )

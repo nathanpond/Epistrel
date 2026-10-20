@@ -2,9 +2,11 @@
 
 Each case is one render of one to three observable beats with its scene, read by #146's
 ``detect_salience`` at ``commitment.salience = rules_and_model`` — the ``salience_detection``
-purpose through the Model Access Layer and the production span check (a span outside a beat
-it was shown becomes texture). A predicted salient span **hits** a labeled one when both are on
-the same beat and share at least half of the shorter span (``metrics.hits``).
+purpose through the Model Access Layer and the production span location (the model quotes each
+span and the engine locates the quote in its beat, #461; a quote not found there is dropped and
+counted as ``unlocated`` in the case's detail). A predicted salient span **hits** a labeled
+one when both are on the same beat and share at least half of the shorter span
+(``metrics.hits``).
 
 - ``nfr_qual_4.recall`` (rate, ≥ 95 %): over the labeled salient spans (one per salient case),
   the share some predicted salient span hits.
@@ -15,7 +17,8 @@ the same beat and share at least half of the shorter span (``metrics.hits``).
 - ``e05.texture_clean`` (report-only): a texture-only render got no salient span.
 - ``e05.answered`` (report-only): the call returned a usable answer (no degradation).
 
-Its stub answers are scripted per case (the labeled spans), so CI gates on its stub run.
+Its stub answers are scripted per case (the labeled spans, quoted), so CI gates on its stub
+run.
 """
 
 from __future__ import annotations
@@ -164,6 +167,7 @@ class E05Suite(Suite):
                 "missed": missed,
                 "right": right,
                 "wrong": wrong,
+                "unlocated": len(verdict.unlocated),
                 "degradation": list(verdict.degradation),
             },
         )
@@ -185,7 +189,8 @@ class E05Suite(Suite):
         assert isinstance(case, SalienceCase)  # noqa: S101 - load() validated it as case_model
         salient = [
             {
-                "span": {"beat": e.beat, "start": e.start, "end": e.end},
+                "beat": e.beat,
+                "span": case.inputs.beats[e.beat].text[e.start : e.end],
                 "proposition_sketch": {
                     "subject": e.subject,
                     "relation": e.relation,
@@ -197,9 +202,7 @@ class E05Suite(Suite):
         ]
         labeled = {e.beat for e in case.expected}
         texture = [
-            {"beat": i, "start": 0, "end": len(b.text)}
-            for i, b in enumerate(case.inputs.beats)
-            if i not in labeled
+            {"beat": i, "span": b.text} for i, b in enumerate(case.inputs.beats) if i not in labeled
         ]
         return {SALIENCE_DETECTION.name: json.dumps({"salient": salient, "texture": texture})}
 

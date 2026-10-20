@@ -72,7 +72,11 @@ async def test_u_01(engine: AsyncEngine) -> None:
     mal = stub_models()
     mal.stub.script(
         SALIENCE_DETECTION.name,
-        [c.salience_answer((2, 0, 26, c.KNOCK), texture=[(3, 0, 23)])],
+        [
+            c.salience_answer(
+                (2, "Someone knocks at the door", c.KNOCK), texture=[(3, "The kettle hums")]
+            )
+        ],
     )
     beats = [
         k.beat(2, "narration", "Someone knocks at the door."),
@@ -288,7 +292,7 @@ async def test_u_01__rules_and_degradation() -> None:
     ``do`` and narration beats are salient (a ``say`` never is; a fully stated claim is no
     reference to an unknown). Salience is optional work: no model, a spent budget, a failed or
     unparseable answer each degrade to all texture with the reason in ``degradation``; the
-    stub's unscripted answer is all texture; a span outside its beat is texture."""
+    stub's unscripted answer is all texture."""
     mal = stub_models()
     beats = [c.beat(1, "narration", "Someone knocks.")]
     assert (await detect_salience(beats, SCENE, mode="rules", models=mal)).called is False
@@ -321,10 +325,62 @@ async def test_u_01__rules_and_degradation() -> None:
     default = await detect_salience(beats, SCENE, models=mal, budget=TurnBudget(max_calls=4))
     assert default.salient == ()
     assert default.degradation == ()
-    mal.stub.script(SALIENCE_DETECTION.name, [c.salience_answer((1, 0, 999, c.KNOCK))])
-    outside = await detect_salience(beats, SCENE, models=mal, budget=TurnBudget(max_calls=4))
-    assert outside.salient == ()
-    assert [t.beat for t in outside.texture] == [1]
+
+
+@pytest.mark.part("M4", "FR-COMMIT-3")
+async def test_u_01__quoted_spans() -> None:
+    """The model quotes each span and the engine locates the quote in the beat it names (#461;
+    small models place character offsets poorly, E-05's "Mare" for "a letter before anyone can
+    read it"): exactly, case-insensitively, or without the quotation marks a model adds. A quote
+    not found in its beat, or naming a beat the request did not carry, is never mapped to a
+    span: it is dropped into ``unlocated``, salient and texture alike."""
+    mal = stub_models()
+    letter = SalienceSketch(subject="Maren", relation="burned", object="a letter")
+    beats = [
+        c.beat(0, "narration", "The rain keeps on."),
+        c.beat(1, "do", "Maren burns a letter before anyone can read it."),
+    ]
+    mal.stub.script(
+        SALIENCE_DETECTION.name,
+        [
+            c.salience_answer(
+                (1, "a letter before anyone can read it", letter),
+                (1, '"A Letter Before Anyone Can Read It."', letter),
+                texture=[(0, "rain keeps")],
+            )
+        ],
+    )
+    found = await detect_salience(beats, SCENE, models=mal, budget=TurnBudget(max_calls=4))
+    assert [(s.span.beat, s.span.start, s.span.end) for s in found.salient] == [
+        (1, 12, 46),
+        (1, 12, 47),
+    ]
+    assert found.salient[0].proposition_sketch == letter
+    assert [(t.beat, t.start, t.end) for t in found.texture] == [(0, 4, 14)]
+    assert found.unlocated == ()
+
+    mal.stub.script(
+        SALIENCE_DETECTION.name,
+        [
+            c.salience_answer(
+                (1, "a letter nobody reads", letter),
+                (0, "a letter before anyone can read it", letter),
+                (7, "a letter", letter),
+                texture=[(0, "the snow")],
+            )
+        ],
+    )
+    lost = await detect_salience(beats, SCENE, models=mal, budget=TurnBudget(max_calls=4))
+    assert lost.called
+    assert lost.degradation == ()
+    assert lost.salient == ()
+    assert lost.texture == ()
+    assert [(q.beat, q.span) for q in lost.unlocated] == [
+        (1, "a letter nobody reads"),
+        (0, "a letter before anyone can read it"),
+        (7, "a letter"),
+        (0, "the snow"),
+    ]
 
 
 @pytest.mark.integration
@@ -380,7 +436,7 @@ async def test_u_01__follow_up(
 
         # -- the follow-up settles the reference
         k = await c.knock_story(engine)
-        played = await play(k, [(2, 0, len(knock_text), c.KNOCK)])
+        played = await play(k, [(2, knock_text, c.KNOCK)])
         commit_report = (await structured.turn_report(engine, k.story_id))["commit"]
         assert commit_report["follow_up"]["path"] == "follow_up"
         assert commit_report["follow_up"]["settled"] == 1
@@ -404,7 +460,7 @@ async def test_u_01__follow_up(
         k = await c.knock_story(engine)
         played = await play(
             k,
-            [(2, 0, len(knock_text), c.KNOCK)],
+            [(2, knock_text, c.KNOCK)],
             settle=False,
             budget={"max_calls": before + reservation["composed"]},
         )
@@ -418,7 +474,7 @@ async def test_u_01__follow_up(
 
         # -- the follow-up settles one of two: the minimal commit is for the other only
         k = await c.knock_story(engine)
-        await play(k, [(2, 0, len(knock_text), c.KNOCK), (2, 0, len(knock_text), c.WHY)])
+        await play(k, [(2, knock_text, c.KNOCK), (2, knock_text, c.WHY)])
         commit_report = (await structured.turn_report(engine, k.story_id))["commit"]
         assert commit_report["follow_up"]["path"] == "follow_up_and_minimal"
         assert (commit_report["follow_up"]["settled"], commit_report["follow_up"]["open"]) == (1, 1)

@@ -140,8 +140,7 @@ async def test_s_thunk_resolve__m4(
                 salience_answer(
                     (
                         2,
-                        0,
-                        len(KNOCK),
+                        KNOCK,
                         SalienceSketch(subject="someone", relation="knocked_at", object="porch"),
                     )
                 )
@@ -286,8 +285,7 @@ async def test_s_thunk_resolve__m4(
                 salience_answer(
                     (
                         2,
-                        0,
-                        len(rattle),
+                        rattle,
                         SalienceSketch(subject="something", relation="rattled", object="porch"),
                     )
                 )

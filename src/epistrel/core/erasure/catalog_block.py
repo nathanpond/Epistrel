@@ -20,7 +20,10 @@ that name it, and the creation reports that carry its public card) is **reached*
   whose creation report, is reached is refused;
 - outside the catalog, a deployment or rating policy whose text names the subject is refused by
   id (``GET``, update and retire) and left out of ``GET /admin/policies``, and a deployment
-  configuration change whose values name it is left out of ``GET /admin/config-changes`` (#429).
+  configuration change whose values name it is left out of ``GET /admin/config-changes`` (#429);
+  a story's settings list such a policy without its name or rule, and a violation of it is
+  refused with 503 ``erasure_pending`` instead of naming it (#447, ADR-161:
+  ``StoryGuardrails.withholding``, ``check.refuse_withheld``).
 
 ``read`` answers ``None`` when nothing catalog-scope is pending (one query); otherwise it
 computes each pending entry's reach afresh, so a catalog write made during the window is seen.

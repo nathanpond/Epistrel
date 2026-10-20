@@ -19,8 +19,8 @@ move it), and the version ids of every rating in the story rating's closure.
 from __future__ import annotations
 
 from collections import OrderedDict
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Collection, Sequence
+from dataclasses import dataclass, replace
 from typing import Any
 
 from sqlalchemy import exists, or_, select
@@ -29,7 +29,14 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from epistrel.core.config_changes import read_settings
 from epistrel.core.enums import StoryStatus
 from epistrel.core.errors import PolicyNotFound, StoryNotFound
-from epistrel.core.policies.model import SCOPE_RANK, ModelAssistedRule, Policy, Scope, Target
+from epistrel.core.policies.model import (
+    SCOPE_RANK,
+    ModelAssistedRule,
+    Policy,
+    Scope,
+    Target,
+    WithheldPolicy,
+)
 from epistrel.core.policies.rows import policy_of, select_policies
 from epistrel.core.ratings import closure_versions, effective_guardrails, load_graph
 from epistrel.core.tables import characters, policies, stories
@@ -214,13 +221,25 @@ class StoryGuardrails:
     ``calls_input`` is per text checked with no character acting (a character-scoped input
     policy adds one call when its character acts); ``calls_output`` per output checkpoint."""
 
-    active: tuple[Policy, ...]
-    inactive: tuple[Policy, ...]
+    active: tuple[Policy | WithheldPolicy, ...]
+    inactive: tuple[Policy | WithheldPolicy, ...]
     sources: dict[str, str]
     calls_input: int
     calls_output: int
 
-    def source(self, policy: Policy) -> str:
+    def withholding(self, withheld: Collection[str]) -> StoryGuardrails:
+        """These guardrails with each policy in ``withheld`` (the ids a pending catalog-scope
+        erasure reaches) shown as a ``WithheldPolicy``: no name, message or rule until it is
+        reapplied (#447, ADR-161). The call counts are the enforced set's, unchanged."""
+        if not withheld:
+            return self
+        return replace(
+            self,
+            active=withhold(self.active, withheld),
+            inactive=withhold(self.inactive, withheld),
+        )
+
+    def source(self, policy: Policy | WithheldPolicy) -> str:
         """``global``, ``rating:<id>`` (the contributing rating), ``story`` or
         ``character:<id>``."""
         if policy.scope is Scope.RATING:
@@ -228,6 +247,15 @@ class StoryGuardrails:
         if policy.scope is Scope.CHARACTER:
             return f"character:{policy.scope_id}"
         return policy.scope.value
+
+
+def withhold(
+    found: Sequence[Policy | WithheldPolicy], withheld: Collection[str]
+) -> tuple[Policy | WithheldPolicy, ...]:
+    """``found`` in order, each policy in ``withheld`` as its ``WithheldPolicy`` (#447)."""
+    return tuple(
+        WithheldPolicy.of(p) if isinstance(p, Policy) and p.id in withheld else p for p in found
+    )
 
 
 def _assisted_count(found: Sequence[Policy], target: Target) -> int:

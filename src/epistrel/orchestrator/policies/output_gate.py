@@ -53,6 +53,12 @@ retrieves again) no longer sees it and the loop converges. ``Gated.quarantined``
 quarantined during the turn (the response's ``degradation`` then names
 ``quarantined_context``) and ``Gated.pins_quarantined`` the author pins among them. A Lite
 draft carries no records and no hook is passed: #68's behaviour is unchanged.
+
+**Withheld policies** (#447, ADR-161). With a ``withheld`` hook (both pipelines pass
+``check.refuse_withheld``), every violation is put to it before the draft is rejected or a
+fallback released: while a pending catalog-scope erasure reaches a violated policy's text, the
+hook raises 503 ``erasure_pending`` and the turn rolls back, so the policy's message is never
+sent as a constraint, stored on a ``guardrail_output_rejected`` event or reported.
 """
 
 from __future__ import annotations
@@ -272,6 +278,10 @@ class Implicated:
 Implicate = Callable[[Draft, OutputCheck, int], Awaitable[Implicated]]
 """``implicate(draft, check, attempt)``: FR-GUARD-5's feedback for a rejected draft."""
 
+Withheld = Callable[[Sequence[str]], Awaitable[None]]
+"""``withheld(policy_ids)``: raises (503 ``erasure_pending``) when a pending catalog-scope
+erasure reaches any of the violated policies (#447; ``check.refuse_withheld``)."""
+
 
 def _reject(rejected: list[Rejected], record: Rejected, stage: str) -> None:
     rejected.append(record)
@@ -300,8 +310,10 @@ async def gate_output(
     retry_budget: int,
     fallback: FallbackLines,
     implicate: Implicate | None = None,
+    withheld: Withheld | None = None,
 ) -> Gated:
-    """Generate, check, and regenerate or fall back; see the module docstring."""
+    """Generate, check, and regenerate or fall back; see the module docstring. ``withheld`` is
+    asked about every violation before anything is done with it (#447)."""
     rejected: list[Rejected] = []
     quarantined: list[str] = []
     pins: list[str] = []
@@ -332,6 +344,8 @@ async def gate_output(
                 quarantined=tuple(quarantined),
                 pins_quarantined=tuple(pins),
             )
+        if withheld is not None:
+            await withheld([v.policy_id for v in check.violations])
         implicated = Implicated()
         if implicate is not None and (draft.context or draft.pins):
             implicated = await implicate(draft, check, attempt)
@@ -367,6 +381,16 @@ async def gate_output(
             cause = out
             break
     fell = _fall_back(policies, fallback, rejected, attempts=attempt + 1, cause=cause)
+    if withheld is not None:
+        await withheld(
+            [
+                v.policy_id
+                for r in fell.rejected
+                if r.reason == FALLBACK_POLICY
+                for v in r.check.violations
+            ]
+            + [v.policy_id for v in fell.violations]
+        )
     return replace(fell, quarantined=tuple(quarantined), pins_quarantined=tuple(pins))
 
 
@@ -446,6 +470,7 @@ __all__ = [
     "PinText",
     "Produce",
     "Rejected",
+    "Withheld",
     "check_output",
     "deterministic_check",
     "gate_output",

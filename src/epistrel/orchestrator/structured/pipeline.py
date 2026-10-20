@@ -264,6 +264,7 @@ from epistrel.orchestrator.models.facts import runtime_facts
 from epistrel.orchestrator.models.metrics import CallLog, recording
 from epistrel.orchestrator.models.registry import GenerationInputs, SceneContext
 from epistrel.orchestrator.models.registry import PlayerInput as PromptPlayer
+from epistrel.orchestrator.policies.check import refuse_withheld
 from epistrel.orchestrator.policies.implication import Implicator, draft_context, threshold_of
 from epistrel.orchestrator.policies.output_gate import (
     Draft,
@@ -2282,6 +2283,7 @@ async def play(
                 threshold=threshold_of(settings),
                 policies=policies,
             ),
+            withheld=partial(refuse_withheld, db),
         )
         timing.policy_check_s += time.perf_counter() - gating
         clock.add("render", time.perf_counter() - gating)

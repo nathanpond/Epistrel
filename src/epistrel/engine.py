@@ -104,7 +104,7 @@ from epistrel.core.media.stores import make_store
 from epistrel.core.memory import consolidation as consolidation_core
 from epistrel.core.memory import pins as memory_pins
 from epistrel.core.memory.consolidation import ConsolidateRequest
-from epistrel.core.policies.model import Policy, Scope
+from epistrel.core.policies.model import Policy, Scope, WithheldPolicy
 from epistrel.core.ports import Ports
 from epistrel.core.profiles import effective, guarantees, impact
 from epistrel.core.profiles import store as profiles
@@ -2027,9 +2027,13 @@ class Engine:
         self, ctx: RequestContext, story_id: str
     ) -> tuple[StorySettings, policy_store.StoryGuardrails]:
         """The story's settings (defaults filled in) and its guardrails: effective policies
-        with their kind and source, inactive ones, and the model calls they add (FR-GUARD-9)."""
+        with their kind and source, inactive ones, and the model calls they add (FR-GUARD-9).
+        A policy whose text a pending catalog-scope erasure reaches is a ``WithheldPolicy`` (no
+        name, message or rule) until it has been reapplied (#447, ADR-161)."""
         story = await stories.get_story(self.db, story_id)
         guardrails = await policy_store.story_guardrails(self.db, story_id)
+        if (block := await self._catalog_block()) is not None:
+            guardrails = guardrails.withholding(block.records(catalog_block.POLICIES))
         return StorySettings.from_row(story.settings), guardrails
 
     @library_only("served as `effective_budget` in `GET`/`PATCH /stories/{id}/settings`")
@@ -2721,9 +2725,16 @@ class Engine:
 
     @library_only("served as `effective_policies` in `GET /stories/{id}/settings`")
     @refuses_nul()
-    async def policies_effective(self, ctx: RequestContext, story_id: str) -> tuple[Policy, ...]:
-        """The story's effective policies: global, the rating closure, story, character."""
-        return await policy_store.effective_policies(self.db, story_id)
+    async def policies_effective(
+        self, ctx: RequestContext, story_id: str
+    ) -> tuple[Policy | WithheldPolicy, ...]:
+        """The story's effective policies: global, the rating closure, story, character. One
+        whose text a pending catalog-scope erasure reaches is a ``WithheldPolicy`` (no name,
+        message or rule; still enforced) until it has been reapplied (#447, ADR-161)."""
+        found = await policy_store.effective_policies(self.db, story_id)
+        if (block := await self._catalog_block()) is None:
+            return found
+        return policy_store.withhold(found, block.records(catalog_block.POLICIES))
 
     async def policies_create(
         self, ctx: RequestContext, fields: PolicyFields

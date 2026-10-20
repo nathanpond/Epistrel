@@ -149,6 +149,7 @@ from epistrel.orchestrator.models.config import routes_of
 from epistrel.orchestrator.models.errors import EmptyCompletion, ModelError
 from epistrel.orchestrator.models.facts import runtime_facts
 from epistrel.orchestrator.models.metrics import CallLog, recording
+from epistrel.orchestrator.policies.check import refuse_withheld
 from epistrel.orchestrator.policies.input_gate import input_policies, model_assisted
 from epistrel.orchestrator.policies.output_gate import (
     Draft,
@@ -623,6 +624,7 @@ async def _play(
             budget=budget,
             retry_budget=polish_budget(configuration.settings),
             fallback=_fallback_lines(inputs, cast),
+            withheld=partial(refuse_withheld, db),
         )
         timing.policy_check_s += time.perf_counter() - gating - (produced[0] - before)
         gated[:] = [outcome]

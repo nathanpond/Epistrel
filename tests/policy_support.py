@@ -126,3 +126,12 @@ def story_item(rule: dict[str, Any], **fields: Any) -> StoryPolicyItem:
     fields.setdefault("name", unique("story"))
     fields.setdefault("message", "Not in this story.")
     return StoryPolicyItem.model_validate({"rule": rule, **fields})
+
+
+async def enforced(lib: Engine, ctx: RequestContext, story_id: str) -> tuple[Policy, ...]:
+    """The library's effective policies, none withheld: no catalog-scope erasure is pending
+    in these tests, so each is a whole ``Policy`` (#447, ADR-161)."""
+    found = await lib.policies_effective(ctx, story_id)
+    whole = tuple(p for p in found if isinstance(p, Policy))
+    assert len(whole) == len(found)
+    return whole

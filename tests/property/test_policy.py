@@ -26,6 +26,7 @@ from tests.concurrency_support import set_instructions, set_pins
 from tests.event_support import play_turn
 from tests.policy_support import (
     AUTHOR,
+    enforced,
     global_policy,
     library,
     rated_policy_rating,
@@ -67,7 +68,7 @@ async def _baseline(engine: AsyncEngine, config: Settings) -> Baseline:
     rating_id, rated = await rated_policy_rating(lib, engine, words(banned[1]))
     story_id = await create_story(engine, principal="p-author", content_rating_id=rating_id)
     own = await lib.policies_set_story(AUTHOR, story_id, [story_item(words(banned[2]))])
-    effective = await lib.policies_effective(AUTHOR, story_id)
+    effective = await enforced(lib, AUTHOR, story_id)
     return Baseline(
         story_id=story_id,
         banned=banned,
@@ -121,7 +122,7 @@ async def _attempt(url: str, base: Baseline, sequence: list[Step]) -> None:
                 with pytest.raises(CannotRelax):
                     await lib.policies_set_story(AUTHOR, base.story_id, [relax])
         assert await row_hashes(engine) == base.hashes
-        effective = await lib.policies_effective(AUTHOR, base.story_id)
+        effective = await enforced(lib, AUTHOR, base.story_id)
         assert effective == base.effective
         assert _verdicts(_probes(base.banned), effective) == base.verdicts
     finally:
@@ -143,9 +144,9 @@ def test_policy(pg_url: str) -> None:
             base = await _baseline(engine, config)
             lib = library(config, engine)
             bare = await create_story(engine, principal="p-author")
-            empty = await lib.policies_effective(AUTHOR, bare)
+            empty = await enforced(lib, AUTHOR, bare)
             await set_pins(engine, bare, *(f"note {i}" for i in range(MEMORY_COUNT)))
-            full = await lib.policies_effective(AUTHOR, bare)
+            full = await enforced(lib, AUTHOR, bare)
             return base, empty, full
         finally:
             await engine.dispose()

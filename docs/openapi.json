@@ -5132,8 +5132,15 @@
             "$ref": "#/components/schemas/PolicyKind"
           },
           "name": {
-            "title": "Name",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
           },
           "scope": {
             "$ref": "#/components/schemas/Scope-Output"
@@ -57572,7 +57579,7 @@
     },
     "/stories/{story_id}/settings": {
       "get": {
-        "description": "The settings with defaults filled in, and the story's guardrails: `effective_policies` (scope, source, applies_to, age_condition, kind), `inactive_policies` (age-conditioned ones whose condition is false for the cast) and `guardrail_calls`, so the model-call cost of guardrails is predictable (FR-GUARD-9); and `effective_budget`, the budget the next turn plans with.",
+        "description": "The settings with defaults filled in, and the story's guardrails: `effective_policies` (scope, source, applies_to, age_condition, kind), `inactive_policies` (age-conditioned ones whose condition is false for the cast) and `guardrail_calls`, so the model-call cost of guardrails is predictable (FR-GUARD-9); and `effective_budget`, the budget the next turn plans with. A policy whose text a pending catalog-scope erasure reaches is listed with a `null` `name` until the erasure is reapplied; it is still enforced (ADR-161).",
         "operationId": "story_settings",
         "parameters": [
           {

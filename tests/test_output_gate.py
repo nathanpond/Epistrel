@@ -7,6 +7,7 @@ from typing import Any, cast
 
 import pytest
 
+from epistrel.core.errors import ErasurePending
 from epistrel.core.policies.model import Scope, Target
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models.access import ModelAccessLayer
@@ -47,7 +48,9 @@ class Script:
         return Draft(text=self.texts.pop(0), model="m", prompt_hash="h", finish_reason="stop")
 
 
-async def _gate(script: Script, *policies: Any, retry: int = 2, **lines: Any) -> Any:
+async def _gate(
+    script: Script, *policies: Any, retry: int = 2, withheld: Any = None, **lines: Any
+) -> Any:
     context = _context(*policies)
     return await gate_output(
         NO_MODELS,
@@ -57,7 +60,22 @@ async def _gate(script: Script, *policies: Any, retry: int = 2, **lines: Any) ->
         budget=TurnBudget(),
         retry_budget=retry,
         fallback=FallbackLines(name="Ada", **lines),
+        withheld=withheld,
     )
+
+
+class Withholding:
+    """A ``withheld`` hook refusing the listed policy ids (as ``check.refuse_withheld`` does
+    while a pending catalog-scope erasure reaches them), recording what it was asked."""
+
+    def __init__(self, *policy_ids: str) -> None:
+        self.policy_ids = set(policy_ids)
+        self.asked: list[list[str]] = []
+
+    async def __call__(self, policy_ids: Any) -> None:
+        self.asked.append(list(policy_ids))
+        if self.policy_ids & set(policy_ids):
+            raise ErasurePending("withheld", {"story_id": None})
 
 
 async def test_regenerates_with_accumulating_constraints() -> None:
@@ -141,6 +159,36 @@ async def test_out_of_time_mid_regeneration_falls_back() -> None:
     assert gated.fallback_used
     with pytest.raises(ModelUnavailable):
         await _gate(Failing(ModelUnavailable("generation", "http_500")), BANNED)
+
+
+async def test_a_withheld_policy_refuses_before_its_message_is_used() -> None:
+    """#447 (ADR-161): a draft breaking a withheld policy refuses the turn (503
+    ``erasure_pending``) before the policy's message becomes a constraint, so nothing is
+    generated again; a fallback line breaking one refuses too. Complement: a withheld policy
+    nothing breaks changes nothing, and the hook is asked only about violations."""
+    script = Script("A dragon.", "A cat.")
+    with pytest.raises(ErasurePending):
+        await _gate(script, BANNED, ALSO, withheld=Withholding("no-dragons"))
+    assert script.seen == [((), 0)]
+
+    hook = Withholding("no-dragons")
+    with pytest.raises(ErasurePending):
+        await _gate(
+            Script("A goblin."),
+            BANNED,
+            ALSO,
+            retry=0,
+            character_text="{name} feeds the dragon.",
+            withheld=hook,
+        )
+    assert hook.asked == [["no-goblins"], ["no-dragons"]]
+
+    hook = Withholding("no-dragons")
+    script = Script("A goblin.", "A cat.")
+    gated = await _gate(script, BANNED, ALSO, withheld=hook)
+    assert gated.draft.text == "A cat."
+    assert script.seen == [((), 0), ((CONSTRAINT.format(message="no-goblins says no"),), 1)]
+    assert hook.asked == [["no-goblins"]]
 
 
 def test_which_policies_and_reservation() -> None:

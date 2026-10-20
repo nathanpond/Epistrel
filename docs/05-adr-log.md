@@ -27,7 +27,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-RET | §8 | 129 |
 | FR-PROP | §8.1 | 160 |
 | FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160 |
-| FR-GUARD | §11 | 087, 095, 096, 114 |
+| FR-GUARD | §11 | 087, 095, 096, 114, 161 |
 | FR-REWRITE | §12.1 | 144 |
 | FR-MODEL | §13 | 129, 136, 144, 150 |
 | FR-EXT | §15 | 051, 054, 056, 061, 066, 072, 074, 092, 133, 140, 144 |
@@ -36,7 +36,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-MULTI | §16 | 043, 126 |
 | FR-API | §17 | 092, 138 |
 | FR-AUTH | §17.1 | 078, 091, 093, 144, 149, 152 |
-| FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144, 153, 154, 155, 156, 157, 159 |
+| FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144, 153, 154, 155, 156, 157, 159, 161 |
 | FR-CAT | §18.1 | 081, 088, 089, 090, 091, 095, 097, 107, 108, 138, 144 |
 | FR-SCN | §18.2 | 081, 082, 087, 088, 091, 097, 107, 140, 141, 142 |
 | FR-PROF | §18.3 | 084, 086, 087, 107, 134, 138, 141, 142, 144, 158 |
@@ -52,7 +52,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 112, 114, 115, 158 |
 | NFR-REL | §20 | 045, 127 |
 | NFR-SEC | §20 | 138, 149, 152 |
-| NFR-PRIV | §20 | 077, 101, 154, 157, 159 |
+| NFR-PRIV | §20 | 077, 101, 154, 157, 159, 161 |
 | NFR-PORT | §20 | 150 |
 | NFR-OPS | §20 | 127, 148, 151 |
 | NFR-MAINT | §20 | 148 |
@@ -221,8 +221,9 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 156 | The erasure fold is canonical caseless matching, `ı` is `i`, and a soft hyphen is no character | Current | — |
 | 157 | A pending catalog-scope erasure holds back what it reaches until it is reapplied | Partly superseded | 159 |
 | 158 | The extraction backstop is gated by default; a profile chooses `always` | Current | — |
-| 159 | A pending catalog-scope erasure also holds back the deployment policies and configuration changes naming its subject | Current | — |
+| 159 | A pending catalog-scope erasure also holds back the deployment policies and configuration changes naming its subject | Partly superseded | 161 |
 | 160 | Verification checks an affirmed claim's declared consequences, closed sets may close a key set, and a rule-free presence conflict is uncertain | Current | — |
+| 161 | A pending catalog-scope erasure withholds a policy naming its subject from a story's settings, and refuses a violation of it | Current | — |
 
 ---
 
@@ -1564,6 +1565,7 @@ Nothing is persisted: the reach is computed afresh on each call while an entry i
 
 ### ADR-159 — A pending catalog-scope erasure also holds back the deployment policies and configuration changes naming its subject
 **Status:** Accepted. Amends ADR-157 (what a pending catalog-scope erasure holds outside the catalog).
+**Amended by:** ADR-161 — a story's settings withhold a policy its reach names, and a violation of one is refused.
 **Context:** ADR-157 holds back what a pending catalog-scope erasure reaches in the catalog. Its reapply also redacts deployment records outside the catalog that name the subject: global and rating policies (name, message and rule) and the deployment's configuration changes (old and new values; a policy write records its body as one). ADR-157 left their reads served (#429), so during a restore window `GET /admin/policies`, `GET /admin/policies/{id}` and `GET /admin/config-changes` could serve the erased subject's name. NFR-PRIV-2's intent, and ADR-157's own definition of the reach as what the reapply would touch, apply to them alike.
 **Decision:** While a catalog-scope ledger entry is pending, in the Engine so REST and the library agree:
 - a policy its reach names is refused by id with 503 `erasure_pending` (`details.story_id` null), reads and writes alike: `GET`, `PUT` and `DELETE /admin/policies/{id}` (`policies_get`, `policies_update`, `policies_retire`), because a replacement records the old text again and a retirement echoes it;
@@ -1573,7 +1575,7 @@ Nothing is persisted: the reach is computed afresh on each call while an entry i
 A story's own policies and configuration changes are story records, which a catalog-scope erasure leaves alone; a blocked story's stay governed by #363 and ADR-153 (FR-ADMIN-7, NFR-PRIV-2).
 **Consequences:**
 - An operator cannot read, change or retire a policy naming the erased subject until the reapply finishes. The policy is still enforced on turns throughout, as before the restore.
-- A story's effective policies (`GET /stories/{id}/settings`) and a turn's policy violation are not covered here; #447 tracks them.
+- A story's effective policies (`GET /stories/{id}/settings`) and a turn's policy violation are not covered here; #447 tracks them. *[superseded by ADR-161: a story's settings list such a policy with a null name, and a violation of it is 503 `erasure_pending`]*
 - Tests: `tests/integration/test_erasure_ledger.py` (the restore window for a global policy naming the subject, with a complement policy, on REST and a fresh library Engine; the history's page stays full).
 
 ---
@@ -1593,6 +1595,24 @@ Nothing is inferred beyond the declared rules and closed sets (FR-PROP-8,11); CO
 - A located claim inside a place the holder negates is now `contradicted` where it was `novel`; an affirmed entity claim against a negated presence elsewhere that no rule reaches is now `uncertain` where it was `novel`. Each affirmed entity claim makes one more keyed read per presence predicate, and each claim whose predicate starts a declared rule reads its consequents.
 - Later milestones that read or export closed sets (M5's per-holder verification, M7's portability) carry `key_set`.
 - Tests: U-15 (`test_u_15__forward_implication`, `__key_set_closed_sets`, `__cross_predicate`, and the registry slice's key-set declaration), CONTRADICTION-SOUNDNESS (`__implied`, `__key_set`, and the containment clause of the polarity citation), S-TENNIS (`__varsity`, `__degree`, `__presence`).
+
+---
+
+### ADR-161 — A pending catalog-scope erasure withholds a policy naming its subject from a story's settings, and refuses a violation of it
+**Status:** Accepted. Amends ADR-159 (a story's effective policies and a policy violation during the restore window).
+**Context:** ADR-159 holds back a global or rating policy naming a pending catalog-scope erasure's subject on the operator surface, and left two surfaces to #447. `GET /stories/{id}/settings` (and the library's `story_settings` and `policies_effective`) listed every effective policy by name, so a global policy naming the subject was listed in every story's settings; and a text such a policy refuses answered 422 `guardrail_violation` with the policy's `name` and `message` in `details.violations[]`, so a player or consumer hitting it saw the subject's name. Leaving the policy out of the settings would misstate what is enforced, and it must keep being enforced. Refusing the settings read for the window would refuse every story's settings, since a global policy is in every story's set. The owner chose on 2026-10-20 (#447, option (C)): redact the settings read, and refuse the violation.
+**Decision:** While a catalog-scope ledger entry is pending, in the Engine so REST and the library agree:
+- a story's settings (`GET` and `PUT /stories/{id}/settings`, `story_settings`) and the library's `policies_effective` show an effective or inactive policy whose text its reach names as **withheld**: its id, scope, source, `applies_to`, `age_condition` and kind, with `name` null and no message or rule (`EffectivePolicyBody.name` is nullable; the library returns a `WithheldPolicy`). It stays in the set and is still enforced; the guardrail call counts are the enforced set's;
+- a text such a policy refuses, at the input gate (a turn, a regeneration, an ingest, pins, custom instructions, story creation, an added character, a sanitize), is 503 `erasure_pending` (`Retry-After: 30`, `details.story_id` null, as ADR-157's refusals) instead of 422 `guardrail_violation`, and no `guardrail_input_rejected` audit row is written;
+- a draft or fallback line such a policy rejects at the output gate refuses the turn the same way before the policy's message is used: it is never sent to the model as a regeneration constraint, stored on a `guardrail_output_rejected` event or reported in the turn's `guardrail.violations`, and the turn rolls back.
+
+The block is read only when a violation is found, so a passing text costs nothing. A retry after the reapply gets the real outcome, with the redacted text (FR-ADMIN-7, FR-GUARD-9, NFR-PRIV-2).
+**Consequences:**
+- A story's settings stay readable throughout a restore window and still show what is enforced; only the withheld policies' names are missing.
+- A player whose input breaks a policy naming the erased subject is told to retry, not why, for the window (minutes at hobby scale); a violation of any other policy is the 422 as before.
+- The OpenAPI contract changes: `EffectivePolicyBody.name` is `string | null`. The library's `policies_effective` returns `Policy | WithheldPolicy`, and `StoryGuardrails.active`/`inactive` hold either.
+- The in-process effective-policy cache is keyed by configuration revisions that a reapply's redaction does not move, so a process that cached a story's set before the reapply serves the unredacted policy after it; #469 tracks that.
+- Tests: `tests/integration/test_erasure_ledger.py` (`test_a_pending_catalog_erasure_withholds_a_story_policy_naming_her`: the settings on REST and a fresh library Engine, a refused input on both and a refused turn, with a complement policy, the state before the restore and after the reapply) and `tests/test_output_gate.py` (`test_a_withheld_policy_refuses_before_its_message_is_used`).
 
 ---
 

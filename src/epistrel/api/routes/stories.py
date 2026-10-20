@@ -22,7 +22,8 @@
 - ``GET /stories/{id}/settings``: the settings with defaults filled in, and the story's
   guardrails — ``effective_policies`` (scope, source, applies_to, age_condition, kind),
   ``inactive_policies`` (age-conditioned ones whose condition is false for the cast) and
-  ``guardrail_calls`` — so the model-call cost of guardrails is predictable (FR-GUARD-9).
+  ``guardrail_calls`` — so the model-call cost of guardrails is predictable (FR-GUARD-9). A
+  policy a pending catalog-scope erasure reaches is listed with a ``null`` name (#447).
 - ``PATCH /stories/{id}/settings``: a JSON merge patch over the settings (#63), plus the story's
   own ``policies``; answers the read's shape with the revisions.
 
@@ -72,7 +73,7 @@ from epistrel.core.genesis.create import CreationHeld
 from epistrel.core.genesis.models import CreationReport, StoryFromScenario, is_scenario_body
 from epistrel.core.ingest import IngestRequest, IngestResult
 from epistrel.core.ownership import RELATION_FILTER_PATTERN, relation_filter_problem
-from epistrel.core.policies.model import Policy, PolicyKind, Scope, Target
+from epistrel.core.policies.model import Policy, PolicyKind, Scope, Target, WithheldPolicy
 from epistrel.core.profiles.effective import ProfileVersionRef
 from epistrel.core.profiles.impact import ImpactReport
 from epistrel.core.settings_schema import ConfigClass, StorySettings
@@ -374,7 +375,9 @@ class EffectivePolicyBody(BaseModel):
     source and kind: a ``model_assisted`` policy costs a model call per check (FR-GUARD-9)."""
 
     id: str
-    name: str
+    name: str | None
+    """``null`` while a pending catalog-scope erasure reaches the policy's text (it is still
+    enforced; #447, ADR-161)."""
     scope: Scope
     source: str
     """``global``, ``rating:<id>`` (the rating that contributes it), ``story`` or
@@ -384,7 +387,9 @@ class EffectivePolicyBody(BaseModel):
     kind: PolicyKind
 
     @classmethod
-    def of(cls, policy: Policy, guardrails: StoryGuardrails) -> EffectivePolicyBody:
+    def of(
+        cls, policy: Policy | WithheldPolicy, guardrails: StoryGuardrails
+    ) -> EffectivePolicyBody:
         return cls(
             id=policy.id,
             name=policy.name,
@@ -832,7 +837,9 @@ async def ingest(
         "`effective_policies` (scope, source, applies_to, age_condition, kind), "
         "`inactive_policies` (age-conditioned ones whose condition is false for the cast) and "
         "`guardrail_calls`, so the model-call cost of guardrails is predictable (FR-GUARD-9); "
-        "and `effective_budget`, the budget the next turn plans with."
+        "and `effective_budget`, the budget the next turn plans with. A policy whose text a "
+        "pending catalog-scope erasure reaches is listed with a `null` `name` until the "
+        "erasure is reapplied; it is still enforced (ADR-161)."
     ),
 )
 async def story_settings(

@@ -34,14 +34,17 @@ from epistrel.core.db import make_engine
 from epistrel.core.erasure import ledger as erasure_ledger
 from epistrel.core.erasure.erase import ErasureRequest
 from epistrel.core.erasure.ledger import GENESIS_HASH, Entry, LedgerFile, canonical, parse
-from epistrel.core.errors import ErasurePending
+from epistrel.core.errors import ErasurePending, GuardrailViolation
 from epistrel.core.feedback_export import FeedbackExportRequest
 from epistrel.core.feedback_reporting import FeedbackReviewList
 from epistrel.core.ids import new_ulid
+from epistrel.core.policies.model import Policy, WithheldPolicy
 from epistrel.core.stories import StorySpec
+from epistrel.core.story_texts import CustomInstructionsRequest
 from epistrel.engine import CATALOG_GATED_ATTRIBUTE, ERASURE_GATE_EXEMPT, ERASURE_GATED_ATTRIBUTE
 from epistrel.observability import logging as telemetry_logging
 from epistrel.orchestrator.jobs import queue as job_queue
+from epistrel.orchestrator.policies import store as policy_store
 from epistrel.testing import pauses
 from epistrel.tools import backup
 from tests import character_support as characters
@@ -58,7 +61,8 @@ from tests.feedback_support import (
     rate,
     set_deployment,
 )
-from tests.respond_support import respond_client
+from tests.respond_support import body as respond_body
+from tests.respond_support import new_story, respond, respond_client
 from tests.story_support import WRITE, story_body
 
 CTX = RequestContext(principal="p-ledger")
@@ -1482,6 +1486,143 @@ async def test_a_pending_catalog_erasure_holds_the_policies_and_changes_naming_h
             settings = {i["setting"] for i in history.json()["items"]}
             assert {f"policy:{named}", f"policy:{plain}"} <= settings
             for text in (found.text, history.text):
+                assert ledger.SUBJECT not in text
+
+
+async def test_a_pending_catalog_erasure_withholds_a_story_policy_naming_her(
+    ledger_server: ledger.Server, tmp_path: Path
+) -> None:
+    """#447 (the owner's option (C), ADR-161): during the restore window of a catalog-scope
+    erasure of a catalog character, a story's settings (``GET /stories/{id}/settings``, the
+    library's ``story_settings`` and ``policies_effective``) list a global policy whose text
+    names her with a ``null`` name and no rule or message, still counted as enforced; an input
+    it refuses is 503 ``erasure_pending`` on REST and through the library, never 422 with her
+    name. Complements: before the restore, and for a policy not naming her throughout, the
+    settings and the 422 are unchanged; after the reapply, both are served, redacted."""
+    url = ledger_server.fresh()
+    ledger_dir = tmp_path / "ledger"
+    held: dict[str, str] = {}
+    operator = {**e.WRITE, "X-Epistrel-Principal": "p-operator"}
+    named_word, plain_word = f"zq{new_ulid().lower()}", f"zq{new_ulid().lower()}"
+
+    def settings_names(body: dict[str, Any]) -> dict[str, str | None]:
+        return {p["id"]: p["name"] for p in body["effective_policies"]}
+
+    def violation(response: httpx.Response) -> dict[str, Any]:
+        assert response.status_code == 422, response.text
+        error = response.json()["error"]
+        assert error["code"] == "guardrail_violation"
+        (found,) = error["details"]["violations"]
+        return typing.cast(dict[str, Any], found)
+
+    async def instruct(client: httpx.AsyncClient, word: str) -> httpx.Response:
+        return await client.put(
+            f"/stories/{held['story']}/custom-instructions",
+            json={"text": f"Mention {word} often."},
+            headers=WRITE,
+        )
+
+    async def prepare(client: httpx.AsyncClient) -> tuple[str, str]:
+        subject = await scenarios.published_character(client, ledger.SUBJECT)
+        for label, name, message, word in (
+            ("plain", "Keep the quay quiet", f"{ledger.BYSTANDER} mends nets.", plain_word),
+            (
+                "named",
+                f"Keep {ledger.SUBJECT} offstage",
+                f"{ledger.SUBJECT} is not cursed.",
+                named_word,
+            ),
+        ):
+            body = {
+                "scope": "global",
+                "name": name,
+                "rule": {"type": "wordlist", "words": [word]},
+                "message": message,
+            }
+            made = await client.post("/admin/policies", json=body, headers=operator)
+            assert made.status_code == 201, made.text
+            held[label] = made.json()["id"]
+        held["story"], ids = await new_story(client, ledger.PLAYER_NAME, ledger.BYSTANDER)
+        held["player"] = ids[ledger.PLAYER_NAME]
+        # Complement: nothing pending, so her policy is listed and refuses by name.
+        shown = await client.get(f"/stories/{held['story']}/settings", headers=WRITE)
+        assert shown.status_code == 200, shown.text
+        assert settings_names(shown.json())[held["named"]] == f"Keep {ledger.SUBJECT} offstage"
+        refused = violation(await instruct(client, named_word))
+        assert (refused["policy_id"], refused["name"]) == (
+            held["named"],
+            f"Keep {ledger.SUBJECT} offstage",
+        )
+        return "catalog_character", subject
+
+    await _pending_catalog_erasure(url, ledger_dir, prepare)
+    named, plain, story = held["named"], held["plain"], held["story"]
+    config = ledger.settings(url, ledger_dir)
+    db = make_engine(config)
+    try:
+        found = await _fresh(config, db).policies_effective(CTX, story)
+        by_id = {p.id: p for p in found}
+        assert isinstance(by_id[named], WithheldPolicy)
+        assert by_id[named].name is None
+        assert isinstance(by_id[plain], Policy)
+        assert by_id[plain].name == "Keep the quay quiet"
+        assert ledger.SUBJECT not in repr(found)
+        assert named_word not in repr(found)
+        _, guardrails = await _fresh(config, db).story_settings(CTX, story)
+        assert {p.id: p.name for p in guardrails.active}[named] is None
+        assert ledger.SUBJECT not in repr(guardrails)
+        writer = RequestContext(principal="p-ledger-writer")
+        with pytest.raises(ErasurePending) as caught:
+            await _fresh(config, db).set_custom_instructions(
+                writer, story, CustomInstructionsRequest(text=f"Mention {named_word}.")
+            )
+        assert caught.value.details["story_id"] is None
+        assert ledger.SUBJECT not in repr(caught.value.details)
+        with pytest.raises(GuardrailViolation) as plain_refusal:
+            await _fresh(config, db).set_custom_instructions(
+                writer, story, CustomInstructionsRequest(text=f"Mention {plain_word}.")
+            )
+        assert plain_refusal.value.details["violations"][0]["policy_id"] == plain
+    finally:
+        await db.dispose()
+
+    with pauses.held(pauses.ERASURE_RECONCILE_BEFORE_REAPPLY) as hold:
+        async with ledger.started(config) as (client, lib):
+            await hold.arrived()
+            shown = await client.get(f"/stories/{story}/settings", headers=WRITE)
+            assert shown.status_code == 200, shown.text
+            assert ledger.SUBJECT not in shown.text
+            assert named_word not in shown.text
+            names = settings_names(shown.json())
+            assert names[named] is None
+            assert names[plain] == "Keep the quay quiet"
+            withheld = next(p for p in shown.json()["effective_policies"] if p["id"] == named)
+            assert (withheld["scope"], withheld["source"], withheld["kind"]) == (
+                "global",
+                "global",
+                "deterministic",
+            )
+            _pending(await instruct(client, named_word))
+            # A turn whose input breaks her policy is refused the same way (the input gate).
+            _pending(
+                await respond(
+                    client, story, respond_body(held["player"], say=f"I say {named_word}.")
+                )
+            )
+            refused = violation(await instruct(client, plain_word))
+            assert (refused["policy_id"], refused["name"]) == (plain, "Keep the quay quiet")
+
+            hold.release()
+            assert lib._reconcile_task is not None
+            await lib._reconcile_task
+            # The reapply's redaction moves no key of the in-process effective-policy cache
+            # (#469, filed from here): read as a process that has not cached the story does.
+            policy_store.clear_effective_cache()
+            shown = await client.get(f"/stories/{story}/settings", headers=WRITE)
+            assert settings_names(shown.json())[named] == "Keep [erased] offstage"
+            refused = violation(await instruct(client, named_word))
+            assert (refused["policy_id"], refused["name"]) == (named, "Keep [erased] offstage")
+            for text in (shown.text, json.dumps(refused)):
                 assert ledger.SUBJECT not in text
 
 

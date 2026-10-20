@@ -522,10 +522,13 @@ async def _fact_inputs(
 
     found = [
         f
-        for f in await canon(conn, story_id, through_position=(window.to_turn, 0))
-        if f.narrative_turn is not None
-        and window.from_turn <= f.narrative_turn <= window.to_turn
-        and _fact_in_scope(f, scope)
+        for f in await canon(
+            conn,
+            story_id,
+            through_position=(window.to_turn, 0),
+            written_in=(window.from_turn, window.to_turn),
+        )
+        if _fact_in_scope(f, scope)
     ]
     if not found:
         return []

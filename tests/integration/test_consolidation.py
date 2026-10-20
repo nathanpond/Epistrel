@@ -260,3 +260,44 @@ def test_lite_summary_resolves_through_the_consolidation_row() -> None:
     rows["lite_summary"] = row("lite_summary", "own")
     entry = describe("lite_summary", rows, KeyBox(None))
     assert (entry.model, entry.sources["model"]) == ("own", "own")
+
+
+async def test_a_window_decodes_only_its_own_facts(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NFR-PERF-4 (#452): a consolidation window's fact inputs are read for the window's turns
+    in the query, not filtered from the whole canon: collecting turns 3-6 of a story whose
+    facts are spread over every turn decodes exactly the facts written in those turns."""
+    from epistrel.core.canon import facts as canon
+    from epistrel.core.memory import consolidation as core
+    from epistrel.testing.fixtures import scale
+
+    fixture = await scale.build_scale_fixture(
+        engine, scale.ScaleSpec.scaled(60, characters=3, dimension=8)
+    )
+    story_id = fixture.story.story_id
+    window = Window(3, 6)
+    in_window = int(
+        await scalar(
+            engine,
+            "SELECT count(*) FROM facts WHERE story_id = :s AND narrative_turn BETWEEN 3 AND 6",
+            s=story_id,
+        )
+    )
+    total = int(await scalar(engine, "SELECT count(*) FROM facts WHERE story_id = :s", s=story_id))
+    assert 0 < in_window < total
+    decoded = 0
+    fact_of = canon._fact_of
+
+    def counted(row: Any, **extra: Any) -> Any:
+        nonlocal decoded
+        decoded += 1
+        return fact_of(row, **extra)
+
+    monkeypatch.setattr(canon, "_fact_of", counted)
+    async with engine.connect() as conn:
+        inputs, _ = await core.collect(conn, story_id, window, core.Scope(), 1)
+    facts = [i for i in inputs if i.kind == "fact"]
+    assert decoded == in_window
+    assert len(facts) == in_window
+    assert all(3 <= i.narrative_turn <= 6 for i in facts)

@@ -56,6 +56,9 @@ class RenderSections:
     resolution_steering: str = ""
     """#154 (FR-COMMIT-11): ``RESOLUTION_STEERING`` when an open thunk introduced in an earlier
     turn is in the context, else empty."""
+    length_target: str = ""
+    """#464 (FR-RESP-3): the requested response length as a target in words
+    (``render.length_line``); the pipeline also holds the render to it."""
 
 
 RESOLUTION_STEERING = (
@@ -129,6 +132,7 @@ def character_inputs(
         voiced_characters=[character.name],
         policy_constraints=list(s.constraints),
         resolution_steering=s.resolution_steering,
+        length_target=s.length_target,
         player_input=_player(actor, say, do),
         scene=s.scene,
         working_memory=list(s.working_memory),

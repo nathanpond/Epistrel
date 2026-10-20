@@ -6,13 +6,21 @@ the omniscient viewpoint so every channel (say, think, do, latent) is visible.
 rendered beat, every beat on a known channel with text, at least one ``say`` or ``do``, a
 non-empty message, and no safe fallback (a render the output gate replaced is not the
 model's structure).
+
+``render_output(ctx, result)`` is what the turn's render call answered (#464): each rendered
+beat's text by beat, a beat #151's ladder repaired by its original text (its
+``render_rejected`` event, attempt 0), never the composed message.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
+from sqlalchemy import select
+
 from epistrel.core.stories import CharacterSpec, StorySpec
+from epistrel.core.tables import events
 from epistrel.evals import scenes
 from epistrel.orchestrator.lite.schemas import SAFE_FALLBACK, RespondRequest, RespondResult
 
@@ -75,4 +83,46 @@ def structure_problems(result: RespondResult) -> list[str]:
     return found
 
 
-__all__ = ["CAST", "INNKEEPER", "PLAYER", "play", "rendered", "structure_problems"]
+RenderKey = tuple[tuple[int, str, str], ...]
+
+
+def render_key(beats: Sequence[Any], originals: Mapping[int, str]) -> RenderKey:
+    """The render's output from the released rendered ``beats`` and the repaired beats'
+    ``originals`` (by beat): ``(beat, channel, text)`` in beat order; a beat the ladder
+    dropped keeps its original text (its channel unknown, ``""``)."""
+    found = {int(b.beat): (str(b.channel), str(b.text)) for b in beats if b.beat is not None}
+    for beat, text in originals.items():
+        channel = found.get(beat, ("", ""))[0]
+        found[beat] = (channel, text)
+    return tuple((beat, *found[beat]) for beat in sorted(found))
+
+
+async def render_output(ctx: CaseContext, result: RespondResult) -> RenderKey:
+    """What the turn's render call answered (see the module docstring)."""
+    beats = rendered(result)
+    operation = next((b.operation_id for b in result.beats), None)
+    originals: dict[int, str] = {}
+    if operation is not None:
+        async with ctx.engine.db.connect() as conn:
+            rows = await conn.execute(
+                select(events.c.payload).where(
+                    events.c.operation_id == operation, events.c.type == "render_rejected"
+                )
+            )
+            for (payload,) in rows:
+                if isinstance(payload, dict) and payload.get("attempt") == 0:
+                    originals[int(payload["beat"])] = str(payload.get("text") or "")
+    return render_key(beats, originals)
+
+
+__all__ = [
+    "CAST",
+    "INNKEEPER",
+    "PLAYER",
+    "RenderKey",
+    "play",
+    "render_key",
+    "render_output",
+    "rendered",
+    "structure_problems",
+]

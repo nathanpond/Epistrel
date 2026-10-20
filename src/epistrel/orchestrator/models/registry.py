@@ -207,6 +207,9 @@ class GenerationInputs(InputSchema):
     resolution_steering: Annotated[str, C.CONSTRAINT] = Field(default="", max_length=1_000)
     """A structured render's deferral bias (FR-COMMIT-11; #154, ``steering_resolution.j2``): a
     fixed line, present when an open thunk an earlier turn introduced is in the context."""
+    length_target: Annotated[str, C.CONSTRAINT] = Field(default="", max_length=300)
+    """A structured character render's length target (FR-RESP-3; #464): one fixed line naming
+    the requested response length in words; empty in every other prompt."""
     player_input: PlayerInput
     # -- the structured pipeline's sections (#150; empty, and so absent, in a Lite prompt) ------
     scene: Annotated[str, C.SCENE] = ""

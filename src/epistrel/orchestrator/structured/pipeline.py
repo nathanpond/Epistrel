@@ -288,6 +288,9 @@ from epistrel.orchestrator.structured.render import (
     IntroductionDecl,
     PropositionSketch,
     RenderedBeats,
+    hold_length,
+    length_chars,
+    length_line,
     render_beats,
     render_params,
     render_schema,
@@ -1952,6 +1955,7 @@ async def compose_turn(
         assisted_checks=assisted,
         detection_calls=composition_detection_calls(configuration, base_config),
         hidden=hidden,
+        max_chars=length_chars(read.resolved.max_tokens),
     )
     return await composing.compose(shown, viewpoint, budget, composer=composer, reserved=reserved)
 
@@ -2122,10 +2126,15 @@ async def play(
             segments=read.inputs.segments,
             scene=read.scene,
             resolution_steering=prompts.RESOLUTION_STEERING if read.deferred else "",
+            length_target=length_line(read.resolved.max_tokens),
         )
         budget_tokens = settings.render.prompt_token_budget
         max_beats = settings.render.max_beats
         cast_ids = list(read.names)
+        # #464 (FR-RESP-3): the renders are held to the requested length, counted over the
+        # beats the output viewpoint receives.
+        max_chars = length_chars(read.resolved.max_tokens)
+        hidden = frozenset() if is_omniscient(viewpoint) else PRIVATE_KINDS
 
         async def produce(constraints: tuple[str, ...], attempt: int) -> Draft:
             assembling = time.perf_counter()
@@ -2144,6 +2153,7 @@ async def play(
             narration: list[str] = []
             narrator_inputs: GenerationInputs | None = None
             next_beat = 2
+            used = 0
             if narrate:
                 narr_retrieval = await retrieve_for(NARRATOR, OMNISCIENT, joined)
                 retrievals.append(narr_retrieval)
@@ -2174,6 +2184,7 @@ async def play(
                     budget=budget,
                 )
                 retries += n
+                narr, used, _ = hold_length(narr, max_chars, hidden=hidden)
                 made, found_sketches = _beats_of(narr, start=next_beat, actor=None, narrator=True)
                 beats += made
                 sketches.update(found_sketches)
@@ -2216,6 +2227,7 @@ async def play(
                 budget=budget,
             )
             retries += n
+            char_render, _, _ = hold_length(char_render, max_chars, hidden=hidden, used=used)
             made, found_sketches = _beats_of(
                 char_render, start=next_beat, actor=read.character.id, narrator=False
             )

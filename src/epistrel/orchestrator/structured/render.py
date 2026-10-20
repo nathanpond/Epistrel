@@ -32,6 +32,12 @@ of the response length; a ``length`` finish is invalid structure. When the retri
 turn fails: 503 ``model_unavailable`` with ``details.reason = invalid_structure`` and
 ``details.structural_errors`` (what was wrong, never the answer's text), and nothing is recorded.
 
+**The length** (#464, FR-RESP-3): ``max_tokens`` covers the JSON, not the reply, so the
+character render's prompt names the requested length as a target in words (``length_line``)
+and the pipeline holds each validated render to it (``hold_length``) before verification:
+beats past the length, counted over the beats the output viewpoint receives, are dropped in
+turn order, as if the model had answered fewer.
+
 **The age repair** (``repair_ages``): one batched call per render for every character it
 introduced without an age (``generation`` with ``age_repair.j2``, temperature 0), validated
 against each clue's range (or 0 to 150); an implausible or failed answer is retried within the
@@ -66,6 +72,13 @@ INVALID_STRUCTURE = "invalid_structure"
 AGE_UNREPAIRED = "age_unrepaired"
 RENDER_TOKEN_FACTOR = 4
 """A beat render's ``max_tokens``: this many times the Lite mapping of the response length."""
+CHARS_PER_TOKEN = 4
+"""The response length's token budget in characters (#464), as the composition's draft
+estimate and E-06 count it."""
+WORDS_PER_TOKEN = 0.75
+"""The render prompt's length target in words (#464): a token is about three quarters of a
+word."""
+ACTION_KINDS = frozenset({"say", "do"})
 NAME_MAX = 120
 CLUE_MAX = 500
 SKETCH_TEXT_MAX = 200
@@ -299,6 +312,60 @@ def render_params(base: ModelParams, max_tokens: int) -> ModelParams:
     )
 
 
+def length_chars(max_tokens: int) -> int:
+    """The requested response length in characters (#464)."""
+    return max_tokens * CHARS_PER_TOKEN
+
+
+def length_line(max_tokens: int) -> str:
+    """The render prompt's length target (#464): the beats the reader is shown, together."""
+    words = max(10, round(max_tokens * WORDS_PER_TOKEN))
+    return (
+        f"Keep the beats the reader is shown to about {words} words in all; "
+        "a short reply is better than a long one."
+    )
+
+
+def hold_length(
+    render: RenderedBeats,
+    max_chars: int,
+    *,
+    hidden: frozenset[str] = frozenset(),
+    used: int = 0,
+) -> tuple[RenderedBeats, int, int]:
+    """The render held to the requested length (#464): its beats in order while the text the
+    output viewpoint receives (every beat less the ``hidden`` kinds) fits in ``max_chars``
+    after ``used`` (an earlier render's share); the first beat past it and every later one
+    are dropped, as if the model had answered fewer. A character render always keeps
+    its beats up to its first ``say`` or ``do`` (FR-TURN-1), a narrator's render its first beat.
+    An introduction named only in a dropped beat is dropped with it. Answers the held render,
+    the characters now used and how many beats were dropped."""
+    narrator = type(render).actor_id is None
+    kept: list[BeatDecl] = []
+    acted = False
+    for beat in render.beats:
+        size = 0 if beat.kind in hidden else len(beat.text.strip())
+        anchored = bool(kept) if narrator else acted
+        if used + size > max_chars and anchored:
+            break
+        kept.append(beat)
+        used += size
+        acted = acted or beat.kind in ACTION_KINDS
+    dropped = len(render.beats) - len(kept)
+    if not dropped:
+        return render, used, 0
+    kept_text = " ".join(b.text for b in kept).casefold()
+    gone_text = " ".join(b.text for b in render.beats[len(kept) :]).casefold()
+    introduces = [
+        d
+        for d in render.introduces
+        if (key := d.name.strip().casefold()) in kept_text or key not in gone_text
+    ]
+    log.debug("render: %d beats dropped past the requested length", dropped)
+    held = render.model_copy(update={"beats": kept, "introduces": introduces})
+    return held, used, dropped
+
+
 async def render_beats(
     models: ModelAccessLayer,
     inputs: GenerationInputs,
@@ -371,6 +438,9 @@ __all__ = [
     "RenderedBeats",
     "VisibilityDecl",
     "age_schema",
+    "hold_length",
+    "length_chars",
+    "length_line",
     "render_beats",
     "render_params",
     "render_schema",

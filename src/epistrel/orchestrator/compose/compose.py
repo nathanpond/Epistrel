@@ -20,10 +20,11 @@ can pay for it and its re-check by every model-assisted output policy; under bud
 it is the first step skipped (NFR-PERF-7 (1): ``polish_skipped_budget``).
 
 **The check** (``check_composition``): first a length guard (at most ``LENGTH_FACTOR`` times
-the draft), then #68's output gate on the polished text, then #148's claim detection on it
-(``ClaimDetector.message``, as the viewpoint's character, ``narrator`` when omniscient; the
-model layer always runs when the story's verification level enables it, the call the turn
-reserved), then ``trace``:
+the draft, and no longer than the requested length or the draft, whichever is longer, #464:
+``longest_polish``), then #68's output gate on the polished text, then #148's claim
+detection on it (``ClaimDetector.message``, as the viewpoint's character, ``narrator`` when
+omniscient; the model layer always runs when the story's verification level enables it, the
+call the turn reserved), then ``trace``:
 
 - **alignment**: the text is cut into units (each quotation, and each sentence outside
   quotes) and each unit is aligned to the beat whose words share its longest common run of
@@ -718,6 +719,16 @@ def polish_inputs(
     )
 
 
+def longest_polish(draft: str, max_chars: int | None = None) -> float:
+    """The longest polished text accepted: ``LENGTH_FACTOR`` times the draft and, when the
+    request names a length (#464), no longer than that length or the draft, whichever is
+    longer (a polish may join beats; it may not take the message past the requested length)."""
+    longest = LENGTH_FACTOR * max(len(draft), 1)
+    if max_chars is not None:
+        longest = min(longest, max(len(draft), max_chars))
+    return longest
+
+
 def polish_params(base: ModelParams, draft: str) -> ModelParams:
     """The polish's parameters: the request's temperature and top-p, ``max_tokens`` twice the
     draft's token estimate (four characters a token)."""
@@ -782,6 +793,9 @@ class Composer:
     """C: the composed message's detection calls (one when the model layer runs)."""
     hidden: Sequence[VerifiedBeat] = field(default_factory=tuple)
     """The turn's ``think``/``latent`` beats the viewpoint does not receive."""
+    max_chars: int | None = None
+    """The requested response length in characters (FR-RESP-3; #464): a polished text longer
+    than it, and longer than the draft, is refused like any over-long polish."""
 
 
 async def check_composition(
@@ -874,7 +888,7 @@ async def compose(
     fallback = (COMPOSITION_FALLBACK,)
     if text is None:
         return await deterministic(fallback, polished=True, cause="model")
-    if len(text) > LENGTH_FACTOR * max(len(draft), 1):
+    if len(text) > longest_polish(draft, composer.max_chars):
         rejected = CompositionCheck(failures=(Failure("length", (0, len(text))),))
         return await deterministic(
             fallback, polished=True, cause="length", rejected_text=text, rejected=rejected
@@ -924,6 +938,7 @@ __all__ = [
     "check_composition",
     "compose",
     "deterministic_assembly",
+    "longest_polish",
     "polish",
     "polish_inputs",
     "polish_params",

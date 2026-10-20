@@ -115,7 +115,7 @@ from epistrel.orchestrator.budget import COMPOSED, TurnBudget
 from epistrel.orchestrator.jobs import queue
 from epistrel.orchestrator.jobs.types import JobContext, JobHandler, JobOutput
 from epistrel.orchestrator.models.access import ModelAccessLayer, routing
-from epistrel.orchestrator.models.adapter import ModelParams
+from epistrel.orchestrator.models.adapter import MAX_COMPLETION_TOKENS, ModelParams
 from epistrel.orchestrator.models.config import Route, routes_of
 from epistrel.orchestrator.models.errors import BudgetExhausted, ModelError, ModelUnavailable
 from epistrel.orchestrator.models.registry import (
@@ -138,8 +138,12 @@ ExtractionState = Literal["ran", "skipped", "failed", "off"]
 EXTRACTION_DEGRADED = "extraction_degraded"
 EXTRACTION_LEVELS = frozenset({"extraction", "entailment"})
 """The verification levels with claim extraction (FR-PROF-2)."""
-BUILT_IN_PARAMS = ModelParams(temperature=0.0, max_tokens=1_000)
-"""The extraction call's own params; the story's ``extraction_backstop`` route's params win."""
+BUILT_IN_PARAMS = ModelParams(temperature=0.0, max_tokens=MAX_COMPLETION_TOKENS)
+"""The extraction call's own params; the story's ``extraction_backstop`` route's params win.
+``max_tokens`` is the adapter's cap (#464): the answer may list ``EXTRACTION_MAX_CLAIMS``
+claims, and a smaller cap cut a long render's full list at ``length``, which is invalid
+structure, so the backstop failed (``extraction_degraded``) on exactly the renders that say
+the most."""
 SHADOW_JOB = "extraction_shadow"
 SHADOW_MAX_CALLS = 2
 """A shadow job's own budget: the render's call and the composed message's."""

@@ -97,7 +97,7 @@ async def pin_counts(conn: AsyncConnection, story_id: str) -> PinCounts:
     m = memories.c
     rows = await conn.execute(
         select(m.holder_character_id, func.count())
-        .where(m.story_id == story_id, m.pinned.is_(True))
+        .where(m.story_id == story_id, m.pinned)  # ix_memories_pinned (#451)
         .group_by(m.holder_character_id)
     )
     by_character: dict[str, int] = {}
@@ -316,7 +316,9 @@ async def pinned_context(conn: AsyncConnection, request: SourceRequest) -> Seque
             select(m.id, m.text, m.importance, m.importance_at)
             .where(
                 m.story_id == request.story_id,
-                m.pinned.is_(True),
+                # ``pinned`` itself (NOT NULL), not ``IS TRUE``: the partial index
+                # ``ix_memories_pinned`` (``WHERE pinned``) serves only this form (#451).
+                m.pinned,
                 active_only(memories),
                 m.quarantined_at.is_(None),
                 or_(m.narrative_turn.is_(None), m.narrative_turn <= turn),

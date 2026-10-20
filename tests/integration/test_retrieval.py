@@ -553,6 +553,46 @@ async def test_the_retired_lexical_search_reads_the_tier_index(
     assert "retrieval_tier" not in _index_conditions(await r.plan_of(db, cast_text, params))
 
 
+async def test_the_pins_source_reads_the_pinned_index(
+    scratch: Scratch, long_story: r.Story
+) -> None:
+    """#451 (NFR-PERF-1): the pins context source (#147), which every retrieval runs, reaches
+    the story's pinned memories through the partial index ``ix_memories_pinned`` (``WHERE
+    pinned``), so it reads the pins, not every memory of the story. At 50k memories the
+    ``IS TRUE`` form was a 25 ms sequential scan on every retrieval.
+
+    Complement asserted: the same statement with ``pinned IS true`` cannot use the index."""
+    db = scratch.db
+    with r.statements(db) as seen:
+        await _retrieve(db, long_story.story_id, QUERY, touch=False)
+    pins = [
+        (sql, params)
+        for sql, params in seen.reading("memories")
+        if "memories.pinned" in sql and "importance_at" in sql
+    ]
+    assert len(pins) == 1, len(pins)
+    sql, params = pins[0]
+
+    async def plan_of(statement: str) -> str:
+        """``EXPLAIN`` with fresh statistics and sequential scans priced out (sorts allowed:
+        the statement orders by id, and pricing sorts out would pick the primary key)."""
+        async with db.connect() as conn:
+            await conn.execute(text("ANALYZE memories"))
+            await conn.execute(text("SET enable_seqscan = off"))
+            raw = await conn.get_raw_connection()
+            cursor = raw.driver_connection.cursor()  # type: ignore[union-attr]
+            await cursor.execute("EXPLAIN " + statement, params)
+            rows = await cursor.fetchall()
+            await conn.rollback()
+        return "\n".join(str(row[0]) for row in rows)
+
+    plan = await plan_of(sql)
+    assert "ix_memories_pinned" in plan, plan
+    is_true = sql.replace("memories.pinned AND", "memories.pinned IS true AND")
+    assert is_true != sql
+    assert "ix_memories_pinned" not in await plan_of(is_true)
+
+
 async def test_the_debugging_read_is_omniscient_only(scratch: Scratch) -> None:
     """``GET /stories/{id}/retrieve`` answers the library's result for ``omniscient`` and
     touches no memory; a character viewpoint is 403 ``omniscient_required``; ``as_of`` beyond

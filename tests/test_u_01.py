@@ -392,15 +392,23 @@ async def test_u_01__follow_up(
         narrator = [cl for cl in stub.calls if cl.response_schema == "NarratorRender"]
         assert len(narrator) == 1
         assert "## Settle now" in narrator[0].messages[0].content
-        # The calls the turn made before its follow-up render (the second ``generation``).
+        # The calls the turn made before its follow-up render (the second ``generation``), plus
+        # the composed message's detection C, which #156's planner reserves from the start and
+        # no optional work may spend (NFR-PERF-6): under that cap salience still fits and the
+        # follow-up (a render plus its extraction) does not.
         purposes = [call["purpose"] for call in played["model_calls"]]
         before = [n for n, p in enumerate(purposes) if p == "generation"][1]
+        reservation = (await structured.turn_report(engine, k.story_id))["budget"]["reservation"]
 
         # -- complement: no budget left for the follow-up, so the minimal commit settles it
         k = await c.knock_story(engine)
         played = await play(
-            k, [(2, 0, len(knock_text), c.KNOCK)], settle=False, budget={"max_calls": before}
+            k,
+            [(2, 0, len(knock_text), c.KNOCK)],
+            settle=False,
+            budget={"max_calls": before + reservation["composed"]},
         )
+        assert "salience_skipped" not in played["degradation"]
         assert "follow_up_skipped_budget" in played["degradation"]
         commit_report = (await structured.turn_report(engine, k.story_id))["commit"]
         assert commit_report["follow_up"]["skipped"] == "budget"

@@ -64,7 +64,7 @@ from types import SimpleNamespace
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import func, insert, literal_column, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -109,6 +109,17 @@ from epistrel.core.tables import (
 from epistrel.core.tables.propositions import CORE_SCOPE
 
 log = logging.getLogger(__name__)
+
+# ON CONFLICT arbiters spelled with literals, exactly as their indexes are (#466). A bound value
+# (``coalesce(story_id, $1)``) is folded to a constant only on a custom plan: once psycopg
+# prepares the statement and Postgres picks the generic plan, the parameter no longer matches
+# ``uq_predicates_scope_name`` (or ``uq_predicate_proposals_pending``'s predicate) and the
+# insert raises ``InvalidColumnReference``.
+_PREDICATE_SCOPE_NAME = (
+    func.coalesce(predicates.c.story_id, literal_column(f"'{CORE_SCOPE}'")),
+    predicates.c.name,
+)
+_PROPOSAL_PENDING = predicate_proposals.c.status == literal_column("'pending'")
 
 IMPLICATION_MAX_DEPTH = 3
 """The default depth of the implication closure (FR-PROP-11)."""
@@ -830,9 +841,7 @@ async def auto_register(
     inserted = await conn.execute(
         pg_insert(predicates)
         .values(**row)
-        .on_conflict_do_nothing(
-            index_elements=[func.coalesce(predicates.c.story_id, CORE_SCOPE), predicates.c.name]
-        )
+        .on_conflict_do_nothing(index_elements=list(_PREDICATE_SCOPE_NAME))
         .returning(predicates.c.id)
     )
     if inserted.scalar_one_or_none() is None:  # pragma: no cover - the lock serialises racers
@@ -949,7 +958,7 @@ async def file_proposal(
         )
         .on_conflict_do_nothing(
             index_elements=[predicate_proposals.c.predicate_id],
-            index_where=predicate_proposals.c.status == "pending",
+            index_where=_PROPOSAL_PENDING,
         )
         .returning(predicate_proposals.c.id)
     )

@@ -392,6 +392,37 @@ async def test_auto_registration_is_a_configuration_change(engine: AsyncEngine) 
         await _auto(engine, new_ulid(), "anything")
 
 
+async def test_conflict_arbiters_hold_on_a_generic_plan(engine: AsyncEngine) -> None:
+    """#466: auto registration and proposal filing name their ON CONFLICT arbiters exactly as
+    the indexes spell them. A bound value in the arbiter matched the index only while Postgres
+    folded it on a custom plan; once psycopg prepared the statement and the generic plan took
+    over (about the tenth registration on one connection in a live run), every insert raised
+    ``InvalidColumnReference``. Forcing the generic plan makes that happen on the first one."""
+    story = await new_story(engine)
+    async with engine.begin() as conn:
+        await conn.execute(text("SET LOCAL plan_cache_mode = force_generic_plan"))
+        registered = [
+            await registry.auto_register(conn, story, f"is not actually his {n}") for n in range(12)
+        ]
+        for predicate in registered:
+            first = await registry.file_proposal(
+                conn, story, predicate.id, registry.ProposedChanges(symmetric=True)
+            )
+            again = await registry.file_proposal(
+                conn, story, predicate.id, registry.ProposedChanges(symmetric=True)
+            )
+            assert again == first  # the pending proposal is the arbiter's conflicting row
+    assert len({p.id for p in registered}) == 12
+    assert (
+        await scalar(
+            engine,
+            "SELECT count(*) FROM predicate_proposals WHERE story_id = :s AND status = 'pending'",
+            s=story,
+        )
+        == 12
+    )
+
+
 async def test_proposals_are_inert_until_decided(settings: Settings, engine: AsyncEngine) -> None:
     """The engine proposes ``functional`` after five single-valued observations; the
     proposal changes nothing (the predicate stays weak, the revision stays) until approved

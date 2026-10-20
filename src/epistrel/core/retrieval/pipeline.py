@@ -13,6 +13,8 @@ embedding calls are excluded and counted in ``model_calls``):
    mentions (as ``actor`` says them, against the context at ``position``), its first temporal
    expression as story-time (a subject-anchored one, "when he was seven", reads the subject's
    timeline through ``KeyedLookup``) and its event type. Q-02's eval runs the same function.
+   The context reads only the relationships the text's relational descriptions need (#451:
+   none without a relation noun, else its possessors', ``load_context(text=…)``).
 2. **occasion** (FR-RET-3): when the text gives a time window or an event type, the episode
    layer (episodic memories, ``event_type``/``participants``) is queried by
    ``(story-time window as turns, event_type, participants && the resolved entities)``, up to
@@ -34,9 +36,9 @@ embedding calls are excluded and counted in ``model_calls``):
    episodes or assessments are ``memories``, each with its score. Nothing positioned after
    ``position`` is ever a candidate.
 5. **profiles** (FR-RET-6): the standing profile of each resolved or located character (#137,
-   through ``KeyedLookup.profile``) and the canon about the resolved entities (#133's
-   ``canon_at`` with its visibility filter, through ``KeyedLookup.canon_context``); the speaker
-   is left out of both.
+   through ``KeyedLookup.profiles``, one batched read, #451) and the canon about the resolved
+   entities (#133's ``canon_at`` with its visibility filter, through
+   ``KeyedLookup.canon_context``); the speaker is left out of both.
 6. **assemble** (FR-RET-7, FR-MEM-6): ``core.retrieval.assemble`` fills
    ``memory.episodic.retrieval_token_budget`` by tier: the ``CONTEXT_SOURCES`` hook's ledger
    items and pins, the occasions, the profiles and canon, the ranked memories.
@@ -67,8 +69,9 @@ not delivered.
 The cost of one retrieval is a fixed number of statements, whatever the story's size: each arm
 is one indexed query (HNSW for the vector arm, GIN on ``search`` for the lexical and alias arms,
 GIN on ``participants`` and ``(story_id, event_type, narrative_turn)`` for the occasion step),
-plus one statement per resolved entity for profiles and canon. Logs carry identifiers and counts
-only (invariant 3).
+the profiles a fixed number whatever the characters (#451), plus one statement per resolved
+entity for canon; the rows the resolve stage reads grow with the text's relational
+descriptions, not with the canon (#451). Logs carry identifiers and counts only (invariant 3).
 """
 
 from __future__ import annotations
@@ -775,7 +778,13 @@ async def retrieve(
     speaker = await _speaker(index, query.actor)
     basis = await resolution.load_time_basis(conn, story_id)
     context = await resolution.load_context(
-        conn, story_id, position=position, speaker=speaker, index=index, lookup=lookup
+        conn,
+        story_id,
+        position=position,
+        speaker=speaker,
+        index=index,
+        lookup=lookup,
+        text=query.text,
     )
     resolved = resolve_query(
         query.text,
@@ -1003,14 +1012,9 @@ async def retrieve(
     ]
     profiles: list[ProfileView] = []
     as_of = min(max(now_turn, 0), head)
-    if head >= 0:
-        for entity_id in subjects:
-            entry = index.get(entity_id)
-            if entry is None or entry.character_id is None:
-                continue
-            profiles.append(
-                await lookup.profile(story_id, entity_id, as_of=as_of, viewpoint=viewpoint)
-            )
+    profiled = [e for e in subjects if (entry := index.get(e)) is not None and entry.character_id]
+    if head >= 0 and profiled:
+        profiles = await lookup.profiles(story_id, profiled, as_of=as_of, viewpoint=viewpoint)
     canon: list[Fact] = []
     if subjects:
         canon = await lookup.canon_context(

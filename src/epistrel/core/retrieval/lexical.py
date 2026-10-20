@@ -124,9 +124,12 @@ class TsvectorLexicalSearch:
                 "SELECT m.id, ts_rank(m.search, q) AS rank "  # noqa: S608 - fixed fragments only
                 f"FROM memories m, (SELECT {ANY_WORD_QUERY} AS q) words "
                 f"WHERE m.story_id = :story AND {active_only_sql('m')} "
-                "AND m.retrieval_tier::text = ANY(CAST(:tiers AS text[])) "
-                "AND (CAST(:kinds AS text[]) IS NULL "
-                "OR m.kind::text = ANY(CAST(:kinds AS text[]))) "
+                # The columns are compared as their enums, not cast to text, so the tier and
+                # kind filters can use the story's b-tree indexes (#451: a search of the
+                # retired tier reads the retired rows, not every row matching a word).
+                "AND m.retrieval_tier = ANY(CAST(:tiers AS retrieval_tier[])) "
+                "AND (CAST(:kinds AS memory_kind[]) IS NULL "
+                "OR m.kind = ANY(CAST(:kinds AS memory_kind[]))) "
                 f"AND {position_clause('m')} "
                 f"AND {quarantine_clause('m')} "
                 "AND m.search @@ q "

@@ -1069,8 +1069,6 @@ async def profile_view(
     """``entity_id``'s standing profile as of turn ``as_of`` for ``viewpoint``: its
     relationships in both directions, where it is, and what it holds. 404 ``not_found`` for an
     entity that is not the story's; a placement of ``null`` when it has none."""
-    from epistrel.core.propositions.registry import load
-
     ctx, turn = await _read_context(conn, story_id, as_of, viewpoint)
     entity = (await _refs(conn, story_id, [entity_id])).get(entity_id)
     if entity is None:
@@ -1078,6 +1076,45 @@ async def profile_view(
             f"entity {entity_id} is not one of the story's",
             {"story_id": story_id, "entity_id": entity_id},
         )
+    return (await _profiles(conn, story_id, ctx, turn, {entity_id: entity}))[entity_id]
+
+
+async def profile_views(
+    conn: AsyncConnection,
+    story_id: str,
+    entity_ids: Sequence[str],
+    *,
+    as_of: int | None = None,
+    viewpoint: str | None = None,
+) -> dict[str, ProfileView]:
+    """The standing profile of each of ``entity_ids`` that is one of the story's, exactly as
+    ``profile_view`` answers it, in a number of statements that does not grow with the number
+    of entities (#451): the read context, the entities, the registry once, one keyed read each
+    of the ``relationships`` and ``placement`` rows touching any of them, the containing places
+    of each distinct location (``WITHIN_DEPTH`` canon reads at most), and the entity refs. An
+    id that is not the story's entity is left out (``profile_view`` answers 404 for it)."""
+    ctx, turn = await _read_context(conn, story_id, as_of, viewpoint)
+    wanted = list(dict.fromkeys(entity_ids))
+    if not wanted:
+        return {}
+    known = await _refs(conn, story_id, wanted)
+    return await _profiles(conn, story_id, ctx, turn, {e: known[e] for e in wanted if e in known})
+
+
+async def _profiles(
+    conn: AsyncConnection,
+    story_id: str,
+    ctx: _ReadContext,
+    turn: int,
+    entities_by_id: Mapping[str, EntityRef],
+) -> dict[str, ProfileView]:
+    """The profiles of ``entities_by_id`` (known entities) as of ``turn`` for ``ctx``: the one
+    builder ``profile_view`` and ``profile_views`` share, so both answer identical views."""
+    from epistrel.core.propositions.registry import load
+
+    wanted = list(entities_by_id)
+    if not wanted:
+        return {}
     registry = await load(conn, story_id)
     omniscient = ctx.viewpoint == OMNISCIENT
     current = _current(registry, ctx, turn)
@@ -1087,9 +1124,7 @@ async def profile_view(
         for r in await conn.execute(
             select(relationships).where(
                 relationships.c.story_id == story_id,
-                or_(
-                    relationships.c.subject_id == entity_id, relationships.c.object_id == entity_id
-                ),
+                or_(relationships.c.subject_id.in_(wanted), relationships.c.object_id.in_(wanted)),
             )
         )
     ]
@@ -1099,56 +1134,77 @@ async def profile_view(
         for r in await conn.execute(
             select(placement).where(
                 placement.c.story_id == story_id,
-                or_(placement.c.entity_id == entity_id, placement.c.container_id == entity_id),
+                or_(placement.c.entity_id.in_(wanted), placement.c.container_id.in_(wanted)),
             )
         )
     ]
     place_rows = [r for r in place_rows if current(r, None)]
-    own = _latest(r for r in place_rows if r["entity_id"] == entity_id)
-    held = sorted(
-        (r for r in place_rows if r["container_id"] == entity_id),
-        key=lambda r: (str(r["entity_id"]), str(r["source_fact_id"])),
-    )
-    within = (
-        []
-        if own is None or own["location_id"] is None
-        else await _within(conn, story_id, str(own["location_id"]), turn, ctx)
-    )
-    others = [_other(r, entity_id) for r in rel_rows]
+    touching: dict[str, list[dict[str, Any]]] = {e: [] for e in wanted}
+    for row in rel_rows:
+        for end in dict.fromkeys((str(row["subject_id"]), str(row["object_id"]))):
+            if end in touching:
+                touching[end].append(row)
+    own: dict[str, Row | None] = {
+        e: _latest(r for r in place_rows if str(r["entity_id"]) == e) for e in wanted
+    }
+    held = {
+        e: sorted(
+            (
+                r
+                for r in place_rows
+                if r["container_id"] is not None and str(r["container_id"]) == e
+            ),
+            key=lambda r: (str(r["entity_id"]), str(r["source_fact_id"])),
+        )
+        for e in wanted
+    }
+    within_of: dict[str, list[str]] = {}
+    for found in own.values():
+        if found is not None and found["location_id"] is not None:
+            place = str(found["location_id"])
+            if place not in within_of:
+                within_of[place] = await _within(conn, story_id, place, turn, ctx)
     refs = await _refs(
         conn,
         story_id,
         [
-            *others,
-            *within,
-            *(str(r["entity_id"]) for r in held),
-            *([] if own is None else [str(own["location_id"] or own["container_id"])]),
+            *(_other(r, e) for e, rows in touching.items() for r in rows),
+            *(i for chain in within_of.values() for i in chain),
+            *(str(r["entity_id"]) for rows in held.values() for r in rows),
+            *(str(o["location_id"] or o["container_id"]) for o in own.values() if o is not None),
         ],
     )
-    placed = None
-    if own is not None:
-        placed = PlacementView(
-            location=None if own["location_id"] is None else _ref(refs, str(own["location_id"])),
-            container=None if own["container_id"] is None else _ref(refs, str(own["container_id"])),
-            within=tuple(_ref(refs, i) for i in within),
-            valid_from=own["valid_from"],
-            valid_to=own["valid_to"],
-            source_fact_id=str(own["source_fact_id"]) if omniscient else None,
-        )
-    return ProfileView(
-        entity=entity,
-        as_of=turn,
-        relationships=_relationship_views(entity_id, rel_rows, registry, refs, omniscient),
-        placement=placed,
-        inventory=tuple(
-            InventoryItem(
-                item=_ref(refs, str(r["entity_id"])),
-                source_fact_id=str(r["source_fact_id"]) if omniscient else None,
+    views: dict[str, ProfileView] = {}
+    for e in wanted:
+        mine = own[e]
+        placed = None
+        if mine is not None:
+            location = None if mine["location_id"] is None else str(mine["location_id"])
+            placed = PlacementView(
+                location=None if location is None else _ref(refs, location),
+                container=(
+                    None if mine["container_id"] is None else _ref(refs, str(mine["container_id"]))
+                ),
+                within=tuple(_ref(refs, i) for i in within_of.get(location or "", [])),
+                valid_from=mine["valid_from"],
+                valid_to=mine["valid_to"],
+                source_fact_id=str(mine["source_fact_id"]) if omniscient else None,
             )
-            for r in held
-        ),
-        viewpoint=ctx.viewpoint,
-    )
+        views[e] = ProfileView(
+            entity=entities_by_id[e],
+            as_of=turn,
+            relationships=_relationship_views(e, touching[e], registry, refs, omniscient),
+            placement=placed,
+            inventory=tuple(
+                InventoryItem(
+                    item=_ref(refs, str(r["entity_id"])),
+                    source_fact_id=str(r["source_fact_id"]) if omniscient else None,
+                )
+                for r in held[e]
+            ),
+            viewpoint=ctx.viewpoint,
+        )
+    return views
 
 
 __all__ = [
@@ -1173,6 +1229,7 @@ __all__ = [
     "follow_operations",
     "on_fact_change",
     "profile_view",
+    "profile_views",
     "refresh",
     "relationships_views",
     "scene",

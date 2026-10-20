@@ -12,7 +12,10 @@ the operation's connection:
   projections, omniscient: no visibility filter on candidates in M4), read through
   ``KeyedLookup.scene``/``relationships`` (#137's carried rule: a turn-time projection read is
   recorded in the read set, as context). The relationships of every person are one keyed read
-  (#442), so the statements do not grow with the cast;
+  (#442), so the statements do not grow with the cast. Given the ``text`` to resolve, only the
+  relationships its relational descriptions consult are read (#451: none for a text with no
+  relation noun, else those of its possessors, closed over chained possessors), so neither the
+  statements nor the rows grow with the cast or the canon;
 - ``subject_timeline``: the subject's ``born`` and ``age`` canon through #136's
   ``KeyedLookup`` (so a verdict resting on "when he was seven" regenerates when they change).
   This module is a keyed reader (``core.readset.KEYED_READERS``): it never reads ``facts`` or
@@ -22,6 +25,9 @@ Nothing here calls a model.
 """
 
 from __future__ import annotations
+
+from dataclasses import replace
+from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -40,10 +46,14 @@ from epistrel.core.resolution.entities import (
     EntityIndex,
     Relation,
     ResolutionContext,
+    relation_owners,
 )
 from epistrel.core.resolution.time import Position, SubjectTimeline, TimeBasis
 from epistrel.core.settings_schema import OMNISCIENT
 from epistrel.core.tables import characters, entities, entity_aliases, stories
+
+if TYPE_CHECKING:
+    from epistrel.core.projections.structured import RelationshipView
 
 
 async def load_index(conn: AsyncConnection, story_id: str) -> EntityIndex:
@@ -99,13 +109,19 @@ async def load_context(
     index: EntityIndex | None = None,
     lookup: KeyedLookup | None = None,
     shared: SharedContext | None = None,
+    text: str | None = None,
 ) -> ResolutionContext:
     """The ``ResolutionContext`` of a text spoken by ``speaker`` (an entity id, ``narrator`` or
     ``player``) at ``position`` (see the module docstring). The scene and the relationships are
     read through ``lookup`` (#136's ``KeyedLookup``: recorded in its read set as retrieved
     rows), or through a lookup of a read set of its own when none is given. They do not depend
     on the speaker: ``shared`` keeps them for the other speakers of the same snapshot and
-    lookup (a turn's detection environment, #452), so they are read once, not per speaker."""
+    lookup (a turn's detection environment, #452), so they are read once, not per speaker.
+
+    With ``text``, the context is for resolving that text only: its ``relations`` are the rows
+    touching the possessors ``relation_owners`` finds (#451), and resolving ``text`` against it
+    answers what it answers against every person's relationships. Without, every person's
+    relationships are read (a context reused for several texts); ``shared`` applies then."""
     lookup = lookup or KeyedLookup(conn, StructuredReadSet())
     index = index or await load_index(conn, story_id)
     player = await conn.scalar(
@@ -133,15 +149,77 @@ async def load_context(
     relations: list[Relation] = []
     if head >= 0:
         as_of = min(max(turn, 0), head)
-        known = None if shared is None else shared.get((story_id, as_of))
-        if known is None:
-            known = await _scene_share(lookup, story_id, as_of, index)
-            if shared is not None:
-                shared[(story_id, as_of)] = known
-        present, relations = known[0], list(known[1])
-    return ResolutionContext(
+        if text is None:
+            known = None if shared is None else shared.get((story_id, as_of))
+            if known is None:
+                known = await _scene_share(lookup, story_id, as_of, index)
+                if shared is not None:
+                    shared[(story_id, as_of)] = known
+            present, relations = known[0], list(known[1])
+        else:
+            try:
+                scene = await lookup.scene(story_id, as_of=as_of, viewpoint=OMNISCIENT)
+            except InvalidRequest:
+                scene = None
+            if scene is not None and scene.present:
+                present = frozenset(e.entity_id for e in scene.present)
+    context = ResolutionContext(
         index=index, beats=beats, present=present, player_id=player_id, relations=relations
     )
+    if text is None or head < 0:
+        return context
+    return await _scoped_relations(context, lookup, story_id, text, speaker, as_of)
+
+
+def _is_person(index: EntityIndex, entity_id: str) -> bool:
+    entry = index.get(entity_id)
+    return entry is not None and entry.kind == "person"
+
+
+def _add_relations(
+    relations: list[Relation],
+    seen: set[tuple[str, str, str]],
+    index: EntityIndex,
+    owners: list[str],
+    found: dict[str, tuple[RelationshipView, ...]],
+) -> None:
+    """Append each owner's relationship rows to ``relations`` once, as ``(subject, predicate,
+    object)``: a row is kept when either end is a person, as every person's read keeps it."""
+    for owner in owners:
+        owner_person = _is_person(index, owner)
+        for rel in found.get(owner, ()):
+            other = rel.other.entity_id
+            if not owner_person and not _is_person(index, other):
+                continue
+            subject, obj = (owner, other) if rel.direction == "out" else (other, owner)
+            key = (subject, rel.predicate, obj)
+            if key not in seen:
+                seen.add(key)
+                relations.append(Relation(subject, rel.predicate, obj))
+
+
+async def _scoped_relations(
+    context: ResolutionContext,
+    lookup: KeyedLookup,
+    story_id: str,
+    text: str,
+    speaker: str,
+    as_of: int,
+) -> ResolutionContext:
+    """``context`` with the relationships of the possessors resolving ``text`` consults (#451):
+    read the new possessors' rows (one keyed read), resolve again, until no new one appears. A
+    round adds at least one possessor, so there are at most as many rounds as relation nouns."""
+    relations: list[Relation] = []
+    seen: set[tuple[str, str, str]] = set()
+    loaded: set[str] = set()
+    while True:
+        new = [o for o in relation_owners(text, speaker, context) if o not in loaded]
+        if not new:
+            return context
+        found = await lookup.relationships(story_id, new, as_of=as_of, viewpoint=OMNISCIENT)
+        loaded.update(new)
+        _add_relations(relations, seen, context.index, new, found)
+        context = replace(context, relations=list(relations))
 
 
 async def _scene_share(

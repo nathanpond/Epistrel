@@ -602,6 +602,36 @@ class KeyedLookup:
         self.retrieved(PROFILE_TABLE, entity_id, _version_of(found.as_of, sources))
         return found
 
+    async def profiles(
+        self,
+        story_id: str,
+        entity_ids: Sequence[str],
+        *,
+        as_of: int | None = None,
+        viewpoint: str = OMNISCIENT,
+    ) -> list[ProfileView]:
+        """The standing profiles of ``entity_ids`` (#137's ``profile_views``: each exactly what
+        ``profile`` answers), in their order, in a number of statements that does not grow with
+        their number (#451). Each is recorded as ``profile`` records it (``profile:<entity>``,
+        versioned by the facts behind it), as context, never keyed. An id that is not one of
+        the story's entities is left out."""
+        from epistrel.core.projections.structured import profile_views
+
+        found = await profile_views(
+            self.conn, story_id, entity_ids, as_of=as_of, viewpoint=viewpoint
+        )
+        views: list[ProfileView] = []
+        for entity_id in dict.fromkeys(entity_ids):
+            view = found.get(entity_id)
+            if view is None:
+                continue
+            sources = [r.source_fact_id for r in view.relationships]
+            sources += [] if view.placement is None else [view.placement.source_fact_id]
+            sources += [i.source_fact_id for i in view.inventory]
+            self.retrieved(PROFILE_TABLE, entity_id, _version_of(view.as_of, sources))
+            views.append(view)
+        return views
+
     async def relationships(
         self,
         story_id: str,

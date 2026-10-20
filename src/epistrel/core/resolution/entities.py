@@ -426,6 +426,8 @@ class _State:
     context: ResolutionContext
     mentions: list[Mention] = field(default_factory=list)
     by_token: dict[int, Mention] = field(default_factory=dict)
+    owners: list[str] = field(default_factory=list)
+    """The possessors whose relationships the relational pass consulted, in text order."""
 
 
 def _speaker_id(speaker: str, context: ResolutionContext) -> str | None:
@@ -664,6 +666,7 @@ def _relation_pass(state: _State) -> None:
                 Mention(span, MentionKind.DESCRIPTION, None, (), 0.0, reason, "relation"),
             )
             continue
+        state.owners.append(owner)
         found: set[str] = set()
         for row in state.context.relations:
             if row.predicate != relation["predicate"]:
@@ -786,9 +789,7 @@ def _unknown_pass(state: _State) -> None:
         i = last + 1
 
 
-def resolve_mentions(text: str, speaker: str, context: ResolutionContext) -> list[Mention]:
-    """Every mention in ``text``, in order, as ``speaker`` (an entity id, ``narrator`` or
-    ``player``) says it, against ``context`` (see the module docstring for the rules)."""
+def _resolve(text: str, speaker: str, context: ResolutionContext) -> _State:
     state = _State(text, _tokens(text), None, context)
     state.speaker = _speaker_id(speaker, context)
     _alias_pass(state)
@@ -797,7 +798,33 @@ def resolve_mentions(text: str, speaker: str, context: ResolutionContext) -> lis
     _relation_pass(state)
     _description_pass(state)
     _unknown_pass(state)
-    return sorted(state.mentions, key=lambda m: m.span)
+    return state
+
+
+def resolve_mentions(text: str, speaker: str, context: ResolutionContext) -> list[Mention]:
+    """Every mention in ``text``, in order, as ``speaker`` (an entity id, ``narrator`` or
+    ``player``) says it, against ``context`` (see the module docstring for the rules)."""
+    return sorted(_resolve(text, speaker, context).mentions, key=lambda m: m.span)
+
+
+def has_relation_noun(text: str) -> bool:
+    """Whether ``text`` holds a relation noun (``brother``, ``wife``…): the only words whose
+    resolution reads ``ResolutionContext.relations``."""
+    nouns = lexicon().relations
+    return any(token.word in nouns for token in _tokens(text))
+
+
+def relation_owners(text: str, speaker: str, context: ResolutionContext) -> tuple[str, ...]:
+    """The entities whose relationships resolving ``text`` consults (#451): the possessors of
+    its relational descriptions (``his brother``, ``Bobby's mother``), each once, in text order.
+    The relational pass reads only the ``relations`` rows that touch a possessor, so a
+    resolution against the rows of these entities equals one against every row, once the set is
+    closed: a possessor can itself be a relational description (``his brother's wife``), so
+    ``core.resolution.context`` reads the rows of these, resolves again and stops when no new
+    one appears. Empty, without running the resolver, for a text with no relation noun."""
+    if not has_relation_noun(text):
+        return ()
+    return tuple(dict.fromkeys(_resolve(text, speaker, context).owners))
 
 
 def resolve_reference(phrase: str, speaker: str, context: ResolutionContext) -> Mention:
@@ -831,8 +858,10 @@ __all__ = [
     "character_spec",
     "descriptors_of",
     "gender_of",
+    "has_relation_noun",
     "lexicon",
     "normalize",
+    "relation_owners",
     "resolve_mentions",
     "resolve_reference",
     "scenario_entity_specs",

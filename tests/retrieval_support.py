@@ -24,7 +24,7 @@ the module.
 from __future__ import annotations
 
 import random
-from collections.abc import Iterator, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
@@ -83,9 +83,16 @@ async def pin(db: AsyncEngine) -> None:
 
 
 async def build_story(
-    db: AsyncEngine, *, fillers: int = 0, turns: int = TURNS, seed: int = 141
+    db: AsyncEngine,
+    *,
+    fillers: int = 0,
+    turns: int = TURNS,
+    seed: int = 141,
+    before_head: Callable[[AsyncEngine, Story], Awaitable[None]] | None = None,
 ) -> Story:
-    """The story (see the module docstring), with ``fillers`` filler memories."""
+    """The story (see the module docstring), with ``fillers`` filler memories. ``before_head``
+    runs while the story's turns still form a chain (before its head moves to ``turns``): a
+    test's own operations go there."""
     w = await c.world(db)
     story = w.story_id
     await use_structured(db, story)
@@ -124,6 +131,8 @@ async def build_story(
                 )
             )
         await scale.insert_memories(db, rows)
+    if before_head is not None:
+        await before_head(db, built)
     async with db.begin() as conn:
         await conn.execute(
             update(stories).where(stories.c.id == story).values(next_turn_index=turns + 1)
@@ -241,22 +250,31 @@ async def operation_count(db: AsyncEngine, story_id: str) -> int:
 
 @dataclass
 class Seen:
-    """The statements a block ran: their SQL and parameters."""
+    """The statements a block ran: their SQL and parameters, and the rows each answered."""
 
     statements: list[tuple[str, Any]] = field(default_factory=list)
+    rows: list[int] = field(default_factory=list)
+    """The rows each statement answered (its cursor's ``rowcount``), in ``statements``' order."""
 
     def __len__(self) -> int:
         return len(self.statements)
 
-    def reading(self, table: str) -> list[tuple[str, Any]]:
-        """The SELECTs that read ``table`` (``FROM``/``JOIN``)."""
+    def _reads(self, table: str) -> list[int]:
         needle = (f"from {table} ", f"from {table}\n", f'from "{table}"', f"join {table} ")
         return [
-            (sql, params)
-            for sql, params in self.statements
+            i
+            for i, (sql, _) in enumerate(self.statements)
             if sql.lstrip().lower().startswith(("select", "with"))
             and any(n in sql.lower() for n in needle)
         ]
+
+    def reading(self, table: str) -> list[tuple[str, Any]]:
+        """The SELECTs that read ``table`` (``FROM``/``JOIN``)."""
+        return [self.statements[i] for i in self._reads(table)]
+
+    def rows_reading(self, table: str) -> int:
+        """The rows the SELECTs that read ``table`` answered, together (#451's cost tests)."""
+        return sum(self.rows[i] for i in self._reads(table) if i < len(self.rows))
 
 
 @contextmanager
@@ -268,11 +286,19 @@ def statements(db: AsyncEngine) -> Iterator[Seen]:
         del conn, cursor, args
         seen.statements.append((statement, parameters))
 
+    def answered(conn: Any, cursor: Any, *args: Any) -> None:
+        del conn, args
+        # A statement that failed has no row count: pad it with 0 to keep the order aligned.
+        seen.rows.extend([0] * (len(seen.statements) - 1 - len(seen.rows)))
+        seen.rows.append(max(int(getattr(cursor, "rowcount", 0) or 0), 0))
+
     event.listen(db.sync_engine, "before_cursor_execute", record)
+    event.listen(db.sync_engine, "after_cursor_execute", answered)
     try:
         yield seen
     finally:
         event.remove(db.sync_engine, "before_cursor_execute", record)
+        event.remove(db.sync_engine, "after_cursor_execute", answered)
 
 
 async def plan_of(db: AsyncEngine, sql: str, params: Any) -> str:

@@ -27,10 +27,12 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.core.canon import facts as canon_facts
 from epistrel.core.context import RequestContext
-from epistrel.core.enums import MemoryKind, RetrievalTier
+from epistrel.core.enums import MemoryKind, RecordProvenance, RetrievalTier
 from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.profiles.schema import ProfileSettings
+from epistrel.core.projections import structured
 from epistrel.core.propositions import store
 from epistrel.core.propositions.model import (
     Granularity,
@@ -39,7 +41,7 @@ from epistrel.core.propositions.model import (
     Polarity,
     Proposition,
 )
-from epistrel.core.propositions.vocabulary import BORN, CORE_BY_NAME
+from epistrel.core.propositions.vocabulary import BORN, CORE_BY_NAME, LOCATED_IN
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.resolution import context as resolution
 from epistrel.core.resolution.entities import Relation, resolve_mentions
@@ -515,6 +517,42 @@ async def test_retrieval_cost_is_fixed_and_indexed(scratch: Scratch, long_story:
         assert f"ix_memories_{index}" in plan, plan
 
 
+def _index_conditions(plan: str) -> str:
+    return "\n".join(line for line in plan.splitlines() if "Index Cond" in line)
+
+
+async def test_the_retired_lexical_search_reads_the_tier_index(
+    scratch: Scratch, long_story: r.Story
+) -> None:
+    """#451 (NFR-PERF-1): rehydration's lexical search of the retired tier reaches its rows
+    through the story's ``(story_id, membership, retrieval_tier)`` index: the tier is an index
+    condition, so the search reads the retired rows, not every row holding one of the query's
+    words and then drops the hot ones (which made it cost as much as the hot search).
+
+    Complement asserted: the same statement with the tier cast to text (the shape before #451)
+    has no tier index condition."""
+    db = scratch.db
+    with r.statements(db) as seen:
+        await _retrieve(db, long_story.story_id, QUERY, touch=False)
+    retired = [
+        (sql, params)
+        for sql, params in seen.reading("memories")
+        if "ts_rank" in sql and params.get("tiers") == [RetrievalTier.RETIRED.value]
+    ]
+    assert len(retired) == 1, [p.get("tiers") for _, p in seen.reading("memories")]
+    sql, params = retired[0]
+    async with db.begin() as conn:  # the planner's statistics, as autovacuum keeps them
+        await conn.execute(text("ANALYZE memories"))
+    plan = await r.plan_of(db, sql, params)
+    assert "retrieval_tier" in _index_conditions(plan), plan
+    cast_text = sql.replace(
+        "m.retrieval_tier = ANY(CAST(%(tiers)s AS retrieval_tier[]))",
+        "m.retrieval_tier::text = ANY(CAST(%(tiers)s AS text[]))",
+    )
+    assert cast_text != sql
+    assert "retrieval_tier" not in _index_conditions(await r.plan_of(db, cast_text, params))
+
+
 async def test_the_debugging_read_is_omniscient_only(scratch: Scratch) -> None:
     """``GET /stories/{id}/retrieve`` answers the library's result for ``omniscient`` and
     touches no memory; a character viewpoint is 403 ``omniscient_required``; ``as_of`` beyond
@@ -752,3 +790,280 @@ async def test_resolve_relations_equal_the_per_profile_read(engine: AsyncEngine)
     assert all(x.predicate != "friend_of" for x in at_head)
     assert any(x.predicate == "friend_of" for x in by_turn[head - 1])
     assert len({tuple(v) for v in by_turn.values()}) > 2
+
+
+async def _with_canon(db: AsyncEngine, story: r.Story, n: int) -> None:
+    """``n`` more people in ``story``, none named in a query, and ``2n`` relationships among
+    them (each knows the next and is the friend of the one after), committed in one turn: a
+    canon that grows without touching anyone a query names."""
+    async with db.begin() as conn:
+        extra = [
+            await store.add_entity(conn, story.story_id, "person", f"Extra Person {i:03d}")
+            for i in range(n)
+        ]
+
+    async def write(conn: Any, op: Any) -> None:
+        for i, person in enumerate(extra):
+            for name, other in (("knows", extra[(i + 1) % n]), ("friend_of", extra[(i + 2) % n])):
+                proposition = Proposition(
+                    subject_id=person,
+                    predicate_id=CORE_BY_NAME[name].id,
+                    object_id=other,
+                    valid_time=Interval.of(None, None),
+                )
+                await canon_facts.commit_fact(
+                    conn,
+                    story.story_id,
+                    proposition,
+                    operation=op,
+                    provenance=RecordProvenance.RENDER,
+                )
+
+    await c.run(db, story.story_id, write)
+
+
+async def _head_of(db: AsyncEngine, story_id: str) -> int:
+    async with db.connect() as conn:
+        found = await conn.scalar(
+            text("SELECT next_turn_index FROM stories WHERE id = :s"), {"s": story_id}
+        )
+    return int(found or 0) - 1
+
+
+async def test_resolve_reads_only_the_relationships_its_text_needs(scratch: Scratch) -> None:
+    """#451 (NFR-PERF-1): with the text to resolve, ``load_context`` reads the relationships of
+    the possessors its relational descriptions name, not every person's, so neither the
+    statements nor the rows read grow with the canon. A story whose canon has 400 more
+    relationships among 200 more people reads exactly what the plain story reads: no
+    relationship rows besides the scene's for a text with no relation noun, and only Bobby's
+    for "Bobby's sister". The whole retrieval reads the same ``relationships`` rows on both.
+
+    Complement asserted: the comparison sees the canon: without the text (every person's
+    relationships, #442's read) the big story reads over 400 rows more than the small one; and
+    "Bobby's sister" still resolves to Ann on both."""
+    db = scratch.db
+    small = await r.build_story(db)
+    big = await r.build_story(db, before_head=lambda db, story: _with_canon(db, story, 200))
+    for story in (small, big):
+        await _plant_occasion(db, story)
+        await r.set_vectors(db, story.story_id, NEAR)
+
+    async def context_of(story: r.Story, text: str | None) -> tuple[r.Seen, Any]:
+        position = (await _head_of(db, story.story_id) + 1, 0)
+        with r.statements(db) as seen:
+            async with db.connect() as conn:
+                found = await resolution.load_context(
+                    conn,
+                    story.story_id,
+                    position=position,
+                    speaker=story.people["Cal"],
+                    text=text,
+                )
+        return seen, found
+
+    plain = "Those guys a month ago at the game."
+    (few, _), (many, _) = await context_of(small, plain), await context_of(big, plain)
+    assert len(few) == len(many), (len(few), len(many))
+    assert len(many.reading("relationships")) == 1  # the scene's present_at rows only
+    assert few.rows_reading("relationships") == many.rows_reading("relationships")
+
+    (few, few_context), (many, many_context) = (
+        await context_of(small, QUERY),
+        await context_of(big, QUERY),
+    )
+    assert len(few) == len(many), (len(few), len(many))
+    assert len(many.reading("relationships")) == 2  # the scene's, then Bobby's
+    assert few.rows_reading("relationships") == many.rows_reading("relationships")
+    for story, context in ((small, few_context), (big, many_context)):
+        found = resolve_mentions(QUERY, story.people["Cal"], context)
+        assert found[-1].entity_id == story.people["Ann"]
+
+    async def whole(story: r.Story) -> r.Seen:
+        with r.statements(db) as seen:
+            await _retrieve(db, story.story_id, QUERY, embed=_vector(), touch=False)
+        return seen
+
+    whole_few, whole_many = await whole(small), await whole(big)
+    assert len(whole_few) == len(whole_many), (len(whole_few), len(whole_many))
+    assert whole_few.rows_reading("relationships") == whole_many.rows_reading("relationships")
+
+    # Complement: every person's relationships (no text) read the big canon.
+    (few, _), (many, _) = await context_of(small, None), await context_of(big, None)
+    assert many.rows_reading("relationships") >= few.rows_reading("relationships") + 400
+
+
+SCOPED_TEXTS = (
+    "Bobby's sister was at the game.",
+    "Ann's brother's friend came along.",
+    "Did he see his sister there?",
+    "The Guild's enemy and Dan's friend left early.",
+    "Cal's wife and her mother stayed home.",
+    "Bobby, Ann and Dan were at the game.",
+    "His father's father was there too.",
+)
+
+
+async def test_scoped_relations_resolve_as_every_persons_do(engine: AsyncEngine) -> None:
+    """#451: resolving a text against ``load_context(text=…)`` (the relationships of the
+    possessors it names, closed over chained possessors) answers exactly the mentions it
+    answers against every person's relationships, at every turn: a possessive name, a chained
+    possessor ("Ann's brother's friend"), a pronoun possessor, an organization possessor (its
+    relation to a person counts, its relation to a place does not), a missing relation, a text
+    with no relation noun.
+
+    Complement asserted: the comparison is not vacuous: the chained description resolves only
+    through its second hop, and the scoped contexts hold fewer relations than the full one."""
+    w = await c.world(engine)
+    story, bobby, ann, cal = w.story_id, w.people["Bobby"], w.people["Ann"], w.people["Cal"]
+    async with engine.begin() as conn:
+        dan = await store.add_entity(conn, story, "person", "Dan")
+        guild = await store.add_entity(conn, story, "organization", "the Guild")
+
+    def rel(subject: str, name: str, obj: str) -> Any:
+        return Proposition(
+            subject_id=subject,
+            predicate_id=CORE_BY_NAME[name].id,
+            object_id=obj,
+            valid_time=Interval.of(None, None),
+        )
+
+    await c.commit(engine, story, rel(bobby, "sibling_of", ann))
+    await c.commit(engine, story, rel(bobby, "friend_of", dan))
+    await c.commit(engine, story, rel(guild, "enemy_of", cal))
+    await c.commit(engine, story, rel(guild, "enemy_of", w.places["kitchen"]))
+    await c.commit(engine, story, rel(dan, "friend_of", cal))
+    await c.run(engine, story, lambda conn, op: _nothing(), said="Bobby waved.")
+    head = await _head_of(engine, story)
+    chained = None
+    async with engine.connect() as conn:
+        for turn in range(head + 2):
+            full = await resolution.load_context(conn, story, position=(turn, 0), speaker=cal)
+            for said in SCOPED_TEXTS:
+                scoped = await resolution.load_context(
+                    conn, story, position=(turn, 0), speaker=cal, text=said
+                )
+                assert resolve_mentions(said, cal, scoped) == resolve_mentions(said, cal, full), (
+                    turn,
+                    said,
+                )
+                assert set(scoped.relations) <= set(full.relations)
+                if turn == head + 1 and said == SCOPED_TEXTS[1]:
+                    chained = (scoped, full)
+    assert chained is not None
+    scoped, full = chained
+    mentions = resolve_mentions(SCOPED_TEXTS[1], cal, scoped)
+    assert [m.entity_id for m in mentions] == [ann, bobby, dan]
+    assert len(scoped.relations) < len(full.relations)
+
+
+async def _profile_world(engine: AsyncEngine) -> tuple[c.World, dict[str, str]]:
+    """Cal, Bobby, Ann, Dan and Eve in the kitchen, which is in the school; Bobby holds the
+    lamp; Bobby and Ann are siblings, Dan knows Eve, the Guild is Cal's enemy. Then Ann moves to
+    the garden and the sibling relation is negated."""
+    w = await c.world(engine)
+    story = w.story_id
+    async with engine.begin() as conn:
+        more = {
+            "Dan": await store.add_entity(conn, story, "person", "Dan"),
+            "Eve": await store.add_entity(conn, story, "person", "Eve"),
+            "lamp": await store.add_entity(conn, story, "item", "lamp"),
+            "Guild": await store.add_entity(conn, story, "organization", "the Guild"),
+        }
+    people = {**w.people, **more}
+    kitchen, school, garden = w.places["kitchen"], w.places["school"], w.places["garden"]
+
+    def rel(subject: str, name: str, obj: str) -> Proposition:
+        return Proposition(
+            subject_id=subject,
+            predicate_id=CORE_BY_NAME[name].id,
+            object_id=obj,
+            valid_time=Interval.of(None, None),
+        )
+
+    await c.commit(engine, story, c.at(kitchen, school, None, None, predicate=LOCATED_IN))
+    for who in ("Cal", "Bobby", "Ann", "Dan", "Eve"):
+        await c.commit(engine, story, c.at(people[who], kitchen, 0, None))
+    await c.commit(engine, story, rel(people["Bobby"], "holds", more["lamp"]))
+    sibling = await c.commit(engine, story, rel(people["Bobby"], "sibling_of", people["Ann"]))
+    await c.commit(engine, story, rel(more["Dan"], "knows", more["Eve"]))
+    await c.commit(engine, story, rel(more["Guild"], "enemy_of", people["Cal"]))
+    await c.commit(engine, story, c.at(people["Ann"], garden, 0, None))
+    negated = rel(people["Bobby"], "sibling_of", people["Ann"])
+    await c.supersede(
+        engine, story, sibling.id, negated.model_copy(update={"polarity": Polarity.NEGATED})
+    )
+    return w, people
+
+
+async def test_profiles_equal_one_profile_each(engine: AsyncEngine) -> None:
+    """#451: ``profile_views`` (the batched read the retrieval's profiles stage uses) answers,
+    at every turn, exactly what ``profile_view`` answers for each entity: relationships both
+    ways, a placement with its containing places, an inventory, a holder that moved, a
+    relation that was negated; an id that is not the story's is left out. ``KeyedLookup.profiles``
+    records each profile in the read set exactly as ``KeyedLookup.profile`` does.
+
+    Complement asserted: the comparison is not vacuous: the profiles differ between turns, and
+    one holds a placement with a containing place and an inventory."""
+    w, people = await _profile_world(engine)
+    story = w.story_id
+    ids = [*people.values(), *w.places.values(), "01J9Z8Q4N5V6W7X8Y9Z0A1B2C9"]
+    head = await _head_of(engine, story)
+    by_turn = []
+    async with engine.connect() as conn:
+        for turn in range(head + 1):
+            batched = await structured.profile_views(
+                conn, story, ids, as_of=turn, viewpoint="omniscient"
+            )
+            one_each = {
+                e: await structured.profile_view(conn, story, e, as_of=turn, viewpoint="omniscient")
+                for e in ids[:-1]
+            }
+            assert batched == one_each, turn
+            by_turn.append(batched)
+        batch_set, single_set = StructuredReadSet(), StructuredReadSet()
+        found = await KeyedLookup(conn, batch_set).profiles(story, ids, as_of=head)
+        for e in ids[:-1]:
+            await KeyedLookup(conn, single_set).profile(story, e, as_of=head)
+    assert [p.entity.entity_id for p in found] == ids[:-1]
+    assert batch_set.retrieved == single_set.retrieved
+    assert len({repr(v) for v in by_turn}) > 2
+    bobby = by_turn[head][people["Bobby"]]
+    assert bobby.placement is not None
+    assert [p.entity_id for p in bobby.placement.within] == [w.places["school"]]
+    assert [i.item.entity_id for i in bobby.inventory] == [people["lamp"]]
+
+
+async def test_profiles_cost_does_not_grow_with_the_subjects(engine: AsyncEngine) -> None:
+    """#451 (NFR-PERF-1): the profiles of five people in one place cost the statements one
+    person's does (the read context, the entities, the registry once, the relationships and
+    placement rows, the place's containing places, the refs), where one profile each cost
+    five times as many.
+
+    Complement asserted: one profile each really does grow with the subjects."""
+    w, people = await _profile_world(engine)
+    story = w.story_id
+    one = [people["Cal"]]
+    five = [people[n] for n in ("Cal", "Bobby", "Dan", "Eve", "Guild")]
+
+    async def batched(ids: list[str]) -> r.Seen:
+        with r.statements(engine) as seen:
+            async with engine.connect() as conn:
+                await KeyedLookup(conn, StructuredReadSet()).profiles(story, ids)
+        return seen
+
+    async def one_each(ids: list[str]) -> r.Seen:
+        with r.statements(engine) as seen:
+            async with engine.connect() as conn:
+                lookup = KeyedLookup(conn, StructuredReadSet())
+                for e in ids:
+                    await lookup.profile(story, e)
+        return seen
+
+    few, many = await batched(one), await batched(five)
+    assert len(few) == len(many), (len(few), len(many))
+    # The registry is loaded once (the other ``predicates`` reads are the canon's joins).
+    loads = [
+        q for q, _ in many.reading("predicates") if q.lstrip().startswith("SELECT predicates.")
+    ]
+    assert len(loads) == 1
+    assert len(await one_each(five)) >= 4 * len(await one_each(one))

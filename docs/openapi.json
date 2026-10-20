@@ -26072,6 +26072,13 @@
             "title": "Escalation Retention Days",
             "type": "integer"
           },
+          "extraction_shadow_retention_days": {
+            "default": 90,
+            "maximum": 3650.0,
+            "minimum": 1.0,
+            "title": "Extraction Shadow Retention Days",
+            "type": "integer"
+          },
           "extraction_shadow_sample_rate": {
             "default": 0.1,
             "maximum": 1.0,
@@ -27185,6 +27192,17 @@
               }
             ],
             "title": "Escalation Retention Days"
+          },
+          "extraction_shadow_retention_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extraction Shadow Retention Days"
           },
           "extraction_shadow_sample_rate": {
             "anyOf": [
@@ -32041,6 +32059,7 @@
                           "entailment_max_records",
                           "erasure_shared_media",
                           "escalation_retention_days",
+                          "extraction_shadow_retention_days",
                           "extraction_shadow_sample_rate",
                           "feedback_export",
                           "feedback_regen_window_s",

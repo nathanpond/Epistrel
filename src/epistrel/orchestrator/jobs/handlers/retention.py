@@ -39,6 +39,10 @@ FR-CONC-6, NFR-REL-5; #71).
 - the escalation records (``escalations``, #155) older than ``escalation_retention_days`` (90),
   by when they were recorded: ids, codes and confidences of committed turns' entailment calls,
   derived rows no story view reads, so they leave no marker.
+- claim detection's shadow samples (``extraction_shadow``, #148) older than
+  ``extraction_shadow_retention_days`` (90; #455), by when they were recorded: statuses, counts,
+  spans, predicate ids and shape hashes, never story text, read only by the shadow report, so
+  they leave no marker either.
 
 No M2 operation kind writes only audit events, so no operation row is deleted. Every delete
 runs in chunks of ``CHUNK`` rows, each its own transaction, at most ``MAX_CHUNKS`` per table and
@@ -94,6 +98,7 @@ from epistrel.core.profiles import store as profiles
 from epistrel.core.ratings import change as rating_change
 from epistrel.core.settings_schema import STORY_LIFETIME, FeedbackSettings, RetentionSettings
 from epistrel.core.tables import audit_log, events, idempotency_keys, jobs, operations, stories
+from epistrel.core.tables.detection import extraction_shadow
 from epistrel.core.tables.escalations import escalations
 from epistrel.core.tables.events import ALLOW_AUDIT_EXPIRY_GUC
 from epistrel.core.tables.feedback import feedback_history, message_feedback
@@ -325,6 +330,9 @@ async def sweep_retention(db: AsyncEngine, now: datetime | None = None) -> dict[
         "escalations": await _chunked(
             db, escalations, _expired_escalations(moment, settings), audit=False
         ),
+        "extraction_shadow": await _chunked(
+            db, extraction_shadow, _expired_shadow_samples(moment, settings), audit=False
+        ),
     }
 
 
@@ -334,6 +342,17 @@ def _expired_escalations(moment: datetime, settings: RetentionSettings) -> Any:
     return (
         select(escalations.c.id)
         .where(escalations.c.at < before)
+        .limit(CHUNK)
+        .with_for_update(skip_locked=True)
+    )
+
+
+def _expired_shadow_samples(moment: datetime, settings: RetentionSettings) -> Any:
+    """Shadow samples (#148) older than ``extraction_shadow_retention_days`` (#455)."""
+    before = moment - timedelta(days=settings.extraction_shadow_retention_days)
+    return (
+        select(extraction_shadow.c.id)
+        .where(extraction_shadow.c.created_at < before)
         .limit(CHUNK)
         .with_for_update(skip_locked=True)
     )

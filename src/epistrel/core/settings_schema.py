@@ -417,6 +417,9 @@ DEFAULT_READSET_CHANGE_RETENTION_DAYS = 7
 than that cannot rebase and conflicts instead."""
 DEFAULT_ESCALATION_RETENTION_DAYS = 90
 """How long an ``escalations`` row is kept (#155)."""
+DEFAULT_EXTRACTION_SHADOW_RETENTION_DAYS = 90
+"""How long an ``extraction_shadow`` row is kept (#455): longer than the shadow report's 30-day
+default window, so a gate tightening's validation can read a full one (FR-OBS-4)."""
 
 
 class RetentionSettings(BaseModel):
@@ -428,7 +431,9 @@ class RetentionSettings(BaseModel):
     ``offboarding_report_retention_days``, and a finished rating check's status and violations
     (``rating_check_jobs``, #118) for ``rating_check_retention_days``, and the structured read
     set's change index (``proposition_changes``, #136) for ``readset_change_retention_days``, and
-    the escalation records (``escalations``, #155) for ``escalation_retention_days``.
+    the escalation records (``escalations``, #155) for ``escalation_retention_days``, and claim
+    detection's shadow samples (``extraction_shadow``, #148, #455) for
+    ``extraction_shadow_retention_days``.
     Prospective: each sweep applies the values in force when it runs; story history never
     expires."""
 
@@ -453,6 +458,9 @@ class RetentionSettings(BaseModel):
     )
     escalation_retention_days: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_ESCALATION_RETENTION_DAYS, ge=1, le=AUDIT_RETENTION_MAX_DAYS
+    )
+    extraction_shadow_retention_days: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_EXTRACTION_SHADOW_RETENTION_DAYS, ge=1, le=AUDIT_RETENTION_MAX_DAYS
     )
 
 

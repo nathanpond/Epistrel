@@ -5,10 +5,12 @@ shadow sample's failure, the Lite complement, and ``GET /admin/evals/extraction-
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.config import Settings
@@ -24,6 +26,7 @@ from epistrel.core.verify import protected
 from epistrel.core.verify.detect import DeclaredClaim, DetectBeat
 from epistrel.core.verify.protected import load_protected_index
 from epistrel.orchestrator.budget import TurnBudget
+from epistrel.orchestrator.jobs.handlers.retention import sweep_retention
 from epistrel.orchestrator.verify import extraction
 from epistrel.orchestrator.verify.extraction import (
     EXTRACTION_DEGRADED,
@@ -35,6 +38,7 @@ from tests import detection_support as ds
 from tests import verify_support as vs
 from tests.auth_support import bearer
 from tests.canon_support import commit
+from tests.event_support import scalar
 from tests.respond_support import respond_client
 
 pytestmark = pytest.mark.integration
@@ -275,3 +279,32 @@ async def test_extraction_shadow_route(engine: AsyncEngine, settings: Settings) 
         bad = await client.get(path, params={"from": "yesterday"}, headers=bearer())
         assert bad.status_code == 422, bad.text
         assert bad.json()["error"]["details"]["field"] == "query.from"
+
+
+async def test_shadow_samples_expire_after_their_retention(engine: AsyncEngine) -> None:
+    """The retention sweep deletes an ``extraction_shadow`` row older than
+    ``extraction_shadow_retention_days`` (90 by default; #455) and keeps a younger one: the
+    sample, aged 89 days, survives a sweep, and aged 91 days it is gone."""
+    t = await ds.tavern_story(engine, mode="gated")
+    mal = vs.stub_models()
+    mal.stub.script("extraction_backstop", [ds.claims_answer(), ds.claims_answer()])
+    beats = [
+        DetectBeat(1, "do", "She pockets the key.", t.linda),
+        DetectBeat(2, "narration", "Linda smiles at Marcus.", NARRATOR),
+    ]
+    found = await ds.detect_turn(
+        engine, t.story_id, mal, beats, shadow_rate=1.0, scene_entity=t.tavern
+    )
+    await ds.commit_turn(engine, t.story_id, found, beats)
+    await ds.run_shadow_jobs(engine, mal, t.story_id)
+    count = "SELECT count(*) FROM extraction_shadow WHERE story_id = :s"
+    assert await scalar(engine, count, s=t.story_id) == 1
+    for days, left in ((89, 1), (91, 0)):
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE extraction_shadow SET created_at = :t WHERE story_id = :s"),
+                {"t": datetime.now(UTC) - timedelta(days=days), "s": t.story_id},
+            )
+        swept = await sweep_retention(engine)
+        assert swept["extraction_shadow"] >= 1 - left
+        assert await scalar(engine, count, s=t.story_id) == left

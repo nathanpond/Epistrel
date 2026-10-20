@@ -26,8 +26,9 @@ much the verifier reads around a claim (``neighborhood_max_facts``, ``entailment
 (``extraction_shadow_sample_rate``, ``protected_index_max``; #148), the repair classification's
 ``cascade_threshold`` (#151), a gate tightening's promotion rule and how long escalation records are
 kept (``gate_promotion_min_cases``, ``gate_promotion_min_agreement``,
-``escalation_retention_days``; #155), and how many open thunks a story keeps (``thunks_max_open``,
-#146).
+``escalation_retention_days``; #155), how long shadow samples are kept
+(``extraction_shadow_retention_days``; #455), and how many open thunks a story keeps
+(``thunks_max_open``, #146).
 ``media_sweep_interval`` also moves its recurring task's ``recurring_tasks`` row
 (``RECURRING_INTERVAL_SETTINGS``).
 
@@ -176,6 +177,7 @@ class SettingsPatch(BaseModel):
     offboarding_report_retention_days: StrictInt | None = None
     rating_check_retention_days: StrictInt | None = None
     escalation_retention_days: StrictInt | None = None
+    extraction_shadow_retention_days: StrictInt | None = None
     readset_change_retention_days: StrictInt | None = None
     worker_heartbeat_timeout: StrictFloat | None = None
     timer_lag_alert: StrictFloat | None = None

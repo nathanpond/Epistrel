@@ -125,6 +125,7 @@ STORED: dict[str, Any] = {
     "offboarding_report_retention_days": 91,
     "rating_check_retention_days": 31,
     "readset_change_retention_days": 8,
+    "extraction_shadow_retention_days": 91,
     "worker_heartbeat_timeout": 10.0,
     "timer_lag_alert": 120.0,
     "media_sweep_interval": 7200,

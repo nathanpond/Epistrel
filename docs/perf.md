@@ -8,8 +8,8 @@
 
 | Test | Requirement | Budget | Measured p95 | Result | Host |
 |---|---|---|---|---|---|
-| P-01 retrieval | NFR-PERF-1 | p95 ≤ 150 ms | 542.3 ms | **over budget** | local-mac-loaded (not the reference host) |
-| P-02 deterministic verify | NFR-PERF-2 | p95 ≤ 50 ms | 41.4 ms | within budget | local-mac-loaded (not the reference host) |
+| P-01 retrieval | NFR-PERF-1 | p95 ≤ 150 ms | 119.0 ms | within budget | local-mac-loaded (not the reference host) |
+| P-02 deterministic verify | NFR-PERF-2 | p95 ≤ 50 ms | 37.5 ms | within budget | local-mac-loaded (not the reference host) |
 
 ## P-01: retrieval latency by stage (NFR-PERF-1)
 
@@ -17,14 +17,14 @@
 
 | Stage | p50 (ms) | p95 (ms) | p99 (ms) | max (ms) |
 |---|---|---|---|---|
-| assemble | 29.2 | 36.5 | 42.9 | 134.3 |
-| fuse | 3.3 | 4.4 | 6.4 | 8.2 |
-| lexical | 83.2 | 135.1 | 142.7 | 146.5 |
-| occasion | 0.0 | 16.3 | 19.9 | 21.7 |
-| profiles | 10.5 | 142.8 | 176.4 | 235.4 |
-| resolve | 275.0 | 319.0 | 342.3 | 396.8 |
-| total | 432.1 | 542.3 | 579.2 | 632.4 |
-| vector | 18.0 | 22.8 | 23.8 | 28.1 |
+| assemble | 8.0 | 10.9 | 12.9 | 93.8 |
+| fuse | 3.3 | 4.1 | 5.8 | 7.0 |
+| lexical | 37.9 | 52.9 | 58.4 | 63.6 |
+| occasion | 0.0 | 7.0 | 8.7 | 9.7 |
+| profiles | 5.6 | 60.3 | 125.6 | 139.4 |
+| resolve | 10.6 | 14.3 | 17.4 | 42.8 |
+| total | 86.7 | 119.0 | 179.0 | 200.0 |
+| vector | 11.6 | 13.5 | 14.7 | 15.8 |
 
 ## P-02: deterministic verify latency (NFR-PERF-2)
 
@@ -32,7 +32,7 @@
 
 | p50 (ms) | p95 (ms) | p99 (ms) | max (ms) |
 |---|---|---|---|
-| 27.4 | 41.4 | 48.4 | 186.9 |
+| 25.8 | 37.5 | 40.5 | 111.2 |
 
 Verdicts (built → found): contradicted->contradicted 600, novel->novel 400, supported->supported 800, uncertain->uncertain 200.
 
@@ -42,7 +42,7 @@ This is the commit in which an overflow episode reaches its deadline. It ranks e
 
 | Vectors ranked | Ranking (ms) | Forced run (ms) | Retired | vs 250 ms | vs 2 s |
 |---|---|---|---|---|---|
-| 49,760 | 134.2 | 181.4 | {"covered": 177, "floor": 323} | under | under |
+| 49,760 | 70.3 | 185.6 | {"covered": 177, "floor": 323} | under | under |
 
 ## P-04: the structured reference workload (NFR-PERF-4, M4)
 
@@ -75,4 +75,5 @@ One row per run, oldest first.
 |---|---|---|---|---|---|---|---|---|---|
 | 2026-10-18 | - | local-mac-loaded (not the reference host) | macOS-27.0.1-arm64-arm-64bit-Mach-O | 16.15 | 0.8.7 | 16 / 128.0 GB | 5531.7 | 38.3 | 315.8 |
 | 2026-10-19 | - | local-mac-loaded (not the reference host) | macOS-27.0.1-arm64-arm-64bit-Mach-O | 16.15 | 0.8.7 | 16 / 128.0 GB | 542.3 | 41.4 | 181.4 |
+| 2026-10-20 | - | local-mac-loaded (not the reference host) | macOS-27.0.1-arm64-arm-64bit-Mach-O | 16.15 | 0.8.7 | 16 / 128.0 GB | 119.0 | 37.5 | 185.6 |
 <!-- history:end -->

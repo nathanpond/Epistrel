@@ -8034,3 +8034,23 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   - docs/03 §22 and docs/04 §15: an M9 row.
   - M10/M11: their titles only.
   - Planning: `/n8-replan` for M9 when M8 closes.
+
+## /n8-exec M4 engine fixes — 2026-10-20
+
+- **Decision (Discretion):** `salience_detection` returns quoted span text (`{"beat", "span"}`, the `extraction_backstop` shape) and the engine locates it with the shared `locate_quote` (formerly `extraction._locate`, made public, not duplicated). The located `[start, end)` form (`SalientSpan`/`SalienceSpan`) stays the verdict's, so `record_salience`, the pipeline and E-05's scorer are unchanged. Only the model-facing response schema changed, and its top-level fields (`salient`, `texture`) kept their names, so docs/models.md is unchanged.
+  **Why:** Small models place character offsets poorly (E-05: `[0, 4]` "Mare"). Quoting and locating deterministically is the pattern the extraction backstop already uses.
+  **Issue:** #461
+- **Decision (Discretion):** A quote the engine cannot find in the beat it names, or one naming a beat the request did not carry, is dropped into `SalienceVerdict.unlocated`. It is counted in the debug log and in E-05's per-case `detail.unlocated`. It is not a turn `degradation` code: adding one would change the turn report's degradation list and E-05's `answered` metric, both beyond this issue. The old behaviour of turning an out-of-range span into texture is gone.
+  **Why:** The issue requires that an unlocated quote never maps silently to a wrong span. A located match is the only thing that becomes a span.
+  **Issue:** #461
+- **Decision (Discretion):** Before dropping a quote, salience retries it without surrounding whitespace or quotation marks (straight and curly). `locate_quote` itself is unchanged (exact, then case-insensitive, first occurrence), so the extraction backstop behaves as before. A quote found only in a different beat than the one named is not remapped.
+  **Why:** Models often wrap a quote in quotation marks. Remapping across beats would be guessing.
+  **Issue:** #461
+- **Decision (Discretion):** salience.j2 lists texture explicitly (room/furniture, weather/light, setting sounds, food and drink, small talk/greetings, routine actions), adds "something out of place, a threat, a clue" to the salient examples, and says to leave "salient" empty when nothing is placed to be noticed. Texture is still requested, but as a short quote ("a few of their words") to keep output short.
+  **Why:** FR-COMMIT-3 separates content placed to be noticed from inconsequential background texture. The live run marked texture as salient, and the clue/threat/out-of-place families were missed.
+  **Issue:** #461
+- **Decision (Discretion):** The worktree started at main (c8b347c), not at the milestone head. Before any change, I reset this worktree's own branch to `milestone/m4-structured-memory` (20549df). The tree was clean, I did not switch branches, and I did not touch the main checkout.
+  **Why:** The brief says to work at the head of `milestone/m4-structured-memory`.
+  **Issue:** #461
+- **Deferred to M9 (model):** Salience false positives on texture that remain after the prompt guidance, and recall misses where the model names no salient span. Both depend on the model. The orchestrator's live E-05 re-run measures them, and floors and labels stay unchanged.
+  **Issue:** #461

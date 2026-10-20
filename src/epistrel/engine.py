@@ -2878,6 +2878,7 @@ class Engine:
 
     # -- escalation yield and gate tightening (FR-OBS-2,4, NFR-PERF-5; #155) -------------------
 
+    @refuses_nul()
     async def escalation_yield(
         self,
         ctx: RequestContext,

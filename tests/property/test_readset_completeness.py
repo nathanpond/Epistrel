@@ -80,6 +80,7 @@ from tests.canon_support import World, at, auto_predicate, commit, world
 from tests.concurrency_support import (
     assert_single_chain,
     change_setting,
+    included_segment_ids,
     next_turn_index,
     regenerate,
     reject_render,
@@ -344,7 +345,8 @@ MAX_IN_FLIGHT = 3
 NOW = 1_000
 READ_SET_CHANGES = frozenset({"turn", "pins", "segment", "lock"})
 """Kinds of change a structured turn's read set sees: the Lite members, and a lock on the door
-(its keyed precondition)."""
+(its keyed precondition). A derived segment the prompt does not include (it does not continue
+the included run from turn 1, FR-STORE-26) is ``derived``: it touches nothing."""
 
 
 @dataclass
@@ -560,8 +562,10 @@ class ConcLinearStructured(RuleBasedStateMachine):
         head = self.run(next_turn_index(self.engine, self.story_id))
         if head == 1:
             return
+        before = self.run(included_segment_ids(self.engine, self.story_id))
         self.run(summarise(self.engine, self.story_id, head - 1))
-        self.changed("segment", bumps=False)
+        included = self.run(included_segment_ids(self.engine, self.story_id)) != before
+        self.changed("segment" if included else "derived", bumps=False)
 
     @rule()
     def audit_and_settings(self) -> None:
@@ -623,6 +627,33 @@ def test_conc_linear__structured(pg_url: str) -> None:
     seen = ConcLinearStructured.tally
     assert all(seen[name] > 0 for name in ("commit", "rebase", "regenerate", "abandon")), seen
     assert seen["revision_conflict"] > 0, seen
+
+
+@pytest.mark.part("M4", "FR-CONC-3")
+def test_conc_linear__structured_unincluded_segment(pg_url: str) -> None:
+    """The run Hypothesis found (b22, 5c3a749): a turn held over an unrelated fact and a
+    derived segment over turn 2 alone, which the prompt does not include (no segment covers
+    turn 1), rebases: the oracle must not count that segment as touching the read set."""
+    ConcLinearStructured.url = pg_url
+    ConcLinearStructured.tally = Counter()
+    state = ConcLinearStructured()
+    try:
+        state.story_settings(budget=0)
+        state.derived_summary()
+        state.unrelated_fact()
+        state.turn_over_a_fact(chance=0, matching=False)
+        state.begin_another_turn()
+        state.release_turn(pick=0)
+        state.begin_turn()
+        state.begin_turn()
+        state.unrelated_fact()
+        state.begin_another_turn()
+        state.derived_summary()
+        assert state.log[-2:] == [("fact", True), ("derived", False)], state.log
+        state.release_oldest_turn()
+        assert state.tally["rebase"] == 2, state.tally
+    finally:
+        state.teardown()
 
 
 # -- CONFIG-REVALIDATION, M4 part --------------------------------------------------------------

@@ -61,6 +61,7 @@ from tests.concurrency_support import (
     HeldTurn,
     assert_single_chain,
     change_setting,
+    included_segment_ids,
     next_turn_index,
     regenerate,
     reject_render,
@@ -75,7 +76,9 @@ from tests.projection_support import swap, truncate, untruncate
 
 MAX_IN_FLIGHT = 3
 READ_SET_CHANGES = frozenset({"turn", "pins", "segment"})
-"""Kinds of change a Lite turn's read set sees (window, pins, summary segments)."""
+"""Kinds of change a Lite turn's read set sees (window, pins, summary segments). A derived
+segment the prompt does not include (it does not continue the included run from turn 1) is
+``derived``: it touches nothing."""
 
 
 @dataclass
@@ -259,9 +262,11 @@ class ConcLinear(RuleBasedStateMachine):
         if head == 1:
             return
         before = self.run(revision(self.engine, self.story))
+        segments = self.run(included_segment_ids(self.engine, self.story))
         self.run(summarise(self.engine, self.story, head - 1))
         assert self.run(revision(self.engine, self.story)) == before
-        self.changed("segment", bumps=False)
+        included = self.run(included_segment_ids(self.engine, self.story)) != segments
+        self.changed("segment" if included else "derived", bumps=False)
 
     @rule()
     def audit_and_settings(self) -> None:
@@ -332,6 +337,29 @@ def test_conc_linear(pg_url: str) -> None:
         seen
     )
     assert seen.get("revision_conflict", 0) > 0, seen
+
+
+@pytest.mark.part("M2", "FR-CONC-1,2,4")
+def test_conc_linear__unincluded_segment(pg_url: str) -> None:
+    """A turn held over a change outside its read set and a derived segment over turn 2 alone,
+    which the prompt does not include (no segment covers turn 1), rebases: the oracle must not
+    count that segment as touching the read set (the case b22 found in the M4 machine)."""
+    ConcLinear.url = pg_url
+    ConcLinear.tally = Tally()
+    state = ConcLinear()
+    try:
+        state.story_settings(budget=0)
+        for _ in range(2):
+            state.begin_turn()
+            state.release_oldest_turn()
+        state.begin_turn()
+        state.change_outside_read_set()
+        state.derived_summary()
+        assert state.log[-2:] == [("outside", True), ("derived", False)], state.log
+        state.release_oldest_turn()
+        assert state.tally.outcomes.get("rebase") == 1, state.tally
+    finally:
+        state.teardown()
 
 
 # -- the FR-CONC-6 slice (#61) ---------------------------------------------------------------

@@ -87,6 +87,7 @@ from epistrel.core.repair.rungs import (
     narrow,
     substitute,
 )
+from epistrel.core.resolution.context import load_time_basis
 from epistrel.core.settings_schema import NAME_PLACEHOLDER, OMNISCIENT, VerifySettings
 from epistrel.core.tables import entities
 from epistrel.core.tables.propositions import closed_sets
@@ -119,7 +120,9 @@ from epistrel.orchestrator.structured.render import (
 from epistrel.orchestrator.verify.extraction import EXTRACTION_DEGRADED, CheckedClaim
 from epistrel.orchestrator.verify.verifier import (
     RESOLUTION_CONFLICT,
+    UNANCHORED,
     UNPERMITTED,
+    TimeFrame,
     render_proposition,
     render_time,
 )
@@ -237,6 +240,8 @@ class Context:
     names: Mapping[str, str] = field(default_factory=dict)
     registry: Registry | None = None
     constraints: tuple[Constraint, ...] = ()
+    frame: TimeFrame = UNANCHORED
+    """How the facts' valid-times read in the regeneration prompt (#460)."""
 
     @property
     def size(self) -> int:
@@ -473,6 +478,7 @@ class RepairLadder:
             props += [v.claim.proposition for v in violations if v.claim.proposition is not None]
             names = await _names(conn, self.story_id, props)
             constraints = tuple([await self._constraint(v, registry, names) for v in violations])
+            frame = TimeFrame.of(await load_time_basis(conn, self.story_id))
         return Context(
             contradicted=tuple(contradicted.values()),
             neighborhood=tuple(neighbors.values()),
@@ -480,6 +486,7 @@ class RepairLadder:
             names=names,
             registry=registry,
             constraints=constraints,
+            frame=frame,
         )
 
     def _viewpoint(self, beat: TurnBeat) -> str:
@@ -760,7 +767,7 @@ class RepairLadder:
         def line(fact: Fact) -> str:
             p = fact.proposition
             rendered = render_proposition(p, registry, context.names)
-            return f"{rendered} [{render_time(p, registry)}]"[:1_000]
+            return f"{rendered} [{render_time(p, registry, context.frame)}]"[:1_000]
 
         contradicted = {f.id for f in context.contradicted}
         inputs = RegenerationInputs.model_validate(

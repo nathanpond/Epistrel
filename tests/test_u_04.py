@@ -39,7 +39,13 @@ from epistrel.core.canon.canonize import CanonRequest, NewEntity, canonize_all
 from epistrel.core.canon.facts import Fact, Visibility
 from epistrel.core.enums import RecordProvenance
 from epistrel.core.events import Operation
-from epistrel.core.propositions.model import Granularity, Instant, Interval, Proposition
+from epistrel.core.propositions.model import (
+    DEFAULT_EPOCH,
+    Granularity,
+    Instant,
+    Interval,
+    Proposition,
+)
 from epistrel.core.tables import entities
 from epistrel.core.verify.normalize import Unnormalizable
 from epistrel.core.verify.permission import Asserter, Basis, Denied, EntityInfo, Permitted, Reason
@@ -55,12 +61,16 @@ from epistrel.orchestrator.verify.gate import (
     PredicateShape,
 )
 from epistrel.orchestrator.verify.verifier import (
+    TIME_UNDECIDABLE,
     ClaimRef,
     RecordsSource,
+    TimeFrame,
     Verifier,
     VerifyConfig,
     VerifyResult,
+    render_time,
 )
+from epistrel.orchestrator.verify.yields import flipped
 from tests import canon_support as cs
 from tests import verify_support as vs
 
@@ -244,17 +254,28 @@ async def test_u_04__escalation() -> None:
         assert found.verdict.reason is reason, reason
         assert found.decision is not None
         assert found.decision.threshold == 1.0
-        assert (found.kind, found.source, found.escalated, found.rule) == (
-            VerdictKind.CONTRADICTED,
-            "entailment",
-            True,
-            "entailment",
-        ), reason
+        if reason in TIME_UNDECIDABLE:
+            # #460: the bounds leave it open in the rules, and no model answer can close it.
+            assert (found.kind, found.source, found.escalated, found.disposition) == (
+                VerdictKind.UNCERTAIN,
+                "deterministic",
+                True,
+                "repair",
+            ), reason
+        else:
+            assert (found.kind, found.source, found.escalated, found.rule) == (
+                VerdictKind.CONTRADICTED,
+                "entailment",
+                True,
+                "entailment",
+            ), reason
         assert calls(mal) == 1, reason
         (call,) = mal.stub.calls
         user = call.messages[-1].content
         assert user.startswith("Claim: Bobby"), reason
-        assert "Ann" not in " ".join(m.content for m in call.messages)
+        sent = " ".join(m.content for m in call.messages)
+        assert "Ann" not in sent
+        assert "T+" not in sent, reason
         (record,) = v.escalations
         assert (record.gate_reason, record.called, record.model_verdict) == (
             reason.value,
@@ -262,7 +283,76 @@ async def test_u_04__escalation() -> None:
             "contradicted",
         )
         assert record.tentative_verdict == "uncertain"
+        assert record.final_kind == found.kind.value
         assert v.report()["escalated"] == 1
+
+    # #460 (FR-PROP-10, FR-VERIFY-8): over approximate bounds, a confident model answer either
+    # way takes the safe disposition, and the escalation is recorded unflipped. The model reads
+    # the bounds as ranges ("sometime between"), not as story-minute offsets.
+    claim, canon, _ = cases[VerdictReason.APPROXIMATE_BOUNDS]
+    for verdict in ("supported", "contradicted"):
+        mal = models()
+        mal.stub.script("entailment", [answer(verdict, 0.99)])
+        v = verifier(mal, canon)
+        found = await _verify(v, claim)
+        assert (found.kind, found.disposition, found.needs_repair) == (
+            VerdictKind.UNCERTAIN,
+            "repair",
+            True,
+        ), verdict
+        assert (found.model_verdict, found.model_confidence) == (verdict, 0.99)
+        (record,) = v.escalations
+        assert flipped(record) is False, verdict
+        (call,) = mal.stub.calls
+        sent = " ".join(m.content for m in call.messages)
+        assert (
+            "[from sometime between 1 hour 35 minutes after the story's start and 1 hour 38 "
+            "minutes after the story's start until sometime between 1 hour 50 minutes after the "
+            "story's start and 2 hours after the story's start]"
+        ) in sent
+        assert (
+            "(from sometime between the story's start and 10 minutes after the story's start "
+            "until sometime between 1 hour 30 minutes after the story's start and 1 hour 40 "
+            "minutes after the story's start)"
+        ) in sent
+
+    # On a story with a calendar anchor the same renderer prints dates (E-01's "about 2008-2012
+    # to about 2022-2024"), an instant at its own precision, and an open side as "from"/"until".
+    calendar = TimeFrame(epoch=DEFAULT_EPOCH)
+
+    def ohio(valid: Interval | Instant) -> Proposition:
+        return vs.prop(vs.BOBBY, vs.LOCATED_AT, vs.OHIO, valid)
+
+    def y(year: int) -> int:
+        return vs.minute(f"{year}-01-01T00:00")
+
+    lived = ohio(vs.approx((y(2008), y(2012)), (y(2022), y(2024))))
+    assert render_time(lived, vs.REGISTRY, calendar) == (
+        "from sometime between 2008-01-01 and 2012-01-01 "
+        "until sometime between 2022-01-01 and 2024-01-01"
+    )
+    exact = ohio(vs.years(2010, 2014))
+    assert render_time(exact, vs.REGISTRY, calendar) == "from 2010-01-01 until 2014-01-01"
+    opened = ohio(Interval.of(vs.minute("2010-03-04T09:15"), None))
+    assert render_time(opened, vs.REGISTRY, calendar) == "from 2010-03-04 09:15 on"
+    assert render_time(ohio(Interval.of(None, y(2014))), vs.REGISTRY, calendar) == (
+        "until 2014-01-01"
+    )
+    hour = ohio(Instant.of(vs.minute("2012-05-10T09:00"), Granularity.HOUR))
+    assert render_time(hour, vs.REGISTRY, calendar) == "at 2012-05-10 09:00 (to the hour)"
+    on_day = ohio(Instant.of(vs.minute("2012-05-10T00:00"), Granularity.DAY))
+    assert render_time(on_day, vs.REGISTRY, calendar) == "on 2012-05-10"
+    in_year = ohio(Instant.of(y(2012), Granularity.YEAR))
+    assert render_time(in_year, vs.REGISTRY, calendar) == "in 2012"
+    # Unanchored (FR-CLOCK-3: never a date the story has not set): offsets from its start.
+    start = vs.minute("2012-05-10T00:00")
+    assert render_time(on_day, vs.REGISTRY, TimeFrame(minute_zero=start)) == (
+        "at the story's start (to the day)"
+    )
+    assert render_time(exact, vs.REGISTRY, TimeFrame(minute_zero=y(2010) + 90)) == (
+        "from 1 hour 30 minutes before the story's start "
+        "until 1460 days 22 hours 30 minutes after the story's start"
+    )
 
     # Complement: coverage and granularity never reach the model.
     mal = models()

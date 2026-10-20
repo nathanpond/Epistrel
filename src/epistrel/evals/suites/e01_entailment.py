@@ -13,7 +13,9 @@ The expected label is the final kind a correct check ends with: ``supported``,
 the claim (a model ``novel`` or a low-confidence answer takes the safe disposition, which
 scores as ``uncertain``). About 30 % of the cases are the **fuzzy residual** (families
 ``residual-*``): claims the deterministic rules leave ``uncertain`` (world knowledge,
-approximate bounds, weak semantics), which only the model can settle.
+approximate bounds, weak semantics), which only the model can settle. An approximate-bounds
+residual is escalated, but the model's answer on it is never taken (#460), so it always ends
+``uncertain``. The model reads the cases' years as calendar dates (``FRAME``).
 
 - ``nfr_qual_2.false_contradiction`` (rate, ≤ 2 %): over the cases labeled anything but
   ``contradicted``, the share the check ended ``contradicted``.
@@ -38,6 +40,7 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from epistrel.core.propositions.model import (
+    DEFAULT_EPOCH,
     Bound,
     Granularity,
     Instant,
@@ -57,7 +60,12 @@ from epistrel.evals.gate import Direction, Metric, Rule
 from epistrel.evals.suites import CaseModel, Outcome, Suite, register
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models.registry import ENTAILMENT
-from epistrel.orchestrator.verify.verifier import RecordsSource, Verifier, VerifyConfig
+from epistrel.orchestrator.verify.verifier import (
+    RecordsSource,
+    TimeFrame,
+    Verifier,
+    VerifyConfig,
+)
 
 if TYPE_CHECKING:
     from epistrel.evals.runner import CaseContext
@@ -70,6 +78,9 @@ RESIDUAL_FALSE_CONTRADICTION = "e01.residual.false_contradiction"
 RESIDUAL_FALSE_SUPPORT = "e01.residual.false_support"
 RESIDUAL = "residual-"
 """The family prefix of the fuzzy-residual cases."""
+FRAME = TimeFrame(epoch=DEFAULT_EPOCH)
+"""The cases' calendar: their years are story-minutes from ``DEFAULT_EPOCH`` (``_minute``), so
+the model reads them as the dates they are (#460)."""
 CALL_DEADLINE_S = 300.0
 STUB_CONFIDENCE = 0.9
 
@@ -333,6 +344,7 @@ class E01Suite(Suite):
             closed_sets=closed_sets_of(case),
             options=Options(strict_weak=case.inputs.strict_weak),
             entity_names=ENTITY_NAMES,
+            frame=FRAME,
         )
         verifier = Verifier(
             source,

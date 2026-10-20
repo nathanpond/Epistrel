@@ -95,6 +95,13 @@ async def _verify(
     return found, v, read_set
 
 
+GARDEN_UNANCHORED = (
+    "Claim: Bobby located_at garden [from 50 minutes after the story's start until 1 hour after "
+    "the story's start]"
+)
+"""The garden claim as the model reads it on an unanchored story (#460)."""
+
+
 def _garden(w: World) -> Any:
     """Bobby in the garden while canon has him in the kitchen: two places no containment fact
     places, so ``uncertain(world_knowledge)``."""
@@ -126,8 +133,11 @@ async def test_only_the_uncertain_residual_reaches_the_model(engine: AsyncEngine
     )
     (call,) = entailment_calls(mal)
     sent = "\n".join(m.content for m in call.messages)
-    assert "Claim: Bobby located_at garden [T+50..T+60]" in sent
-    assert "[canon] Bobby located_at kitchen (T+0..T+100)" in sent
+    assert GARDEN_UNANCHORED in sent
+    assert (
+        "[canon] Bobby located_at kitchen (from the story's start until 1 hour 40 minutes after "
+        "the story's start)"
+    ) in sent
     assert "Ann" not in sent
     assert "school" not in sent
     assert call.fields is not None
@@ -170,6 +180,19 @@ async def test_only_the_uncertain_residual_reaches_the_model(engine: AsyncEngine
         ],
         "denied": [],
     }
+
+    # #460: on a story with a calendar anchor the model reads dates, never minute offsets.
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("UPDATE stories SET story_epoch = '2012-05-10T08:00:00Z' WHERE id = :s"),
+            {"s": w.story_id},
+        )
+    mal.stub.script("entailment", [answer("contradicted", 0.9)])
+    await _verify(engine, w, _garden(w), mal)
+    sent = "\n".join(m.content for m in entailment_calls(mal)[-1].messages)
+    assert "Claim: Bobby located_at garden [from 2012-05-10 08:50 until 2012-05-10 09:00]" in sent
+    assert "[canon] Bobby located_at kitchen (from 2012-05-10 08:00 until 2012-05-10 09:40)" in sent
+    assert "T+" not in sent
 
 
 @pytest.mark.parametrize(
@@ -258,7 +281,7 @@ async def test_the_profile_decides_the_disposition_and_the_level(engine: AsyncEn
     )
     assert v.uncertain_claims() == [
         {
-            "claim": "Bobby located_at garden [T+50..T+60]",
+            "claim": GARDEN_UNANCHORED.removeprefix("Claim: "),
             "claim_id": "op:1",
             "span": [0, 12],
             "beat": 2,

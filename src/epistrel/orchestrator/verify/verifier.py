@@ -22,15 +22,21 @@ no model is called. Verification off (a Lite story) is inert: ``None``, nothing 
   the claim and the holder's records: the records the deterministic check was decided over, then
   the facts of the claim subject's neighborhood (``core.verify.neighborhood``), up to the
   deployment's ``entailment_max_records``. Each is rendered ``<subject> <predicate> <object>``
-  with its holder and valid-time (``T+<minutes>``).
+  with its holder and valid-time, readable (#460; ``render_time``): calendar dates on a story
+  with a calendar anchor, offsets from the story's start on one without, and an approximate
+  bound as ``sometime between A and B``.
 
 **Validated, never trusted** (FR-VERIFY-8). ``Uncertain`` (a parse or schema failure that
 retries did not cure, a verdict outside the enum, a confidence below the deployment's
 ``uncertain_below``, the budget), a confidence below the profile's
 ``verification.entailment_min_confidence`` (0.6), and a model ``novel`` (the model's word never
 canonizes) all take the safe disposition, and so does ``ModelUnavailable`` (degradation
-``entailment_unavailable``: the turn goes on; never a 503). Only a validated ``supported`` or
-``contradicted`` at or above the floor is taken, with ``source = entailment``; a model
+``entailment_unavailable``: the turn goes on; never a 503). An ``approximate_bounds`` residual
+is never decided by the model (``TIME_UNDECIDABLE``, #460): FR-PROP-10 needs every admissible
+reading for a verdict, the rules showed the readings disagree, and the model knows no more about
+the bounds than the records say, so whatever it answers takes the safe disposition. Otherwise
+only a validated ``supported`` or ``contradicted`` at or above the floor is taken, with
+``source = entailment``; a model
 ``contradicted`` cites no record (rule ``entailment``: #151 repairs it as a constraint). Because
 only ``uncertain`` escalates, a model's ``supported`` can never override a deterministic
 ``contradicted``.
@@ -78,6 +84,7 @@ import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from typing import Any, Literal, Protocol
 
 from sqlalchemy import select
@@ -87,9 +94,17 @@ from epistrel.core.canon.canonize import CanonRequest, anchor_for, visibility_of
 from epistrel.core.config_changes import read_section
 from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.profiles.schema import ProfileSettings
-from epistrel.core.propositions.model import Bound, Instant, Proposition, TemporalKind
+from epistrel.core.propositions.model import (
+    Bound,
+    Granularity,
+    Instant,
+    Proposition,
+    TemporalKind,
+)
 from epistrel.core.propositions.registry import Registry, load
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
+from epistrel.core.resolution.context import load_time_basis
+from epistrel.core.resolution.time import TimeBasis
 from epistrel.core.settings_schema import OMNISCIENT, VerifySettings
 from epistrel.core.tables import entities
 from epistrel.core.verify import permission as permissions
@@ -153,6 +168,14 @@ RESOLUTION_CONFLICT = "resolution_conflict"
 """#154: a dependence's binding of an open thunk that conflicts with recorded history
 (``core.commit.reconcile``): ``contradicted``, repaired with an ``avoid_binding`` constraint."""
 """The repair tag of a novel claim its asserter may not introduce (#151's ladder)."""
+TIME_UNDECIDABLE = frozenset({VerdictReason.APPROXIMATE_BOUNDS})
+"""Residual reasons no model answer can settle (#460): the rules already showed that the claim
+is covered (or overlaps) under some admissible readings of the approximate bounds and not under
+others, and FR-PROP-10 (ADR-048) requires every reading for ``supported`` or ``contradicted``.
+The model sees the same bounds and knows no more about where they really lie, so its
+``supported`` or ``contradicted`` cannot be validated (FR-VERIFY-8) and the claim takes the safe
+disposition. The call is still made (docs/02 §4.9's clause (c)), and its record carries the
+model's answer as an unflipped escalation, which is #155's evidence for tightening it."""
 NEVER_CANONIZES = frozenset({"think"})
 """Beat channels whose claims never canonize."""
 SAY = "say"
@@ -388,6 +411,10 @@ class ClaimSource(Protocol):
 
     async def names(self, ids: Sequence[str]) -> Mapping[str, str]: ...
 
+    async def time_frame(self) -> TimeFrame:
+        """How the story's valid-times read in a prompt (its calendar anchor and start)."""
+        ...
+
     async def permission(
         self,
         claim: Proposition,
@@ -406,7 +433,8 @@ class ClaimSource(Protocol):
 class RecordsSource:
     """The holder's records passed in (pure: #140's ``check``). For an utterance holder, whose
     records #150 fetches, and for the unit tests. Permission is decided over the ``entities``,
-    ``locked`` (subject, predicate) keys, ``placed`` subjects and arrival policy passed in."""
+    ``locked`` (subject, predicate) keys, ``placed`` subjects and arrival policy passed in;
+    ``frame`` is the story's time frame (unanchored by default)."""
 
     records: Sequence[Record]
     registry_: Registry
@@ -417,9 +445,13 @@ class RecordsSource:
     locked: frozenset[tuple[str, str]] = frozenset()
     placed: frozenset[str] = frozenset()
     allow_new_arrivals: bool = True
+    frame: TimeFrame | None = None
 
     async def registry(self) -> Registry:
         return self.registry_
+
+    async def time_frame(self) -> TimeFrame:
+        return self.frame or UNANCHORED
 
     async def deterministic(
         self,
@@ -493,11 +525,19 @@ class CanonSource:
         self.story_id = story_id
         self.remember = remember
         self._registry: Registry | None = None
+        self._frame: TimeFrame | None = None
 
     async def registry(self) -> Registry:
         if self._registry is None:
             self._registry = await load(self.conn, self.story_id)
         return self._registry
+
+    async def time_frame(self) -> TimeFrame:
+        """The story's ``story_epoch`` and ``story_minute_zero``, read once, and only when a
+        claim is rendered for a prompt or the turn report."""
+        if self._frame is None:
+            self._frame = TimeFrame.of(await load_time_basis(self.conn, self.story_id))
+        return self._frame
 
     async def deterministic(
         self,
@@ -587,29 +627,109 @@ class CanonSource:
 # -- rendering --------------------------------------------------------------------------------
 
 
-def _bound(bound: Bound | None, open_side: str) -> str:
-    """``T+<minute>``, or ``T+<outer>~<inner>`` for an approximate bound."""
-    if bound is None:
-        return open_side
+DAY_MINUTES = 1440
+
+
+@dataclass(frozen=True, slots=True)
+class TimeFrame:
+    """How a story-minute reads in a prompt (#460): the story's calendar anchor
+    (``stories.story_epoch``) and where the story starts (``stories.story_minute_zero``).
+
+    An anchored story reads in calendar dates (``2012-05-10``, ``2012-05-10 09:15``). An
+    unanchored one reads as an offset from its start ("2 days 3 hours after the story's
+    start"), because the engine never picks a date the story has not established
+    (FR-CLOCK-3)."""
+
+    epoch: datetime | None = None
+    minute_zero: int = 0
+
+    @classmethod
+    def of(cls, basis: TimeBasis) -> TimeFrame:
+        return cls(epoch=basis.epoch, minute_zero=basis.minute_zero)
+
+    def moment(self, minute: int) -> str:
+        """``minute`` as a date (with its time of day unless midnight), or as an offset from
+        the story's start."""
+        when = self._calendar(minute)
+        if when is None:
+            return self._offset(minute)
+        if when.hour == 0 and when.minute == 0:
+            return when.strftime("%Y-%m-%d")
+        return when.strftime("%Y-%m-%d %H:%M")
+
+    def instant(self, at: int, granularity: Granularity) -> str:
+        """An instant at its own precision: ``in 2012``, ``in 2012-05``, ``on 2012-05-10``,
+        ``at 2012-05-10 09:00 (to the hour)``, ``at 2012-05-10 09:15``."""
+        when = self._calendar(at)
+        if when is None:
+            if granularity is Granularity.MINUTE:
+                return f"at {self._offset(at)}"
+            return f"at {self._offset(at)} (to the {granularity.value})"
+        if granularity is Granularity.YEAR:
+            return f"in {when:%Y}"
+        if granularity is Granularity.MONTH:
+            return f"in {when:%Y-%m}"
+        if granularity is Granularity.DAY:
+            return f"on {when:%Y-%m-%d}"
+        if granularity is Granularity.HOUR:
+            return f"at {when:%Y-%m-%d %H}:00 (to the hour)"
+        return f"at {when:%Y-%m-%d %H:%M}"
+
+    def _calendar(self, minute: int) -> datetime | None:
+        if self.epoch is None:
+            return None
+        try:
+            return self.epoch + timedelta(minutes=minute)
+        except OverflowError:
+            return None
+
+    def _offset(self, minute: int) -> str:
+        delta = minute - self.minute_zero
+        if delta == 0:
+            return "the story's start"
+        days, rest = divmod(abs(delta), DAY_MINUTES)
+        hours, minutes = divmod(rest, 60)
+        parts = [
+            f"{n} {unit}{'' if n == 1 else 's'}"
+            for n, unit in ((days, "day"), (hours, "hour"), (minutes, "minute"))
+            if n
+        ]
+        return f"{' '.join(parts)} {'after' if delta > 0 else 'before'} the story's start"
+
+
+UNANCHORED = TimeFrame()
+"""The frame of a story with no calendar anchor that starts at story-minute 0."""
+
+
+def _bound(bound: Bound, frame: TimeFrame, *, start: bool) -> str:
+    """An exact bound as its moment; an approximate one as the range it lies in, earliest
+    first ("sometime between A and B")."""
     if bound.inner == bound.outer:
-        return f"T+{bound.outer}"
-    return f"T+{bound.outer}~{bound.inner}"
+        return frame.moment(bound.inner)
+    early, late = (bound.outer, bound.inner) if start else (bound.inner, bound.outer)
+    return f"sometime between {frame.moment(early)} and {frame.moment(late)}"
 
 
-def render_time(p: Proposition, registry: Registry) -> str:
-    """A proposition's valid-time as the model reads it, in story-minutes from the epoch:
-    ``T+<from>..T+<to>`` (``...`` for an open side; an approximate bound as its outer and
-    inner value), ``at T+<minute> (<granularity>)`` for an instant, ``always`` for a permanent
-    predicate or an unbounded interval."""
+def render_time(p: Proposition, registry: Registry, frame: TimeFrame = UNANCHORED) -> str:
+    """A proposition's valid-time as the model reads it (#460): ``from A until B`` (``from A
+    on`` or ``until B`` with an open side; an approximate bound as ``sometime between X and
+    Y``), an instant at its own precision (``on 2012-05-10``), and ``always`` for a permanent
+    predicate or an unbounded interval. Dates follow ``frame`` (``TimeFrame``); story-minute
+    offsets never reach a prompt."""
     predicate = registry.get(p.predicate_id)
     if predicate is not None and predicate.temporal_kind is TemporalKind.PERMANENT:
         return "always"
     vt = p.valid_time
     if isinstance(vt, Instant):
-        return f"at T+{vt.at} ({vt.granularity.value})"
+        return frame.instant(vt.at, vt.granularity)
     if vt.start is None and vt.end is None:
         return "always"
-    return f"{_bound(vt.start, '...')}..{_bound(vt.end, '...')}"
+    if vt.start is None:
+        assert vt.end is not None  # noqa: S101 - one side is set
+        return f"until {_bound(vt.end, frame, start=False)}"
+    if vt.end is None:
+        return f"from {_bound(vt.start, frame, start=True)} on"
+    return f"from {_bound(vt.start, frame, start=True)} until {_bound(vt.end, frame, start=False)}"
 
 
 def render_proposition(p: Proposition, registry: Registry, names: Mapping[str, str]) -> str:
@@ -644,6 +764,7 @@ def _ids_of(props: Sequence[Proposition]) -> list[str]:
 
 TEXT_MAX = 1_000
 HOLDER_MAX = 200
+TIME_MAX = 200
 
 
 def _clip(text: str, limit: int = TEXT_MAX) -> str:
@@ -977,7 +1098,11 @@ class Verifier:
                 degradation=degradation,
             )
         self._answers[key] = answer
-        if answer.confidence < self.config.entailment_min_confidence or answer.verdict == "novel":
+        if (
+            answer.confidence < self.config.entailment_min_confidence
+            or answer.verdict == "novel"
+            or decision.reason in TIME_UNDECIDABLE
+        ):
             return self._safe(
                 claim, verdict, decision, ref, called=True, reused=reused, answer=answer
             )
@@ -1009,9 +1134,10 @@ class Verifier:
             chosen += [r for r in more if r.proposition_id not in seen][: limit - len(chosen)]
         registry = await self.source.registry()
         names = await self.source.names(_ids_of([claim, *(r.proposition for r in chosen)]))
+        frame = await self.source.time_frame()
         holder = at.holder.key()
         claim_text = (
-            f"{render_proposition(claim, registry, names)} [{render_time(claim, registry)}]"
+            f"{render_proposition(claim, registry, names)} [{render_time(claim, registry, frame)}]"
         )
         return EntailmentInputs(
             claim=_clip(claim_text),
@@ -1019,7 +1145,7 @@ class Verifier:
                 EntailmentRecord(
                     text=_clip(render_proposition(r.proposition, registry, names)),
                     holder=_clip(holder, HOLDER_MAX),
-                    valid_time=render_time(r.proposition, registry),
+                    valid_time=_clip(render_time(r.proposition, registry, frame), TIME_MAX),
                 )
                 for r in chosen
             ],
@@ -1030,7 +1156,10 @@ class Verifier:
             return None
         registry = await self.source.registry()
         names = await self.source.names(_ids_of([claim]))
-        return f"{render_proposition(claim, registry, names)} [{render_time(claim, registry)}]"
+        frame = await self.source.time_frame()
+        return (
+            f"{render_proposition(claim, registry, names)} [{render_time(claim, registry, frame)}]"
+        )
 
     def _record(self, result: VerifyResult, ref: ClaimRef, *, called: bool, reused: bool) -> None:
         decision = result.decision
@@ -1139,6 +1268,8 @@ __all__ = [
     "ENTAILMENT_RULE",
     "ENTAILMENT_UNAVAILABLE",
     "RESOLUTION_CONFLICT",
+    "TIME_UNDECIDABLE",
+    "UNANCHORED",
     "UNCERTAIN_SURFACED",
     "UNPERMITTED",
     "CanonSource",
@@ -1148,6 +1279,7 @@ __all__ = [
     "EscalationSink",
     "RecordsSource",
     "SafeDisposition",
+    "TimeFrame",
     "Verifier",
     "VerifyConfig",
     "VerifyResult",

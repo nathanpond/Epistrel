@@ -306,6 +306,7 @@ from epistrel.orchestrator.verify.extraction import (
 from epistrel.orchestrator.verify.verifier import (
     ENTAILMENT_BUDGET,
     ClaimSource,
+    TimeFrame,
     Verifier,
     story_verifier,
 )
@@ -981,6 +982,9 @@ class StagedSource:
 
     async def names(self, ids: Sequence[str]) -> Mapping[str, str]:
         return await self.inner.names(ids)
+
+    async def time_frame(self) -> TimeFrame:
+        return await self.inner.time_frame()
 
     async def permission(self, claim: Proposition, asserter: Any, **kwargs: Any) -> Any:
         return await self.inner.permission(claim, asserter, **kwargs)

@@ -8,7 +8,9 @@ names what may escalate:
 - (b) a conflict that depends on world knowledge: ``world_knowledge``, and ``weak_semantics``
   (a different object on a weak predicate: whether the two exclude each other is world
   knowledge the registry does not hold);
-- (c) a partial or ambiguous match the rules do not resolve: ``approximate_bounds``.
+- (c) a partial or ambiguous match the rules do not resolve: ``approximate_bounds``. It is
+  escalated and recorded, but the verifier never takes the model's answer on it
+  (``verifier.TIME_UNDECIDABLE``, #460).
 
 ``partial_coverage`` and ``granularity_refinement`` are resolved by #140's rules and never reach
 the gate (``RESOLVED_IN_CORE``). ``unresolved_entity``, ``unresolved_time`` and

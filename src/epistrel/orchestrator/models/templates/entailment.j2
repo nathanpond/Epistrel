@@ -5,7 +5,10 @@
 You judge whether a story's records settle one claim. Use only the records listed here and
 general world knowledge about the named things; never invent a record. Answer "supported" when
 the records entail the claim, "contradicted" when they rule it out, and "novel" when they do
-neither. Answer only with a JSON object
+neither. Each record and the claim give the time they hold for: "from A until B" ends just
+before B, and "sometime between X and Y" is a time no record pins down, anywhere from X to Y.
+When the answer depends on where such a time really falls (the two spans may or may not
+overlap), the records do not settle the claim: answer "novel". Answer only with a JSON object
 {"verdict": "supported"|"contradicted"|"novel", "confidence": 0.0-1.0}.
 
 ## Records ({{ records|length }})

@@ -8528,3 +8528,16 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Issue:** #134
 - **Deferred to M9 (model):** the reference-model floors of NFR-QUAL-2 (weak-predicate over-commitment to `contradicted`), NFR-QUAL-3 (non-entailed generalizations), NFR-QUAL-4 (seed variance below the floors) and NFR-QUAL-14 (evidence volume per intervention type). M9 needs `/n8-replan` when M8 closes.
   **Issue:** #134, #158
+
+- **Measurement (live, `81705da`, run `84411b5aaf1a-2026-10-21`; E-10 100 cases, E-06 40, E-07 60, 3 seeds each):**
+
+  | Requirement | Result | Floor | Verdict |
+  |---|---|---|---|
+  | NFR-QUAL-10 gated recall | 100.00 % ± 0.00 % | ≥ 95 % | **pass** (was 95.0 % at `2f91d92`, before #478) |
+  | NFR-QUAL-5 valid after retry | 100.00 % ± 0.00 % | ≥ 99 % | **pass** (was 94.25 %, before #480/#482) |
+  | NFR-QUAL-7 conformance | 48.33 % ± 13.77 % | ≥ 98 % | **fail** (was 10 %, before #479) |
+
+  E-06's per-seed results were 0.35, 0.475 and 0.625. Structure was valid in 49.17 % of cases, length was honoured in 99 %, and repeatability was 79 %. In 60 of the 62 failing cases, the safe fallback replaced the render.
+
+  The report files were lost: the worktree was removed before they were copied (an orchestrator error). These numbers come from the report as read before the removal, and a committed report will come from a re-run.
+  **Issue:** #134, #479

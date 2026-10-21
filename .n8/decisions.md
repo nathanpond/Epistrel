@@ -8414,3 +8414,14 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Issue:** #477
 - **Decision (Discretion):** Residual assumption: monotonic ids make id order deterministic only where creation order is deterministic. Ids minted by concurrently scheduled work (e.g. the job worker racing a request) still order by which ran first. The determinism script runs without a background worker, so this does not affect NFR-DETERM-1 as tested.
   **Issue:** #477
+
+
+- **Decision (Discretion):** For #478 I chose option (a), limited to `say`/`think`: an uncovered entity mention (not the speaker, not the scene, covered by no declared proposition or detector claim) flags the beat `uncovered_mention`. Option (b), the identity cue table, was not added.
+  **Why:** (a) flags all 8 `identity-declared` cases. (b) alone would miss 3 of them, which have no cue word, and adds nothing on top of (a) on the labeled data. In scene channels an uncovered mention is already a checked `present_at` claim. Flagging those channels too would add +75 flagged beats on the E-12 scenario renders (156 → 231 of 300) and make every E-06/E-07 render call extraction, turning gated into always. The shipped scope adds +8 flagged beats on E-10 and 0 elsewhere. The gate rule is unchanged. FR-VERIFY-13 and docs/02 already name uncovered mentions as a flagging detector, so no FR text changed.
+  **Issue:** #478
+- **Decision (Discretion):** `tests/eval/test_e_10.py` changed from asserting gated recall = 1 − 8/300 (the blind spot) to asserting gated = always = 1.0. The `identity-declared` family stays in the set as the fix's regression. The set, the floor and the scoring are unchanged.
+  **Why:** The test pinned the defect #478 fixes.
+  **Issue:** #478
+- **Decision (Discretion):** I left the stale sentence in `evals/sets/claim_detection/PROVENANCE.md` ("gated extraction never reads them") unchanged.
+  **Why:** The file is part of the owner-approved labeled set, and the brief forbids changing the set. Rewording it is the owner's call.
+  **Issue:** #478

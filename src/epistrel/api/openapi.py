@@ -735,7 +735,8 @@ def _rule_errors(method: str, path: str, *, mutating: bool) -> list[str]:
     if mutating:
         codes += ["idempotency_conflict", "original_in_flight_timeout"]
         if STORY_PATH_PARAMETER in path:
-            codes.append("revision_conflict")
+            # A commit that times out on the story lock (#472).
+            codes += ["revision_conflict", "story_busy"]
     return codes
 
 

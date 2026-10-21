@@ -8,9 +8,11 @@ went away, restarted, or refused the connection) is 503 ``database_unavailable``
 ``details.reason`` ``connection``, and the connection pool is disposed so the next request
 connects afresh (NFR-REL-3, X-06; #75). A transaction that was cut off rolled back; the client
 retries under the same ``Idempotency-Key``. An ``OperationalError`` the server answered on a
-live connection (a SQLSTATE outside class 08 and the shutdown codes: a lock or statement
-timeout) is answered the same way, but the pool is kept (#452): disposing it would drop every
-healthy connection and make each request under load connect again.
+live connection (a SQLSTATE outside class 08 and the shutdown codes: a statement timeout) is
+answered the same way, but the pool is kept (#452): disposing it would drop every healthy
+connection and make each request under load connect again. A story commit that times out on
+the story lock never reaches this handler: the commit raises 423 ``story_busy`` with
+``Retry-After`` instead (#472).
 """
 
 from __future__ import annotations

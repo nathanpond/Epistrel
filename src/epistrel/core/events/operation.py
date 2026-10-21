@@ -10,7 +10,8 @@ revisions, the story rating's version and the interpretive settings its kind dep
 (FR-CONC-2). ``commit()`` runs
 one transaction that does all of the following:
 
-1. takes ``SELECT … FOR UPDATE`` on the story row, with ``lock_timeout`` 5 s, and in the same
+1. takes ``SELECT … FOR UPDATE`` on the story row, with ``lock_timeout`` 5 s (past it, 423
+   ``story_busy`` with ``Retry-After``, nothing written; #472), and in the same
    statement sets the revision this commit leaves (``core.readset.COMMIT_REVISION_SETTING``),
    which the read set's change index stamps on what the commit's canon writes record (#136);
 2. with ``decide``, revalidates against the base (``epistrel.core.concurrency``), including
@@ -78,6 +79,7 @@ from sqlalchemy import (
     text,
     update,
 )
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from sqlalchemy.orm import aliased
 from sqlalchemy.sql.elements import ColumnElement
@@ -127,6 +129,7 @@ from epistrel.core.errors import (
     InvalidRequest,
     PrincipalRequired,
     StoryArchived,
+    StoryBusy,
     StoryNotFound,
 )
 from epistrel.core.events.registry import EventPayload, lookup, validate
@@ -166,7 +169,38 @@ def register_turn_hook(hook: TurnHook) -> TurnHook:
 Database = AsyncEngine | AsyncConnection
 
 LOCK_TIMEOUT = "5s"
-"""How long ``commit()`` waits for the story row lock before failing."""
+"""How long ``commit()`` waits for the story row lock before failing. Read when each commit
+transaction starts (``set_lock_timeout``), so a test can make it small."""
+
+LOCK_RETRY_AFTER_S = 5
+"""The ``Retry-After`` (seconds) of a story-lock timeout (#472): the lock timeout itself. The
+holder has already kept the lock that long, so a retry sooner would most likely wait again."""
+
+LOCK_NOT_AVAILABLE = "55P03"
+"""PostgreSQL's ``lock_not_available``: a ``lock_timeout`` expired."""
+
+
+async def set_lock_timeout(conn: AsyncConnection) -> None:
+    """Bound how long the open transaction waits for a lock (``LOCK_TIMEOUT``)."""
+    await conn.execute(text(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'"))
+
+
+def lock_timed_out(error: BaseException) -> bool:
+    """Whether ``error`` is the server's ``lock_not_available`` on a live connection."""
+    sqlstate = getattr(getattr(error, "orig", None), "sqlstate", None)
+    return isinstance(error, DBAPIError) and sqlstate == LOCK_NOT_AVAILABLE
+
+
+def story_lock_busy(story_id: str) -> StoryBusy:
+    """423 ``story_busy`` (``reason: lock_timeout``) with ``Retry-After``: another transaction
+    held the story's lock past ``LOCK_TIMEOUT``, and nothing was written (#472). The database
+    answered, so this is not ``database_unavailable``."""
+    return StoryBusy(
+        f"story {story_id} is busy: another commit held its lock; retry later",
+        {"story_id": story_id, "reason": "lock_timeout"},
+        retry_after=LOCK_RETRY_AFTER_S,
+    )
+
 
 DEPLOYMENT_LOCK_KEY = 0x45_5049_5354  # "EPIST": serialises story-less operations' seq
 """``pg_advisory_xact_lock`` key that stands in for the story row lock when ``story_id`` is
@@ -709,7 +743,7 @@ class Operation:
         try:
             with tracing.span("commit", self._span_attributes()):
                 async with self._connection() as conn, conn.begin():
-                    await conn.execute(text(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'"))
+                    await set_lock_timeout(conn)
                     await self._write(conn, decide)
         except RevalidationRequired:
             self._reset_position()
@@ -718,6 +752,8 @@ class Operation:
         except BaseException as exc:
             self._reset_position()
             await self._finish(_failure_status(exc), exc)
+            if self.story_id is not None and lock_timed_out(exc):
+                raise story_lock_busy(self.story_id) from exc
             raise
         self.status = OperationStatus.COMMITTED
         if self.kind is OperationKind.TURN:

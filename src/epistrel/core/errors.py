@@ -284,6 +284,10 @@ class StoryBusy(EpistrelError):
     ``details``: ``reason`` (``in_flight`` or ``queue_full``), ``operation_id`` (the turn
     holding the story, when one does) and, for turn concurrency, ``queue_depth``. A turn
     refusal carries ``Retry-After``: the seconds left on the running turn's lease.
+
+    A commit that waited past the story-lock timeout for another transaction is refused the
+    same way (#472): ``reason`` ``lock_timeout``, ``story_id``, ``Retry-After`` the lock timeout
+    in seconds; nothing was written.
     """
 
     code = "story_busy"

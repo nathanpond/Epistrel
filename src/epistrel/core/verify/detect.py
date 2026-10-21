@@ -92,6 +92,7 @@ from epistrel.core.resolution.entities import (
 )
 from epistrel.core.resolution.time import Position, TimeBasis, find_time_expressions
 from epistrel.core.resolution.types import Mention, MentionKind, ReasonCode
+from epistrel.core.verify.introduce import Introductions
 from epistrel.core.verify.normalize import ClaimSketch, Unnormalizable, normalize
 from epistrel.core.verify.protected import ProtectedIndex
 from epistrel.core.verify.rules import VerdictReason
@@ -490,6 +491,9 @@ class DetectionEnv:
     scene_entity: str | None = None
     placement: Mapping[str, str] = field(default_factory=dict)
     open_thunks: Sequence[tuple[str, ThunkSketch]] = ()
+    introductions: Introductions | None = None
+    """The turn's minted ids for new places and objects (``core.verify.introduce``, #479);
+    ``None``: nothing is minted (an eval, the shadow job)."""
 
 
 # -- the detector pass -----------------------------------------------------------------------
@@ -1034,7 +1038,13 @@ def _normalize_one(
     context: ResolutionContext,
 ) -> Proposition | Unnormalizable:
     found = normalize(
-        sketch, speaker, position, registry=env.registry, context=context, basis=env.basis
+        sketch,
+        speaker,
+        position,
+        registry=env.registry,
+        context=context,
+        basis=env.basis,
+        introduce=env.introductions,
     )
     if isinstance(found, Proposition | Unnormalizable):
         return found

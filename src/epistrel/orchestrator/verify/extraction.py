@@ -27,9 +27,13 @@ its B slot, the message's (``charging(COMPOSED)``) its C slot.
 
 An extraction claim's ``span`` is located in its beat by search (first exact, then case-folded
 occurrence); one that cannot be located, or whose ``confidence`` is below
-``EXTRACTION_MIN_CONFIDENCE``, is dropped. Its sketch is normalized like a declared claim
-(#140's ``normalize_declared``: an unregistered relation auto-registers with the weakest
-semantics) when the detector is given the turn's connection, else purely. It merges into a
+``EXTRACTION_MIN_CONFIDENCE``, is dropped. Its subject, object and time are read with
+underscores as spaces (``spaced``, #479: the model writes ``the_inn``). Its sketch is
+normalized like a declared claim (#140's ``normalize_declared``: an unregistered relation
+auto-registers with the weakest semantics) when the detector is given the turn's connection,
+else purely. Either way an untracked place or object takes an id minted by the turn's
+``DetectionEnv.introductions`` when the environment has them (a structured turn does; an eval
+and the shadow job do not; ``core.verify.introduce``). It merges into a
 declared or detector claim of the same beat that has its shape or overlaps it by half the
 longer span or more (``detect.merge``:
 not verified twice). ``ModelUnavailable``, a spent budget or an ``Uncertain`` answer after the
@@ -337,13 +341,23 @@ def locate_quote(text: str, span: str) -> tuple[int, int] | None:
     return found, found + len(span)
 
 
+def spaced(text: str | None) -> str | None:
+    """A model's argument text with underscores read as spaces (#479: an extraction model
+    writes ``the_inn`` for "the inn", copying the snake_case of its predicates); ``None`` for
+    an empty one."""
+    if not text:
+        return None
+    return " ".join(text.replace("_", " ").split()) or None
+
+
 def extraction_sketch(claim: ExtractedClaim, span: tuple[int, int]) -> ClaimSketch:
-    """An extraction claim as a #140 sketch (normalized like a declared one)."""
+    """An extraction claim as a #140 sketch (normalized like a declared one; its subject,
+    object and time with underscores read as spaces, ``spaced``)."""
     return ClaimSketch(
-        subject_text=claim.subject,
+        subject_text=spaced(claim.subject) or "",
         relation_text=claim.predicate,
-        object_text=claim.object or None,
-        time_text=claim.time or None,
+        object_text=spaced(claim.object),
+        time_text=spaced(claim.time),
         polarity=Polarity.NEGATED if claim.polarity == "negated" else Polarity.AFFIRMED,
         span=span,
         declared=True,
@@ -542,6 +556,7 @@ class ClaimDetector:
                 registry=self.env.registry,
                 context=context,
                 basis=self.env.basis,
+                introduce=self.env.introductions,
             )
             if registry is not self.env.registry:
                 object.__setattr__(self.env, "registry", registry)
@@ -553,6 +568,7 @@ class ClaimDetector:
             registry=self.env.registry,
             context=context,
             basis=self.env.basis,
+            introduce=self.env.introductions,
         )
         return found_
 

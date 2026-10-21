@@ -7,7 +7,10 @@ span it came from. #148's detectors and the declared turn structure produce sket
 never guesses (FR-PROP-12):
 
 - **Entities** go through #139's ``resolve_reference`` with the speaker's viewpoint. An
-  ambiguous or unknown mention is ``unresolved_entity``.
+  ambiguous or unknown mention is ``unresolved_entity``. Given the turn's ``Introductions``
+  (``introduce``; #479), an argument that names nothing the story holds, in a ``place`` or
+  ``item`` slot of a registered predicate, takes a minted id instead (``core.verify.introduce``:
+  the entity is created only if the claim is canonized).
 - **The predicate** is the registry's predicate of that name (``registry.auto_name`` of the
   relation text). Failing that, ``RELATION_ALIASES`` maps everyday relation names to core
   predicates ("lives in" → ``located_at``, "has a sister" → ``sibling_of``). An unregistered
@@ -37,6 +40,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date
+from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -72,8 +76,11 @@ from epistrel.core.resolution.time import (
     resolve_time,
     story_time_at,
 )
-from epistrel.core.resolution.types import ResolvedTime, Uncertain
+from epistrel.core.resolution.types import ReasonCode, ResolvedTime, Uncertain
 from epistrel.core.verify.rules import Verdict, VerdictReason, uncertain
+
+if TYPE_CHECKING:
+    from epistrel.core.verify.introduce import Introductions
 
 RELATION_ALIASES: Mapping[str, str] = {
     "lives_in": "located_at",
@@ -200,6 +207,26 @@ def _entity(
     return Unnormalizable(VerdictReason.UNRESOLVED_ENTITY, detail, found)
 
 
+def _introduced(
+    failed: Unnormalizable,
+    text: str | None,
+    given: str | None,
+    kind: str,
+    speaker: str,
+    introduce: Introductions | None,
+) -> str | Unnormalizable:
+    """An unresolved argument's minted id (``core.verify.introduce``, #479), else ``failed``."""
+    if introduce is None or given is not None or not text:
+        return failed
+    # The resolver's own reason: ``no_mention`` (nothing named) or ``unknown_name`` may mint.
+    reason = None if failed.resolution is None else failed.resolution.reason
+    detail = failed.detail
+    if reason is not None:
+        detail = reason.detail if reason.code is ReasonCode.UNRESOLVED_ENTITY else reason.code
+    found = introduce.resolve(text, kind, detail, speaker)
+    return failed if found is None else found
+
+
 def _kind_ok(expected: str, kind: str | None) -> bool:
     return expected == ANY or kind is None or kind == expected
 
@@ -292,13 +319,26 @@ def normalize(
     context: ResolutionContext,
     basis: TimeBasis,
     subject_timeline: SubjectTimeline | None = None,
+    introduce: Introductions | None = None,
 ) -> Normalized:
     """``sketch`` as a proposition said by ``speaker`` (an entity id, ``narrator`` or
-    ``player``) at ``position`` (see the module docstring)."""
+    ``player``) at ``position`` (see the module docstring). With ``introduce``, an unresolved
+    place or object argument takes a minted id (``core.verify.introduce``)."""
     subject = _entity(sketch.subject_text, sketch.subject_id, speaker, context)
-    if isinstance(subject, Unnormalizable):
-        return subject
     predicate = predicate_for(registry, sketch.relation_text)
+    if isinstance(subject, Unnormalizable):
+        if predicate is None:
+            return subject
+        subject = _introduced(
+            subject,
+            sketch.subject_text,
+            sketch.subject_id,
+            predicate.subject_type,
+            speaker,
+            introduce,
+        )
+        if isinstance(subject, Unnormalizable):
+            return subject
     has_object = bool(sketch.object_text) or sketch.object_id is not None
     if predicate is None:
         if not sketch.declared:
@@ -341,6 +381,15 @@ def normalize(
             return Unnormalizable(VerdictReason.ARGUMENT_TYPE, "literal_unparsed")
     elif has_object:
         found = _entity(sketch.object_text, sketch.object_id, speaker, context)
+        if isinstance(found, Unnormalizable):
+            found = _introduced(
+                found,
+                sketch.object_text,
+                sketch.object_id,
+                predicate.object_type,
+                speaker,
+                introduce,
+            )
         if isinstance(found, Unnormalizable):
             parsed = (
                 parse_literal(sketch.object_text or "", ANY)
@@ -397,6 +446,7 @@ async def normalize_declared(
     context: ResolutionContext,
     basis: TimeBasis,
     subject_timeline: SubjectTimeline | None = None,
+    introduce: Introductions | None = None,
 ) -> tuple[Proposition | Unnormalizable, Registry]:
     """``normalize``, applying a ``RegisterPredicate`` in ``conn``'s transaction (a story
     configuration change, #131) and normalizing again; answers the result and the registry it
@@ -409,6 +459,7 @@ async def normalize_declared(
         context=context,
         basis=basis,
         subject_timeline=subject_timeline,
+        introduce=introduce,
     )
     if not isinstance(found, RegisterPredicate):
         return found, registry
@@ -428,6 +479,7 @@ async def normalize_declared(
         context=context,
         basis=basis,
         subject_timeline=subject_timeline,
+        introduce=introduce,
     )
     if isinstance(again, RegisterPredicate):  # pragma: no cover - it is registered now
         return Unnormalizable(VerdictReason.UNRESOLVED_PREDICATE, "unregistered"), registry

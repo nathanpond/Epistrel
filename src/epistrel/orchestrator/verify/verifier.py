@@ -108,6 +108,7 @@ from epistrel.core.settings_schema import OMNISCIENT, VerifySettings
 from epistrel.core.tables import entities
 from epistrel.core.verify import permission as permissions
 from epistrel.core.verify import rules, yield_queries
+from epistrel.core.verify.introduce import Introductions
 from epistrel.core.verify.neighborhood import Seed, fact_neighborhood
 from epistrel.core.verify.normalize import Unnormalizable
 from epistrel.core.verify.permission import (
@@ -810,6 +811,8 @@ class Verifier:
         self._answers: dict[str, EntailmentVerdict] = {}
         self.entailment_s = 0.0
         """Seconds spent in entailment calls (#155's ``latency_ms_by_stage.entailment``)."""
+        self.introductions: Introductions | None = None
+        """The turn's minted places and objects (#479), named in prompts and the report."""
 
     async def verify(
         self,
@@ -1120,7 +1123,7 @@ class Verifier:
             )
             chosen += [r for r in more if r.proposition_id not in seen][: limit - len(chosen)]
         registry = await self.source.registry()
-        names = await self.source.names(_ids_of([claim, *(r.proposition for r in chosen)]))
+        names = await self._names(_ids_of([claim, *(r.proposition for r in chosen)]))
         frame = await self.source.time_frame()
         holder = at.holder.key()
         claim_text = (
@@ -1138,11 +1141,17 @@ class Verifier:
             ],
         )
 
+    async def _names(self, ids: Sequence[str]) -> Mapping[str, str]:
+        """Entity names for a prompt or the report: the story's, and the turn's minted places
+        and objects (#479) by the name the claim gave them."""
+        minted = {} if self.introductions is None else self.introductions.names()
+        return {**minted, **await self.source.names([i for i in ids if i not in minted])}
+
     async def _render_claim(self, claim: Proposition | None) -> str | None:
         if claim is None:
             return None
         registry = await self.source.registry()
-        names = await self.source.names(_ids_of([claim]))
+        names = await self._names(_ids_of([claim]))
         frame = await self.source.time_frame()
         return (
             f"{render_proposition(claim, registry, names)} [{render_time(claim, registry, frame)}]"

@@ -20,7 +20,11 @@ asserted it, under the story lock, through the canon store's own erasure guard a
   names that no entity holds yet carries a fresh id (minted by the caller, #150's detection)
   and its name; it becomes an entity (``propositions.store.add_entity``, with that id) only
   when the claim is canonized, its ``kind`` from the predicate's argument type on that side
-  (``kind_for``; ``other`` when the type is no entity kind). A denied claim creates nothing.
+  (``kind_for``; ``other`` when the type is no entity kind) and its descriptors from its name's
+  words. A denied claim creates nothing. The ids are minted at normalization by the turn's
+  ``core.verify.introduce.Introductions`` (#479: only for a place or object slot, after the
+  story's own entities and aliases failed to resolve the name), and the structured turn's
+  commit attaches them to each request whose claim names one.
 
 **Only permitted claims.** ``CanonRequest`` is what the verifier hands over for each permitted
 novel claim (``orchestrator.verify.verifier.Verifier.canon_requests``); a denied claim never
@@ -44,6 +48,7 @@ from epistrel.core.enums import FactCommitState, RecordProvenance
 from epistrel.core.propositions import store
 from epistrel.core.propositions.model import ENTITY_KINDS, Instant, Predicate, Proposition
 from epistrel.core.propositions.registry import Registry, load
+from epistrel.core.resolution.entities import descriptors_of
 
 log = logging.getLogger(__name__)
 
@@ -141,6 +146,7 @@ async def canonize(
                 kind_for(claim, new.entity_id, predicate),
                 new.name,
                 entity_id=new.entity_id,
+                descriptors=descriptors_of(new.name),
                 operation_id=operation.operation_id,
             )
     anchor = anchored_to if anchored_to is not None else anchor_for(claim, neighborhood)

@@ -43,7 +43,10 @@ runs over the player's input and every render (with a connection, so an extracti
 relation registers too), and every detected claim goes to #142's verifier
 (``story_verifier``, one per turn) beat by beat with its asserter (#144's permission). A
 ``StagedSource`` lays the turn's earlier permitted claims over canon, so a later beat sees what an
-earlier one established (the same-turn overlay). A ``say``'s labels follow
+earlier one established (the same-turn overlay). One ``Introductions`` per turn (#479,
+``core.verify.introduce``; shared by the follow-up's and the repairs' re-checks and the composed
+message's detection) mints an id for an untracked place or object a claim names. A ``say``'s
+labels follow
 (``core.turns.beats``): ``objective_relation`` from the verdicts, ``belief_relation``
 ``unknown``, ``intent`` as declared. Salience (#146) reads every render's observable beats.
 
@@ -54,8 +57,9 @@ the character's), a ``character_defined`` per introduction, the composed message
 ``message_rendered`` event with ``composed`` after the beats) and, when the polish was rejected,
 its ``composition_rejected`` audit record. The commit steps write, in order: the introduced
 characters and their canon ``age`` facts; the permitted canon
-(``core.canon.canonize.canonize_all``) and every ``latent`` beat's propositions with its
-declared visibility (FR-TURN-4); the utterances; the episodic
+(``core.canon.canonize.canonize_all``, each request with the minted entities its claim
+names, ``canon_requests``: only a canonized claim creates one) and every ``latent`` beat's
+propositions with its declared visibility (FR-TURN-4); the utterances; the episodic
 memories of the observable beats (``write_episodic``, with each beat's occasion from
 ``beat_occasion``); the salient references (``record_salience``), the dependences
 (``apply_dependences`` → ``lifecycle.depend``) and the turn's close (``close_turn``, its
@@ -222,6 +226,7 @@ from epistrel.core.turns.beats import (
     write_utterances,
 )
 from epistrel.core.verify.detect import DeclaredClaim, DetectBeat, DetectedClaim
+from epistrel.core.verify.introduce import Introductions
 from epistrel.core.verify.normalize import ClaimSketch, Unnormalizable, normalize_declared
 from epistrel.core.verify.rules import Record, VerdictKind, check
 from epistrel.core.viewpoint import (
@@ -1030,6 +1035,9 @@ class Checked:
     repair_verifiers: list[tuple[int, Verifier]] = field(default_factory=list)
     """The verifier of each repair re-check (#151) with the rung whose candidate it checked:
     #155 records their escalations as the pass ``repair_<rung>``."""
+    introductions: Introductions = field(default_factory=Introductions)
+    """The turn's minted places and objects (#479): the commit creates those a canonized claim
+    names (``canon_requests``)."""
 
 
 def _verdict_of(result: CheckedClaim) -> str | None:
@@ -1085,6 +1093,7 @@ async def check_turn(
     backstop: bool = True,
     answers_from: Sequence[Verifier | None] = (),
     clock: StageClock | None = None,
+    introductions: Introductions | None = None,
 ) -> Checked:
     """Detect and verify the player's input and every render's beats (see the module
     docstring). A follow-up render's check (``first_claim``: where its claim ids start) sees
@@ -1092,7 +1101,8 @@ async def check_turn(
     repair's re-check (#151) runs without the model backstop when ``backstop`` is off (layers
     a and b only) and reuses the entailment answers of ``answers_from``, the turn's verifiers.
     ``clock`` (#155) takes the time of its normalize, detection, verify and entailment
-    stages."""
+    stages. ``introductions`` are the turn's minted places and objects (#479; a follow-up's and
+    a repair's re-check share the turn's, so one name is one id)."""
     clock = clock or StageClock()
     detecting = time.perf_counter()
     settings = configuration.settings
@@ -1107,6 +1117,8 @@ async def check_turn(
         env = await extraction.load_env(
             conn, story_id, read_set, position=(turn, 0), speakers=speakers, config=config
         )
+    introductions = Introductions() if introductions is None else introductions
+    env = replace(env, introductions=introductions)
     clock.add("detection", time.perf_counter() - detecting)
     # The declared propositions, normalized (an unregistered relation registers, in a short
     # transaction of its own).
@@ -1126,6 +1138,7 @@ async def check_turn(
                     registry=env.registry,
                     context=env.context_for(speaker),
                     basis=env.basis,
+                    introduce=introductions,
                 )
                 env = replace(env, registry=registry)
                 claim_id = f"d{beat.beat}.{n}"
@@ -1189,6 +1202,7 @@ async def check_turn(
     verifying = time.perf_counter()
     async with db.connect() as conn:
         verifier = await story_verifier(conn, read_set, story_id, models=models, budget=budget)
+        verifier.introductions = introductions
         for earlier in answers_from:
             if earlier is not None:
                 verifier.adopt_answers(earlier)
@@ -1333,6 +1347,7 @@ async def check_turn(
         degradation=degradation,
         staged=list(staged.staged),
         rejected_bindings=rejected_bindings,
+        introductions=introductions,
     )
 
 
@@ -1534,6 +1549,7 @@ async def _follow_up(
         first_claim=len(checked.checked),
         with_salience=False,
         clock=clock,
+        introductions=checked.introductions,
     )
     left = [s for s in still if not _settled_by(extra.checked, s)]
     checked.beats += extra.beats
@@ -1700,6 +1716,7 @@ async def repair_turn(
             with_salience=False,
             backstop=backstop,
             answers_from=(checked.verifier, checked.follow_up_verifier),
+            introductions=checked.introductions,
         )
         claims_made[0] += len(found.checked)
         if found.verifier is not None:
@@ -1745,6 +1762,16 @@ async def repair_turn(
         _merge_repair(checked, result)
         checked.degradation += result.degradation
     return checked
+
+
+def canon_requests(checked: Checked, requests: Sequence[CanonRequest]) -> list[CanonRequest]:
+    """The turn's canon requests, each with the minted places and objects its claim names
+    (#479: ``introduces``; ``core.canon.canonize`` creates each at its first canonized
+    mention). A minted id no request names is never created."""
+    return [
+        replace(r, introduces=checked.introductions.introduces(r.claim)) if not r.introduces else r
+        for r in requests
+    ]
 
 
 def _merge_repair(checked: Checked, result: RepairResult) -> None:
@@ -1913,6 +1940,8 @@ async def compose_turn(
                 speakers=[speaker],
                 config=config,
             )
+            # The message names the turn's places and objects by the beats' minted ids (#479).
+            env = replace(env, introductions=checked.introductions)
             detector = ClaimDetector(
                 config,
                 env,
@@ -2531,7 +2560,11 @@ async def play(
             if claim.proposition is not None
         ]
         canonized = await canonize_all(
-            conn, story_id, [*checked.requests, *latent_requests], operation=op, registry=registry
+            conn,
+            story_id,
+            canon_requests(checked, [*checked.requests, *latent_requests]),
+            operation=op,
+            registry=registry,
         )
         utterance_rows = []
         for beat in checked.beats:

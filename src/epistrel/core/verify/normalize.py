@@ -13,7 +13,7 @@ never guesses (FR-PROP-12):
   the entity is created only if the claim is canonized). An unresolved argument of a weak
   relation (unregistered, or ``auto``: FR-PROP-4 (c)) is marked ``weak_relation``, with
   ``touches_character`` when another argument resolved to a modeled character other than the
-  speaker; ``Unnormalizable.untracked_weak`` is what #479's surfacing reads (ADR-163).
+  speaker; ``Unnormalizable.untracked_weak`` is what #479's surfacing reads (ADR-163, ADR-165).
 - **The predicate** is the registry's predicate of that name (``registry.auto_name`` of the
   relation text). Failing that, ``RELATION_ALIASES`` maps everyday relation names to core
   predicates ("lives in" → ``located_at``, "has a sister" → ``sibling_of``). An unregistered
@@ -80,7 +80,7 @@ from epistrel.core.resolution.time import (
     resolve_time,
     story_time_at,
 )
-from epistrel.core.resolution.types import ReasonCode, ResolvedTime, Uncertain
+from epistrel.core.resolution.types import Reason, ReasonCode, ResolvedTime, Uncertain
 from epistrel.core.verify.rules import Verdict, VerdictReason, uncertain
 
 if TYPE_CHECKING:
@@ -169,16 +169,18 @@ class Unnormalizable:
     @property
     def untracked_weak(self) -> bool:
         """Whether this is uncertain only because a weak relation names something no entity
-        holds (the resolver found no mention at all), with no other character involved: the
-        claim #479's surfacing applies to (``orchestrator.verify.extraction``)."""
-        found = None if self.resolution is None else self.resolution.reason
+        holds, with no other character involved: the claim #479's surfacing applies to
+        (``orchestrator.verify.extraction``). "No entity holds it" is the resolver finding
+        nothing: no mention, a name no alias matches, or a pronoun with no antecedent; never
+        an ambiguous mention, which has candidates."""
+        found = None if self.resolution is None else self.resolution
         return (
             self.weak_relation
             and not self.touches_character
             and self.reason is VerdictReason.UNRESOLVED_ENTITY
             and found is not None
-            and found.code is ReasonCode.UNRESOLVED_ENTITY
-            and found.detail == "no_mention"
+            and not found.candidates
+            and _untracked(found.reason)
         )
 
     def verdict(self) -> Verdict:
@@ -230,6 +232,13 @@ def _entity(
     found = mention.uncertain()
     detail = "no_mention" if found is None else found.reason.code.value
     return Unnormalizable(VerdictReason.UNRESOLVED_ENTITY, detail, found)
+
+
+def _untracked(reason: Reason) -> bool:
+    """The resolver found nothing for the argument (see ``Unnormalizable.untracked_weak``)."""
+    if reason.code is ReasonCode.UNRESOLVED_ENTITY:
+        return reason.detail == "no_mention"
+    return reason.code in (ReasonCode.UNKNOWN_NAME, ReasonCode.NO_ANTECEDENT)
 
 
 def _introduced(

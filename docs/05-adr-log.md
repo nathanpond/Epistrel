@@ -25,8 +25,8 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-TURN | §6 | 043 |
 | FR-COMMIT | §7 | 018, 022, 043, 053, 129 |
 | FR-RET | §8 | 129 |
-| FR-PROP | §8.1 | 160, 162, 163 |
-| FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162, 163 |
+| FR-PROP | §8.1 | 160, 162, 163, 165 |
+| FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162, 163, 165 |
 | FR-GUARD | §11 | 087, 095, 096, 114, 161 |
 | FR-REWRITE | §12.1 | 144 |
 | FR-MODEL | §13 | 129, 136, 144, 150 |
@@ -225,8 +225,9 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 160 | Verification checks an affirmed claim's declared consequences, closed sets may close a key set, and a rule-free presence conflict is uncertain | Current | — |
 | 161 | A pending catalog-scope erasure withholds a policy naming its subject from a story's settings, and refuses a violation of it | Current | — |
 | 162 | An approximate-bounds residual takes the safe disposition with no entailment call | Current | — |
-| 163 | An extraction claim whose weak relation names something untracked is surfaced, not repaired | Current | — |
+| 163 | An extraction claim whose weak relation names something untracked is surfaced, not repaired | Amended | 165 |
 | 164 | Model-bound quality floors that miss on the reference model after M4's engine fixes move to M9: Performance tuning | Current | — |
+| 165 | The render's own declared claims surface like extraction claims, and an unknown name or a pronoun with no antecedent counts as untracked | Current | — |
 
 ---
 
@@ -1631,10 +1632,11 @@ The block is read only when a violation is found, so a passing text costs nothin
 
 ### ADR-163 — An extraction claim whose weak relation names something untracked is surfaced, not repaired
 **Status:** Accepted.
+**Amended by:** ADR-165 — the render's declared claims qualify too, and an unknown name or a pronoun with no antecedent counts as untracked.
 **Context:** The Structured (M4) profile runs the extraction backstop on every render (`extraction_mode = always`). Once #459 let its claims land, most of them named scene texture the story had no entity for, and the extraction model invents its own relations ("the inn has_been_in_business_for a hundred years", "Maren looks_up_from wiping the bar"). Each such claim failed to normalize as `uncertain(unresolved_entity)`. Unresolved entities never escalate, so each took `verification.safe_disposition`, which is `repair` by default (the owner's decision on #142). Repair narrowed and regenerated until `repair.max_attempts`, and released the safe fallback. Live E-06 (NFR-QUAL-7) `e06.structure_valid` on the reference model fell from 89 % to 10 % (#479). The owner chose two remedies on 2026-10-21. The first, option 2, makes a permitted claim in a core or author relation whose `place` or `item` argument is untracked mint that entity when it is canonized (`core.verify.introduce`; the path `canonize(..., introduces=...)` already specified). That left the invented relations: they auto-register with the weakest semantics and no argument types, so nothing in them mints.
 **Decision:** An extraction claim that is `uncertain` only because a weak relation names something no entity holds takes the `surface` disposition, whatever the profile's `safe_disposition`. A weak relation is one that is unregistered or auto-registered (FR-PROP-4 (c)). "Names something no entity holds" means #139's resolver found no mention at all in the argument. The claim is listed in `turn_report.uncertain_claims` and its beat is released. It is never `supported` and never canonized. The claim qualifies only if all of these hold (`orchestrator.verify.extraction.surfaces`, over `Unnormalizable.untracked_weak`):
-- it is layer (c)'s own finding, merged with no declared or detector claim and carrying no protected content;
-- the resolver's result is `no_mention`, which excludes an `unknown_name`, a `protected_value`, an ambiguous name and a pronoun with no antecedent;
+- it is layer (c)'s own finding, merged with no declared or detector claim and carrying no protected content *[superseded by ADR-165: a declared or extraction claim, merged with each other or not, that no detector also found and that carries no protected content]*;
+- the resolver's result is `no_mention`, which excludes an `unknown_name`, a `protected_value`, an ambiguous name and a pronoun with no antecedent *[superseded by ADR-165: `no_mention`, `unknown_name` or a pronoun or addressee with no antecedent, with no candidates; an ambiguous name and a `protected_value` stay excluded]*;
 - no other argument resolved to a modeled character other than the speaker, or to the player's character.
 
 The grounds:
@@ -1668,6 +1670,18 @@ Everything else keeps the safe disposition: detector findings, the excluded reso
 - M9's gate is the full release gate (it was M8's, ADR-139).
 - Tests: the gate checks in `tests/gates` (`tests/gates/test_parts.py`'s bad-milestone fixture now names M99, because M9 is a §22 milestone); the parts in `tests/eval/test_e_01.py`, `test_e_03.py`, `test_e_05.py`, `test_e_12.py` and `tests/conformance/test_c_25.py`.
 
+
+---
+
+### ADR-165 — The render's own declared claims surface like extraction claims, and an unknown name or a pronoun with no antecedent counts as untracked
+**Status:** Accepted. Amends ADR-163 (which claims qualify, and which resolver results count as untracked).
+**Context:** The live re-run after ADR-163 (`81705da`, run `84411b5aaf1a-2026-10-21`) left NFR-QUAL-7 at 48.33 % ± 13.77 % against ≥ 98 %, with `e06.structure_valid` at 49.17 %. The safe fallback replaced the render in 60 of the 62 failing cases. A traced diagnostic on the same model (6 cases, 94 unnormalizable claims) found that every repaired claim was one of the render's own **declared** claims (its `propositions`), not an extraction finding. The model declares its scene texture in its own relations, for example "Maren wipes_down the counter", "Maren gestures_toward the window" and "Maren wipes_hands_on her apron". These claims auto-register with the weakest semantics. ADR-163 surfaced such a claim only when it came from the extraction layer. It also counted only `no_mention` as untracked, so "her apron" (a pronoun with no antecedent in a claim's argument) and "the Crossroads Inn" (an unknown name) were repaired. 50 of the 94 claims were untracked weak claims that only the layer rule kept from surfacing; 26 more failed only on the resolver-result rule. The owner's decision on #479 named the class itself, "a claim that is uncertain only because an invented (weak) relation names something untracked", without restricting the layer.
+**Decision:** `orchestrator.verify.extraction.surfaces` applies to claims of the declared and extraction layers (`SURFACED_LAYERS`), merged with each other or not. A claim a detector also found (`"detector"` in `merged`) and a claim carrying protected content keep the safe disposition. `Unnormalizable.untracked_weak` counts an argument as untracked when #139's resolver found nothing for it: `no_mention`, `unknown_name`, or `no_antecedent` (a pronoun or "you" with nothing to refer to), and never when the result has candidates. An ambiguous mention, a `protected_value` and a gender mismatch stay excluded, as do claims touching another modeled character or the player's. ADR-163's grounds carry over unchanged: a weak relation can be contradicted only by the identical proposition, which an argument that is no entity cannot form.
+**Consequences:**
+- A render's declared texture in invented relations is released and listed in `turn_report.uncertain_claims` instead of being repaired to the safe fallback.
+- An unknown name under a weak relation (a new person or place the render names) is surfaced, not canonized. A later render may name the same thing differently, and nothing catches it until the thing is tracked. Under a core or author relation, option 2 still mints a place or object, and a person slot still never mints.
+- A pronoun with no antecedent under a weak relation may refer to a modeled character the resolver could not bind. The claim is still never `supported` or canonized, so canon is unaffected.
+- Tests: `tests/test_introduce.py` (the widened marks; declared and extraction claims surface, and detector findings do not); `tests/integration/test_introduced_entities.py` (a declared claim with no mention, an unresolved pronoun or an unknown name is released and listed).
 ---
 
 *Every ADR above is Accepted as a record; the indexes at the top show which are amended or partly superseded. No decisions are open.*

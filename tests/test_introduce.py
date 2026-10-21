@@ -195,6 +195,8 @@ def said(subject: str, relation: str, obj: str | None, speaker: str = MAREN) -> 
         ("the inn", "has_been_in_business_for", "a hundred years"),  # a subject too
         ("the regulars", "needed", None),  # object-less
         ("the inn", "is_near", "Ohio"),  # the other argument is a place, not a character
+        ("Maren", "talks_about", "the Crossroads Inn"),  # an unknown proper name
+        ("Maren", "looks_up_from", "it"),  # a pronoun with no antecedent
     ],
 )
 def test_a_weak_relation_naming_something_untracked_is_marked(
@@ -232,8 +234,6 @@ def test_a_weak_relation_touching_another_character_is_not_marked(
 @pytest.mark.parametrize(
     ("subject", "relation", "obj"),
     [
-        ("Maren", "talks_about", "the Crossroads Inn"),  # an unknown proper name
-        ("Maren", "looks_up_from", "it"),  # a pronoun with no antecedent
         ("Maren", "knows", "the ferryman"),  # a core relation: option 2 governs it
         ("the ferryman", "located_at", "Ohio"),
     ],
@@ -246,9 +246,10 @@ def test_other_unresolved_claims_are_not_untracked_weak(
     assert not found.untracked_weak
 
 
-def test_only_an_extraction_finding_of_its_own_surfaces() -> None:
-    """Detector findings, claims merged with a declared or detector claim, and protected content
-    keep the safe disposition (``extraction.surfaces``)."""
+def test_declared_and_extraction_claims_surface_detector_findings_do_not() -> None:
+    """A declared or extraction claim surfaces, merged with each other or not; a detector
+    finding, a claim merged with one, and protected content keep the safe disposition
+    (``extraction.surfaces``)."""
     found = said("Maren", "looks_up_from", "wiping_down_the_bar")
     assert isinstance(found, Unnormalizable)
     own = DetectedClaim(
@@ -261,7 +262,8 @@ def test_only_an_extraction_finding_of_its_own_surfaces() -> None:
     )
     assert surfaces(own)
     assert not surfaces(replace(own, layer="detector", category="possession"))
-    assert not surfaces(replace(own, merged=("extraction",), layer="declared"))
+    assert surfaces(replace(own, layer="declared", category="declared"))
+    assert surfaces(replace(own, merged=("extraction",), layer="declared"))
     assert not surfaces(replace(own, merged=("detector",)))
     assert not surfaces(replace(own, category="protected_content"))
     assert not surfaces(replace(own, unnormalized=said("Maren", "knows", "the ferryman")))  # type: ignore[arg-type]

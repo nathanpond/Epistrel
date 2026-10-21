@@ -25,7 +25,14 @@ from tests.auth_support import auth_settings
 from tests.detection_support import claims_answer
 from tests.event_support import rows
 from tests.respond_support import body, respond, respond_client
-from tests.structured_turn_support import beat, place, render, structured_story, turn_report
+from tests.structured_turn_support import (
+    beat,
+    claim,
+    place,
+    render,
+    structured_story,
+    turn_report,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -230,10 +237,48 @@ async def test_a_weak_relation_naming_something_untracked_is_surfaced(
 
 
 @pytest.mark.parametrize(
+    ("text", "subject", "relation", "obj"),
+    [
+        ("Maren wipes down the counter.", "Maren", "wipes_down", "the counter"),
+        ("Maren wipes her hands on her apron.", "Maren", "wipes_hands_on", "her apron"),
+        ("Maren talks about the Crossroads Inn.", "Maren", "talks_about", "the Crossroads Inn"),
+    ],
+)
+async def test_the_renders_own_untracked_weak_claim_is_surfaced(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+    text: str,
+    subject: str,
+    relation: str,
+    obj: str,
+) -> None:
+    """A declared claim in the model's own relation, naming nothing the story holds (no
+    mention, a pronoun with no antecedent, an unknown name), is surfaced like an extraction
+    claim (#479): released as rendered, never repaired, never canonized."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        story, ids = await structured_story(client, "Wren", "Maren")
+        stub = epistrel.models.stub
+        stub.reset()
+        stub.script(
+            "generation",
+            [render(beat("do", text, propositions=[claim(subject, relation, obj)]))],
+        )
+        stub.script("extraction_backstop", [claims_answer()])
+        response = await respond(client, story, body(ids["Wren"], "And then?"))
+        assert response.status_code == 200, response.text
+        assert response.json()["message"]["text"] == f"*{text}*"
+        report = await turn_report(engine, story)
+        assert "repairs" not in report
+        dispositions = {(v["kind"], v["disposition"]) for v in report["verify"]["verdicts"]}
+        assert dispositions == {("uncertain", "surface")}
+        assert "uncertain_surfaced" in report["degradation"]
+        assert report["commit"]["canonized"] == 0
+
+
+@pytest.mark.parametrize(
     ("span", "subject", "predicate", "obj"),
     [
-        # an unknown proper name
-        ("talks about the Crossroads Inn", "Maren", "talks_about", "the Crossroads Inn"),
         # the player's character is an argument
         ("Wren looks up from the bar", "Wren", "looks_up_from", "the_bar"),
         # a core relation: option 2 governs it, and a person slot never mints

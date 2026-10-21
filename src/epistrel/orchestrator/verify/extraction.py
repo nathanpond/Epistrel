@@ -693,22 +693,25 @@ class CheckedClaim:
 
 
 SURFACE: SafeDisposition = "surface"
+SURFACED_LAYERS: frozenset[str] = frozenset({"declared", "extraction"})
+"""The layers whose untracked weak-relation claims are surfaced; a detector's risk claims
+(possession, transfer, quantity, time, protected content) always keep the safe disposition."""
 
 
 def surfaces(claim: DetectedClaim) -> bool:
-    """Whether an unnormalized claim is surfaced rather than repaired (#479, ADR-163): an
-    extraction finding of its own (merged with no declared or detector claim, no protected
-    content) that is uncertain only because a weak relation names something no entity holds
-    (``Unnormalizable.untracked_weak``: the resolver found no mention, and no other argument
-    is another modeled character or the player's). FR-PROP-4 (c): a weak relation is never
+    """Whether an unnormalized claim is surfaced rather than repaired (#479, ADR-163, ADR-165): a
+    declared or extraction claim (not one a detector also found, no protected content) that
+    is uncertain only because a weak relation names something no entity holds
+    (``Unnormalizable.untracked_weak``: the resolver found nothing for it, and no other
+    argument is another modeled character or the player's). FR-PROP-4 (c): a weak relation is never
     ``contradicted`` by cardinality, exclusion, implication or containment, and a direct
     polarity conflict needs the identical proposition, which an untracked argument cannot
     form. So repairing the claim buys no consistency and only destroys scene texture
     (FR-VERIFY-11). Everything else keeps the safe disposition."""
     found = claim.unnormalized
     return (
-        claim.layer == "extraction"
-        and not claim.merged
+        claim.layer in SURFACED_LAYERS
+        and "detector" not in claim.merged
         and not claim.protected
         and found is not None
         and found.untracked_weak

@@ -8425,3 +8425,7 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision (Discretion):** I left the stale sentence in `evals/sets/claim_detection/PROVENANCE.md` ("gated extraction never reads them") unchanged.
   **Why:** The file is part of the owner-approved labeled set, and the brief forbids changing the set. Rewording it is the owner's call.
   **Issue:** #478
+
+- **Decision (Rule 1):** `tests/evals/test_judge_model.py::test_a_report_written_before_475_still_parses` no longer asserts that no committed report names a judge. It checks instead that the reports written before #475 carry no judge, and that at least one is still committed.
+  **Why:** The assertion held only until the first live report written with a second judge model (`2c61ec2dbc6c-2026-10-21`, committed for #134). The test's purpose, that old reports still parse, is unchanged.
+  **Issue:** #475

@@ -8365,3 +8365,24 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Issue:** #467
 - **Decision (orchestrator):** #467 grew `evals/sets/e02/cases.jsonl` from 78 to 102 escalation cases, so E-02 keeps its 300-escalation floor with three escalating reasons instead of four. `e02` (like `smoke`) predates #157's approval regime and has no `PROVENANCE.md`, so no owner re-approval applies. No labels or floors changed.
   **Issue:** #467
+- **Decision (Discretion):** the judge's calls go through `JudgeModels`, a harness-side `ModelAccessLayer` subclass in `epistrel.evals` that overrides `resolve`. It takes the deployment's effective config and swaps in the judge's model, URL and key. It is not a per-call route or a `model_config` row.
+  **Why:** `entailment` is also an engine pipeline purpose (the verifier). A `model_config` row or a story route would move the engine's calls as well. `config.Route` carries no endpoint or key, and widening it would change the orchestrator's API beyond the issue. A separate layer touches only the harness. Metrics and the stub then record the judge's model name.
+  **Issue:** #475
+- **Decision (Discretion):** reading of FR-PROF-16 and NFR-QUAL-11. The fingerprint covers "the model identifier … for every model purpose", and `quality_judge` is a model purpose (FR-MODEL-2). So with a judge set, `run_fingerprint` adds `quality_judge: {id: <judge>}` to the facts' models, with no reported version, the same as the run model's entry. With no judge, nothing is added and the fingerprint is byte-identical, so every committed report keeps its fingerprint and run id. A judged run therefore gets its own report file and index row (NFR-QUAL-11: "every eval report states the configuration fingerprint it ran under").
+  **Why:** this is the issue's AC. The judge's reported version is recorded in the report rather than in the fingerprint, because the fingerprint and run id are computed before the preflight. Flag for M7 (FR-PROF-15 certification matching): a deployment's runtime fingerprint never includes `quality_judge`, so matching a judged report to a deployment must compare the fingerprint without the judge entry.
+  **Issue:** #475
+- **Decision (Discretion):** E-12/E-13's per-configuration fingerprints stay judge-free.
+  **Why:** they name the engine configurations users rate. E-13's correlation joins them with feedback aggregates keyed by the deployment fingerprint.
+  **Issue:** #475
+- **Decision (Discretion):** E-13 pools the committed reports' voice means only with means scored by the same judge. Each judged row in the summary now names its `judge`. A row written before #475 counts as judged by its report's `model`.
+  **Why:** two judges' scores are not on one scale. No current data changes: every committed report is `cydonia-24b-v4.3`, self-judged.
+  **Issue:** #475
+- **Decision (Discretion):** on the stub, the judge stub is scripted with the same `Suite.script_stub` as the run stub, but only for suites that declare `judge_purposes`. Routing is proved by which stub received the calls (`StubCall.purpose` and `.model`). No new scripting hook was added.
+  **Why:** `tests/eval/suite_support.frozen` and the E-03 complement override `script_stub`, and a separate hook would need them all changed. A broken route sends judge calls to the run stub, and the test catches that.
+  **Issue:** #475
+- **Decision (Discretion):** a new `Suite.judge_purposes` class variable marks judged suites (E-03 `entailment`; E-12/E-13 `quality_judge`). E-03's rows are not added to `judge_metrics`.
+  **Why:** `judge_metrics` makes rows `report_only` when the quality judge is uncalibrated. Putting E-03's floored faithfulness row there would change a gate.
+  **Issue:** #475
+- **Decision (Discretion):** INDEX.md columns are unchanged. The judge appears in each report and its embedded summary, not in the index.
+  **Why:** the AC names the report and the summary. Keeping the index means `--check` agrees without regenerating it. The fingerprint column already separates judged runs.
+  **Issue:** #475

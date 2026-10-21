@@ -8438,3 +8438,17 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   - Permission is unchanged.
   - Paraphrase duplicates are a known limit, to be filed separately.
   **Issue:** #479
+
+- **Decision (Discretion):** Age-repair answers for characters nobody asked about are ignored rather than refused, because the repair needs ages only for the names it asked about. Name matching goes exact → same words → whole-word containment, and a match must be unique both ways; ambiguity fails the attempt with a correction and is never guessed.
+  **Why:** live `-0004` was refused 3/3 for a correct answer plus an extra `Old Tom`; the owner's brief allows a unique containment match and forbids guessing.
+  **Issue:** #480
+- **Decision (Discretion):** The retry correction names the expected, missing, ambiguous and extra names, but `details.structural_errors` (the 503 body, the turn-queue error record and the eval failure records) keeps a content-free form with counts only, through the new `structured.feedback()` / `_Failure.public`.
+  **Why:** the model needs the names to correct itself, while `structured_call`'s contract is that failures carry "what was wrong, never the answer's text" (in the spirit of invariant 3).
+  **Issue:** #480
+- **Decision (Rule 1):** `BeatDecl`'s JSON Schema, sent as the render's `response_format`, is one `anyOf` alternative per kind group, so `intent` is only on `say` and `visibility` only on `latent`. Python validation is unchanged.
+  **Why:** the schema allowed what the validator refuses, so constrained decoding couldn't prevent E-07's `beats.N.intent: only a say declares an intent` failures.
+  **Issue:** #480
+- **Decision (Discretion):** E-07 `garbage-once-0011`'s demotion to unconstrained retries after an injected non-JSON answer was not changed inline; it is filed as #482.
+  **Why:** it is FR-MODEL-7's documented memo rule, and changing it is a design decision.
+  **Issue:** #480, #482
+- **Deferred to M9 (model):** a model that splits a listed group or ignores a correction that names the characters, and stray `intent` or `propositions` fields when decoding is unconstrained.

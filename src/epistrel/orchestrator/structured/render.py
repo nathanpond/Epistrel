@@ -42,6 +42,12 @@ turn order, as if the model had answered fewer.
 introduced without an age (``generation`` with ``age_repair.j2``, temperature 0), validated
 against each clue's range (or 0 to 150); an implausible or failed answer is retried within the
 same budget, then the turn fails with 503 ``model_unavailable``, ``reason = age_unrepaired``.
+Each name asked about takes one answer (``match_ages``, #480): the exact case-folded name, else
+the same words (case, punctuation and a leading article aside), else one name's words inside
+the other's, and only when the match is unique both ways (two candidates are never guessed
+between). An answer for someone not asked about is ignored. The retry's correction names the
+characters asked about, the missing and ambiguous ones and the answers not asked about;
+``details.structural_errors`` keeps only the counts.
 
 Log lines carry counts only (invariant 3).
 """
@@ -49,7 +55,9 @@ Log lines carry counts only (invariant 3).
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Annotated, Any, ClassVar, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
@@ -61,7 +69,7 @@ from epistrel.orchestrator.models.access import ModelAccessLayer
 from epistrel.orchestrator.models.adapter import Message, ModelParams
 from epistrel.orchestrator.models.errors import ModelUnavailable
 from epistrel.orchestrator.models.registry import GENERATION, GenerationInputs
-from epistrel.orchestrator.models.structured import Uncertain
+from epistrel.orchestrator.models.structured import Uncertain, feedback
 
 log = logging.getLogger(__name__)
 
@@ -116,8 +124,42 @@ class VisibilityDecl(_Strict):
     characters: list[str] = Field(default_factory=list)
 
 
+_SAY_ONLY = {"intent": frozenset({"say"}), "visibility": frozenset({"latent"})}
+"""The beat fields one kind alone declares (``RenderedBeats._structure``)."""
+_KIND_GROUPS = (("say",), ("latent",), ("think", "do", "narration"))
+
+
+def _per_kind(schema: dict[str, Any]) -> None:
+    """A beat's JSON Schema as one alternative per kind group (#480): ``intent`` only on a
+    ``say``, ``visibility`` only on a ``latent``, so constrained decoding cannot write the
+    field a kind may not declare (the validator still enforces it). The validation is the
+    model's own; only the schema the model is sent changes."""
+    properties: dict[str, Any] = schema["properties"]
+    variants = []
+    for kinds in _KIND_GROUPS:
+        fields = {
+            name: spec
+            for name, spec in properties.items()
+            if name not in _SAY_ONLY or set(kinds) <= _SAY_ONLY[name]
+        }
+        fields["kind"] = {**properties["kind"], "enum": list(kinds)}
+        variants.append(
+            {
+                "type": "object",
+                "properties": fields,
+                "required": list(schema.get("required", [])),
+                "additionalProperties": False,
+            }
+        )
+    for key in ("properties", "required", "additionalProperties", "type"):
+        schema.pop(key, None)
+    schema["anyOf"] = variants
+
+
 class BeatDecl(_Strict):
     """One beat as a render returns it."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, json_schema_extra=_per_kind)
 
     kind: Kind
     text: str = Field(max_length=BEAT_TEXT_MAX)
@@ -269,18 +311,29 @@ class AgeRepair(_Strict):
 
     expected: ClassVar[Mapping[str, tuple[int, int]]] = {}
     """Each character asked about (case-folded name) and the bounds its age must lie in."""
+    asked: ClassVar[Mapping[str, str]] = {}
+    """Each case-folded name as the prompt listed it (the retry names it so; #480)."""
 
     @model_validator(mode="after")
     def _answers(self) -> Self:
         cls = type(self)
-        given = [a.name.strip().casefold() for a in self.ages]
-        if sorted(given) != sorted(cls.expected):
-            raise ValueError("ages: one answer for each character asked about, by name")
-        for n, answer in enumerate(self.ages):
-            low, high = cls.expected[answer.name.strip().casefold()]
-            if not low <= answer.age <= high:
-                raise ValueError(f"ages.{n}.age: outside the plausible range")
+        found = match_ages(list(cls.expected), [a.name for a in self.ages])
+        if found.missing or found.ambiguous:
+            raise feedback(found.correction(cls.asked, self.ages), found.public(len(cls.expected)))
+        for key, n in found.matched.items():
+            low, high = cls.expected[key]
+            if not low <= self.ages[n].age <= high:
+                name = cls.asked.get(key, key)
+                raise feedback(
+                    f"ages.{n}.age: {name!r} is {low} to {high} years old",
+                    f"ages.{n}.age: outside the plausible range",
+                )
         return self
+
+    def resolved(self) -> dict[str, int]:
+        """Each case-folded name asked about and its answered age (a validated answer)."""
+        found = match_ages(list(type(self).expected), [a.name for a in self.ages])
+        return {key: self.ages[n].age for key, n in found.matched.items()}
 
     @classmethod
     def stub_example(cls, digest: str, messages: Sequence[Message]) -> dict[str, Any]:
@@ -296,7 +349,103 @@ class AgeRepair(_Strict):
 def age_schema(expected: Mapping[str, tuple[int, int]]) -> type[AgeRepair]:
     model = create_model("AgeRepairAnswer", __base__=AgeRepair)
     model.expected = {k.strip().casefold(): v for k, v in expected.items()}
+    model.asked = {k.strip().casefold(): k.strip() for k in expected}
     return model
+
+
+_ARTICLES = frozenset({"the", "a", "an"})
+
+
+def name_words(name: str) -> tuple[str, ...]:
+    """A name's words for matching (#480): case-folded, punctuation dropped, without a leading
+    article (``"The old man."`` → ``("old", "man")``)."""
+    words = tuple(re.findall(r"\w+", name.casefold()))
+    if len(words) > 1 and words[0] in _ARTICLES:
+        return words[1:]
+    return words
+
+
+def _contains(outer: tuple[str, ...], inner: tuple[str, ...]) -> bool:
+    size = len(inner)
+    return bool(size) and any(outer[i : i + size] == inner for i in range(len(outer) - size + 1))
+
+
+def _exact(key: str, given: str) -> bool:
+    return given.strip().casefold() == key
+
+
+def _same_words(key: str, given: str) -> bool:
+    return bool(name_words(key)) and name_words(key) == name_words(given)
+
+
+def _containing(key: str, given: str) -> bool:
+    asked, answered = name_words(key), name_words(given)
+    return _contains(asked, answered) or _contains(answered, asked)
+
+
+_MATCH_RULES = (_exact, _same_words, _containing)
+"""The age repair's name rules, strictest first: the exact case-folded name, the same words
+(case, punctuation and a leading article aside), then one name's words inside the other's."""
+
+
+@dataclass(frozen=True, slots=True)
+class AgeMatch:
+    """How an age repair's answers matched the names asked about (``match_ages``)."""
+
+    matched: dict[str, int]
+    """Each case-folded name asked about and the index of its answer."""
+    missing: list[str]
+    ambiguous: list[str]
+    extra: list[int]
+    """The answers no name asked about matched (ignored when nothing is missing)."""
+
+    def correction(self, asked: Mapping[str, str], ages: Sequence[AgeAnswer]) -> str:
+        """The retry's correction: the names asked about, then what was wrong, by name."""
+        listed = ", ".join(repr(asked.get(k, k)) for k in asked) or "none"
+        parts = [f"ages: answer once for each character asked about, copying its name: {listed}"]
+        if self.missing:
+            parts.append("no answer for " + ", ".join(repr(asked.get(k, k)) for k in self.missing))
+        if self.ambiguous:
+            parts.append(
+                "more than one answer could be "
+                + ", ".join(repr(asked.get(k, k)) for k in self.ambiguous)
+            )
+        if self.extra:
+            parts.append("not asked about: " + ", ".join(repr(ages[n].name) for n in self.extra))
+        return "; ".join(parts)
+
+    def public(self, asked: int) -> str:
+        """The content-free form of ``correction`` (counts, never names)."""
+        return (
+            f"ages: one answer for each character asked about, by name ({asked} asked about, "
+            f"{len(self.missing)} missing, {len(self.ambiguous)} ambiguous, "
+            f"{len(self.extra)} not asked about)"
+        )
+
+
+def match_ages(expected: Sequence[str], given: Sequence[str]) -> AgeMatch:
+    """Each case-folded name in ``expected`` matched to one of the ``given`` answer names
+    (#480). The rules (``_MATCH_RULES``) are tried strictest first; under each, a name takes an
+    answer only when that answer is its one candidate and it is the answer's one candidate. Two
+    candidates either way is ambiguous and never guessed. An answer no name takes is extra."""
+    pending = list(expected)
+    free = list(range(len(given)))
+    matched: dict[str, int] = {}
+    ambiguous: list[str] = []
+    contested: set[int] = set()
+    for rule in _MATCH_RULES:
+        candidates = {key: [n for n in free if rule(key, given[n])] for key in pending}
+        for key, found in candidates.items():
+            if not found:
+                continue  # perhaps under a looser rule
+            pending.remove(key)
+            if len(found) == 1 and sum(found[0] in c for c in candidates.values()) == 1:
+                matched[key] = found[0]
+            else:
+                ambiguous.append(key)
+                contested.update(found)
+        free = [n for n in free if n not in matched.values() and n not in contested]
+    return AgeMatch(matched, pending, ambiguous, free)
 
 
 # -- the calls -----------------------------------------------------------------------------------
@@ -415,7 +564,7 @@ async def repair_ages(
     )
     if isinstance(found, Uncertain):
         raise _unavailable(AGE_UNREPAIRED, found, failures)
-    return {a.name.strip().casefold(): a.age for a in found.ages}
+    return found.resolved()
 
 
 def _unavailable(reason: str, found: Uncertain, failures: Sequence[str]) -> ModelUnavailable:
@@ -431,6 +580,7 @@ __all__ = [
     "NARRATOR",
     "RENDER_TOKEN_FACTOR",
     "STRUCTURED",
+    "AgeMatch",
     "AgeRepair",
     "BeatDecl",
     "IntroductionDecl",
@@ -441,6 +591,8 @@ __all__ = [
     "hold_length",
     "length_chars",
     "length_line",
+    "match_ages",
+    "name_words",
     "render_beats",
     "render_params",
     "render_schema",

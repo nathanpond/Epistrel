@@ -43,6 +43,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ValidationError
+from pydantic_core import PydanticCustomError
 
 from epistrel.core.errors import nul_location, without_nul
 from epistrel.core.policies.evaluate import evaluate
@@ -108,8 +109,28 @@ class ResponseFormatMemo:
 
 @dataclass(frozen=True, slots=True)
 class _Failure:
+    """A failed attempt: ``problem`` is the correction the model is sent, ``public`` what the
+    caller's report keeps (the same text unless a validator gave a content-free form)."""
+
     reason: Literal["parse_error", "schema_error"]
     problem: str
+    public: str = ""
+
+    def reported(self) -> str:
+        return self.public or self.problem
+
+
+PUBLIC = "public"
+"""The context key of a ``feedback`` error's content-free form."""
+
+
+def feedback(correction: str, public: str) -> PydanticCustomError:
+    """A validator's error whose ``correction`` may name story content (the names a call asked
+    about, so the model can fix its answer; #480) while the failure the caller reports, and so
+    ``details.structural_errors``, keeps only the content-free ``public`` form."""
+    return PydanticCustomError(
+        "feedback", "{correction}", {"correction": correction, PUBLIC: public}
+    )
 
 
 def unfence(text: str) -> str:
@@ -132,11 +153,14 @@ def parse[T: BaseModel](text: str, schema: type[T]) -> T | _Failure:
     try:
         return schema.model_validate_json(body, strict=True)
     except ValidationError as exc:
-        problems = [
-            f"{'.'.join(str(p) for p in error['loc']) or 'the object'}: {error['msg']}"
-            for error in exc.errors()[:MAX_FEEDBACK_ERRORS]
-        ]
-        return _Failure("schema_error", "; ".join(problems))
+        problems: list[str] = []
+        public: list[str] = []
+        for error in exc.errors()[:MAX_FEEDBACK_ERRORS]:
+            where = ".".join(str(p) for p in error["loc"]) or "the object"
+            problems.append(f"{where}: {error['msg']}")
+            context = error.get("ctx") or {}
+            public.append(f"{where}: {context.get(PUBLIC, error['msg'])}")
+        return _Failure("schema_error", "; ".join(problems), "; ".join(public))
 
 
 def usable(result: ModelResult, schema: type[BaseModel]) -> bool:
@@ -177,7 +201,7 @@ async def structured_call[T: BaseModel](
 ) -> T | Uncertain:
     """See the module docstring. ``variant`` names the purpose's template variant (#150);
     ``failures``, when given, collects each failed attempt's problem (what was wrong, never the
-    answer's text) for the caller's report."""
+    answer's text; a ``feedback`` error's content-free form) for the caller's report."""
     if deterministic_first is None and purpose not in DETERMINISTIC_FIRST_EXEMPT:
         raise MissingDeterministicStep(
             f"a structured {purpose!r} call needs its deterministic_first step (FR-MODEL-5)"
@@ -229,7 +253,7 @@ async def structured_call[T: BaseModel](
                 return Uncertain("parse_error", attempts)
             outcome = parse(result.text, schema)
             if isinstance(outcome, _Failure) and failures is not None:
-                failures.append(outcome.problem)
+                failures.append(outcome.reported())
             if not isinstance(outcome, _Failure):
                 if _low_confidence(outcome, settings.uncertain_below):
                     return Uncertain("low_confidence", attempts)
@@ -286,6 +310,7 @@ __all__ = [
     "ResponseFormatMemo",
     "Uncertain",
     "UncertainReason",
+    "feedback",
     "guardrail_deterministic_first",
     "parse",
     "resolve_uncertain",

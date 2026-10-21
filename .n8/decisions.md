@@ -8319,3 +8319,20 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Issue:** #452, #472
 - **Decision (owner):** #471, canon's per-row supersedes probe, is deferred to M10: Bug fixes & testing. NFR-PERF-1 passes after #451 (P-01 p95 119 ms on a loaded local host), and a stored closed-by column is a risky canon schema change better done and audited there.
   **Issue:** #471
+- **Decision (Discretion):** a story-lock timeout reuses the existing `story_busy` shape, which is **423** (not 409 as the issue text says): `StoryBusy` with `details {story_id, reason: "lock_timeout"}` and `Retry-After`.
+  **Why:** the owner's decision says "as a contended story already does elsewhere", and that is 423 throughout the code and the published contract. Moving `story_busy` to 409 everywhere would change existing routes' contracts beyond the issue (Rule 4). Two statuses for one code cannot be documented by `ERROR_STATUS`. Flagged for the owner, with the follow-up spelled out.
+  **Issue:** #472
+- **Decision (Discretion):** `Retry-After` for a lock timeout is 5 s (`LOCK_RETRY_AFTER_S`, equal to the lock timeout).
+  **Why:** the holder has already kept the story lock for the whole lock timeout, which is unusual for a commit of milliseconds. A sooner retry would most likely wait again and add to the load #452 described. The seconds left on the holder are unknowable (unlike the turn gate's lease).
+  **Issue:** #472
+- **Decision (Discretion):** the translation sits in core's two story commit sites (`Operation.commit`, `OperationBatch.commit`), keyed on SQLSTATE 55P03 only and only for story operations. The REST `OperationalError` handler is unchanged. Story-less operations (deployment advisory lock) and background job commits (`jobs/queue.py`) keep their current behaviour.
+  **Why:** the library and REST then answer alike (FR-API-3), with the story id in `details`. Only the story row lock is the "story busy" condition the owner decided. A job's commit failure is handled by the job runner, not by a client.
+  **Issue:** #472
+- **Decision (Discretion):** OpenAPI documents `story_busy` on every story-scoped mutating route (`_rule_errors`, next to `revision_conflict`), not only on the routes named in the issue.
+  **Why:** every story write commits under the story lock, so any of them can time out on it.
+  **Issue:** #472
+- **Decision (Discretion):** the lock timeout is applied through one helper, `operation.set_lock_timeout`, which reads `LOCK_TIMEOUT` at call time (used by operations, batches and the job queue). The test makes it 100 ms and takes the lock from another transaction at that point.
+  **Why:** the brief asks for no wall-clock bound beyond the configured lock timeout. The holder takes the lock after the turn gate (which locks the row without a timeout) and before the commit's `FOR UPDATE`, and it releases on a server-side observation, not on a sleep.
+  **Issue:** #472
+- **Correction (orchestrator):** the owner's choice for #472 was worded as "409 `story_busy` + Retry-After, as a contended story already reads elsewhere". Every existing `story_busy` is in fact **423**, so the orchestrator misstated the code. The implementation follows the intent, the existing `story_busy` shape: 423 with `Retry-After`. Moving `story_busy` to 409 everywhere would change about a dozen routes' contracts and was not done. The owner was told.
+  **Issue:** #472

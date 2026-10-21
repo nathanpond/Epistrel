@@ -6,6 +6,7 @@ in one operation, approximate bounds and the Lite path."""
 
 from __future__ import annotations
 
+import secrets
 from typing import Any
 
 import pytest
@@ -13,12 +14,15 @@ from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.core.canon import facts as canon
+from epistrel.core.db import make_engine
 from epistrel.core.enums import RecordProvenance
 from epistrel.core.errors import ErasedSubjectReferenced
 from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Bound, Interval, Proposition
 from tests import erasure_support as e
+from tests.auth_support import auth_settings
 from tests.canon_support import KNOWS, LOCATED_AT, at, at_time, commit, fact_rows, run, world
+from tests.conformance.conftest import migrated_database
 from tests.event_support import play_turn, rows
 from tests.respond_support import new_story as new_rest_story
 from tests.respond_support import respond_client
@@ -170,3 +174,55 @@ async def test_the_lite_path_reads_no_facts(engine: AsyncEngine) -> None:
     finally:
         event.remove(engine.sync_engine, "before_cursor_execute", count)
     assert not [s for s in statements if "facts" in s]
+
+
+KNOWN = ("Ivo", "Dree", "Holt", "Mabe", "Pell", "Sorrel")
+
+
+async def _neighbor_order(pg_url: str) -> tuple[list[str], list[str]]:
+    """On a fresh database: Cal comes to know six people in one operation, every fact valid
+    from story-time 0. Answers ``canon_links``'s and ``canon``'s orders, by the known name."""
+    with migrated_database(pg_url, f"epistrel_canon_{secrets.token_hex(4)}") as url:
+        db = make_engine(auth_settings(url))
+        try:
+            w = await world(db)
+            known = {await _entity(db, w.story_id, name): name for name in KNOWN}
+
+            async def write(conn: Any, op: Any) -> None:
+                for person in known:
+                    proposition = Proposition(
+                        subject_id=w.people["Cal"],
+                        predicate_id=KNOWS,
+                        object_id=person,
+                        valid_time=Interval.of(0, None),
+                    )
+                    await canon.commit_fact(
+                        conn,
+                        w.story_id,
+                        proposition,
+                        operation=op,
+                        provenance=RecordProvenance.RENDER,
+                    )
+
+            await run(db, w.story_id, write)
+            async with db.connect() as conn:
+                links = await canon.canon_links(conn, w.story_id, subject=w.people["Cal"])
+                found = await canon.canon(conn, w.story_id, subject=w.people["Cal"])
+            return (
+                [known[str(link.object_id)] for link in links],
+                [known[str(f.proposition.object_id)] for f in found],
+            )
+        finally:
+            await db.dispose()
+
+
+@pytest.mark.usefixtures("frozen_ids")
+async def test_canon_ties_order_the_same_on_two_fresh_databases(pg_url: str) -> None:
+    """#477 (NFR-DETERM-1): facts tied on ``valid_from`` are ordered by id, the tie-break of
+    ``canon_links`` (a neighborhood's ranking, #470) and ``canon``. Written in one millisecond
+    (their timestamp frozen), they come back in the order they were written on each of two
+    fresh databases, because ``new_ulid`` is monotonic. With random ids, the order changed from
+    one database to the next."""
+    first = await _neighbor_order(pg_url)
+    second = await _neighbor_order(pg_url)
+    assert first == second == (list(KNOWN), list(KNOWN))

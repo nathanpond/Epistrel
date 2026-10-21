@@ -68,7 +68,7 @@ from epistrel.core.enums import OperationStatus
 from epistrel.core.erasure.index import drop_many, index_records
 from epistrel.core.erasure.records import idempotency_id, idempotency_record
 from epistrel.core.errors import IdempotencyConflict, InvalidRequest, OriginalInFlightTimeout
-from epistrel.core.ids import new_ulid
+from epistrel.core.ids import random_ulid
 from epistrel.core.settings_schema import IdempotencySettings
 from epistrel.core.tables import (
     deployment_state,
@@ -335,7 +335,7 @@ class IdempotentCall:
         self.wait_s = wait_s
         self.request_hash: str | None = None
         self.sent_hash: str | None = None
-        self.token = new_ulid()
+        self.token = random_ulid()
         self.claimed = False
         self.window = IdempotencySettings()
         self.result_in_commit: ResultInCommit | None = None

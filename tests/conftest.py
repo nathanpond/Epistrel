@@ -18,6 +18,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core import ids
 from epistrel.core.db import make_engine, make_sync_engine, normalize_url
 from tests.auth_support import ERASURE_LEDGER_DIR, auth_settings, note_session_database
 from tests.perf.census import CENSUS, installed
@@ -129,6 +130,17 @@ def _clean_epistrel_env(monkeypatch: pytest.MonkeyPatch) -> None:
         if name.upper().startswith("EPISTREL_") and not name.upper().startswith("EPISTREL_TEST_"):
             monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("EPISTREL_ERASURE_LEDGER_DIR", str(ERASURE_LEDGER_DIR))
+
+
+@pytest.fixture
+def frozen_ids(monkeypatch: pytest.MonkeyPatch) -> int:
+    """Every ``new_ulid``/``random_ulid`` from here on carries this millisecond (#477), so
+    ids that would have sorted at random sort only by ``new_ulid``'s monotonic sequence. The
+    sequence starts afresh and is put back afterwards."""
+    millis = ids._millis()
+    monkeypatch.setattr(ids, "_millis", lambda: millis)
+    monkeypatch.setattr(ids, "_last", 0)
+    return millis
 
 
 @pytest.fixture

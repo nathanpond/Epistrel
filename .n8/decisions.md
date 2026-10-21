@@ -8348,3 +8348,20 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision (Discretion):** The autouse shared-database check now also fails a test that leaves the shared vector space pinned. It unpins first, so only the culprit fails.
   **Why:** This prevents a recurrence and points straight at the test that caused it, instead of showing up later as dimension errors in unrelated tests. I chose to unpin and fail (not fail only) so a single offender doesn't take out every test after it.
   **Issue:** #473
+- **Decision (Owner, #467 option (b)):** `approximate_bounds` moves to the gate's `NEVER_ESCALATES`, and #460's `TIME_UNDECIDABLE` override, which could no longer be reached, is removed. The outcome is the same.
+  **Why:** FR-PROP-10 already resolves the residual deterministically to `uncertain`. The call cost budget and latency and could not change the verdict.
+  **Issue:** #467
+- **Decision (Discretion):** I left docs/03 FR-VERIFY-3 unedited. ADR-162 records the narrowing, and ADR-017 gets an Amended-by line plus an inline *[narrowed by ADR-162]* marker on clause (c).
+  **Why:** FR-VERIFY-3 (c) covers only matches "that FR-PROP-10 does not resolve deterministically". FR-PROP-10 resolves approximate bounds (otherwise `uncertain`), so 03 still reads correctly. ADR-017's "(c) a partial/ambiguous match" is the older clause that the change narrows.
+  **Issue:** #467
+- **Decision (Rule 1):** E-02's hand-written set grows from 78 to 102 escalation cases, and its suite plays the three reasons that escalate.
+  **Why:** An approximate-bounds residual writes no `escalations` row any more. Without the change, E-02's `len(rows) == len(REASONS)` checks fail, and the set would fall below its own floor of 300 escalations (78 × 3 = 234). The new cases repeat the existing scripted-verdict cycle. No labels or floors change.
+  **Issue:** #467
+- **Decision (Discretion):** The #460 rendering assertions for approximate bounds in `test_u_04__escalation` now call `render_time` directly with an unanchored `TimeFrame()`, instead of reading the stub's prompt.
+  **Why:** An approximate-bounds claim no longer reaches the model. The renderer still matters for approximate-bound records shown as neighbours of other residuals.
+  **Issue:** #467
+- **Decision (Discretion):** The new test's part marker is `FR-VERIFY-3` only, not `FR-VERIFY-3,8`.
+  **Why:** docs/04 §15 maps FR-VERIFY-8 to E-02 alone, and check-traceability refuses an unlisted U-04 part. The test still asserts the FR-VERIFY-8 behaviour, the safe disposition.
+  **Issue:** #467
+- **Decision (orchestrator):** #467 grew `evals/sets/e02/cases.jsonl` from 78 to 102 escalation cases, so E-02 keeps its 300-escalation floor with three escalating reasons instead of four. `e02` (like `smoke`) predates #157's approval regime and has no `PROVENANCE.md`, so no owner re-approval applies. No labels or floors changed.
+  **Issue:** #467

@@ -8429,3 +8429,12 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision (Rule 1):** `tests/evals/test_judge_model.py::test_a_report_written_before_475_still_parses` no longer asserts that no committed report names a judge. It checks instead that the reports written before #475 carry no judge, and that at least one is still committed.
   **Why:** The assertion held only until the first live report written with a second judge model (`2c61ec2dbc6c-2026-10-21`, committed for #134). The test's purpose, that old reports still parse, is unchanged.
   **Issue:** #475
+
+- **Decision (owner, 2026-10-21):** #479 takes option 2. A permitted extracted claim that names a place or object no entity holds yet mints the entity when the claim is canonized. This is the `introduces` path that `canonize` (#144) specifies and detection (#150) never fed. The rejected options were: surface the claim as `uncertain` without repairing it (option 1), and keep the design and send NFR-QUAL-7 to M9 (option 3).
+  **Why:** A surfaced-but-unrecorded detail could be renamed or changed by the next render without any check. Canonizing it makes later contradictions checkable. FR-VERIFY-11 already lets a render introduce incidental scene texture.
+  **Guard rails:**
+  - Reuse an existing entity or alias before minting.
+  - Mint only in place and object argument slots.
+  - Permission is unchanged.
+  - Paraphrase duplicates are a known limit, to be filed separately.
+  **Issue:** #479

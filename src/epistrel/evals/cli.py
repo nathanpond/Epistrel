@@ -13,6 +13,8 @@
     uv run python -m epistrel.evals digest                   # regenerate the review digest
     uv run python -m epistrel.evals calibrate-judge --base-url … --model …  # #158
     uv run python -m epistrel.evals calibrate-judge --adapter stub
+    uv run python -m epistrel.evals run --all … --judge-model <second model> \\
+        [--judge-base-url …] [--judge-api-key …]          # #475: a second judge model
 
 ``run`` needs PostgreSQL: ``--database-url`` (a scratch database; the run writes the endpoint
 into its model configuration and plays its turns there), else a throwaway one started through
@@ -38,6 +40,12 @@ report), ``build/evals/judge-calibration.json`` for the stub. A ``run --suite e1
 stored calibration of its judge model and exits 1 before any case when there is none. Below
 75 % agreement every judge-based row is ``report_only``. It exits 0 whatever the agreement,
 and 1 on an unreachable endpoint or a malformed set.
+
+``--judge-model`` (#475; ``run`` and ``calibrate-judge``) sends the harness's judge calls to a
+second model: E-03's entailment judgement, E-12/E-13's ``quality_judge`` and the calibration,
+stored under the judge model. ``--judge-base-url`` and ``--judge-api-key`` default to
+``--base-url`` and ``--api-key``. Every engine call keeps ``--model``. Without it the run model
+judges, and the report says the judged suites were self-judged.
 """
 
 from __future__ import annotations
@@ -101,6 +109,13 @@ def _endpoint_options(command: argparse.ArgumentParser) -> None:
     command.add_argument("--hardware", default="", help="where the model ran, e.g. 'Apple M3 Max'")
     command.add_argument("--server-version", default="", help="the model server and its version")
     command.add_argument("--calibration-file", type=Path, help=argparse.SUPPRESS)
+    command.add_argument(
+        "--judge-model",
+        help="a second model for the harness's judge calls (E-03, E-12, E-13, the calibration); "
+        "default: --model judges itself",
+    )
+    command.add_argument("--judge-base-url", help="the judge model's endpoint (--base-url)")
+    command.add_argument("--judge-api-key", help="the judge endpoint's key (--api-key)")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -209,6 +224,9 @@ def _config(args: argparse.Namespace, adapter: AdapterName) -> AdapterConfig:
         hardware=args.hardware,
         server_version=args.server_version,
         host=getattr(args, "host", None),
+        judge_model=args.judge_model or None,
+        judge_base_url=args.judge_base_url.rstrip("/") if args.judge_base_url else None,
+        judge_api_key=args.judge_api_key,
     )
 
 
@@ -245,7 +263,8 @@ async def _run(args: argparse.Namespace) -> int:
         return EX_USAGE
     config = _config(args, adapter)
     now = datetime.now(UTC)
-    run_id, merge_from = _run_id(args, default_run_id(run_fingerprint(config.model_name), now))
+    fingerprint_value = run_fingerprint(config.model_name, judge=config.judge_model)
+    run_id, merge_from = _run_id(args, default_run_id(fingerprint_value, now))
     prior = reports.Report.from_json(_load(merge_from)) if merge_from is not None else None
     json_path = args.json_dir / f"{run_id}.json"
     failures = args.json_dir / f"{run_id}-failures.jsonl"
@@ -258,6 +277,7 @@ async def _run(args: argparse.Namespace) -> int:
             combined.merge(suite)
         combined.errors = [*prior.errors, *report.errors]
         combined.model_version = report.model_version or prior.model_version
+        combined.judge = report.judge or prior.judge
         combined.finished_at = report.finished_at
         combined.verdict = combined.computed_verdict()
         return combined

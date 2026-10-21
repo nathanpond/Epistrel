@@ -54,7 +54,8 @@ No automated check spends money or calls a real model (the owner's decision, 202
 
 Each report states the model and the version the server reported, the configuration
 fingerprint (FR-PROF-16: the seeded `Structured (M4)` profile with the model as every story
-purpose's), the host, the seeds and the sample size, and one row per metric: floor, rule,
+purpose's, and a second judge model as `quality_judge`'s when one is set), the judge, the host,
+the seeds and the sample size, and one row per metric: floor, rule,
 mean ± SD across seeds, cases per seed, seeds, verdict and, for a zero-tolerance metric, the
 one-sided 95% upper bound.
 
@@ -111,6 +112,52 @@ below 75 % agreement makes every E-12 row *report only*. `run --all` calibrates 
 `run --suite e12` reads the stored calibration of its judge model and exits 1 before any case
 when there is none. Changing the judge model needs a new calibration: earlier reports keep the
 judge they recorded.
+
+## A second judge model (#475)
+
+By default the run model is its own judge. E-03 judges the reflections it wrote with the
+`entailment` purpose, and E-12/E-13 judge its prose with `quality_judge`. A model can be lenient
+with its own output, so a run can name a second **judge model**. The harness's judge calls then
+go to it: E-03's entailment judgement, E-12's pairwise judgements, E-13's scores and the judge
+calibration. Every engine call stays on `--model`: turns, the verifier's own entailment
+fallback (E-01, E-02), consolidation and every job. `e03.judge_agreement` then measures the
+judge model.
+
+To serve both models from one LM Studio:
+
+1. Load the run model as usual. Then load the judge as well: in the Developer tab, use
+   *Load model* again, or run `lms load <judge model>`. LM Studio serves every loaded model at
+   the same URL, each under its own identifier. `lms ps` lists the loaded models and their
+   identifiers, and `GET /v1/models` shows them as well. Both models must fit in memory together.
+   If they don't, load a smaller judge, or serve the judge on another machine or port.
+2. Pass the judge by its identifier. For example, the reference run (`cydonia-24b-v4.3`) with
+   `qwen/qwen3-32b` (a 4-bit quant) as its judge, both loaded in one LM Studio on port 1235:
+
+   ```sh
+   uv run epistrel evals calibrate-judge --base-url http://localhost:1235/v1 \
+       --model cydonia-24b-v4.3 --judge-model qwen/qwen3-32b
+   uv run epistrel evals run --all --base-url http://localhost:1235/v1 \
+       --model cydonia-24b-v4.3 --judge-model qwen/qwen3-32b \
+       --embedding-model <embedding model> --seeds 3 \
+       --hardware "<machine, memory>" --server-version "LM Studio <version>"
+   ```
+
+   Under structured output, LM Studio suppresses Qwen3's thinking, so each judgement comes
+   back as plain JSON.
+
+   `--judge-base-url` and `--judge-api-key` default to `--base-url` and `--api-key`. Set them
+   when the judge is served elsewhere. The judge's endpoint is probed before any case, like
+   the run's. An unreachable judge exits 1 before anything is written.
+
+The calibration is stored under the judge model, so `calibrate-judge --judge-model X` and
+`run --suite e12 --judge-model X` share it. The report has a **Judge** line that names the judge
+model, the version it reported and its endpoint. Each judged suite (`e03`, `e12`, `e13`) says
+which model judged it. Without `--judge-model`, the report says the run model judged
+(**self-judged**). The configuration fingerprint then also names the judge, as the
+`quality_judge` purpose's model (FR-PROF-16), so a judged run gets its own report file and index
+row, apart from a self-judged run of the same model. E-13 pools the committed reports' voice
+means only with means from the same judge. A report written before #475 records no judge: it
+was self-judged.
 
 Voice fidelity and plot adherence are outside the guarantee (NFR-QUAL-13): the engine delivers
 each character's definition and the director's drivers to the right contexts (C-25), and E-13

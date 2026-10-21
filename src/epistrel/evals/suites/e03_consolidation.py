@@ -12,7 +12,9 @@ A free-text reflection carries no subject/relation/object split, so the determin
 planner described (normalizing the reflection through #140) has nothing to normalize; the
 judge is the model arm. When the judge is the model under test (a single-model run), the
 report says so: a model may be lenient with its own reflections, and the labeled pairs below
-measure how far its judging can be trusted.
+measure how far its judging can be trusted. A run with a second judge model (``--judge-model``,
+#475) sends these judge calls to it through ``CaseContext.judge_models``. The consolidation
+itself stays on the run model.
 
 - ``nfr_qual_3.faithfulness`` (rate, ≥ 98 %): every reflection the window produced is entailed
   by its episodes (a window that produced none is not observed).
@@ -144,6 +146,7 @@ class E03Suite(Suite):
     min_cases = 150
     guarantees = ("consolidation",)
     ci_gate = True
+    judge_purposes = (ENTAILMENT.name,)
     case_model = ConsolidationCase
     metrics = (
         Metric(
@@ -161,10 +164,11 @@ class E03Suite(Suite):
         ),
     )
     reading_notes = (
-        "E-03's judge is the `entailment` purpose; on a single-model run it is the model under "
-        "test judging its own reflections (`e03.judge_agreement` shows how well it judges the "
-        "labeled entailed and non-entailed reflections). A window that produced no reflection "
-        "is not counted in `nfr_qual_3.faithfulness`, but is in `e03.produced`.",
+        "E-03's judge is the `entailment` purpose. On a single-model run it is the model under "
+        "test judging its own reflections. With `--judge-model` (#475) it is that second model, "
+        "and the suite's Judge line names it. `e03.judge_agreement` shows how well the judge "
+        "judges the labeled entailed and non-entailed reflections. A window that produced no "
+        "reflection is not counted in `nfr_qual_3.faithfulness`, but is in `e03.produced`.",
     )
 
     async def evaluate(self, ctx: CaseContext, case: CaseModel) -> Outcome:
@@ -184,9 +188,10 @@ class E03Suite(Suite):
             ctx.engine.db, story, Window(min(turns), max(turns)), models=ctx.models
         )
         reflections = await written_reflections(ctx, story)
-        entailed = [await judge(ctx.models, r, sources) for r in reflections]
-        agreement = await judge(ctx.models, case.expected.entailed, sources) and not (
-            await judge(ctx.models, case.expected.non_entailed, sources)
+        judges = ctx.judge_models
+        entailed = [await judge(judges, r, sources) for r in reflections]
+        agreement = await judge(judges, case.expected.entailed, sources) and not (
+            await judge(judges, case.expected.non_entailed, sources)
         )
         observations: dict[str, bool | None] = {
             PRODUCED: bool(reflections),

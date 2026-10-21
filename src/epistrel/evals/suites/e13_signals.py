@@ -29,7 +29,9 @@ fingerprint (``structured``, ``gated``):
   voice rows of every report in ``reports_dir`` (``docs/evals``, the files ``INDEX.md`` is built
   from), and the correlation pools them with this run's own, weighted by n. A report committed
   before #463 has no such list and adds nothing. The judge's voice scores are uncalibrated in
-  every run (no calibration set in M4), so the pooled means are too.
+  every run (no calibration set in M4), so the pooled means are too. Only the means of the
+  run's own judge are pooled (#475): each row names its judge (a row without one was judged by
+  its report's model), since two judges' scores are not on one scale.
 """
 
 from __future__ import annotations
@@ -64,6 +66,7 @@ from epistrel.evals.suites.scenario_play import (
     play,
     script,
 )
+from epistrel.orchestrator.models.registry import QUALITY_JUDGE
 from epistrel.orchestrator.models.stub import StubAdapter
 
 if TYPE_CHECKING:
@@ -100,15 +103,35 @@ def pool(into: Pooled, fingerprint: str, mean: float, n: int) -> None:
     into[fingerprint] = (total + mean * n, count + n)
 
 
-def committed_voice_means(reports_dir: Path) -> Pooled:
-    """The judge's voice-consistency means per fingerprint in the committed reports'
-    embedded summaries (#463), pooled by n; a report without them adds nothing."""
-    found: Pooled = {}
+def committed_voice_means_by_judge(reports_dir: Path) -> dict[str, Pooled]:
+    """The judge's voice-consistency means per fingerprint in the committed reports' embedded
+    summaries (#463), pooled by n, per judge model (#475: a row's ``judge``, else its report's
+    ``model``); a report without them adds nothing."""
+    found: dict[str, Pooled] = {}
     for path in report_files(reports_dir):
         summary = read_summary(path) or {}
         for row in _voice_rows(summary.get("judged") or []):
-            pool(found, row["fingerprint"], float(row["mean"]), int(row["n"]))
+            judge = str(row.get("judge") or summary.get("model") or "")
+            pool(found.setdefault(judge, {}), row["fingerprint"], float(row["mean"]), int(row["n"]))
     return found
+
+
+def committed_voice_means(reports_dir: Path, judge: str | None = None) -> Pooled:
+    """``committed_voice_means_by_judge`` for ``judge``, or every judge's pooled (``None``)."""
+    by_judge = committed_voice_means_by_judge(reports_dir)
+    if judge is not None:
+        return dict(by_judge.get(judge, {}))
+    found: Pooled = {}
+    for pooled in by_judge.values():
+        for key, (total, n) in pooled.items():
+            pool(found, key, total / n, n)
+    return found
+
+
+def _judge_of(outcomes: Sequence[Outcome], model: str) -> str:
+    """The model that judged ``outcomes`` (#475): the cases' ``judge``, else the run model."""
+    found = next((o.detail.get("judge") for o in outcomes if o.detail.get("judge")), None)
+    return str(found or model)
 
 
 def _voice_rows(rows: Iterable[Mapping[str, Any]]) -> Iterable[Mapping[str, Any]]:
@@ -189,6 +212,7 @@ class E13Suite(Suite):
     metrics = _metrics()
     judge_metrics = frozenset({metric_id(c, s) for c in CONFIGS for s in SCORED} | {CORRELATION})
     judge_calibration = "none"
+    judge_purposes = (QUALITY_JUDGE.name,)
     reading_notes = (
         "E-13 (M4) reports signals, never a floor: voice fidelity and plot adherence are "
         "outside the guarantee (NFR-QUAL-13). Repetition, openings and length are computed "
@@ -202,7 +226,8 @@ class E13Suite(Suite):
         self.ratings: dict[str, float] = {}
         self.reports_dir = REPORTS_DIR if reports_dir is None else reports_dir
         """Where the committed reports are, whose judge means the correlation pools (#463)."""
-        self.committed: Pooled = {}
+        self.committed: dict[str, Pooled] = {}
+        """The committed reports' voice means per judge model, then per fingerprint (#475)."""
 
     async def setup(self, engine: Engine, ctx: RequestContext) -> None:
         """Read users' mean rating per fingerprint (FR-FB-3), and the committed reports'
@@ -213,7 +238,11 @@ class E13Suite(Suite):
             for g in found.groups
             if g.key is not None and g.mean_rating is not None
         }
-        self.committed = committed_voice_means(self.reports_dir)
+        self.committed = committed_voice_means_by_judge(self.reports_dir)
+
+    def committed_for(self, judge: str) -> Pooled:
+        """The committed voice means that ``judge`` scored (#475)."""
+        return self.committed.get(judge, {})
 
     async def evaluate(self, ctx: CaseContext, case: CaseModel) -> Outcome:
         assert isinstance(case, ScenarioCase)  # noqa: S101 - load() validated it
@@ -243,6 +272,7 @@ class E13Suite(Suite):
         detail: dict[str, Any] = {
             "seed": ctx.seed,
             "model": ctx.model,
+            "judge": ctx.judge_model,
             "config": case.config,
             "repetition": repetition,
             "repeated_opening": openings,
@@ -276,8 +306,8 @@ class E13Suite(Suite):
 
     def pooled_voice_means(self, outcomes: Sequence[Outcome], model: str) -> dict[str, float]:
         """The judge's mean voice score per fingerprint: this run's pooled with the committed
-        reports' (#463), weighted by n."""
-        pooled = dict(self.committed)
+        reports' that the same judge scored (#463, #475), weighted by n."""
+        pooled = dict(self.committed_for(_judge_of(outcomes, model)))
         for key, (total, n) in self.own_voice_means(outcomes, model).items():
             pool(pooled, key, total / n, n)
         return {key: total / n for key, (total, n) in pooled.items() if n}
@@ -340,12 +370,13 @@ class E13Suite(Suite):
         own = set(self.own_voice_means(outcomes, model))
         rated = set(self.ratings)
         from_run = len(own & rated)
-        from_reports = len((set(self.committed) - own) & rated)
+        committed = self.committed_for(_judge_of(outcomes, model))
+        from_reports = len((set(committed) - own) & rated)
         notes = [
             f"E-13 fingerprint `{config}`: `{_fingerprint(model, config)}`." for config in CONFIGS
         ]
         sources = (
-            f"{from_run} from this run, {from_reports} more from {len(self.committed)} "
+            f"{from_run} from this run, {from_reports} more from {len(committed)} "
             "fingerprint(s) judged in the committed reports"
         )
         notes.append(
@@ -379,6 +410,7 @@ __all__ = [
     "MIN_FINGERPRINTS",
     "E13Suite",
     "committed_voice_means",
+    "committed_voice_means_by_judge",
     "feedback_correlation",
     "metric_id",
     "pool",

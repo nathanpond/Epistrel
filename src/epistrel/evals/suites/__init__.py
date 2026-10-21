@@ -113,6 +113,11 @@ class Suite:
     """``pairwise``: the suite's judge rows are pairwise judgements, which the stored pairwise
     calibration covers (a run fails fast without one for its judge model); ``none``: its judge
     rows (single-message scores, E-13) have no calibration set in M4 and are ``uncalibrated``."""
+    judge_purposes: ClassVar[tuple[str, ...]] = ()
+    """The purposes the suite's harness-side judge calls use (#475): E-03's ``entailment``,
+    E-12/E-13's ``quality_judge``. A suite that names any is a **judged suite**. Its judge calls
+    go through ``CaseContext.judge_models`` (the run's judge model when one is set), and its
+    result records which model judged."""
 
     @property
     def set_file(self) -> str:

@@ -49,6 +49,7 @@ from epistrel.evals.suites.scenario_play import (
     play,
     script,
 )
+from epistrel.orchestrator.models.registry import QUALITY_JUDGE
 from epistrel.orchestrator.models.stub import StubAdapter
 
 if TYPE_CHECKING:
@@ -128,6 +129,7 @@ class E12Suite(Suite):
         metric_id(config, kind) for config in CONFIGS for kind in INTERVENTION_TYPES
     )
     judge_calibration = "pairwise"
+    judge_purposes = (QUALITY_JUDGE.name,)
     reading_notes = (
         "E-12 (M4) pairs each turn's first draft (its raw renders, assembled deterministically) "
         "with its final message wherever a repair rung, the composition or its polish changed "

@@ -11,6 +11,13 @@ server-version fields and the endpoint; never the machine's name), and per suite
 suite, its ``notes`` (the suite's scoring notes, rendered under "How to read"; #437).
 Values are fractions 0-1.
 
+**The judge** (#475). ``judge`` names the run's second judge model (its model, the version it
+reported and its endpoint), or is ``null`` when the run model judged. Each suite whose rows come
+from a judge (``Suite.judge_purposes``: E-03's ``entailment``, E-12/E-13's ``quality_judge``)
+records the judge that ran in ``judge``, with ``self_judged`` true when that was the run model.
+A report written before #475 has neither field. It still parses, and its judged suites were
+self-judged.
+
 **Markdown** (``docs/evals/<fingerprint[:12]>-<YYYY-MM-DD>.md`` for a real model, committed
 whatever its verdict as the honest record; ``build/evals/stub-report.md`` for a stub run):
 columns metric / floor / rule / mean ± sd / n / seeds / verdict / bound, percentages to two
@@ -133,6 +140,25 @@ class JudgeCalibrationRef(BaseModel):
     floor: float = 0.75
 
 
+class JudgeModel(BaseModel):
+    """A run's second judge model (#475): the model, the version its endpoint reported and the
+    endpoint (``None`` on the stub)."""
+
+    model: str
+    model_version: str | None = None
+    endpoint: str | None = None
+
+
+class SuiteJudge(BaseModel):
+    """The judge a judged suite's calls went to (#475): its model and reported version, the
+    purposes it judged with, and whether it was the run model judging its own output."""
+
+    model: str
+    model_version: str | None = None
+    purposes: list[str] = Field(default_factory=list)
+    self_judged: bool
+
+
 class SuiteResult(BaseModel):
     name: str
     title: str
@@ -148,6 +174,9 @@ class SuiteResult(BaseModel):
     notes: list[str] = Field(default_factory=list)
     calibration: JudgeCalibrationRef | None = None
     """For a suite with judge-based rows (#158): the calibration they were judged under."""
+    judge: SuiteJudge | None = None
+    """For a judged suite (#475): the judge its calls went to; ``None`` for any other suite, and
+    in a report written before #475."""
 
     @classmethod
     def errored(cls, suite: Suite, errors: list[str], seeds: list[int]) -> SuiteResult:
@@ -176,6 +205,8 @@ class Report(BaseModel):
     adapter: str
     engine_sha: str
     host: Host
+    judge: JudgeModel | None = None
+    """The run's second judge model (#475); ``None``: the run model judged (self-judged)."""
     seed_base: int
     seeds: list[int]
     suites: list[SuiteResult] = Field(default_factory=list)
@@ -288,6 +319,24 @@ def calibration_text(calibration: JudgeCalibrationRef) -> str:
     )
 
 
+def _version_text(version: str | None) -> str:
+    return f"`{version}`" if version else EM_DASH
+
+
+def judge_text(judge: SuiteJudge) -> str:
+    """One line on the judge a judged suite's calls went to (#475)."""
+    purposes = ", ".join(f"`{p}`" for p in judge.purposes) or EM_DASH
+    if judge.self_judged:
+        return (
+            f"Judge: **self-judged**. The run model `{judge.model}` (reported version: "
+            f"{_version_text(judge.model_version)}) judged its own output ({purposes})."
+        )
+    return (
+        f"Judge: `{judge.model}` (reported version: {_version_text(judge.model_version)}), a "
+        f"second model, made this suite's judge calls ({purposes})."
+    )
+
+
 def _bound_text(metric: MetricResult) -> str:
     if metric.rule is not Rule.zero:
         return EM_DASH
@@ -328,19 +377,25 @@ def summary(report: Report) -> dict[str, Any]:
         "suites": {s.name: s.verdict.value for s in report.suites},
         "requirements": requirement_verdicts(report),
         "judged": judged_means(report),
+        "judge": report.judge.model if report.judge is not None else None,
+        "judges": {
+            s.name: s.judge.model_dump(mode="json") for s in report.suites if s.judge is not None
+        },
     }
 
 
 def judged_means(report: Report) -> list[dict[str, Any]]:
     """Every judge-based row that measured a named configuration fingerprint, with its mean and
     n (#463): what a later run pools across the committed reports, e.g. E-13's feedback
-    correlation, which needs more fingerprints than one run judges."""
+    correlation, which needs more fingerprints than one run judges. Each row names the model
+    that judged it (#475), so rows are pooled only with rows from the same judge."""
     return [
         {
             "metric": m.id,
             "fingerprint": m.fingerprint,
             "mean": m.mean,
             "n": m.sample_size,
+            "judge": s.judge.model if s.judge is not None else report.model,
         }
         for s in report.suites
         for m in s.metrics
@@ -396,6 +451,15 @@ def render_markdown(report: Report) -> str:
     host_bits: list[str] = [host.kind]
     host_bits += [bit for bit in (host.hardware, host.server_version) if bit]
     endpoint = f"`{report.adapter}`" + (f" at `{host.endpoint}`" if host.endpoint else "")
+    if report.judge is not None:
+        at = f" at `{report.judge.endpoint}`" if report.judge.endpoint else ""
+        judge_line = (
+            f"- **Judge:** `{report.judge.model}` (reported version: "
+            f"{_version_text(report.judge.model_version)}){at}, a second model for the "
+            "harness's judge calls; the run model served every engine call"
+        )
+    else:
+        judge_line = "- **Judge:** the run model (self-judged)"
     lines = [
         f"# Eval report {report.run_id}",
         "",
@@ -405,8 +469,11 @@ def render_markdown(report: Report) -> str:
         f"- **Model:** `{report.model}` (reported version: "
         f"{f'`{report.model_version}`' if report.model_version else EM_DASH})",
         f"- **Adapter:** {endpoint}",
+        judge_line,
         f"- **Fingerprint:** `{report.fingerprint}` ({report.fingerprint_profile}, with the model "
-        "as every story purpose's)",
+        "as every story purpose's"
+        + (" and the judge as `quality_judge`'s" if report.judge is not None else "")
+        + ")",
         f"- **Host:** {'; '.join(host_bits)}",
         f"- **Seeds:** {seed_text}",
         f"- **Sample size:** {report.sample_size} cases per seed",
@@ -428,6 +495,8 @@ def render_markdown(report: Report) -> str:
             f"{len(suite.seeds)} seeds{timing}; {gated}. Guarantee rows measured: "
             f"{', '.join(f'`{g}`' for g in suite.guarantees) or EM_DASH}."
         )
+        if suite.judge is not None:
+            lines += ["", judge_text(suite.judge)]
         if suite.calibration is not None:
             lines += ["", calibration_text(suite.calibration)]
         if suite.errors:
@@ -551,11 +620,14 @@ __all__ = [
     "REPORT_VERSION",
     "Host",
     "JudgeCalibrationRef",
+    "JudgeModel",
     "MetricResult",
     "Report",
+    "SuiteJudge",
     "SuiteResult",
     "calibration_text",
     "index_text",
+    "judge_text",
     "percent",
     "read_summary",
     "render_index",

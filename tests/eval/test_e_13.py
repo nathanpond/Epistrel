@@ -279,7 +279,7 @@ def test_judged_means_in_the_embedded_summary() -> None:
         suites=[result],
     )
     assert summary(report)["judged"] == [
-        {"metric": voice, "fingerprint": "sha256:fp", "mean": 0.8, "n": 8}
+        {"metric": voice, "fingerprint": "sha256:fp", "mean": 0.8, "n": 8, "judge": "m"}
     ]
 
 

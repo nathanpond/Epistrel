@@ -8505,3 +8505,4 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Issue:** #479
 - **Deferred to M9 (model):** The remaining live E-06 fallbacks (3 of 5) come from the model writing about the player's character and using unbound "you" and unknown proper names in claims, all of which are repaired by design.
   **Issue:** #479
+

@@ -94,8 +94,9 @@ def test_u_10__ranking() -> None:
     1.0 and ranks the arms' agreement above one arm's; recency halves every half-life of turns
     before the query's position (none for a position-less memory, no negative age); the score
     is ``w_sim·fused + w_rec·recency + w_imp·decayed importance`` with the profile's weights,
-    ties by id. Complements: each weight alone orders by its own term (a zero weight removes its
-    term's influence), and the order is the same on every run."""
+    ties by story position (turn, then beat, earliest first), then text, then id (#476: ids
+    differ between two replays). Complements: each weight alone orders by its own term (a zero
+    weight removes its term's influence), and the order is the same on every run."""
     # Fusion.
     fused = fuse([["a", "b", "c"], ["b", "a"], ["b"]], k=60)
     assert fused["b"] > fused["a"] > fused["c"]
@@ -159,8 +160,19 @@ def test_u_10__ranking() -> None:
     ]
     assert (unscored.similarity, unscored.recency) == (0.0, 0.0)
     assert unscored.importance == pytest.approx(DEFAULT_IMPORTANCE)
-    # Ties by id, deterministic.
+    # Ties by story position, then text, and only then by id, deterministic (#476).
     tied = [Candidate(i, turn=50, importance=0.5, importance_at=50) for i in ("b", "a", "c")]
     once = rank(tied, {}, now=100, weights=weights, recency_half_life=100, importance_half_life=200)
     assert [r.memory_id for r in once] == ["a", "b", "c"]
+    by_position = [
+        Candidate("a-beat-3", turn=50, importance=0.5, importance_at=50, beat=3, text="x"),
+        Candidate("b-beat-1-z", turn=50, importance=0.5, importance_at=50, beat=1, text="z"),
+        Candidate("c-beat-1-y", turn=50, importance=0.5, importance_at=50, beat=1, text="y"),
+        Candidate("d-no-beat", turn=50, importance=0.5, importance_at=50, beat=None, text="w"),
+    ]
+    ranked = rank(
+        by_position, {}, now=100, weights=weights, recency_half_life=100, importance_half_life=200
+    )
+    assert len({r.score for r in ranked}) == 1
+    assert [r.memory_id for r in ranked] == ["c-beat-1-y", "b-beat-1-z", "a-beat-3", "d-no-beat"]
     assert order(weights) == order(weights)

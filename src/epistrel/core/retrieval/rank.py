@@ -18,8 +18,11 @@ and decayed importance:
 - ``score = w_sim · fused + w_rec · recency + w_imp · decayed_importance`` with the profile's
   ``memory.episodic.weight_*`` dials (0.6 / 0.2 / 0.2 by default; they need not sum to 1).
 
-``rank`` orders by score, best first, ties by memory id, so the same inputs always give the
-same order.
+``rank`` orders by score, best first. Ties go by story position, earliest first (``turn``, then
+``beat``; a memory with no position after those with one), then by text, and only then by memory
+id (#476): ids are ULIDs whose random part differs between two replays of the same story, so an
+id-only tie-break put equal-score memories in a different order on two fresh databases
+(NFR-DETERM-1).
 """
 
 from __future__ import annotations
@@ -48,12 +51,14 @@ class Weights:
 @dataclass(frozen=True, slots=True)
 class Candidate:
     """What ranking needs of one memory: its id, its position (``turn``), its importance and
-    the turn the importance holds from."""
+    the turn the importance holds from; its ``beat`` and ``text`` break score ties."""
 
     memory_id: str
     turn: int | None
     importance: float | None
     importance_at: int | None
+    beat: int | None = None
+    text: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,15 +116,25 @@ def rank(
     importance_half_life: float,
 ) -> list[Ranked]:
     """Every candidate scored (its fused ``similarity``, 0.0 when no arm found it), best first,
-    ties by memory id."""
-    out: list[Ranked] = []
+    ties by story position, then text, then memory id (see the module docstring)."""
+    out: list[tuple[tuple[float, bool, int, bool, int, str, str], Ranked]] = []
     for c in dict((c.memory_id, c) for c in candidates).values():
         sim = float(similarity.get(c.memory_id, 0.0))
         rec = recency(c.turn, now, recency_half_life)
         imp = decayed_importance(c.importance, c.importance_at, now, importance_half_life)
-        out.append(Ranked(c.memory_id, score(sim, rec, imp, weights), sim, rec, imp))
-    out.sort(key=lambda r: (-r.score, r.memory_id))
-    return out
+        total = score(sim, rec, imp, weights)
+        key = (
+            -total,
+            c.turn is None,
+            c.turn or 0,
+            c.beat is None,
+            c.beat or 0,
+            c.text,
+            c.memory_id,
+        )
+        out.append((key, Ranked(c.memory_id, total, sim, rec, imp)))
+    out.sort(key=lambda pair: pair[0])
+    return [ranked for _, ranked in out]
 
 
 __all__ = ["DEFAULT_RRF_K", "Candidate", "Ranked", "Weights", "fuse", "rank", "recency", "score"]

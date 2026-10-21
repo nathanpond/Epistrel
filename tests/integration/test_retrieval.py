@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.core.canon import facts as canon_facts
 from epistrel.core.context import RequestContext
 from epistrel.core.enums import MemoryKind, RecordProvenance, RetrievalTier
+from epistrel.core.ids import new_ulid
 from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.projections import structured
@@ -459,6 +460,40 @@ async def test_rehydration_reads_retired_records_without_promoting_them(scratch:
     lexical = await _retrieve(db, story.story_id, query, embed=_vector(), touch=False)
     assert lantern in _ids(lexical.memories)
     assert lexical.model_calls == 1
+
+
+async def test_equal_scores_rank_by_story_position_not_id(scratch: Scratch) -> None:
+    """#476 (the structured determinism test's replays diverged here): two memories of one
+    turn with the same score (each ranked first by one arm: the lantern lexically, the song by
+    its vector) come back in story order, beat 1 before beat 2, though their ids sort the
+    other way. Ids are ULIDs whose random part differs between two replays of a story, so an
+    id tie-break reorders the prompt's memories from one fresh database to the next."""
+    db = scratch.db
+    story = await r.build_story(db, turns=r.TURNS)
+    low, high = sorted((new_ulid(), new_ulid()))
+    later = await r.memory(
+        db, story, "song", "Ann hums an old song.", turn=900, beat=2, importance=0.5, memory_id=low
+    )
+    await r.set_vectors(db, story.story_id, NEAR)  # the song only: the lantern has no vector
+    earlier = await r.memory(
+        db,
+        story,
+        "lantern",
+        "Quillon Vexby polished the brass lantern.",
+        turn=900,
+        beat=1,
+        importance=0.5,
+        memory_id=high,
+    )
+    found = await _retrieve(db, story.story_id, "the brass lantern", embed=_vector(), touch=False)
+    ranked = {m.id: m for m in found.memories}
+    assert ranked[earlier].arms == ("lexical",)
+    assert ranked[later].arms == ("vector",)
+    assert ranked[earlier].score == ranked[later].score
+    assert earlier > later  # the id order is the reverse of the story order
+    assert [i for i in _ids(found.memories) if i in (earlier, later)] == [earlier, later]
+    memory_items = [i.item_id for i in found.context.items if i.kind == "memory"]
+    assert [i for i in memory_items if i in (earlier, later)] == [earlier, later]
 
 
 async def test_a_lite_story_retrieves_nothing(scratch: Scratch) -> None:

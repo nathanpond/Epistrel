@@ -539,7 +539,8 @@ async def _episodes(
         where.append(m.event_type == event_type)
     if entities:
         where.append(m.participants.overlap(list(entities)))
-    latest = (m.narrative_turn.desc().nulls_last(), m.beat.desc().nulls_last(), m.id)
+    # Ties by position, then text, then id (#476: ids differ between two replays).
+    latest = (m.narrative_turn.desc().nulls_last(), m.beat.desc().nulls_last(), m.text, m.id)
     order: tuple[Any, ...] = latest
     if turns is None and text_query is not None and text_query.strip():
         # No window locates the occasion: the episodes that best match the text come first
@@ -579,7 +580,7 @@ async def _assessments(
     found = await conn.execute(
         select(*_COLUMNS)
         .where(*where)
-        .order_by(m.narrative_turn.desc().nulls_last(), m.id)
+        .order_by(m.narrative_turn.desc().nulls_last(), m.beat.desc().nulls_last(), m.text, m.id)
         .limit(k)
     )
     return list(found)
@@ -625,7 +626,8 @@ async def _alias_arm(
             f"AND {position_clause('m')} "
             f"AND {quarantine_clause('m')} "
             f"AND m.search @@ ({phrases}) "
-            "ORDER BY m.narrative_turn DESC NULLS LAST, m.beat DESC NULLS LAST, m.id LIMIT :k"
+            "ORDER BY m.narrative_turn DESC NULLS LAST, m.beat DESC NULLS LAST, m.text, m.id "
+            "LIMIT :k"
         ),
         {
             "story": story_id,
@@ -997,9 +999,12 @@ async def retrieve(
                     "rehydration embedding failed story=%s error=%s", story_id, type(exc).__name__
                 )
             clk.exclude(time.perf_counter() - started)
-        vector_hits = sorted([*vector_hits, *similar.items()], key=lambda hit: (-hit[1], hit[0]))
+        # A stable sort by score alone: ties keep each arm's own order (its position tie-break)
+        # and the hot hits before the rehydrated ones, never the random id order (#476).
+        rehydrated = [(i, similar[i]) for i in retired_ids if i in similar]
+        vector_hits = sorted([*vector_hits, *rehydrated], key=lambda hit: -hit[1])
     if retired_hits:
-        lexical_hits = sorted([*lexical_hits, *retired_hits], key=lambda hit: (-hit[1], hit[0]))
+        lexical_hits = sorted([*lexical_hits, *retired_hits], key=lambda hit: -hit[1])
     lexical_hits = _relevant_lexical(lexical_hits)
 
     # 4. fuse and rank
@@ -1022,7 +1027,7 @@ async def retrieve(
         details = {i: r for i, r in details.items() if MemoryKind(r.kind) in wanted}
     ranked = ranking.rank(
         (
-            ranking.Candidate(i, r.narrative_turn, r.importance, r.importance_at)
+            ranking.Candidate(i, r.narrative_turn, r.importance, r.importance_at, r.beat, r.text)
             for i, r in details.items()
         ),
         fused,

@@ -184,8 +184,10 @@ async def memory(
     importance: float | None = None,
     tier: RetrievalTier = RetrievalTier.HOT,
     vector: Sequence[float] | None = None,
+    memory_id: str | None = None,
 ) -> str:
-    """One memory (``name`` keys it in ``story.ids``): participants are person names."""
+    """One memory (``name`` keys it in ``story.ids``): participants are person names;
+    ``memory_id`` fixes its id (a fresh ULID otherwise)."""
     row = _row(
         story,
         line,
@@ -196,6 +198,8 @@ async def memory(
         participants=[story.people[p] for p in participants],
         importance=importance,
     )
+    if memory_id is not None:
+        row["id"] = memory_id
     async with db.begin() as conn:
         await insert_derived(conn, memories, [row])
         values: dict[str, Any] = {}

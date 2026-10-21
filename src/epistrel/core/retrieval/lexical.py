@@ -133,10 +133,11 @@ class TsvectorLexicalSearch:
                 f"AND {position_clause('m')} "
                 f"AND {quarantine_clause('m')} "
                 "AND m.search @@ q "
-                # Ties by position, newest first, then id (#154: ids are random within a
-                # millisecond, so an id-only tie-break is not deterministic across runs).
+                # Ties by position, newest first, then text, then id (#154, #476: ids are
+                # random within a millisecond, so an id tie-break is not deterministic across
+                # runs).
                 "ORDER BY rank DESC, m.narrative_turn DESC NULLS LAST, m.beat DESC NULLS LAST, "
-                "m.id LIMIT :k"
+                "m.text, m.id LIMIT :k"
             ),
             {
                 "story": story_id,

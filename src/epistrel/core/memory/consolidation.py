@@ -587,13 +587,16 @@ async def collect(
     rows = await conn.execute(
         select(memories)
         .where(*where)
-        .order_by(m.narrative_turn, m.beat.asc().nulls_first(), m.created_at, m.id)
+        # Ties by text before id (#476: ids are random within a millisecond).
+        .order_by(m.narrative_turn, m.beat.asc().nulls_first(), m.created_at, m.text, m.id)
         .limit(MAX_INPUTS + 1)
     )
     found = [_memory_input(r, names, level) for r in rows]
     if level == 1:
         found.extend(await _fact_inputs(conn, story_id, window, scope))
-        found.sort(key=lambda i: (i.narrative_turn, i.beat or 0, i.kind == "fact", i.record_id))
+        found.sort(
+            key=lambda i: (i.narrative_turn, i.beat or 0, i.kind == "fact", i.text, i.record_id)
+        )
     if len(found) <= MAX_INPUTS:
         return found, False
     cut = found[MAX_INPUTS].narrative_turn

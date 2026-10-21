@@ -1,4 +1,5 @@
-"""E-01: entailment accuracy, M4's part (docs/04 §8; FR-VERIFY-1,3, NFR-QUAL-2; #157). The
+"""E-01: entailment accuracy, its M4 and M9 parts (docs/04 §8; FR-VERIFY-1,3, NFR-QUAL-2; #157;
+NFR-QUAL-2 gates from M9 per ADR-164, and this stub test runs in CI either way). The
 ``e01`` suite runs its labeled set (``evals/sets/entailment``) through #142's ``Verifier`` on
 the stub, scripted per case: both NFR-QUAL-2 rates are clear of their floors and the verdict
 accuracy is reported, the escalated residual apart."""
@@ -29,7 +30,8 @@ from tests.eval.suite_support import (
 pytestmark = pytest.mark.integration
 
 
-@pytest.mark.part("M4", "FR-VERIFY-1,3; NFR-QUAL-2")
+@pytest.mark.part("M4", "FR-VERIFY-1,3")
+@pytest.mark.part("M9", "NFR-QUAL-2")
 async def test_e_01(pg_url: str, engine: AsyncEngine) -> None:
     """At least 400 labeled claims, about 30 % of them the fuzzy residual: on the stub, the
     false-contradiction rate (over the claims not labeled contradicted) and the false-support

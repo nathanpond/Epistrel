@@ -1,4 +1,5 @@
-"""E-03: consolidation faithfulness (docs/04 §8; FR-MEM-3,6, NFR-QUAL-3; #157). The ``e03``
+"""E-03: consolidation faithfulness (docs/04 §8; FR-MEM-3,6, NFR-QUAL-3; #157; NFR-QUAL-3 gates
+from M9 per ADR-164, and this stub test runs in CI either way). The ``e03``
 suite runs source windows (``evals/sets/consolidation``) through #143's consolidation job on
 scratch stories, on the stub: every reflection written is judged entailed by its window's
 episodes, and the judge agrees with both labeled reflections."""
@@ -45,7 +46,8 @@ class Hallucinating(E03Suite):
         )
 
 
-@pytest.mark.part("M4", "FR-MEM-3,6; NFR-QUAL-3")
+@pytest.mark.part("M4", "FR-MEM-3,6")
+@pytest.mark.part("M9", "NFR-QUAL-3")
 async def test_e_03(pg_url: str, engine: AsyncEngine) -> None:
     """At least 150 labeled windows; on a seeded sample, each window's consolidation writes its
     reflection, the judge finds it entailed by the window's episodes (faithfulness 100 % on both

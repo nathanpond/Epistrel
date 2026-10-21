@@ -1,7 +1,9 @@
 """C-25: creative inputs reach the right contexts (docs/04 §5; NFR-QUAL-13,14,15, FR-SCN-2), its
-M4 part (#158).
+M4 and M9 parts (#158). NFR-QUAL-14 gates from M9 (ADR-164), so ``test_c_25__m4`` also carries
+C-25's M9 part; it runs in CI either way.
 
-Every C-25 (M4) part lives in this file (traceability counts a test ID per milestone in one file).
+Every C-25 (M4) and C-25 (M9) part lives in this file (traceability counts a test ID per
+milestone in one file).
 
 ``test_c_25__m4``: with the stub capturing the prompts, a structured story created from the
 Sunday Dinner scenario (#149's structured genesis) plays one turn whose input addresses no
@@ -61,7 +63,8 @@ def stub_settings(pg_url: str) -> Settings:
     return auth_settings(pg_url, model_adapter="stub")
 
 
-@pytest.mark.part("M4", "NFR-QUAL-13,14,15; FR-SCN-2")
+@pytest.mark.part("M4", "NFR-QUAL-13,15; FR-SCN-2")
+@pytest.mark.part("M9", "NFR-QUAL-14")
 async def test_c_25__m4(
     stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
 ) -> None:

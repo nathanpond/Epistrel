@@ -1,5 +1,5 @@
-"""E-12: engine interventions and prose, in aggregate (docs/04 §8; NFR-QUAL-8,14), its M4 part
-(#158).
+"""E-12: engine interventions and prose, in aggregate (docs/04 §8; NFR-QUAL-8,14), its M4 and M9
+parts (#158; NFR-QUAL-14 gates from M9 per ADR-164, and this stub test runs in CI either way).
 
 ``test_e_12`` plays the ``e12`` suite over every intervention scenario
 (``evals/sets/scenarios``) on the stub, two seeds, after calibrating the stub's judge on the
@@ -55,7 +55,8 @@ def _pairs_flipped(share: float) -> set[str]:
     return {p.id for i, p in enumerate(pairs) if i % 10 < round(share * 10)}
 
 
-@pytest.mark.part("M4", "NFR-QUAL-8,14")
+@pytest.mark.part("M4", "NFR-QUAL-8")
+@pytest.mark.part("M9", "NFR-QUAL-14")
 async def test_e_12(pg_url: str, engine: AsyncEngine, tmp_path: Path) -> None:
     suite = SUITES["e12"]
     cases = [c for c in suite.load(SETS) if isinstance(c, ScenarioCase)]

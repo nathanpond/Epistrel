@@ -68,7 +68,7 @@ def test_bad_milestone_is_a_finding() -> None:
     _, findings = _collect("tests_bad_milestone")
     assert findings == [
         "bad milestone tests/gates/fixtures/tests_bad_milestone/test_bad.py::test_i_99: "
-        "M9 is not a §22 milestone"
+        "M99 is not a §22 milestone"
     ]
 
 

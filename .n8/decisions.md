@@ -8400,3 +8400,17 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Issue:** #476
 - **Decision (Rule 1):** the full suite at `8c4037f` failed `test_determinism__structured` (NFR-DETERM-1), intermittently, about 1 run in 4. A probe of every stub call found the first divergence in a prompt's `## Retrieved` order. The cause was exact score ties broken by ULID `memory_id` (#476). This was not caught at `cc85295`, where it happened to pass.
   **Issue:** #476
+- **Decision (Rule 1):** `new_ulid` is monotonic within a process (ULID spec monotonic mode: same millisecond or a clock step back → previous + 1; new millisecond → fresh random bits), thread-safe under a lock, and reset in a forked child. This was option (b) of #477.
+  **Why:** Id order then equals creation order, which a deterministic replay repeats. That fixes every id tie-break that can reach a prompt or Engine Core state (canon facts, canon links and neighborhoods, relationship views, held items, and any not listed) at once, instead of per site. Ids stay unique (16,000 across 8 threads in one frozen ms in the test). Overflow of the 80-bit part carries into the timestamp, which still sorts later, and only fails at 2^128.
+  **Issue:** #477
+- **Decision (Discretion):** The one id used as a token, the idempotency lease's `owner_token`, moves to a new `random_ulid()` (all 80 bits fresh). All other ids use the monotonic `new_ulid`, upload and media ids included.
+  **Why:** Monotonic ids are predictable from the id minted just before them. No id is a bearer secret: signed content URLs are HMAC over method|path|exp, not the id (ADR-152), and every other route requires the service credential (invariant 4). The fencing token is the only value whose guessability could matter, so it keeps the random source.
+  **Issue:** #477
+- **Decision (Discretion):** No per-site domain keys were added. The listed sites keep their `id` / `entity_id` tie-breaks.
+  **Why:** With monotonic ids these tie-breaks are creation order, oldest first, which is already the meaningful order. Changing them to name or text would change profile and canon prompt text without any determinism gain.
+  **Issue:** #477
+- **Decision (Discretion):** A `_millis()` seam in `core/ids.py` and a `frozen_ids` test fixture (in `tests/conftest.py`) freeze the id timestamp. The fixture restores the sequence afterwards.
+  **Why:** The regression tests need many ids in one millisecond to show random ordering without flaking. Patching `time.time_ns` globally would affect the rest of the engine.
+  **Issue:** #477
+- **Decision (Discretion):** Residual assumption: monotonic ids make id order deterministic only where creation order is deterministic. Ids minted by concurrently scheduled work (e.g. the job worker racing a request) still order by which ran first. The determinism script runs without a background worker, so this does not affect NFR-DETERM-1 as tested.
+  **Issue:** #477

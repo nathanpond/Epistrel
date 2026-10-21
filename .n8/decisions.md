@@ -8463,3 +8463,45 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision (Discretion):** The 400 test case is preceded by one prose strike, so that it is red with the fix reverted. On the old code, that strike had already flipped the endpoint, and the 400 probe was never sent. The plain 400 path is still covered by the existing `test_provider_400_falls_back_and_succeeds_on_attempt_two`.
   **Why:** The brief requires every regression test to be red with the fix reverted.
   **Issue:** #482
+
+- **Decision (owner-directed):** #479 is implemented as option 2. A turn-wide `core.verify.introduce.Introductions` mints an id at normalization for an unresolved argument in a `place`/`item` slot of a registered predicate (resolver result `no_mention`/`unknown_name`, not an indefinite). The name is first resolved against the story's index, then against the turn's minted ids. `canonize(..., introduces=...)` creates the entity only for a canonized claim.
+  **Why:** The owner's decision of 2026-10-21 and its guard rails. `canonize` already specified this path.
+  **Issue:** #479
+- **Decision (Discretion):** No ADR was added.
+  **Why:** docs/02 §4.9 and `canonize` already specify the behaviour ("a place or object first named there becomes an entity then"; ids minted by #150's detection). This change implements it, and docs/02 now spells out the mechanics.
+  **Issue:** #479
+- **Decision (Discretion):** "Place or object" means the entity kinds `place` and `item` (FR-PROP-6's "object" is `item`, per `ENTITY_KINDS`). `other`, `organization`, `person`, `any` and every literal kind never mint.
+  **Why:** This is the owner's guard rail ("only entity-typed slots… quantities, durations and times never become entities").
+  **Issue:** #479
+- **Decision (Discretion):** Underscores in an extraction claim's subject, object and time are read as spaces (`extraction.spaced`; `introduce.entity_name` for the stored name).
+  **Why:** The extraction model copies the snake_case of its predicates into its arguments (`the_inn`). Read raw, a multi-word alias does not match (the resolver needs spaces between words), so a minted "the_inn" would sit beside an existing "the inn". The predicate text is unchanged (`auto_name` already handles it).
+  **Issue:** #479
+- **Decision (Discretion):** One `Introductions` object is shared across the whole structured turn. That covers declared, detector and extraction normalization, the follow-up's and the repairs' re-checks, and the composed message's detection.
+  **Why:** One name must be one id within a turn. Otherwise canonize would create two entities, and the composition trace would not match the message's claim to its beat's claim.
+  **Issue:** #479
+- **Decision (Discretion):** A minted id named only by a claim that is not canonized (a `say` utterance label that is not the speaker's own, or a claim kept in the beat's asserted claims) stays in that record with no entity row. It renders by id if read later. No entity is created for it.
+  **Why:** The owner's guard rail says only canonization creates an entity. These records are not canon, and there is no foreign key to entities.
+  **Issue:** #479
+- **Decision (Discretion):** An entity created at canonization gets `descriptors_of(name)`.
+  **Why:** So a later description ("the mill" after "the old mill") resolves to it, as it already does within the turn.
+  **Issue:** #479
+- **Decision (Discretion):** After commit 1, the live AC (≥ 89 %) was reported as unmet (0/5 → 0/5), with options for the owner. The profile, the floors and the extraction template were not changed.
+  **Why:** The residue was claims under free-form predicates, which the guard rails exclude from minting. Going further changed the verification policy, which is the owner's call (Rule 4). The owner then chose option 1 on top (commit 2).
+  **Issue:** #479
+- **Decision (owner, 2026-10-21, second part):** An extraction claim that is uncertain only because a weak (unregistered or auto-registered) relation names something no entity holds is surfaced, not repaired (ADR-163, commit `7a7fb9b`). Detector findings, `unknown_name`/`protected_value` claims, claims about another modeled character or the player, and every core or author relation stay repaired.
+  **Why:** A weak relation is never contradicted by inferred semantics (FR-PROP-4), and a direct polarity conflict needs a proposition an untracked argument cannot form. Repair would only remove texture FR-VERIFY-11 permits.
+  **Issue:** #479
+- **Decision (Discretion):** "Names something the story doesn't track" means the resolver's `unresolved_entity/no_mention` and nothing else. A pronoun with no antecedent (`no_antecedent`, e.g. an unbound "you") and an ambiguous name stay repaired.
+  **Why:** An unbound pronoun may refer to a modeled character or the player (the "still repaired" class), and the owner's scope names untracked *things*. This is the main remaining live residue (14 `no_antecedent` claims in the 5-case dump).
+  **Issue:** #479
+- **Decision (Discretion):** "Another modeled character or the player" means any argument that resolved to an entity with a `character_id` other than the speaker's (the player's character included). For narration (speaker `narrator`), every modeled character counts. An argument that resolved to a non-character (a place) does not block surfacing.
+  **Why:** This mirrors the permission matrix: a render may assert its own actions and backstory, and a director pass may assert nothing about a modeled character beyond an arrival.
+  **Issue:** #479
+- **Decision (Discretion):** The coordinator asked to cite "the rules never return `contradicted` on a weak relation". That is not quite what FR-PROP-4 says: a weak relation still yields `contradicted` on a direct polarity conflict of the identical proposition. ADR-163, docs/02 and the docstrings state the exact rule, and add that an untracked argument cannot form that identical proposition.
+  **Why:** Accuracy against the normative spec (docs/03).
+  **Issue:** #479
+- **Decision (Discretion):** ADR-163 is a new, standalone ADR and amends no earlier one. The `repair` default came from the owner's decision on #142, which is not an ADR, and ADR-162 concerns escalation, not disposition. ADR-163 is the next free number in this worktree, so a parallel branch adding an ADR would need renumbering at cherry-pick.
+  **Why:** The append-only rules in the docs/05 header.
+  **Issue:** #479
+- **Deferred to M9 (model):** The remaining live E-06 fallbacks (3 of 5) come from the model writing about the player's character and using unbound "you" and unknown proper names in claims, all of which are repaired by design.
+  **Issue:** #479

@@ -8342,3 +8342,9 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Issue:** #467
 - **Decision (owner):** E-03's judge takes option (b). The eval harness gains an optional second judge model, configured like the run model, and reports record which model judged; with none set, the run model judges and the report says so. Filed as #475 in M4. The owner will load a second model in LM Studio for the live re-run.
   **Issue:** #462, #475
+- **Decision (Rule 1):** The shared-database pin was a test bug (#452's cost test ran the scale fixture on the shared session database, against the builder's documented precondition). I moved it to a migrated database of its own. I left the engine unchanged because the embedding pin is deployment-wide by design (#138), not a process-wide cache.
+  **Why:** The pin retyped `memories.embedding` to `vector(8)` for every later test on the shared database, and 3-dimension writes there failed depending on test order.
+  **Issue:** #473
+- **Decision (Discretion):** The autouse shared-database check now also fails a test that leaves the shared vector space pinned. It unpins first, so only the culprit fails.
+  **Why:** This prevents a recurrence and points straight at the test that caused it, instead of showing up later as dimension errors in unrelated tests. I chose to unpin and fail (not fail only) so a single offender doesn't take out every test after it.
+  **Issue:** #473

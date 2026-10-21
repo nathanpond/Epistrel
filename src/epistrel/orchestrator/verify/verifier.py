@@ -32,14 +32,13 @@ retries did not cure, a verdict outside the enum, a confidence below the deploym
 ``verification.entailment_min_confidence`` (0.6), and a model ``novel`` (the model's word never
 canonizes) all take the safe disposition, and so does ``ModelUnavailable`` (degradation
 ``entailment_unavailable``: the turn goes on; never a 503). An ``approximate_bounds`` residual
-is never decided by the model (``TIME_UNDECIDABLE``, #460): FR-PROP-10 needs every admissible
-reading for a verdict, the rules showed the readings disagree, and the model knows no more about
-the bounds than the records say, so whatever it answers takes the safe disposition. Otherwise
-only a validated ``supported`` or ``contradicted`` at or above the floor is taken, with
-``source = entailment``; a model
-``contradicted`` cites no record (rule ``entailment``: #151 repairs it as a constraint). Because
-only ``uncertain`` escalates, a model's ``supported`` can never override a deterministic
-``contradicted``.
+never reaches the model (the gate's ``NEVER_ESCALATES``, #467, ADR-162). FR-PROP-10 needs every
+admissible reading for a verdict, and the rules showed that the readings disagree. The model
+knows no more about the bounds than the records say, so the residual takes the safe disposition
+with no call. Otherwise only a validated ``supported`` or ``contradicted`` at or above the
+floor is taken, with ``source = entailment``; a model ``contradicted`` cites no record (rule
+``entailment``: #151 repairs it as a constraint). Because only ``uncertain`` escalates, a
+model's ``supported`` can never override a deterministic ``contradicted``.
 
 **The safe disposition** is the profile's ``verification.safe_disposition``: ``repair`` (the
 default, the owner's decision on #142) hands the claim to #151's repair as if it were
@@ -168,14 +167,6 @@ RESOLUTION_CONFLICT = "resolution_conflict"
 """#154: a dependence's binding of an open thunk that conflicts with recorded history
 (``core.commit.reconcile``): ``contradicted``, repaired with an ``avoid_binding`` constraint."""
 """The repair tag of a novel claim its asserter may not introduce (#151's ladder)."""
-TIME_UNDECIDABLE = frozenset({VerdictReason.APPROXIMATE_BOUNDS})
-"""Residual reasons no model answer can settle (#460): the rules already showed that the claim
-is covered (or overlaps) under some admissible readings of the approximate bounds and not under
-others, and FR-PROP-10 (ADR-048) requires every reading for ``supported`` or ``contradicted``.
-The model sees the same bounds and knows no more about where they really lie, so its
-``supported`` or ``contradicted`` cannot be validated (FR-VERIFY-8) and the claim takes the safe
-disposition. The call is still made (docs/02 §4.9's clause (c)), and its record carries the
-model's answer as an unflipped escalation, which is #155's evidence for tightening it."""
 NEVER_CANONIZES = frozenset({"think"})
 """Beat channels whose claims never canonize."""
 SAY = "say"
@@ -1098,11 +1089,7 @@ class Verifier:
                 degradation=degradation,
             )
         self._answers[key] = answer
-        if (
-            answer.confidence < self.config.entailment_min_confidence
-            or answer.verdict == "novel"
-            or decision.reason in TIME_UNDECIDABLE
-        ):
+        if answer.confidence < self.config.entailment_min_confidence or answer.verdict == "novel":
             return self._safe(
                 claim, verdict, decision, ref, called=True, reused=reused, answer=answer
             )
@@ -1268,7 +1255,6 @@ __all__ = [
     "ENTAILMENT_RULE",
     "ENTAILMENT_UNAVAILABLE",
     "RESOLUTION_CONFLICT",
-    "TIME_UNDECIDABLE",
     "UNANCHORED",
     "UNCERTAIN_SURFACED",
     "UNPERMITTED",

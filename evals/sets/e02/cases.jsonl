@@ -76,6 +76,30 @@
 {"id": "e02-esc-076", "kind": "escalation", "verdict": "supported", "confidence": 0.55}
 {"id": "e02-esc-077", "kind": "escalation", "verdict": "contradicted", "confidence": 0.55}
 {"id": "e02-esc-078", "kind": "escalation", "verdict": "unparseable"}
+{"id": "e02-esc-079", "kind": "escalation", "verdict": "contradicted", "confidence": 0.9}
+{"id": "e02-esc-080", "kind": "escalation", "verdict": "supported", "confidence": 0.9}
+{"id": "e02-esc-081", "kind": "escalation", "verdict": "novel", "confidence": 0.9}
+{"id": "e02-esc-082", "kind": "escalation", "verdict": "supported", "confidence": 0.55}
+{"id": "e02-esc-083", "kind": "escalation", "verdict": "contradicted", "confidence": 0.55}
+{"id": "e02-esc-084", "kind": "escalation", "verdict": "unparseable"}
+{"id": "e02-esc-085", "kind": "escalation", "verdict": "contradicted", "confidence": 0.9}
+{"id": "e02-esc-086", "kind": "escalation", "verdict": "supported", "confidence": 0.9}
+{"id": "e02-esc-087", "kind": "escalation", "verdict": "novel", "confidence": 0.9}
+{"id": "e02-esc-088", "kind": "escalation", "verdict": "supported", "confidence": 0.55}
+{"id": "e02-esc-089", "kind": "escalation", "verdict": "contradicted", "confidence": 0.55}
+{"id": "e02-esc-090", "kind": "escalation", "verdict": "unparseable"}
+{"id": "e02-esc-091", "kind": "escalation", "verdict": "contradicted", "confidence": 0.9}
+{"id": "e02-esc-092", "kind": "escalation", "verdict": "supported", "confidence": 0.9}
+{"id": "e02-esc-093", "kind": "escalation", "verdict": "novel", "confidence": 0.9}
+{"id": "e02-esc-094", "kind": "escalation", "verdict": "supported", "confidence": 0.55}
+{"id": "e02-esc-095", "kind": "escalation", "verdict": "contradicted", "confidence": 0.55}
+{"id": "e02-esc-096", "kind": "escalation", "verdict": "unparseable"}
+{"id": "e02-esc-097", "kind": "escalation", "verdict": "contradicted", "confidence": 0.9}
+{"id": "e02-esc-098", "kind": "escalation", "verdict": "supported", "confidence": 0.9}
+{"id": "e02-esc-099", "kind": "escalation", "verdict": "novel", "confidence": 0.9}
+{"id": "e02-esc-100", "kind": "escalation", "verdict": "supported", "confidence": 0.55}
+{"id": "e02-esc-101", "kind": "escalation", "verdict": "contradicted", "confidence": 0.55}
+{"id": "e02-esc-102", "kind": "escalation", "verdict": "unparseable"}
 {"id": "e02-promote-1", "kind": "promotion", "cases": 200, "agreed": 200}
 {"id": "e02-promote-2", "kind": "promotion", "cases": 199, "agreed": 199}
 {"id": "e02-promote-3", "kind": "promotion", "cases": 250, "agreed": 240}

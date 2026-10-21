@@ -8,21 +8,25 @@ names what may escalate:
 - (b) a conflict that depends on world knowledge: ``world_knowledge``, and ``weak_semantics``
   (a different object on a weak predicate: whether the two exclude each other is world
   knowledge the registry does not hold);
-- (c) a partial or ambiguous match the rules do not resolve: ``approximate_bounds``. It is
-  escalated and recorded, but the verifier never takes the model's answer on it
-  (``verifier.TIME_UNDECIDABLE``, #460).
+- (c) a partial or ambiguous match the rules do not resolve. Every one is resolved by FR-PROP-10
+  now, so no reason escalates under (c) (ADR-162).
 
 ``partial_coverage`` and ``granularity_refinement`` are resolved by #140's rules and never reach
 the gate (``RESOLVED_IN_CORE``). ``unresolved_entity``, ``unresolved_time`` and
 ``argument_type`` never escalate (``NEVER_ESCALATES``): the claim is not about anything the
-model could judge against the records, so it takes the safe disposition at once.
+model could judge against the records, so it takes the safe disposition at once. Neither does
+``approximate_bounds`` (#467, ADR-162). FR-PROP-10 already resolves it deterministically to
+``uncertain``: the rules showed that the claim holds under some admissible readings of the
+approximate bounds and not under others, and a verdict needs every reading. The model sees the
+same bounds and knows no more about where they lie, so no answer it gave could be taken
+(FR-VERIFY-8). The call would cost budget and latency and could not change the outcome.
 
 **The threshold.** A reason that may escalate does so when the deterministic confidence
-(``Verdict.confidence``: 0.5 for (b) and (c), 0.0 for (a) and ``weak_semantics``) is below the
-effective threshold: the least of the profile's ``verification.entailment_gate`` and the
-claim's per-shape threshold. The gate launches conservatively: the default gate, 1.0, escalates
-every one, and no shape is tightened by default. #155 tightens per shape (shadow first, then
-promotion) and hands its live thresholds to the gate as a ``ShapeThresholds``.
+(``Verdict.confidence``: 0.5 for ``world_knowledge``, 0.0 for (a) and ``weak_semantics``) is
+below the effective threshold: the least of the profile's ``verification.entailment_gate``
+and the claim's per-shape threshold. The gate launches conservatively: the default gate, 1.0,
+escalates every one, and no shape is tightened by default. #155 tightens per shape (shadow
+first, then promotion) and hands its live thresholds to the gate as a ``ShapeThresholds``.
 
 **Predicate shape** (``PredicateShape``): ``(layer, cardinality, temporal kind, polarity)``,
 the cluster key #155 reports yield by; stored as ``layer|cardinality|temporal|polarity``. An
@@ -46,16 +50,17 @@ ESCALATES: Mapping[VerdictReason, Literal["a", "b", "c"]] = MappingProxyType(
         R.UNRESOLVED_PREDICATE: "a",
         R.WORLD_KNOWLEDGE: "b",
         R.WEAK_SEMANTICS: "b",
-        R.APPROXIMATE_BOUNDS: "c",
     }
 )
-"""The reasons that may escalate, with FR-VERIFY-3's clause."""
+"""The reasons that may escalate, with FR-VERIFY-3's clause (none is (c): ADR-162)."""
 
 RESOLVED_IN_CORE = frozenset({R.PARTIAL_COVERAGE, R.GRANULARITY_REFINEMENT})
 """Resolved by #140's coverage logic (through their remainders); never escalated."""
 
-NEVER_ESCALATES = frozenset({R.UNRESOLVED_ENTITY, R.UNRESOLVED_TIME, R.ARGUMENT_TYPE})
-"""Take the safe disposition directly, whatever the threshold."""
+NEVER_ESCALATES = frozenset(
+    {R.UNRESOLVED_ENTITY, R.UNRESOLVED_TIME, R.ARGUMENT_TYPE, R.APPROXIMATE_BOUNDS}
+)
+"""Take the safe disposition directly, whatever the threshold (``approximate_bounds``: #467)."""
 
 UNKNOWN = "unknown"
 SHAPE_SEPARATOR = "|"

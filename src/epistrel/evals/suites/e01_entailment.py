@@ -13,9 +13,10 @@ The expected label is the final kind a correct check ends with: ``supported``,
 the claim (a model ``novel`` or a low-confidence answer takes the safe disposition, which
 scores as ``uncertain``). About 30 % of the cases are the **fuzzy residual** (families
 ``residual-*``): claims the deterministic rules leave ``uncertain`` (world knowledge,
-approximate bounds, weak semantics), which only the model can settle. An approximate-bounds
-residual is escalated, but the model's answer on it is never taken (#460), so it always ends
-``uncertain``. The model reads the cases' years as calendar dates (``FRAME``).
+approximate bounds, weak semantics). The model settles world knowledge and weak semantics. An
+approximate-bounds residual never reaches the model (#467, ADR-162): FR-PROP-10 already leaves
+it ``uncertain``, so it takes the safe disposition with no call and always ends ``uncertain``.
+The model reads the cases' years as calendar dates (``FRAME``).
 
 - ``nfr_qual_2.false_contradiction`` (rate, ≤ 2 %): over the cases labeled anything but
   ``contradicted``, the share the check ended ``contradicted``.
@@ -332,8 +333,9 @@ class E01Suite(Suite):
     reading_notes = (
         "E-01's label is the final kind a correct check ends with; `uncertain` marks a claim "
         "neither canon nor world knowledge decides (the safe disposition). About 30 % of the "
-        "cases are the fuzzy residual, the only ones that reach the model; the "
-        "`e01.residual.*` rows show them alone.",
+        "cases are the fuzzy residual, the only ones that reach the model (an approximate-bounds "
+        "residual does not: it ends `uncertain` with no call); the `e01.residual.*` rows show "
+        "them alone.",
     )
 
     async def evaluate(self, ctx: CaseContext, case: CaseModel) -> Outcome:

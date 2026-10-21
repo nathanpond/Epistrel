@@ -25,8 +25,8 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-TURN | §6 | 043 |
 | FR-COMMIT | §7 | 018, 022, 043, 053, 129 |
 | FR-RET | §8 | 129 |
-| FR-PROP | §8.1 | 160 |
-| FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160 |
+| FR-PROP | §8.1 | 160, 162 |
+| FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162 |
 | FR-GUARD | §11 | 087, 095, 096, 114, 161 |
 | FR-REWRITE | §12.1 | 144 |
 | FR-MODEL | §13 | 129, 136, 144, 150 |
@@ -45,8 +45,8 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-RATE | §18.6 | 094, 107, 132, 138 |
 | FR-IMG | §18.7 | 098, 099, 100, 101, 102, 103, 104, 105, 108, 109, 110, 114, 116, 117, 118, 119, 120, 121, 124, 125, 129, 130, 131, 135, 136, 145 |
 | FR-FB | §18.8 | 111 |
-| FR-OBS | §19 | 129, 158 |
-| NFR-PERF | §20 | 080, 123, 126, 133, 137, 145, 146, 147 |
+| FR-OBS | §19 | 129, 158, 162 |
+| NFR-PERF | §20 | 080, 123, 126, 133, 137, 145, 146, 147, 162 |
 | NFR-DETERM | §20 | 045, 080 |
 | NFR-SCALE | §20 | 070, 072, 075, 137 |
 | NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 112, 114, 115, 158 |
@@ -79,7 +79,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 014 | Multi-character single-response composition | Amended | 031, 047, 059 |
 | 015 | Model-agnostic via OpenAI-compatible interface; Apache-2.0 license | Current | — |
 | 016 | API surfaces: REST + MCP + library; Story as the top-level container | Partly superseded | 092 |
-| 017 | Deterministic-first job disposition; the model is reached only through measured, tunable gates | Partly superseded | 065, 080, 084, 158 |
+| 017 | Deterministic-first job disposition; the model is reached only through measured, tunable gates | Partly superseded | 065, 080, 084, 158, 162 |
 | 018 | In-story time travel via sequence invalidation (truncate / regenerate) | Partly superseded | 027, 072, 122, 028 |
 | 019 | Stories are self-contained; fork is a full copy; deletion is a scoped delete | Amended | 027, 072, 128 |
 | 020 | Every external read is an event; single source of truth for external values | Amended | 030, 056 |
@@ -224,6 +224,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 159 | A pending catalog-scope erasure also holds back the deployment policies and configuration changes naming its subject | Partly superseded | 161 |
 | 160 | Verification checks an affirmed claim's declared consequences, closed sets may close a key set, and a rule-free presence conflict is uncertain | Current | — |
 | 161 | A pending catalog-scope erasure withholds a policy naming its subject from a story's settings, and refuses a violation of it | Current | — |
+| 162 | An approximate-bounds residual takes the safe disposition with no entailment call | Current | — |
 
 ---
 
@@ -369,10 +370,10 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 
 ### ADR-017 — Deterministic-first job disposition; the model is reached only through measured, tunable gates
 **Status:** Accepted. Resolves the split left open by ADR-006.
-**Amended by:** ADR-065 — the extraction bullet is superseded: claim detection runs on every render by default; ADR-080 — per-turn call budget and deadline with ordered degradation; ADR-084 — gates and modules are set per story by its engine profile; ADR-158 — the extraction backstop's default mode is `gated`.
+**Amended by:** ADR-065 — the extraction bullet is superseded: claim detection runs on every render by default; ADR-080 — per-turn call budget and deadline with ordered degradation; ADR-084 — gates and modules are set per story by its engine profile; ADR-158 — the extraction backstop's default mode is `gated`; ADR-162 — clause (c) of the verification bullet no longer covers approximate bounds.
 **Context:** For each internal job: does it need a model, is it on the hot path, and — for hot-path model use — what gate triggers escalation from the cheap deterministic attempt to the expensive model call? The entailment-fallback gate is the knob that most affects cost, latency, and the risk of false `supported` verdicts (silent canon corruption). The risks are asymmetric: a wrong deterministic `supported` corrupts the story; a needless escalation merely costs a call. So gates bias toward escalation.
 **Decision:** Deterministic is the default and the hot path; a model is reached only through explicit gates that fail toward safety. Per-job disposition:
-- **Verification / entailment (hot path, gated).** Engine Core normalizes claims and returns supported/contradicted/novel deterministically; it returns `uncertain` — and only then does the Orchestrator call the entailment model — on (a) an unresolved predicate, (b) a world-knowledge-dependent conflict, (c) a partial/ambiguous match. The gate is a **tunable predicate-resolution-confidence threshold**, shipped as config and launched conservatively.
+- **Verification / entailment (hot path, gated).** Engine Core normalizes claims and returns supported/contradicted/novel deterministically; it returns `uncertain` — and only then does the Orchestrator call the entailment model — on (a) an unresolved predicate, (b) a world-knowledge-dependent conflict, (c) a partial/ambiguous match *[narrowed by ADR-162: approximate bounds are not one; FR-PROP-10 resolves them deterministically to `uncertain`, with no call]*. The gate is a **tunable predicate-resolution-confidence threshold**, shipped as config and launched conservatively.
 - **Salience (hot-ish; model behind a deterministic pre-filter).** Rules skip obvious non-salient turns; the model resolves the rest. Biased toward recall — a missed signal (under-commitment) is the worse error.
 - **Extraction backstop (hot path).** *Refined by ADR-065:* a structurally valid render does not prove every claim in its prose was declared, so claim detection now runs deterministic detectors on every render and the model extraction on every render by default (`extraction_mode = always`) *[default superseded by ADR-158: `gated` is the default; `always` is a profile's choice]*, with gating available only as an evidence-driven reduction.
 - **Consolidation / reflection, importance scoring (off hot path, no gate).** Model-first, latency-tolerant; model tier chosen freely.
@@ -1613,6 +1614,18 @@ The block is read only when a violation is found, so a passing text costs nothin
 - The OpenAPI contract changes: `EffectivePolicyBody.name` is `string | null`. The library's `policies_effective` returns `Policy | WithheldPolicy`, and `StoryGuardrails.active`/`inactive` hold either.
 - The in-process effective-policy cache is keyed by configuration revisions that a reapply's redaction does not move, so a process that cached a story's set before the reapply serves the unredacted policy after it; #469 tracks that.
 - Tests: `tests/integration/test_erasure_ledger.py` (`test_a_pending_catalog_erasure_withholds_a_story_policy_naming_her`: the settings on REST and a fresh library Engine, a refused input on both and a refused turn, with a complement policy, the state before the restore and after the reapply) and `tests/test_output_gate.py` (`test_a_withheld_policy_refuses_before_its_message_is_used`).
+
+---
+
+### ADR-162 — An approximate-bounds residual takes the safe disposition with no entailment call
+**Status:** Accepted. Amends ADR-017 (clause (c) of the verification bullet: what a partial or ambiguous match covers).
+**Context:** FR-PROP-10 (ADR-048) needs every admissible reading of approximate bounds before a claim is `supported` or `contradicted`, and otherwise leaves it `uncertain`. #142's gate counted `approximate_bounds` under FR-VERIFY-3 (c), a partial or ambiguous match, so it escalated. #460 then stopped taking the model's answer on it: the rules have already shown that the readings disagree, and the model knows no more about the bounds than the records do. Every such escalation was a model call that could not change the verdict. It cost budget and latency, and it left an unflipped `escalations` row as evidence for #155's tightening. The owner chose on 2026-10-20 (#467, option (b)) to stop making the call.
+**Decision:** `approximate_bounds` is in the gate's `NEVER_ESCALATES` set (`orchestrator.verify.gate`), alongside unresolved entities, unresolved times and argument types. Such a residual takes `verification.safe_disposition` at once, with no model call and whatever the threshold, and it ends `uncertain` (FR-VERIFY-8). FR-VERIFY-3 (c)'s "partial or ambiguous match that FR-PROP-10 does not resolve deterministically" no longer covers approximate bounds, because FR-PROP-10 resolves them deterministically to `uncertain`. No current reason escalates under (c). #460's override, which refused the model's answer on an escalated approximate-bounds residual, can no longer be reached and is removed. The outcome is the same. FR-VERIFY-3's text is unchanged, since it already excludes what FR-PROP-10 resolves.
+**Consequences:**
+- An approximate-bounds residual makes zero entailment calls. A turn spends less of its budget (NFR-PERF-6; entailment was never a reserved call) and has less latency. It escalates less often (NFR-PERF-5's reference rate).
+- Its record is `never_escalates`, so #155 writes no `escalations` row for it. The yield report, the shadow window and promotion count only the reasons that escalate, and no approximate-bounds shape collects unflipped evidence. E-02 plays the three reasons that escalate, and its set grows to 102 escalation cases to keep at least 300 escalations. E-01's approximate-bounds cases are labeled `uncertain` and still end `uncertain`, now with no call.
+- Readable valid-times (#460) still apply to every record shown to the model, including approximate bounds on a record shown with another residual.
+- Tests: U-04 (`test_u_04__approximate_bounds`: zero calls, `uncertain`, the safe disposition, no recorded escalation; `test_u_04__escalation` over the reasons that escalate), E-02 (`tests/eval/test_e_02.py`).
 
 ---
 

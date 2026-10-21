@@ -6,8 +6,9 @@ invariants, not a quality rate, and ~20 % escalation is a reference baseline, ne
 ``tests/eval/test_e_02.py`` runs the suite against the stub and asserts no bad observation.
 
 **Escalation cases** (``kind: escalation``, at least 300 escalations over the set): each plays
-one claim per gate reason FR-VERIFY-3 names (an unresolved predicate, world knowledge, weak
-semantics, approximate bounds) through #142's ``Verifier`` (deterministic first, over records
+one claim per gate reason that escalates (an unresolved predicate, world knowledge, weak
+semantics; an approximate-bounds residual never escalates and writes no row, #467, ADR-162)
+through #142's ``Verifier`` (deterministic first, over records
 passed in, ``verification.level = entailment``) with the case's scripted entailment answer
 (a confident or low-confidence ``supported``/``contradicted``, a ``novel``, or an unparseable
 answer), and writes its escalation records through #155's writer
@@ -56,7 +57,6 @@ from epistrel.core.errors import GateNotPromotable
 from epistrel.core.ids import new_ulid
 from epistrel.core.membership import insert_derived
 from epistrel.core.propositions.model import (
-    Bound,
     Interval,
     Layer,
     Polarity,
@@ -135,34 +135,22 @@ REGISTRY = Registry(
 )
 NAMES = {BOBBY: "Bobby", OHIO: "Ohio", SMITH: "Smith", SMITH_2: "Smithson", BOSTON: "Boston"}
 
-Reason = Literal["unresolved_predicate", "world_knowledge", "weak_semantics", "approximate_bounds"]
-REASONS: tuple[Reason, ...] = (
-    "unresolved_predicate",
-    "world_knowledge",
-    "weak_semantics",
-    "approximate_bounds",
-)
+Reason = Literal["unresolved_predicate", "world_knowledge", "weak_semantics"]
+REASONS: tuple[Reason, ...] = ("unresolved_predicate", "world_knowledge", "weak_semantics")
+"""The gate reasons that escalate (``gate.ESCALATES``)."""
 
 
 def _year(y: int) -> int:
     return story_minute(datetime(y, 1, 1, tzinfo=UTC))
 
 
-def _prop(
-    predicate: str, obj: str, when: Interval | None = None, *, negated: bool = False
-) -> Proposition:
+def _prop(predicate: str, obj: str, when: Interval | None = None) -> Proposition:
     return Proposition(
         subject_id=BOBBY,
         predicate_id=predicate,
         object_id=obj,
-        polarity=Polarity.NEGATED if negated else Polarity.AFFIRMED,
+        polarity=Polarity.AFFIRMED,
         valid_time=when if when is not None else Interval.of(None, None),
-    )
-
-
-def _approx(start: tuple[int, int], end: tuple[int, int]) -> Interval:
-    return Interval(
-        start=Bound(outer=start[0], inner=start[1]), end=Bound(inner=end[0], outer=end[1])
     )
 
 
@@ -173,15 +161,8 @@ def claim_for(reason: Reason) -> tuple[Proposition, list[Proposition], bool]:
     if reason == "world_knowledge":
         ohio = _prop(LOCATED_AT, OHIO, Interval.of(_year(2010), _year(2014)))
         return _prop(LOCATED_AT, BOSTON, Interval.of(_year(2011), _year(2012))), [ohio], False
-    if reason == "weak_semantics":
-        smith = _prop(APPRENTICED, SMITH, Interval.of(0, 100))
-        return _prop(APPRENTICED, SMITH_2, Interval.of(50, 60)), [smith], True
-    approximate = _prop(LOCATED_AT, OHIO, _approx((0, 10), (90, 100)))
-    return (
-        _prop(LOCATED_AT, OHIO, _approx((95, 98), (110, 120)), negated=True),
-        [approximate],
-        False,
-    )
+    smith = _prop(APPRENTICED, SMITH, Interval.of(0, 100))
+    return _prop(APPRENTICED, SMITH_2, Interval.of(50, 60)), [smith], True
 
 
 # -- the cases ------------------------------------------------------------------------------

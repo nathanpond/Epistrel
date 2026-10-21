@@ -10,10 +10,13 @@ Model Access Layer with no database, so the model calls are counted exactly:
   covered claim settles from its remainders. Complement: with every ``uncertain`` verdict
   escalating, a conclusive verdict still makes zero calls.
 - ``test_u_04__escalation``: each gate reason, (a) an unresolved predicate, (b) world knowledge
-  and weak semantics, (c) approximate bounds, escalates at the launch threshold, 1.0. Coverage
-  and granularity never do (complement), and neither do the reasons that never escalate. A
-  low-confidence or unparseable answer takes the safe disposition, and so does every residual
-  below ``verification.level = entailment``, with zero calls.
+  and weak semantics, escalates at the launch threshold, 1.0. Coverage and granularity never do
+  (complement), and neither do the reasons that never escalate. A low-confidence or
+  unparseable answer takes the safe disposition, and so does every residual below
+  ``verification.level = entailment``, with zero calls.
+- ``test_u_04__approximate_bounds`` (#467, ADR-162): an approximate-bounds residual makes no
+  model call, whatever the model would answer, and ends ``uncertain`` with the safe
+  disposition and no escalation row.
 - ``test_u_04__canonize`` (#144): a permitted ``novel`` verdict canonizes (FR-VERIFY-4). Over
   records passed in, Bobby's own novel claim is permitted and becomes a canon request with his
   provenance (``render``), its beat's visibility (``objective``; a ``latent`` beat's scope) and
@@ -61,7 +64,6 @@ from epistrel.orchestrator.verify.gate import (
     PredicateShape,
 )
 from epistrel.orchestrator.verify.verifier import (
-    TIME_UNDECIDABLE,
     ClaimRef,
     RecordsSource,
     TimeFrame,
@@ -70,7 +72,7 @@ from epistrel.orchestrator.verify.verifier import (
     VerifyResult,
     render_time,
 )
-from epistrel.orchestrator.verify.yields import flipped
+from epistrel.orchestrator.verify.yields import recorded
 from tests import canon_support as cs
 from tests import verify_support as vs
 
@@ -232,9 +234,10 @@ def _reasons() -> dict[VerdictReason, tuple[Proposition, list[Proposition], bool
 async def test_u_04__escalation() -> None:
     """The gate, at the launch threshold 1.0 (``verification.entailment_gate``'s default):
 
-    - every reason FR-VERIFY-3 names escalates: (a) ``unresolved_predicate``, (b)
-      ``world_knowledge`` and ``weak_semantics``, (c) ``approximate_bounds``; the model is
-      shown the claim and the holder's records, and a validated, confident answer decides it;
+    - every reason that escalates does: (a) ``unresolved_predicate``, (b) ``world_knowledge``
+      and ``weak_semantics`` (no reason escalates under (c): ``approximate_bounds`` never
+      escalates, ``test_u_04__approximate_bounds``); the model is shown the claim and the
+      holder's records, and a validated, confident answer decides it;
     - coverage and granularity never escalate (complement): a partly covered claim and a
       coarser record settle with no call, and the gate refuses both reasons outright, like the
       reasons that never escalate (an unresolved entity, an unresolved time, an argument type);
@@ -245,8 +248,10 @@ async def test_u_04__escalation() -> None:
     """
     assert VerifyConfig().entailment_gate == 1.0
     cases = _reasons()
-    assert set(cases) == set(ESCALATES)
+    assert set(cases) == set(ESCALATES) | {VerdictReason.APPROXIMATE_BOUNDS}
     for reason, (claim, canon, strict) in cases.items():
+        if reason not in ESCALATES:
+            continue
         mal = models()
         mal.stub.script("entailment", [answer("contradicted", 0.9)])
         v = verifier(mal, canon, strict_weak=strict)
@@ -254,21 +259,12 @@ async def test_u_04__escalation() -> None:
         assert found.verdict.reason is reason, reason
         assert found.decision is not None
         assert found.decision.threshold == 1.0
-        if reason in TIME_UNDECIDABLE:
-            # #460: the bounds leave it open in the rules, and no model answer can close it.
-            assert (found.kind, found.source, found.escalated, found.disposition) == (
-                VerdictKind.UNCERTAIN,
-                "deterministic",
-                True,
-                "repair",
-            ), reason
-        else:
-            assert (found.kind, found.source, found.escalated, found.rule) == (
-                VerdictKind.CONTRADICTED,
-                "entailment",
-                True,
-                "entailment",
-            ), reason
+        assert (found.kind, found.source, found.escalated, found.rule) == (
+            VerdictKind.CONTRADICTED,
+            "entailment",
+            True,
+            "entailment",
+        ), reason
         assert calls(mal) == 1, reason
         (call,) = mal.stub.calls
         user = call.messages[-1].content
@@ -286,35 +282,21 @@ async def test_u_04__escalation() -> None:
         assert record.final_kind == found.kind.value
         assert v.report()["escalated"] == 1
 
-    # #460 (FR-PROP-10, FR-VERIFY-8): over approximate bounds, a confident model answer either
-    # way takes the safe disposition, and the escalation is recorded unflipped. The model reads
-    # the bounds as ranges ("sometime between"), not as story-minute offsets.
+    # #460: an approximate bound reads as a range ("sometime between"), not as story-minute
+    # offsets, wherever a record that carries one reaches the model (a neighbour of another
+    # residual). On a story with no calendar anchor it reads as offsets from the story's start.
     claim, canon, _ = cases[VerdictReason.APPROXIMATE_BOUNDS]
-    for verdict in ("supported", "contradicted"):
-        mal = models()
-        mal.stub.script("entailment", [answer(verdict, 0.99)])
-        v = verifier(mal, canon)
-        found = await _verify(v, claim)
-        assert (found.kind, found.disposition, found.needs_repair) == (
-            VerdictKind.UNCERTAIN,
-            "repair",
-            True,
-        ), verdict
-        assert (found.model_verdict, found.model_confidence) == (verdict, 0.99)
-        (record,) = v.escalations
-        assert flipped(record) is False, verdict
-        (call,) = mal.stub.calls
-        sent = " ".join(m.content for m in call.messages)
-        assert (
-            "[from sometime between 1 hour 35 minutes after the story's start and 1 hour 38 "
-            "minutes after the story's start until sometime between 1 hour 50 minutes after the "
-            "story's start and 2 hours after the story's start]"
-        ) in sent
-        assert (
-            "(from sometime between the story's start and 10 minutes after the story's start "
-            "until sometime between 1 hour 30 minutes after the story's start and 1 hour 40 "
-            "minutes after the story's start)"
-        ) in sent
+    unanchored = TimeFrame()
+    assert render_time(claim, vs.REGISTRY, unanchored) == (
+        "from sometime between 1 hour 35 minutes after the story's start and 1 hour 38 "
+        "minutes after the story's start until sometime between 1 hour 50 minutes after the "
+        "story's start and 2 hours after the story's start"
+    )
+    assert render_time(canon[0], vs.REGISTRY, unanchored) == (
+        "from sometime between the story's start and 10 minutes after the story's start "
+        "until sometime between 1 hour 30 minutes after the story's start and 1 hour 40 "
+        "minutes after the story's start"
+    )
 
     # On a story with a calendar anchor the same renderer prints dates (E-01's "about 2008-2012
     # to about 2022-2024"), an instant at its own precision, and an open side as "from"/"until".
@@ -434,6 +416,63 @@ async def test_u_04__escalation() -> None:
     assert found.decision is not None
     assert found.decision.outcome == "below_gate"
     assert (found.kind, found.escalated, calls(mal)) == (VerdictKind.UNCERTAIN, False, 0)
+
+
+@pytest.mark.part("M4", "FR-VERIFY-3")
+async def test_u_04__approximate_bounds() -> None:
+    """#467 (ADR-162; FR-PROP-10, FR-VERIFY-3,8): an ``approximate_bounds`` residual never
+    escalates. The rules showed that the readings of the bounds disagree, and FR-PROP-10 needs
+    every reading for a verdict, so no model answer could be taken. At the launch gate (1.0),
+    and with the model scripted to answer confidently either way, the claim makes zero model
+    calls and ends ``uncertain`` with the safe disposition (``repair`` by default, ``surface``
+    when the profile says so). Its record is ``never_escalates`` and is not one #155 writes.
+
+    Complement: a world-knowledge residual over the same verifier escalates, with one call."""
+    claim, canon, _ = _reasons()[VerdictReason.APPROXIMATE_BOUNDS]
+    for verdict in ("supported", "contradicted"):
+        mal = models()
+        mal.stub.script("entailment", [answer(verdict, 0.99)])
+        v = verifier(mal, canon)
+        found = await _verify(v, claim)
+        assert found.verdict.reason is VerdictReason.APPROXIMATE_BOUNDS
+        assert (found.kind, found.source, found.disposition, found.needs_repair) == (
+            VerdictKind.UNCERTAIN,
+            "deterministic",
+            "repair",
+            True,
+        ), verdict
+        assert (found.escalated, found.model_verdict, found.model_confidence) == (
+            False,
+            None,
+            None,
+        )
+        assert found.decision is not None
+        assert found.decision.outcome == "never_escalates"
+        assert calls(mal) == 0, verdict
+        (record,) = v.escalations
+        assert (record.gate_reason, record.called, record.final_kind) == (
+            "approximate_bounds",
+            False,
+            "uncertain",
+        )
+        assert not recorded(record)
+        assert v.report()["escalated"] == 0
+    surfaced = verifier(models(), canon, safe_disposition="surface")
+    found = await _verify(surfaced, claim)
+    assert (found.kind, found.disposition, found.escalated) == (
+        VerdictKind.UNCERTAIN,
+        "surface",
+        False,
+    )
+    (listed,) = surfaced.uncertain_claims()
+    assert listed["reason"] == "approximate_bounds"
+
+    # Complement: the gate still escalates a world-knowledge residual.
+    boston, ohio, _ = _reasons()[VerdictReason.WORLD_KNOWLEDGE]
+    mal = models()
+    mal.stub.script("entailment", [answer("contradicted", 0.9)])
+    found = await _verify(verifier(mal, ohio), boston)
+    assert (found.kind, found.escalated, calls(mal)) == (VerdictKind.CONTRADICTED, True, 1)
 
 
 @pytest.mark.integration

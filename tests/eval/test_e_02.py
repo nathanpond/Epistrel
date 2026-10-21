@@ -17,6 +17,7 @@ from epistrel.evals.suites.e02_escalation import (
     INSTRUMENTATION,
     NO_SILENT_SUPPORTED,
     PROMOTION_RULE,
+    REASONS,
     SHADOW_RECORDED,
     YIELD_REPORTED,
     E02Case,
@@ -70,7 +71,7 @@ async def test_e_02(pg_url: str, engine: AsyncEngine) -> None:
     cases = suite.load(SETS)
     escalation_cases = [c for c in cases if isinstance(c, E02Case) and c.kind == "escalation"]
     promotions = [c for c in cases if isinstance(c, E02Case) and c.kind == "promotion"]
-    assert len(escalation_cases) * 4 >= 300
+    assert len(escalation_cases) * len(REASONS) >= 300
     expected = [
         (c.cases or 0) >= 200 and (c.cases or 0) > 0 and (c.agreed or 0) / c.cases >= 0.98
         for c in promotions

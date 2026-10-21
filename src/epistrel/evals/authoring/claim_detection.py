@@ -13,8 +13,9 @@ A template marks the claim with ``[[…]]``; ``claim`` is what a model extractio
 for it (the stub's scripted answer). Twelve cases per category are composed messages.
 
 **Adversarial for gating** (``identity-declared``): eight identity claims sit in a ``say`` beat
-that also declares a proposition, so no detector flags the beat and ``gated`` extraction never
-reads it. A real gap of the ``gated`` mode, measured, not hidden.
+that also declares a proposition. Until #478 no detector flagged the beat and ``gated``
+extraction never read it; now the uncovered mention of the entity it names flags the beat
+(``core.verify.detect.UNCOVERED_MENTION``). The family stays as that fix's regression.
 """
 
 from __future__ import annotations

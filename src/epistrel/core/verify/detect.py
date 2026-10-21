@@ -45,9 +45,15 @@ as a new claim. A claim that fills an open thunk's slot names it (``matched_thun
 ``fills``): #150 hands it to ``core.commit.lifecycle.depend`` (the dependence) once the beat
 survives verification.
 
-**Gating input.** A beat is ``flagged`` when a detector hit one of ``RISK_CATEGORIES`` or when
-it is a ``say``/``do`` beat that declared no proposition (an incomplete structural parse):
-``gated`` extraction runs only on flagged beats.
+**Gating input.** A beat is ``flagged`` when a detector hit one of ``RISK_CATEGORIES``; when it
+is a ``say``/``think`` beat with an uncovered entity mention (``UNCOVERED_MENTION``, #478: a
+named entity that is not the speaker or the scene and that no declared proposition or detector
+claim of the beat covers; in these channels the mention becomes no claim, so a beat that
+declared ``Linda located_at tavern`` and says "Cal and I were married once." is otherwise never
+read); or when it is a ``say``/``do`` beat that declared no proposition (an incomplete
+structural parse, ``INCOMPLETE``). ``gated`` extraction runs only on flagged beats. An
+uncovered mention in a scene channel (``do``, narration, ``latent``, a message) does not flag:
+it is already a ``present_at`` claim that is checked.
 
 **Seeds** (``detect_seed``, #149's publish check and genesis): the same detectors over a seed's
 text, speaker ``narrator``, at position 0, with no protected content; an unresolved capitalized
@@ -124,6 +130,10 @@ RISK_CATEGORIES: frozenset[str] = frozenset(
 """A detector hit of one of these flags its beat for ``gated`` extraction."""
 INCOMPLETE = "incomplete"
 """The flag of a ``say``/``do`` beat that declared no proposition."""
+UNCOVERED_MENTION = "uncovered_mention"
+"""The flag of a ``say``/``think`` beat naming an entity that no declared proposition, no
+detector claim, the speaker nor the scene covers (#478): that mention becomes no claim, so only
+extraction can read what the beat says about the entity."""
 STRUCTURED_CHANNELS: frozenset[str] = frozenset({"say", "do"})
 """The beats whose structure must declare their propositions (empty: an incomplete parse)."""
 SCENE_CHANNELS: frozenset[str] = frozenset({"do", "narration", "latent", "message"})
@@ -565,6 +575,8 @@ class _Beat:
     """Risk categories that flag the beat: an unmatched claim's, or a hit that could not
     become a claim (an unresolved argument), never a suppressed one."""
     used: set[str] = field(default_factory=set)
+    uncovered: bool = False
+    """An uncovered mention that became no claim (``UNCOVERED_MENTION``)."""
     sketches: list[tuple[str, ClaimSketch, tuple[int, int]]] = field(default_factory=list)
 
     def hit(self, category: str) -> None:
@@ -981,7 +993,10 @@ def _mentions(
             continue
         seen.add(entity)
         beat.hit("entity_mention")
-        if beat.channel not in SCENE_CHANNELS or scene_entity is None or seed:
+        if beat.channel not in SCENE_CHANNELS:
+            beat.uncovered = True  # a reference with no claim: only extraction can read it
+            continue
+        if scene_entity is None or seed:
             continue
         found.append(
             (
@@ -1106,6 +1121,8 @@ def _detect_beat(
                 claims[i] = replace(claim, matched_thunk_id=thunk_id)
                 break
     flags = sorted(work.risky & RISK_CATEGORIES)
+    if work.uncovered:
+        flags.append(UNCOVERED_MENTION)
     if beat.channel in STRUCTURED_CHANNELS and not message and not beat.declared:
         flags.append(INCOMPLETE)
     claims.sort(key=lambda c: (c.layer != "declared", c.span[1], c.span[2]))
@@ -1284,6 +1301,7 @@ __all__ = [
     "RISK_CATEGORIES",
     "SCENE_CHANNELS",
     "STRUCTURED_CHANNELS",
+    "UNCOVERED_MENTION",
     "BeatDetection",
     "Category",
     "DeclaredClaim",

@@ -9,7 +9,8 @@ thunks), layers (a) declared structure and (b) deterministic detectors, then (c)
 
 - ``always``: every beat goes to extraction;
 - ``gated`` (the profiles' default): only the beats a detector flagged (a risk category, an
-  unresolved argument, or a ``say``/``do`` that declared nothing).
+  unresolved argument, an uncovered entity mention in a ``say``/``think``, #478, or a
+  ``say``/``do`` that declared nothing).
 
 A composed message is detected as the pipeline detects it (``ClaimDetector.message``, extraction
 forced on: ``check_composition``), so its case counts the same under both modes. The scene is
@@ -289,7 +290,8 @@ class E10Suite(Suite):
         "extraction claim is compatible). A composed message is detected with extraction "
         "forced on, as the pipeline does, so it counts alike under both modes. The "
         "`identity-declared` family puts an identity claim in a beat that declares something "
-        "else: no detector flags it, so `gated` extraction never reads it (a measured gap).",
+        "else; the entity it names is covered by no declaration, which flags the beat "
+        "(#478), so `gated` extraction reads it.",
     )
 
     def __init__(self) -> None:

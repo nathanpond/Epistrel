@@ -10,7 +10,7 @@ in), so nothing a detector found is left unchecked."""
 from __future__ import annotations
 
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -31,6 +31,7 @@ from epistrel.core.resolution.entities import (
 )
 from epistrel.core.resolution.time import TimeBasis
 from epistrel.core.verify.detect import (
+    UNCOVERED_MENTION,
     DeclaredClaim,
     DetectBeat,
     DetectedClaim,
@@ -45,6 +46,7 @@ from epistrel.core.verify.permission import EntityInfo
 from epistrel.core.verify.protected import build_index, term
 from epistrel.core.verify.rules import VerdictKind, VerdictReason
 from epistrel.orchestrator.budget import TurnBudget
+from epistrel.orchestrator.models.registry import ExtractionResult
 from epistrel.orchestrator.models.stub import StubAdapter
 from epistrel.orchestrator.verify.extraction import (
     ClaimDetector,
@@ -373,3 +375,90 @@ async def test_u_22__negated_departure_from_a_place() -> None:
     """A negated departure from a place ("Tom Harrow did not leave the orchard") asserts no
     movement claim, like a negated placeless departure."""
     assert _movement("Tom Harrow did not leave the orchard.") == []
+
+
+LINDA_AT_TAVERN = Proposition(
+    subject_id=LINDA,
+    predicate_id=vs.LOCATED_AT,
+    object_id=TAVERN,
+    valid_time=Interval.of(30, None),
+)
+
+
+def _declares_linda_at_tavern(index: int, channel: str, text: str) -> DetectBeat:
+    """A Linda beat that declares something other than what its prose claims (#478)."""
+    return DetectBeat(
+        index, channel, text, LINDA, (DeclaredClaim("decl-at", proposition=LINDA_AT_TAVERN),)
+    )
+
+
+class _RecordingModels:
+    """A Model Access Layer stand-in that records each ``structured_call`` and answers no
+    claims: it shows whether gated extraction chose to read a beat (the stub adapter stays
+    instrumented to fail)."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, Any]] = []
+
+    async def structured_call(self, purpose: str, _schema: Any, inputs: Any, **_: Any) -> Any:
+        self.calls.append((purpose, inputs))
+        return ExtractionResult()
+
+
+@pytest.mark.part("M4", "FR-VERIFY-13")
+async def test_u_22__uncovered_mention_gates_extraction() -> None:
+    """#478 regression (NFR-QUAL-10's ``identity-declared`` family): a ``say`` beat that declares
+    ``Linda located_at tavern`` and says "Marcus and I were married once." names Marcus, whom no
+    declared proposition covers. In ``say`` that mention becomes no claim, so it flags the beat
+    (``uncovered_mention``) and ``gated`` extraction reads it: one call, carrying that beat."""
+    beat = _declares_linda_at_tavern(1, "say", "Marcus and I were married once.")
+    detection = detect_render([beat], (3, 0), env())
+    assert detection.beats[0].flags == (UNCOVERED_MENTION,)
+
+    models = _RecordingModels()
+    config = DetectionConfig(structured=True, level="entailment", extraction_mode="gated")
+    detector = ClaimDetector(config, env(), models=cast(Any, models), budget=TurnBudget())
+    outcome = await detector.render([beat], (3, 0), operation_id="op-identity-declared")
+    assert outcome.called
+    assert outcome.extraction == {1: "ran"}
+    assert [purpose for purpose, _ in models.calls] == ["extraction_backstop"]
+    (_, inputs) = models.calls[0]
+    assert [b.text for b in inputs.beats] == ["Marcus and I were married once."]
+
+
+@pytest.mark.part("M4", "FR-VERIFY-13")
+async def test_u_22__uncovered_mention_flag() -> None:
+    """The ``uncovered_mention`` flag (#478): an uncovered mention in ``say`` or ``think`` flags
+    the beat; a mention a declared proposition covers, the speaker's own name or the scene's
+    place does not; and in a scene channel (``do``, narration) the uncovered mention is a
+    ``present_at`` claim that is checked, so it flags nothing either."""
+    flagged = detect_render(
+        [
+            _declares_linda_at_tavern(1, "say", "Marcus is my cousin."),
+            _declares_linda_at_tavern(2, "think", "Marcus never forgave me."),
+        ],
+        (3, 0),
+        env(),
+    )
+    assert [b.flags for b in flagged.beats] == [(UNCOVERED_MENTION,), (UNCOVERED_MENTION,)]
+
+    marcus_at_tavern = Proposition(
+        subject_id=MARCUS,
+        predicate_id=vs.LOCATED_AT,
+        object_id=TAVERN,
+        valid_time=Interval.of(30, None),
+    )
+    covered = DetectBeat(
+        1,
+        "say",
+        "Marcus is here at the tavern.",
+        LINDA,
+        (DeclaredClaim("decl-marcus", proposition=marcus_at_tavern),),
+    )
+    own = _declares_linda_at_tavern(2, "say", "Linda stays at the tavern.")
+    scene = _declares_linda_at_tavern(3, "do", "She smiles at Marcus.")
+    unflagged = detect_render([covered, own, scene], (3, 0), env())
+    assert [b.flags for b in unflagged.beats] == [(), (), ()]
+    assert [c.category for c in unflagged.claims if c.beat == 3 and c.layer == "detector"] == [
+        "entity_mention"
+    ]

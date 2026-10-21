@@ -2,7 +2,8 @@
 suite runs its adversarial renders and composed messages (``evals/sets/claim_detection``)
 through #148's ``ClaimDetector`` in the shared tavern scene, under both ``extraction_mode``s, on
 the stub scripted per case: overall recall clears 95 % in each mode, reported per layer and per
-category, and ``gated``'s blind spot (a beat no detector flags) shows."""
+category, and ``gated`` reads the identity claims in beats that declared something else (#478:
+the uncovered mention flags them)."""
 
 from __future__ import annotations
 
@@ -34,9 +35,10 @@ pytestmark = pytest.mark.integration
 async def test_e_10(pg_url: str, engine: AsyncEngine) -> None:
     """300 labeled claims, at least 40 per category per mode: under ``always`` every one is
     detected (the deterministic detectors find possession, quantities, times and protected
-    content first; only extraction finds identity claims), and under ``gated`` every one but
-    the identity claims in beats that declared something else, which no detector flags; both
-    clear 95 %. A composed message counts alike in both modes.
+    content first; only extraction finds identity claims), and under ``gated`` every one too:
+    the identity claims in beats that declared something else (``identity-declared``) name an
+    entity no declaration covers, which flags the beat (#478). A composed message counts alike
+    in both modes.
 
     Complement asserted: a copy of the set that moves one claim's span off its words fails
     the ``always`` recall floor under the strict rule."""
@@ -50,10 +52,9 @@ async def test_e_10(pg_url: str, engine: AsyncEngine) -> None:
     metrics = by_id(result)
     assert metrics[recall_id("always")].mean == 1.0
     assert strict_verdict(result, recall_id("always")) is Verdict.passed
-    blind = sum(c.family == "identity-declared" for c in cases)
-    assert blind > 0
-    assert metrics[recall_id("gated")].mean == pytest.approx(1 - blind / len(cases))
-    assert (metrics[category_id("gated", "identity")].mean or 0.0) < 1.0
+    assert sum(c.family == "identity-declared" for c in cases) > 0
+    assert metrics[recall_id("gated")].mean == 1.0
+    assert metrics[category_id("gated", "identity")].mean == 1.0
     assert (metrics[layer_id("always", "detector")].mean or 0.0) > 0.5
     assert (metrics[layer_id("always", "extraction")].mean or 0.0) > 0.0
 

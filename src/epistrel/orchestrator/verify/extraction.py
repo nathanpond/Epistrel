@@ -16,8 +16,9 @@ its B slot, the message's (``charging(COMPOSED)``) its C slot.
   and no call is made (FR-PROF-2's ladder). A Lite story detects nothing (no structured turn).
 - ``extraction_mode = always``: one call per render, every beat.
 - ``extraction_mode = gated`` (the schema's default; the owner's decision at the 2026-10-16
-  replan): a call only when a beat is flagged (a detector hit of a risk category, or a
-  ``say``/``do`` beat that declared nothing), carrying only the flagged beats. The other beats'
+  replan): a call only when a beat is flagged (a detector hit of a risk category, a
+  ``say``/``think`` beat naming an entity nothing covers, #478, or a ``say``/``do`` beat that
+  declared nothing; ``core.verify.detect``), carrying only the flagged beats. The other beats'
   detection records ``extraction: skipped``. A share of renders (the deployment's
   ``extraction_shadow_sample_rate``, 0.1, drawn per operation and render from the operation id:
   ``shadow_sampled``) is a **shadow sample**: after the turn commits, the ``extraction_shadow``

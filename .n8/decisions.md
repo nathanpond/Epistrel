@@ -8336,3 +8336,9 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Issue:** #472
 - **Correction (orchestrator):** the owner's choice for #472 was worded as "409 `story_busy` + Retry-After, as a contended story already reads elsewhere". Every existing `story_busy` is in fact **423**, so the orchestrator misstated the code. The implementation follows the intent, the existing `story_busy` shape: 423 with `Retry-After`. Moving `story_busy` to 409 everywhere would change about a dozen routes' contracts and was not done. The owner was told.
   **Issue:** #472
+- **Decision (owner):** #158 closes with M4, since every AC is built. NFR-QUAL-14's certification on the reference model moves to M9, with the 300-pair rule unchanged. #474 (M9) builds a direct-intervention E-12 mode, about 2–4 calls a pair instead of a 264 s full turn, then certifies the common intervention types.
+  **Issue:** #158, #474
+- **Decision (owner):** #467 takes option (b). `approximate_bounds` never escalates: it takes the safe disposition at once, with no model call, since FR-PROP-10 already decides it `uncertain`. This amends docs/02 §4.9 and the gate docstring, plus an ADR note on FR-VERIFY-3 (c).
+  **Issue:** #467
+- **Decision (owner):** E-03's judge takes option (b). The eval harness gains an optional second judge model, configured like the run model, and reports record which model judged; with none set, the run model judges and the report says so. Filed as #475 in M4. The owner will load a second model in LM Studio for the live re-run.
+  **Issue:** #462, #475

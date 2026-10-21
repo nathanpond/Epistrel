@@ -28,7 +28,7 @@ guarantees, and the guarantee table, are derived from the same map.
 | Per-character renders | `per_character_renders` | FR-MULTI | `multi_character` at `per_character` | not yet | M5 |
 | Consolidation | `consolidation` | FR-MEM-3,6,9,10 | `consolidation` | yes | M4 |
 | Repair of a missing or invalid structured field | `required_field_repair` | FR-CAT-12; FR-STATE-5,6; FR-CLOCK-16 | none (wherever the field is required) | yes | M2, M6 |
-| The floor | `floor` | the rest | none (every profile) | yes | M2, M3, M4, M5, M6, M7, M8 |
+| The floor | `floor` | the rest | none (every profile) | yes | M2, M3, M4, M5, M6, M7, M8, M9 |
 
 ## Notes
 

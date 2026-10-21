@@ -225,7 +225,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 160 | Verification checks an affirmed claim's declared consequences, closed sets may close a key set, and a rule-free presence conflict is uncertain | Current | — |
 | 161 | A pending catalog-scope erasure withholds a policy naming its subject from a story's settings, and refuses a violation of it | Current | — |
 | 162 | An approximate-bounds residual takes the safe disposition with no entailment call | Current | — |
-| 163 | An extraction claim whose weak relation names something untracked is surfaced, not repaired | Amended | 165 |
+| 163 | An extraction claim whose weak relation names something untracked is surfaced, not repaired | Partly superseded | 165 |
 | 164 | Model-bound quality floors that miss on the reference model after M4's engine fixes move to M9: Performance tuning | Current | — |
 | 165 | The render's own declared claims surface like extraction claims, and an unknown name or a pronoun with no antecedent counts as untracked | Current | — |
 

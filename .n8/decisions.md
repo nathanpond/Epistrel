@@ -8452,3 +8452,7 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Why:** it is FR-MODEL-7's documented memo rule, and changing it is a design decision.
   **Issue:** #480, #482
 - **Deferred to M9 (model):** a model that splits a listed group or ignores a correction that names the characters, and stray `intent` or `propositions` fields when decoding is unconstrained.
+
+- **Decision (owner, 2026-10-21):** in addition to option 2, #479 surfaces rather than repairs an extraction claim that is uncertain only because a weak (auto-registered, untyped) relation names something untracked. The claim is listed in `uncertain_claims` and released. Option 2 (mint on canonization) still governs registered relations. Detector findings, `unknown_name`/`protected_value` claims, and claims about another modeled character or the player are still repaired. Rejected: extract registered relations only (it changes extraction and risks E-10 recall), and option 2 alone with NFR-QUAL-7 sent to M9.
+  **Why:** Option 2 alone left live E-06 at 0/5, because the model invents relations. The rules never return `contradicted` on a weak relation, so recording such a claim adds no consistency check, and repairing it removes permitted scene texture (FR-VERIFY-11).
+  **Issue:** #479

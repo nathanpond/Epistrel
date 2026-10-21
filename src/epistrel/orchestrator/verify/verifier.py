@@ -45,7 +45,10 @@ default, the owner's decision on #142) hands the claim to #151's repair as if it
 contradicted (``needs_repair``; the sentence is rewritten so it no longer asserts it, and the
 reason is recorded); ``surface`` lets the beat stand and lists the claim in the turn report's
 ``uncertain_claims`` (degradation ``uncertain_surfaced``). Either way the final kind stays
-``uncertain``: an undecided claim is never a silent ``supported``.
+``uncertain``: an undecided claim is never a silent ``supported``. One case is surfaced
+whatever the profile says (#479, ADR-163): an extraction claim that did not normalize only
+because a weak relation names something untracked (``orchestrator.verify.extraction.surfaces``;
+the caller passes ``unnormalizable(..., disposition="surface")``).
 
 **Novelty is not permission** (FR-VERIFY-11,12; #144). Every claim that ends ``novel`` and
 names its asserter (``verify(..., asserter=...)``) passes ``core.verify.permission`` before it
@@ -865,11 +868,17 @@ class Verifier:
             self._answers.setdefault(key, answer)
 
     def unnormalizable(
-        self, found: Unnormalizable, *, ref: ClaimRef | None = None
+        self,
+        found: Unnormalizable,
+        *,
+        ref: ClaimRef | None = None,
+        disposition: SafeDisposition | None = None,
     ) -> VerifyResult | None:
         """A claim #140's ``normalize`` could not turn into a proposition: ``uncertain`` with
         its reason, which takes the safe disposition directly (there is no normalized claim to
-        show the model); ``None`` when the story's verification is off."""
+        show the model), or ``disposition`` when the caller names one (#479, ADR-163: an
+        extraction claim whose weak relation names something untracked is surfaced);
+        ``None`` when the story's verification is off."""
         if not self.config.on:
             return None
         where = ref or ClaimRef()
@@ -877,7 +886,7 @@ class Verifier:
         decision = GateDecision(
             "unnormalized", found.reason, UNNORMALIZED_SHAPE, verdict.confidence, None
         )
-        result = self._safe(None, verdict, decision, where)
+        result = self._safe(None, verdict, decision, where, disposition=disposition)
         self.results.append((where, result))
         return result
 
@@ -1024,8 +1033,9 @@ class Verifier:
         answer: EntailmentVerdict | None = None,
         model_uncertain: str | None = None,
         degradation: tuple[str, ...] = (),
+        disposition: SafeDisposition | None = None,
     ) -> VerifyResult:
-        disposition = self.config.safe_disposition
+        disposition = disposition or self.config.safe_disposition
         if disposition == "surface":
             degradation = (*degradation, UNCERTAIN_SURFACED)
         result = VerifyResult(

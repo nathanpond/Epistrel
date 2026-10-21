@@ -25,8 +25,8 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-TURN | §6 | 043 |
 | FR-COMMIT | §7 | 018, 022, 043, 053, 129 |
 | FR-RET | §8 | 129 |
-| FR-PROP | §8.1 | 160, 162 |
-| FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162 |
+| FR-PROP | §8.1 | 160, 162, 163 |
+| FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162, 163 |
 | FR-GUARD | §11 | 087, 095, 096, 114, 161 |
 | FR-REWRITE | §12.1 | 144 |
 | FR-MODEL | §13 | 129, 136, 144, 150 |
@@ -225,6 +225,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 160 | Verification checks an affirmed claim's declared consequences, closed sets may close a key set, and a rule-free presence conflict is uncertain | Current | — |
 | 161 | A pending catalog-scope erasure withholds a policy naming its subject from a story's settings, and refuses a violation of it | Current | — |
 | 162 | An approximate-bounds residual takes the safe disposition with no entailment call | Current | — |
+| 163 | An extraction claim whose weak relation names something untracked is surfaced, not repaired | Current | — |
 
 ---
 
@@ -1626,6 +1627,25 @@ The block is read only when a violation is found, so a passing text costs nothin
 - Its record is `never_escalates`, so #155 writes no `escalations` row for it. The yield report, the shadow window and promotion count only the reasons that escalate, and no approximate-bounds shape collects unflipped evidence. E-02 plays the three reasons that escalate, and its set grows to 102 escalation cases to keep at least 300 escalations. E-01's approximate-bounds cases are labeled `uncertain` and still end `uncertain`, now with no call.
 - Readable valid-times (#460) still apply to every record shown to the model, including approximate bounds on a record shown with another residual.
 - Tests: U-04 (`test_u_04__approximate_bounds`: zero calls, `uncertain`, the safe disposition, no recorded escalation; `test_u_04__escalation` over the reasons that escalate), E-02 (`tests/eval/test_e_02.py`).
+
+### ADR-163 — An extraction claim whose weak relation names something untracked is surfaced, not repaired
+**Status:** Accepted.
+**Context:** The Structured (M4) profile runs the extraction backstop on every render (`extraction_mode = always`). Once #459 let its claims land, most of them named scene texture the story had no entity for, and the extraction model invents its own relations ("the inn has_been_in_business_for a hundred years", "Maren looks_up_from wiping the bar"). Each such claim failed to normalize as `uncertain(unresolved_entity)`. Unresolved entities never escalate, so each took `verification.safe_disposition`, which is `repair` by default (the owner's decision on #142). Repair narrowed and regenerated until `repair.max_attempts`, and released the safe fallback. Live E-06 (NFR-QUAL-7) `e06.structure_valid` on the reference model fell from 89 % to 10 % (#479). The owner chose two remedies on 2026-10-21. The first, option 2, makes a permitted claim in a core or author relation whose `place` or `item` argument is untracked mint that entity when it is canonized (`core.verify.introduce`; the path `canonize(..., introduces=...)` already specified). That left the invented relations: they auto-register with the weakest semantics and no argument types, so nothing in them mints.
+**Decision:** An extraction claim that is `uncertain` only because a weak relation names something no entity holds takes the `surface` disposition, whatever the profile's `safe_disposition`. A weak relation is one that is unregistered or auto-registered (FR-PROP-4 (c)). "Names something no entity holds" means #139's resolver found no mention at all in the argument. The claim is listed in `turn_report.uncertain_claims` and its beat is released. It is never `supported` and never canonized. The claim qualifies only if all of these hold (`orchestrator.verify.extraction.surfaces`, over `Unnormalizable.untracked_weak`):
+- it is layer (c)'s own finding, merged with no declared or detector claim and carrying no protected content;
+- the resolver's result is `no_mention`, which excludes an `unknown_name`, a `protected_value`, an ambiguous name and a pronoun with no antecedent;
+- no other argument resolved to a modeled character other than the speaker, or to the player's character.
+
+The grounds:
+- **Repair buys no consistency here.** A weak relation never yields `contradicted` from cardinality, exclusion, implication or containment (FR-PROP-4). Its only contradiction, a direct polarity conflict, needs the identical proposition, which an argument that is no entity cannot form.
+- **Repair destroys permitted content.** It removes incidental scene texture and the render's own minor backstory, which FR-VERIFY-11 lets a render introduce.
+
+Everything else keeps the safe disposition: detector findings, the excluded resolver results, claims touching another modeled character or the player, and every claim in a core or author relation, whose untracked place or object mints under option 2.
+**Consequences:**
+- The repair ladder is no longer spent on texture it cannot check. A rich render keeps its beats instead of falling back.
+- Such a claim records nothing. A later render may describe the same untracked thing differently, and nothing catches it until the thing is tracked (option 2 for registered relations; #481 for paraphrases).
+- The FR-VERIFY-8 guarantee holds: the claim ends `uncertain` and is surfaced, never a silent `supported`.
+- Tests: `tests/test_introduce.py` (the `untracked_weak` marks); `tests/integration/test_introduced_entities.py` (a weak-relation claim released and listed; each repaired case repaired); E-06 on the stub (`tests/eval/test_e_06.py`, unchanged).
 
 ---
 

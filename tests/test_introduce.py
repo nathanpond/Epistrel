@@ -10,6 +10,7 @@ indefinites keep today's ``uncertain`` result. The extraction model's snake_case
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -18,6 +19,7 @@ from epistrel.core.canon.canonize import NewEntity
 from epistrel.core.propositions.model import Proposition
 from epistrel.core.resolution.entities import NARRATOR, EntityEntry, EntityIndex, ResolutionContext
 from epistrel.core.resolution.time import TimeBasis
+from epistrel.core.verify.detect import DetectedClaim
 from epistrel.core.verify.introduce import Introductions, entity_name
 from epistrel.core.verify.normalize import (
     ClaimSketch,
@@ -28,7 +30,7 @@ from epistrel.core.verify.normalize import (
 )
 from epistrel.core.verify.rules import VerdictReason
 from epistrel.orchestrator.models.registry import ExtractedClaim
-from epistrel.orchestrator.verify.extraction import extraction_sketch
+from epistrel.orchestrator.verify.extraction import extraction_sketch, surfaces
 from tests import verify_support as vs
 
 BASIS = TimeBasis(minute_zero=vs.year(2020), epoch=datetime(2000, 1, 1, tzinfo=UTC))
@@ -156,3 +158,110 @@ def test_snake_case_arguments_read_with_spaces() -> None:
     )
     assert sketch.relation_text == "located_at"
     assert entity_name("  'the_inn'. ") == "the inn"
+
+
+# -- #479's second part (ADR-163): what an unresolved weak-relation claim is marked ------------
+
+WREN = "01JA00000000000000000000W1"
+MAREN = "01JA00000000000000000000M1"
+CAST = ResolutionContext(
+    EntityIndex(
+        [
+            EntityEntry(MAREN, "person", "Maren", "feminine", character_id=MAREN),
+            EntityEntry(WREN, "person", "Wren", "feminine", character_id=WREN),
+            EntityEntry(vs.OHIO, "place", "Ohio"),
+        ]
+    ),
+    player_id=WREN,
+)
+
+
+def said(subject: str, relation: str, obj: str | None, speaker: str = MAREN) -> Normalized:
+    return normalize(
+        ClaimSketch(subject_text=subject, relation_text=relation, object_text=obj, declared=True),
+        speaker,
+        3,
+        registry=vs.REGISTRY,
+        context=CAST,
+        basis=BASIS,
+        introduce=Introductions(),
+    )
+
+
+@pytest.mark.parametrize(
+    ("subject", "relation", "obj"),
+    [
+        ("Maren", "looks_up_from", "wiping_down_the_bar"),  # an object no entity holds
+        ("the inn", "has_been_in_business_for", "a hundred years"),  # a subject too
+        ("the regulars", "needed", None),  # object-less
+        ("the inn", "is_near", "Ohio"),  # the other argument is a place, not a character
+    ],
+)
+def test_a_weak_relation_naming_something_untracked_is_marked(
+    subject: str, relation: str, obj: str | None
+) -> None:
+    found = said(subject, relation, obj)
+    assert isinstance(found, Unnormalizable), found
+    assert (found.weak_relation, found.touches_character, found.untracked_weak) == (
+        True,
+        False,
+        True,
+    )
+
+
+@pytest.mark.parametrize(
+    ("subject", "relation", "obj"),
+    [
+        ("Wren", "looks_up_from", "the bar"),  # the player's character
+        ("the bar", "reminds", "Wren"),
+        ("the stew", "pleases", "Maren"),  # Maren, from the narrator: another character
+    ],
+)
+def test_a_weak_relation_touching_another_character_is_not_marked(
+    subject: str, relation: str, obj: str | None
+) -> None:
+    found = said(
+        subject, relation, obj, speaker=MAREN if "Maren" not in (subject, obj) else NARRATOR
+    )
+    assert isinstance(found, Unnormalizable), found
+    assert found.weak_relation
+    assert found.touches_character
+    assert not found.untracked_weak
+
+
+@pytest.mark.parametrize(
+    ("subject", "relation", "obj"),
+    [
+        ("Maren", "talks_about", "the Crossroads Inn"),  # an unknown proper name
+        ("Maren", "looks_up_from", "it"),  # a pronoun with no antecedent
+        ("Maren", "knows", "the ferryman"),  # a core relation: option 2 governs it
+        ("the ferryman", "located_at", "Ohio"),
+    ],
+)
+def test_other_unresolved_claims_are_not_untracked_weak(
+    subject: str, relation: str, obj: str | None
+) -> None:
+    found = said(subject, relation, obj)
+    assert isinstance(found, Unnormalizable), found
+    assert not found.untracked_weak
+
+
+def test_only_an_extraction_finding_of_its_own_surfaces() -> None:
+    """Detector findings, claims merged with a declared or detector claim, and protected content
+    keep the safe disposition (``extraction.surfaces``)."""
+    found = said("Maren", "looks_up_from", "wiping_down_the_bar")
+    assert isinstance(found, Unnormalizable)
+    own = DetectedClaim(
+        span=(2, 0, 10),
+        layer="extraction",
+        category="extracted",
+        channel="do",
+        speaker=MAREN,
+        unnormalized=found,
+    )
+    assert surfaces(own)
+    assert not surfaces(replace(own, layer="detector", category="possession"))
+    assert not surfaces(replace(own, merged=("extraction",), layer="declared"))
+    assert not surfaces(replace(own, merged=("detector",)))
+    assert not surfaces(replace(own, category="protected_content"))
+    assert not surfaces(replace(own, unnormalized=said("Maren", "knows", "the ferryman")))  # type: ignore[arg-type]

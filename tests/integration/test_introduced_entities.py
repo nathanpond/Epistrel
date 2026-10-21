@@ -190,3 +190,80 @@ async def test_a_name_the_story_holds_reuses_its_entity(
         assert only.id == cellar
         (fact,) = await facts_about(engine, story, cellar)
         assert fact.subject_id == ids["Maren"]
+
+
+# -- #479's second part (ADR-163): a weak relation naming something untracked is surfaced -----
+
+TEXTURE = "Maren looks up from wiping down the bar."
+
+
+async def test_a_weak_relation_naming_something_untracked_is_surfaced(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """The model's own relation (``looks_up_from``) about an untracked thing: released as
+    rendered, listed in ``uncertain_claims``, never repaired and never canonized."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        story, ids = await structured_story(client, "Wren", "Maren")
+        played = await _turn(
+            client,
+            epistrel.models.stub,
+            story,
+            ids["Wren"],
+            TEXTURE,
+            extracted(
+                "looks up from wiping down the bar", "Maren", "looks_up_from", "wiping_down_the_bar"
+            ),
+        )
+        assert played["message"]["text"] == f"*{TEXTURE}*"
+        report = await turn_report(engine, story)
+        assert "repairs" not in report
+        ((verdict),) = report["verify"]["verdicts"]
+        assert (verdict["kind"], verdict["reason"], verdict["disposition"]) == (
+            "uncertain",
+            "unresolved_entity",
+            "surface",
+        )
+        ((listed),) = report["uncertain_claims"]
+        assert (listed["claim_id"], listed["reason"]) == (verdict["claim_id"], "unresolved_entity")
+        assert "uncertain_surfaced" in report["degradation"]
+        assert report["commit"]["canonized"] == 0
+
+
+@pytest.mark.parametrize(
+    ("span", "subject", "predicate", "obj"),
+    [
+        # an unknown proper name
+        ("talks about the Crossroads Inn", "Maren", "talks_about", "the Crossroads Inn"),
+        # the player's character is an argument
+        ("Wren looks up from the bar", "Wren", "looks_up_from", "the_bar"),
+        # a core relation: option 2 governs it, and a person slot never mints
+        ("knows the ferryman", "Maren", "knows", "the_ferryman"),
+    ],
+)
+async def test_other_unresolved_claims_are_still_repaired(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+    span: str,
+    subject: str,
+    predicate: str,
+    obj: str,
+) -> None:
+    """Each case keeps the safe disposition (``repair``): the beat goes to the ladder."""
+    text = f"Maren {span}." if not span.startswith("Wren") else f"{span}."
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        story, ids = await structured_story(client, "Wren", "Maren")
+        played = await _turn(
+            client,
+            epistrel.models.stub,
+            story,
+            ids["Wren"],
+            text,
+            extracted(span, subject, predicate, obj),
+        )
+        report = await turn_report(engine, story)
+        ((verdict),) = report["verify"]["verdicts"]
+        assert (verdict["kind"], verdict["disposition"]) == ("uncertain", "repair")
+        assert report["repairs"]
+        assert report["uncertain_claims"] == []
+        assert played["message"]["text"] != f"*{text}*"

@@ -44,7 +44,10 @@ retries leaves the render on layers (a) and (b): ``extraction: failed`` and degr
 and only them: a claim matched to a declared proposition is verified once, as the declared
 claim; every other one as a new claim (``Verifier.verify``, its asserter named so a novel claim
 passes #144's permission check, a protected-content hit with ``protected=True``); one that did
-not normalize takes ``Verifier.unnormalizable`` (``uncertain``, never a guess, FR-PROP-12).
+not normalize takes ``Verifier.unnormalizable`` (``uncertain``, never a guess, FR-PROP-12)
+with the safe disposition, except an extraction finding of its own that is uncertain only
+because a weak relation names something no entity holds: it is surfaced, not repaired
+(``surfaces``; #479, ADR-163).
 With verification off nothing is verified, and no verify call is made.
 
 **After verification** (#150 calls these per beat): ``dependences`` lists the claims of
@@ -144,7 +147,12 @@ from epistrel.orchestrator.models.registry import (
     SceneContext,
 )
 from epistrel.orchestrator.models.structured import Uncertain
-from epistrel.orchestrator.verify.verifier import ClaimRef, Verifier, VerifyResult
+from epistrel.orchestrator.verify.verifier import (
+    ClaimRef,
+    SafeDisposition,
+    Verifier,
+    VerifyResult,
+)
 
 log = logging.getLogger(__name__)
 
@@ -684,6 +692,29 @@ class CheckedClaim:
         return self.result.kind.value
 
 
+SURFACE: SafeDisposition = "surface"
+
+
+def surfaces(claim: DetectedClaim) -> bool:
+    """Whether an unnormalized claim is surfaced rather than repaired (#479, ADR-163): an
+    extraction finding of its own (merged with no declared or detector claim, no protected
+    content) that is uncertain only because a weak relation names something no entity holds
+    (``Unnormalizable.untracked_weak``: the resolver found no mention, and no other argument
+    is another modeled character or the player's). FR-PROP-4 (c): a weak relation is never
+    ``contradicted`` by cardinality, exclusion, implication or containment, and a direct
+    polarity conflict needs the identical proposition, which an untracked argument cannot
+    form. So repairing the claim buys no consistency and only destroys scene texture
+    (FR-VERIFY-11). Everything else keeps the safe disposition."""
+    found = claim.unnormalized
+    return (
+        claim.layer == "extraction"
+        and not claim.merged
+        and not claim.protected
+        and found is not None
+        and found.untracked_weak
+    )
+
+
 def asserter_for(claim: DetectedClaim, player_id: str | None = None) -> Asserter:
     """The default asserter of a claim: its beat's character, the director for narration and
     the composed message, the player for the player's input."""
@@ -723,7 +754,14 @@ async def verify_detected(
         )
         if claim.proposition is None:
             reason = claim.unnormalized or Unnormalizable(VerdictReason.UNRESOLVED_ENTITY)
-            checked.append(CheckedClaim(claim, verifier.unnormalizable(reason, ref=ref), claim_id))
+            disposition: SafeDisposition | None = SURFACE if surfaces(claim) else None
+            checked.append(
+                CheckedClaim(
+                    claim,
+                    verifier.unnormalizable(reason, ref=ref, disposition=disposition),
+                    claim_id,
+                )
+            )
             continue
         asserter = (asserter_of or (lambda c: asserter_for(c, player_id)))(claim)
         # Narration is checked against the whole of canon (the director knows it); a character's

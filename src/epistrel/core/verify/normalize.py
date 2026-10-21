@@ -10,7 +10,10 @@ never guesses (FR-PROP-12):
   ambiguous or unknown mention is ``unresolved_entity``. Given the turn's ``Introductions``
   (``introduce``; #479), an argument that names nothing the story holds, in a ``place`` or
   ``item`` slot of a registered predicate, takes a minted id instead (``core.verify.introduce``:
-  the entity is created only if the claim is canonized).
+  the entity is created only if the claim is canonized). An unresolved argument of a weak
+  relation (unregistered, or ``auto``: FR-PROP-4 (c)) is marked ``weak_relation``, with
+  ``touches_character`` when another argument resolved to a modeled character other than the
+  speaker; ``Unnormalizable.untracked_weak`` is what #479's surfacing reads (ADR-163).
 - **The predicate** is the registry's predicate of that name (``registry.auto_name`` of the
   relation text). Failing that, ``RELATION_ALIASES`` maps everyday relation names to core
   predicates ("lives in" → ``located_at``, "has a sister" → ``sibling_of``). An unregistered
@@ -38,7 +41,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from typing import TYPE_CHECKING
 
@@ -52,6 +55,7 @@ from epistrel.core.propositions.model import (
     Instant,
     Interval,
     InvalidValidTime,
+    Layer,
     LiteralKind,
     Polarity,
     Predicate,
@@ -155,6 +159,27 @@ class Unnormalizable:
     reason: VerdictReason
     detail: str = ""
     resolution: Uncertain | None = None
+    weak_relation: bool = False
+    """#479: an argument of a weak relation (unregistered, or auto-registered with the weakest
+    semantics, FR-PROP-4 (c)) named nothing the story tracks (``untracked_weak``)."""
+    touches_character: bool = False
+    """#479: another argument resolved to a modeled character (or the player's) other than
+    the speaker."""
+
+    @property
+    def untracked_weak(self) -> bool:
+        """Whether this is uncertain only because a weak relation names something no entity
+        holds (the resolver found no mention at all), with no other character involved: the
+        claim #479's surfacing applies to (``orchestrator.verify.extraction``)."""
+        found = None if self.resolution is None else self.resolution.reason
+        return (
+            self.weak_relation
+            and not self.touches_character
+            and self.reason is VerdictReason.UNRESOLVED_ENTITY
+            and found is not None
+            and found.code is ReasonCode.UNRESOLVED_ENTITY
+            and found.detail == "no_mention"
+        )
 
     def verdict(self) -> Verdict:
         """The ``uncertain`` verdict the claim gets, never a guess."""
@@ -225,6 +250,27 @@ def _introduced(
         detail = reason.detail if reason.code is ReasonCode.UNRESOLVED_ENTITY else reason.code
     found = introduce.resolve(text, kind, detail, speaker)
     return failed if found is None else found
+
+
+def _other_character(found: str, speaker: str, context: ResolutionContext) -> bool:
+    entry = context.index.get(found)
+    if entry is None or entry.character_id is None or found == speaker:
+        return False
+    return not (speaker == "player" and found == context.player_id)
+
+
+def _weak(
+    failed: Unnormalizable,
+    predicate: Predicate | None,
+    resolved: tuple[str | None, ...],
+    speaker: str,
+    context: ResolutionContext,
+) -> Unnormalizable:
+    """``failed`` marked for #479 when the relation is weak (see ``Unnormalizable``)."""
+    if predicate is not None and predicate.layer is not Layer.AUTO:
+        return failed
+    touches = any(r is not None and _other_character(r, speaker, context) for r in resolved)
+    return replace(failed, weak_relation=True, touches_character=touches)
 
 
 def _kind_ok(expected: str, kind: str | None) -> bool:
@@ -327,8 +373,12 @@ def normalize(
     subject = _entity(sketch.subject_text, sketch.subject_id, speaker, context)
     predicate = predicate_for(registry, sketch.relation_text)
     if isinstance(subject, Unnormalizable):
+        other: str | Unnormalizable | None = None
+        if sketch.object_text or sketch.object_id is not None:
+            other = _entity(sketch.object_text, sketch.object_id, speaker, context)
+        bound = (other if isinstance(other, str) else None,)
         if predicate is None:
-            return subject
+            return _weak(subject, predicate, bound, speaker, context)
         subject = _introduced(
             subject,
             sketch.subject_text,
@@ -338,7 +388,7 @@ def normalize(
             introduce,
         )
         if isinstance(subject, Unnormalizable):
-            return subject
+            return _weak(subject, predicate, bound, speaker, context)
     has_object = bool(sketch.object_text) or sketch.object_id is not None
     if predicate is None:
         if not sketch.declared:
@@ -349,7 +399,7 @@ def normalize(
         elif has_object:
             found = _entity(sketch.object_text, sketch.object_id, speaker, context)
             if isinstance(found, Unnormalizable):
-                return found
+                return _weak(found, predicate, (subject,), speaker, context)
             entry = context.index.get(found)
             object_kind = ANY if entry is None else entry.kind
         else:
@@ -397,7 +447,7 @@ def normalize(
                 else None
             )
             if parsed is None:
-                return found
+                return _weak(found, predicate, (subject,), speaker, context)
             literal = parsed
         else:
             entry = context.index.get(found)

@@ -12,8 +12,11 @@ never the model's raw text.
 2. **Constrained decoding first** (FR-MODEL-7). The request carries ``response_format:
    {"type": "json_schema", ...}`` (``json_schema.name`` is the schema's class name, ``strict``
    false; the schema is not repeated in the prompt). An endpoint that answers it with a 400
-   whose body names ``response_format``, or answers 200 with text that is not JSON at all,
-   does not support it: that is remembered per ``(base_url, model)`` until the deployment's
+   whose body names ``response_format`` does not support it, at once. A 200 with text that is
+   not JSON at all is one strike: the call retries still in ``json_schema`` mode, and only
+   ``PROSE_STRIKES`` (2) such answers in a row, across calls to the same ``(base_url, model)``,
+   prove the endpoint ignores it; any JSON answer in ``json_schema`` mode resets the run
+   (#482). Either proof is remembered per ``(base_url, model)`` until the deployment's
    ``config_revision`` moves (``ResponseFormatMemo``). The 400 probe costs one call of the turn
    budget but no retry.
 3. **Parse-validate-retry** otherwise. The JSON Schema goes into the system message. A fenced
@@ -86,12 +89,21 @@ class MissingDeterministicStep(TypeError):
     """A structured call for a purpose that has a deterministic path did not pass one."""
 
 
+PROSE_STRIKES = 2
+"""Consecutive non-JSON ``200`` answers in ``json_schema`` mode, across calls to one
+``(base_url, model)``, that prove the endpoint ignores ``response_format`` (#482). One is a
+glitch, not evidence; two in a row still leave a call with the default retry budget an attempt
+in the fallback."""
+
+
 class ResponseFormatMemo:
     """``(base_url, model)`` pairs whose endpoint does not honour ``json_schema``, each valid
-    only at the ``config_revision`` it was learned at."""
+    only at the ``config_revision`` it was learned at, plus each pair's run of consecutive
+    non-JSON answers in ``json_schema`` mode (``strike``; #482)."""
 
     def __init__(self) -> None:
         self._rejected: dict[tuple[str, str], int] = {}
+        self._strikes: dict[tuple[str, str], tuple[int, int]] = {}
 
     def supported(self, key: tuple[str, str], revision: int) -> bool:
         learned = self._rejected.get(key)
@@ -102,9 +114,26 @@ class ResponseFormatMemo:
 
     def reject(self, key: tuple[str, str], revision: int) -> None:
         self._rejected[key] = revision
+        self._strikes.pop(key, None)
+
+    def strike(self, key: tuple[str, str], revision: int) -> bool:
+        """Count a non-JSON answer in ``json_schema`` mode; ``True`` (and remembered as
+        rejected) once ``PROSE_STRIKES`` have come in a row at this revision."""
+        learned, count = self._strikes.get(key, (revision, 0))
+        count = count + 1 if learned == revision else 1
+        if count >= PROSE_STRIKES:
+            self.reject(key, revision)
+            return True
+        self._strikes[key] = (revision, count)
+        return False
+
+    def honoured(self, key: tuple[str, str]) -> None:
+        """A JSON answer in ``json_schema`` mode: the run of non-JSON answers is broken."""
+        self._strikes.pop(key, None)
 
     def clear(self) -> None:
         self._rejected.clear()
+        self._strikes.clear()
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,13 +283,16 @@ async def structured_call[T: BaseModel](
             outcome = parse(result.text, schema)
             if isinstance(outcome, _Failure) and failures is not None:
                 failures.append(outcome.reported())
+            prose = isinstance(outcome, _Failure) and outcome.reason == "parse_error"
+            if json_mode and not prose:
+                mal.response_format.honoured(key)  # JSON, valid or not: json_schema was obeyed
             if not isinstance(outcome, _Failure):
                 if _low_confidence(outcome, settings.uncertain_below):
                     return Uncertain("low_confidence", attempts)
                 return outcome
-            if outcome.reason == "parse_error" and json_mode:
-                # A 200 of prose: the endpoint ignored json_schema.
-                mal.response_format.reject(key, revision)
+            if json_mode and prose and mal.response_format.strike(key, revision):
+                # PROSE_STRIKES non-JSON 200s in a row (across calls): the endpoint ignores
+                # json_schema. A single one is a glitch, and the retry stays constrained (#482).
                 json_mode = False
                 messages = with_schema(base, schema)
             if retries_left == 0:

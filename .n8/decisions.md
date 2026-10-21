@@ -8259,3 +8259,61 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Issue:** #452
 - **Deferred (#451 / #470, not M9):** Retrieval p95 under load (relationships read in `load_context`) stays with #451. The repair neighborhood's decode cost is filed as #470.
   **Issue:** #452
+- **Decision (Discretion):** I took issue option 2 (lean read of every neighbour, decode only the kept ones), not option 1 (a per-level SQL `LIMIT`).
+  **Why:** A `LIMIT` cannot keep the answer identical. Depth 2 follows the entities of every level-1 neighbour, and the closed sets and memories read every collected fact's predicate, proposition and source events, not only the kept facts'. A lean read keeps the selection, the order and `truncated` exact, and drops the per-fact pydantic decode, which was the measured cost.
+  **Issue:** #470
+- **Decision (Discretion):** `canon_links` shares `canon`'s WHERE through a factored-out `_canon_where` rather than restating it.
+  **Why:** Equivalence depends on the two reads selecting the same rows (visibility, through-position, open versions). One builder means they cannot drift.
+  **Issue:** #470
+- **Decision (Discretion):** The neighbourhood skips the memories read when the non-memory items already exceed `max_facts`.
+  **Why:** Memories rank last (priority 6). When there are more items than the cap without them, none can be kept and `truncated` is true either way, so the answer is unchanged and a statement is saved. When the count equals the cap exactly, memories are still read, because they decide `truncated`.
+  **Issue:** #470
+- **Decision (Discretion):** The kept facts are decoded in a second statement (`canon_rows(ids=...)`), with the same viewpoint and through-position filters. A kept fact a concurrent commit closed between the reads is left out.
+  **Why:** Callers in a REPEATABLE READ snapshot (the operation read phase) cannot see such a close. A READ COMMITTED caller already read the neighbourhood across many statements before this change, so it was never a single snapshot. Leaving the closed fact out matches what a read after that commit returns.
+  **Issue:** #470
+- **Decision (Discretion):** I kept a viewpoint check on each lean read (as `canon_rows` does), not once per neighbourhood as the plan comment suggested.
+  **Why:** It keeps `KeyedLookup.canon_links` safe for any caller and the statement count no higher than before. The check issues a statement only for character viewpoints, and it was never the measured cost.
+  **Issue:** #470
+- **Decision (Discretion):** `check-keyed-readers` now treats `canon_links` as a canon read, so a `KEYED_READERS` module importing it directly is a finding.
+  **Why:** It is a new direct read of `facts`/`propositions`. Keyed readers must go through `KeyedLookup.canon_links`.
+  **Issue:** #470
+- **Decision (Discretion):** The tests are plain regression tests citing #470/#142 with no requirement-ID part marker. The equivalence matrix varies the through-position only at the repair's depth (2), which keeps it at 90 cases (about 30 s).
+  **Why:** I followed #452's convention (a docstring requirement ID would make a part of another milestone). The full cartesian product took about 55 s with no added coverage of the changed code.
+  **Issue:** #470
+- **Decision (Discretion):** `load_context` takes an optional `text`. With it, `relations` are only the rows touching the possessors `relation_owners` finds, read one round at a time until no new possessor appears. Without it, every person's relationships are read as in #442. Only the retrieval passes a text.
+  **Why:** the relational pass is the only reader of `relations`, and it only reads rows touching a possessor, so the scoped context resolves identically (the equivalence test). Verify, salience and the structured pipeline reuse one context for several texts, so they keep the full read.
+  **Issue:** #451
+- **Decision (Discretion):** an owner's rows are kept when either end is a person. This matches the read of every person, which kept organization–person rows and dropped non-person–non-person ones.
+  **Why:** to make the scoped and full reads identical, the organization-possessor case included.
+  **Issue:** #451
+- **Decision (Discretion):** `profile_views` is the shared builder (`_profiles`) behind `profile_view` and the batched read. `KeyedLookup.profiles` records each profile exactly as `KeyedLookup.profile` does. Containing places are read once per distinct location.
+  **Why:** a fixed statement count per retrieval whatever the located characters, with no second copy of the profile logic to drift.
+  **Issue:** #451
+- **Decision (Rule 1):** the lexical search compares `retrieval_tier` and `kind` as their enums (`= ANY(CAST(:tiers AS retrieval_tier[]))`), not cast to text.
+  **Why:** the cast made the story's tier index unusable, so the rehydration search scanned every matching row. The rows selected are the same.
+  **Issue:** #451
+- **Decision (Rule 1):** the pins context source and `pin_counts` filter on `pinned` rather than `pinned IS true`. `pinned` is NOT NULL, so the rows are the same.
+  **Why:** only the plain form matches the partial index `ix_memories_pinned` (`WHERE pinned`); the `IS TRUE` form was a 25 ms scan per retrieval at 50k. Found outside the three stages named in the issue, but it is retrieval's own assemble stage, so I fixed it under #451.
+  **Issue:** #451
+- **Decision (Discretion):** no new index or migration. The hot lexical search is left as designed (the any-word semantics of docs/02; at 50k free-text queries match about all rows). The canon anti-join cost is filed as #471 rather than fixed here.
+  **Why:** neither has an index-only fix. #471 needs a schema decision in canon's shared open/closed rule (Rule 4 territory).
+  **Issue:** #451, #471
+- **Decision (Discretion):** the 50k measurement used a fixture built with my own scratch script into a dedicated local Postgres container (the same `build_scale_fixture`, the same spec), dumped with `scale.write_cached` and restored by the weekly tests through `EPISTREL_TEST_PERF_CACHE_DIR`. `build/perf/p_04_structured.json` was copied from the main checkout so the re-render keeps P-04's existing report.
+  **Why:** the cache key includes the alembic head, so no cached dump matched. A rebuild inside pytest would have repeated the 88-minute build for every weekly test.
+  **Issue:** #451, #153
+- **Decision (Discretion):** with no time window, the occasion step orders the event type's episodes by `ts_rank` against the query text (any of its words), latest first among equals. With a window it stays latest first.
+  **Why:** a type with no time does not locate an occasion. The text's own words are the evidence of which occasion is meant. This is still FR-RET-3's structured type query over the episode layer.
+  **Issue:** #458
+- **Decision (Discretion):** the alias arm searches the aliases of entities the text names other than through a first-person mention. The speaker's "I"/"me" no longer adds the speaker's name.
+  **Why:** the speaker is in most memories, so the arm returned their latest memories rather than the topic. This follows the profiles stage, which already leaves out the speaker. "you", names and third-person pronouns still count, and S-THOSEGUYS's "you" stays green.
+  **Issue:** #458
+- **Decision (Discretion):** the lexical arm drops hits scoring under 60% of its best hit (`LEXICAL_RELATIVE_FLOOR = 0.6`). The SQL query and its any-word matching are unchanged.
+  **Why:** RRF keeps only ranks, so a one-common-word match ranks close to an all-words match, and recency then reorders them. I chose 0.6 rather than 0.5 because ts_rank of 1 matched term out of 4 is exactly half of 2 out of 4, and float rounding kept such hits at a 0.5 floor. The formula and RRF k stay as docs/02 has them.
+  **Issue:** #458
+- **Decision (Discretion):** the regression test builds its topic-only cases in the test (five templates, one query per occasion) and asserts recall@10 ≥ 0.95 and MRR ≥ 0.9. It does not add a labeled set or a floor.
+  **Why:** the brief forbids changing Q-01's labels, and topic-only recall has no floor in docs/04. The bounds are regression guards, below the measured 1.0.
+  **Issue:** #458, #157
+- **Decision (Rule 3):** cherry-picking #451 onto #452 conflicted in `core/resolution/context.py`. #452 shares one snapshot's scene and every person's relationships across a turn's speakers (`shared`); #451 scopes the relationships to a resolved text (`text`). Merged: with no `text`, the shared all-relationships read is unchanged; with `text`, only the scene is read, then `_scoped_relations`. The repo gates, the retrieval, resolution and scenario tests (95) and `tests/gates tests/test_*.py` (1535) pass.
+  **Issue:** #451, #452
+- **Decision (owner):** a story-lock timeout answers 409 `story_busy` with `Retry-After`, not 503 `database_unavailable` (#452's Rule 4 options). Filed as #472 in M4.
+  **Issue:** #452, #472

@@ -183,7 +183,8 @@ def _old_report_json() -> dict[str, Any]:
 def test_a_report_written_before_475_still_parses() -> None:
     """An older JSON has no judge fields: it parses with none, its Markdown reads as
     self-judged, and its summary has no suite judges. Every committed report still carries a
-    summary the index is built from, and ``--check`` still agrees with the index."""
+    summary the index is built from (the older ones with no judge), and ``--check`` still agrees
+    with the index."""
     old = Report.from_json(_old_report_json())
     assert old.judge is None
     assert old.suites[0].judge is None
@@ -192,10 +193,14 @@ def test_a_report_written_before_475_still_parses() -> None:
     assert (found["judge"], found["judges"]) == (None, {})
     committed = report_files(checks.REPORTS_DIR)
     assert committed
+    older = 0
     for path in committed:
         embedded = read_summary(path)
         assert embedded is not None, path
-        assert "judges" not in embedded  # written before #475
+        if "judges" not in embedded:  # written before #475
+            older += 1
+            assert embedded.get("judge") is None, path
+    assert older  # the committed history still holds reports written before #475
     assert checks.problems() == []
 
 

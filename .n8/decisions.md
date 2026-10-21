@@ -8541,3 +8541,12 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 
   The report files were lost: the worktree was removed before they were copied (an orchestrator error). These numbers come from the report as read before the removal, and a committed report will come from a re-run.
   **Issue:** #134, #479
+
+- **Decision (Rule 1, engine):** #479's surfacing now covers the render's own **declared** claims, not just extraction findings. It also counts `unknown_name` and `no_antecedent` (no candidates) as untracked, alongside `no_mention`. ADR-165 amends ADR-163 (`eee9fba`).
+  **Why:** a traced live E-06 diagnostic at `538b4cc` (6 cases, 94 unnormalizable claims) found that every repaired claim was a declared claim in an invented relation ("Maren wipes_down the counter"). 50 qualified as untracked weak claims and were excluded only by the layer rule. 26 more were excluded only for being an unresolved pronoun or an unknown name. The owner's #479 choice described the class without a layer restriction, so the extraction-only scope was my implementation's narrowing, not the owner's decision.
+  **Trade-off, logged:** a newly named person under an invented relation is surfaced and not canonized, so a later render may rename them unnoticed (the owner's concern on #479). Persons still never mint under option 2.
+  **Issue:** #479
+- **Decision (Discretion):** E-06's case detail now records the safe fallback's causes (`538b4cc`), as the smoke suite and the model matrix already did.
+  **Issue:** #479
+- **Finding:** `check-traceability` reads the parts that `check-parts --json` writes. It fails on a stale cache (it reported NFR-QUAL-2,3,4,14 still at M4 after `a0c24ac`) until `check-parts --json` runs again. CI runs them in order, so this is a local-only trap.
+  **Issue:** #134

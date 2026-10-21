@@ -277,6 +277,23 @@ _LEFTOVER = text(
     "SELECT count(*) FROM jobs WHERE kind = ANY(:kinds) AND status IN ('queued', 'running')"
 )
 _DRAIN = text("DELETE FROM jobs WHERE kind = ANY(:kinds) AND status IN ('queued', 'running')")
+_PINNED = text(
+    "SELECT (SELECT embedding_dimension FROM deployment_state LIMIT 1) AS dimension, "
+    "(SELECT format_type(atttypid, atttypmod) FROM pg_attribute "
+    "WHERE attrelid = 'memories'::regclass AND attname = 'embedding') AS column_type"
+)
+"""The shared database's vector space: unpinned is no dimension and a ``vector`` column with
+none (#473: a pin left there retypes ``memories.embedding`` for every later test)."""
+_UNPIN = (
+    "UPDATE deployment_state SET embedding_model_version = NULL, embedding_dimension = NULL, "
+    "embedding_pinned_at = NULL, reembed_state = '{}'::jsonb",
+    "DROP INDEX IF EXISTS ix_memories_embedding_hnsw",
+    "UPDATE memories SET embedding = NULL, embedding_model_version = NULL",
+    "ALTER TABLE memories ALTER COLUMN embedding TYPE vector",
+    "UPDATE stories SET embedding_model_version = NULL",
+)
+"""Put a pinned shared database back to unpinned (``tests.embedding_support.RESET``'s vector
+space half), so only the test that pinned it fails, not every test after it."""
 
 
 @pytest.fixture(scope="session")
@@ -292,7 +309,9 @@ def _shared_jobs_db(pg_url: str) -> Iterator[Any]:
 def _no_embedding_jobs_left(request: pytest.FixtureRequest) -> Iterator[None]:
     """After every test that uses the shared database, fail it if an ``embed`` or ``reembed``
     job is left queued or running there (M3's rule: deployment-scope state is rolled back). A
-    test that writes memories there drains its jobs with ``drained_embedding_jobs``. The
+    test that writes memories there drains its jobs with ``drained_embedding_jobs``. It fails
+    too if the test left the shared vector space pinned (``_PINNED``; #473), after unpinning
+    it (``_UNPIN``) so the tests after it run unpinned. The
     database is requested before the test runs (only for a test that uses ``pg_url``, so a unit
     test starts no container): pytest refuses fixture requests during teardown."""
     sync = request.getfixturevalue("_shared_jobs_db") if "pg_url" in request.fixturenames else None
@@ -301,10 +320,21 @@ def _no_embedding_jobs_left(request: pytest.FixtureRequest) -> Iterator[None]:
         return
     with sync.connect() as conn:
         left = int(conn.execute(_LEFTOVER, {"kinds": list(EMBEDDING_JOB_KINDS)}).scalar() or 0)
+        pinned = conn.execute(_PINNED).one()
     if left:
         pytest.fail(
             f"{request.node.nodeid} left {left} embed/reembed job(s) queued on the shared "
             "database; use the drained_embedding_jobs fixture",
+            pytrace=False,
+        )
+    if pinned.dimension is not None or pinned.column_type != "vector":
+        with sync.begin() as conn:
+            for statement in _UNPIN:
+                conn.execute(text(statement))
+        pytest.fail(
+            f"{request.node.nodeid} pinned the shared database's vector space (dimension "
+            f"{pinned.dimension}, memories.embedding {pinned.column_type}); a test that pins "
+            "runs on a database of its own (tests.conformance.conftest.migrated_database)",
             pytrace=False,
         )
 

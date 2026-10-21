@@ -7,6 +7,8 @@ and ``lite_summary``'s new default model row."""
 
 from __future__ import annotations
 
+import secrets
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
 
@@ -15,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.core.canon import facts as canon
 from epistrel.core.context import RequestContext
+from epistrel.core.db import make_engine
 from epistrel.core.errors import ModuleOff
 from epistrel.core.memory import consolidation as core
 from epistrel.core.memory.consolidation import ConsolidateRequest, Window
@@ -26,6 +29,7 @@ from epistrel.orchestrator.models.registry import CONSOLIDATION, DELIVERED, LITE
 from epistrel.testing.fixtures import scale
 from tests import consolidation_support as cs
 from tests.auth_support import auth_settings, bearer
+from tests.conformance.conftest import migrated_database
 from tests.event_support import execute_in_tx, new_story, scalar
 from tests.memory_support import turn
 from tests.respond_support import respond_client
@@ -265,12 +269,27 @@ def test_lite_summary_resolves_through_the_consolidation_row() -> None:
     assert (entry.model, entry.sources["model"]) == ("own", "own")
 
 
+@pytest.fixture
+async def scale_db(pg_url: str) -> AsyncIterator[AsyncEngine]:
+    """A migrated database of its own (dropped afterwards): the scale fixture pins the
+    deployment's vector space (``memories.embedding`` retyped to the stub's dimension), a
+    deployment-wide change the shared session database must never see (#473)."""
+    with migrated_database(pg_url, f"epistrel_scale_{secrets.token_hex(4)}") as url:
+        db = make_engine(auth_settings(url))
+        try:
+            yield db
+        finally:
+            await db.dispose()
+
+
 async def test_a_window_decodes_only_its_own_facts(
-    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+    scale_db: AsyncEngine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """P-04 structured (#452): a consolidation window's fact inputs are read for the window's turns
     in the query, not filtered from the whole canon: collecting turns 3-6 of a story whose
-    facts are spread over every turn decodes exactly the facts written in those turns."""
+    facts are spread over every turn decodes exactly the facts written in those turns. The
+    fixture runs on a database of its own (``scale_db``; #473)."""
+    engine = scale_db
     fixture = await scale.build_scale_fixture(
         engine, scale.ScaleSpec.scaled(60, characters=3, dimension=8)
     )

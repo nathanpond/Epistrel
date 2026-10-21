@@ -8386,3 +8386,17 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision (Discretion):** INDEX.md columns are unchanged. The judge appears in each report and its embedded summary, not in the index.
   **Why:** the AC names the report and the summary. Keeping the index means `--check` agrees without regenerating it. The fingerprint column already separates judged runs.
   **Issue:** #475
+- **Decision (Rule 1):** Ties in retrieval ranking go by story position, earliest first (turn, then beat, position-less last), then by text, and only then by memory id.
+  **Why:** ULIDs minted in the same millisecond order at random, so an id tie-break differs between two replays and broke NFR-DETERM-1. Earliest-first keeps the old de facto order for ids minted in different milliseconds (id order was creation order) and reads chronologically. Text disambiguates two memories at the same beat without a join to `events.seq`, which would add a read per candidate.
+  **Issue:** #476
+- **Decision (Discretion):** In the SQL arms, `text` goes between the existing `(turn DESC, beat DESC)` tie-break and `id`, and assessments gain `beat DESC`. The merges of rehydrated hits sort stably by score alone.
+  **Why:** The arms' ranks feed reciprocal-rank fusion, so a random order within an arm changes the fused scores. A stable sort keeps each arm's own deterministic order rather than reintroducing the id.
+  **Issue:** #476
+- **Decision (Rule 1):** Consolidation inputs break same-position ties by text before id.
+  **Why:** Batch-inserted memories share the turn, beat and `created_at` and are minted in the same millisecond, so the consolidation prompt's input order varied between replays.
+  **Issue:** #476
+- **Decision (Discretion):** The other id tie-breaks that can reach a prompt (canon facts, canon links, relationship views) are not changed here and are filed as #477.
+  **Why:** They did not cause this failure, because their rows are usually minted in separate milliseconds. Changing them alters profile and canon order and needs a choice between per-site keys and a monotonic ULID.
+  **Issue:** #476
+- **Decision (Rule 1):** the full suite at `8c4037f` failed `test_determinism__structured` (NFR-DETERM-1), intermittently, about 1 run in 4. A probe of every stub call found the first divergence in a prompt's `## Retrieved` order. The cause was exact score ties broken by ULID `memory_id` (#476). This was not caught at `cc85295`, where it happened to pass.
+  **Issue:** #476

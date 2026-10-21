@@ -32,6 +32,7 @@ from epistrel.core.settings_schema import LENGTH_TOKENS
 from epistrel.evals.gate import Direction, Metric, Rule
 from epistrel.evals.suites import CaseModel, Outcome, Suite, register
 from epistrel.evals.suites.structured_turns import play, render_output, structure_problems
+from epistrel.orchestrator.lite.schemas import SAFE_FALLBACK
 from epistrel.orchestrator.models.registry import GENERATION
 
 if TYPE_CHECKING:
@@ -131,7 +132,14 @@ class E06Suite(Suite):
         return Outcome(
             observations,
             output=text,
-            detail={"problems": problems, "chars": len(text), "degradation": result.degradation},
+            detail={
+                "problems": problems,
+                "chars": len(text),
+                "degradation": result.degradation,
+                "fallback_causes": [
+                    d.cause for d in result.degradation_details if d.step == SAFE_FALLBACK
+                ],
+            },
         )
 
     def stub_answers(self, case: CaseModel) -> Mapping[str, str]:

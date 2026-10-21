@@ -29,5 +29,36 @@
     "model_version": "cydonia-24b-v4.3",
     "pairs": 220,
     "status": "calibrated"
+  },
+  "qwen/qwen3-32b": {
+    "agreed": 167,
+    "agreement": 0.759090909090909,
+    "by_label": {
+      "a": {
+        "agreed": 66,
+        "pairs": 96
+      },
+      "b": {
+        "agreed": 61,
+        "pairs": 84
+      },
+      "tie": {
+        "agreed": 40,
+        "pairs": 40
+      }
+    },
+    "ci95": [
+      0.6984472788096325,
+      0.8108417537074335
+    ],
+    "date": "2026-10-21",
+    "engine_sha": "2f91d92",
+    "excluded": 0,
+    "floor": 0.75,
+    "judge_model": "qwen/qwen3-32b",
+    "min_pairs": 200,
+    "model_version": "qwen/qwen3-32b",
+    "pairs": 220,
+    "status": "calibrated"
   }
 }

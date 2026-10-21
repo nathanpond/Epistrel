@@ -8506,3 +8506,25 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Deferred to M9 (model):** The remaining live E-06 fallbacks (3 of 5) come from the model writing about the player's character and using unbound "you" and unknown proper names in claims, all of which are repaired by design.
   **Issue:** #479
 
+
+- **Decision (owner, applied):** NFR-QUAL-2, -3, -4 and -14 are reassigned from M4 to M9: Performance tuning. That covers §22, the §15 rows, the part markers and ADR-164. The live numbers come from `docs/evals/2c61ec2dbc6c-2026-10-21.md`: false contradiction 5.0 % vs ≤ 2 %; faithfulness 90 % ± 5 % vs ≥ 98 %; recall 96.67 % ± 2.94 % and precision 72.68 % ± 5.29 % (mean − SD under the floors); E-12 `insufficient_evidence` with at most 3 non-tied pairs per type. No floor, set, label, scorer or gate rule changed.
+  **Why:** the owner's decision of 2026-10-20 (`.n8/decisions.md`, "Owner decisions — 2026-10-20"), plus #158's decision for NFR-QUAL-14.
+  **Issue:** #134, #158
+- **Decision (Discretion):** each affected test's part is **split**: an M4 part for its capability requirements and an M9 part for the floor, on the same function. Moving whole parts to M9 was rejected, because FR-VERIFY-1,3, FR-MEM-3,6, FR-COMMIT-3 and NFR-QUAL-8 would lose their M4 coverage.
+  **Why:** a part may only name requirements assigned at or before its milestone, and `part` markers have no runtime effect, so the stub tests run in CI either way.
+  **Issue:** #134
+- **Decision (Discretion):** E-01's planned M5 part drops NFR-QUAL-2 and keeps `[M5: FR-VERIFY-2,5]`. Its viewpoint cases join NFR-QUAL-2's M9 part. E-12's planned M7 part drops NFR-QUAL-14 and keeps `[M7: FR-PROF-15]`. The NFR-QUAL-2 §15 row loses `E-01 (M5)`, and NFR-QUAL-14 loses `E-12 (M7)`.
+  **Why:** an M5 or M7 part may not name an M9 requirement. M5's and M7's stories that plan these parts should be checked at `/n8-replan`.
+  **Issue:** #134, #158
+- **Decision (Discretion):** C-25 keeps NFR-QUAL-14 as an M9 part on `test_c_25__m4`, the same function, rather than dropping C-25 from NFR-QUAL-14's row. The function name keeps its `__m4` suffix; traceability maps it to C-25 either way.
+  **Why:** the task names C-25 for NFR-QUAL-14. Keeping one function avoids a duplicate test body.
+  **Issue:** #158
+- **Decision (Discretion):** `epistrel.evals.check.PENDING` is not used for these floors.
+  **Why:** PENDING is for metrics no suite measures, and `--check` fails on an entry a suite already measures. These floors are measured; only their gating milestone moved.
+  **Issue:** #134
+- **Decision (Rule 1, test update):** `tests/gates/fixtures/tests_bad_milestone` and `test_bad_milestone_is_a_finding` now use `M99` as the nonexistent milestone, since M9 is now a §22 row.
+  **Issue:** #134
+- **Decision (Discretion):** ADR-164 amends ADR-139, because the milestone sequence gains M9 and M9's gate is now the full release gate. ADR-139 gets an `Amended by` entry and a *[revised per ADR-164 …]* marker on its consequence line, and its index row is updated. §22 does not list GitHub's M10 (Bug fixes & testing) or M11 (Audit), since they carry no requirements.
+  **Issue:** #134
+- **Deferred to M9 (model):** the reference-model floors of NFR-QUAL-2 (weak-predicate over-commitment to `contradicted`), NFR-QUAL-3 (non-entailed generalizations), NFR-QUAL-4 (seed variance below the floors) and NFR-QUAL-14 (evidence volume per intervention type). M9 needs `/n8-replan` when M8 closes.
+  **Issue:** #134, #158

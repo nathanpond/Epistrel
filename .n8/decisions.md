@@ -8317,3 +8317,5 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Issue:** #451, #452
 - **Decision (owner):** a story-lock timeout answers 409 `story_busy` with `Retry-After`, not 503 `database_unavailable` (#452's Rule 4 options). Filed as #472 in M4.
   **Issue:** #452, #472
+- **Decision (owner):** #471, canon's per-row supersedes probe, is deferred to M10: Bug fixes & testing. NFR-PERF-1 passes after #451 (P-01 p95 119 ms on a loaded local host), and a stored closed-by column is a risky canon schema change better done and audited there.
+  **Issue:** #471

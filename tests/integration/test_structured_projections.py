@@ -42,6 +42,7 @@ from tests.event_support import execute_in_tx, rows, scalar
 from tests.fork_support import fork
 from tests.projection_support import swap, truncate, untruncate
 from tests.respond_support import respond_client
+from tests.retrieval_support import statements
 
 pytestmark = pytest.mark.integration
 
@@ -301,6 +302,31 @@ async def test_i_01__structured_now_is_the_turns_story_time(engine: AsyncEngine)
     kept = await snapshot(engine, story)
     await rebuild(engine, story, principal="p-operator")
     assert await snapshot(engine, story) == kept
+
+
+async def test_a_write_at_the_head_reads_the_placements_still_open(engine: AsyncEngine) -> None:
+    """#153: a placement written at the head re-derives the head's scene from the placements a
+    scene there can use, not the story's whole history. Bobby's past stays (closed windows) are
+    not read: the rows read are the same after 2 of them as after 12."""
+    read: list[int] = []
+    for stays in (2, 12):
+        w = await world(engine)
+        story = w.story_id
+        bobby, cal = w.people["Bobby"], w.people["Cal"]
+        kitchen, garden = w.places["kitchen"], w.places["garden"]
+        await execute_in_tx(
+            engine, ("UPDATE stories SET story_minute_zero = 100000 WHERE id = :s", {"s": story})
+        )
+        for i in range(stays):
+            await commit(engine, story, at(bobby, kitchen if i % 2 else garden, i * 10, i * 10 + 5))
+        await commit(engine, story, at(bobby, kitchen, 100000, None))
+        with statements(engine) as seen:
+            await commit(engine, story, at(cal, kitchen, 100000, None))
+        read.append(seen.rows_reading("placement"))
+        then = await scene_of(engine, story, viewpoint="omniscient")
+        assert then.location is not None
+        assert (then.location.entity_id, sorted(present(then))) == (kitchen, sorted([bobby, cal]))
+    assert read[0] == read[1], read
 
 
 @pytest.mark.part("M4", "FR-STORE-3")

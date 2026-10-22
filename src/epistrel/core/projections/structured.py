@@ -61,9 +61,11 @@ from sqlalchemy import (
     and_,
     delete,
     exists,
+    func,
     insert,
     or_,
     select,
+    true,
     tuple_,
     update,
 )
@@ -444,10 +446,39 @@ async def _scene_predicates(conn: AsyncConnection, story_id: str) -> frozenset[s
     return frozenset(str(i) for i in found)
 
 
-async def _scene_inputs(conn: AsyncConnection, story_id: str) -> tuple[list[Row], list[Row]]:
+def _from_turn_on(table: Table, from_turn: int, basis: TimeBasis) -> ColumnElement[bool]:
+    """The rows ``scene`` can keep at some turn from ``from_turn`` on (#153): not closed at or
+    before ``(from_turn, 0)`` (``through``), and valid past that turn's story time (``covers``;
+    story time never decreases with the turn). The rest are dropped by every such turn."""
+    start = story_time_at(from_turn, basis)
+    closed = tuple_(table.c.closed_turn, func.coalesce(table.c.closed_slot, 0))
+    return and_(
+        or_(
+            table.c.closed_by_fact_id.is_(None),
+            and_(table.c.closed_turn.is_not(None), closed > tuple_(from_turn, 0)),
+        ),
+        or_(table.c.valid_to.is_(None), table.c.valid_to > start),
+    )
+
+
+async def _scene_inputs(
+    conn: AsyncConnection, story_id: str, from_turn: int | None = None
+) -> tuple[list[Row], list[Row]]:
+    """The story's placement rows and its ``scene`` relationship rows; with ``from_turn``, only
+    those a scene from that turn on can use, so a write at the head reads the rows still open
+    there rather than the story's whole history."""
+    basis = None if from_turn is None else await _basis(conn, story_id)
+
+    def bounded(table: Table) -> ColumnElement[bool]:
+        return (
+            true() if from_turn is None or basis is None else _from_turn_on(table, from_turn, basis)
+        )
+
     places = [
         dict(r._mapping)
-        for r in await conn.execute(select(placement).where(placement.c.story_id == story_id))
+        for r in await conn.execute(
+            select(placement).where(placement.c.story_id == story_id, bounded(placement))
+        )
     ]
     scene_ids = await _scene_predicates(conn, story_id)
     presences = (
@@ -457,6 +488,7 @@ async def _scene_inputs(conn: AsyncConnection, story_id: str) -> tuple[list[Row]
                 select(relationships).where(
                     relationships.c.story_id == story_id,
                     relationships.c.predicate_id.in_(sorted(scene_ids)),
+                    bounded(relationships),
                 )
             )
         ]
@@ -572,7 +604,7 @@ async def refresh(
             ),
             scene_state,
         )
-        places, presences = await _scene_inputs(conn, story_id)
+        places, presences = await _scene_inputs(conn, story_id, first)
         await _sync(
             conn,
             scene_state,
@@ -897,7 +929,7 @@ async def scene_view(
             )
         )
     if found is None:
-        places, presences = await _scene_inputs(conn, story_id)
+        places, presences = await _scene_inputs(conn, story_id, turn)
         found = scene(
             places,
             presences,

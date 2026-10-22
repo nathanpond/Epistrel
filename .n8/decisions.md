@@ -8562,4 +8562,10 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision:** #479 is closed by PR #426. Its engine work is done (option 2, ADR-163, ADR-165): live `e06.structure_valid` rose from 10 % to 80.83 % ± 8.78 %. The live criterion "≥ 89 %" moves to M9 with NFR-QUAL-7, where the remaining model-side causes sit.
   **Issue:** #479
 - **Finding, not fixed (filed):** a narrator-speaker normalization (the composed message) marks every modeled character as "another character" (`touches_character`). So a weak-relation texture claim about the render's own character ("Maren wipes_down the counter") is never surfaced there, and it feeds `composition_fallback`. It does not affect a scored M4 floor. Changing which characters count for the director is a verification-scope choice, so it is filed rather than changed.
-  **Issue:** see the new needs-triage issue
+  **Issue:** #484 (needs-triage)
+- **Decision (Rule 2, orchestrator):** a model-matrix failure mark now records the error's `details.structural_errors` (`RowFailure.structural_errors`, shown in **Failed runs**).
+  **Why:** the first P-08 Structured run at `e9d6a7f` stopped at turn 4 on `age_unrepaired`. The mark could not say whether the age repair ran out of budget (engine) or the model answered wrongly (model). The codes and counts carry no story text (invariant 3), as `details.structural_errors` already guarantees.
+  **Issue:** #153, #454
+- **Decision (Rule 1, orchestrator):** the render schema sent to the model offers ids only under a `characters` scope (`VisibilityDecl` as one JSON Schema alternative per scope shape, as #480 did for beat kinds). The validator is unchanged.
+  **Why:** the Structured re-run stopped at turn 6: three renders in a row named characters under a scope that names none (`only a characters scope names some`). The schema the model was sent allowed it, so constrained decoding could not stop it. That makes it an engine gap, not model quality (the owner's rule of 2026-10-20).
+  **Issue:** #153

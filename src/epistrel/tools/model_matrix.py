@@ -630,6 +630,9 @@ class RowFailure:
     purpose: str | None
     reason: str | None
     deadline_override_ms: int | None = None
+    structural_errors: list[str] | None = None
+    """The failure's ``details.structural_errors`` (what was wrong, as codes and counts, never
+    the answer's text), or ``None`` when the error carries none."""
 
     @property
     def key(self) -> str:
@@ -901,6 +904,8 @@ def _failed_lines(failed_rows: Sequence[Mapping[str, Any]]) -> list[str]:
         error = f["code"] + "".join(
             f", {name} `{f[name]}`" for name in ("purpose", "reason") if f.get(name)
         )
+        if f.get("structural_errors"):
+            error += "; " + ", ".join(f"`{e}`" for e in f["structural_errors"])
         lines.append(
             f"| {_label(f)} | {POLICY_LABELS.get(f['policies'], f['policies'])} | "
             f"{f['measured_at']} | `{f['sha']}` | {f['turn']} | {error} | {_turn_path_text(f)} |"
@@ -1211,6 +1216,11 @@ def _detail(error: ModelError, name: str) -> str | None:
     return None if value is None else str(value)
 
 
+def _errors(error: ModelError) -> list[str] | None:
+    value = error.details.get("structural_errors")
+    return None if not value else [str(v) for v in value]
+
+
 async def run_matrix(
     engine: Engine,
     target: Target,
@@ -1253,6 +1263,7 @@ async def run_matrix(
                 purpose=_detail(failed.error, "purpose"),
                 reason=_detail(failed.error, "reason"),
                 deadline_override_ms=override,
+                structural_errors=_errors(failed.error),
             )
             raise MatrixInterrupted(rows, failure) from failed.error
         finally:

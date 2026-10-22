@@ -405,7 +405,9 @@ class FailingDriver:
     async def turn(self, said: str) -> mm.TurnCalls:
         self.played += 1
         if self.faulty and self.played == self.fail_at:
-            raise ModelUnavailable("extraction_backstop", "deadline")
+            error = ModelUnavailable("extraction_backstop", "deadline")
+            error.details["structural_errors"] = ["budget_exhausted"]
+            raise error
         return await self.inner.turn(said)
 
 
@@ -414,7 +416,8 @@ async def test_a_row_failing_partway_keeps_the_finished_rows(
 ) -> None:
     """#454: the minors row's second measured turn fails on the deadline. ``run_matrix``
     raises ``MatrixInterrupted`` carrying the policies-off row, which finished, and the
-    minors row's failure: the turn reached, the error code, purpose and reason.
+    minors row's failure: the turn reached, the error code, purpose, reason and structural
+    errors.
 
     Complement asserted: no row for the failed minors row is in ``rows`` (no partial timings)."""
     settings = auth_settings(pg_url, model_adapter="stub", config_key=config_key())
@@ -435,6 +438,7 @@ async def test_a_row_failing_partway_keeps_the_finished_rows(
         "extraction_backstop",
         "deadline",
     )
+    assert failure.structural_errors == ["budget_exhausted"]
     assert failure.deadline_override_ms is None
 
 
@@ -467,7 +471,8 @@ async def test_main_writes_the_finished_rows_and_marks_the_failure(
     pg_url: str, engine: AsyncEngine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """#454: when a row fails partway, the tool writes the rows that finished, lists the
-    failed row under **Failed runs** (``failed_rows`` in the JSON), and exits 1. The tier's
+    failed row under **Failed runs** (``failed_rows`` in the JSON, with the error's structural
+    errors), and exits 1. The tier's
     earlier row of the failed key keeps its timings.
 
     Complement asserted: a later run that measures the failed row clears its failure mark."""
@@ -486,6 +491,7 @@ async def test_main_writes_the_finished_rows_and_marks_the_failure(
         purpose="generation",
         reason="deadline",
         deadline_override_ms=mm.MEASUREMENT_DEADLINE_MS,
+        structural_errors=["budget_exhausted"],
     )
     raw, markdown = tmp_path / "model-matrix.json", tmp_path / "model-matrix.md"
     mm.write_matrix(mm.merge([], [earlier]), markdown, raw)
@@ -517,7 +523,7 @@ async def test_main_writes_the_finished_rows_and_marks_the_failure(
     assert "## Failed runs" in text
     assert (
         "| local: m (structured turns) | minors policy on | 2026-10-20 | `abc1234` | 3 | "
-        "model_unavailable, purpose `generation`, reason `deadline` | "
+        "model_unavailable, purpose `generation`, reason `deadline`; `budget_exhausted` | "
         f"{mm.STRUCTURED_PATH}; turn deadline 300 s (override) |"
     ) in text
     assert "**Turn deadline override (#454).**" in text

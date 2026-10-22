@@ -39,26 +39,43 @@ releases the safe fallback. If it is the input check or the first generation, th
 the run writes no row for it, keeps the rows that finished, and lists the row under **Failed
 runs** (#454).
 
+**Turn deadline override (#454).** A row whose turn path says *turn deadline … s (override)*
+ran its turns under that per-story `budgets.deadline_ms` override, not its profile's own
+deadline (the `Structured (M4)` profile's is 45 s). The matrix measures how long a turn takes,
+so the profile's deadline must not cut it. Whether the profile's deadline fits a tier is read
+from the p50 / p95 against it.
+
 ## Results
 
 | Tier | Policies | Protocol | `generation` | `guardrail_check` | `consolidation` | `lite_summary` | `importance_scoring` | `entailment` | `salience_detection` | `extraction_backstop` | `regeneration` | E-06 | Turns | p50 | p95 | Calls per turn |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| local: cydonia-24b-v4.3 | minors policy on | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (tokens 32/32, 128/128; temp 0: 10/10 identical) | 20 | 18.84 s | 22.18 s | 3 (generation 1, guardrail_check 2) |
-| local: cydonia-24b-v4.3 | policies off | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (tokens 32/32, 128/128; temp 0: 10/10 identical) | 20 | 11.87 s | 14.93 s | 1 (generation 1) |
+| local: cydonia-24b-v4.3 | minors policy on | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (tokens 32/32, 128/128; temp 0: 10/10 identical) | 20 | 12.85 s | 15.42 s | 3 (generation 1, guardrail_check 2) |
+| local: cydonia-24b-v4.3 | policies off | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (tokens 32/32, 128/128; temp 0: 10/10 identical) | 20 | 10.45 s | 13.20 s | 1 (generation 1) |
 
 ## Calls
 
 | Tier | Policies | Designed per turn | Extra calls | Failed calls | Turns with a deadline or error | p50 / p95 without them | Safe fallbacks |
 |---|---|---|---|---|---|---|---|
-| local: cydonia-24b-v4.3 | minors policy on | 3 (generation 1, guardrail_check 2) | 0 | 0 | 0 of 20 | 18.84 s / 22.18 s | 0 |
-| local: cydonia-24b-v4.3 | policies off | 1 (generation 1) | 0 | 0 | 0 of 20 | 11.87 s / 14.93 s | 0 |
+| local: cydonia-24b-v4.3 | minors policy on | 3 (generation 1, guardrail_check 2) | 0 | 0 | 0 of 20 | 12.85 s / 15.42 s | 0 |
+| local: cydonia-24b-v4.3 | policies off | 1 (generation 1) | 0 | 0 | 0 of 20 | 10.45 s / 13.20 s | 0 |
 
 ## Runs
 
 | Tier | Policies | Measured | Engine SHA | Hardware | Server | Turn path |
 |---|---|---|---|---|---|---|
-| local: cydonia-24b-v4.3 | minors policy on | 2026-10-19 | `8c80f44` | Apple M3 Max, 128 GB; context 16,384 | LM Studio 0.4.26 | respond (#57) |
-| local: cydonia-24b-v4.3 | policies off | 2026-10-19 | `8c80f44` | Apple M3 Max, 128 GB; context 16,384 | LM Studio 0.4.26 | respond (#57) |
+| local: cydonia-24b-v4.3 | minors policy on | 2026-10-22 | `e9d6a7f` | Apple M3 Max, 128 GB | LM Studio 0.4.26 | respond (#57) |
+| local: cydonia-24b-v4.3 | policies off | 2026-10-22 | `e9d6a7f` | Apple M3 Max, 128 GB | LM Studio 0.4.26 | respond (#57) |
+
+## Failed runs
+
+A row whose turns stopped on a model failure partway. The run wrote the rows that finished
+before it, and kept this row's previous measurement (if any) in the tables above. The turn is
+numbered from 1 in the measured turns; turn 0 is the warm-up. The next run that measures the
+row clears its entry.
+
+| Tier | Policies | Measured | Engine SHA | Turn | Error | Turn path |
+|---|---|---|---|---|---|---|
+| local: cydonia-24b-v4.3 (structured turns) | policies off | 2026-10-22 | `e9d6a7f-dirty` | 6 | model_unavailable, purpose `generation`, reason `invalid_structure`; `the object: Value error, beats.3.visibility: only a characters scope names some`, `the object: Value error, beats.3.visibility: only a characters scope names some`, `the object: Value error, beats.3.visibility: only a characters scope names some` | structured respond (#150); turn deadline 300 s (override) |
 
 ## Embedding
 

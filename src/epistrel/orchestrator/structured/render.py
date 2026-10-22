@@ -117,8 +117,38 @@ class PropositionSketch(_Strict):
     ``role``; #151): normalization keeps only the declared ones."""
 
 
+def _per_scope(schema: dict[str, Any]) -> None:
+    """A scope's JSON Schema as one alternative per shape, as ``_per_kind`` does for beats: a
+    ``characters`` scope names one or more ids, ``objective`` and ``public`` name none, so
+    constrained decoding cannot write ids under a scope that names none (the validator still
+    enforces it)."""
+    properties: dict[str, Any] = schema["properties"]
+    scope, characters = properties["scope"], properties["characters"]
+    named = {k: v for k, v in scope.items() if k != "default"}
+    schema["anyOf"] = [
+        {
+            "type": "object",
+            "properties": {"scope": {**scope, "enum": ["objective", "public"]}},
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
+                "scope": {**named, "enum": ["characters"]},
+                "characters": {**characters, "minItems": 1},
+            },
+            "required": ["scope", "characters"],
+            "additionalProperties": False,
+        },
+    ]
+    for key in ("properties", "required", "additionalProperties", "type"):
+        schema.pop(key, None)
+
+
 class VisibilityDecl(_Strict):
     """A ``latent`` beat's scope: ``objective``, ``public`` or ``characters`` (with ids)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, json_schema_extra=_per_scope)
 
     scope: Literal["objective", "public", "characters"] = "objective"
     characters: list[str] = Field(default_factory=list)

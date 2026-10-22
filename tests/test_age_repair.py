@@ -208,3 +208,41 @@ def test_the_render_schema_offers_intent_on_a_say_alone() -> None:
     bad = '{"beats": [{"kind": "do", "text": "Maren nods.", "intent": "sincere"}]}'
     failure = parse(bad, schema)
     assert "beats.0.intent: only a say declares an intent" in failure.problem  # type: ignore[union-attr]
+
+
+def test_the_render_schema_offers_ids_under_a_characters_scope_alone() -> None:
+    """P-08's structured row (#153): three renders in a row named characters under a scope that
+    names none (``beats.N.visibility: only a characters scope names some``), because the schema
+    the render is sent let any scope carry ids. Each scope shape is now its own alternative: a
+    ``characters`` scope requires one or more ids, ``objective`` and ``public`` offer none. The
+    validator still refuses both mistakes."""
+    cast = "c" * 26
+    schema = render_schema(actor_id="a" * 26, player_id="p" * 26, cast_ids=[cast], max_beats=6)
+    scope = schema.model_json_schema()["$defs"]["VisibilityDecl"]
+    variants = {tuple(v["properties"]["scope"]["enum"]): v for v in scope["anyOf"]}
+    assert set(variants) == {("objective", "public"), ("characters",)}
+    assert "characters" not in variants[("objective", "public")]["properties"]
+    named = variants[("characters",)]
+    assert named["properties"]["characters"]["minItems"] == 1
+    assert named["required"] == ["scope", "characters"]
+    assert "default" not in named["properties"]["scope"]
+    assert all(v["additionalProperties"] is False for v in variants.values())
+    for visibility, problem in (
+        ({"scope": "public", "characters": [cast]}, "only a characters scope names some"),
+        ({"scope": "characters", "characters": []}, "a characters scope names some"),
+    ):
+        beats = [
+            {"kind": "do", "text": "Maren nods."},
+            {"kind": "latent", "text": "She knows.", "visibility": visibility},
+        ]
+        failure = parse(json.dumps({"beats": beats}), schema)
+        assert f"beats.1.visibility: {problem}" in failure.problem  # type: ignore[union-attr]
+    valid = [
+        {"kind": "do", "text": "Maren nods."},
+        {
+            "kind": "latent",
+            "text": "She knows.",
+            "visibility": {"scope": "characters", "characters": [cast]},
+        },
+    ]
+    assert len(parse(json.dumps({"beats": valid}), schema).beats) == 2  # type: ignore[union-attr]

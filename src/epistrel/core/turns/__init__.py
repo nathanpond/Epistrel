@@ -201,10 +201,13 @@ def _active_committed(story_id: str) -> Any:
     )
 
 
-def _before(column: Any, before_turn: int | None) -> Any:
-    """Positioned before ``before_turn`` (or position-less); everything when ``None``."""
+def _before(column: Any, before_turn: int | None, *, positioned: bool = False) -> Any:
+    """Positioned before ``before_turn`` (or position-less, unless ``positioned``: another
+    bound already excludes those rows); everything when ``None``."""
     if before_turn is None:
         return true()
+    if positioned:
+        return column < before_turn
     return or_(column.is_(None), column < before_turn)
 
 
@@ -223,6 +226,10 @@ async def transcript_rows(
     latest ``last`` of them, read as such (the order is total: ``seq`` is unique in a story), not
     sliced from the whole transcript (#452)."""
     t = transcript_messages
+    # A lower or upper bound already excludes position-less rows, so the before bound is then a
+    # plain range: one index range over the story's position, not an ``OR`` the planner may
+    # split into a bitmap OR or leave as a filter, by the whole table's statistics (#501).
+    positioned = after_turn > 0 or through_turn is not None
     query = (
         select(
             t.c.kind,
@@ -236,7 +243,7 @@ async def transcript_rows(
             t.c.story_id == story_id,
             t.c.membership == Membership.ACTIVE.value,
             t.c.channel.in_(PROMPT_CHANNELS),
-            _before(t.c.narrative_turn, before_turn),
+            _before(t.c.narrative_turn, before_turn, positioned=positioned),
         )
     )
     if last is None:

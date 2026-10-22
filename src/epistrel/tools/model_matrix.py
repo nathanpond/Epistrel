@@ -93,6 +93,7 @@ from cryptography.fernet import Fernet
 from epistrel.config import Settings
 from epistrel.core.context import RequestContext
 from epistrel.core.db import make_engine
+from epistrel.core.errors import EpistrelError, RevisionConflict
 from epistrel.core.policies.model import ModelAssistedRule, Policy
 from epistrel.core.policies.model import Target as PolicyTarget
 from epistrel.core.profiles.story import ProfileOverridesPatch
@@ -639,10 +640,15 @@ class RowFailure:
         return row_key(self.tier, self.model, self.policies, self.turn_kind)
 
 
+TURN_FAILURES = (ModelError, RevisionConflict)
+"""What stops a row partway (#454): a model failure, or a turn whose read set changed and whose
+budget could not pay to generate again (409 ``revision_conflict``)."""
+
+
 class TurnFailed(Exception):
     """``measure_turns``: turn ``turn`` (0 = the warm-up) failed with ``error``."""
 
-    def __init__(self, turn: int, error: ModelError) -> None:
+    def __init__(self, turn: int, error: EpistrelError) -> None:
         super().__init__(f"turn {turn}: {error.code}")
         self.turn = turn
         self.error = error
@@ -1197,7 +1203,7 @@ async def measure_turns(
     script = [SCRIPT[i % len(SCRIPT)] for i in range(turns + 1)]
     try:
         await driver.turn(script[0])
-    except ModelError as exc:
+    except TURN_FAILURES as exc:
         raise TurnFailed(0, exc) from exc
     latencies: list[int] = []
     logs: list[TurnCalls] = []
@@ -1205,18 +1211,18 @@ async def measure_turns(
         started = time.perf_counter()
         try:
             logs.append(await driver.turn(said))
-        except ModelError as exc:
+        except TURN_FAILURES as exc:
             raise TurnFailed(n, exc) from exc
         latencies.append(round((time.perf_counter() - started) * 1000))
     return latencies, logs
 
 
-def _detail(error: ModelError, name: str) -> str | None:
+def _detail(error: EpistrelError, name: str) -> str | None:
     value = error.details.get(name)
     return None if value is None else str(value)
 
 
-def _errors(error: ModelError) -> list[str] | None:
+def _errors(error: EpistrelError) -> list[str] | None:
     value = error.details.get("structural_errors")
     return None if not value else [str(v) for v in value]
 

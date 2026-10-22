@@ -19,6 +19,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.core.context import RequestContext
+from epistrel.core.errors import RevisionConflict
 from epistrel.core.profiles.story import ProfileOverridesPatch
 from epistrel.core.seeds.profiles import STRUCTURED_M4_PROFILE_ID
 from epistrel.engine import Engine
@@ -397,6 +398,7 @@ class FailingDriver:
     name: str = mm.TURN_PATH
     played: int = -1
     faulty: bool = False
+    conflict: bool = False
 
     async def prepare(self, engine: Engine, policies: mm.PolicySet) -> None:
         await self.inner.prepare(engine, policies)
@@ -404,6 +406,8 @@ class FailingDriver:
 
     async def turn(self, said: str) -> mm.TurnCalls:
         self.played += 1
+        if self.faulty and self.played == self.fail_at and self.conflict:
+            raise RevisionConflict("changed", {"reason": "budget"})
         if self.faulty and self.played == self.fail_at:
             error = ModelUnavailable("extraction_backstop", "deadline")
             error.details["structural_errors"] = ["budget_exhausted"]
@@ -440,6 +444,31 @@ async def test_a_row_failing_partway_keeps_the_finished_rows(
     )
     assert failure.structural_errors == ["budget_exhausted"]
     assert failure.deadline_override_ms is None
+
+
+async def test_a_turn_conflict_stops_the_row_like_a_model_failure(
+    pg_url: str, engine: AsyncEngine
+) -> None:
+    """P-08's structured row: a turn whose read set changed and whose budget cannot pay to
+    generate again (409 ``revision_conflict``) stops its row as a model failure does (#454),
+    rather than ending the run with nothing written."""
+    settings = auth_settings(pg_url, model_adapter="stub", config_key=config_key())
+    async with restored_model_config(engine):
+        epistrel = Engine(settings, db=engine)
+        try:
+            with pytest.raises(mm.MatrixInterrupted) as stopped:
+                await mm.run_matrix(
+                    epistrel,
+                    STUB_TARGET,
+                    turns=3,
+                    driver_factory=lambda: FailingDriver(1, conflict=True),
+                )
+        finally:
+            await epistrel.models.aclose()
+    assert [(r.policies, r.turns) for r in stopped.value.rows] == [("off", 3)]
+    failure = stopped.value.failure
+    assert (failure.policies, failure.turn) == ("minors", 1)
+    assert (failure.code, failure.purpose, failure.reason) == ("revision_conflict", None, "budget")
 
 
 def row_of(kind: mm.TurnKind, policies: mm.PolicySet, **changes: object) -> mm.Row:

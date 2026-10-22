@@ -25,6 +25,14 @@ Asserted, at every checkpoint (every ``CHECK_EVERY`` turns) and at the end:
 
 Latency is reported (each checkpoint's retrieval and commit milliseconds are printed for the
 run's log), not gated here: #153's ``perf.yml`` gates the timing budgets on the measured range.
+
+``test_x_01__consolidation`` (#143, #492; FR-MEM-6) is the same bound with consolidation on: a
+5,000-turn story (``EPISTREL_SOAK_CONSOLIDATION_TURNS`` sets fewer for a local run) whose
+episodic memories are written in bulk (``consolidation_support.bulk_turns``, as #143's 300-turn
+``test_s_consolidation_race__bounded`` does), and whose due windows run through the worker's own
+``execute`` after every 50 turns with the profile's dials: every level-1 window and every
+level-2 fold. At every checkpoint the context a retrieval assembles at the head has the
+profile's ``retrieval_token_budget`` and its items' tokens stay within it.
 """
 
 from __future__ import annotations
@@ -37,8 +45,13 @@ import pytest
 from sqlalchemy import text
 
 from epistrel.core.memory import pins, retirement
+from epistrel.core.memory.consolidation import Scope, covered_to, settings_of
+from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.retrieval import pipeline
+from epistrel.core.retrieval.assemble import tokens_of
+from epistrel.orchestrator.jobs.handlers.consolidation import schedule_in
 from epistrel.orchestrator.jobs.handlers.reembed import EMBED
+from tests import consolidation_support as cs
 from tests import hot_set_support as h
 from tests import retrieval_support as r
 from tests.embedding_support import Scratch, embedding_db, reset
@@ -51,6 +64,10 @@ BOBBY_BUDGET = 300
 VECTOR_BUDGET = 1_500
 LAG = 50
 QUERY = "Tell me about the rain on the quay."
+CONSOLIDATION_TURNS = int(os.environ.get("EPISTREL_SOAK_CONSOLIDATION_TURNS", "5000"))
+BLOCK = 50
+"""Turns written between two runs of the due consolidation windows (one default window)."""
+CONSOLIDATION_CHECK_EVERY = 250
 
 
 @pytest.fixture(scope="module")
@@ -183,3 +200,83 @@ async def test_x_01(scratch: Scratch) -> None:
     async with db.connect() as conn:
         closed = [e for e in await retirement.episodes(conn, story) if not e.open]
     assert closed, "the run overflowed at least once"
+
+
+def _line(n: int) -> str:
+    """A long line, so the retrieved candidates overflow the budget and it binds."""
+    return (
+        f"on day {n} the rain on the quay soaked the nets, the harbour bell rang twice, "
+        "and the gulls fought over the catch while the tide turned at the old stone pier; "
+        "the fishermen hauled their boats up the slipway, the lamplighter came early, "
+        "the chandler shuttered his windows against the squall, and the ferry from the "
+        "island waited out the weather behind the breakwater until the evening bell"
+    )
+
+
+@pytest.mark.part("M4", "FR-MEM-6")
+async def test_x_01__consolidation(scratch: Scratch) -> None:
+    """X-01 (M4), FR-MEM-6 with consolidation on: on a ``CONSOLIDATION_TURNS`` (5,000) turn
+    story, every window consolidated as the profile configures it (level 1 every 50 memories,
+    level 2 over every five windows), the context a retrieval assembles at the head at every
+    checkpoint has the profile's ``retrieval_token_budget`` and never exceeds it, its items'
+    tokens recounted. The consolidated outputs reach the context, and consolidation kept up:
+    by the end every turn but the last block's is covered at level 1 and level 2 ran."""
+    s = scratch
+    db = s.db
+    models = s.lib.models
+    models.stub.when(
+        "",
+        cs.answer(
+            facts=[("Rain soaks the quay most days.", "observation", [0])],
+            reflections=[("The harbour is a wet, busy place.", "observation", [1, 2])],
+        ),
+        purpose="consolidation",
+    )
+    w = await cs.story(db)
+    story, bobby = w.story_id, w.characters["Bobby"]
+    async with db.connect() as conn:
+        budget = (
+            await effective_configuration(conn, story, validate=False)
+        ).settings.memory.episodic.retrieval_token_budget
+        assert (await settings_of(conn, story)).enabled
+    kinds_seen: set[str] = set()
+    checkpoints = 0
+    binding = 0  # checkpoints whose candidates overflowed the budget (items dropped for it)
+    played = 0
+    started = time.perf_counter()
+    while played < CONSOLIDATION_TURNS:
+        count = min(BLOCK, CONSOLIDATION_TURNS - played)
+        await cs.bulk_turns(db, story, count, actor=bobby, name="Bobby", line=_line)
+        played += count
+        async with db.begin() as conn:
+            await schedule_in(conn, story)
+        outcomes = await cs.run_jobs(db, models, story, limit=50)
+        assert all(str(o) == "committed" for o in outcomes), outcomes
+        if played % CONSOLIDATION_CHECK_EVERY and played < CONSOLIDATION_TURNS:
+            continue
+        async with db.begin() as conn:
+            found = await pipeline.retrieve(
+                conn, story, pipeline.RetrievalQuery(QUERY), touch=False
+            )
+        context = found.context
+        recounted = sum(tokens_of(item.text) for item in context.items)
+        assert context.budget == budget, (played, context.budget)
+        assert recounted <= budget, (played, recounted)
+        assert context.used <= budget, (played, context.used)
+        kinds_seen |= {m.kind for m in found.memories}
+        binding += any(d.reason == "budget" for d in context.dropped)
+        checkpoints += 1
+        print(
+            f"X-01 consolidation turn={played} used={recounted}/{budget} "
+            f"items={len(context.items)} dropped={len(context.dropped)} "
+            f"windows={len(await cs.windows(db, story))} "
+            f"elapsed_s={time.perf_counter() - started:.1f}"
+        )
+    assert checkpoints >= CONSOLIDATION_TURNS // CONSOLIDATION_CHECK_EVERY
+    assert binding == checkpoints, (binding, checkpoints)  # the budget bound every time
+    assert {"semantic", "reflection"} <= kinds_seen, kinds_seen
+    async with db.connect() as conn:
+        level1 = await covered_to(conn, story, Scope().key, 1)
+        level2 = await covered_to(conn, story, Scope().key, 2)
+    assert level1 >= CONSOLIDATION_TURNS - BLOCK, level1
+    assert level2 > 0, level2

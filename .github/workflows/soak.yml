@@ -1,7 +1,9 @@
 # The weekly soak (#147, docs/04 §12): X-01's long-horizon consistency run, 20,000 narration-only
 # stub turns of one structured story (`soak`, which PR CI deselects). It asserts the bounded
 # retrieved context, the hot set's bounds outside overflow episodes, every episode's deadline,
-# and linear growth of active records and total storage; it reports in the step summary,
+# and linear growth of active records and total storage. Its consolidation slice (#492,
+# FR-MEM-6) plays 5,000 turns with consolidation on and asserts the retrieved context stays within
+# the profile's token budget at every checkpoint. The run reports in the step summary,
 # uploads the log, and on a red run opens (or comments on) a "Weekly soak run failed" issue.
 name: Soak
 

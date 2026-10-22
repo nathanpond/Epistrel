@@ -422,6 +422,9 @@ class Operation:
         self.config_captured = config_dependencies.captured_for(kind, origin)
         self.config_dependencies = config_dependencies.dependencies_for(kind, origin)
         """The members compared at commit: an interpretive change to one is re-checked."""
+        self.own_predicates: set[str] = set()
+        """The predicates this operation auto-registered itself (``core.own_predicates``): its
+        configuration captures leave them out, so it never re-checks against its own change."""
         self.story_settings = StorySettings()
         self.attempts: list[dict[str, Any]] = []
         self.timeline_revision: int | None = None
@@ -525,7 +528,7 @@ class Operation:
             self.base_revision = int(found.timeline_revision)
             self.story_settings = StorySettings.from_row(found.settings)
             self.config_revisions = await config_dependencies.capture(
-                conn, self.story_id, self.config_captured
+                conn, self.story_id, self.config_captured, own_predicates=self.own_predicates
             )
         await conn.execute(
             insert(operations).values(
@@ -621,7 +624,7 @@ class Operation:
             self.base_revision = int(found.timeline_revision)
             self.story_settings = StorySettings.from_row(found.settings)
             self.config_revisions = await config_dependencies.capture(
-                conn, self.story_id, self.config_captured
+                conn, self.story_id, self.config_captured, own_predicates=self.own_predicates
             )
             if self.read_set_source is not None:
                 keyed = self._keyed()
@@ -638,7 +641,9 @@ class Operation:
         self._require_in_flight("re-capture the configuration of")
         assert self.story_id is not None  # noqa: S101 - only story operations depend on config
         async with self._connection() as conn, conn.begin():
-            current = await config_dependencies.capture(conn, self.story_id, self.config_captured)
+            current = await config_dependencies.capture(
+                conn, self.story_id, self.config_captured, own_predicates=self.own_predicates
+            )
             moved = config_dependencies.changed(
                 self.config_revisions, current, self.config_dependencies
             )
@@ -985,7 +990,7 @@ class Operation:
         config_changed: tuple[str, ...] = ()
         if not control and not touched and self.config_dependencies:
             current_config = await config_dependencies.capture(
-                conn, self.story_id, self.config_dependencies
+                conn, self.story_id, self.config_dependencies, own_predicates=self.own_predicates
             )
             config_changed = config_dependencies.changed(
                 self.config_revisions, current_config, self.config_dependencies

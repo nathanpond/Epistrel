@@ -68,6 +68,7 @@ from sqlalchemy import func, insert, literal_column, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from epistrel.core import own_predicates
 from epistrel.core.config_changes import ConfigScope, record_config_change
 from epistrel.core.enums import StoryStatus
 from epistrel.core.erasure import guard
@@ -852,6 +853,7 @@ async def auto_register(
         update(stories).where(stories.c.id == story_id).values(config_revision=revision)
     )
     await _index_predicates(conn, [row])
+    own_predicates.note(predicate.id)
     await record_config_change(
         conn,
         config_revision=revision,

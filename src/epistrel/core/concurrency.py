@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import summary
+from epistrel.core import own_predicates, summary
 from epistrel.core.enums import Membership, OperationKind, OperationStatus
 from epistrel.core.errors import (
     ErasedSubjectReferenced,
@@ -501,7 +501,8 @@ async def run_with_revalidation(
     try:
         while True:
             if generate_next:
-                await generate(op, inputs)
+                with own_predicates.recording(op.own_predicates):
+                    await generate(op, inputs)
             generate_next = True
             try:
                 await op.commit(decide=decide)
@@ -521,15 +522,16 @@ async def run_with_revalidation(
                         raise await conflict(state.current_revision, "config_changed") from None
                     rechecks += 1
                     await op.recapture_config()
-                    passed = (
-                        True
-                        if config_recheck is None
-                        else await config_recheck(op, outcome.changed)
-                    )
-                    if passed and isinstance(op.read_set_source, KeyedReadSetSource):
-                        # A structured turn's verification and permission checks re-run under
-                        # the new configuration too (FR-CONC-16, M4; #136).
-                        passed = await op.rebase_recheck()
+                    with own_predicates.recording(op.own_predicates):
+                        passed = (
+                            True
+                            if config_recheck is None
+                            else await config_recheck(op, outcome.changed)
+                        )
+                        if passed and isinstance(op.read_set_source, KeyedReadSetSource):
+                            # A structured turn's verification and permission checks re-run
+                            # under the new configuration too (FR-CONC-16, M4; #136).
+                            passed = await op.rebase_recheck()
                     op.attempts[-1]["recheck"] = "passed" if passed else "failed"
                     if passed:
                         generate_next = False

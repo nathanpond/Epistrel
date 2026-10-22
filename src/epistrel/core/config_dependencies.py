@@ -37,7 +37,7 @@ guidance-only edit regenerates.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -96,12 +96,16 @@ def dependencies_for(
     return ()
 
 
-async def _predicate_registry(conn: AsyncConnection, story_id: str) -> str:
+async def _predicate_registry(
+    conn: AsyncConnection, story_id: str, own: Collection[str] = ()
+) -> str:
     """Hash of the story's own predicate rows (the core vocabulary is the same for every story
-    and changes only with a release)."""
-    found = await conn.execute(
-        select(predicates).where(predicates.c.story_id == story_id).order_by(predicates.c.id)
-    )
+    and changes only with a release), without ``own``: the ones the capturing operation
+    registered itself (``core.own_predicates``)."""
+    query = select(predicates).where(predicates.c.story_id == story_id)
+    if own:
+        query = query.where(predicates.c.id.not_in(sorted(own)))
+    found = await conn.execute(query.order_by(predicates.c.id))
     return hash_member([list(map(str, row)) for row in found.all()])
 
 
@@ -142,10 +146,15 @@ async def _policy_set(
 
 
 async def capture(
-    conn: AsyncConnection, story_id: str, members: Sequence[str]
+    conn: AsyncConnection,
+    story_id: str,
+    members: Sequence[str],
+    *,
+    own_predicates: Collection[str] = (),
 ) -> dict[str, Any] | None:
     """``config_revisions`` for an operation of ``story_id`` recording ``members`` (``None``
-    when the story does not exist)."""
+    when the story does not exist). ``own_predicates`` (the operation's own auto-registrations,
+    ``core.own_predicates``) are left out of ``predicate_registry``."""
     story = (
         await conn.execute(
             select(
@@ -184,7 +193,7 @@ async def capture(
     if "minor_age_threshold" in members:
         captured["minor_age_threshold"] = int(deployment.minor_age_threshold)
     if "predicate_registry" in members:
-        captured["predicate_registry"] = await _predicate_registry(conn, story_id)
+        captured["predicate_registry"] = await _predicate_registry(conn, story_id, own_predicates)
     if "verification_settings" in members:
         captured["verification_settings"] = await _verification_settings(conn, story_id)
     if "allow_new_arrivals" in members:

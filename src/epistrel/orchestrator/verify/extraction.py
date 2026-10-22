@@ -130,7 +130,6 @@ from epistrel.core.verify.protected import (
 from epistrel.core.verify.rules import VerdictReason
 from epistrel.observability.metrics import CLAIMS_CHECKED, CLAIMS_DETECTED
 from epistrel.orchestrator.budget import COMPOSED, TurnBudget
-from epistrel.orchestrator.jobs import queue
 from epistrel.orchestrator.jobs.types import JobContext, JobHandler, JobOutput
 from epistrel.orchestrator.models.access import ModelAccessLayer, routing
 from epistrel.orchestrator.models.adapter import MAX_COMPLETION_TOKENS, ModelParams
@@ -915,6 +914,11 @@ def shadow_owed(outcomes: Sequence[DetectionOutcome]) -> bool:
 async def enqueue_shadow(conn: AsyncConnection, story_id: str, operation_id: str) -> None:
     """Enqueue the sampled turn's shadow job in the turn's commit (#150 calls it when
     ``shadow_owed``); it runs after the commit, under its own budget."""
+    # Imported here, not at the top: ``jobs.handlers`` registers this module's
+    # ``SHADOW_HANDLER`` and ``jobs.queue`` imports ``jobs.handlers``, so a top-level import
+    # makes importing this module first a cycle (#499).
+    from epistrel.orchestrator.jobs import queue
+
     await queue.enqueue(
         conn,
         SHADOW_JOB,

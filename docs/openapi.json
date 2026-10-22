@@ -9242,6 +9242,12 @@
             "description": "A structured turn's beat (#150): each proposition it asserts (the normalized proposition) with its verdict (`supported`, `contradicted`, `novel`, `uncertain`, `denied`; `null` with verification off). Absent from a Lite item.",
             "title": "Propositions"
           },
+          "quarantined": {
+            "default": false,
+            "description": "Omniscient reads only: present (`true`) when the item's event is a source of a quarantined memory (#145). A quarantine keeps the item in history; it only keeps the memory out of retrieval and every generation context.",
+            "title": "Quarantined",
+            "type": "boolean"
+          },
           "redacted": {
             "default": false,
             "description": "Present (`true`) when an erasure rewrote the item in place: each span that named the erased subject reads `[erased]` (#124).",
@@ -13696,6 +13702,12 @@
             ],
             "description": "A structured turn's beat (#150): each proposition it asserts (the normalized proposition) with its verdict (`supported`, `contradicted`, `novel`, `uncertain`, `denied`; `null` with verification off). Absent from a Lite item.",
             "title": "Propositions"
+          },
+          "quarantined": {
+            "default": false,
+            "description": "Omniscient reads only: present (`true`) when the item's event is a source of a quarantined memory (#145). A quarantine keeps the item in history; it only keeps the memory out of retrieval and every generation context.",
+            "title": "Quarantined",
+            "type": "boolean"
           },
           "redacted": {
             "default": false,

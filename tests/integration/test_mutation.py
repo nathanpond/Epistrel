@@ -314,3 +314,56 @@ async def test_erasure_reaches_a_quarantine_reason_and_a_fork_keeps_the_quaranti
     row = await _memory(engine, said.id)
     assert row.quarantined_at is not None
     assert "Ann" not in row.quarantine_reason
+
+
+async def test_a_quarantined_memory_is_flagged_on_omniscient_history_only(
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#145 AC1 (#497): a quarantine leaves history alone. The quarantined memory's beat is
+    still in the story's history, and under ``omniscient`` it carries ``quarantined: true``.
+    A character viewpoint reads the same beat with
+    no flag: which memories are quarantined is an omniscient fact. Complements asserted: the
+    beat whose memory is not quarantined has no flag, and after the quarantine is reversed the
+    omniscient read shows no flag either."""
+    w = await cs.story(engine)
+    story, bobby = w.story_id, w.characters["Bobby"]
+    _, (said,) = await turn(
+        engine, story, actor=bobby, say="The code is under the bell.", reply=None
+    )
+    _, (clean,) = await turn(engine, story, actor=bobby, say="Good night.", reply=None)
+
+    async def history(viewpoint: str) -> dict[str, list[dict[str, Any]]]:
+        answer = await client.get(
+            f"/stories/{story}/history", params={"viewpoint": viewpoint}, headers=bearer()
+        )
+        assert answer.status_code == 200, answer.text
+        found: dict[str, list[dict[str, Any]]] = {}
+        for item in answer.json()["items"]:
+            found.setdefault(item["message_id"], []).append(item)
+        return found
+
+    (said_event,) = said.source_event_ids
+    (clean_event,) = clean.source_event_ids
+    async with respond_client(erasure_settings(pg_url), engine) as (client, _):
+        answer = await client.post(
+            _admin(story, f"/memories/{said.id}/quarantine"),
+            json={"reason": "A planted line."},
+            headers=WRITE,
+        )
+        assert answer.status_code == 200, answer.text
+
+        omniscient = await history("omniscient")
+        assert [(i["channel"], i.get("quarantined")) for i in omniscient[said_event]] == [
+            ("say", True)
+        ]
+        assert [i.get("quarantined") for i in omniscient[clean_event]] == [None]
+        as_bobby = await history(w.viewpoint("Bobby"))
+        assert [i["text"] for i in as_bobby[said_event]] == ["The code is under the bell."]
+        assert all("quarantined" not in i for items in as_bobby.values() for i in items)
+
+        released = await client.delete(
+            _admin(story, f"/memories/{said.id}/quarantine"), headers=WRITE
+        )
+        assert released.status_code == 200, released.text
+        after = await history("omniscient")
+        assert all("quarantined" not in i for items in after.values() for i in items)

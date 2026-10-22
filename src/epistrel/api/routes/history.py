@@ -90,6 +90,13 @@ class HistoryItemModel(BaseModel):
         description="Present (`true`) when an erasure rewrote the item in place: each span "
         "that named the erased subject reads `[erased]` (#124).",
     )
+    quarantined: bool = Field(
+        default=False,
+        exclude_if=lambda quarantined: not quarantined,
+        description="Omniscient reads only: present (`true`) when the item's event is a "
+        "source of a quarantined memory (#145). A quarantine keeps the item in history; it "
+        "only keeps the memory out of retrieval and every generation context.",
+    )
     propositions: list[BeatPropositionModel] | None = Field(
         default=None,
         exclude_if=lambda v: v is None,

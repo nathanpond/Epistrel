@@ -60,7 +60,8 @@ class ThinkOnly(E06Suite):
 
 
 @pytest.mark.integration
-@pytest.mark.part("M4", "FR-TURN-1; NFR-QUAL-7")
+@pytest.mark.part("M4", "FR-TURN-1")
+@pytest.mark.part("M9", "NFR-QUAL-7")
 async def test_e_06__structured(pg_url: str, engine: AsyncEngine) -> None:
     """200 labeled structured turns over every length and temperature, 40 of them repeated at
     temperature 0: on a seeded sample of the stub run every released turn is a valid

@@ -8550,3 +8550,16 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Issue:** #479
 - **Finding:** `check-traceability` reads the parts that `check-parts --json` writes. It fails on a stale cache (it reported NFR-QUAL-2,3,4,14 still at M4 after `a0c24ac`) until `check-parts --json` runs again. CI runs them in order, so this is a local-only trap.
   **Issue:** #134
+
+- **Decision (owner rule, applied):** NFR-QUAL-7 moves from M4 to M9 (ADR-166, which amends ADR-164). E-06 is split into `[M4: FR-TURN-1]` and `[M9: NFR-QUAL-7]` on `test_e_06__structured`, and its §15 row and §22 rows are updated.
+  **Why:** after the engine fixes (ADR-163, ADR-165), live conformance at `eee9fba` is 79.17 % ± 9.46 % against ≥ 98 % (it was 10 %, then 48.33 %). A traced diagnostic at `bcc640c` (24 cases, 87.5 %) found that the remaining repairs follow the spec:
+  - core-relation claims with an untracked argument in a slot option 2 does not mint (a person, or `any`);
+  - detector risk categories;
+  - claims about the player's character.
+
+  The rest of the miss is the model: temperature-0 repeatability 78.57 % ± 25.75 %, length 97.50 %, and `model_unavailable` errors. This follows the owner's rule of 2026-10-20: a floor that still misses after the engine fixes moves to M9.
+  **Issue:** #134, #479
+- **Decision:** #479 is closed by PR #426. Its engine work is done (option 2, ADR-163, ADR-165): live `e06.structure_valid` rose from 10 % to 80.83 % ± 8.78 %. The live criterion "≥ 89 %" moves to M9 with NFR-QUAL-7, where the remaining model-side causes sit.
+  **Issue:** #479
+- **Finding, not fixed (filed):** a narrator-speaker normalization (the composed message) marks every modeled character as "another character" (`touches_character`). So a weak-relation texture claim about the render's own character ("Maren wipes_down the counter") is never surfaced there, and it feeds `composition_fallback`. It does not affect a scored M4 floor. Changing which characters count for the director is a verification-scope choice, so it is filed rather than changed.
+  **Issue:** see the new needs-triage issue

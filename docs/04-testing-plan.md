@@ -292,7 +292,7 @@ Use **real models**, report scores with variance, gate on thresholds. Run across
 - **[E-03] Consolidation quality (FR-MEM-3,6, NFR-QUAL-3):** **[M4: FR-MEM-3,6]** faithfulness (reflections entailed by source episodes — anti-hallucination), abstraction level, downstream retrieval usefulness; on the stub, in CI, faithfulness clears its floor. **[M9: NFR-QUAL-3]** Faithfulness meets NFR-QUAL-3's floor on the reference model tier (ADR-164).
 - **[E-04] Importance calibration (FR-MEM-7):** correlation with a labeled pivotal/trivial set; pivotal out-ranks trivia.
 - **[E-05] Salience detection (FR-COMMIT-3, NFR-QUAL-4):** **[M4: FR-COMMIT-3]** precision/recall on labeled salient-vs-texture; false negatives weighted heavily (they cause under-commitment); on the stub, in CI, both clear their floors. **[M9: NFR-QUAL-4]** Recall and precision meet NFR-QUAL-4's floors on the reference model tier (ADR-164).
-- **[E-06] Generation conformance (FR-RESP-3, FR-TURN-1, NFR-QUAL-7):** **[M2: FR-RESP-3]** Lite output honors prompt params across the model matrix. **[M4: FR-TURN-1, NFR-QUAL-7]** Structured output honors prompt params and returns valid say/think/do/latent structure across the model matrix. Its temperature-0 repeatability check compares the render call's output only (the rendered beats, a repaired beat by its original text), not the composed message (the owner's decision on #464).
+- **[E-06] Generation conformance (FR-RESP-3, FR-TURN-1, NFR-QUAL-7):** **[M2: FR-RESP-3]** Lite output honors prompt params across the model matrix. **[M4: FR-TURN-1]** Structured output honors prompt params and returns valid say/think/do/latent structure across the model matrix. Its temperature-0 repeatability check compares the render call's output only (the rendered beats, a repaired beat by its original text), not the composed message (the owner's decision on #464). **[M9: NFR-QUAL-7]** Generation conformance meets the floor on the reference model tier (ADR-166).
 - **[E-07] Structured-output robustness (FR-MODEL-6,7, NFR-QUAL-5):** per-model rate of invalid output; degradation path triggers correctly (uncertain → conservative), never silent acceptance. NFR-QUAL-5's "valid after retry" counts only the model's structured-call validity: the render's `invalid_output` attempts retried to a valid final answer; a safe fallback or deterministic repair released after a valid render is not an invalid structure for this metric (the owner's decision on #465).
 - **[E-08] Gate statistics and reporting (NFR-QUAL-8, NFR-QUAL-1):** **[M4: NFR-QUAL-8]** the eval harness applies the rate rule to rate floors and the observed-zero rule to zero-tolerance floors; a zero-tolerance run on fewer than 300 cases, or with any violation on any seed, fails; every report carries sample size, seed count, model/version, and for zero-tolerance metrics the one-sided 95% upper bound; a run with **one deterministically injected violation** (a scripted model adapter that leaks on a fixed case of a fixed seed) must fail the zero gate, as must a run of 299 clean cases; a clean run of 300 cases on every seed passes and reports an upper bound of about 1%. **[M5: NFR-QUAL-1,8]** The same rules applied to NFR-QUAL-1's knowledge-asymmetry and private-thought metrics on their labeled sets.
 - **[E-09] Time estimation (FR-CLOCK-7, NFR-QUAL-9):** a labeled set of narrated time skips with context (activities, established start times, travel) and a human-judged acceptable duration range; metric: share of estimates inside the range; also reports the rate of model-initiated skips removed by FR-CLOCK-8 per 100 turns, as a pacing-health signal.
@@ -883,7 +883,7 @@ Generated from the explicit requirement references in each test in §§3–12 (r
 | NFR-QUAL-4 | M | M9 | E-05 (M9) |
 | NFR-QUAL-5 | M | M4 | E-07 (M4) |
 | NFR-QUAL-6 | M | M4 | Q-01 (M4), Q-02 (M4) |
-| NFR-QUAL-7 | M | M4 | E-06 (M4) |
+| NFR-QUAL-7 | M | M9 | E-06 (M9) |
 | NFR-QUAL-8 | M | M4 | E-08 (M4), E-08 (M5), E-11 (M8), E-12 (M4) |
 | NFR-QUAL-9 | M | M6 | C-14 (M6), E-09 (M6) |
 | NFR-QUAL-10 | M | M4 | E-10 (M4) |
@@ -907,7 +907,7 @@ Generated from the explicit requirement references in each test in §§3–12 (r
 
 **Not release-gated** (S or C requirements with no named test): FR-MODEL-9 (S).
 
-**M requirements first gated per milestone:** M2 105 · M3 51 · M4 90 · M5 64 · M6 58 · M7 40 · M8 14 · M9 4.
+**M requirements first gated per milestone:** M2 105 · M3 51 · M4 89 · M5 64 · M6 58 · M7 40 · M8 14 · M9 5.
 
 ---
 

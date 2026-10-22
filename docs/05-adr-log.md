@@ -49,7 +49,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | NFR-PERF | §20 | 080, 123, 126, 133, 137, 145, 146, 147, 162 |
 | NFR-DETERM | §20 | 045, 080 |
 | NFR-SCALE | §20 | 070, 072, 075, 137 |
-| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 112, 114, 115, 158, 164 |
+| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 112, 114, 115, 158, 164, 166 |
 | NFR-REL | §20 | 045, 127 |
 | NFR-SEC | §20 | 138, 149, 152 |
 | NFR-PRIV | §20 | 077, 101, 154, 157, 159, 161 |
@@ -226,8 +226,9 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 161 | A pending catalog-scope erasure withholds a policy naming its subject from a story's settings, and refuses a violation of it | Current | — |
 | 162 | An approximate-bounds residual takes the safe disposition with no entailment call | Current | — |
 | 163 | An extraction claim whose weak relation names something untracked is surfaced, not repaired | Partly superseded | 165 |
-| 164 | Model-bound quality floors that miss on the reference model after M4's engine fixes move to M9: Performance tuning | Current | — |
+| 164 | Model-bound quality floors that miss on the reference model after M4's engine fixes move to M9: Performance tuning | Amended | 166 |
 | 165 | The render's own declared claims surface like extraction claims, and an unknown name or a pronoun with no antecedent counts as untracked | Current | — |
+| 166 | NFR-QUAL-7 (generation conformance) also moves to M9 | Current | — |
 
 ---
 
@@ -1654,6 +1655,7 @@ Everything else keeps the safe disposition: detector findings, the excluded reso
 
 ### ADR-164 — Model-bound quality floors that miss on the reference model after M4's engine fixes move to M9: Performance tuning
 **Status:** Accepted. Amends ADR-139 (the milestone sequence: M9 follows M8, and M9's gate is the full release gate).
+**Amended by:** ADR-166 — NFR-QUAL-7 (generation conformance) also moves to M9.
 **Context:** M4's first live exit report on the reference model tier (`cydonia-24b-v4.3` on LM Studio; `docs/evals/775d2c4f43f3-2026-10-20.md`) missed several NFR-QUAL floors. On 2026-10-20 the owner decided that every engine-side cause is fixed in M4, and that quality or speed that depends on the model is deferred to a new milestone, **M9: Performance tuning**, placed after M8 (the GitHub milestones for bug fixes and the audit became M10 and M11; neither carries requirements, so §22 does not list them). A floor that still misses on the reference model after the engine fixes is reassigned to M9: its §22 assignment, its §15 rows and its test part markers move, so M4 can close with its engine work done. The re-run after the fixes (`docs/evals/2c61ec2dbc6c-2026-10-21.md`) leaves four such requirements. Each miss is the model's own judgment or output on a path the engine already handles as specified:
 - **NFR-QUAL-2** (E-01): false-contradiction rate 5.0 % ± 0.0 % against ≤ 2 % (false support 0.0 %, which passes). Every miss is a `residual-weak` case in which the entailment model commits to `contradicted` on an escalated weak predicate, the world-knowledge judgment FR-VERIFY-3 (b) sends to the model by design.
 - **NFR-QUAL-3** (E-03): faithfulness 90 % ± 5 % against ≥ 98 %. The consolidation model writes generalizations its source records do not entail; the engine already drops hedged statements (#462).
@@ -1682,6 +1684,17 @@ Everything else keeps the safe disposition: detector findings, the excluded reso
 - An unknown name under a weak relation (a new person or place the render names) is surfaced, not canonized. A later render may name the same thing differently, and nothing catches it until the thing is tracked. Under a core or author relation, option 2 still mints a place or object, and a person slot still never mints.
 - A pronoun with no antecedent under a weak relation may refer to a modeled character the resolver could not bind. The claim is still never `supported` or canonized, so canon is unaffected.
 - Tests: `tests/test_introduce.py` (the widened marks; declared and extraction claims surface, and detector findings do not); `tests/integration/test_introduced_entities.py` (a declared claim with no mention, an unresolved pronoun or an unknown name is released and listed).
+
+---
+
+### ADR-166 — NFR-QUAL-7 (generation conformance) also moves to M9
+**Status:** Accepted. Amends ADR-164 (one more requirement takes its route).
+**Context:** ADR-164 moved the model-bound floors that still missed after M4's engine fixes to M9, and named the route for any later one. NFR-QUAL-7 (E-06, ≥ 98 %) missed for an engine reason first: the repair ladder spent itself on scene texture it could not check, so the safe fallback replaced the render (#479). The live numbers on the reference model tier were 10 % at `2f91d92`, 48.33 % ± 13.77 % at `81705da` after ADR-163, and **79.17 % ± 9.46 %** at `eee9fba` after ADR-165 (`docs/evals/84411b5aaf1a-2026-10-21.md`). A traced diagnostic at `bcc640c` (24 cases, 87.5 %) found that the claims still sent to repair do so as specified. They are claims in a core relation with an untracked argument in a slot option 2 does not mint (a person, or an `any` slot), detector findings on a risk category (time, quantity), and claims about the player's character. The other parts of the miss are the model's: temperature-0 repeatability 78.57 % ± 25.75 % (the same render call, the same prompt), the length limit honoured in 97.50 % ± 2.50 %, and model calls the server failed (`model_unavailable`).
+**Decision:** NFR-QUAL-7 is assigned to M9 (03 §22). E-06's M4 part keeps FR-TURN-1 (`[M4: FR-TURN-1]`), and the floor is an M9 part (`[M9: NFR-QUAL-7]`) on the same test, `test_e_06__structured`. The floor, the set, the scorer and the gate rule are unchanged, and the stub CI gate still runs E-06 at 100 %.
+**Consequences:**
+- M4's live exit evidence is NFR-QUAL-5, 6, 8, 10, 13 and 15 on the reference model tier. NFR-QUAL-5 and NFR-QUAL-10 pass at `eee9fba` (100 % each).
+- M9 receives the remaining causes: model output that declares new people and facts in core relations, temperature-0 non-determinism on the serving stack, and length adherence.
+- Invariant 7 holds; `check-assignment`, `check-parts`, `check-lexicon` and `check-traceability` pass.
 ---
 
 *Every ADR above is Accepted as a record; the indexes at the top show which are amended or partly superseded. No decisions are open.*

@@ -8569,3 +8569,9 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision (Rule 1, orchestrator):** the render schema sent to the model offers ids only under a `characters` scope (`VisibilityDecl` as one JSON Schema alternative per scope shape, as #480 did for beat kinds). The validator is unchanged.
   **Why:** the Structured re-run stopped at turn 6: three renders in a row named characters under a scope that names none (`only a characters scope names some`). The schema the model was sent allowed it, so constrained decoding could not stop it. That makes it an engine gap, not model quality (the owner's rule of 2026-10-20).
   **Issue:** #153
+- **Decision (Rule 1, orchestrator):** the age repair's schema sent to the model now takes exactly one answer per name asked about, each that name as listed and an age inside its bounds (`age_schema`, as `_per_kind` does for beats). `match_ages` still validates the answer.
+  **Why:** the P-08 Structured run at `7f0ed0f` stopped at turn 1 on `age_unrepaired`: three answers for nobody (`1 asked about, 1 missing, 0 not asked about`). The schema took any list of any names, so constrained decoding could not prevent it. That is an engine gap (the owner's rule of 2026-10-20). The engine knows the names and bounds when it calls.
+  **Issue:** #153, #480
+- **Decision (Rule 1, orchestrator):** the model matrix treats a turn's 409 `revision_conflict` like a model failure: the row is marked failed and the finished rows are written (`7f0ed0f`). Before, the run crashed and wrote nothing.
+  **Why:** the P-08 Structured run at `7b6402a` ended that way. Why the turn's read set changed with one driver and no worker is not yet known; the next run keeps its database so the operation's recorded attempts can be read.
+  **Issue:** #153, #454

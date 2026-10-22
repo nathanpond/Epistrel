@@ -377,9 +377,44 @@ class AgeRepair(_Strict):
 
 
 def age_schema(expected: Mapping[str, tuple[int, int]]) -> type[AgeRepair]:
-    model = create_model("AgeRepairAnswer", __base__=AgeRepair)
-    model.expected = {k.strip().casefold(): v for k, v in expected.items()}
-    model.asked = {k.strip().casefold(): k.strip() for k in expected}
+    """The age repair's answer type for ``expected``. Its JSON Schema (the one the model is sent)
+    takes exactly one answer per name asked about, each that name as the prompt listed it and an
+    age inside its bounds, so constrained decoding cannot answer for nobody or name someone else
+    (as ``_per_kind`` does for beats). ``match_ages`` still validates the answer."""
+    shown = {k.strip(): v for k, v in expected.items()}
+
+    def closed(schema: dict[str, Any]) -> None:
+        answers = [
+            {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "enum": [name]},
+                    "age": {
+                        "type": "integer",
+                        "minimum": max(low, TRUE_AGE_MIN),
+                        "maximum": min(high, TRUE_AGE_MAX),
+                    },
+                },
+                "required": ["name", "age"],
+                "additionalProperties": False,
+            }
+            for name, (low, high) in shown.items()
+        ]
+        schema["properties"]["ages"] = {
+            "type": "array",
+            "items": {"anyOf": answers},
+            "minItems": len(answers),
+            "maxItems": len(answers),
+        }
+        schema.pop("$defs", None)
+
+    model = create_model(
+        "AgeRepairAnswer",
+        __base__=AgeRepair,
+        __cls_kwargs__={"json_schema_extra": closed},
+    )
+    model.expected = {k.casefold(): v for k, v in shown.items()}
+    model.asked = {k.casefold(): k for k in shown}
     return model
 
 

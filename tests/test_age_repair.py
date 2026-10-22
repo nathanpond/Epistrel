@@ -246,3 +246,26 @@ def test_the_render_schema_offers_ids_under_a_characters_scope_alone() -> None:
         },
     ]
     assert len(parse(json.dumps({"beats": valid}), schema).beats) == 2  # type: ignore[union-attr]
+
+
+def test_the_age_schema_takes_one_answer_per_name_asked_about() -> None:
+    """P-08's structured row (#153): the age repair answered for nobody three times in a row
+    (``1 asked about, 1 missing, 0 not asked about``), because the schema it was sent took any
+    list of any names. It now takes exactly one answer per name asked about, each that name as
+    the prompt listed it and an age inside its bounds; ``match_ages`` still validates it."""
+    schema = age_schema({" Old Tom ": (60, 90), "the girl": (8, 12)})
+    ages = schema.model_json_schema()["properties"]["ages"]
+    assert (ages["minItems"], ages["maxItems"]) == (2, 2)
+    answers = {a["properties"]["name"]["enum"][0]: a for a in ages["items"]["anyOf"]}
+    assert set(answers) == {"Old Tom", "the girl"}
+    tom = answers["Old Tom"]["properties"]["age"]
+    assert (tom["minimum"], tom["maximum"]) == (60, 90)
+    assert all(a["required"] == ["name", "age"] for a in answers.values())
+    assert all(a["additionalProperties"] is False for a in answers.values())
+    assert "$defs" not in schema.model_json_schema()
+    failure = parse('{"ages": []}', schema)
+    assert "no answer for 'Old Tom', 'the girl'" in failure.problem  # type: ignore[union-attr]
+    good = parse(
+        '{"ages": [{"name": "Old Tom", "age": 70}, {"name": "the girl", "age": 9}]}', schema
+    )
+    assert good.resolved() == {"old tom": 70, "the girl": 9}  # type: ignore[union-attr]

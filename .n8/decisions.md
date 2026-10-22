@@ -8579,3 +8579,16 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Why:** the P-08 Structured run at `15b6184` (kept database) showed every structured turn that registered a relation getting `config_changed: ["predicate_registry"]` on attempt 1: its own short-transaction registration, compared at commit with its start capture. On the minors row the re-check failed, the turn tried to regenerate, and its model budget could not pay (409 `revision_conflict`, reason `budget`). FR-CONC-16 is about a change made *under* the operation, and the turn already normalized under its own predicate.
   **Trade-off:** the operation's recorded `config_revisions.predicate_registry` is the registry without its own registrations. Another operation's registration still changes the hash and re-checks the turn (asserted in `tests/integration/test_own_registration.py`).
   **Issue:** #153
+- **Decision (Rule 1, core; migration 0067):** the `memories` guard fires `AFTER UPDATE OR DELETE` (it was `BEFORE`), and the table's `fillfactor` is 70. The guard function, its default-deny comparison and its refusals are unchanged.
+  **Why:** P-04 structured at `1c44887` passed every criterion except retrieval: 0 % of 281 in-turn retrievals were within 150 ms, all in the 250 to 500 ms bucket. A probe on P-04's cached seed put about 200 ms of each retrieval in its `last_accessed_at` touch of about 40 rows. Only 8.6 % of `memories` updates were heap-only:
+  - The `BEFORE` PL/pgSQL guard returned a detoasted `NEW`, so the indexed `embedding` looked changed and every touch inserted into all 14 indexes, the HNSW graph among them.
+  - Seeded pages at fillfactor 100 had no room for a second row version.
+
+  Neither change alone was enough. Fillfactor 70 alone stayed slow; the `AFTER` guard alone got 32 % HOT. Both together got 99.8 % HOT; the touch went from about 200 ms to about 3 ms, and retrieval p50/p95 from 281/328 ms to 142/182 ms in the serial probe.
+  **Rejected:**
+  - A `BEFORE` trigger `WHEN` clause: it cannot reference a whole `NEW` row with a generated column (`search`), and listing the immutable columns would make later columns mutable by default.
+  - A separate access-time table: a new table (Rule 4).
+  - Moving the touch off the turn path: it still rewrites every index.
+  **Trade-off:** the heap is about 1.5× larger (169 → 254 MB on the seed); indexes are unchanged. An existing store gains the free space only on pages written from now on, or at once with `VACUUM FULL memories`.
+  **Residue:** in the serial probe the vector arm (about 50 ms: ten stories share one HNSW index filtered by story) and lexical (about 50 ms) remain. The P-04 re-run decides whether the 150 ms bound holds.
+  **Issue:** #452, #153

@@ -64,7 +64,10 @@ Guarded (``epistrel_memories_guard``): an UPDATE may change only ``MUTABLE_MEMOR
 erasure (``epistrel.erasure = on``) may also rewrite ``text`` and ``quarantine_reason``, and a
 sanitize (``epistrel.sanitize`` = the memory's id, #145) that one row's ``text`` and
 ``inputs_hash``. A DELETE passes only under an
-erasure or the story's deletion (``epistrel.allow_story_delete``); TRUNCATE is refused.
+erasure or the story's deletion (``epistrel.allow_story_delete``); TRUNCATE is refused. The
+guard fires after the row is written (migration 0067, #452), and the table keeps 30 % of each page
+free (``fillfactor = 70``), so a retrieval's ``last_accessed_at`` touch is a heap-only update that
+writes no index entry.
 ``core.memory.records`` is the only writer of rows; ``core.mutation``, ``core.memory.retirement``
 and ``core.memory.pins`` update them.
 """

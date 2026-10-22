@@ -372,6 +372,37 @@ async def test_the_table_is_guarded(engine: AsyncEngine) -> None:
     assert (await memory_rows(engine, w.story_id))[memory.id].text == "[erased]"
 
 
+async def test_a_touch_is_a_heap_only_update(engine: AsyncEngine) -> None:
+    """#452: a retrieval's ``last_accessed_at`` touch on a memory with a full-size (toasted)
+    embedding writes no index entry. A ``BEFORE`` guard returned a detoasted ``NEW``, so the
+    indexed ``embedding`` looked changed and every touch inserted into every index."""
+    w = await _structured_world(engine)
+    _, (memory, *_) = await turn(engine, w.story_id, actor=w.characters["Cal"])
+    vector = "[" + ",".join(f"{(i * 7919 % 1000) / 1000 - 0.5:.6f}" for i in range(768)) + "]"
+    await execute_in_tx(
+        engine,
+        (
+            "UPDATE memories SET embedding = CAST(:v AS vector) WHERE id = :m",
+            {"m": memory.id, "v": vector},
+        ),
+    )
+    counts = text(
+        # The session's not-yet-flushed earlier transactions count here too (PG >= 15), so the
+        # touch is the difference.
+        "SELECT n_tup_upd, n_tup_hot_upd FROM pg_stat_xact_user_tables WHERE relname = 'memories'"
+    )
+    async with engine.begin() as conn:
+        assert (
+            await conn.scalar(text("SELECT reloptions FROM pg_class WHERE relname = 'memories'"))
+        ) == ["fillfactor=70"]
+        before = (await conn.execute(counts)).one()
+        await conn.execute(
+            text("UPDATE memories SET last_accessed_at = now() WHERE id = :m"), {"m": memory.id}
+        )
+        after = (await conn.execute(counts)).one()
+    assert (after[0] - before[0], after[1] - before[1]) == (1, 1)
+
+
 async def test_the_writer_records_the_occasion_and_the_lexical_vector(engine: AsyncEngine) -> None:
     """#141's writer hook: a beat's ``event_type`` and ``participants`` are written (its actor
     first), ``beat_occasion`` derives them from a text and its resolved mentions, the generated

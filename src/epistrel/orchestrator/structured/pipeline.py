@@ -175,7 +175,7 @@ from epistrel.core.profiles.fingerprint import Stamp
 from epistrel.core.profiles.reservation import extraction_on
 from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Polarity, Proposition
-from epistrel.core.propositions.registry import Registry
+from epistrel.core.propositions.registry import Registry, consider_proposals
 from epistrel.core.propositions.registry import load as load_registry
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.resolution.context import load_context
@@ -2642,6 +2642,22 @@ async def play(
         else:
             commit_report = {"canonized": len(canonized)}
         fixed["commit"] = commit_report
+        # FR-PROP-4: the auto predicates this turn's propositions used may now earn a
+        # strengthening proposal (inert until the author approves it; #131, #491).
+        await consider_proposals(
+            conn,
+            story_id,
+            [
+                *(r.claim.predicate_id for r in checked.requests),
+                *(r.claim.predicate_id for r in latent_requests),
+                *(
+                    c.proposition.predicate_id
+                    for c in (*checked.input_claims, *(c for b in checked.beats for c in b.claims))
+                    if c.proposition is not None
+                ),
+            ],
+            registry,
+        )
         # #155: the turn's escalation records, in its commit.
         await yields.write(
             conn,

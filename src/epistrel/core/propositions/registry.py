@@ -31,7 +31,9 @@ proposition affirmed and negated over overlapping time).
 
 **Proposals.** The engine may propose strengthening an auto predicate (``file_proposal``;
 ``consider_proposal`` files ``functional`` once ``PROPOSAL_OBSERVATIONS`` affirmed propositions
-of it are single-valued per subject). A proposal is inert: nothing reads it but the listing,
+of it are single-valued per subject; a structured turn's commit runs it through
+``consider_proposals`` for the auto predicates its propositions use, and a proposal the author
+rejected is not filed again). A proposal is inert: nothing reads it but the listing,
 until ``POST /stories/{id}/predicates/{predicate_id}/approve`` applies it (all of it, or a
 subset of its fields) as an interpretive configuration change (revision bump, one
 ``config_changes`` row). Existing propositions that the new semantics would flag are reported in
@@ -1010,10 +1012,27 @@ async def single_valued_observations(
 async def consider_proposal(conn: AsyncConnection, story_id: str, predicate_id: str) -> str | None:
     """File a ``functional`` proposal for the story's auto predicate once its observations are
     ``PROPOSAL_OBSERVATIONS`` consistent single-valued ones; answers the proposal id (``None``:
-    not yet, or not a weak auto predicate)."""
+    not yet, not a weak auto predicate, or the author already rejected this proposal). A pending
+    proposal's id is answered as it is."""
     predicate = await _story_predicate(conn, story_id, predicate_id)
     if predicate.layer is not Layer.AUTO or not predicate.weak:
         return None
+    changes = ProposedChanges(cardinality=Cardinality.FUNCTIONAL)
+    earlier = await conn.execute(
+        select(
+            predicate_proposals.c.id, predicate_proposals.c.status, predicate_proposals.c.proposed
+        ).where(
+            predicate_proposals.c.story_id == story_id,
+            predicate_proposals.c.predicate_id == predicate_id,
+            predicate_proposals.c.status.in_(("pending", "rejected")),
+        )
+    )
+    found = earlier.all()
+    for row in found:
+        if row.status == "pending":
+            return str(row.id)
+    if any(dict(row.proposed or {}).get("changes") == changes.fields() for row in found):
+        return None  # the author said no: a later observation does not re-open it
     observed = await single_valued_observations(conn, story_id, predicate_id)
     if observed is None or observed < PROPOSAL_OBSERVATIONS:
         return None
@@ -1021,9 +1040,27 @@ async def consider_proposal(conn: AsyncConnection, story_id: str, predicate_id: 
         conn,
         story_id,
         predicate_id,
-        ProposedChanges(cardinality=Cardinality.FUNCTIONAL),
+        changes,
         evidence={"single_valued_observations": observed},
     )
+
+
+async def consider_proposals(
+    conn: AsyncConnection, story_id: str, predicate_ids: Iterable[str], registry: Registry
+) -> tuple[str, ...]:
+    """``consider_proposal`` for each of the story's weak auto predicates among
+    ``predicate_ids`` (the predicates of the propositions a commit wrote; core and author
+    predicates take no proposals and are skipped), in the caller's transaction; answers the
+    pending proposals' ids. A structured turn's commit runs it (#491)."""
+    filed: list[str] = []
+    for predicate_id in dict.fromkeys(predicate_ids):
+        predicate = registry.get(predicate_id)
+        if predicate is None or predicate.layer is not Layer.AUTO or not predicate.weak:
+            continue
+        found = await consider_proposal(conn, story_id, predicate_id)
+        if found is not None:
+            filed.append(found)
+    return tuple(filed)
 
 
 class ApproveRequest(BaseModel):
@@ -1287,6 +1324,7 @@ __all__ = [
     "cardinality_may_contradict",
     "check_rules",
     "consider_proposal",
+    "consider_proposals",
     "core_registry",
     "direct_polarity_conflict",
     "file_proposal",

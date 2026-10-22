@@ -6,23 +6,34 @@ first on cardinality while a direct negation over overlapping time is still a po
 conflict; a strengthening proposal is inert until the author approves it; the core predicates
 carry their documented semantics; and author-declared predicates and rules take effect as
 declared. #140 adds the verdicts on top (``novel``, ``contradicted``, the model residual).
+#491 adds where the proposal comes from: structured turns on the stub file it once the relation
+has been used single-valued often enough, and the author approves it over REST.
 """
 
 from __future__ import annotations
 
+from typing import Any
+
+import httpx2 as httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.config import Settings
 from epistrel.core.propositions import registry, store
 from epistrel.core.propositions.model import (
     Cardinality,
     Interval,
     Layer,
+    Predicate,
     Proposition,
     TemporalKind,
 )
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME
-from tests.event_support import new_story, scalar
+from tests.auth_support import auth_settings
+from tests.event_support import new_story, rows, scalar
+from tests.respond_support import body, played, respond_client
+from tests.story_support import WRITE
+from tests.structured_turn_support import beat, claim, render, structured_story
 
 
 @pytest.mark.integration
@@ -141,3 +152,151 @@ async def test_s_predicate_layers__registry(engine: AsyncEngine) -> None:
     assert implied.predicate_id == CORE_BY_NAME["enrolled_at"].id
     assert implied.object_id == school
     assert registry.imply(facts, registry.core_registry().rules()).derived == ()
+
+
+@pytest.fixture
+def stub_settings(pg_url: str) -> Settings:
+    return auth_settings(pg_url, model_adapter="stub")
+
+
+async def _apprentice_story(
+    client: httpx.AsyncClient, engine: AsyncEngine
+) -> tuple[str, dict[str, str]]:
+    """A structured story with Wren (the player), Ada, and two smiths Ada could name."""
+    story, ids = await structured_story(client, "Wren", "Ada")
+    async with engine.begin() as conn:
+        await store.add_entity(conn, story, "person", "the blacksmith")
+        await store.add_entity(conn, story, "person", "the farrier")
+    return story, ids
+
+
+async def _apprenticed(
+    client: httpx.AsyncClient, story: str, ids: dict[str, str], stub: Any, master: str
+) -> None:
+    """One structured turn: Ada's render declares that she apprenticed with ``master``."""
+    stub.script(
+        "generation",
+        [
+            render(
+                beat(
+                    "say",
+                    f"I apprenticed with {master}.",
+                    intent="sincere",
+                    propositions=[claim("I", "apprenticed with", master)],
+                )
+            )
+        ],
+    )
+    await played(client, story, body(ids["Wren"], "Who taught you?"))
+
+
+async def _predicate(engine: AsyncEngine, story: str) -> Predicate:
+    found = (await registry.load(engine, story)).named("apprenticed_with")
+    assert found is not None  # the render's relation was auto-registered
+    return found
+
+
+async def _proposals(engine: AsyncEngine, story: str) -> list[Any]:
+    return await rows(
+        engine,
+        "SELECT id, predicate_id, status, proposed, filed_by FROM predicate_proposals "
+        "WHERE story_id = :s ORDER BY id",
+        s=story,
+    )
+
+
+async def _observations(engine: AsyncEngine, story: str, predicate_id: str) -> int | None:
+    async with engine.connect() as conn:
+        return await registry.single_valued_observations(conn, story, predicate_id)
+
+
+async def _decide(
+    client: httpx.AsyncClient, story: str, predicate_id: str, action: str
+) -> httpx.Response:
+    return await client.post(
+        f"/stories/{story}/predicates/{predicate_id}/{action}", json={}, headers=WRITE
+    )
+
+
+@pytest.mark.part("M4", "FR-PROP-4")
+async def test_s_predicate_layers__proposal_from_turns(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """Ada says, turn after turn, that she apprenticed with the blacksmith. The relation is
+    auto-registered weak. Once ``PROPOSAL_OBSERVATIONS`` of its affirmed propositions are
+    single-valued, that turn's commit files one ``functional`` proposal, by the engine and
+    inert (the predicate stays weak), and ``POST .../approve`` applies it (200). Complements:
+    before the threshold there is no proposal (approve is 404); a story where she names two
+    different masters never gets one; a rejected proposal is not filed again by a later
+    turn."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+
+        story, ids = await _apprentice_story(client, engine)
+        await _apprenticed(client, story, ids, stub, "the blacksmith")
+        apprenticed = await _predicate(engine, story)
+        assert (apprenticed.layer, apprenticed.weak) == (Layer.AUTO, True)
+        observed = await _observations(engine, story, apprenticed.id)
+        assert observed is not None
+        assert 0 < observed < registry.PROPOSAL_OBSERVATIONS
+        # Below the threshold: nothing is filed, so there is nothing to approve.
+        assert await _proposals(engine, story) == []
+        early = await _decide(client, story, apprenticed.id, "approve")
+        assert early.status_code == 404, early.text
+        filed: list[Any] = []
+        for _ in range(registry.PROPOSAL_OBSERVATIONS):
+            await _apprenticed(client, story, ids, stub, "the blacksmith")
+            observed = await _observations(engine, story, apprenticed.id)
+            assert observed is not None
+            filed = await _proposals(engine, story)
+            assert len(filed) == int(observed >= registry.PROPOSAL_OBSERVATIONS)
+            if filed:
+                break
+        (proposal,) = filed
+        assert (proposal.predicate_id, proposal.status, proposal.filed_by) == (
+            apprenticed.id,
+            "pending",
+            registry.ENGINE_PRINCIPAL,
+        )
+        assert proposal.proposed["changes"] == {"cardinality": "functional"}
+        assert await _predicate(engine, story) == apprenticed  # inert until approved
+        listed = await client.get(f"/stories/{story}/predicates", headers=WRITE)
+        assert listed.status_code == 200, listed.text
+        (row,) = [p for p in listed.json()["predicates"] if p["id"] == apprenticed.id]
+        assert row["pending_proposal"]["id"] == proposal.id
+        # A later turn finds it pending and files no second one.
+        await _apprenticed(client, story, ids, stub, "the blacksmith")
+        assert [p.id for p in await _proposals(engine, story)] == [proposal.id]
+        approved = await _decide(client, story, apprenticed.id, "approve")
+        assert approved.status_code == 200, approved.text
+        answer = approved.json()
+        assert (answer["proposal_id"], answer["status"]) == (proposal.id, "approved")
+        assert answer["predicate"]["cardinality"] == "functional"
+        assert answer["violations"] == []
+        assert (await _predicate(engine, story)).cardinality is Cardinality.FUNCTIONAL
+
+        # Complement: two masters for one subject is not single-valued, so there is no
+        # proposal however often the relation is used.
+        story, ids = await _apprentice_story(client, engine)
+        for n in range(registry.PROPOSAL_OBSERVATIONS + 1):
+            master = "the farrier" if n == 1 else "the blacksmith"
+            await _apprenticed(client, story, ids, stub, master)
+        apprenticed = await _predicate(engine, story)
+        assert await _observations(engine, story, apprenticed.id) is None
+        assert await _proposals(engine, story) == []
+        refused = await _decide(client, story, apprenticed.id, "approve")
+        assert refused.status_code == 404, refused.text
+
+        # Complement: a rejected proposal stays rejected; the next use does not re-file it.
+        story, ids = await _apprentice_story(client, engine)
+        for _ in range(registry.PROPOSAL_OBSERVATIONS):
+            await _apprenticed(client, story, ids, stub, "the blacksmith")
+        apprenticed = await _predicate(engine, story)
+        (proposal,) = await _proposals(engine, story)
+        rejected = await _decide(client, story, apprenticed.id, "reject")
+        assert rejected.status_code == 200, rejected.text
+        await _apprenticed(client, story, ids, stub, "the blacksmith")
+        assert [(p.id, p.status) for p in await _proposals(engine, story)] == [
+            (proposal.id, "rejected")
+        ]
+        assert (await _predicate(engine, story)).weak

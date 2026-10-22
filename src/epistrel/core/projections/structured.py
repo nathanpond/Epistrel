@@ -462,12 +462,16 @@ def _from_turn_on(table: Table, from_turn: int, basis: TimeBasis) -> ColumnEleme
 
 
 async def _scene_inputs(
-    conn: AsyncConnection, story_id: str, from_turn: int | None = None
+    conn: AsyncConnection,
+    story_id: str,
+    from_turn: int | None = None,
+    basis: TimeBasis | None = None,
 ) -> tuple[list[Row], list[Row]]:
     """The story's placement rows and its ``scene`` relationship rows; with ``from_turn``, only
     those a scene from that turn on can use, so a write at the head reads the rows still open
     there rather than the story's whole history."""
-    basis = None if from_turn is None else await _basis(conn, story_id)
+    if from_turn is not None and basis is None:
+        basis = await _basis(conn, story_id)
 
     def bounded(table: Table) -> ColumnElement[bool]:
         return (
@@ -504,6 +508,7 @@ async def _scenes(
     places: Sequence[Row],
     presences: Sequence[Row],
     from_turn: int = 1,
+    basis: TimeBasis | None = None,
 ) -> dict[tuple[Any, ...], Row]:
     """The ``scene_state`` rows of the active turns from ``from_turn`` on, from ``places`` and
     ``presences`` (the story's placement rows and its ``scene`` relationship rows)."""
@@ -513,7 +518,7 @@ async def _scenes(
     if not turns:
         return {}
     actor = await _actor(conn, story_id)
-    basis = await _basis(conn, story_id)
+    basis = basis or await _basis(conn, story_id)
     out: dict[tuple[Any, ...], Row] = {}
     for turn, variant, operation_id in turns:
         now = story_time_at(turn, basis)
@@ -604,12 +609,13 @@ async def refresh(
             ),
             scene_state,
         )
-        places, presences = await _scene_inputs(conn, story_id, first)
+        basis = await _basis(conn, story_id)
+        places, presences = await _scene_inputs(conn, story_id, first, basis)
         await _sync(
             conn,
             scene_state,
             stored_scenes,
-            await _scenes(conn, story_id, places, presences, first),
+            await _scenes(conn, story_id, places, presences, first, basis),
         )
     for hook in list(AFTER_WRITE):
         hook(story_id)

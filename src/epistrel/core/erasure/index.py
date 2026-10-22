@@ -79,6 +79,7 @@ from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Se
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import and_, delete, func, insert, select, text, tuple_
@@ -296,35 +297,59 @@ def _overrides(snapshot: Any) -> dict[str, tuple[list[str], list[str]]]:
     return found
 
 
+CHARACTER_COLUMNS = (
+    "id",
+    "name",
+    "role_id",
+    "source_catalog_id",
+    "persona_id",
+    "persona_snapshot",
+)
+"""The ``characters`` columns a story subject is built from."""
+
+
 async def story_subjects(conn: AsyncConnection, story_id: str) -> list[Subject]:
     """The story's characters (see the module docstring for their terms and links)."""
-    snapshot = await conn.scalar(
-        select(stories.c.scenario_snapshot).where(stories.c.id == story_id)
+    # One statement (#153): every indexed record of a turn reads these, several times a turn.
+    snapshots = (
+        select(
+            func.jsonb_agg(
+                func.jsonb_build_array(
+                    character_snapshots.c.character_id, character_snapshots.c.content
+                )
+            )
+        )
+        .where(character_snapshots.c.story_id == stories.c.id)
+        .scalar_subquery()
     )
+    cast = (
+        select(
+            func.jsonb_agg(
+                func.jsonb_build_object(
+                    *(part for name in CHARACTER_COLUMNS for part in (name, characters.c[name]))
+                )
+            )
+        )
+        .where(characters.c.story_id == stories.c.id)
+        .scalar_subquery()
+    )
+    read = (
+        await conn.execute(
+            select(stories.c.scenario_snapshot, snapshots, cast).where(stories.c.id == story_id)
+        )
+    ).one_or_none()
+    snapshot, snapshot_rows, character_rows = read if read is not None else (None, None, None)
     overrides = _overrides(snapshot)
     snapshotted: dict[str, tuple[list[str], list[str]]] = {}
-    for character_id, content in await conn.execute(
-        select(character_snapshots.c.character_id, character_snapshots.c.content).where(
-            character_snapshots.c.story_id == story_id
-        )
-    ):
+    for character_id, content in snapshot_rows or ():
         snapshotted[str(character_id)] = (
             _strings(_at(content, NAME_PATH)),
             _strings(_at(content, ALIASES_PATH)),
         )
     keys: list[tuple[str, tuple[Defined, ...]]] = []
     named: list[tuple[list[str], list[str]]] = []
-    rows = await conn.execute(
-        select(
-            characters.c.id,
-            characters.c.name,
-            characters.c.role_id,
-            characters.c.source_catalog_id,
-            characters.c.persona_id,
-            characters.c.persona_snapshot,
-        ).where(characters.c.story_id == story_id)
-    )
-    for row in rows:
+    for found in character_rows or ():
+        row = SimpleNamespace(**found)
         character_id = str(row.id)
         snapshot_names, snapshot_aliases = snapshotted.get(character_id, ([], []))
         role_names, role_aliases = (

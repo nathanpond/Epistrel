@@ -8608,3 +8608,10 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Issue:** #494, #154
 - **Decision (method):** the fix pass runs five worktree agents in parallel (#491; #494; #498's S-PROMOTE, C-20 and P-10 parts; the guard tests #492, #493, #495, #497; #499, #500, #501). Their commits are cherry-picked onto `milestone/m4-verify-fixes-1`, and each agent's head gets a full suite plus every CI gate before its issues' completion comments. `current_milestone` goes to 4 in the last commit (#498).
   **Why:** the items are independent apart from U-30 (#494 and #498), which is assigned to #494 alone.
+
+## Blocker — 2026-10-22
+
+- **Blocked (Rule 4):** S-PROMOTE's M4 part (FR-CAT-8: promoting with selected memories seeds them into the companion scenario) needs a new `seed_memories` field on `PromoteRequest` (`extra="forbid"` today; M3's test asserts it is refused 422) and a new companion-draft write. That is an API-contract change.
+  **Options:** (1) add `seed_memories` now (openapi, docs/02, the M3 refusal test, the M4 part); (2) move the part to a later milestone (docs/04 §15/§22, `/n8-replan`); (3) drop the M4 part (FR-CAT-8 is S priority and its seeding clause is "may").
+  **Holds up:** `current_milestone = 4` (#498), so the M4 gate and re-verify. Question and options are on #498 (comment 6353456235).
+  **Issue:** #498

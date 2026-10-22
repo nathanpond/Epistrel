@@ -46,25 +46,24 @@ This is the commit in which an overflow episode reaches its deadline. It ranks e
 
 ## P-04: the structured reference workload (NFR-PERF-4, M4)
 
-**FAIL** on host class `mac` (reported, not gated): Darwin arm64, 16 CPUs, 128 GB RAM, engine `9f0662fdcc7f + uncommitted changes`, started 2026-10-19 19:15 UTC. 10 structured stories of 10,000 memories and 20,000 events, one single-character turn every 60 s each for 30 minutes, open loop, `turn_concurrency = queue`, the stub at 2 s per call with 10% contradicted and 10% novel claims. The full report is committed under `perf/results/`.
+**PASS** on host class `mac` (reported, not gated): Darwin arm64, 16 CPUs, 128 GB RAM, engine `075bef503330`, started 2026-10-22 14:47 UTC. 10 structured stories of 10,000 memories and 20,000 events, one single-character turn every 60 s each for 30 minutes, open loop, `turn_concurrency = queue`, the stub at 2 s per call with 10% contradicted and 10% novel claims. The full report is committed under `perf/results/`.
 
 | Criterion | Measured | Bound | Result |
 |---|---|---|---|
-| turn commit p95 (server commit stage) | 12.9% of 279 commits ≤ 250 ms | ≥ 95% ≤ 250 ms | **FAIL** |
-| failed requests | 2 | 0 | **FAIL** |
-| lost or duplicated turns | 2 lost, 0 duplicated | 0 | **FAIL** |
-| retrieval p95 (server retrieve stage) | 0.0% of 279 retrievals ≤ 150 ms | ≥ 95% ≤ 150 ms | **FAIL** |
-| deterministic verify p95 (server verify stage) | 61.5% of 52 claims checked ≤ 50 ms | ≥ 95% ≤ 50 ms | **FAIL** |
+| turn commit p95 (server commit stage) | 96.1% of 281 commits ≤ 250 ms | ≥ 95% ≤ 250 ms | PASS |
+| failed requests | 0 | 0 | PASS |
+| lost or duplicated turns | 0 lost, 0 duplicated | 0 | PASS |
+| retrieval p95 (server retrieve stage) | 95.7% of 281 retrievals ≤ 150 ms | ≥ 95% ≤ 150 ms | PASS |
+| deterministic verify p95 (server verify stage) | 100.0% of 58 claims checked ≤ 50 ms | ≥ 95% ≤ 50 ms | PASS |
 
-Per story (queue keeps up, waits within one interval, front to first call p95 ≤ 1 s): 0 of 10 stories pass.
+Per story (queue keeps up, waits within one interval, front to first call p95 ≤ 1 s): 10 of 10 stories pass.
 
 | Stage | Observations | p50 | p95 | p99 |
 |---|---|---|---|---|
-| commit | 279 | ≤ 2000 ms | ≤ 5000 ms | ≤ 5000 ms |
-| retrieve | 279 | ≤ 2000 ms | ≤ 5000 ms | ≤ 5000 ms |
-| verify | 52 | ≤ 50 ms | ≤ 1000 ms | ≤ 1000 ms |
-| front_to_first_call | 279 | ≤ 2000 ms | ≤ 5000 ms | ≤ 10000 ms |
-| queue_wait | 2 | ≤ 5000 ms | ≤ 10000 ms | ≤ 10000 ms |
+| commit | 281 | ≤ 150 ms | ≤ 250 ms | ≤ 500 ms |
+| retrieve | 281 | ≤ 100 ms | ≤ 150 ms | ≤ 500 ms |
+| verify | 58 | ≤ 50 ms | ≤ 50 ms | ≤ 50 ms |
+| front_to_first_call | 281 | ≤ 100 ms | ≤ 150 ms | ≤ 250 ms |
 
 ## History
 

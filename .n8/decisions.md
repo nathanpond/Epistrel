@@ -8689,3 +8689,8 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Issue:** #497, #145
 - **Decision (lead, #500):** the owner-approved re-run of the M4 edge publish (run 39835278625 attempt 2) stalled the same way (ffmpeg apt step, 25 minutes). It was not re-run a third time. The edge publish comes from this pass's merge to main (`publish-edge.yml` runs on push to main).
   **Issue:** #500
+
+## Owner decisions — 2026-10-22 (fix pass 1)
+
+- **Owner decision (2026-10-22):** S-PROMOTE's M4 part takes option 1: add `seed_memories` to `PromoteRequest` now (an API-contract change the owner approved), seeding the selected memories into the companion scenario's draft, never into the character. This resolves the 2026-10-22 blocker above.
+  **Issue:** #498, #114

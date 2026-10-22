@@ -1,0 +1,69 @@
+{
+  "budgets": {
+    "commit_p95_ms": 250.0,
+    "retrieval_p95_ms": 150.0
+  },
+  "commit_samples": 100,
+  "first_failure": {
+    "budget": "retrieval p95 351.9 ms > 150 ms",
+    "memories": 250000
+  },
+  "host": {
+    "host": "local-mac-loaded",
+    "machine": "arm64",
+    "maintenance_work_mem": "64MB",
+    "pgvector": "0.8.7",
+    "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+    "postgres": "16.15 (Debian 16.15-1.pgdg12+2)",
+    "ram_gb": 128.0,
+    "runner_image": null,
+    "sha": null,
+    "shared_buffers": "128MB",
+    "vcpus": 16
+  },
+  "informational": true,
+  "live_memory_rows": 2000,
+  "measured_at": "2026-10-22T23:16:17Z",
+  "points": [
+    {
+      "build_spilled_after": null,
+      "bulk_memory_rows_per_s": 1683.6,
+      "commit_ms": {
+        "max": 36.824,
+        "p50": 17.097,
+        "p95": 20.388,
+        "p99": 24.992
+      },
+      "event_rows_per_s": 99.8,
+      "hnsw_build_s": 378.915,
+      "index_bytes": 1024008192,
+      "live_memory_rows_per_s": 74.0,
+      "maintenance_work_mem": "1GB",
+      "memories": 250000,
+      "retrieval_ms": {
+        "max": 408.317,
+        "p50": 240.523,
+        "p95": 351.897,
+        "p99": 403.688
+      },
+      "vectors": 250000
+    }
+  ],
+  "queries": 100,
+  "requested_steps": [
+    250000,
+    1000000,
+    5000000
+  ],
+  "requirement": "NFR-SCALE-1",
+  "start": {
+    "events": 2000,
+    "memories": 1000
+  },
+  "test": "P-10",
+  "turns_per_step": 500,
+  "unmeasured_steps": [
+    1000000,
+    5000000
+  ]
+}

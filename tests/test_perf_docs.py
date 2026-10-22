@@ -199,31 +199,58 @@ def test_the_structured_workload_is_summarised(tmp_path: Path) -> None:
 
 
 def test_capacity_reports_the_first_failing_budget(tmp_path: Path) -> None:
-    """P-10's steps stay above the gated 50k and at most ``--up-to``; the report names the
-    first step whose retrieval or commit budget failed.
+    """P-10's steps stay above the fixture's start and at most ``--up-to``; the report names
+    the first step whose retrieval or commit budget failed, each step's build memory, and the
+    requested steps left unmeasured; pgvector's "no longer fits" NOTICE gives the spill point.
 
-    Complement asserted: with every step within budget the report says none failed."""
+    Complement asserted: with every step within budget and every requested step measured, the
+    report says none failed and lists nothing as unmeasured."""
     assert capacity.steps_up_to(1_000_000) == [250_000, 1_000_000]
     assert capacity.steps_up_to(50_000) == []
+    assert capacity.steps_up_to(250_000, start=1_000) == [250_000]
 
-    def step(memories: int, p95: float, commit: float = 20.0) -> capacity.Step:
+    def step(
+        memories: int, p95: float, commit: float = 20.0, spilled: int | None = None
+    ) -> capacity.Step:
         return capacity.Step(
-            memories,
-            10.0,
-            2**20,
-            memories,
-            5_000.0,
-            900.0,
-            commit,
-            {"p50": 1.0, "p95": p95, "p99": p95},
+            memories=memories,
+            hnsw_build_s=10.0,
+            index_bytes=2**20,
+            vectors=memories,
+            maintenance_work_mem="1GB",
+            build_spilled_after=spilled,
+            bulk_memory_rows_per_s=5_000.0,
+            live_memory_rows_per_s=1_000.0,
+            event_rows_per_s=900.0,
+            commit_ms={"p50": commit / 2, "p95": commit, "p99": commit, "max": commit},
+            retrieval_ms={"p50": 1.0, "p95": p95, "p99": p95, "max": p95},
         )
 
-    measured = [step(250_000, 120.0), step(1_000_000, 190.0), step(5_000_000, 400.0, 300.0)]
+    measured = [step(250_000, 120.0, spilled=180_000), step(1_000_000, 190.0)]
     assert capacity.first_failure(measured) == (1_000_000, "retrieval p95 190.0 ms > 150 ms")
-    page = capacity.page(measured, {"host": "local", "platform": "x", "vcpus": 4, "ram_gb": 16})
+    commit_only = [step(250_000, 100.0, commit=300.0)]
+    assert capacity.first_failure(commit_only) == (250_000, "commit p95 300.0 ms > 250 ms")
+    host = {"host": "local", "platform": "x", "vcpus": 4, "ram_gb": 16}
+    page = capacity.page(measured, host, requested=capacity.DEFAULT_STEPS)
     assert (
         "First budget that fails: at 1,000,000 memories, retrieval p95 190.0 ms > 150 ms." in page
     )
     assert "(not the reference host)" in page
-    fine = capacity.page([step(250_000, 100.0)], {"host": "local"})
+    assert "| 1GB, spilled after 180,000 tuples |" in page
+    assert "| 1GB, fit in memory |" in page
+    assert "Unmeasured: 5,000,000 memories." in page
+    found = capacity.document(
+        measured, host, requested=capacity.DEFAULT_STEPS, start={"memories": 1_000}
+    )
+    assert found["unmeasured_steps"] == [5_000_000]
+    assert found["first_failure"] == {
+        "memories": 1_000_000,
+        "budget": "retrieval p95 190.0 ms > 150 ms",
+    }
+    assert found["informational"] is True
+    notice = "hnsw graph no longer fits into maintenance_work_mem after 180000 tuples"
+    assert capacity.spilled_after(["building index", notice]) == 180_000
+    assert capacity.spilled_after(["building index"]) is None
+    fine = capacity.page([step(250_000, 100.0)], {"host": "local"}, requested=(250_000,))
     assert "none in the measured steps" in fine
+    assert "Unmeasured" not in fine

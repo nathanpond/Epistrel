@@ -6,8 +6,11 @@ Engine read refuses one in its arguments before any SQL. The integration halves 
 from __future__ import annotations
 
 import inspect
+import io
+import json
+import logging
 import re
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Iterator
 from typing import Any
 
 import pytest
@@ -23,6 +26,7 @@ from epistrel.engine import (
     nul_guarded_parameters,
     operations,
 )
+from epistrel.observability import logging as telemetry_logging
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models.access import ModelAccessLayer
 from epistrel.orchestrator.models.adapter import Message
@@ -34,6 +38,8 @@ from tests.conformance.test_c_02 import full_app, method_of, route_operations
 from tests.conftest import DUMMY_DSN
 
 NUL = "\x00"
+ACCESS_LOGGER = "epistrel.orchestrator.models.access"
+WARNING = logging.WARNING
 HELLO = (Message(role="user", content="hello"),)
 LIBRARY_READS = ("effective_budget", "policies_effective", "undo_state")
 """Library-only methods that read: served inside a ``GET`` route's answer (``library_only``)."""
@@ -68,6 +74,71 @@ async def test_a_completion_leaves_the_access_layer_without_nul() -> None:
     assert (await mal.complete("generation", HELLO)).text == "plain"
     with pytest.raises(EmptyCompletion):
         await mal.complete("generation", HELLO)
+
+
+class _Records(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__(logging.DEBUG)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+@pytest.fixture
+def nul_logs() -> Iterator[tuple[io.StringIO, _Records]]:
+    """What ``epistrel serve`` would write (Epistrel's JSON handler at DEBUG, on a buffer) and
+    every record of any logger; the root logger restored after."""
+    root = logging.getLogger()
+    level, handlers = root.level, list(root.handlers)
+    stream = io.StringIO()
+    handler = telemetry_logging.configure_logging(level="DEBUG", stream=stream)
+    records = _Records()
+    root.addHandler(records)
+    try:
+        yield stream, records
+    finally:
+        root.removeHandler(records)
+        root.removeHandler(handler)
+        root.handlers[:] = handlers
+        root.setLevel(level)
+
+
+async def test_the_nul_warning_logs_only_purpose_and_count(
+    nul_logs: tuple[io.StringIO, _Records],
+) -> None:
+    """#275 AC3 (invariant 3): stripping NUL from a model's answer logs one warning that carries
+    the purpose and the count of removed characters and nothing else. Neither the answer's text
+    around the NUL nor any piece of it appears in any record or in the JSON line. Complement
+    asserted: an answer without NUL logs no such warning."""
+    stream, captured = nul_logs
+    before, after = "Marisol hid the brass lantern", "under the third quay stone"
+    mal = stub_models()
+    mal.stub.script("generation", [f"{before}\x00 {after}.\x00", f"{before} {after}."])
+    assert (await mal.complete("generation", HELLO)).text == f"{before} {after}."
+    warnings = [r for r in captured.records if r.name == ACCESS_LOGGER and r.levelno >= WARNING]
+    (warning,) = warnings
+    assert warning.msg == "model answer held NUL characters purpose=%s removed=%d"
+    assert warning.args == ("generation", 2)
+    (line,) = [
+        json.loads(raw)
+        for raw in stream.getvalue().splitlines()
+        if json.loads(raw).get("logger") == ACCESS_LOGGER and "NUL" in raw
+    ]
+    assert line["event"] == "model answer held NUL characters purpose=generation removed=2"
+    pieces = [*before.split(), *after.split(), before, after]
+    logged = [stream.getvalue(), *(_record_text(r) for r in captured.records)]
+    leaked = [p for p in pieces if len(p) > 3 and any(p in text for text in logged)]
+    assert leaked == []
+
+    captured.records.clear()
+    assert (await mal.complete("generation", HELLO)).text == f"{before} {after}."
+    assert not [r for r in captured.records if r.name == ACCESS_LOGGER and "NUL" in r.msg]
+
+
+def _record_text(record: logging.LogRecord) -> str:
+    """Everything a record carries: its formatted message and every attribute's value."""
+    return record.getMessage() + " " + " ".join(repr(v) for v in vars(record).values())
 
 
 def test_a_structured_answer_loses_an_escaped_nul() -> None:

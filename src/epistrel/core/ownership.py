@@ -59,7 +59,12 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from sqlalchemy.sql.expression import ColumnElement, TableClause
 
 from epistrel.core import clock, control
-from epistrel.core.context import PRINCIPAL_PATTERN, SYSTEM_PRINCIPAL, principal_problem
+from epistrel.core.context import (
+    CONTROL_CHARACTERS,
+    PRINCIPAL_PATTERN,
+    SYSTEM_PRINCIPAL,
+    principal_problem,
+)
 from epistrel.core.errors import (
     CompanionFollowsCharacter,
     EntityNotFound,
@@ -204,7 +209,9 @@ async def delivered(conn: AsyncConnection) -> list[EntityType]:
 RELATION_NAME = re.compile(RELATION_NAME_PATTERN)
 RELATION_FIELD_PATTERN = r"^[\t ]*[A-Za-z0-9_-]{1,64}[\t ]*$"
 """A relation name as sent: trimmed of spaces and tabs, then ``RELATION_NAME_PATTERN``."""
-RELATION_FILTER_PATTERN = r"^[A-Za-z0-9_-]{1,64}:[\t ]*([^\x00-\x1f\x7f]{1,256}[\t ]*)?$"
+RELATION_FILTER_PATTERN = (
+    rf"^[A-Za-z0-9_-]{{1,64}}:[\t ]*([^{CONTROL_CHARACTERS}]{{1,256}}[\t ]*)?$"
+)
 """A ``relation`` list filter: ``name:principal``, or ``name:`` for any principal. It splits at
 the first colon (a relation name holds none). The colon is required, so a bare word such as
 ``true`` or ``0`` is never a filter: a query string cannot tell it from a wrongly typed value."""

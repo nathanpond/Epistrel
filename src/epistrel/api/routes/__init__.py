@@ -19,11 +19,16 @@ from epistrel.api.routes import (
     feedback_reports,
     health,
     history,
+    inspect,
     media,
+    memories,
     operations,
     personas,
+    predicates,
     principals,
     respond,
+    retrieval,
+    scene,
     stories,
     story_profile,
     story_rating,
@@ -41,6 +46,11 @@ router.include_router(stories.router)
 router.include_router(history.router)
 router.include_router(respond.router)
 router.include_router(story_texts.router)
+router.include_router(memories.router)
+router.include_router(predicates.router)
+router.include_router(scene.router)
+router.include_router(inspect.router)
+router.include_router(retrieval.router)
 router.include_router(timeline.router)
 router.include_router(operations.router)
 router.include_router(catalog_characters.router)

@@ -1,7 +1,9 @@
-"""I-20: companion versioning, concurrency, and atomic publish (docs/04 §4), its M3 parts.
+"""I-20: companion versioning, concurrency, and atomic publish (docs/04 §4), its M3 parts and
+its M4 part.
 
-Every I-20 (M3) part lives in this file, because traceability counts a test ID per milestone in
-one file.
+Every I-20 part lives in this file, because traceability counts a test ID per milestone in one
+file. #149's M4 part, ``test_i_20__alias_seed``, is the publish-time seed check inside the
+companion's validation (FR-CAT-10, FR-SCN-5, FR-PROP-12).
 
 - #111's part, ``test_i_20__validation``: what a publish validates (FR-SCN-5) and the rating
   mismatch that only warns (FR-RATE-5). Every check has a draft that fails it (an error, or a
@@ -43,6 +45,7 @@ from tests.character_support import complete, named
 from tests.event_support import rows
 from tests.media_support import media_client, scratch, uploaded, video
 from tests.scenario_support import OPENING
+from tests.story_support import rest
 from tests.validation_support import (
     PROVIDER,
     PROVIDER_FIELD,
@@ -74,8 +77,9 @@ async def test_i_20__validation(pg_url: str, tmp_path: Path) -> None:
     Explicit image in the gallery of this Everyone scenario, role text that asserts personality,
     and a seed that breaks a global input policy: warnings (``kept``, ``kept``, ``ignored``,
     ``kept``). A dry run reports all of it (``valid`` false) and writes nothing; a publish is 422
-    ``publish_invalid`` with the same errors and makes no version. The report lists
-    ``seed_normalization``, ``fact_consistency`` and ``state_schema`` as unavailable.
+    ``publish_invalid`` with the same errors and makes no version. The report lists the checks
+    the deployment cannot run as unavailable (``state_schema``; the seed checks run once the
+    structured pipeline is delivered, #149).
 
     The keeping draft validates with no error and no warning and publishes; the publish answers
     the report the dry run gave. An Explicit character in an Everyone scenario publishes with one
@@ -195,7 +199,7 @@ async def test_i_20__validation(pg_url: str, tmp_path: Path) -> None:
             word,
             seeds[1]["id"],
         )
-        assert set(report["unavailable"]) >= set(scenarios.M3_UNAVAILABLE)
+        assert set(report["unavailable"]) >= set(scenarios.undeliverable_checks())
         assert await counts(space.db) == before
 
         refused = await scenarios.publish(client, sid, created["draft_revision"])
@@ -678,3 +682,85 @@ async def test_i_20__companion(
                 c=cid,
                 v=pinned,
             )
+
+
+ALIAS = "Lin"
+ALIAS_SEED = "Only her brother still calls her Lin."
+"""A companion seed naming Linda by the alias her new version drops (I-20 M4)."""
+
+
+@pytest.mark.integration
+@pytest.mark.part("M4", "FR-CAT-10; FR-SCN-5; FR-PROP-12")
+async def test_i_20__alias_seed(settings: Any, engine: AsyncEngine) -> None:
+    """Linda's companion holds a seed that names her by her alias "Lin". While her version has
+    the alias, the pair publishes. Her next version drops it: publishing both together fails
+    as the M3 atomic failure does, 422 ``publish_invalid`` naming the companion
+    (``details.entity``), with the seed-normalization error ``seed_unnormalizable`` at the
+    seed's text and its ``seed_id``; neither a character version nor a companion version is
+    made. The companion's validation inside the character's publish
+    (``companion.copy_companion``) runs the check: no story exists, so the seed is read against
+    the companion's roles, and no open role could carry the name.
+
+    Complements asserted: with the alias, the same seed publishes; after the refusal both
+    version counts are as they were, and putting the alias back publishes the pair."""
+    async with rest(settings, engine) as client:
+        made = await client.post(
+            "/catalog/characters",
+            json=complete("Linda Okafor", metadata={"aliases": [ALIAS]}),
+            headers=scenarios.WRITE,
+        )
+        linda = await _answer(made, 201)
+        cid, sid = linda["id"], linda["companion_id"]
+        first = await _answer(await _publish_character(client, cid, 1), 201)
+        seeded = await _companion_save(
+            client,
+            cid,
+            world=LINDA_WORLD,
+            starting_state={
+                "opening": {"narration": OPENING},
+                "seeded_memories": [scenarios.seed(ALIAS_SEED, audience=["public"])],
+            },
+        )
+        seed_id = seeded["starting_state"]["seeded_memories"][0]["id"]
+        paired = await _answer(
+            await _publish_character(
+                client, cid, first["draft_revision"], companion=seeded["draft_revision"]
+            ),
+            201,
+        )
+        assert (paired["version"], paired["companion"]["version"]) == (2, 2)
+        assert not [
+            e for e in paired["companion"]["report"]["errors"] if e["code"] == "seed_unnormalizable"
+        ]
+
+        dropped = await _character_save(
+            client, cid, paired["draft_revision"], metadata={"aliases": []}
+        )
+        draft = await read_companion(client, cid)
+        before = (await _versions_of(engine, cid), len(await _pins(engine, sid)))
+        refused = await _publish_character(
+            client, cid, dropped["draft_revision"], companion=draft["draft_revision"]
+        )
+        status, code, details = _refusal(refused)
+        assert (status, code, details["entity"], details["scenario_id"]) == (
+            422,
+            "publish_invalid",
+            "companion",
+            sid,
+        )
+        errors = details["report"]["errors"]
+        assert codes(errors) == [("seed_unnormalizable", "starting_state.seeded_memories[0].text")]
+        assert errors[0]["location"]["seed_id"] == seed_id
+        assert errors[0]["source"] == "unknown_name"
+        assert (await _versions_of(engine, cid), len(await _pins(engine, sid))) == before
+
+        restored = await _character_save(
+            client, cid, dropped["draft_revision"], metadata={"aliases": [ALIAS]}
+        )
+        fixed = await _answer(
+            await _publish_character(
+                client, cid, restored["draft_revision"], companion=draft["draft_revision"]
+            ),
+            201,
+        )
+        assert (fixed["version"], fixed["companion"]["version"]) == (3, 3)

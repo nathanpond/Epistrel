@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from epistrel.api.deps import ContextDep, EngineDep, OperationId
 from epistrel.core.genesis.models import CreationReport
@@ -37,6 +37,16 @@ OPERATION_DESCRIPTION = (
     "`offboarding` (one stage per entity type, in processing order); and an `erasure` "
     "(`redacted`, `ledger_written`, `regenerated`, `rebuilt`; a catalog erasure skips the last "
     "two). Every other operation has a null `label` and no stages."
+    "\n\nAn operation that captured a read set reports `read_set`: `keys_count` (the query "
+    "keys a structured turn's verdict, precondition and blocker lookups recorded, empty "
+    "results included; 0 for a Lite turn), `retrieved_count` (rows read as generation context "
+    "only) and, with `?viewpoint=omniscient` only, the `keys` themselves (`subject`, "
+    "`predicate`, `object`, `holder`, `window`, `result_hash`); otherwise `keys` is null. "
+    "`read_set` is null for an operation with no read set."
+    "\n\nA committed structured turn reports `eval_hooks` to a read with "
+    "`?viewpoint=omniscient` only (FR-OBS-2): `raw_render_event_ids`, the verification "
+    "`verdicts`, the `repair_rungs`, `model_calls_by_purpose` and `latency_ms_by_stage`; "
+    "otherwise it is null."
     "\n\nWithin the idempotency result window (default 24 hours) `result` holds the stored "
     "response (`status`, `body`) of the operation's `Idempotency-Key`. A result produced for an "
     "output viewpoint (a turn) is returned only when `?viewpoint=` names that viewpoint; another "
@@ -63,6 +73,47 @@ class StageBody(BaseModel):
     @classmethod
     def of(cls, stage: Stage) -> StageBody:
         return cls(name=stage.name, status=stage.status, at=stage.at)
+
+
+class QueryKeyBody(BaseModel):
+    """One query key of a structured turn's read set: what the lookup asked (ids; `*` for a
+    wildcard subject or object) and the hash of what it found."""
+
+    subject: str | list[str]
+    predicate: str
+    object: str | dict[str, Any]
+    holder: str
+    window: list[int | None]
+    result_hash: str
+
+
+class ReadSetBody(BaseModel):
+    """An operation's read set: counts, and the keys to an omniscient read only."""
+
+    keys_count: int
+    retrieved_count: int
+    keys: list[QueryKeyBody] | None = None
+
+
+class EvalHooksBody(BaseModel):
+    """A structured turn's eval hooks (FR-OBS-2; #155): ids, codes and counts only."""
+
+    raw_render_event_ids: list[str] = Field(
+        description="The events holding the raw render: each released beat's own event, and a "
+        "repaired beat's original `render_rejected` event."
+    )
+    verdicts: list[dict[str, Any]] = Field(
+        description="The verification verdicts (`turn_report.verify` and `verify_follow_up`)."
+    )
+    repair_rungs: list[dict[str, Any]] = Field(
+        description="Per repaired beat: `beat`, the `rung` accepted (4: the safe fallback) and "
+        "whether a correction was `accepted`."
+    )
+    model_calls_by_purpose: dict[str, int]
+    latency_ms_by_stage: dict[str, int] = Field(
+        description="Wall time by stage: `plan`, `render`, `normalize`, `detection`, `verify`, "
+        "`entailment`, `repair`, `composition`, `commit`."
+    )
 
 
 class OperationBody(BaseModel):
@@ -93,6 +144,8 @@ class OperationBody(BaseModel):
     creation_report: CreationReport | None = None
     label: OperationLabel | None = None
     stages: list[StageBody] = []
+    read_set: ReadSetBody | None = None
+    eval_hooks: EvalHooksBody | None = None
 
     @classmethod
     def of(cls, view: OperationView) -> OperationBody:
@@ -120,6 +173,18 @@ class OperationBody(BaseModel):
             else CreationReport.model_validate(view.creation_report),
             label=view.label,
             stages=[StageBody.of(stage) for stage in view.stages],
+            read_set=None
+            if view.read_set is None
+            else ReadSetBody(
+                keys_count=view.read_set.keys_count,
+                retrieved_count=view.read_set.retrieved_count,
+                keys=None
+                if view.read_set.keys is None
+                else [QueryKeyBody.model_validate(k) for k in view.read_set.keys],
+            ),
+            eval_hooks=None
+            if view.eval_hooks is None
+            else EvalHooksBody.model_validate(view.eval_hooks),
             result=(
                 StoredResultBody(status=view.result.status, body=view.result.body)
                 if view.result is not None

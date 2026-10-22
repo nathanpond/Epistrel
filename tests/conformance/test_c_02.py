@@ -58,6 +58,16 @@ M3_OPERATOR_PATHS = (
 the feedback export (#126)."""
 
 
+M4_OPERATOR_PATHS = (
+    "/admin/stories/{story_id}/memories/{memory_id}/quarantine",
+    "/admin/stories/{story_id}/memories/{memory_id}/sanitize",
+    "/admin/stories/{story_id}/facts",
+    "/admin/stories/{story_id}/facts/{fact_id}/supersede",
+    "/admin/stories/{story_id}/facts/{fact_id}/lock",
+)
+"""docs/04 C-02 [M4]'s operator endpoints: the low-level mutation calls (#145)."""
+
+
 def full_app(dsn: str) -> FastAPI:
     """``create_app`` exactly as ``epistrel serve`` builds it: no test routes."""
     return create_app(auth_settings(dsn, mode="all"))
@@ -191,4 +201,35 @@ def test_c_02__admin_prefix(dummy_dsn: str) -> None:
     assert misplaced == []
     outside = [path.removeprefix(ADMIN_PREFIX) for path in M3_OPERATOR_PATHS]
     assert [path for path in outside if not is_operator_path(path)] == []
+    assert unguarded_routes(app) == []
+
+
+@pytest.mark.part("M4", "FR-API-1")
+def test_c_02__low_level_calls(dummy_dsn: str) -> None:
+    """M4's low-level mutation calls (quarantine, sanitize, commit_fact, supersede, lock) are
+    served under ``/admin``, each matched by the operator patterns, each backed by an Engine
+    operation, and nothing operator-shaped is served outside ``/admin``.
+
+    Complement asserted: the same paths outside ``/admin`` would be reported as misplaced."""
+    app = full_app(dummy_dsn)
+    paths = {path for _, path, _ in served(app)}
+    assert set(M4_OPERATOR_PATHS) <= paths
+    assert [path for path in M4_OPERATOR_PATHS if not is_operator_path(path)] == []
+    misplaced = [p for p in paths if is_operator_path(p) and not p.startswith(ADMIN_PREFIX)]
+    assert misplaced == []
+    outside = [path.removeprefix(ADMIN_PREFIX) for path in M4_OPERATOR_PATHS]
+    assert [path for path in outside if not is_operator_path(path)] == []
+    names = operations()
+    for name in (
+        "quarantine_memory",
+        "unquarantine_memory",
+        "sanitize_memory",
+        "commit_fact",
+        "supersede_fact",
+        "lock_fact",
+        "unlock_fact",
+        "list_facts",
+    ):
+        assert name in names, name
+    assert unreachable(app) == []
     assert unguarded_routes(app) == []

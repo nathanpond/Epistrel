@@ -30,6 +30,10 @@ default ``var/erasure-ledger`` under the repository, which outlives the test ses
 reconcile would load an earlier session's erasures into the test database as pending entries
 (``/health`` ``degraded``) and copy this database's erasures into that file for the next one.
 
+In-process faults (#136): ``readset_intersection_disabled()`` turns off the structured read set's
+key-against-change-index intersection (``core.readset.INTERSECTION_ENABLED``) for the block, so a
+test can run a build without the FR-CONC-12 check and watch the scenario that relies on it fail.
+
 Nothing in ``create_app`` or the Engine imports this module.
 """
 
@@ -45,8 +49,10 @@ import socket
 import sys
 import tempfile
 import weakref
+from collections.abc import Iterator
 from typing import Any
 
+from epistrel.core import readset
 from epistrel.testing.crash import POINTS, CrashPlan, crash_at, hit
 
 FAULT_MARKER = "EPISTREL-FAULT"
@@ -275,6 +281,16 @@ def serve(argv: list[str] | None = None) -> int:
     return 0
 
 
+@contextlib.contextmanager
+def readset_intersection_disabled() -> Iterator[None]:
+    """Commit structured turns without checking their query keys against the change index."""
+    readset.INTERSECTION_ENABLED = False
+    try:
+        yield
+    finally:
+        readset.INTERSECTION_ENABLED = True
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] != "serve":
@@ -297,5 +313,6 @@ __all__ = [
     "free_port",
     "hit",
     "main",
+    "readset_intersection_disabled",
     "serve",
 ]

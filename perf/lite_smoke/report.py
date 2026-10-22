@@ -14,6 +14,13 @@ progress (from the driver's outstanding turns); no turn waiting longer than one 
 to reach the front of its queue (``queued_ms``); queue-front-to-first-model-call p95 ≤ 1 s
 (``first_call_offset_ms``). Engine-only turn time (``elapsed_ms`` minus the model calls'
 latency) is reported per story and in aggregate.
+
+**The structured variant** (#153, ``RunInfo.scenario = "structured"``, one turn every 60 s) has
+the same criteria plus two aggregate budgets, read from the server's stage histogram like the
+commit's: retrieval p95 ≤ 150 ms (NFR-PERF-1, the ``retrieve`` stage, one observation per
+retrieval) and deterministic verify p95 ≤ 50 ms (NFR-PERF-2, the ``verify`` stage, one per
+claim checked). Both bounds are bucket edges. Its report is titled "P-04 Structured reference
+workload" and saved as ``<date>-<time>-structured.md``.
 """
 
 from __future__ import annotations
@@ -31,12 +38,18 @@ from perf.lite_smoke import (
     ENFORCED_HOST_CLASS,
     FRONT_TO_FIRST_CALL_P95_S,
     MAX_WAITING,
+    RETRIEVAL_P95_BUDGET_S,
     STOP_BEFORE_S,
+    VERIFY_P95_BUDGET_S,
     WARMUP_S,
 )
 
 PASS, FAIL = "PASS", "FAIL"
-TITLE = re.compile(r"^# P-04 Lite reference workload: (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) UTC$", re.M)
+TITLE = re.compile(
+    r"^# P-04 (?:Lite|Structured) reference workload: (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) UTC$", re.M
+)
+SCENARIO = re.compile(r"^# P-04 (Lite|Structured) reference workload: ", re.M)
+SCENARIO_TITLES = {"lite": "Lite", "structured": "Structured"}
 VERDICT = re.compile(r"^\*\*Result: (PASS|FAIL)\*\* \(host class ([a-z]+): ", re.M)
 LENGTH = re.compile(r"`turn_concurrency = queue`, (\d+(?:\.\d+)?) minutes")
 SIZE = re.compile(r"^- Stories: ([\d,]+) turns ", re.M)
@@ -52,20 +65,22 @@ class Header:
     host_class: str
     verdict: str
     turns: int
+    scenario: str = "lite"
 
 
 def header(text: str) -> Header:
     """Parse a report's header; ``ValueError`` when it lacks its date, length or host class."""
     title, verdict, length = TITLE.search(text), VERDICT.search(text), LENGTH.search(text)
-    size = SIZE.search(text)
-    if title is None or verdict is None or length is None or size is None:
-        raise ValueError("not a P-04 Lite report: no date, verdict, host class or run length")
+    size, scenario = SIZE.search(text), SCENARIO.search(text)
+    if title is None or verdict is None or length is None or size is None or scenario is None:
+        raise ValueError("not a P-04 report: no date, verdict, host class or run length")
     return Header(
         started=datetime.strptime(title.group(1), "%Y-%m-%d %H:%M").replace(tzinfo=UTC),
         minutes=float(length.group(1)),
         host_class=verdict.group(2),
         verdict=verdict.group(1),
         turns=int(size.group(1).replace(",", "")),
+        scenario=scenario.group(1).lower(),
     )
 
 
@@ -84,6 +99,13 @@ class RunInfo:
     stub_latency_s: float
     turns: int = 10_000
     """Seeded turns per story (two events each)."""
+    scenario: str = "lite"
+    """``lite`` or ``structured`` (#153)."""
+    events: int | None = None
+    """Seeded events per story when not two per turn (the structured stories' canon adds one
+    ``fact_committed`` event per fact)."""
+    memories: int = 0
+    """Seeded memories per story (the structured variant)."""
 
     @property
     def end_s(self) -> float:
@@ -238,6 +260,29 @@ def share_within(buckets: Mapping[str, float], bound_s: float) -> float | None:
     if within is None:
         raise ValueError(f"{bound_s} s is not a bucket edge")
     return within / total
+
+
+def _budget(
+    stage_buckets: Mapping[str, Mapping[str, float]],
+    stage: str,
+    name: str,
+    bound_s: float,
+    what: str,
+) -> Criterion:
+    """An aggregate p95 budget on a server stage: at least 95% of its observations at or under
+    ``bound_s`` (a bucket edge). Nothing observed fails: the run did not exercise it."""
+    buckets = dict(stage_buckets.get(stage, {}))
+    within = share_within(buckets, bound_s) if buckets else None
+    ms = f"{bound_s * 1000:g} ms"
+    return Criterion(
+        name,
+        "aggregate",
+        f"{within:.1%} of {int(buckets.get('+Inf', 0))} {what} ≤ {ms}"
+        if within is not None
+        else f"no {what} observed",
+        f"≥ 95% ≤ {ms}",
+        within is not None and within >= 0.95,
+    )
 
 
 def _ms(value: float | None) -> str:
@@ -401,6 +446,23 @@ def evaluate(
             lost == 0 and duplicated == 0,
         ),
     ]
+    if info.scenario == "structured":
+        aggregate += [
+            _budget(
+                stage_buckets,
+                "retrieve",
+                "retrieval p95 (server retrieve stage)",
+                RETRIEVAL_P95_BUDGET_S,
+                "retrievals",
+            ),
+            _budget(
+                stage_buckets,
+                "verify",
+                "deterministic verify p95 (server verify stage)",
+                VERIFY_P95_BUDGET_S,
+                "claims checked",
+            ),
+        ]
     engine = [float(t.engine_ms) for t in committed if t.engine_ms is not None]
     figures = {
         "offered": len(turns),
@@ -464,8 +526,23 @@ def markdown(evaluation: Evaluation) -> str:
         if info.enforced
         else f"host class {info.host_class}: reported, not gated"
     )
+    title = SCENARIO_TITLES.get(info.scenario, info.scenario)
+    if info.scenario == "structured":
+        events = info.events if info.events is not None else info.turns * 2
+        stories_line = (
+            f"- Stories: {info.turns:,} turns ({events:,} events, canon's `fact_committed` "
+            f"included) and {info.memories:,} memories each, on the `Structured (M4)` profile "
+            "(the scale fixture's builder, `epistrel.testing.fixtures.scale`); single-character "
+            "turns; the stub's renders declare 10% contradicted and 10% novel claims "
+            "(`epistrel.testing.structured_load`)."
+        )
+    else:
+        stories_line = (
+            f"- Stories: {info.turns:,} turns ({info.turns * 2:,} events) and 50 pinned memories "
+            "each, rolling summary up to date (`epistrel.testing.perf`)."
+        )
     lines = [
-        f"# P-04 Lite reference workload: {info.started}",
+        f"# P-04 {title} reference workload: {info.started}",
         "",
         f"**Result: {verdict}** ({gating}).",
         "",
@@ -474,8 +551,7 @@ def markdown(evaluation: Evaluation) -> str:
         f"- Workload: {info.stories} stories, one turn every {info.interval_s:g} s each, "
         f"open loop, `turn_concurrency = queue`, {info.minutes:g} minutes, stub model at "
         f"{info.stub_latency_s:g} s per call; submissions stop 2 minutes before the end.",
-        f"- Stories: {info.turns:,} turns ({info.turns * 2:,} events) and 50 pinned memories "
-        "each, rolling summary up to date (`epistrel.testing.perf`).",
+        stories_line,
         "",
         "## Criteria",
         "",
@@ -531,7 +607,7 @@ def markdown(evaluation: Evaluation) -> str:
         "From `epistrel_turn_stage_seconds`, diffed over the run; each percentile is the upper "
         "edge of the bucket that holds it.",
         "",
-        "| Stage | Turns | p50 | p95 | p99 |",
+        "| Stage | Observations | p50 | p95 | p99 |",
         "|---|---|---|---|---|",
     ]
     for stage, figures in evaluation.stages.items():

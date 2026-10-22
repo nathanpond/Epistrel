@@ -10,19 +10,46 @@ Tests drive it through the Model Access Layer's ``stub`` (the ``stub`` fixture):
 ``script(purpose, [responses])`` queues answers (FIFO; exhausted → the default),
 ``when(substring, response, purpose=None)`` answers any request (of ``purpose``, when given)
 whose messages contain ``substring`` (or every one of a tuple of substrings),
+``case(case_id, response, purpose=None, seed=None)`` answers the requests an eval scope marks
+as case ``case_id`` (their ``X-Eval-Case`` line, #134; only ``purpose``'s, and only under
+``seed``, when given; the most specific match wins, before any queued script),
 ``fault(purpose, kind, n)`` makes the next ``n`` calls fail: ``timeout``, ``connection``,
 ``http_500``, ``http_429`` (with ``Retry-After``), ``http_401``, ``response_format_400`` and
 ``bad_body`` raise the ``openai`` SDK's own exception types; ``garbage`` answers unparseable
 text, ``empty`` answers nothing, ``refusal`` and ``length`` answer with the provider's refusal
 flag or a ``length`` finish; ``hang`` never answers (the Model Access Layer's timeout ends it).
+``parrot(pattern, purpose=None, template="{canary}")`` (#145's poisoning-loop tests) answers a
+request whose messages hold a match of the regular expression ``pattern`` (a canary planted in
+the story's records) with ``template`` filled with the first match, as a model that repeats
+what its context says would; a request with no match falls through to the default.
 ``fault_hook`` (a callable of the purpose) is consulted on every call with no queued fault,
 so a chaos test can draw faults at random. ``hold(purpose)`` latches calls until released, and
 ``calls`` records every request (purpose, messages, params, declared field paths, model).
-``nondeterministic = True`` salts the hash per call.
+``nondeterministic = True`` salts the hash per call. A response schema naming a template in
+``stub_script`` (#152's ``ComposedMessage``: ``composition.j2``) is scripted by that name
+instead of its purpose: ``script("composition.j2", …)``, ``fault("composition.j2", …)`` and
+``when(…, purpose="composition.j2")`` answer its calls, and nothing scripted, matched, parroted
+or faulted for ``generation`` does; unscripted, it answers the draft its prompt carries.
 
 A purpose that declares a response schema (``guardrail_check``) answers schema-conformant JSON
 by default whether or not the request carried ``response_format``, as a model following the
-schema in its prompt would.
+schema in its prompt would. ``importance_scoring`` (#135) answers ``{"importance": x}`` with
+``x`` derived from the SHA-256 of the last user message (``digest_score``), so each memory gets
+its own score, the same in every process. ``entailment`` (#142) answers its schema's defaults,
+``{"confidence": 0.0, "verdict": "novel"}``: the most conservative answer, which the verifier
+resolves to the safe disposition, so an unscripted escalation never supports a claim.
+``salience_detection`` (#146) answers its schema's defaults too, ``{"salient": [], "texture":
+[]}``: every beat is texture, so an unscripted turn owes nothing.
+``extraction_backstop`` (#148) answers ``{"claims": []}``: the deterministic layers stand
+alone. ``regeneration`` (#151) answers its ``RegeneratedBeat`` schema's ``stub_example``: a
+text from the request's hash and no claims. A response schema with a
+``stub_example(digest, messages)`` classmethod answers that (#150: a structured render's
+default is one ``think``, one ``say`` with intent ``sincere`` and one ``do``, their texts from
+the request's hash; the age repair answers 40 for each character it names). With
+``render_claims`` (the ``stub_render_claims`` setting, #153's P-04 structured variant) a
+render's default ``say`` also declares one of those claims on its share of the renders, chosen
+by the request's hash (``with_render_claims``), so verification, permission and repair run
+under load.
 """
 
 from __future__ import annotations
@@ -31,10 +58,11 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import types
 import typing
 from collections import defaultdict, deque
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Annotated, Any, Literal
@@ -51,13 +79,21 @@ from epistrel.orchestrator.models.adapter import (
     ModelParams,
     ModelResult,
     ProbeResult,
+    eval_case_of,
 )
-from epistrel.orchestrator.models.registry import DELIVERED
+from epistrel.orchestrator.models.registry import DELIVERED, IMPORTANCE_SCORING
 
 STUB_URL = "http://stub.invalid/v1/chat/completions"
 STUB_MODEL = "stub"
 GARBAGE = '<<stub garbage>> {"violation": tru'
 DEFAULT_PREVIEW_CHARS = 40
+STUB_EXAMPLE = "stub_example"
+"""A response schema's classmethod ``stub_example(digest, messages)``: its default answer
+(#150), instead of ``conformant_example``."""
+STUB_SCRIPT = "stub_script"
+"""A response schema's class attribute naming the template its calls are scripted by (#152:
+``composition.j2``): ``script(<template>, …)``, ``fault(<template>, …)`` and
+``when(…, purpose=<template>)`` answer them, and nothing scripted for the purpose does."""
 
 type FaultKind = Literal[
     "timeout",
@@ -111,6 +147,37 @@ def canonical_digest(purpose: str, messages: Sequence[Message], params: ModelPar
     }
     encoded = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def digest_score(text: str) -> float:
+    """A number in 0..1 from the SHA-256 of ``text`` (four decimals): the stub's importance."""
+    value = int(hashlib.sha256(text.encode()).hexdigest()[:8], 16)
+    return round(value / 0xFFFFFFFF, 4)
+
+
+def with_render_claims(
+    example: dict[str, Any], digest: str, claims: Sequence[Mapping[str, Any]]
+) -> dict[str, Any]:
+    """``example`` with one of ``claims`` declared by its first ``say`` beat (#153's P-04
+    structured variant): the claims' ``share`` values are stacked over ``digest_score(digest)``,
+    so each claim lands on its share of the renders and the rest declare none. An answer with
+    no ``say`` beat (the narrator's, any other schema's) is returned unchanged."""
+    beats = example.get("beats")
+    if not isinstance(beats, list):
+        return example
+    say = next((b for b in beats if isinstance(b, dict) and b.get("kind") == "say"), None)
+    if say is None:
+        return example
+    score = digest_score(digest)
+    low = 0.0
+    for claim in claims:
+        high = low + float(claim["share"])
+        if low <= score < high:
+            sketch = {k: v for k, v in claim.items() if k != "share"}
+            say["propositions"] = [*say.get("propositions", []), sketch]
+            break
+        low = high
+    return example
 
 
 def _bound(metadata: list[Any], name: str, fallback: float) -> float:
@@ -197,15 +264,25 @@ class StubAdapter:
 
     name = "stub"
 
-    def __init__(self, *, model_lookup: ModelLookup | None = None, latency_s: float = 0.0) -> None:
+    def __init__(
+        self,
+        *,
+        model_lookup: ModelLookup | None = None,
+        latency_s: float = 0.0,
+        render_claims: Sequence[Mapping[str, Any]] = (),
+    ) -> None:
         self._model_lookup = model_lookup
         self.latency_s = latency_s
+        self.render_claims = [dict(c) for c in render_claims]
+        """Claims a structured render's default answer declares (``with_render_claims``)."""
         self.nondeterministic = False
         self.calls: list[StubCall] = []
         self._scripts: defaultdict[str, deque[str]] = defaultdict(deque)
         self._faults: defaultdict[str, deque[FaultKind]] = defaultdict(deque)
         self._when: list[tuple[tuple[str, ...], str, str | None]] = []
+        self._cases: dict[tuple[str, str | None, int | None], str] = {}
         self._latches: dict[str, StubLatch] = {}
+        self._parrots: list[tuple[re.Pattern[str], str, str | None]] = []
         self.fault_hook: Callable[[str], FaultKind | None] | None = None
         """Consulted on every call with no queued fault (chaos tests draw faults at random)."""
 
@@ -222,6 +299,51 @@ class StubAdapter:
         needles = (substring,) if isinstance(substring, str) else substring
         self._when.append((needles, response, purpose))
 
+    def case(
+        self,
+        case_id: str,
+        response: str,
+        *,
+        purpose: str | None = None,
+        seed: int | None = None,
+    ) -> None:
+        """Answer ``response`` to the requests marked as eval case ``case_id`` (see the module
+        docstring); a later call for the same case, purpose and seed replaces the answer."""
+        self._cases[(case_id, purpose, seed)] = response
+
+    def _case_answer(
+        self, purpose: str, messages: Sequence[Message], params: ModelParams
+    ) -> str | None:
+        case_id = eval_case_of(messages)
+        if case_id is None or not self._cases:
+            return None
+        for key in (
+            (case_id, purpose, params.seed),
+            (case_id, None, params.seed),
+            (case_id, purpose, None),
+            (case_id, None, None),
+        ):
+            if key in self._cases:
+                return self._cases[key]
+        return None
+
+    def parrot(
+        self, pattern: str, *, purpose: str | None = None, template: str = "{canary}"
+    ) -> None:
+        """Echo a canary (see the module docstring): requests (of ``purpose``, when given) whose
+        messages match ``pattern`` are answered ``template.format(canary=<first match>)``."""
+        self._parrots.append((re.compile(pattern), template, purpose))
+
+    def _parroted(self, purpose: str, messages: Sequence[Message]) -> str | None:
+        for pattern, template, only in self._parrots:
+            if only not in (None, purpose):
+                continue
+            for message in messages:
+                found = pattern.search(message.content)
+                if found is not None:
+                    return template.format(canary=found.group(0))
+        return None
+
     def fault(self, purpose: str, kind: FaultKind = "timeout", n: int = 1) -> None:
         self._faults[purpose].extend([kind] * n)
 
@@ -236,7 +358,9 @@ class StubAdapter:
         self._scripts.clear()
         self._faults.clear()
         self._when.clear()
+        self._cases.clear()
         self._latches.clear()
+        self._parrots.clear()
         self.fault_hook = None
         self.nondeterministic = False
 
@@ -251,6 +375,24 @@ class StubAdapter:
         last_user = next((m.content for m in reversed(messages) if m.role == "user"), "")
         return f"[stub {purpose} {digest[:12]}] {last_user[:DEFAULT_PREVIEW_CHARS]}"
 
+    def _keyed_answer(
+        self,
+        key: str,
+        messages: Sequence[Message],
+        digest: str,
+        response_schema: type[BaseModel],
+    ) -> str:
+        """A call scripted by its template (``STUB_SCRIPT``, #152): only ``key``'s scripts and
+        matches answer it, else its schema's default."""
+        if self._scripts[key]:
+            return self._scripts[key].popleft()
+        for needles, response, only in self._when:
+            if only == key and all(any(n in m.content for m in messages) for n in needles):
+                return response
+        hook = getattr(response_schema, STUB_EXAMPLE, None)
+        example = hook(digest, messages) if callable(hook) else conformant_example(response_schema)
+        return json.dumps(example, sort_keys=True, separators=(",", ":"))
+
     def _answer(
         self,
         purpose: str,
@@ -258,6 +400,9 @@ class StubAdapter:
         digest: str,
         response_schema: type[BaseModel] | None,
     ) -> str:
+        key = getattr(response_schema, STUB_SCRIPT, None)
+        if response_schema is not None and isinstance(key, str):
+            return self._keyed_answer(key, messages, digest, response_schema)
         if self._scripts[purpose]:
             return self._scripts[purpose].popleft()
         for needles, response, only in self._when:
@@ -265,10 +410,24 @@ class StubAdapter:
                 continue
             if all(any(n in m.content for m in messages) for n in needles):
                 return response
+        parroted = self._parroted(purpose, messages)
+        if parroted is not None:
+            return parroted
+        if purpose == IMPORTANCE_SCORING.name and response_schema in (
+            None,
+            IMPORTANCE_SCORING.response_schema,
+        ):
+            last_user = next((m.content for m in reversed(messages) if m.role == "user"), "")
+            return json.dumps({"importance": digest_score(last_user)})
         declared = DELIVERED.get(purpose)
         schema = response_schema or (declared.response_schema if declared else None)
         if schema is not None:
-            example = conformant_example(schema)
+            # A schema may name its own default answer (#150's beat schema: a think, a say and a
+            # do from the prompt's hash).
+            hook = getattr(schema, STUB_EXAMPLE, None)
+            example = hook(digest, messages) if callable(hook) else conformant_example(schema)
+            if self.render_claims:
+                example = with_render_claims(example, digest, self.render_claims)
             return json.dumps(example, sort_keys=True, separators=(",", ":"))
         return self._default_text(purpose, digest, messages)
 
@@ -301,7 +460,9 @@ class StubAdapter:
             digest = hashlib.sha256(digest.encode() + os.urandom(16)).hexdigest()
         text: str | None = None
         finish_reason, refused = "stop", False
-        kind = self._faults[purpose].popleft() if self._faults[purpose] else None
+        key = getattr(response_schema, STUB_SCRIPT, None)
+        queue = key if isinstance(key, str) else purpose
+        kind = self._faults[queue].popleft() if self._faults[queue] else None
         if kind is None and self.fault_hook is not None:
             kind = self.fault_hook(purpose)
         if kind is not None:
@@ -314,6 +475,8 @@ class StubAdapter:
             refused = kind == "refusal"
             if kind == "length":
                 finish_reason = "length"
+        if text is None and queue == purpose:
+            text = self._case_answer(purpose, messages, params)
         if text is None:
             text = self._answer(purpose, messages, digest, response_schema)
             if finish_reason == "length":
@@ -344,10 +507,13 @@ __all__ = [
     "FAULT_KINDS",
     "GARBAGE",
     "RETRY_AFTER",
+    "STUB_EXAMPLE",
     "STUB_MODEL",
     "StubAdapter",
     "StubCall",
     "StubLatch",
     "canonical_digest",
     "conformant_example",
+    "digest_score",
+    "with_render_claims",
 ]

@@ -25,8 +25,9 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-TURN | §6 | 043 |
 | FR-COMMIT | §7 | 018, 022, 043, 053, 129 |
 | FR-RET | §8 | 129 |
-| FR-VERIFY | §9 | 043, 065, 077, 138, 144 |
-| FR-GUARD | §11 | 087, 095, 096, 114 |
+| FR-PROP | §8.1 | 160, 162, 163, 165 |
+| FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162, 163, 165 |
+| FR-GUARD | §11 | 087, 095, 096, 114, 161 |
 | FR-REWRITE | §12.1 | 144 |
 | FR-MODEL | §13 | 129, 136, 144, 150 |
 | FR-EXT | §15 | 051, 054, 056, 061, 066, 072, 074, 092, 133, 140, 144 |
@@ -35,23 +36,23 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-MULTI | §16 | 043, 126 |
 | FR-API | §17 | 092, 138 |
 | FR-AUTH | §17.1 | 078, 091, 093, 144, 149, 152 |
-| FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144, 153, 154, 155, 156 |
+| FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144, 153, 154, 155, 156, 157, 159, 161 |
 | FR-CAT | §18.1 | 081, 088, 089, 090, 091, 095, 097, 107, 108, 138, 144 |
 | FR-SCN | §18.2 | 081, 082, 087, 088, 091, 097, 107, 140, 141, 142 |
-| FR-PROF | §18.3 | 084, 086, 087, 107, 134, 138, 141, 142, 144 |
+| FR-PROF | §18.3 | 084, 086, 087, 107, 134, 138, 141, 142, 144, 158 |
 | FR-LITE | §18.4 | 085, 086, 087 |
 | FR-MEDIA | §18.5 | 083, 097, 113, 116, 151, 152 |
 | FR-RATE | §18.6 | 094, 107, 132, 138 |
 | FR-IMG | §18.7 | 098, 099, 100, 101, 102, 103, 104, 105, 108, 109, 110, 114, 116, 117, 118, 119, 120, 121, 124, 125, 129, 130, 131, 135, 136, 145 |
 | FR-FB | §18.8 | 111 |
-| FR-OBS | §19 | 129 |
-| NFR-PERF | §20 | 080, 123, 126, 133, 137, 145, 146, 147 |
+| FR-OBS | §19 | 129, 158, 162 |
+| NFR-PERF | §20 | 080, 123, 126, 133, 137, 145, 146, 147, 162 |
 | NFR-DETERM | §20 | 045, 080 |
 | NFR-SCALE | §20 | 070, 072, 075, 137 |
-| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 112, 114, 115 |
+| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 112, 114, 115, 158, 164, 166 |
 | NFR-REL | §20 | 045, 127 |
 | NFR-SEC | §20 | 138, 149, 152 |
-| NFR-PRIV | §20 | 077, 101, 154 |
+| NFR-PRIV | §20 | 077, 101, 154, 157, 159, 161 |
 | NFR-PORT | §20 | 150 |
 | NFR-OPS | §20 | 127, 148, 151 |
 | NFR-MAINT | §20 | 148 |
@@ -78,7 +79,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 014 | Multi-character single-response composition | Amended | 031, 047, 059 |
 | 015 | Model-agnostic via OpenAI-compatible interface; Apache-2.0 license | Current | — |
 | 016 | API surfaces: REST + MCP + library; Story as the top-level container | Partly superseded | 092 |
-| 017 | Deterministic-first job disposition; the model is reached only through measured, tunable gates | Amended | 065, 080, 084 |
+| 017 | Deterministic-first job disposition; the model is reached only through measured, tunable gates | Partly superseded | 065, 080, 084, 158, 162 |
 | 018 | In-story time travel via sequence invalidation (truncate / regenerate) | Partly superseded | 027, 072, 122, 028 |
 | 019 | Stories are self-contained; fork is a full copy; deletion is a scoped delete | Amended | 027, 072, 128 |
 | 020 | Every external read is an event; single source of truth for external values | Amended | 030, 056 |
@@ -110,7 +111,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 046 | Erasure is a control action, guarded at every write path, with a ledger that survives restores | Amended | 080, 128, 154 |
 | 047 | Explicit output viewpoint with an audience filter; disclosure is distinct from inference | Partly superseded | 059, 071, 091, 078, 145 |
 | 048 | Support requires coverage; instants are first-class | Partly superseded | 058 |
-| 049 | Functional uniqueness is over a declared key; distinct facts stay distinct; exhaustiveness only by declared closed sets | Current | — |
+| 049 | Functional uniqueness is over a declared key; distinct facts stay distinct; exhaustiveness only by declared closed sets | Amended | 160 |
 | 050 | Weak predicates forbid inferred exclusivity, not direct negation | Current | — |
 | 051 | External effects follow a staged, durable lifecycle with a recorded in-flight point | Amended | 054, 055, 062 |
 | 052 | Configuration is versioned per operation; interpretive changes revalidate, prospective changes don't | Amended | 057, 062, 072, 084 |
@@ -126,7 +127,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 062 | Configuration rebasing stops at committed stages | Partly superseded | 072 |
 | 063 | Time claims use the three speech dimensions; characters get only the time they can know | Current | — |
 | 064 | Scheduled events have a lifecycle; an interrupted skip is regenerated at the cutoff; beliefs don't stop the clock | Partly superseded | 073 |
-| 065 | Claim detection is layered, always on by default, and measured separately from verification | Amended | 077, 080 |
+| 065 | Claim detection is layered, always on by default, and measured separately from verification | Partly superseded | 077, 080, 158 |
 | 066 | One settled terminal outcome per effect; expired reservations never convert automatically | Current | — |
 | 067 | Beats and steps have start and end times | Amended | 074, 076 |
 | 068 | Partial anchors: an exact offset plus a ranged absolute anchor; never invent precision | Partly superseded | 073, 079 |
@@ -200,7 +201,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 136 | One purpose registry generates the model guide; prompts and payloads use only declared inputs | Amended | 138 |
 | 137 | Capacity claims stop at what has been measured | Amended | 145 |
 | 138 | Milestone gates are scoped per test part; requirements that spanned milestones are split | Amended | 139, 140 |
-| 139 | Infrastructure and project setup come first as M0 and M1; delivery milestones become M2–M8 | Amended | 140, 143, 144 |
+| 139 | Infrastructure and project setup come first as M0 and M1; delivery milestones become M2–M8 | Amended | 140, 143, 144, 164 |
 | 140 | Test parts are checked against a capability lexicon; the remaining cross-milestone tests are split | Amended | 141 |
 | 141 | Scenario fields have classes, and genesis materializes them by capability | Partly superseded | 142 |
 | 142 | Lite genesis does not detect fact conflicts; per-class handling, report projections, and forward-only seeds are explicit | Current | — |
@@ -214,10 +215,20 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 150 | The model transport is the `openai` SDK against OpenAI-compatible endpoints | Current | — |
 | 151 | Video posters are taken with ffmpeg, a GPL program run as a separate process | Current | — |
 | 152 | A short-lived signed URL is enough to read media content | Current | — |
-| 153 | The erasure ledger's file is the authority, and a restore is reconciled before it is served | Current | — |
+| 153 | The erasure ledger's file is the authority, and a restore is reconciled before it is served | Amended | 157 |
 | 154 | Erasure redacts only mentions attributed to the subject; ambiguous ones are reported, not guessed | Partly superseded | 155 |
 | 155 | Erasure matches a name in any case by full case-folding, and at any dash | Partly superseded | 156 |
 | 156 | The erasure fold is canonical caseless matching, `ı` is `i`, and a soft hyphen is no character | Current | — |
+| 157 | A pending catalog-scope erasure holds back what it reaches until it is reapplied | Partly superseded | 159 |
+| 158 | The extraction backstop is gated by default; a profile chooses `always` | Current | — |
+| 159 | A pending catalog-scope erasure also holds back the deployment policies and configuration changes naming its subject | Partly superseded | 161 |
+| 160 | Verification checks an affirmed claim's declared consequences, closed sets may close a key set, and a rule-free presence conflict is uncertain | Current | — |
+| 161 | A pending catalog-scope erasure withholds a policy naming its subject from a story's settings, and refuses a violation of it | Current | — |
+| 162 | An approximate-bounds residual takes the safe disposition with no entailment call | Current | — |
+| 163 | An extraction claim whose weak relation names something untracked is surfaced, not repaired | Partly superseded | 165 |
+| 164 | Model-bound quality floors that miss on the reference model after M4's engine fixes move to M9: Performance tuning | Amended | 166 |
+| 165 | The render's own declared claims surface like extraction claims, and an unknown name or a pronoun with no antecedent counts as untracked | Current | — |
+| 166 | NFR-QUAL-7 (generation conformance) also moves to M9 | Current | — |
 
 ---
 
@@ -363,12 +374,12 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 
 ### ADR-017 — Deterministic-first job disposition; the model is reached only through measured, tunable gates
 **Status:** Accepted. Resolves the split left open by ADR-006.
-**Amended by:** ADR-065 — the extraction bullet is superseded: claim detection runs on every render by default; ADR-080 — per-turn call budget and deadline with ordered degradation; ADR-084 — gates and modules are set per story by its engine profile.
+**Amended by:** ADR-065 — the extraction bullet is superseded: claim detection runs on every render by default; ADR-080 — per-turn call budget and deadline with ordered degradation; ADR-084 — gates and modules are set per story by its engine profile; ADR-158 — the extraction backstop's default mode is `gated`; ADR-162 — clause (c) of the verification bullet no longer covers approximate bounds.
 **Context:** For each internal job: does it need a model, is it on the hot path, and — for hot-path model use — what gate triggers escalation from the cheap deterministic attempt to the expensive model call? The entailment-fallback gate is the knob that most affects cost, latency, and the risk of false `supported` verdicts (silent canon corruption). The risks are asymmetric: a wrong deterministic `supported` corrupts the story; a needless escalation merely costs a call. So gates bias toward escalation.
 **Decision:** Deterministic is the default and the hot path; a model is reached only through explicit gates that fail toward safety. Per-job disposition:
-- **Verification / entailment (hot path, gated).** Engine Core normalizes claims and returns supported/contradicted/novel deterministically; it returns `uncertain` — and only then does the Orchestrator call the entailment model — on (a) an unresolved predicate, (b) a world-knowledge-dependent conflict, (c) a partial/ambiguous match. The gate is a **tunable predicate-resolution-confidence threshold**, shipped as config and launched conservatively.
+- **Verification / entailment (hot path, gated).** Engine Core normalizes claims and returns supported/contradicted/novel deterministically; it returns `uncertain` — and only then does the Orchestrator call the entailment model — on (a) an unresolved predicate, (b) a world-knowledge-dependent conflict, (c) a partial/ambiguous match *[narrowed by ADR-162: approximate bounds are not one; FR-PROP-10 resolves them deterministically to `uncertain`, with no call]*. The gate is a **tunable predicate-resolution-confidence threshold**, shipped as config and launched conservatively.
 - **Salience (hot-ish; model behind a deterministic pre-filter).** Rules skip obvious non-salient turns; the model resolves the rest. Biased toward recall — a missed signal (under-commitment) is the worse error.
-- **Extraction backstop (hot path).** *Refined by ADR-065:* a structurally valid render does not prove every claim in its prose was declared, so claim detection now runs deterministic detectors on every render and the model extraction on every render by default (`extraction_mode = always`), with gating available only as an evidence-driven reduction.
+- **Extraction backstop (hot path).** *Refined by ADR-065:* a structurally valid render does not prove every claim in its prose was declared, so claim detection now runs deterministic detectors on every render and the model extraction on every render by default (`extraction_mode = always`) *[default superseded by ADR-158: `gated` is the default; `always` is a profile's choice]*, with gating available only as an evidence-driven reduction.
 - **Consolidation / reflection, importance scoring (off hot path, no gate).** Model-first, latency-tolerant; model tier chosen freely.
 - **Everything else (deterministic, no model, ever).** Commitment lifecycle, visibility scoping, bitemporal reads, projections, repair-ladder selection, mutation primitives, directive-classification mechanics.
 Launch conservative (high continuity, more escalation), then **tighten data-drivenly:** gates are tunable config, never hardcoded; every tightening is validated in **shadow/canary** before promotion; a predicate-shape graduates to deterministic only when its escalation **yield** (the fraction of escalations where the model flips the deterministic tentative verdict) is low **and** the residual flips are low-consequence. A model fallback's verdict is validated, never trusted: `uncertain`/low-confidence resolves to the safe disposition (needs-repair or surface to author), never a silent `supported` (cf. FR-MODEL-6). Testability is unaffected — the cognition-port stub keeps the engine deterministic in tests regardless of which jobs use a model.
@@ -605,6 +616,7 @@ Launch conservative (high continuity, more escalation), then **tighten data-driv
 
 ### ADR-049 — Functional uniqueness is over a declared key; distinct facts stay distinct; exhaustiveness only by declared closed sets
 **Status:** Accepted. Refines ADR-035.
+**Amended by:** ADR-160 — a closed set may also close the values of one key qualifier for a subject ("his only undergraduate degree"), and an affirmed claim's declared consequences are checked against closed sets.
 **Context:** The core vocabulary treated "undergraduate institution" as functional per person, and S-TENNIS normalized "played on Florida's college team as an undergrad" into it. Playing for a team does not establish enrollment or which institution awarded a degree, and people can hold several degrees or a jointly awarded one. The tests would have enforced the very false contradictions the verifier exists to prevent.
 **Decision:** Cardinality is declared over a **uniqueness key** (subject plus named key qualifiers); non-key qualifiers never participate; objects may be sets where the domain allows (joint awards). Education uses distinct core predicates — `enrolled_at`, `attended_program`, `member_of` (role), `degree_awarded` keyed by (person, degree ID) — with **no core implications** between them; authors may declare such rules where they hold. Exhaustiveness ("his only undergraduate degree", "enrolled only at OSU in those years") is expressed by explicit **closed sets**, never inferred; adding to a closed set over overlapping time is a contradiction.
 **Consequences:** The Florida/OSU case is contradicted only when the story actually says enough to make it so, and the reason is cited. Scenarios share a documented Bobby education fixture.
@@ -742,10 +754,10 @@ Launch conservative (high continuity, more escalation), then **tighten data-driv
 
 ### ADR-065 — Claim detection is layered, always on by default, and measured separately from verification
 **Status:** Accepted. Refines ADR-017 (extraction backstop) and ADR-032.
-**Amended by:** ADR-077 — the guarantee boundary is published; privacy is structural first, output scanning secondary; ADR-080 — a clean leak eval is evidence with an upper bound, not a guarantee
+**Amended by:** ADR-077 — the guarantee boundary is published; privacy is structural first, output scanning secondary; ADR-080 — a clean leak eval is evidence with an upper bound, not a guarantee; ADR-158 — the default extraction mode is `gated`
 **Context:** The extraction backstop ran only when the structural parse looked incomplete, but valid channels don't prove every claim in their prose was declared: an undeclared possession change or a leaked secret can sit inside well-formed output. Verification accuracy on extracted propositions does not measure this failure.
-**Decision:** Claim detection has three layers — declared structure, always-on deterministic detectors (including protected-content matching against facts hidden from the speaker), and model extraction on every render by default (`extraction_mode = always`; `gated` allowed with shadow sampling of what gating misses). It runs on renders, reactive narration, and the final composed message. The guarantee is stated precisely: every detected claim is checked; complete detection is a measured rate, NFR-QUAL-10 (≥ 95% recall on an adversarial set), reported per layer and mode (FR-VERIFY-13,14).
-**Consequences:** One model call per render is added by default, consistent with the launch-conservative, reduce-by-evidence policy of ADR-017; the shadow data is what justifies switching a story to `gated`. Tests U-22, S-EXTRACT-ADVERSARIAL, E-10.
+**Decision:** Claim detection has three layers — declared structure, always-on deterministic detectors (including protected-content matching against facts hidden from the speaker), and model extraction on every render by default (`extraction_mode = always`; `gated` allowed with shadow sampling of what gating misses) *[default superseded by ADR-158: `gated`, with its shadow sample, is the default; `always` is a profile's choice, as the Structured (M4) profile makes it]*. It runs on renders, reactive narration, and the final composed message. The guarantee is stated precisely: every detected claim is checked; complete detection is a measured rate, NFR-QUAL-10 (≥ 95% recall on an adversarial set), reported per layer and mode (FR-VERIFY-13,14).
+**Consequences:** One model call per render is added where a profile sets `always` (the Structured (M4) profile does), and under the default `gated` only for flagged beats, plus the shadow sample after the turn; the shadow data is what justifies narrowing or widening a story's mode *[revised per ADR-158]*. Tests U-22, S-EXTRACT-ADVERSARIAL, E-10.
 
 ---
 
@@ -1339,10 +1351,10 @@ Launch conservative (high continuity, more escalation), then **tighten data-driv
 
 ### ADR-139 — Infrastructure and project setup come first as M0 and M1; delivery milestones become M2–M8
 **Status:** Accepted. Refines ADR-134 and ADR-138.
-**Amended by:** ADR-140 — FR-SCN-8 moves to M5 and FR-EXT-8 to M7; ADR-143 — M4 routes nothing by perception; perception arrives in M5; ADR-144 — milestone dependencies are sequential, and some requirements move to M2 and M3
+**Amended by:** ADR-140 — FR-SCN-8 moves to M5 and FR-EXT-8 to M7; ADR-143 — M4 routes nothing by perception; perception arrives in M5; ADR-144 — milestone dependencies are sequential, and some requirements move to M2 and M3; ADR-164 — M9 Performance tuning follows M8 and receives the model-bound quality floors that still miss on the reference model tier
 **Context:** The milestone plan began with the Lite core as M1, leaving no place in the sequence for standing up infrastructure or for setting up the project and its CI, both of which must exist before any requirement can be built or gated.
 **Decision:** Two milestones precede delivery: **M0 — Infrastructure** and **M1 — Project setup and CI**. Both are not yet planned: they carry no requirements and have no gates defined until they are planned. Every delivery milestone moves up by one — the Lite core is M2, the catalog M3, structured memory M4, character knowledge M5, the world M6, history and profiles M7, and images M8 — with the same scope, assignments, dependencies, and exclusions. The Lite core now depends on M1. Every requirement assignment, test part marker, and milestone reference in the specification and testing plan is renumbered accordingly. Milestone numbers in ADR-134 and ADR-138 predate this change and are marked inline (03 §22).
-**Consequences:** The plan has a place for infrastructure and CI work ahead of the first requirement-bearing milestone, and nothing else in it changes. M8's gate is the full release gate.
+**Consequences:** The plan has a place for infrastructure and CI work ahead of the first requirement-bearing milestone, and nothing else in it changes. M8's gate is the full release gate *[revised per ADR-164: M9 follows M8, and M9's gate is the full release gate]*.
 
 ---
 
@@ -1458,6 +1470,7 @@ Launch conservative (high continuity, more escalation), then **tighten data-driv
 
 ### ADR-153 — The erasure ledger's file is the authority, and a restore is reconciled before it is served
 **Status:** Accepted. Builds on ADR-046.
+**Amended by:** ADR-157 — a pending catalog-scope erasure also holds back what it reaches in the catalog until it is reapplied.
 **Context:** FR-ADMIN-7 keeps the erasure ledger outside the backups it governs and copied into each of them, and serves no restored story until the ledger has been reapplied. ADR-046 decided that, but not where the outside copy lives, which copy wins, or how a restore is caught when the backup predates an erasure. The owner decided, when M3 was planned (#125, round one), that Epistrel reapplies the ledger by itself at start-up and blocks the affected stories until it has.
 **Decision:** The authority is an append-only file, `EPISTREL_ERASURE_LEDGER_DIR/ledger.jsonl`, on its own volume (`erasure-ledger` in compose, separate from `pgdata` and `media`). It holds one JSON line per erasure, with identifiers, counts and keyed hashes and never a name. The lines are hash-chained: each `ledger_hash` is the SHA-256 of the line's canonical JSON, and each `ledger_hash_prev` is the previous line's hash. An erasure appends its line and fsyncs it before it commits, under an advisory lock held to the commit, so the chain's order is the commit order. The same row, with the same hashes, goes into the `erasure_ledger` table, which every `pg_dump` carries. A file that cannot be written refuses the erasure (503 `ledger_unavailable`). Before traffic, start-up compares the file with the table. A line the table lacks becomes pending and blocks its story (`blocked_by_erasure`: every read and write is 503 `erasure_pending`, except deleting the story and listing it). A row the file lacks is appended to the file. Differing copies, a broken chain or an unwritable directory refuse the start (exit 78). The reconciler reapplies each pending erasure with #124's own operation: the original id, principal `system`, and no new ledger line. It runs in the background under an advisory lock that every process shares, catalog erasures first, then every 5 minutes until none is pending. `epistrel backup verify` lists erasure markers as expected gaps and checks a dump's ledger rows against the file. `GET /admin/erasure/boundary`, `docs/OPERATIONS.md` and the API description state the erasure boundary from one constant (FR-ADMIN-7, FR-ADMIN-8, FR-ADMIN-4).
 **Consequences:** Restoring an old backup cannot serve an erased person again. The restored stories wait, refused, until the reapply finishes. A deployment that loses the ledger volume rebuilds it from the database's copy, chained anew. One that restores the file from a backup loses the erasures made after that backup, so the documentation says never to restore it. A reapply that cannot run, for example without `EPISTREL_CONFIG_KEY`, keeps its story blocked and is reported, never dropped. Tests S-ERASURE-BOUNDARY (M3) and `tests/integration/test_erasure_ledger.py`.
@@ -1522,6 +1535,166 @@ The guard's normalisation is the same fold (FR-ADMIN-6, FR-ADMIN-9).
 - Ledger rows written before this change hash names holding `ı`, a soft hyphen, a minus sign or a decomposable upper case differently. M3 is unreleased, so no deployment holds such rows.
 - Tests: `tests/test_erasure_matcher.py` (the fold, and the guard's own hashes against the ledger's term hashes, #392) and `tests/integration/test_erasure_mentions.py` (end to end, and the guard's 409s).
 
+---
+
+### ADR-157 — A pending catalog-scope erasure holds back what it reaches until it is reapplied
+**Status:** Accepted. Amends ADR-153 (what a pending erasure blocks).
+**Amended by:** ADR-159 — the deployment policies and configuration changes its reach names are held too.
+**Context:** After a restore, ADR-153 blocks the story a pending erasure was made in until the reconciler reapplies it. A catalog-scope erasure is made in no story, so its pending entry blocked nothing: until the background reapply ran, the restored catalog served the erased character or persona, the entries and media naming her, and the deployment-scoped stored results of `GET /operations/{id}` (#346). FR-ADMIN-7 named restored stories only, and NFR-PRIV-2's intent is that an erased person is not served again. The owner decided on 2026-10-16, at M4's triage, that while a catalog-scope erasure is pending, catalog reads that touch it are refused with 503 `erasure_pending`, or the entry is left out of lists, until the reapply finishes.
+**Decision:** While a catalog-scope ledger entry is pending, its **reach** is what its reapply would touch, computed the way the erasure finds it: the subject's own entry or persona, a catalog character's companion scenarios, every catalog record the subject-reference index names for the subject or the subject's terms (and the confirmed candidates, ADR-154) match, the media that depict or name her, the deployment-scoped stored results and events that name her, and the creation reports that carry her public card. In the Engine, so REST and the library agree:
+- every call naming a reached catalog character, scenario, persona, media asset or upload session is refused, reads and writes alike, with 503 `erasure_pending` (`Retry-After: 30`; `details.story_id` is null, with the first pending erasure that reaches it and how many do). Deletes are refused too: deleting the subject would take the terms the reapply redacts the other records by;
+- a story created from a scenario is refused when the scenario, a catalog character filling a role, or a player's saved persona is reached, because a catalog-scope erasure never touches a story (FR-STORE-14);
+- `GET /operations/{id}` and an `Idempotency-Key` replay are refused when the stored result or the creation report they would serve is reached;
+- a catalog-scope erasure, dry run or not, is refused while another is pending (its candidate snippets quote the catalog), as a story's is (#383);
+- catalog lists and search, `GET /personas` and `GET /media` leave reached entries out, so a page may be short; the principal lookup lists them with a `null` name, as it lists a blocked story.
+
+Nothing is persisted: the reach is computed afresh on each call while an entry is pending, and is one query otherwise. The block lifts entry by entry as the reapply settles them, catalog entries first (FR-ADMIN-7, NFR-PRIV-2).
+**Consequences:**
+- Restoring a backup cannot serve an erased catalog character or persona, or what names her, before the reapply; what does not name her is served throughout.
+- A catalog call during a restore window costs a scan of the catalog's records per pending catalog erasure. The window lasts until the reapply ends (minutes at hobby scale), and a deployment with no pending catalog erasure pays one query.
+- Deployment-scoped reads outside the catalog (policies, configuration history) are not held; #429 tracks them. *[superseded by ADR-159: a policy or configuration change the reach names is held too]*
+- Tests: `tests/integration/test_erasure_ledger.py` (the restore window for a catalog character and for a persona, held with the reapply's pause; every Engine method naming a catalog entry is gated; the OpenAPI document states the 503).
+
+---
+
+### ADR-158 — The extraction backstop is gated by default; a profile chooses `always`
+**Status:** Accepted. Amends ADR-065 and ADR-017 (the extraction backstop's default mode).
+**Context:** ADR-065 made model extraction run on every render by default (`extraction_mode = always`), and docs/03 FR-VERIFY-13 named `always` as the default. M3 shipped the engine-profile schema (#106) with `verification.extraction_mode` defaulting to `gated`, and the deployment's profile defaults followed it, while the `Structured (M4)` profile (#129) sets `always` explicitly. At the M4 replan (2026-10-16) the owner decided the schema default stays `gated` and docs/03 is amended to match (#148).
+**Decision:** `verification.extraction_mode` defaults to `gated`: the extraction backstop runs only on the beats a deterministic detector flagged (a risk category hit: possession, transfer, quantity, time, protected content) or whose structural parse is incomplete (a `say` or `do` beat that declared nothing), and a deployment-set share of renders (`extraction_shadow_sample_rate`, 0.1) is a shadow sample: after the turn commits, the extraction runs over the beats gating skipped, under its own budget, and the claims it would have missed are recorded (`extraction_shadow`, reported by `GET /admin/evals/extraction-shadow`; FR-OBS-4). `always` remains a profile dial; the `Structured (M4)` profile sets it. Layers (a) and (b) always run, and every detected claim is checked; the guarantee and the measured rate are as ADR-065 states them (FR-VERIFY-13,14, NFR-QUAL-10).
+**Consequences:**
+- A default structured story makes fewer model calls than ADR-065 assumed; the shadow sample measures what that costs in detection, per category, before an operator widens or narrows a story's mode.
+- docs/03 FR-VERIFY-13 and docs/02 §4.9 and the purpose table name `gated` as the default.
+- Tests: U-22 (the all-declared complement makes no extraction call under `gated`), S-EXTRACT-ADVERSARIAL M4 (both modes; the shadow sample records what gating missed).
+
+---
+
+### ADR-159 — A pending catalog-scope erasure also holds back the deployment policies and configuration changes naming its subject
+**Status:** Accepted. Amends ADR-157 (what a pending catalog-scope erasure holds outside the catalog).
+**Amended by:** ADR-161 — a story's settings withhold a policy its reach names, and a violation of one is refused.
+**Context:** ADR-157 holds back what a pending catalog-scope erasure reaches in the catalog. Its reapply also redacts deployment records outside the catalog that name the subject: global and rating policies (name, message and rule) and the deployment's configuration changes (old and new values; a policy write records its body as one). ADR-157 left their reads served (#429), so during a restore window `GET /admin/policies`, `GET /admin/policies/{id}` and `GET /admin/config-changes` could serve the erased subject's name. NFR-PRIV-2's intent, and ADR-157's own definition of the reach as what the reapply would touch, apply to them alike.
+**Decision:** While a catalog-scope ledger entry is pending, in the Engine so REST and the library agree:
+- a policy its reach names is refused by id with 503 `erasure_pending` (`details.story_id` null), reads and writes alike: `GET`, `PUT` and `DELETE /admin/policies/{id}` (`policies_get`, `policies_update`, `policies_retire`), because a replacement records the old text again and a retirement echoes it;
+- `GET /admin/policies` (`policies_list`) leaves such a policy out;
+- the deployment's configuration history (`GET /admin/config-changes`, `config_changes`) leaves out a change the reach names. It does so in its query, so a page stays full and its cursor is unaffected.
+
+A story's own policies and configuration changes are story records, which a catalog-scope erasure leaves alone; a blocked story's stay governed by #363 and ADR-153 (FR-ADMIN-7, NFR-PRIV-2).
+**Consequences:**
+- An operator cannot read, change or retire a policy naming the erased subject until the reapply finishes. The policy is still enforced on turns throughout, as before the restore.
+- A story's effective policies (`GET /stories/{id}/settings`) and a turn's policy violation are not covered here; #447 tracks them. *[superseded by ADR-161: a story's settings list such a policy with a null name, and a violation of it is 503 `erasure_pending`]*
+- Tests: `tests/integration/test_erasure_ledger.py` (the restore window for a global policy naming the subject, with a complement policy, on REST and a fresh library Engine; the history's page stays full).
+
+---
+
+### ADR-160 — Verification checks an affirmed claim's declared consequences, closed sets may close a key set, and a rule-free presence conflict is uncertain
+**Status:** Accepted. Refines ADR-049 (what a closed set may close) and ADR-050 (a declared rule is a semantic the author gave the predicate).
+**Context:** docs/04 §7's S-TENNIS expects three verdicts that FR-PROP-10 as written and #140's rules did not give (#441, raised on #151). (1) The implication rule fired only when a claim *negated* what canon implies; an affirmed claim's own consequences were never derived, so "I played on Florida's varsity team" under the author's rule "varsity membership implies enrollment at the team's school" and the closed set "Bobby's only enrollment is OSU" was `novel`, as was a camp at the University of Florida under "attending a program somewhere implies being there" against canon's "Bobby has never been to Florida". (2) A closed set's key had to be exactly the predicate's key qualifiers, so FR-PROP-8's own example, "Bobby's only undergraduate degree is `bobby_ba`", could not be declared: it closes the set of `degree_id`s, not one degree's awarding set. (3) With no declared rule, the camp claim and the negated presence share no predicate, so the verdict was a conclusive `novel` and never reached the model. The owner chose to extend the rules over narrowing the scenario (2026-10-18, #151 option (a)).
+**Decision:** In FR-PROP-10's deterministic rules (`core.verify.rules`):
+- **Forward implication.** For an affirmed claim, the bounded closure (FR-PROP-11, `verification.implication_max_depth`) of the claim and the holder's `via` joins, less what the joins imply alone, is derived; each consequence is checked by polarity, the functional key, closed sets, max cardinality and exclusion over its own predicate. A conflict is `contradicted`, citing `implication` (the joins the chain used) with the consequence's rule and record or closed set; a depth stop is flagged as before. A declared rule from a predicate is a semantic its author gave it, so a structurally weak predicate (`member_of`) takes part. The fetch reads each consequent predicate for the subject, its closed sets, containment and exclusions, and the joins, as query keys.
+- **Containment under negation.** An affirmed proposition whose object lies inside a negated one's object, through the predicate's containment facts, over overlapping time, is a polarity conflict ("at the University of Florida" against "never in Florida"), citing the negation and the containment facts. It follows from the containment ADR-049's functional rule already reads (Columbus and Ohio agree), applied to a negation.
+- **Closed sets over a key set.** A closed set may name `key_set`, one of the predicate's key qualifiers: its members are then all that qualifier's values for the subject among the propositions whose qualifiers include its `key` (any of the predicate's other qualifiers). A claim naming every narrowing qualifier and an unlisted value, over overlapping time, is `contradicted`; a claim that leaves a narrowing qualifier unnamed is not in the set. Stored as `closed_sets.key_set` (nullable; migration 0064): a row without it is an object closed set, unchanged. Declared in `starting_state.closed_sets` with `key_set`; its members are values, never resolved as entity references.
+- **Rule-free cross-predicate conflict.** When the holder negates the subject's presence (a predicate with containment, `located_at`) at the claim's object or at what contains it, over time that may overlap, on a predicate no declared rule reaches from the claim's, the verdict is `uncertain(world_knowledge)` (FR-VERIFY-3's world-knowledge escalation), never `novel`, unless a contradiction rule is conclusive. The presence predicates are read for the subject on every affirmed entity claim, their containment only when a negation comes back.
+
+Nothing is inferred beyond the declared rules and closed sets (FR-PROP-8,11); CONTRADICTION-SOUNDNESS is extended to the new rules (FR-PROP-3,8,10,11, FR-VERIFY-3).
+**Consequences:**
+- S-TENNIS's variants 1, 2 (the second degree under the closed degree set) and 4 (with and without its rule) get the verdicts docs/04 §7 states, deterministically or through the model residual.
+- A located claim inside a place the holder negates is now `contradicted` where it was `novel`; an affirmed entity claim against a negated presence elsewhere that no rule reaches is now `uncertain` where it was `novel`. Each affirmed entity claim makes one more keyed read per presence predicate, and each claim whose predicate starts a declared rule reads its consequents.
+- Later milestones that read or export closed sets (M5's per-holder verification, M7's portability) carry `key_set`.
+- Tests: U-15 (`test_u_15__forward_implication`, `__key_set_closed_sets`, `__cross_predicate`, and the registry slice's key-set declaration), CONTRADICTION-SOUNDNESS (`__implied`, `__key_set`, and the containment clause of the polarity citation), S-TENNIS (`__varsity`, `__degree`, `__presence`).
+
+---
+
+### ADR-161 — A pending catalog-scope erasure withholds a policy naming its subject from a story's settings, and refuses a violation of it
+**Status:** Accepted. Amends ADR-159 (a story's effective policies and a policy violation during the restore window).
+**Context:** ADR-159 holds back a global or rating policy naming a pending catalog-scope erasure's subject on the operator surface, and left two surfaces to #447. `GET /stories/{id}/settings` (and the library's `story_settings` and `policies_effective`) listed every effective policy by name, so a global policy naming the subject was listed in every story's settings; and a text such a policy refuses answered 422 `guardrail_violation` with the policy's `name` and `message` in `details.violations[]`, so a player or consumer hitting it saw the subject's name. Leaving the policy out of the settings would misstate what is enforced, and it must keep being enforced. Refusing the settings read for the window would refuse every story's settings, since a global policy is in every story's set. The owner chose on 2026-10-20 (#447, option (C)): redact the settings read, and refuse the violation.
+**Decision:** While a catalog-scope ledger entry is pending, in the Engine so REST and the library agree:
+- a story's settings (`GET` and `PUT /stories/{id}/settings`, `story_settings`) and the library's `policies_effective` show an effective or inactive policy whose text its reach names as **withheld**: its id, scope, source, `applies_to`, `age_condition` and kind, with `name` null and no message or rule (`EffectivePolicyBody.name` is nullable; the library returns a `WithheldPolicy`). It stays in the set and is still enforced; the guardrail call counts are the enforced set's;
+- a text such a policy refuses, at the input gate (a turn, a regeneration, an ingest, pins, custom instructions, story creation, an added character, a sanitize), is 503 `erasure_pending` (`Retry-After: 30`, `details.story_id` null, as ADR-157's refusals) instead of 422 `guardrail_violation`, and no `guardrail_input_rejected` audit row is written;
+- a draft or fallback line such a policy rejects at the output gate refuses the turn the same way before the policy's message is used: it is never sent to the model as a regeneration constraint, stored on a `guardrail_output_rejected` event or reported in the turn's `guardrail.violations`, and the turn rolls back.
+
+The block is read only when a violation is found, so a passing text costs nothing. A retry after the reapply gets the real outcome, with the redacted text (FR-ADMIN-7, FR-GUARD-9, NFR-PRIV-2).
+**Consequences:**
+- A story's settings stay readable throughout a restore window and still show what is enforced; only the withheld policies' names are missing.
+- A player whose input breaks a policy naming the erased subject is told to retry, not why, for the window (minutes at hobby scale); a violation of any other policy is the 422 as before.
+- The OpenAPI contract changes: `EffectivePolicyBody.name` is `string | null`. The library's `policies_effective` returns `Policy | WithheldPolicy`, and `StoryGuardrails.active`/`inactive` hold either.
+- The in-process effective-policy cache is keyed by configuration revisions that a reapply's redaction does not move, so a process that cached a story's set before the reapply serves the unredacted policy after it; #469 tracks that.
+- Tests: `tests/integration/test_erasure_ledger.py` (`test_a_pending_catalog_erasure_withholds_a_story_policy_naming_her`: the settings on REST and a fresh library Engine, a refused input on both and a refused turn, with a complement policy, the state before the restore and after the reapply) and `tests/test_output_gate.py` (`test_a_withheld_policy_refuses_before_its_message_is_used`).
+
+---
+
+### ADR-162 — An approximate-bounds residual takes the safe disposition with no entailment call
+**Status:** Accepted. Amends ADR-017 (clause (c) of the verification bullet: what a partial or ambiguous match covers).
+**Context:** FR-PROP-10 (ADR-048) needs every admissible reading of approximate bounds before a claim is `supported` or `contradicted`, and otherwise leaves it `uncertain`. #142's gate counted `approximate_bounds` under FR-VERIFY-3 (c), a partial or ambiguous match, so it escalated. #460 then stopped taking the model's answer on it: the rules have already shown that the readings disagree, and the model knows no more about the bounds than the records do. Every such escalation was a model call that could not change the verdict. It cost budget and latency, and it left an unflipped `escalations` row as evidence for #155's tightening. The owner chose on 2026-10-20 (#467, option (b)) to stop making the call.
+**Decision:** `approximate_bounds` is in the gate's `NEVER_ESCALATES` set (`orchestrator.verify.gate`), alongside unresolved entities, unresolved times and argument types. Such a residual takes `verification.safe_disposition` at once, with no model call and whatever the threshold, and it ends `uncertain` (FR-VERIFY-8). FR-VERIFY-3 (c)'s "partial or ambiguous match that FR-PROP-10 does not resolve deterministically" no longer covers approximate bounds, because FR-PROP-10 resolves them deterministically to `uncertain`. No current reason escalates under (c). #460's override, which refused the model's answer on an escalated approximate-bounds residual, can no longer be reached and is removed. The outcome is the same. FR-VERIFY-3's text is unchanged, since it already excludes what FR-PROP-10 resolves.
+**Consequences:**
+- An approximate-bounds residual makes zero entailment calls. A turn spends less of its budget (NFR-PERF-6; entailment was never a reserved call) and has less latency. It escalates less often (NFR-PERF-5's reference rate).
+- Its record is `never_escalates`, so #155 writes no `escalations` row for it. The yield report, the shadow window and promotion count only the reasons that escalate, and no approximate-bounds shape collects unflipped evidence. E-02 plays the three reasons that escalate, and its set grows to 102 escalation cases to keep at least 300 escalations. E-01's approximate-bounds cases are labeled `uncertain` and still end `uncertain`, now with no call.
+- Readable valid-times (#460) still apply to every record shown to the model, including approximate bounds on a record shown with another residual.
+- Tests: U-04 (`test_u_04__approximate_bounds`: zero calls, `uncertain`, the safe disposition, no recorded escalation; `test_u_04__escalation` over the reasons that escalate), E-02 (`tests/eval/test_e_02.py`).
+
+### ADR-163 — An extraction claim whose weak relation names something untracked is surfaced, not repaired
+**Status:** Accepted.
+**Amended by:** ADR-165 — the render's declared claims qualify too, and an unknown name or a pronoun with no antecedent counts as untracked.
+**Context:** The Structured (M4) profile runs the extraction backstop on every render (`extraction_mode = always`). Once #459 let its claims land, most of them named scene texture the story had no entity for, and the extraction model invents its own relations ("the inn has_been_in_business_for a hundred years", "Maren looks_up_from wiping the bar"). Each such claim failed to normalize as `uncertain(unresolved_entity)`. Unresolved entities never escalate, so each took `verification.safe_disposition`, which is `repair` by default (the owner's decision on #142). Repair narrowed and regenerated until `repair.max_attempts`, and released the safe fallback. Live E-06 (NFR-QUAL-7) `e06.structure_valid` on the reference model fell from 89 % to 10 % (#479). The owner chose two remedies on 2026-10-21. The first, option 2, makes a permitted claim in a core or author relation whose `place` or `item` argument is untracked mint that entity when it is canonized (`core.verify.introduce`; the path `canonize(..., introduces=...)` already specified). That left the invented relations: they auto-register with the weakest semantics and no argument types, so nothing in them mints.
+**Decision:** An extraction claim that is `uncertain` only because a weak relation names something no entity holds takes the `surface` disposition, whatever the profile's `safe_disposition`. A weak relation is one that is unregistered or auto-registered (FR-PROP-4 (c)). "Names something no entity holds" means #139's resolver found no mention at all in the argument. The claim is listed in `turn_report.uncertain_claims` and its beat is released. It is never `supported` and never canonized. The claim qualifies only if all of these hold (`orchestrator.verify.extraction.surfaces`, over `Unnormalizable.untracked_weak`):
+- it is layer (c)'s own finding, merged with no declared or detector claim and carrying no protected content *[superseded by ADR-165: a declared or extraction claim, merged with each other or not, that no detector also found and that carries no protected content]*;
+- the resolver's result is `no_mention`, which excludes an `unknown_name`, a `protected_value`, an ambiguous name and a pronoun with no antecedent *[superseded by ADR-165: `no_mention`, `unknown_name` or a pronoun or addressee with no antecedent, with no candidates; an ambiguous name and a `protected_value` stay excluded]*;
+- no other argument resolved to a modeled character other than the speaker, or to the player's character.
+
+The grounds:
+- **Repair buys no consistency here.** A weak relation never yields `contradicted` from cardinality, exclusion, implication or containment (FR-PROP-4). Its only contradiction, a direct polarity conflict, needs the identical proposition, which an argument that is no entity cannot form.
+- **Repair destroys permitted content.** It removes incidental scene texture and the render's own minor backstory, which FR-VERIFY-11 lets a render introduce.
+
+Everything else keeps the safe disposition: detector findings, the excluded resolver results, claims touching another modeled character or the player, and every claim in a core or author relation, whose untracked place or object mints under option 2.
+**Consequences:**
+- The repair ladder is no longer spent on texture it cannot check. A rich render keeps its beats instead of falling back.
+- Such a claim records nothing. A later render may describe the same untracked thing differently, and nothing catches it until the thing is tracked (option 2 for registered relations; #481 for paraphrases).
+- The FR-VERIFY-8 guarantee holds: the claim ends `uncertain` and is surfaced, never a silent `supported`.
+- Tests: `tests/test_introduce.py` (the `untracked_weak` marks); `tests/integration/test_introduced_entities.py` (a weak-relation claim released and listed; each repaired case repaired); E-06 on the stub (`tests/eval/test_e_06.py`, unchanged).
+
+---
+
+### ADR-164 — Model-bound quality floors that miss on the reference model after M4's engine fixes move to M9: Performance tuning
+**Status:** Accepted. Amends ADR-139 (the milestone sequence: M9 follows M8, and M9's gate is the full release gate).
+**Amended by:** ADR-166 — NFR-QUAL-7 (generation conformance) also moves to M9.
+**Context:** M4's first live exit report on the reference model tier (`cydonia-24b-v4.3` on LM Studio; `docs/evals/775d2c4f43f3-2026-10-20.md`) missed several NFR-QUAL floors. On 2026-10-20 the owner decided that every engine-side cause is fixed in M4, and that quality or speed that depends on the model is deferred to a new milestone, **M9: Performance tuning**, placed after M8 (the GitHub milestones for bug fixes and the audit became M10 and M11; neither carries requirements, so §22 does not list them). A floor that still misses on the reference model after the engine fixes is reassigned to M9: its §22 assignment, its §15 rows and its test part markers move, so M4 can close with its engine work done. The re-run after the fixes (`docs/evals/2c61ec2dbc6c-2026-10-21.md`) leaves four such requirements. Each miss is the model's own judgment or output on a path the engine already handles as specified:
+- **NFR-QUAL-2** (E-01): false-contradiction rate 5.0 % ± 0.0 % against ≤ 2 % (false support 0.0 %, which passes). Every miss is a `residual-weak` case in which the entailment model commits to `contradicted` on an escalated weak predicate, the world-knowledge judgment FR-VERIFY-3 (b) sends to the model by design.
+- **NFR-QUAL-3** (E-03): faithfulness 90 % ± 5 % against ≥ 98 %. The consolidation model writes generalizations its source records do not entail; the engine already drops hedged statements (#462).
+- **NFR-QUAL-4** (E-05): recall 96.67 % ± 2.94 % against ≥ 95 %, precision 72.68 % ± 5.29 % against ≥ 70 %. Both means clear their floors, but the seed variance puts mean − SD below them, so the rate rule (NFR-QUAL-8) fails them.
+- **NFR-QUAL-14** (E-12, C-25): `insufficient_evidence` on every intervention type. The run produced at most 3 non-tied pairs for any type, against the 300 a type needs before it can pass, so the floor cannot be established on the reference tier yet. The owner moved its certification to M9 (#158, #474).
+
+**Decision:** NFR-QUAL-2, NFR-QUAL-3, NFR-QUAL-4 and NFR-QUAL-14 are assigned to **M9 — Performance tuning** (03 §22), which depends on M8 and delivers no new capability: it receives the model-bound quality floors and performance targets that still miss on the reference model tier after the engine work of the milestone that delivered their capability. Its exit evidence is those floors met on the reference model tier. The requirements' text and floors are unchanged, as are the labeled sets, their labels, the scorers and the gate rule. In the testing plan, each affected test is split into milestone parts (04 §13): the part that covers the capability stays in M4 (E-01 [M4: FR-VERIFY-1,3], E-03 [M4: FR-MEM-3,6], E-05 [M4: FR-COMMIT-3], E-12 [M4: NFR-QUAL-8], C-25 [M4: NFR-QUAL-13,15, FR-SCN-2]); the floor becomes an M9 part (E-01, E-03, E-05, E-12 and C-25 [M9: …]). E-01's M5 part keeps FR-VERIFY-2,5, and its viewpoint cases join NFR-QUAL-2's M9 part. E-12's M7 part keeps FR-PROF-15. A requirement that misses later in the same way moves by the same route: an ADR amending this one, its §22 and §15 rows, and an M9 part marker beside its test's M4 part.
+**Consequences:**
+- Invariant 7 holds: each requirement is still assigned to exactly one milestone, and each test part gates from exactly one. `check-assignment`, `check-parts`, `check-lexicon` and `check-traceability` pass with the new M9 row.
+- M4 closes on its engine work. Its exit evidence is the remaining evals (NFR-QUAL-5..8, 10, 13, 15) on the reference model tier.
+- The stub CI gates are unchanged. A part marker records the milestone a part gates from; it does not select or skip a test. `test_e_01`, `test_e_03`, `test_e_05`, `test_e_12` and `test_c_25__m4` run in every PR as before, on the stub with the same floors, sets and assertions, and any failure still fails the build. Only the live reference-model floors wait for M9.
+- `python -m epistrel.evals --check` is unchanged. Its `PENDING` list is for guarantee metrics that no suite measures yet (NFR-QUAL-9 until M6), and it fails on a listed metric that a suite already measures. E-01, E-03, E-05 and E-12 already measure these metrics, so listing them would fail the check. A live report still shows their verdicts, and they gate from M9.
+- M9 needs `/n8-replan` once M8 closes: its stories (model, prompt and configuration tuning against these floors) are not planned yet.
+- M9's gate is the full release gate (it was M8's, ADR-139).
+- Tests: the gate checks in `tests/gates` (`tests/gates/test_parts.py`'s bad-milestone fixture now names M99, because M9 is a §22 milestone); the parts in `tests/eval/test_e_01.py`, `test_e_03.py`, `test_e_05.py`, `test_e_12.py` and `tests/conformance/test_c_25.py`.
+
+
+---
+
+### ADR-165 — The render's own declared claims surface like extraction claims, and an unknown name or a pronoun with no antecedent counts as untracked
+**Status:** Accepted. Amends ADR-163 (which claims qualify, and which resolver results count as untracked).
+**Context:** The live re-run after ADR-163 (`81705da`, run `84411b5aaf1a-2026-10-21`) left NFR-QUAL-7 at 48.33 % ± 13.77 % against ≥ 98 %, with `e06.structure_valid` at 49.17 %. The safe fallback replaced the render in 60 of the 62 failing cases. A traced diagnostic on the same model (6 cases, 94 unnormalizable claims) found that every repaired claim was one of the render's own **declared** claims (its `propositions`), not an extraction finding. The model declares its scene texture in its own relations, for example "Maren wipes_down the counter", "Maren gestures_toward the window" and "Maren wipes_hands_on her apron". These claims auto-register with the weakest semantics. ADR-163 surfaced such a claim only when it came from the extraction layer. It also counted only `no_mention` as untracked, so "her apron" (a pronoun with no antecedent in a claim's argument) and "the Crossroads Inn" (an unknown name) were repaired. 50 of the 94 claims were untracked weak claims that only the layer rule kept from surfacing; 26 more failed only on the resolver-result rule. The owner's decision on #479 named the class itself, "a claim that is uncertain only because an invented (weak) relation names something untracked", without restricting the layer.
+**Decision:** `orchestrator.verify.extraction.surfaces` applies to claims of the declared and extraction layers (`SURFACED_LAYERS`), merged with each other or not. A claim a detector also found (`"detector"` in `merged`) and a claim carrying protected content keep the safe disposition. `Unnormalizable.untracked_weak` counts an argument as untracked when #139's resolver found nothing for it: `no_mention`, `unknown_name`, or `no_antecedent` (a pronoun or "you" with nothing to refer to), and never when the result has candidates. An ambiguous mention, a `protected_value` and a gender mismatch stay excluded, as do claims touching another modeled character or the player's. ADR-163's grounds carry over unchanged: a weak relation can be contradicted only by the identical proposition, which an argument that is no entity cannot form.
+**Consequences:**
+- A render's declared texture in invented relations is released and listed in `turn_report.uncertain_claims` instead of being repaired to the safe fallback.
+- An unknown name under a weak relation (a new person or place the render names) is surfaced, not canonized. A later render may name the same thing differently, and nothing catches it until the thing is tracked. Under a core or author relation, option 2 still mints a place or object, and a person slot still never mints.
+- A pronoun with no antecedent under a weak relation may refer to a modeled character the resolver could not bind. The claim is still never `supported` or canonized, so canon is unaffected.
+- Tests: `tests/test_introduce.py` (the widened marks; declared and extraction claims surface, and detector findings do not); `tests/integration/test_introduced_entities.py` (a declared claim with no mention, an unresolved pronoun or an unknown name is released and listed).
+
+---
+
+### ADR-166 — NFR-QUAL-7 (generation conformance) also moves to M9
+**Status:** Accepted. Amends ADR-164 (one more requirement takes its route).
+**Context:** ADR-164 moved the model-bound floors that still missed after M4's engine fixes to M9, and named the route for any later one. NFR-QUAL-7 (E-06, ≥ 98 %) missed for an engine reason first: the repair ladder spent itself on scene texture it could not check, so the safe fallback replaced the render (#479). The live numbers on the reference model tier were 10 % at `2f91d92`, 48.33 % ± 13.77 % at `81705da` after ADR-163, and **79.17 % ± 9.46 %** at `eee9fba` after ADR-165 (`docs/evals/84411b5aaf1a-2026-10-21.md`). A traced diagnostic at `bcc640c` (24 cases, 87.5 %) found that the claims still sent to repair do so as specified. They are claims in a core relation with an untracked argument in a slot option 2 does not mint (a person, or an `any` slot), detector findings on a risk category (time, quantity), and claims about the player's character. The other parts of the miss are the model's: temperature-0 repeatability 78.57 % ± 25.75 % (the same render call, the same prompt), the length limit honoured in 97.50 % ± 2.50 %, and model calls the server failed (`model_unavailable`).
+**Decision:** NFR-QUAL-7 is assigned to M9 (03 §22). E-06's M4 part keeps FR-TURN-1 (`[M4: FR-TURN-1]`), and the floor is an M9 part (`[M9: NFR-QUAL-7]`) on the same test, `test_e_06__structured`. The floor, the set, the scorer and the gate rule are unchanged, and the stub CI gate still runs E-06 at 100 %.
+**Consequences:**
+- M4's live exit evidence is NFR-QUAL-5, 6, 8, 10, 13 and 15 on the reference model tier. NFR-QUAL-5 and NFR-QUAL-10 pass at `eee9fba` (100 % each).
+- M9 receives the remaining causes: model output that declares new people and facts in core relations, temperature-0 non-determinism on the serving stack, and length adherence.
+- Invariant 7 holds; `check-assignment`, `check-parts`, `check-lexicon` and `check-traceability` pass.
 ---
 
 *Every ADR above is Accepted as a record; the indexes at the top show which are amended or partly superseded. No decisions are open.*

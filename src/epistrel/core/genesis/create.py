@@ -61,6 +61,13 @@ and ``creation_report``; when the profile leaves a recommended capability unmet 
 request did not set ``ignore_warnings``, the answer is ``CreationHeld`` and nothing is
 written.
 
+**2b. The structured plan (#149).** When the chosen profile runs the ``structured`` pipeline,
+``plan_structured`` plans the story's materialization (``core.genesis.structured``) and refuses
+what it finds (``seed_unnormalizable``; under ``strict``, a merge conflict as
+``creation_conflicts``); its writer runs as a commit step of the genesis operation. A Lite
+creation is unchanged: its checks run with the Lite capabilities, so it lists the seed checks
+``unavailable``.
+
 **3. Genesis (one transaction).** The ``stories`` row (owner: the request's, else the
 requester; ``scenario_id``/``scenario_version`` and the version's whole document as
 ``scenario_snapshot``; the settings from ``story_settings_defaults`` with the overrides, the
@@ -146,6 +153,7 @@ from epistrel.core.errors import (
     PlayerRoleFixed,
     ProfileDeleted,
     RatingCheckFailed,
+    SeedUnnormalizable,
     SlotRequired,
 )
 from epistrel.core.events.operation import Operation
@@ -157,8 +165,8 @@ from epistrel.core.events.types import (
     ScenarioOrigin,
     StoryCreated,
 )
-from epistrel.core.genesis import merge, render
-from epistrel.core.genesis.materialize import CastRole, Materialized, materialize
+from epistrel.core.genesis import merge, render, structured
+from epistrel.core.genesis.materialize import STRUCTURED, CastRole, Materialized, materialize
 from epistrel.core.genesis.models import (
     PLAYER,
     AdHocSlotCharacter,
@@ -168,18 +176,22 @@ from epistrel.core.genesis.models import (
     ClassCapabilityCounts,
     CreationCounts,
     CreationReport,
+    DeferredItem,
     MemberCastCard,
+    OutcomeCounts,
     PersonaRef,
     PlayerAssignment,
     StoryFromScenario,
     player_role_entries,
     resolve_personas,
 )
+from epistrel.core.genesis.settings_map import genesis_capabilities
 from epistrel.core.ids import new_ulid
 from epistrel.core.policies.model import Target
 from epistrel.core.ports import Ports
 from epistrel.core.profiles import effective
 from epistrel.core.profiles import store as profiles
+from epistrel.core.profiles.capabilities import level_at_least, module_on
 from epistrel.core.profiles.fingerprint import RuntimeFacts, stamp
 from epistrel.core.profiles.impact import (
     ImpactReport,
@@ -196,6 +208,7 @@ from epistrel.core.ratings.change import (
     classify,
     live_guardrail_ids,
 )
+from epistrel.core.resolution.entities import EntitySpec, add_entities, character_spec
 from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX, StorySettings
 from epistrel.core.stories import (
     CharacterRef,
@@ -239,6 +252,9 @@ NOT_PUBLISHED: Final = "not_published"
 CREATION_CONFLICTS: Final = "creation_conflicts"
 PROFILE_UNAVAILABLE: Final = "profile_unavailable"
 PERSONALITY_IN_ROLE: Final = "personality_in_role"
+SEED_UNNORMALIZABLE: Final = structured.UNNORMALIZABLE
+STRUCTURED_CHECKS: Final = frozenset({seed_normalization.CHECK.name, fact_consistency.CHECK.name})
+"""The checks a structured creation runs itself, against its real cast (#149)."""
 
 REFUSALS: Final[dict[str, type[CreationRefused]]] = {
     CREATION_CONFLICTS: CreationConflicts,
@@ -252,6 +268,7 @@ REFUSALS: Final[dict[str, type[CreationRefused]]] = {
     ELIGIBILITY_FAILED: EligibilityFailed,
     CAST_LIMIT_EXCEEDED: CreationCastLimit,
     RATING_CHECK_FAILED: RatingCheckFailed,
+    SEED_UNNORMALIZABLE: SeedUnnormalizable,
 }
 """The refusal of each error code, in precedence order: several conditions at once answer the
 first present (``guardrail_violation``, the input gate's own 422, comes after all of them)."""
@@ -371,6 +388,8 @@ class Plan:
     settings: dict[str, Any]
     materialized: Materialized
     """What the creation defers and leaves inactive (#122)."""
+    structured: structured.Plan | None = None
+    """A structured story's materialization (#149; ``None`` for a Lite story)."""
 
 
 def _entry(
@@ -921,6 +940,8 @@ def _settings(
         values["turn_concurrency"] = defaults.turn_concurrency
     if defaults.audit_retention_days is not None:
         values["audit_retention_days"] = defaults.audit_retention_days
+    if defaults.allow_new_arrivals is not None:
+        values["allow_new_arrivals"] = defaults.allow_new_arrivals
     inactive = materialized.settings()
     if inactive:
         values[INACTIVE_KEY] = inactive
@@ -1032,7 +1053,14 @@ async def plan(db: AsyncEngine, request: StoryFromScenario, *, ports: Ports | No
             entries.extend(await _looser(conn, ids, rating_id, members))
             report = await run_checks(
                 subject,
-                ValidationContext(conn=conn, settings=deployment, ports=ports or Ports()),
+                ValidationContext(
+                    conn=conn,
+                    settings=deployment,
+                    ports=ports or Ports(),
+                    # The Lite view: a structured creation runs the seed checks itself, against
+                    # its real cast (``plan_structured``), so a Lite one stays as it was.
+                    capabilities=genesis_capabilities(),
+                ),
                 checks=(
                     document.CHECK,
                     personality.CHECK,
@@ -1121,29 +1149,52 @@ def creation_report_of(
     setting."""
     report = ValidationReport.of(found.entries, found.unavailable)
     show = found.request.projection == "full" if full is None else full
-    deferred = list(found.materialized.deferred)
+    deferred = deferred_of(found)
     inactive = list(found.materialized.inactive)
+    plan_ = found.structured
     return CreationReport(
         story_id=story_id,
         cast=[_card(m) for m in found.members],
         counts=CreationCounts(
             errors=len(report.errors),
-            conflicts=merge.LITE_CONFLICTS,
+            conflicts=merge.LITE_CONFLICTS if plan_ is None else plan_.conflicts,
             warnings=len(report.warnings),
             deferred=ClassCapabilityCounts.of(deferred),
             inactive=ClassCapabilityCounts.of(inactive),
+            materialized=None
+            if plan_ is None
+            else OutcomeCounts(by_outcome=structured.by_outcome(plan_.entries)),
         ),
         unavailable=list(report.unavailable),
         errors=list(report.errors) if show else None,
         warnings=list(report.warnings) if show else None,
         deferred=deferred if show else None,
         inactive=inactive if show else None,
+        materialized=list(plan_.entries) if show and plan_ is not None else None,
     )
+
+
+def deferred_of(found: Plan) -> list[DeferredItem]:
+    """What the story keeps deferred: every item under Lite; under ``structured``, the items it
+    did not materialize and the seed memories waiting for ``episodic`` (#149)."""
+    items = list(found.materialized.deferred)
+    plan_ = found.structured
+    if plan_ is None:
+        return items
+    kept = [
+        item
+        for item in items
+        if not (item.capability_needed == STRUCTURED and item.field_ref in plan_.materialized)
+    ]
+    return [*kept, *plan_.deferred]
 
 
 def _refusal_code(found: Plan) -> str | None:
     present = {ERROR_CODES.get(e.code, e.code) for e in found.entries if e.error}
-    if found.request.strict and any(e.code == PERSONALITY_IN_ROLE for e in found.entries):
+    conflicts = found.structured is not None and found.structured.conflicts > 0
+    if found.request.strict and (
+        conflicts or any(e.code == PERSONALITY_IN_ROLE for e in found.entries)
+    ):
         present.add(CREATION_CONFLICTS)
     for code in PRECEDENCE:
         if code in present:
@@ -1344,6 +1395,74 @@ async def impact_of(
     )
 
 
+# -- phase 2b: the structured plan (#149) ----------------------------------------------------
+
+
+def _cast_inputs(found: Plan) -> list[structured.CastInput]:
+    """The cast as the structured plan reads it."""
+    return [
+        structured.CastInput(
+            character_id=m.id,
+            role_id=m.role.id,
+            name=m.name,
+            true_age=m.true_age,
+            spec=_entity_spec(m),
+            background=structured.background_of(
+                None if m.version is None else m.version.content,
+                definition=m.definition if m.catalog_id is None and m.persona is None else None,
+                persona_description=None if m.persona is None else m.persona.description,
+            ),
+        )
+        for m in found.members
+    ]
+
+
+def _placements(draft: ScenarioDraft) -> dict[str, str]:
+    """Where each role starts: its ``starting_location``, and the opening's place for the
+    roles the opening has present."""
+    found = {r.id: r.starting_location for r in draft.cast.roles if r.starting_location}
+    opening = draft.starting_state.opening
+    if opening.starting_location:
+        found.update(dict.fromkeys(opening.roles_present, opening.starting_location))
+    return found
+
+
+async def plan_structured(
+    db: AsyncEngine, found: Plan, document: Mapping[str, Any], story_id: str
+) -> None:
+    """When the chosen profile's settings run the ``structured`` pipeline (#129), plan the
+    story's structured materialization (``core.genesis.structured``) and refuse what it finds:
+    a canon seed that does not normalize (422 ``seed_unnormalizable``), and under ``strict`` a
+    merge conflict (``creation_conflicts``). Its seed checks replace the publish-time ones the
+    Lite view listed ``unavailable``."""
+    async with db.connect() as conn:
+        defaults = await effective.profile_defaults(conn)
+    settings = effective.merged_settings(defaults, document)
+    if not level_at_least(settings, "pipeline", "structured"):
+        return
+    found.structured = structured.plan(
+        found.scenario_id,
+        found.version,
+        story_id,
+        found.materialized.deferred,
+        _cast_inputs(found),
+        placements=_placements(found.draft),
+        episodic=module_on(settings, "episodic"),
+    )
+    found.entries.extend(found.structured.errors)
+    found.unavailable = [name for name in found.unavailable if name not in STRUCTURED_CHECKS]
+    refuse(found)
+
+
+def _structured_step(
+    story_id: str, op: Operation, planned: structured.Plan
+) -> Callable[[AsyncConnection], Awaitable[None]]:
+    async def step(conn: AsyncConnection) -> None:
+        await structured.write(conn, story_id, op, planned)
+
+    return step
+
+
 # -- phase 3: genesis ------------------------------------------------------------------------
 
 
@@ -1376,9 +1495,12 @@ async def _locked_catalog(conn: AsyncConnection, found: Plan) -> None:
             )
 
 
-async def insert_cast(conn: AsyncConnection, story_id: str, found: Plan) -> None:
-    """The ``characters`` rows and the catalog characters' ``character_snapshots`` (one
-    multi-row ``VALUES``, so ``age_recorded_at`` is the transaction's time)."""
+async def insert_cast(
+    conn: AsyncConnection, story_id: str, found: Plan, operation_id: str | None = None
+) -> None:
+    """The ``characters`` rows, the catalog characters' ``character_snapshots`` (one
+    multi-row ``VALUES``, so ``age_recorded_at`` is the transaction's time) and each
+    character's entity (#139)."""
     rows: list[dict[str, Any]] = []
     for ordinal, member in enumerate(found.members):
         row: dict[str, Any] = {
@@ -1388,6 +1510,7 @@ async def insert_cast(conn: AsyncConnection, story_id: str, found: Plan) -> None
             "name": member.name,
             "definition": member.definition,
             "true_age": member.true_age,
+            "true_age_source": "catalog" if member.catalog_id is not None else "genesis",
             "age_recorded_at": func.transaction_timestamp(),
             "is_player": member.is_player,
             "safe_fallback_text": member.safe_fallback_text,
@@ -1420,6 +1543,25 @@ async def insert_cast(conn: AsyncConnection, story_id: str, found: Plan) -> None
     ]
     if snapshots:
         await conn.execute(insert(character_snapshots), snapshots)
+    await add_entities(
+        conn,
+        story_id,
+        [_entity_spec(member) for member in found.members],
+        operation_id=operation_id,
+    )
+
+
+def _entity_spec(member: Member) -> EntitySpec:
+    """A cast member's entity (FR-PROP-6; #139): the catalog version's aliases and appearance,
+    the role's name overrides, the persona's name and gender."""
+    overrides = member.role.name_overrides
+    return character_spec(
+        member.id,
+        member.name,
+        catalog_content=None if member.version is None else member.version.content,
+        name_overrides=None if overrides is None else overrides.model_dump(mode="json"),
+        persona=None if member.persona is None else member.persona.model_dump(mode="json"),
+    )
 
 
 async def insert_deferred(
@@ -1437,7 +1579,11 @@ async def insert_deferred(
             "capability_needed": item.capability_needed,
             "payload": item.payload,
         }
-        for item in found.materialized.deferred
+        for item in (
+            found.materialized.deferred
+            if found.structured is None
+            else (*found.materialized.deferred, *found.structured.deferred)
+        )
     ]
     if rows:
         await conn.execute(insert(genesis_deferred), rows)
@@ -1504,7 +1650,7 @@ async def genesis(
             )
             await op.begin_in(conn)
             started.append(op)
-            await insert_cast(conn, story_id, found)
+            await insert_cast(conn, story_id, found, op.operation_id)
             await write_policies(conn, story_id, found.draft.story_settings_defaults.policies)
             for player in sorted({m.principal for m in found.members if m.principal}):
                 await ownership.relate_in(
@@ -1540,6 +1686,8 @@ async def genesis(
                     ),
                 )
             await insert_deferred(conn, story_id, op.operation_id, found)
+            if found.structured is not None:
+                op.add_commit_step(_structured_step(story_id, op, found.structured))
             await op.write_in(conn)
             await conn.execute(
                 update(operations)
@@ -1605,6 +1753,8 @@ async def create_from_scenario(
     await gate(genesis_texts(found), found.rating_id, [m.true_age for m in found.members])
     profile_id, version, document_, warnings = await choose_profile(db, found)
     found.entries.extend(warnings)
+    story_id = story_id or new_ulid()
+    await plan_structured(db, found, document_, story_id)
 
     async def report() -> ImpactReport:
         return await impact_of(db, found, profile_id, version, document_, facts)
@@ -1649,11 +1799,13 @@ __all__ = [
     "RatingCheck",
     "create_from_scenario",
     "creation_report_of",
+    "deferred_of",
     "genesis",
     "genesis_texts",
     "insert_cast",
     "insert_deferred",
     "plan",
+    "plan_structured",
     "refuse",
     "render_definition",
 ]

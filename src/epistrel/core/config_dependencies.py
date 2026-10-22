@@ -15,6 +15,18 @@ depends on. The dependency set is static per operation kind in M2:
   nothing is re-checked at its commit in M2);
 - every other kind records the revisions and nothing more.
 
+A **structured** turn (one whose read set is keyed, #136; ``Operation.use_read_set``) depends on
+the Lite turn's members and on what its deterministic checks interpret (FR-CONC-16, M4):
+``predicate_registry`` (the story's predicates as registered: an auto-registration, an approved
+proposal or an author edit changes it) and ``verification_settings`` (the effective engine
+profile's interpretive ``verification.*`` settings, ``engine_profile:<id>.<path>`` changes,
+#113; a prospective one such as ``verification.entailment_gate`` is not a member). A change to
+either re-checks the turn: its policy checks and its ``REBASE_CHECKS`` (#140's verify, #144's
+permission checks) run under the new configuration. #144 adds what its permission checks
+interpret: ``allow_new_arrivals`` (the story's arrival policy, a story setting) and
+``author_locks`` (a hash of the current ``author_locked`` fact versions' ``(id, subject,
+predicate)``: an author locking or unlocking canon, #145, changes it).
+
 The set values are hashes (``hash_member``), so detection at commit is a compare. At commit,
 under the story lock, ``changed`` names the dependencies whose value moved since the capture:
 a non-empty answer is an interpretive change the turn must be re-checked under (FR-CONC-16).
@@ -25,7 +37,7 @@ guidance-only edit regenerates.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -36,8 +48,8 @@ from epistrel.core.enums import OperationKind
 from epistrel.core.policies.model import Scope, Target
 from epistrel.core.policies.rows import policy_of, select_policies
 from epistrel.core.ratings import effective_guardrails, load_graph
-from epistrel.core.settings_schema import StorySettings
-from epistrel.core.tables import content_ratings, deployment_state, policies, stories
+from epistrel.core.settings_schema import ConfigClass, StorySettings
+from epistrel.core.tables import content_ratings, deployment_state, policies, predicates, stories
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 
 REVISIONS = ("story", "deployment", "rating_version")
@@ -52,23 +64,63 @@ LITE_DEPENDENCIES = (
 )
 """What a Lite turn's commit is re-checked against when it changes (M4 widens it)."""
 
+STRUCTURED_DEPENDENCIES = (
+    *LITE_DEPENDENCIES,
+    "predicate_registry",
+    "verification_settings",
+    "allow_new_arrivals",
+    "author_locks",
+)
+"""What a structured turn's commit is re-checked against when it changes (#136, #144)."""
+
+VERIFICATION_PREFIX = "verification."
+
 INGEST_CAPTURED = ("policy_set",)
 
 
-def captured_for(kind: OperationKind, origin: str) -> tuple[str, ...]:
+def captured_for(kind: OperationKind, origin: str, *, structured: bool = False) -> tuple[str, ...]:
     """The dependency members an operation records at start."""
     if origin == "ingested":
         return INGEST_CAPTURED
     if kind is OperationKind.TURN:
-        return LITE_DEPENDENCIES
+        return STRUCTURED_DEPENDENCIES if structured else LITE_DEPENDENCIES
     return ()
 
 
-def dependencies_for(kind: OperationKind, origin: str) -> tuple[str, ...]:
+def dependencies_for(
+    kind: OperationKind, origin: str, *, structured: bool = False
+) -> tuple[str, ...]:
     """The members compared at commit: a generated turn's; nothing for any other kind."""
     if kind is OperationKind.TURN and origin == "generated":
-        return LITE_DEPENDENCIES
+        return STRUCTURED_DEPENDENCIES if structured else LITE_DEPENDENCIES
     return ()
+
+
+async def _predicate_registry(
+    conn: AsyncConnection, story_id: str, own: Collection[str] = ()
+) -> str:
+    """Hash of the story's own predicate rows (the core vocabulary is the same for every story
+    and changes only with a release), without ``own``: the ones the capturing operation
+    registered itself (``core.own_predicates``)."""
+    query = select(predicates).where(predicates.c.story_id == story_id)
+    if own:
+        query = query.where(predicates.c.id.not_in(sorted(own)))
+    found = await conn.execute(query.order_by(predicates.c.id))
+    return hash_member([list(map(str, row)) for row in found.all()])
+
+
+async def _verification_settings(conn: AsyncConnection, story_id: str) -> str:
+    """Hash of the story's effective interpretive ``verification.*`` profile settings."""
+    from epistrel.core.profiles import schema  # here: profiles import the settings schema
+    from epistrel.core.profiles.effective import effective_configuration
+
+    profile = await effective_configuration(conn, story_id, validate=False)
+    paths = sorted(
+        path
+        for path, tags in schema.setting_tags().items()
+        if path.startswith(VERIFICATION_PREFIX) and tags.change_class is ConfigClass.interpretive
+    )
+    return hash_member([[path, schema.value_at(profile.settings, path)] for path in paths])
 
 
 async def _policy_set(
@@ -94,10 +146,15 @@ async def _policy_set(
 
 
 async def capture(
-    conn: AsyncConnection, story_id: str, members: Sequence[str]
+    conn: AsyncConnection,
+    story_id: str,
+    members: Sequence[str],
+    *,
+    own_predicates: Collection[str] = (),
 ) -> dict[str, Any] | None:
     """``config_revisions`` for an operation of ``story_id`` recording ``members`` (``None``
-    when the story does not exist)."""
+    when the story does not exist). ``own_predicates`` (the operation's own auto-registrations,
+    ``core.own_predicates``) are left out of ``predicate_registry``."""
     story = (
         await conn.execute(
             select(
@@ -135,6 +192,18 @@ async def capture(
             captured["policy_set"] = await _policy_set(conn, story_id, guardrails)
     if "minor_age_threshold" in members:
         captured["minor_age_threshold"] = int(deployment.minor_age_threshold)
+    if "predicate_registry" in members:
+        captured["predicate_registry"] = await _predicate_registry(conn, story_id, own_predicates)
+    if "verification_settings" in members:
+        captured["verification_settings"] = await _verification_settings(conn, story_id)
+    if "allow_new_arrivals" in members:
+        captured["allow_new_arrivals"] = StorySettings.from_row(story.settings).allow_new_arrivals
+    if "author_locks" in members:
+        from epistrel.core.canon.facts import locked_keys  # here: canon imports the read set
+
+        captured["author_locks"] = hash_member(
+            [list(key) for key in await locked_keys(conn, story_id)]
+        )
     if "default_output_viewpoint" in members:
         captured["default_output_viewpoint"] = StorySettings.from_row(
             story.settings
@@ -153,6 +222,7 @@ def changed(
 __all__ = [
     "LITE_DEPENDENCIES",
     "REVISIONS",
+    "STRUCTURED_DEPENDENCIES",
     "capture",
     "captured_for",
     "changed",

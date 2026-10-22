@@ -21,7 +21,7 @@ from fastapi.routing import APIRoute, iter_route_contexts
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from epistrel.config import Settings
-from epistrel.core.context import SYSTEM_PRINCIPAL, principal_problem
+from epistrel.core.context import requesting_principal
 from epistrel.core.errors import (
     PrincipalRequired,
     SignatureInvalid,
@@ -159,12 +159,7 @@ async def require_principal(request: Request) -> str | None:
     Runs as a router dependency, so it answers before the body is validated. On a read a
     well-formed principal is carried; a malformed one is ignored.
     """
-    raw = request.headers.get(PRINCIPAL_HEADER)
-    # Only spaces and tabs (HTTP whitespace) are trimmed: any other control character refuses.
-    value = raw.strip(" \t") if raw is not None else None
-    problem = "is required" if value is None else principal_problem(value)
-    if problem is None and value == SYSTEM_PRINCIPAL:
-        problem = f"`{SYSTEM_PRINCIPAL}` is reserved for background work"
+    value, problem = requesting_principal(request.headers.get(PRINCIPAL_HEADER))
     if problem is None:
         return value
     if request.method.upper() in MUTATING_METHODS:

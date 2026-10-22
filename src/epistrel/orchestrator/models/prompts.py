@@ -148,16 +148,28 @@ def load_templates(
     purposes: Mapping[str, Purpose], environment: Environment | None = None
 ) -> dict[str, Template]:
     environment = environment or make_environment()
-    return {
+    found = {
         name: check_template(
             environment, purpose.template, purpose.input_schema, purpose.history_field
         )
         for name, purpose in purposes.items()
     }
+    for name, purpose in purposes.items():
+        for variant, template in purpose.variants.items():
+            found[variant_key(name, variant)] = check_template(
+                environment, template, purpose.input_schema, purpose.history_field
+            )
+    return found
+
+
+def variant_key(purpose: str, variant: str | None) -> str:
+    """``TEMPLATES``' key of ``purpose``'s template ``variant`` (its own: the purpose name)."""
+    return purpose if variant is None else f"{purpose}:{variant}"
 
 
 TEMPLATES: Mapping[str, Template] = types.MappingProxyType(load_templates(DELIVERED))
-"""Every delivered purpose's checked template, by purpose name (checked at import)."""
+"""Every delivered purpose's checked template, by purpose name, and each template variant by
+``<purpose>:<variant>`` (#150; checked at import)."""
 
 
 def _paths(value: Any, prefix: str = "") -> list[str]:
@@ -179,10 +191,14 @@ def payload_fields(inputs: InputSchema) -> tuple[str, ...]:
     return tuple(sorted(set(_paths(inputs))))
 
 
-def render(purpose: Purpose, inputs: InputSchema) -> list[Message]:
+def render(purpose: Purpose, inputs: InputSchema, variant: str | None = None) -> list[Message]:
     """The chat messages of ``purpose`` for ``inputs`` (already validated): ``system``, the
-    history (when the purpose has one), then ``user``."""
-    return render_blocks(TEMPLATES[purpose.name], inputs, purpose.history_field)
+    history (when the purpose has one), then ``user``; through template ``variant`` when one is
+    named (#150)."""
+    purpose.template_of(variant)  # an unknown variant is a registry error
+    return render_blocks(
+        TEMPLATES[variant_key(purpose.name, variant)], inputs, purpose.history_field
+    )
 
 
 __all__ = [
@@ -195,4 +211,5 @@ __all__ = [
     "merge_roles",
     "payload_fields",
     "render",
+    "variant_key",
 ]

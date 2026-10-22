@@ -8,7 +8,7 @@ outputs are ``audit``; truncate, untruncate, swap, fork, settings and story/char
 
 from __future__ import annotations
 
-from pydantic import Field, JsonValue
+from pydantic import ConfigDict, Field, JsonValue
 
 from epistrel.core.enums import EventCategory
 from epistrel.core.events.registry import EventPayload, register
@@ -127,6 +127,45 @@ class CharacterDefined(EventPayload):
     """The catalog version a genesis character was created from (its snapshot row)."""
 
 
+class BeatProposition(EventPayload):
+    """One proposition a beat asserts (#150): the normalized proposition (#140's
+    ``Proposition`` document: ids, a literal, the polarity and the valid-time) and the verdict
+    it ended with (#142: ``supported``, ``contradicted``, ``novel``, ``uncertain`` or
+    ``denied``; ``None`` with verification off)."""
+
+    proposition: dict[str, JsonValue]
+    verdict: str | None = None
+    claim_id: str | None = Field(default=None, exclude_if=lambda v: v is None)
+
+
+class BeatVisibility(EventPayload):
+    """A ``latent`` beat's declared scope (FR-TURN-4): ``objective`` (canon only),
+    ``public`` (every character may know it) or ``characters`` (only those listed)."""
+
+    scope: str = "objective"
+    characters: tuple[str, ...] = Field(default=(), exclude_if=lambda v: not v)
+
+
+class BeatLabels(EventPayload):
+    """An utterance's three independent labels (FR-TURN-6): the objective relation of what it
+    asserts (#142's verdicts), the speaker's belief relation (``unknown`` until M5) and its
+    communicative intent as declared."""
+
+    objective_relation: str
+    belief_relation: str = "unknown"
+    intent: str = "unspecified"
+
+
+class DetectedRef(EventPayload):
+    """A claim detection found in a beat that the beat did not declare (#148): its character
+    span, category and verdict. Spans and codes only."""
+
+    start: int = Field(ge=0)
+    end: int = Field(ge=0)
+    category: str
+    verdict: str | None = None
+
+
 @register("player_input", category=EventCategory.INPUT)
 class PlayerInput(EventPayload):
     """What the acting character said and did this turn: the turn's first beat (FR-RESP-9).
@@ -138,6 +177,13 @@ class PlayerInput(EventPayload):
     text: str
     say: str | None = None
     do: str | None = None
+    labels: BeatLabels | None = Field(default=None, exclude_if=lambda v: v is None)
+    """A structured turn (#150): the labels of the player's own ``say`` as an utterance
+    (``intent`` ``unspecified``); absent from every Lite input, whose payload is unchanged."""
+    propositions: tuple[BeatProposition, ...] = Field(default=(), exclude_if=lambda v: not v)
+    """A structured turn (#150): the propositions detected in the input, with their verdicts."""
+    mentions: tuple[dict[str, JsonValue], ...] = Field(default=(), exclude_if=lambda v: not v)
+    """A structured turn (#150): the input's resolved mentions (#139)."""
 
 
 @register("message_rendered", category=EventCategory.NARRATIVE_STATE)
@@ -155,6 +201,12 @@ class MessageRendered(EventPayload):
     fallback_used: bool = False
     """The reply is the safe fallback line (#68): every generated draft broke an output policy
     (``model``/``prompt_hash`` null, ``finish_reason`` ``fallback``)."""
+    composed: bool = Field(default=False, exclude_if=lambda v: not v)
+    """A structured turn's composed message (#150, #152): its verified beats as the turn's
+    output viewpoint receives them, polished under the composition check or deterministically
+    assembled. The beats are the record; working memory and the episodic writer read them,
+    never this message, and a history read for another viewpoint recomposes it from them.
+    Absent from every Lite reply."""
     present_character_ids: tuple[str, ...] = Field(default=(), exclude_if=lambda v: not v)
     """A scenario's opening narration (turn 1 of a story created from a scenario, #119): the
     characters of the roles present when the story opens (stored; the Lite pipeline does not
@@ -281,6 +333,14 @@ class RejectedViolation(EventPayload):
     kind: str
 
 
+class RecordRef(EventPayload):
+    """A structured record a render's context held (FR-GUARD-5; #145): its ``table``
+    (``memories`` or ``facts``) and id."""
+
+    table: str
+    id: str
+
+
 @register("guardrail_output_rejected", category=EventCategory.AUDIT)
 class GuardrailOutputRejected(EventPayload):
     """A text an output policy rejected (FR-GUARD-6, FR-STORE-25; #68): a generated draft
@@ -288,7 +348,12 @@ class GuardrailOutputRejected(EventPayload):
     line that itself broke a policy (``reason`` ``fallback_policy``). Audit only: it holds the
     text, but no story view and no prompt reads it; it is written with its turn, so it follows
     the turn's membership (discarded with it on truncation). ``confidence`` is the guardrail
-    model's, when a model-assisted check decided."""
+    model's, when a model-assisted check decided.
+
+    Payload version 2 (#145, FR-GUARD-5) adds ``implicated_record_ids``: the memories and facts
+    the rejected draft's context held. It is left out of the stored payload when empty (a Lite
+    reply and a fallback line hold none), so a Lite turn's event is byte-identical to version
+    1's, and a version-1 payload reads as empty."""
 
     text: str
     reason: str
@@ -296,6 +361,9 @@ class GuardrailOutputRejected(EventPayload):
     policy_ids: tuple[str, ...] = ()
     violations: tuple[RejectedViolation, ...] = ()
     confidence: float | None = None
+    implicated_record_ids: tuple[RecordRef, ...] = Field(
+        default=(), exclude_if=lambda refs: not refs
+    )
 
 
 class SummarySource(EventPayload):
@@ -323,6 +391,22 @@ class LiteSummarySegment(EventPayload):
     prompt_hash: str | None = None
 
 
+@register("consolidation_output", category=EventCategory.DERIVED)
+class ConsolidationOutput(EventPayload):
+    """A consolidation window's outputs (FR-MEM-2,3,6, FR-STORE-27; #143): the semantic
+    memories and reflections it wrote (``memory_ids``, possibly none) over turns
+    ``from_turn``..``to_turn`` of ``scope`` at ``level``, and the earlier outputs it replaced
+    (``superseded_ids``: a rerun's). Its operation (``consolidation``) is positioned at
+    ``to_turn``, so the outputs follow that turn's membership. Identifiers and counts only."""
+
+    memory_ids: tuple[str, ...] = ()
+    superseded_ids: tuple[str, ...] = ()
+    from_turn: int = Field(ge=1)
+    to_turn: int = Field(ge=1)
+    scope: str = "shared"
+    level: int = Field(default=1, ge=1, le=2)
+
+
 @register("erasure_marker", category=EventCategory.CONTROL)
 class ErasureMarker(EventPayload):
     """Where erasure (FR-ADMIN-2,6; #124) deleted a structured record of the story: the
@@ -338,3 +422,282 @@ class ErasureMarker(EventPayload):
     scope: str
     record_table: str
     record_id: str
+
+
+@register("fact_committed", category=EventCategory.DERIVED)
+class FactCommitted(EventPayload):
+    """A fact version written to ``facts`` (FR-BITEMP-1, FR-STORE-9; #133): the new version
+    (``fact_id``, its ``lineage_id`` and ``proposition_id``), the versions it closed
+    (``supersedes``) and the remainders it kept of them (``remainders``: what is left of a
+    trimmed version on either side of the new valid-time). Identifiers only; the fact follows
+    its operation's membership, so this event does too."""
+
+    fact_id: str
+    lineage_id: str
+    proposition_id: str
+    supersedes: tuple[str, ...] = ()
+    remainders: tuple[str, ...] = ()
+
+
+@register("fact_superseded", category=EventCategory.DERIVED)
+class FactSuperseded(EventPayload):
+    """An explicit supersede (FR-BITEMP-2,4; #133): version ``superseded_id`` of a fact was
+    closed in transaction-time by ``fact_id`` (same ``lineage_id``), never deleted; ``authority``
+    is the new version's (``author`` for a retcon). Identifiers only."""
+
+    fact_id: str
+    superseded_id: str
+    lineage_id: str
+    proposition_id: str
+    authority: str
+    supersedes: tuple[str, ...] = ()
+    remainders: tuple[str, ...] = ()
+
+
+# -- commitments (FR-COMMIT-1..3,5..7,10,13; #146) ---------------------------------------------
+
+
+@register("thunk_introduced", category=EventCategory.DERIVED)
+class ThunkIntroduced(EventPayload):
+    """A thunk was introduced (#146): ``thunk_id``, which slot of its proposition is open
+    (``open_slot``) and whether a salient reference introduced it. Identifiers only; the sketch
+    lives in the ``thunks`` row."""
+
+    thunk_id: str
+    open_slot: str
+    salient: bool = False
+
+
+@register("thunk_resolved", category=EventCategory.DERIVED)
+class ThunkResolved(EventPayload):
+    """A dependence resolved a thunk, once, globally (FR-COMMIT-2,10; #146): the committed
+    ``fact_id``. Identifiers only."""
+
+    thunk_id: str
+    fact_id: str
+
+
+@register("ledger_entry", category=EventCategory.DERIVED)
+class LedgerEntryCreated(EventPayload):
+    """A salient reference created a promissory-ledger entry (FR-COMMIT-7,13; #146): on a
+    thunk (``thunk_id``) or on a hidden fact's proposition (``proposition_id``), exactly one.
+    Identifiers only."""
+
+    entry_id: str
+    thunk_id: str | None = None
+    proposition_id: str | None = None
+
+
+@register("ledger_discharged", category=EventCategory.DERIVED)
+class LedgerDischarged(EventPayload):
+    """A ledger entry was discharged (#146): how (``mode``: ``dependence``, ``render`` or
+    ``minimal``) and, for a minimal commit, the fact it wrote. Identifiers only."""
+
+    entry_id: str
+    mode: str
+    fact_id: str | None = None
+
+
+# -- the mutation primitives (FR-GUARD-4,5; #145) --------------------------------------------------
+
+
+@register("memory_quarantined", category=EventCategory.CONTROL)
+class MemoryQuarantined(EventPayload):
+    """A memory was quarantined (FR-GUARD-4; #145): excluded from retrieval and from every
+    generation context from this operation on. ``reason`` is the author's (at most 500
+    characters) or ``repeated_implication`` when the output gate's convergence rule
+    quarantined it (``automatic``, FR-GUARD-5; ``pinned`` when it was an author pin). Written by
+    a position-less ``control`` operation, so a truncation never discards it."""
+
+    memory_id: str
+    reason: str
+    automatic: bool = False
+    pinned: bool = False
+
+
+@register("memory_unquarantined", category=EventCategory.CONTROL)
+class MemoryUnquarantined(EventPayload):
+    """A quarantine was reversed (#145): the memory is retrievable again."""
+
+    memory_id: str
+
+
+# -- the hot set (FR-MEM-8; #147) -----------------------------------------------------------------
+
+
+@register("memory_pinned", category=EventCategory.CONTROL)
+class MemoryPinned(EventPayload):
+    """An author pinned a memory (FR-MEM-8; #147): outside the hot-set budgets and never retired
+    from this operation on (a retired memory is rehydrated to the hot set). Written by a
+    position-less ``control`` operation, so a truncation never discards it. Identifiers only."""
+
+    memory_id: str
+
+
+@register("memory_unpinned", category=EventCategory.CONTROL)
+class MemoryUnpinned(EventPayload):
+    """A pin was removed (#147): the memory counts toward the hot-set budgets again."""
+
+    memory_id: str
+
+
+@register("sanitized", category=EventCategory.NARRATIVE_STATE)
+class Sanitized(EventPayload):
+    """A memory's text had every occurrence of a span replaced by ``surrogate`` (FR-GUARD-4;
+    #145): the replacement as narrative state. The span itself is only in the paired
+    ``sanitize_original`` audit event. History views are unchanged (sanitize rewrites the memory
+    record, never the beat)."""
+
+    memory_id: str
+    surrogate: str
+    occurrences: int = Field(ge=1)
+
+
+@register("sanitize_original", category=EventCategory.AUDIT)
+class SanitizeOriginal(EventPayload):
+    """What a sanitize replaced (#145): the span and the memory's text before the rewrite.
+    Audit only: no story view, retrieval or prompt reads it."""
+
+    memory_id: str
+    span: str
+    text: str
+
+
+@register("memories_implicated", category=EventCategory.CONTROL)
+class MemoriesImplicated(EventPayload):
+    """A rejected render's context implicated these records (FR-GUARD-5; #145): each memory's
+    ``implication_count`` went up by one; ``fact_ids`` are reported, never changed. ``turn``
+    is the operation whose render was rejected, and ``attempt`` the render. Identifiers
+    only; written by a ``system`` control operation before the regeneration."""
+
+    turn: str
+    attempt: int = Field(ge=0)
+    memory_ids: tuple[str, ...] = ()
+    fact_ids: tuple[str, ...] = ()
+
+
+# -- the repair ladder (FR-REPAIR-3, FR-STORE-25; #151) ------------------------------------------
+
+
+@register("render_rejected", category=EventCategory.AUDIT)
+class RenderRejected(EventPayload):
+    """A beat's text the repair ladder rejected (FR-REPAIR-3; #151): the original beat when a
+    rung corrected it, and every regeneration that failed. ``beat`` is the beat it was (the
+    accepted correction keeps that position), ``attempt`` 0 for the original render and ``n``
+    for the n-th regeneration, ``rung`` the rung that rejected it (the one that replaced the
+    original, or the regeneration that failed). ``constraints`` are the typed constraints the
+    rung worked under, ``verdicts`` the claims' verdicts (ids and codes), ``detected_claims``
+    their spans and categories. Audit only: it holds the text, but no story view, retrieval or
+    prompt reads it; written with its turn, so a truncation discards it with the turn, and
+    nothing in it is ever canonized."""
+
+    beat: int = Field(ge=1)
+    attempt: int = Field(ge=0)
+    rung: int = Field(ge=1, le=4)
+    text: str
+    constraints: tuple[dict[str, JsonValue], ...] = ()
+    verdicts: tuple[dict[str, JsonValue], ...] = ()
+    detected_claims: tuple[dict[str, JsonValue], ...] = ()
+    prompt_hash: str | None = None
+
+
+@register("verify_verdict", category=EventCategory.AUDIT)
+class VerifyVerdict(EventPayload):
+    """The verdicts that sent one beat to the repair ladder (FR-STORE-25; #151): each claim's
+    verdict entry (``turn_report.verify``'s: ids and codes, no text) for the beat as rendered.
+    Audit only."""
+
+    beat: int = Field(ge=1)
+    verdicts: tuple[dict[str, JsonValue], ...] = ()
+
+
+@register("composition_rejected", category=EventCategory.AUDIT)
+class CompositionRejected(EventPayload):
+    """A polished composition the turn did not release (FR-RESP-8; #152): its text, the check's
+    failures (``{kind, span, beat}``: codes and offsets into ``text``) and why it was rejected
+    (``check``, ``length`` or ``output_policy``). The turn's message is the deterministic
+    assembly of its beats instead. Audit only: no story view, retrieval or prompt reads it;
+    written with its turn, so a truncation discards it with the turn."""
+
+    text: str
+    failures: tuple[dict[str, JsonValue], ...] = ()
+    cause: str | None = None
+
+
+# -- the structured turn (FR-TURN-1,4,5,6; #150) -------------------------------------------------
+
+
+class RepairedFrom(EventPayload):
+    """How a beat the repair ladder corrected was made (#151): the rung that was accepted
+    (1 narrowing, 2 substitution, 3 regeneration, 4 the safe fallback) and its FR-REPAIR-4
+    class (``cosmetic``, ``substitution``, ``cascade``), stored as ``class``."""
+
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", validate_by_name=True, serialize_by_alias=True
+    )
+
+    rung: int = Field(ge=1, le=4)
+    repair_class: str = Field(alias="class")
+
+
+class StructuredBeat(EventPayload):
+    """The payload every ``beat_*`` event shares (#150): the beat's ``text``, the propositions
+    it declared with their verdicts, the claims detection found beyond them (``detected``) and
+    its resolved mentions (#139's ``Mention.as_payload``: spans and entity ids). The event's
+    ``character_id`` is the acting character (``None`` for narration) and its ``beat`` the
+    position in the turn. Never promoted to canon by being stored (FR-TURN-5). A beat the
+    repair ladder corrected (#151) carries ``repaired_from``; the rejected text is only in the
+    turn's ``render_rejected`` audit events (left out when absent, so an unrepaired beat's
+    payload is #150's)."""
+
+    text: str
+    propositions: tuple[BeatProposition, ...] = ()
+    detected: tuple[DetectedRef, ...] = Field(default=(), exclude_if=lambda v: not v)
+    mentions: tuple[dict[str, JsonValue], ...] = Field(default=(), exclude_if=lambda v: not v)
+    repaired_from: RepairedFrom | None = Field(default=None, exclude_if=lambda v: v is None)
+
+
+@register("beat_say", category=EventCategory.NARRATIVE_STATE)
+class BeatSay(StructuredBeat):
+    """A character's speech (FR-TURN-5): a speech act, stored with its labels and declared
+    ``intent`` (``sincere``, ``deceptive``, ``joking`` or ``unspecified``); its ``utterances``
+    row carries the same labels."""
+
+    intent: str = "unspecified"
+    labels: BeatLabels | None = None
+
+
+@register("beat_think", category=EventCategory.NARRATIVE_STATE)
+class BeatThink(StructuredBeat):
+    """A character's private thought: never in a character viewpoint's read (FR-TURN-3)."""
+
+
+@register("beat_do", category=EventCategory.NARRATIVE_STATE)
+class BeatDo(StructuredBeat):
+    """What a character does: an observable action."""
+
+
+@register("beat_latent", category=EventCategory.NARRATIVE_STATE)
+class BeatLatent(StructuredBeat):
+    """Unrendered narrative state (FR-TURN-4): it routes to canon with its declared
+    ``visibility`` and never appears in a character viewpoint's read."""
+
+    visibility: BeatVisibility = Field(default_factory=BeatVisibility)
+
+
+@register("beat_narration", category=EventCategory.NARRATIVE_STATE)
+class BeatNarration(StructuredBeat):
+    """The narrator's or director's narration (``character_id`` null): scene changes and
+    arrivals."""
+
+
+BEAT_TYPES: dict[str, type[StructuredBeat]] = {
+    "say": BeatSay,
+    "think": BeatThink,
+    "do": BeatDo,
+    "latent": BeatLatent,
+    "narration": BeatNarration,
+}
+"""Each structured beat kind's event model (its event type is ``beat_<kind>``)."""
+
+BEAT_EVENT_PREFIX = "beat_"

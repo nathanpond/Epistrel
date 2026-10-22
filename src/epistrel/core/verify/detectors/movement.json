@@ -1,0 +1,319 @@
+{
+  "category": "movement",
+  "language": "en",
+  "description": "Movement language: located_at(subject, place) for the nearest place mentioned after the verb. A departure from that place (a source marker before it, 'out of the orchard', 'away from the orchard', or a departure verb taking it as its object, 'left the orchard') makes it not located_at the place; a departure verb toward a destination marker ('fled to the barn') is located_at it, and with any other word before the place it asserts nothing. With no place, a departure verb or a departure cue after the verb ('on her way out') makes it not located_at the subject's current placement (it left); any other placeless movement is noise. A negated departure asserts nothing.",
+  "predicate": "located_at",
+  "roles": {
+    "subject": "before",
+    "object": "after"
+  },
+  "departure_cues": [
+    "out",
+    "away",
+    "off",
+    "outside"
+  ],
+  "articles": [
+    "the",
+    "a",
+    "an"
+  ],
+  "destination_markers": [
+    "to",
+    "into",
+    "onto",
+    "toward",
+    "towards"
+  ],
+  "source_markers": [
+    "from",
+    "out of",
+    "off of"
+  ],
+  "lemmas": [
+    {
+      "lemma": "go",
+      "forms": [
+        "go",
+        "goes",
+        "went",
+        "gone",
+        "going"
+      ]
+    },
+    {
+      "lemma": "walk",
+      "forms": [
+        "walk",
+        "walks",
+        "walked",
+        "walking"
+      ]
+    },
+    {
+      "lemma": "run",
+      "forms": [
+        "run",
+        "runs",
+        "ran",
+        "running"
+      ]
+    },
+    {
+      "lemma": "enter",
+      "forms": [
+        "enter",
+        "enters",
+        "entered",
+        "entering"
+      ]
+    },
+    {
+      "lemma": "arrive",
+      "forms": [
+        "arrive",
+        "arrives",
+        "arrived",
+        "arriving"
+      ]
+    },
+    {
+      "lemma": "return",
+      "forms": [
+        "return",
+        "returns",
+        "returned",
+        "returning"
+      ]
+    },
+    {
+      "lemma": "move",
+      "forms": [
+        "move",
+        "moves",
+        "moved",
+        "moving"
+      ]
+    },
+    {
+      "lemma": "climb",
+      "forms": [
+        "climb",
+        "climbs",
+        "climbed",
+        "climbing"
+      ]
+    },
+    {
+      "lemma": "drive",
+      "forms": [
+        "drive",
+        "drives",
+        "drove",
+        "driven",
+        "driving"
+      ]
+    },
+    {
+      "lemma": "ride",
+      "forms": [
+        "ride",
+        "rides",
+        "rode",
+        "ridden",
+        "riding"
+      ]
+    },
+    {
+      "lemma": "come",
+      "forms": [
+        "come",
+        "comes",
+        "came",
+        "coming"
+      ]
+    },
+    {
+      "lemma": "wander",
+      "forms": [
+        "wander",
+        "wanders",
+        "wandered",
+        "wandering"
+      ]
+    },
+    {
+      "lemma": "hurry",
+      "forms": [
+        "hurry",
+        "hurries",
+        "hurried",
+        "hurrying"
+      ]
+    },
+    {
+      "lemma": "rush",
+      "forms": [
+        "rush",
+        "rushes",
+        "rushed",
+        "rushing"
+      ]
+    },
+    {
+      "lemma": "stroll",
+      "forms": [
+        "stroll",
+        "strolls",
+        "strolled",
+        "strolling"
+      ]
+    },
+    {
+      "lemma": "march",
+      "forms": [
+        "march",
+        "marches",
+        "marched",
+        "marching"
+      ]
+    },
+    {
+      "lemma": "sprint",
+      "forms": [
+        "sprint",
+        "sprints",
+        "sprinted",
+        "sprinting"
+      ]
+    },
+    {
+      "lemma": "sneak",
+      "forms": [
+        "sneak",
+        "sneaks",
+        "sneaked",
+        "snuck",
+        "sneaking"
+      ]
+    },
+    {
+      "lemma": "slip",
+      "forms": [
+        "slip",
+        "slips",
+        "slipped",
+        "slipping"
+      ]
+    },
+    {
+      "lemma": "travel",
+      "forms": [
+        "travel",
+        "travels",
+        "traveled",
+        "travelled",
+        "traveling",
+        "travelling"
+      ]
+    },
+    {
+      "lemma": "fly",
+      "forms": [
+        "fly",
+        "flies",
+        "flew",
+        "flown",
+        "flying"
+      ]
+    },
+    {
+      "lemma": "swim",
+      "forms": [
+        "swim",
+        "swims",
+        "swam",
+        "swum",
+        "swimming"
+      ]
+    },
+    {
+      "lemma": "trudge",
+      "forms": [
+        "trudge",
+        "trudges",
+        "trudged",
+        "trudging"
+      ]
+    },
+    {
+      "lemma": "dash",
+      "forms": [
+        "dash",
+        "dashes",
+        "dashed",
+        "dashing"
+      ]
+    },
+    {
+      "lemma": "leave",
+      "forms": [
+        "leave",
+        "leaves",
+        "left",
+        "leaving"
+      ],
+      "departure": true
+    },
+    {
+      "lemma": "exit",
+      "forms": [
+        "exit",
+        "exits",
+        "exited",
+        "exiting"
+      ],
+      "departure": true
+    },
+    {
+      "lemma": "depart",
+      "forms": [
+        "depart",
+        "departs",
+        "departed",
+        "departing"
+      ],
+      "departure": true
+    },
+    {
+      "lemma": "flee",
+      "forms": [
+        "flee",
+        "flees",
+        "fled",
+        "fleeing"
+      ],
+      "departure": true
+    },
+    {
+      "lemma": "escape",
+      "forms": [
+        "escape",
+        "escapes",
+        "escaped",
+        "escaping"
+      ],
+      "departure": true
+    },
+    {
+      "lemma": "retreat",
+      "forms": [
+        "retreat",
+        "retreats",
+        "retreated",
+        "retreating"
+      ],
+      "departure": true
+    }
+  ]
+}

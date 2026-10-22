@@ -34,6 +34,15 @@ OWNED_SCHEMAS = frozenset({None, CATALOG_SCHEMA})
 (#103). Autogenerate compares exactly these."""
 
 
+RUNTIME_INDEXES = frozenset({"ix_memories_embedding_hnsw"})
+"""Indexes the engine creates at run time, not in a migration: the HNSW index over
+``memories.embedding``, built when the first embedding pins the dimension (#138,
+``core.embeddings.retype``)."""
+RUNTIME_TYPED_COLUMNS = frozenset({("memories", "embedding")})
+"""Columns whose type the engine sets at run time: ``memories.embedding`` is the untyped
+``vector`` until the first embedding retypes it to ``vector(d)`` (#138)."""
+
+
 def include_object(
     obj: Any,
     name: str | None,
@@ -41,8 +50,26 @@ def include_object(
     reflected: bool,
     compare_to: Any,
 ) -> bool:
-    """Alembic ``include_object`` hook: ignore Alembic's own bookkeeping table."""
+    """Alembic ``include_object`` hook: ignore Alembic's own bookkeeping table and the indexes
+    the engine creates at run time (``RUNTIME_INDEXES``)."""
+    if type_ == "index" and name in RUNTIME_INDEXES:
+        return False
     return not (type_ == "table" and name == ALEMBIC_VERSION_TABLE)
+
+
+def compare_type(
+    context: Any,
+    inspected_column: Any,
+    metadata_column: Any,
+    inspected_type: Any,
+    metadata_type: Any,
+) -> bool | None:
+    """Alembic ``compare_type`` hook: a column retyped at run time (``RUNTIME_TYPED_COLUMNS``)
+    is never a difference; every other column uses Alembic's own comparison (``None``)."""
+    table = getattr(metadata_column, "table", None)
+    if table is not None and (table.name, metadata_column.name) in RUNTIME_TYPED_COLUMNS:
+        return False
+    return None
 
 
 def include_name(name: str | None, type_: str, parent_names: Any) -> bool:
@@ -53,7 +80,7 @@ def include_name(name: str | None, type_: str, parent_names: Any) -> bool:
 
 
 AUTOGENERATE_OPTS: dict[str, Any] = {
-    "compare_type": True,
+    "compare_type": compare_type,
     "compare_server_default": True,
     "include_schemas": True,
     "include_name": include_name,

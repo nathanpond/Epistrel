@@ -14,13 +14,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from tools.gates.spec import Spec, id_key, milestone_label, milestone_number
+from tools.gates.spec import TEST_ID_PATTERN, Spec, id_key, milestone_label, milestone_number
 
 SECTION_RE = re.compile(r"^## 15\. ")
 HEADER = "| Requirement | Priority | Milestone | Tests |"
 EMPTY_CELL = "—"
 ENTRY_RE = re.compile(
-    r"^(?P<id>[A-Z][A-Z0-9-]*)\s*\((?P<ms>M\d+)(?:,\s*interim until (?P<until>M\d+))?\)$"
+    rf"^(?P<id>{TEST_ID_PATTERN})\s*\((?P<ms>M\d+)(?:,\s*interim until (?P<until>M\d+))?\)$"
 )
 # Splits a Tests cell between entries: only on a comma outside parentheses, so the comma in
 # `C-16 (M4, interim until M7)` stays inside its entry (#93).

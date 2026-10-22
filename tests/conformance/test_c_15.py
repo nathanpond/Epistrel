@@ -643,8 +643,10 @@ CLASSES: dict[str, tuple[FieldClass, Use | None]] = {
     "world.locations[].description": (FieldClass.knowledge_seed, None),
     "world.entities[].id": (FieldClass.knowledge_seed, None),
     "world.entities[].name": (FieldClass.knowledge_seed, None),
+    "world.entities[].kind": (FieldClass.knowledge_seed, None),
     "world.entities[].aliases": (FieldClass.knowledge_seed, None),
     "world.entities[].description": (FieldClass.knowledge_seed, None),
+    "world.event_types": (FieldClass.knowledge_seed, None),
     "cast.roles[].id": (FieldClass.public_card, None),
     "cast.roles[].public_label": (FieldClass.public_card, None),
     "cast.roles[].setup_description": (FieldClass.public_card, None),
@@ -717,6 +719,7 @@ CLASSES: dict[str, tuple[FieldClass, Use | None]] = {
         Use.story_setting,
     ),
     "story_settings_defaults.audit_retention_days": (FieldClass.configuration, Use.story_setting),
+    "story_settings_defaults.allow_new_arrivals": (FieldClass.configuration, Use.story_setting),
     "story_settings_defaults.policies[].name": (FieldClass.configuration, Use.policy),
     "story_settings_defaults.policies[].applies_to": (FieldClass.configuration, Use.policy),
     "story_settings_defaults.policies[].rule": (FieldClass.configuration, Use.policy),
@@ -964,7 +967,7 @@ async def test_c_15__validate(settings: Settings, engine: AsyncEngine) -> None:
             "personality: character over scenario",
             None,
         )
-        assert set(report["unavailable"]) >= set(scenarios.M3_UNAVAILABLE)
+        assert set(report["unavailable"]) >= set(scenarios.undeliverable_checks())
         assert await counts(engine) == before
 
         refused = await scenarios.publish(client, sid, created["draft_revision"])

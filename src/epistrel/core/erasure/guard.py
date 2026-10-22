@@ -317,13 +317,17 @@ CATALOG_REFERENCES = "assert_not_erased"
 FORK_FENCE = "fork_fence"
 """The fork's ledger fence: an erasure committed after its snapshot retries it, and the copy
 carries the source's ledger rows."""
+DIRECT = "check_content"
+"""Guarded by its own ``check_content`` call on what it writes, in its write transaction (the
+structured stores, #131, which write outside an ``Operation``)."""
 EXEMPT = "exempt"
 
 
 @dataclass(frozen=True, slots=True)
 class WritePath:
     """A module that writes story or catalog content, and how the guard covers it (``how``:
-    ``OPERATION``, ``CATALOG_REFERENCES``, ``FORK_FENCE`` or ``EXEMPT`` with ``why``)."""
+    ``OPERATION``, ``CATALOG_REFERENCES``, ``FORK_FENCE``, ``DIRECT`` or ``EXEMPT`` with
+    ``why``)."""
 
     module: str
     how: str
@@ -335,6 +339,7 @@ CONTENT_WRITE_PATHS: tuple[WritePath, ...] = (
     WritePath("epistrel.core.ingest", OPERATION),
     WritePath("epistrel.orchestrator.jobs.queue", OPERATION),
     WritePath("epistrel.orchestrator.lite.pipeline", OPERATION),
+    WritePath("epistrel.orchestrator.structured.pipeline", OPERATION),
     WritePath("epistrel.core.stories", OPERATION),
     WritePath("epistrel.core.genesis.create", OPERATION),
     WritePath("epistrel.core.fork", FORK_FENCE),
@@ -378,6 +383,19 @@ CONTENT_WRITE_PATHS: tuple[WritePath, ...] = (
         EXEMPT,
         "a persona defines its own subject and references no other",
     ),
+    WritePath("epistrel.core.propositions.registry", DIRECT),
+    WritePath("epistrel.core.propositions.store", DIRECT),
+    WritePath("epistrel.core.canon.facts", DIRECT),
+    WritePath("epistrel.core.memory.records", DIRECT),
+    WritePath("epistrel.core.mutation", DIRECT),
+    WritePath("epistrel.core.commit.lifecycle", DIRECT),
+    WritePath("epistrel.core.turns.beats", DIRECT),
+    WritePath(
+        "epistrel.core.verify.shadow",
+        EXEMPT,
+        "a shadow sample adds counts, spans, ids and hashes to the sampled turn's report, "
+        "never text",
+    ),
 )
 """Every content write path (``SUBJECT_WRITERS``' writer modules, plus ingest, the job commit
 and the Lite pipeline); ``tests/integration/test_erasure_resurrection.py`` checks the set and
@@ -387,6 +405,7 @@ each claim. The M7 import path registers here when it lands."""
 __all__ = [
     "CATALOG_REFERENCES",
     "CONTENT_WRITE_PATHS",
+    "DIRECT",
     "DISABLED",
     "EXEMPT",
     "FORK_FENCE",

@@ -100,6 +100,121 @@ class EntryStatus(StrEnum):
     ARCHIVED = "archived"
 
 
+class RecordProvenance(StrEnum):
+    """Where a structured record came from (#133; shared by ``facts`` and #135's memories):
+    the author or the scenario's seed, the engine's consolidation, an in-world source, a
+    render, the director or the player, an external authority (with its timestamp in the
+    record's reference), a resolution, or a backfill. Postgres enum ``record_provenance``."""
+
+    AUTHOR = "author"
+    SEED = "seed"
+    SYSTEM_CONSOLIDATED = "system_consolidated"
+    IN_WORLD = "in_world"
+    RENDER = "render"
+    DIRECTOR = "director"
+    PLAYER = "player"
+    EXTERNAL = "external"
+    RESOLUTION = "resolution"
+    BACKFILL = "backfill"
+
+
+class FactAuthority(StrEnum):
+    """Who stands behind a fact version (FR-BITEMP-4; #133): the author (a retcon, a seed),
+    the engine, or an external authority. Postgres enum ``fact_authority``."""
+
+    AUTHOR = "author"
+    ENGINE = "engine"
+    EXTERNAL = "external"
+
+
+class HolderKind(StrEnum):
+    """Whose record a proposition wrapper is (#133): ``canon`` for objective facts (#150's
+    utterances add theirs). Postgres enum ``holder_kind``."""
+
+    CANON = "canon"
+
+
+class FactCommitState(StrEnum):
+    """Whether a fact's value is settled (FR-COMMIT-1; #133 creates it, #146 owns its
+    semantics): ``committed`` (the default), ``introduced`` (narrated with an open qualifier),
+    ``pending`` (awaiting a dependence in the same turn) or ``revised`` (#146 adds it; #154's
+    regeneration revert writes it). ``core.commit.lifecycle.TRANSITIONS`` names the moves.
+    Postgres enum ``fact_commit_state``."""
+
+    COMMITTED = "committed"
+    INTRODUCED = "introduced"
+    PENDING = "pending"
+    REVISED = "revised"
+
+
+class ThunkState(StrEnum):
+    """A thunk's stored state (FR-COMMIT-5,10; #146): ``open`` (undetermined), ``resolved``
+    (a dependence fixed its value) or ``expired`` (pruned past ``thunks_max_open``, or its
+    subject erased: ignored from then on). A ``resolved`` row whose resolving operation left the
+    timeline reads as ``open`` (``core.commit.lifecycle``). Postgres enum ``thunk_state``."""
+
+    OPEN = "open"
+    RESOLVED = "resolved"
+    EXPIRED = "expired"
+
+
+class OpenSlot(StrEnum):
+    """Which argument of a thunk's proposition is undetermined (#146): its ``subject``
+    ("someone knocked"), its ``object`` or its ``literal``. Postgres enum ``thunk_open_slot``."""
+
+    SUBJECT = "subject"
+    OBJECT = "object"
+    LITERAL = "literal"
+
+
+class LedgerKind(StrEnum):
+    """A promissory-ledger entry's kind (FR-COMMIT-7; #146): a ``salient_reference``.
+    Postgres enum ``ledger_kind``."""
+
+    SALIENT_REFERENCE = "salient_reference"
+
+
+class DischargeMode(StrEnum):
+    """How a ledger entry was discharged (FR-COMMIT-7,13; #146): by a ``dependence`` on the
+    value, by a follow-up ``render`` that settled it, or by the deterministic ``minimal`` commit
+    at budget exhaustion. Postgres enum ``ledger_discharge_mode``."""
+
+    DEPENDENCE = "dependence"
+    RENDER = "render"
+    MINIMAL = "minimal"
+
+
+class MemoryKind(StrEnum):
+    """A memory record's tier (FR-MEM-1..3; #135): ``episodic`` (one observable beat),
+    ``semantic`` (a distilled standing fact) or ``reflection`` (a higher-level abstraction; the
+    last two are written by #143's consolidation). Postgres enum ``memory_kind``."""
+
+    EPISODIC = "episodic"
+    SEMANTIC = "semantic"
+    REFLECTION = "reflection"
+
+
+class MemoryTrustTier(StrEnum):
+    """How far a memory is trusted (FR-MEM-4; #135), derived mechanically from its provenance
+    (``core.memory.records.trust_tier_of``): ``author`` (the author or a scenario seed),
+    ``external`` (an external authority), ``engine`` (consolidation, a resolution, a backfill)
+    or ``in_world`` (what happened or was said in the story). Postgres enum
+    ``memory_trust_tier``."""
+
+    AUTHOR = "author"
+    EXTERNAL = "external"
+    ENGINE = "engine"
+    IN_WORLD = "in_world"
+
+
+class RetrievalTier(StrEnum):
+    """Whether a memory is searched (FR-MEM-8; #135 creates it, #147 retires): ``hot`` or
+    ``retired``, independent of timeline membership. Postgres enum ``retrieval_tier``."""
+
+    HOT = "hot"
+    RETIRED = "retired"
+
+
 PG_ENUM_TYPES: dict[str, type[StrEnum]] = {
     "event_category": EventCategory,
     "operation_kind": OperationKind,
@@ -108,6 +223,17 @@ PG_ENUM_TYPES: dict[str, type[StrEnum]] = {
     "authority": Authority,
     "operation_status": OperationStatus,
     "catalog.entry_status": EntryStatus,
+    "record_provenance": RecordProvenance,
+    "fact_authority": FactAuthority,
+    "holder_kind": HolderKind,
+    "fact_commit_state": FactCommitState,
+    "thunk_state": ThunkState,
+    "thunk_open_slot": OpenSlot,
+    "ledger_kind": LedgerKind,
+    "ledger_discharge_mode": DischargeMode,
+    "memory_kind": MemoryKind,
+    "memory_trust_tier": MemoryTrustTier,
+    "retrieval_tier": RetrievalTier,
 }
 """Postgres enum type name (``<schema>.<name>`` outside ``public``) → the Python enum whose
 values it holds (creation order)."""

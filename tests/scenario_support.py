@@ -21,6 +21,8 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.core.catalog import validation
+from epistrel.core.catalog.checks.base import DEPLOYMENT_CAPABILITIES
 from epistrel.core.catalog.scenario_models import ScenarioDraft, ScenarioModel
 from epistrel.core.ids import ULID_PATTERN
 from epistrel.core.seeds.ratings import EVERYONE_ID
@@ -100,8 +102,30 @@ LOCKED_VERSIONS = 3
 OPENING = "Rain on the windows; the roast is late."
 """The opening narration of ``scenario()``'s body (a published scenario needs one, #111)."""
 M3_UNAVAILABLE = ("fact_consistency", "seed_normalization", "state_schema")
-"""The checks a validation lists ``unavailable`` on every M3 deployment (#111): they need the
-structured pipeline or the module tracking starting values, which M3 has not delivered."""
+"""The checks a Lite story's creation report lists ``unavailable`` (#111, #122): every
+capability-gated check, since a Lite creation runs them with the Lite capabilities. A catalog
+validation lists only those the deployment has not delivered (``undeliverable_checks``): from
+M4 the structured pipeline is delivered and the seed checks run at publish (#149)."""
+
+
+def undeliverable_checks() -> list[str]:
+    """The scenario checks this deployment cannot run (their capability is not delivered): the
+    ones a validation still lists after the document check stops the rest."""
+    return sorted(
+        check.name
+        for check in validation.CHECKS
+        if check.capability is not None and check.capability not in DEPLOYMENT_CAPABILITIES
+    )
+
+
+def runnable_gated_checks() -> list[str]:
+    """The capability-gated checks this deployment can run: a validation lists one only when it
+    runs (it lists itself until implemented), so after a gate stops the run none appears."""
+    return sorted(
+        check.name
+        for check in validation.CHECKS
+        if check.capability is not None and check.name not in undeliverable_checks()
+    )
 
 
 def role(
@@ -273,9 +297,9 @@ COMPLETE: dict[str, Any] = {
         "states": [{"name": "harvest_mood", "initial": "tense"}],
         "clock": {"start": "1987-10-24T18:00:00", "time_awareness": "loose"},
         "scheduled_events": [{"at": "1987-10-24T21:00:00", "what": "the reading of the will"}],
-        "predicates": [{"name": "owns", "cardinality": "multi"}],
+        "predicates": [{"name": "inherits", "subject_type": "person", "cardinality": "multi"}],
         "closed_sets": [],
-        "rules": [{"text": "Nobody leaves before the will is read."}],
+        "rules": [{"when": "inherits", "then": "owns"}],
         "opening": {
             "narration": "Rain on the windows; the roast is late.",
             "starting_location": "kitchen",
@@ -661,11 +685,13 @@ __all__ = [
     "published_character",
     "read",
     "role",
+    "runnable_gated_checks",
     "save",
     "scenario",
     "seed",
     "seeds_of",
     "set_cast_limits",
     "stored_form",
+    "undeliverable_checks",
     "version_rows",
 ]

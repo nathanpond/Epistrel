@@ -13,9 +13,9 @@ in it has been checked (FR-RESP-1).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, model_validator
 
 from epistrel.core.history import HistoryItem
 from epistrel.core.ids import Ulid
@@ -90,8 +90,8 @@ class BudgetOverride(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    max_calls: int | None = Field(default=None, ge=MIN_CALLS_PER_TURN, le=MAX_CALLS_PER_TURN)
-    deadline_s: float | None = Field(default=None, ge=MIN_DEADLINE_S, le=MAX_TURN_DEADLINE_S)
+    max_calls: StrictInt | None = Field(default=None, ge=MIN_CALLS_PER_TURN, le=MAX_CALLS_PER_TURN)
+    deadline_s: StrictFloat | None = Field(default=None, ge=MIN_DEADLINE_S, le=MAX_TURN_DEADLINE_S)
 
 
 class RespondRequest(BaseModel):
@@ -162,7 +162,7 @@ class RegenerateRequest(BaseModel):
         },
     )
 
-    turn: int | None = Field(default=None, ge=1)
+    turn: StrictInt | None = Field(default=None, ge=1)
     render_character_ids: list[Ulid] | None = Field(
         default=None, min_length=1, max_length=MAX_RENDER_CHARACTERS
     )
@@ -173,15 +173,35 @@ class RegenerateRequest(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class FinishedMessage:
-    """The finished reply: the ``message_rendered`` event's id and its text."""
+    """The finished reply: the ``message_rendered`` event's id and its text; for a structured
+    turn (#152), how it was composed (``polished`` or ``deterministic``). ``mode`` is left out
+    of the stored result when unset, so a Lite turn's stored and replayed message has exactly
+    its pre-#152 shape."""
 
     message_id: str
     text: str
+    mode: Annotated[
+        Literal["polished", "deterministic"] | None, Field(exclude_if=lambda v: v is None)
+    ] = None
 
 
 AudienceFilter = Literal["none", "co_location", "full"]
 SAFE_FALLBACK = "safe_fallback"
 """The ``degradation`` entry of a turn whose reply is the safe fallback (#68)."""
+QUARANTINED_CONTEXT = "quarantined_context"
+"""The ``degradation`` entry of a turn whose rejected renders quarantined context records
+(FR-GUARD-5; #145): the regeneration ran without them."""
+PIN_QUARANTINED = "pin_quarantined"
+"""The warning naming an author pin the convergence rule quarantined (#145)."""
+
+
+@dataclass(frozen=True, slots=True)
+class TurnWarning:
+    """Something the turn did that the consumer should know (#145: ``pin_quarantined``, an
+    author pin the output gate's convergence rule quarantined, with its ``memory_id``)."""
+
+    kind: str
+    memory_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,6 +281,8 @@ class RespondResult:
     """The capabilities that configuration enables (#109)."""
     quality_status: QualityStatus | None = None
     """That configuration's quality status: ``uncertified`` in M3 (#109)."""
+    warnings: list[TurnWarning] = field(default_factory=list)
+    """What the turn did that the consumer should know (#145: ``pin_quarantined``)."""
     profile: ProfileVersionRef | None = None
     """The engine profile and the version the turn ran under (C-16, FR-PROF-6; #113): the
     configuration it captured at its start. ``None`` only in a result stored before #113."""
@@ -282,6 +304,8 @@ class RegenerateResult(RespondResult):
 
 __all__ = [
     "MAX_INPUT_CHARS",
+    "PIN_QUARANTINED",
+    "QUARANTINED_CONTEXT",
     "SAFE_FALLBACK",
     "BudgetOverride",
     "BudgetReport",
@@ -296,4 +320,5 @@ __all__ = [
     "RespondRequest",
     "RespondResult",
     "SceneContext",
+    "TurnWarning",
 ]

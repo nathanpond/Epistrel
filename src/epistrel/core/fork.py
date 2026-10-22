@@ -16,7 +16,8 @@ independent copy under new ids, isolated from the source from the moment it exis
   SELECT`` unless ``stories.STORY_TABLES_NOT_COPIED`` names it, so a new table is copied by
   default: a row follows its operation when it has an ``operation_id`` column (``client_events``,
   #58), and otherwise belongs to the story (``characters``, ``policies``, ``story_texts``).
-  ``story_heads`` is rebuilt from the copied turns and ``lite_summary_segments`` by folding the
+  ``story_heads`` is rebuilt from the copied turns, the structured projections (#137) by
+  folding the copied canon, and ``lite_summary_segments`` by folding the
   copied events (#72: segments positioned at or before N come along with their operations, and
   the post-commit ``fork`` hook schedules the fork's summary job for the boundary); story-scoped
   ``config_changes`` rows are
@@ -25,7 +26,8 @@ independent copy under new ids, isolated from the source from the moment it exis
   ``prefix:`` (``character:<id>``), takes the new id; unmapped values (ratings, client event
   ids) are kept. New ULIDs keep the source's relative order. ``tx_time``, ``valid_time``,
   ``base_revision``, ``config_revisions`` and ``parent_variant`` are kept; ``membership_tx``
-  is the fork's time on rows that were not active.
+  is the fork's time on rows that were not active. A registered derived table's rows
+  (``core.membership``, #130) flatten the same way, except that ``superseded`` stays.
 - **One snapshot.** The copy runs on one connection whose transaction is ``REPEATABLE READ``
   from its first statement, so every read sees the source at one ``timeline_revision`` and a
   turn committing meanwhile is wholly in or wholly out (FR-CONC-10). A serialization failure is
@@ -57,7 +59,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from sqlalchemy import (
     Column,
     Table,
@@ -96,6 +98,7 @@ from epistrel.core.events.operation import Operation
 from epistrel.core.events.registry import validate
 from epistrel.core.events.types import CastMember, Fork, ForkedFrom, StoryCreated
 from epistrel.core.ids import new_ulid
+from epistrel.core.membership import DERIVED_TABLES
 from epistrel.core.ownership import Owner
 from epistrel.core.projections.heads import head_row
 from epistrel.core.stories import (
@@ -135,11 +138,18 @@ SKIPPED_EVENT_TYPES: frozenset[str] = frozenset(
 """Control events that edit the source's own timeline or lifecycle; the fork starts without
 them (its membership is already flattened) and their operations are not copied."""
 
-STORY_TABLES_REBUILT: frozenset[str] = frozenset({story_heads.name, lite_summary_segments.name})
+STORY_TABLES_REBUILT: frozenset[str] = frozenset(
+    {
+        story_heads.name,
+        lite_summary_segments.name,
+        *(p.name for p in projections.STRUCTURED),
+    }
+)
 """Story tables the fork rebuilds from the copied rows instead of copying: ``story_heads`` from
-the copied turns, and ``lite_summary_segments`` (#72) by folding the copied events, so a copied
+the copied turns, ``lite_summary_segments`` (#72) by folding the copied events, so a copied
 segment's ``superseded`` state is the fork's own (a merged parent past the fork point is not
-copied, and its children are active in the fork)."""
+copied, and its children are active in the fork), and the structured projections
+(``relationships``, ``placement``, ``scene_state``; #137) by folding the copied canon."""
 
 FORK_SUFFIX = " (fork)"
 
@@ -212,7 +222,7 @@ class ForkRequest(BaseModel):
         json_schema_extra={"examples": [{"at_turn": 4, "name": "What if she stayed"}]},
     )
 
-    at_turn: int | None = Field(
+    at_turn: StrictInt | None = Field(
         default=None, ge=0, description="The last turn to copy (0: only the story's setup)."
     )
     variant_chain: ChainSelector | None = Field(
@@ -380,6 +390,7 @@ async def _copy(
     counts[config_changes.name] = await _copy_config_changes(conn, source, fork_id)
     counts[story_heads.name] = await _rebuild_heads(conn, fork_id)
     counts[lite_summary_segments.name] = await _rebuild_segments(conn, fork_id)
+    counts.update(await _rebuild_structured(conn, fork_id))
 
     cast = await _cast(conn, fork_id)
     origin = ForkOrigin(
@@ -562,8 +573,10 @@ def _expression(column: Column[Any], overrides: dict[str, str]) -> str:
 
 
 def _insert_select(table: Table, overrides: dict[str, str], where: str) -> str:
-    names = [f'"{c.name}"' for c in table.columns]
-    values = [_expression(c, overrides) for c in table.columns]
+    # A generated column (``memories.search``, #141) is computed by the insert, never copied.
+    columns = [c for c in table.columns if c.computed is None]
+    names = [f'"{c.name}"' for c in columns]
+    values = [_expression(c, overrides) for c in columns]
     return (
         f'INSERT INTO "{table.name}" ({", ".join(names)}) '  # noqa: S608 - names from metadata
         f'SELECT {", ".join(values)} FROM "{table.name}" t WHERE {where}'
@@ -572,6 +585,11 @@ def _insert_select(table: Table, overrides: dict[str, str], where: str) -> str:
 
 def _seq_of(event_id: str) -> str:
     return f"(SELECT m.new_seq FROM {_MAP} m WHERE m.old_id = {event_id})"  # noqa: S608
+
+
+def _mapped_or_null(column: str) -> str:
+    """The fork's id for a source row's ``column`` reference, ``NULL`` when it was not copied."""
+    return f'(SELECT m.new_id FROM {_MAP} m WHERE m.old_id = t."{column}"::text)'  # noqa: S608
 
 
 _ACTIVE = f"'{Membership.ACTIVE.value}'"
@@ -588,9 +606,98 @@ OVERRIDES: dict[str, dict[str, str]] = {
     events.name: {"seq": _seq_of("t.id")},
     transcript_messages.name: {"membership": _ACTIVE, "seq": _seq_of("t.message_id")},
     "policies": {"idempotency_key": "NULL"},
+    # Bitemporal canon (#133): links to other versions name the fork's copies; a version
+    # closed by one the fork does not copy (after N) keeps its tx_to but loses the link, and is
+    # current in the fork, since no copied row closes it.
+    "facts": {
+        # #154: a version a regeneration reverted (``revised``, out of the timeline) that the
+        # fork copies into its active timeline is committed there again, as a swap back would.
+        "commit_state": (
+            f"CASE WHEN t.commit_state = 'revised' AND t.membership <> {_ACTIVE} "
+            "THEN 'committed' ELSE t.commit_state END"
+        ),
+        "superseded_by": _mapped_or_null("superseded_by"),
+        "anchored_to": _mapped_or_null("anchored_to"),
+        "supersedes": (
+            f"CAST(ARRAY(SELECT m.new_id FROM unnest(t.supersedes) "  # noqa: S608
+            f"WITH ORDINALITY AS s(id, n) JOIN {_MAP} m ON m.old_id = s.id::text "
+            "ORDER BY s.n) AS char(26)[])"
+        ),
+    },
+    # Commitments (#146): a thunk's resolution and an entry's discharge name the fork's copies;
+    # one made after N is not copied, so the thunk is open and the entry undischarged there (the
+    # stored state is read through the resolving operation's membership).
+    "thunks": {
+        "resolved_fact_id": _mapped_or_null("resolved_fact_id"),
+        "resolution_operation_id": _mapped_or_null("resolution_operation_id"),
+        "state": (
+            "CASE WHEN t.state = 'resolved' AND "
+            f"{_mapped_or_null('resolution_operation_id')} IS NULL THEN 'open' ELSE t.state END"
+        ),
+    },
+    "promissory_ledger": {
+        "discharged_by_operation": _mapped_or_null("discharged_by_operation"),
+        "discharged_mode": (
+            f"CASE WHEN {_mapped_or_null('discharged_by_operation')} IS NULL THEN NULL "
+            "ELSE t.discharged_mode END"
+        ),
+    },
+    # Memory records (#135): the propositions a memory wraps are the fork's copies, (#141)
+    # its participants the fork's entities and (#143) the outputs that cover it the fork's
+    # copies of them (an output positioned after N is not copied, so it covers nothing there).
+    "memories": {
+        "covered_by": (
+            f"CAST(ARRAY(SELECT m.new_id FROM unnest(t.covered_by) "  # noqa: S608
+            f"WITH ORDINALITY AS s(id, n) JOIN {_MAP} m ON m.old_id = s.id::text "
+            "ORDER BY s.n) AS char(26)[])"
+        ),
+        "proposition_ids": (
+            f"CAST(ARRAY(SELECT m.new_id FROM unnest(t.proposition_ids) "  # noqa: S608
+            f"WITH ORDINALITY AS s(id, n) JOIN {_MAP} m ON m.old_id = s.id::text "
+            "ORDER BY s.n) AS char(26)[])"
+        ),
+        "participants": (
+            f"CAST(ARRAY(SELECT {_ID}(s.id::text) FROM unnest(t.participants) "  # noqa: S608
+            "WITH ORDINALITY AS s(id, n) ORDER BY s.n) AS char(26)[])"
+        ),
+    },
+    # Speech acts (#150): the propositions an utterance asserts are the fork's copies.
+    "utterances": {
+        "proposition_ids": (
+            f"CAST(ARRAY(SELECT m.new_id FROM unnest(t.proposition_ids) "  # noqa: S608
+            f"WITH ORDINALITY AS s(id, n) JOIN {_MAP} m ON m.old_id = s.id::text "
+            "ORDER BY s.n) AS char(26)[])"
+        ),
+    },
 }
 """Per-table columns that are not a plain remapped copy: memberships flatten to ``active``,
-events and transcript rows take the new ``seq``, and idempotency keys stay with the source."""
+events and transcript rows take the new ``seq``, idempotency keys stay with the source, a
+fact's links to other versions keep only the copied ones, and a memory's propositions and
+participants are the fork's."""
+
+_SUPERSEDED = f"'{Membership.SUPERSEDED.value}'"
+
+DERIVED_OVERRIDES: dict[str, str] = {
+    "membership": f"CASE WHEN t.membership = {_SUPERSEDED} THEN t.membership ELSE {_ACTIVE} END",
+    "membership_tx": (
+        f"CASE WHEN t.membership IN ({_ACTIVE}, {_SUPERSEDED}) THEN t.membership_tx "
+        "ELSE transaction_timestamp() END"
+    ),
+    "source_event_ids": (
+        f"CAST(ARRAY(SELECT {_ID}(s.id::text) FROM unnest(t.source_event_ids) "  # noqa: S608
+        "WITH ORDINALITY AS s(id, n) ORDER BY s.n) AS char(26)[])"
+    ),
+}
+"""A registered derived table's copied rows (``core.membership``, #130) follow their copied
+operations, which are all ``active`` in the fork (a ``superseded`` row stays superseded), and
+their ``source_event_ids`` name the fork's copies of those events."""
+
+
+def _overrides(table: Table) -> dict[str, str]:
+    if table.name in DERIVED_TABLES:
+        return {**DERIVED_OVERRIDES, **OVERRIDES.get(table.name, {})}
+    return OVERRIDES.get(table.name, {})
+
 
 _EVENT_IDS = f"(SELECT old_id FROM {_MAP} WHERE kind = 'event')"  # noqa: S608
 _OPERATION_IDS = f"(SELECT old_id FROM {_MAP} WHERE kind = 'operation')"  # noqa: S608
@@ -632,7 +739,7 @@ async def _map_primary_keys(conn: AsyncConnection, table: Table, where: str, sou
 async def _copy_table(conn: AsyncConnection, table: Table, source: str, fork_id: str) -> int:
     where = _row_filter(table)
     result = await conn.execute(
-        text(_insert_select(table, OVERRIDES.get(table.name, {}), where)),
+        text(_insert_select(table, _overrides(table), where)),
         {"source": source, "fork": fork_id},
     )
     return int(result.rowcount)
@@ -655,6 +762,13 @@ async def _copy_story_row(
         "in_flight_lease_until": "NULL",
         "paused_by": "NULL",
         "created_at": "transaction_timestamp()",
+        # The copied chain is checked in full at the fork's first chain check (#281); the
+        # chain triggers would set it for the copied turns anyway.
+        "chain_unchecked": "true",
+        # The fork's included segments are its own: its first scheduling computes them (#282).
+        "summary_inclusion": "NULL",
+        # The fork's hot-set counters are recounted when first read (#147).
+        "hot_counts": "NULL",
     }
     await conn.execute(
         text(_insert_select(stories, overrides, "t.id = :source")),
@@ -691,6 +805,18 @@ async def _rebuild_segments(conn: AsyncConnection, fork_id: str) -> int:
     if len(folded):
         await conn.execute(insert(lite_summary_segments), list(folded))
     return len(folded)
+
+
+async def _rebuild_structured(conn: AsyncConnection, fork_id: str) -> dict[str, int]:
+    """The fork's structured projection rows, folded from its copied canon (#137)."""
+    folded = await projections.fold(conn, fork_id, only=projections.STRUCTURED)
+    counts: dict[str, int] = {}
+    for projection in projections.STRUCTURED:
+        rows = folded[projection.name]
+        if len(rows):
+            await conn.execute(insert(projection.table), list(rows))
+        counts[projection.name] = len(rows)
+    return counts
 
 
 async def _cast(conn: AsyncConnection, fork_id: str) -> tuple[ForkCharacter, ...]:

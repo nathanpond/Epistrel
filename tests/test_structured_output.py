@@ -148,15 +148,84 @@ async def test_the_probe_does_not_spend_a_retry() -> None:
     assert len(mal.stub.calls) == 2
 
 
-async def test_prose_in_json_schema_mode_flips_to_the_fallback() -> None:
+PROSE = "Sure! The text looks fine to me."
+
+
+async def test_one_prose_answer_is_a_glitch_and_the_retry_stays_constrained() -> None:
+    # #482: a single non-JSON 200 in json_schema mode is not proof the endpoint ignores it.
     mal = models()
-    mal.stub.script("guardrail_check", ["Sure! The text looks fine to me."])
+    mal.stub.script("guardrail_check", [PROSE])
     assert await check(mal) == GuardrailVerdict(violation=False, confidence=1.0)
     first, second = mal.stub.calls
     assert first.response_schema == "GuardrailVerdict"
-    assert second.response_schema is None
-    assert SCHEMA_INSTRUCTION in second.messages[0].content
-    assert second.messages[-2].content == "Sure! The text looks fine to me."
+    assert second.response_schema == "GuardrailVerdict"  # the retry keeps response_format
+    assert all(SCHEMA_INSTRUCTION not in m.content for m in second.messages)
+    assert second.messages[-2].content == PROSE
+    await check(mal)  # and the endpoint stays constrained for the next call
+    assert mal.stub.calls[-1].response_schema == "GuardrailVerdict"
+
+
+async def test_two_prose_answers_in_a_row_flip_to_the_fallback() -> None:
+    mal = models()
+    mal.stub.script("guardrail_check", [PROSE, PROSE])
+    assert await check(mal) == GuardrailVerdict(violation=False, confidence=1.0)
+    first, second, third = mal.stub.calls
+    assert first.response_schema == second.response_schema == "GuardrailVerdict"
+    assert third.response_schema is None
+    assert SCHEMA_INSTRUCTION in third.messages[0].content
+    await check(mal)  # remembered for the endpoint
+    assert mal.stub.calls[-1].response_schema is None
+
+
+async def test_prose_strikes_count_across_calls_to_the_endpoint() -> None:
+    mal = models(retries=0)
+    mal.stub.script("guardrail_check", [PROSE])
+    assert await check(mal) == Uncertain("parse_error", 1)
+    mal.stub.script("guardrail_check", [PROSE])
+    assert await check(mal) == Uncertain("parse_error", 1)
+    assert [c.response_schema for c in mal.stub.calls] == ["GuardrailVerdict"] * 2
+    await check(mal)
+    assert mal.stub.calls[-1].response_schema is None
+
+
+@pytest.mark.parametrize("answer", [verdict(True, 0.9), '{"violation": "yes", "confidence": 1}'])
+async def test_a_json_answer_resets_the_prose_run(answer: str) -> None:
+    # Valid or schema-invalid, JSON means json_schema was obeyed.
+    mal = models(retries=0)
+    mal.stub.script("guardrail_check", [PROSE, answer, PROSE])
+    for _ in range(3):
+        await check(mal)
+    await check(mal)
+    assert [c.response_schema for c in mal.stub.calls] == ["GuardrailVerdict"] * 4
+
+
+async def test_a_400_naming_response_format_still_rejects_at_once() -> None:
+    mal = models(retries=0)
+    mal.stub.script("guardrail_check", [PROSE])
+    assert await check(mal) == Uncertain("parse_error", 1)  # one strike, still constrained
+    mal.stub.fault("guardrail_check", "response_format_400")
+    assert await check(mal) == GuardrailVerdict(violation=False, confidence=1.0)
+    probe, fallback = mal.stub.calls[1:]
+    assert probe.response_schema == "GuardrailVerdict"
+    assert fallback.response_schema is None
+    await check(mal)
+    assert mal.stub.calls[-1].response_schema is None
+
+
+def test_memo_strikes_reset_with_the_revision_and_clear() -> None:
+    memo = ResponseFormatMemo()
+    key = ("http://a/v1", "m")
+    assert not memo.strike(key, 3)
+    assert not memo.strike(key, 4)  # a configuration write starts the run again
+    assert memo.strike(key, 4)
+    assert not memo.supported(key, 4)
+    memo.clear()
+    assert not memo.strike(key, 4)
+    memo.clear()  # E-07 clears after each injected case: no strike carries over
+    assert not memo.strike(key, 4)
+    memo.honoured(key)
+    assert not memo.strike(key, 4)
+    assert memo.supported(key, 4)
 
 
 def test_memo_is_per_endpoint_and_resets_when_the_revision_moves() -> None:

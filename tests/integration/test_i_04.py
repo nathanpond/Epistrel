@@ -17,10 +17,15 @@ from epistrel.core import projections, timeline, turn_gate
 from epistrel.core.config_changes import read_settings
 from epistrel.core.errors import InvalidRequest, NothingToUndo, StoryNotFound, UnknownChain
 from epistrel.core.ids import new_ulid
+from epistrel.core.memory import records
+from epistrel.core.memory.consolidation import Window
 from epistrel.core.ratings import RatingFields, create_rating
 from epistrel.core.stories import create_story, delete_story
 from epistrel.core.variants import ChainRef
 from epistrel.core.views import corrected_history
+from epistrel.orchestrator.jobs.handlers.consolidation import consolidate_window
+from epistrel.orchestrator.models.access import ModelAccessLayer
+from tests import consolidation_support as cs
 from tests.auth_support import auth_settings
 from tests.concurrency_support import (
     assert_single_chain,
@@ -33,7 +38,8 @@ from tests.concurrency_support import (
 )
 from tests.event_support import new_story, play_turn, rows, scalar, story_row
 from tests.fork_support import content, fork, mentions, owned_ids, owned_rows
-from tests.projection_support import snapshot
+from tests.memory_support import derived_memory
+from tests.projection_support import snapshot, truncate, untruncate
 from tests.respond_support import PLAYER, body, played, respond_client
 from tests.respond_support import new_story as new_rest_story
 from tests.story_support import READ, WRITE
@@ -746,3 +752,44 @@ async def test_i_04__fork_rest(stub_settings: Settings, engine: AsyncEngine) -> 
             assert read.json()["timeline_revision"] == revision
     finally:
         timeline.remove_membership_hook(after)
+
+
+@pytest.mark.part("M4", "FR-STORE-13")
+async def test_i_04__derived(
+    engine: AsyncEngine, pg_url: str, drained_embedding_jobs: None
+) -> None:
+    """A derived memory is in the view through N iff every one of its sources is active at or
+    before N (#143). A consolidation output over turns 1-4 (positioned at 4) and a position-less
+    semantic memory over the events of turns 2 and 5: through 4 the first is in and the second
+    out (a source is at 5); through 5 both are in; truncating to 3 takes both out (the output
+    with its window, the other with its source at 5), rows kept; untruncating brings both
+    back. Complement: the episodes through 3 never leave the view."""
+    models = ModelAccessLayer.from_settings(auth_settings(pg_url, model_adapter="stub"))
+    models.bind(engine)
+    w = await cs.story(engine, cs.dials(window_memories=1_000, cadence_turns=1_000))
+    story, bobby = w.story_id, w.characters["Bobby"]
+    played = await cs.bulk_turns(engine, story, 6, actor=bobby, name="Bobby", does=True)
+    models.stub.script(
+        "consolidation", [cs.answer(facts=[("Bobby is busy.", "observation", [0, 3])])]
+    )
+    made = await consolidate_window(engine, story, Window(1, 4), models=models)
+    assert str(made.outcome) == "committed"
+    loose = await derived_memory(
+        engine, story, "Bobby keeps a log.", [played[1].event_id, played[4].event_id]
+    )
+
+    async def view(through: int | None = None) -> set[str]:
+        async with engine.connect() as conn:
+            return {m.text for m in await records.memories_through(conn, story, through)}
+
+    assert {"Bobby is busy."} <= await view(4)
+    assert "Bobby keeps a log." not in await view(4)
+    assert {"Bobby is busy.", "Bobby keeps a log."} <= await view(5)
+    await truncate(engine, story, 3)
+    after = await view()
+    assert {"Bobby is busy.", "Bobby keeps a log."}.isdisjoint(after)
+    assert {f"Bobby does: line {n}" for n in (1, 2, 3)} <= after
+    kept = await rows(engine, "SELECT id FROM memories WHERE story_id = :s", s=story)
+    assert loose in {r.id for r in kept}
+    await untruncate(engine, story)
+    assert {"Bobby is busy.", "Bobby keeps a log."} <= await view()

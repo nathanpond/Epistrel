@@ -1,0 +1,94 @@
+{#- A structured character render (FR-TURN-1, docs/02 §5's Generation row; #150).
+
+The ``system`` block holds, in order: the story rating's prompt guidance (always first,
+FR-RATE-4), the custom instructions, a scenario story's scenario text (#122), the rendering
+character's definition (never its true age), its deflection style, the pinned memories (#60's
+text pins), the rolling summary when the profile keeps one, then ``## Scene`` (the place and
+who is present, #137), ``## What you remember`` (its working memory, FR-MEM-5), ``## Retrieved``
+(#141's assembled context) and ``## Canon`` (the facts retrieval found that it may know), then
+the beat contract, the requested length as a target in words (#464) and, on a guardrail
+regeneration, one constraint line per violated output
+policy (#68). The director's notes never appear here (FR-SCN-11: the narrator's alone). The
+``user`` block is the player input, the final ``user`` message. The beats come back as the
+call's ``response_schema`` (#53). -#}
+{% macro line(entry) -%}
+{% if entry.text %}{{ entry.text }}{% else %}{{ entry.name }}:{% if entry.say %} "{{ entry.say }}"{% endif %}{% if entry.do %} *{{ entry.do }}*{% endif %}{% endif %}
+{%- endmacro %}
+{% block system %}
+{% if rating_guidance %}
+## Content rating guidance
+{{ rating_guidance }}
+
+{% endif %}
+{% if custom_instructions %}
+## Custom instructions
+{{ custom_instructions }}
+
+{% endif %}
+{% if scenario_text %}
+{{ scenario_text }}
+
+{% endif %}
+{% for character in character_definitions %}
+## You are {{ character.name }}
+{{ character.definition }}
+{% if character.deflection_style %}
+When {{ character.name }} refuses or changes the subject: {{ character.deflection_style }}
+{% endif %}
+
+{% endfor %}
+{% if pinned_memories %}
+## Pinned memories
+{% for memory in pinned_memories %}
+- {{ memory }}
+{% endfor %}
+
+{% endif %}
+{% if summary_segments %}
+## Earlier in the story
+{% for segment in summary_segments %}
+{{ segment }}
+{% endfor %}
+
+{% endif %}
+{% if scene %}
+## Scene
+{{ scene }}
+
+{% endif %}
+{% if working_memory %}
+## What you remember
+{% for beat in working_memory %}
+- {{ beat }}
+{% endfor %}
+
+{% endif %}
+{% if retrieved_memories %}
+## Retrieved
+{% for item in retrieved_memories %}
+- {{ item }}
+{% endfor %}
+
+{% endif %}
+{% if canon_facts %}
+## Canon
+{% for fact in canon_facts %}
+- {{ fact }}
+{% endfor %}
+
+{% endif %}
+## Your part
+You render {{ voiced_characters | join(", ") }} only; never speak, think or act for {{ player_input.name }}.
+Answer with typed beats in order: `say` (speech, with its intent: sincere, deceptive, joking or unspecified), `think` (a private thought), `do` (an observable action) and `latent` (a fact of the world that is true but not shown, with who may know it).
+Give at least one `say` or `do`. Declare each factual claim a beat makes as a proposition (subject, relation, object). Name every new character a beat introduces in `introduces`, with an age in whole years.
+{% if length_target %}
+{{ length_target }}
+{% endif %}
+{% for constraint in policy_constraints %}
+{{ constraint }}
+{% endfor %}
+{% include "steering_resolution.j2" %}
+{% endblock %}
+{% block user %}
+{{ player_input.name }}:{% if player_input.say %} "{{ player_input.say }}"{% endif %}{% if player_input.do %} *{{ player_input.do }}*{% endif %}
+{% endblock %}

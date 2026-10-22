@@ -4,11 +4,13 @@ respond calls, and reads of what the stub was sent and what the turn recorded.""
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+import inspect
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx2 as httpx
+import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.api import create_app
@@ -23,6 +25,9 @@ PLAYER = "Wren"
 FIRST = "Ada"
 SECOND = "Brann"
 AUTHOR = RequestContext(principal="p-author")
+WITHIN_S = 30.0
+"""How long ``until`` waits for its condition: generous, so a loaded host only slows a test down
+instead of failing it (#430, #432)."""
 
 
 @asynccontextmanager
@@ -85,6 +90,16 @@ async def played(
     return result
 
 
+def assert_kept(response: httpx.Response, reply: str) -> None:
+    """The turn committed the scripted ``reply`` on its first attempt (#419, #428). A 200 alone
+    does not prove an armed erasure guard kept it: a refused reply is regenerated within the
+    budget, the stub falls back to its default text, and the turn still commits."""
+    assert response.status_code == 200, response.text
+    turn = response.json()
+    assert turn["message"]["text"] == reply, turn["message"]
+    assert turn["call_counts"].get("generation") == 1, turn["call_counts"]
+
+
 def generation_calls(stub: StubAdapter) -> list[StubCall]:
     return [call for call in stub.calls if call.purpose == "generation"]
 
@@ -115,11 +130,33 @@ async def story_text(engine: AsyncEngine, story_id: str) -> str:
     return "\n".join(r.row for r in found)
 
 
+async def until(
+    condition: Callable[[], bool | Awaitable[bool]], what: str, within: float = WITHIN_S
+) -> None:
+    """Wait until ``condition()`` holds, polling; fail naming ``what`` after ``within`` seconds.
+    Steps that wait on concurrent work wait on this, not on a fixed sleep or a wall-clock bound
+    (#430, #432)."""
+
+    async def holds() -> bool:
+        found = condition()
+        return bool(await found) if inspect.isawaitable(found) else bool(found)
+
+    try:
+        async with asyncio.timeout(within):
+            while True:  # a database row or a stub's record: nothing to await, so poll
+                if await holds():
+                    return
+                await asyncio.sleep(0.02)
+    except TimeoutError:
+        pytest.fail(f"not within {within} s: {what}")
+
+
 __all__ = [
     "AUTHOR",
     "FIRST",
     "PLAYER",
     "SECOND",
+    "WITHIN_S",
     "body",
     "everything_sent",
     "generation_calls",
@@ -130,4 +167,5 @@ __all__ = [
     "story_events",
     "story_text",
     "system_of",
+    "until",
 ]

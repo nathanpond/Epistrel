@@ -17,6 +17,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from epistrel.core import summary
 from epistrel.core.concurrency import (
     ConfigRecheckFn,
     LiteReadSet,
@@ -193,6 +194,16 @@ async def summarise(engine: AsyncEngine, story_id: str, through: int) -> Operati
         kind=OperationKind.CONSOLIDATION,
         turn=through,
     )
+
+
+async def included_segment_ids(engine: AsyncEngine, story_id: str) -> tuple[str, ...]:
+    """The ids of the summary segments a prompt of ``story_id`` includes (FR-STORE-26,
+    ``summary.included_segments``, computed rather than read through the stored inclusion).
+    The Lite read set's ``segments`` member is these (FR-CONC-4), so a concurrency oracle asks
+    whether a derived segment changed them: a segment that does not continue the included run
+    from turn 1 is not in the prompt, and a turn over it rebases rather than regenerates."""
+    async with engine.connect() as conn:
+        return tuple(s.segment_id for s in await summary.included_segments(conn, story_id))
 
 
 async def reject_render(engine: AsyncEngine, story_id: str, at: int) -> Operation:

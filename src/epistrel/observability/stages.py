@@ -1,7 +1,7 @@
-"""Per-stage turn latency (NFR-PERF-3,4; #76): ``epistrel_turn_stage_seconds{stage}``.
+"""Per-stage turn latency (NFR-PERF-1,2,3,4; #76, #153): ``epistrel_turn_stage_seconds{stage}``.
 
 One histogram, labelled by stage only (never ``story_id``: per-story figures come from the
-P-04 driver), observed once per stage per committed Lite turn:
+P-04 driver), observed once per stage per committed turn:
 
 - ``queue_wait``: a queued turn's wait from its enqueue to reaching the front of its story's
   queue (the drainer starting it); unqueued turns observe nothing here;
@@ -14,6 +14,14 @@ P-04 driver), observed once per stage per committed Lite turn:
   (NFR-PERF-3's atomic turn commit);
 - ``post_commit``: what ``Operation.commit()`` does for a turn after its transaction committed
   (the summary port's scheduling, #72), still before the turn answers.
+
+Two more stages are a structured turn's alone (``STRUCTURED_STAGES``; P-04's structured variant
+gates on them, #153), observed once per call rather than once per turn:
+
+- ``retrieve``: one retrieval (``core.retrieval.pipeline.retrieve``), its own ``timings``
+  total, which leaves the query embedding out (NFR-PERF-1's span, as P-01 measures it);
+- ``verify``: one claim's deterministic verify path (the verifier's keyed fetch and ``check``,
+  no model fallback; NFR-PERF-2's span, as P-02 measures it).
 
 The buckets are log-spaced from 1 ms to 60 s, with the gates' bounds as edges. Labels are the
 stage names only (invariant 3). This module imports nothing from the Engine, so
@@ -37,6 +45,8 @@ Stage = Literal[
     "policy_check",
     "commit",
     "post_commit",
+    "retrieve",
+    "verify",
 ]
 STAGES: tuple[Stage, ...] = (
     "queue_wait",
@@ -47,6 +57,9 @@ STAGES: tuple[Stage, ...] = (
     "commit",
     "post_commit",
 )
+"""The stages every committed turn observes once."""
+STRUCTURED_STAGES: tuple[Stage, ...] = ("retrieve", "verify")
+"""The stages only a structured turn observes, once per retrieval and once per claim checked."""
 STAGE_BUCKETS = (
     0.001,
     0.002,
@@ -55,6 +68,7 @@ STAGE_BUCKETS = (
     0.02,
     0.05,
     0.1,
+    0.15,
     0.2,
     0.25,
     0.5,
@@ -65,13 +79,14 @@ STAGE_BUCKETS = (
     20.0,
     60.0,
 )
-"""1 ms to 60 s, log-spaced (1-2-5 per decade), plus 250 ms: NFR-PERF-3's commit budget and
-the 1 s queue-front-to-first-call bound are bucket edges, so P-04 reads both gates exactly."""
+"""1 ms to 60 s, log-spaced (1-2-5 per decade), plus 150 ms and 250 ms: NFR-PERF-1's retrieval
+budget, NFR-PERF-2's 50 ms verify budget, NFR-PERF-3's commit budget and the 1 s
+queue-front-to-first-call bound are bucket edges, so P-04 reads each gate exactly."""
 
 TURN_STAGE = Histogram(
     "epistrel_turn_stage_seconds",
-    "Lite turn latency by stage: queue_wait, front_to_first_call, assemble, generate, "
-    "policy_check, commit, post_commit.",
+    "Turn latency by stage: queue_wait, front_to_first_call, assemble, generate, "
+    "policy_check, commit, post_commit; and a structured turn's retrieve and verify, per call.",
     ("stage",),
     buckets=STAGE_BUCKETS,
 )
@@ -92,4 +107,12 @@ def timed(stage: Stage) -> Iterator[None]:
         observe(stage, time.perf_counter() - started)
 
 
-__all__ = ["STAGES", "STAGE_BUCKETS", "TURN_STAGE", "Stage", "observe", "timed"]
+__all__ = [
+    "STAGES",
+    "STAGE_BUCKETS",
+    "STRUCTURED_STAGES",
+    "TURN_STAGE",
+    "Stage",
+    "observe",
+    "timed",
+]

@@ -55,9 +55,10 @@ the terms) delete the record's rows and write them again:
 (each calls ``index_references``/``index_records``) and the reader the rebuild enumerates it
 with (``core.erasure.records``). ``tests/integration/test_subject_index.py`` checks it against
 ``information_schema``: a new story-content table without a registration (or a registered
-writer that never calls the indexer) fails it. Tables M4+ adds (memories, reflections, beliefs,
-States, the outbox) register here when they land. ``EXEMPT_TABLES`` names the story and catalog
-tables that are not indexed, and why.
+writer that never calls the indexer) fails it. Tables M4+ adds register here when they land
+(#131's predicate registry, propositions and entities did, #133's facts and #135's memories,
+#143's reflections among them, and #146's thunks; beliefs, States and the outbox will).
+``EXEMPT_TABLES`` names the story and catalog tables that are not indexed, and why.
 
 ``drop_references``/``drop_many`` remove a record's rows; every delete path of an indexed record
 calls one. ``reindex_story`` recomputes one story's rows (a fork after its copy; an ad-hoc
@@ -78,6 +79,7 @@ from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Se
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import and_, delete, func, insert, select, text, tuple_
@@ -295,35 +297,59 @@ def _overrides(snapshot: Any) -> dict[str, tuple[list[str], list[str]]]:
     return found
 
 
+CHARACTER_COLUMNS = (
+    "id",
+    "name",
+    "role_id",
+    "source_catalog_id",
+    "persona_id",
+    "persona_snapshot",
+)
+"""The ``characters`` columns a story subject is built from."""
+
+
 async def story_subjects(conn: AsyncConnection, story_id: str) -> list[Subject]:
     """The story's characters (see the module docstring for their terms and links)."""
-    snapshot = await conn.scalar(
-        select(stories.c.scenario_snapshot).where(stories.c.id == story_id)
+    # One statement (#153): every indexed record of a turn reads these, several times a turn.
+    snapshots = (
+        select(
+            func.jsonb_agg(
+                func.jsonb_build_array(
+                    character_snapshots.c.character_id, character_snapshots.c.content
+                )
+            )
+        )
+        .where(character_snapshots.c.story_id == stories.c.id)
+        .scalar_subquery()
     )
+    cast = (
+        select(
+            func.jsonb_agg(
+                func.jsonb_build_object(
+                    *(part for name in CHARACTER_COLUMNS for part in (name, characters.c[name]))
+                )
+            )
+        )
+        .where(characters.c.story_id == stories.c.id)
+        .scalar_subquery()
+    )
+    read = (
+        await conn.execute(
+            select(stories.c.scenario_snapshot, snapshots, cast).where(stories.c.id == story_id)
+        )
+    ).one_or_none()
+    snapshot, snapshot_rows, character_rows = read if read is not None else (None, None, None)
     overrides = _overrides(snapshot)
     snapshotted: dict[str, tuple[list[str], list[str]]] = {}
-    for character_id, content in await conn.execute(
-        select(character_snapshots.c.character_id, character_snapshots.c.content).where(
-            character_snapshots.c.story_id == story_id
-        )
-    ):
+    for character_id, content in snapshot_rows or ():
         snapshotted[str(character_id)] = (
             _strings(_at(content, NAME_PATH)),
             _strings(_at(content, ALIASES_PATH)),
         )
     keys: list[tuple[str, tuple[Defined, ...]]] = []
     named: list[tuple[list[str], list[str]]] = []
-    rows = await conn.execute(
-        select(
-            characters.c.id,
-            characters.c.name,
-            characters.c.role_id,
-            characters.c.source_catalog_id,
-            characters.c.persona_id,
-            characters.c.persona_snapshot,
-        ).where(characters.c.story_id == story_id)
-    )
-    for row in rows:
+    for found in character_rows or ():
+        row = SimpleNamespace(**found)
         character_id = str(row.id)
         snapshot_names, snapshot_aliases = snapshotted.get(character_id, ([], []))
         role_names, role_aliases = (
@@ -644,6 +670,12 @@ class SubjectWriter:
 
 
 _RECORDS = "epistrel.core.erasure.records"
+_REGISTRY = "epistrel.core.propositions.registry"
+_PROPOSITIONS = "epistrel.core.propositions.store"
+_FACTS = "epistrel.core.canon.facts"
+_MEMORIES = "epistrel.core.memory.records"
+_MUTATION = "epistrel.core.mutation"
+_COMMITMENTS = "epistrel.core.commit.lifecycle"
 
 SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
     SubjectWriter(
@@ -658,7 +690,8 @@ SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
     ),
     SubjectWriter(
         "characters",
-        ("epistrel.core.stories", "epistrel.core.genesis.create"),
+        # #150: a structured turn creates the characters its renders introduce.
+        ("epistrel.core.stories", "epistrel.core.genesis.create", "epistrel.core.turns.beats"),
         f"{_RECORDS}:read_characters",
     ),
     SubjectWriter(
@@ -674,7 +707,12 @@ SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
     ),
     SubjectWriter(
         "operations",
-        ("epistrel.core.genesis.create", "epistrel.orchestrator.lite.pipeline"),
+        (
+            "epistrel.core.genesis.create",
+            "epistrel.orchestrator.lite.pipeline",
+            "epistrel.orchestrator.structured.pipeline",
+            "epistrel.core.verify.shadow",
+        ),
         f"{_RECORDS}:read_operations",
     ),
     SubjectWriter(
@@ -715,6 +753,20 @@ SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
         ("epistrel.core.media.uploads",),
         f"{_RECORDS}:read_upload_sessions",
     ),
+    # The structured stores (#131): the predicate registry, propositions and entities.
+    SubjectWriter("predicates", (_REGISTRY,), f"{_RECORDS}:read_predicates"),
+    SubjectWriter("predicate_proposals", (_REGISTRY,), f"{_RECORDS}:read_proposals"),
+    SubjectWriter("propositions", (_PROPOSITIONS,), f"{_RECORDS}:read_propositions"),
+    SubjectWriter("closed_sets", (_PROPOSITIONS,), f"{_RECORDS}:read_closed_sets"),
+    SubjectWriter("entities", (_PROPOSITIONS,), f"{_RECORDS}:read_entities"),
+    SubjectWriter("entity_aliases", (_PROPOSITIONS,), f"{_RECORDS}:read_aliases"),
+    # Bitemporal canon (#133): a fact's characters visibility scope names characters.
+    SubjectWriter("facts", (_FACTS,), f"{_RECORDS}:read_facts"),
+    # Memory records (#135): a memory's text (positional), its holder and its actor; #145's
+    # mutation primitives rewrite a sanitized text and write a quarantine's reason.
+    SubjectWriter("memories", (_MEMORIES, _MUTATION), f"{_RECORDS}:read_memories"),
+    # Commitments (#146): a thunk's proposition sketch, walked whole (positional mentions).
+    SubjectWriter("thunks", (_COMMITMENTS,), f"{_RECORDS}:read_thunks"),
 )
 """Every indexed table (see the module docstring); the coverage test's source of truth."""
 
@@ -733,10 +785,31 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "story_profile_overrides": "engine-profile dial values (numbers and enums)",
     "rating_check_jobs": "a rating check's progress and verdicts by record key and policy id",
     "guardrail_check_results": "verdicts by record key and policy id",
+    "promissory_ledger": "the promissory ledger (#146): ids, positions, kinds and discharge "
+    "modes; the thunk it names is indexed",
+    "proposition_changes": "the read set's change index: ids, hashes, windows and visibility "
+    "scopes of committed proposition changes (#136)",
+    "extraction_shadow": "claim detection's shadow samples (#148): statuses, counts, spans, "
+    "predicate ids and shape hashes; the beats the spans point into are indexed",
+    "escalations": "escalation records (#155): ids and verdicts only, no text: claim ids, gate "
+    "reasons, predicate shape keys, confidences, verdict codes and consequences",
+    "utterances": "speech acts (#150): ids, proposition ids and three labels; the beat events "
+    "they point at are indexed",
+    "overflow_episodes": "the hot set's overflow episodes (#147): scope kinds, ids and turn "
+    "numbers",
+    "relationships": "a projection of facts, which are erased; refolded by erasure's rebuilt "
+    "stage (#137)",
+    "placement": "a projection of facts, which are erased; refolded by erasure's rebuilt stage "
+    "(#137)",
+    "scene_state": "a projection of facts and turns: entity ids only, refolded by erasure's "
+    "rebuilt stage (#137)",
     # Deployment tables (#334: the coverage test enumerates every table with text or JSON).
     "alembic_version": "the schema migration's revision id",
     "schema_meta": "schema bookkeeping keys and values",
     "deployment_state": "deployment settings, tag and listing-status sets, reconcile state",
+    "gate_thresholds": "per-shape gate thresholds (#155): predicate shape keys, numbers, modes",
+    "gate_threshold_history": "gate-threshold writes (#155): shape keys, actions, numbers and "
+    "the acting principal",
     "content_ratings": "operator-authored rating names and the retiring principal",
     "content_rating_versions": "operator-authored rating guidance and policy ids",
     "engine_profiles": "an engine profile's name and owner principal (configuration)",

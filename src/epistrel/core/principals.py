@@ -12,7 +12,8 @@ it owns the presets.
   ``scenarios``, items and count alike, because a companion follows its character (#116).
   Archived stories and entries, retired media and deleted profiles are listed with their
   status. A media ``candidate`` is private (FR-IMG-7) and is not listed. A story the erasure
-  reconciler holds ``blocked_by_erasure`` is listed with a ``null`` name (#359).
+  reconciler holds ``blocked_by_erasure`` is listed with a ``null`` name (#359), and so is an
+  owned entry a pending catalog-scope erasure reaches (``without_names``; #346).
 - **Related** (``entity_relations``): for each type, the entities with at least one relation
   naming the principal, ``{id, relations: [names]}``, newest relation first. An entity both
   owned and related is listed in both.
@@ -30,7 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -97,7 +98,8 @@ class OwnedItem(BaseModel):
     name: str | None = Field(
         description="The story's or profile's name, a catalog entry's draft card name, a "
         "persona's name, or a media asset's caption (else its alt text). `null` for a story "
-        "that is `blocked_by_erasure` after a restore, until its erasure is reapplied."
+        "that is `blocked_by_erasure` after a restore, and for an entry a pending catalog-scope "
+        "erasure reaches, until its erasure is reapplied."
     )
     status: str | None = Field(
         description="A story's or catalog entry's status, a media asset's state (`live`, "
@@ -392,6 +394,30 @@ async def _related_page(
     return RelatedPage(count=count, items=items, next_cursor=_next(principal, key, rows, limit))
 
 
+UNNAMED_WHEN_REACHED: Mapping[str, str] = {
+    "characters": EntityType.CHARACTER.value,
+    "scenarios": EntityType.SCENARIO.value,
+    "personas": EntityType.PERSONA.value,
+    "media": EntityType.MEDIA.value,
+}
+"""The owned pages whose items a pending catalog-scope erasure can reach, by entity type."""
+
+
+def without_names(lookup: PrincipalLookup, hides: Callable[[str, str], bool]) -> PrincipalLookup:
+    """``lookup`` with a ``null`` name for every owned entry ``hides(entity_type, id)``: one a
+    pending catalog-scope erasure reaches is listed, as a blocked story is (#359), without
+    what it names until the erasure is reapplied (#346)."""
+    updates: dict[str, OwnedPage] = {}
+    for page_name, entity_type in UNNAMED_WHEN_REACHED.items():
+        page: OwnedPage = getattr(lookup.owned, page_name)
+        items = [
+            item.model_copy(update={"name": None}) if hides(entity_type, item.id) else item
+            for item in page.items
+        ]
+        updates[page_name] = page.model_copy(update={"items": items})
+    return lookup.model_copy(update={"owned": lookup.owned.model_copy(update=updates)})
+
+
 def lookup_principal_id(value: str, *, field: str = "path.principal_id") -> str:
     """A principal a lookup names: trimmed of spaces and tabs, 1 to 256 characters, no control
     character (``system`` allowed); 422 at ``field``."""
@@ -543,6 +569,7 @@ __all__ = [
     "RELATED_PREFIX",
     "TYPES",
     "TYPE_KEYS",
+    "UNNAMED_WHEN_REACHED",
     "CompanionRef",
     "OwnedEntities",
     "OwnedItem",
@@ -557,4 +584,5 @@ __all__ = [
     "related_entities",
     "related_principals",
     "remaining",
+    "without_names",
 ]

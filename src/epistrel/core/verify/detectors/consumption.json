@@ -1,0 +1,248 @@
+{
+  "category": "consumption",
+  "language": "en",
+  "description": "Consumption language: consumed(subject, item), an event.",
+  "predicate": "consumed",
+  "roles": {
+    "subject": "before",
+    "object": "after"
+  },
+  "lemmas": [
+    {
+      "lemma": "eat",
+      "forms": [
+        "eat",
+        "eats",
+        "ate",
+        "eaten",
+        "eating"
+      ]
+    },
+    {
+      "lemma": "drink",
+      "forms": [
+        "drink",
+        "drinks",
+        "drank",
+        "drunk",
+        "drinking"
+      ]
+    },
+    {
+      "lemma": "swallow",
+      "forms": [
+        "swallow",
+        "swallows",
+        "swallowed",
+        "swallowing"
+      ]
+    },
+    {
+      "lemma": "devour",
+      "forms": [
+        "devour",
+        "devours",
+        "devoured",
+        "devouring"
+      ]
+    },
+    {
+      "lemma": "gulp",
+      "forms": [
+        "gulp",
+        "gulps",
+        "gulped",
+        "gulping"
+      ]
+    },
+    {
+      "lemma": "sip",
+      "forms": [
+        "sip",
+        "sips",
+        "sipped",
+        "sipping"
+      ]
+    },
+    {
+      "lemma": "consume",
+      "forms": [
+        "consume",
+        "consumes",
+        "consumed",
+        "consuming"
+      ]
+    },
+    {
+      "lemma": "spend",
+      "forms": [
+        "spend",
+        "spends",
+        "spent",
+        "spending"
+      ]
+    },
+    {
+      "lemma": "use up",
+      "forms": [
+        "use up",
+        "uses up",
+        "used up",
+        "using up"
+      ]
+    },
+    {
+      "lemma": "smoke",
+      "forms": [
+        "smoke",
+        "smokes",
+        "smoked",
+        "smoking"
+      ]
+    },
+    {
+      "lemma": "chew",
+      "forms": [
+        "chew",
+        "chews",
+        "chewed",
+        "chewing"
+      ]
+    },
+    {
+      "lemma": "munch",
+      "forms": [
+        "munch",
+        "munches",
+        "munched",
+        "munching"
+      ]
+    },
+    {
+      "lemma": "nibble",
+      "forms": [
+        "nibble",
+        "nibbles",
+        "nibbled",
+        "nibbling"
+      ]
+    },
+    {
+      "lemma": "guzzle",
+      "forms": [
+        "guzzle",
+        "guzzles",
+        "guzzled",
+        "guzzling"
+      ]
+    },
+    {
+      "lemma": "quaff",
+      "forms": [
+        "quaff",
+        "quaffs",
+        "quaffed",
+        "quaffing"
+      ]
+    },
+    {
+      "lemma": "ingest",
+      "forms": [
+        "ingest",
+        "ingests",
+        "ingested",
+        "ingesting"
+      ]
+    },
+    {
+      "lemma": "inhale",
+      "forms": [
+        "inhale",
+        "inhales",
+        "inhaled",
+        "inhaling"
+      ]
+    },
+    {
+      "lemma": "deplete",
+      "forms": [
+        "deplete",
+        "depletes",
+        "depleted",
+        "depleting"
+      ]
+    },
+    {
+      "lemma": "squander",
+      "forms": [
+        "squander",
+        "squanders",
+        "squandered",
+        "squandering"
+      ]
+    },
+    {
+      "lemma": "slurp",
+      "forms": [
+        "slurp",
+        "slurps",
+        "slurped",
+        "slurping"
+      ]
+    },
+    {
+      "lemma": "chug",
+      "forms": [
+        "chug",
+        "chugs",
+        "chugged",
+        "chugging"
+      ]
+    },
+    {
+      "lemma": "gobble",
+      "forms": [
+        "gobble",
+        "gobbles",
+        "gobbled",
+        "gobbling"
+      ]
+    },
+    {
+      "lemma": "wolf",
+      "forms": [
+        "wolf",
+        "wolfs",
+        "wolfed",
+        "wolfing"
+      ]
+    },
+    {
+      "lemma": "feast",
+      "forms": [
+        "feast",
+        "feasts",
+        "feasted",
+        "feasting"
+      ]
+    },
+    {
+      "lemma": "dine",
+      "forms": [
+        "dine",
+        "dines",
+        "dined",
+        "dining"
+      ]
+    },
+    {
+      "lemma": "snack",
+      "forms": [
+        "snack",
+        "snacks",
+        "snacked",
+        "snacking"
+      ]
+    }
+  ]
+}

@@ -680,7 +680,9 @@ async def test_a_job_the_framework_ends_does_not_leave_the_offboarding_active(
                 listen=False,
                 concurrency=1,
                 timers=False,
-                max_runtime_s=1.0,
+                # The cap must end the job inside the persona's hang and after the stories are
+                # deleted; 1 s let a loaded host's deletes overrun it (#446's flake class).
+                max_runtime_s=10.0,
             ),
         )
         await run_jobs(s.db, fresh=capped)

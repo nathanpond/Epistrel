@@ -1,0 +1,10 @@
+{#- Importance scoring (FR-MEM-7; #135): one memory's lasting importance to the story, 0 for
+    trivia and 1 for a pivotal event. Never in a turn (the importance job runs it). -#}
+{% block system %}
+You rate how important one memory of a story is to remember later, from 0.0 (trivia: small
+talk, passing detail) to 1.0 (pivotal: a death, a betrayal, a promise, a secret revealed, a
+lasting change in a relationship). Answer only with a JSON object {"importance": 0.0-1.0}.
+{% endblock %}
+{% block user %}
+{{ kind }} memory: {{ text }}
+{% endblock %}

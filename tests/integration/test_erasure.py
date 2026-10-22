@@ -7,7 +7,9 @@ transcript read and the rolling summary, while Bobby, named beside her, keeps ev
 The other tests cover the dry run's complement (an unknown subject answers zeros and writes
 nothing), the refusals, an erasure with no model to regenerate the summary, on an archived
 story, a persona erased in story scope (its player character and the beats it authored) and
-then in catalog scope, and a reply voiced for the subject alone, which is hers.
+then in catalog scope, and a reply voiced for the subject alone, which is hers. #323 and #422:
+a name a scenario writes only in its objects stored as given or its own policies is indexed,
+erased at catalog scope and re-indexed by the rebuild for rows stored before the fix.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from epistrel.config import Settings
 from epistrel.core.context import RequestContext
 from epistrel.core.erasure import erase as erase_module
 from epistrel.core.erasure.erase import ErasureRequest
+from epistrel.core.erasure.index import rebuild_scope
 from epistrel.core.erasure.redact import Redactor
 from epistrel.core.erasure.verify import verify
 from epistrel.core.ids import new_ulid
@@ -727,6 +730,194 @@ async def test_every_catalog_table_is_scanned(
     assert set(ours.tables) >= CATALOG_SCOPE, sorted(CATALOG_SCOPE - set(ours.tables))
     assert ours.tables == theirs
     assert ours.count == sum(theirs.values())
+
+
+BYSTANDER = "Mabel"
+"""Who ``_stored_as_given`` names in the half that does not name her: a word no subject has."""
+
+
+def _stored_as_given(name: str, *, objects: bool = True, policies: bool = True) -> dict[str, Any]:
+    """A publishable scenario naming ``name`` only in the objects stored as given (the
+    ``starting_state`` objects and a role's ``state_initial_values``; #323, unless ``objects``
+    is false) and in its own policy (``story_settings_defaults.policies``; #422, unless
+    ``policies`` is false), with Bobby beside her (the complement). The half left out names
+    ``BYSTANDER`` instead."""
+    at = name if objects else BYSTANDER
+    body = g.scenario_body(name=f"Harvest {new_ulid()}")
+    body["cast"]["roles"][0]["state_initial_values"] = {"mood": f"{at}'s calm"}
+    body["starting_state"].update(
+        {
+            "states": [{"name": f"{at}'s trust", "initial": "wary"}],
+            "clock": {"start": "1987-10-24T18:00:00", "note": f"{at} winds the clocks."},
+            "scheduled_events": [{"at": "1987-10-24T21:00:00", "what": f"{at} meets Bobby."}],
+            "predicates": [{"name": "trusts", "docs": f"{at} trusts Bobby."}],
+            "closed_sets": [{"predicate": "trusts", "subject": "mother", "members": [at, "Bobby"]}],
+            # Typed since #149's publish check (#131's declarations): a rule names predicates
+            # only, so it holds no name; the predicate's docs and the closed set's members do.
+            "rules": [{"when": "trusts", "then": "knows"}],
+        }
+    )
+    at = name if policies else BYSTANDER
+    body["story_settings_defaults"] = {
+        "policies": [
+            {
+                "name": f"{at} stays offstage",
+                "rule": {"type": "wordlist", "words": [at, "Bobby"]},
+                "message": f"Never say where {at} lives.",
+            }
+        ]
+    }
+    return body
+
+
+OBJECT_PATHS = frozenset(
+    {
+        "cast.roles[0].state_initial_values.mood",
+        "starting_state.states[0].name",
+        "starting_state.clock.note",
+        "starting_state.scheduled_events[0].what",
+        "starting_state.predicates[0].docs",
+        "starting_state.closed_sets[0].members[0]",
+    }
+)
+"""Where ``_stored_as_given`` names her in the objects stored as given: one path each (#323)."""
+POLICY_PATHS = frozenset(
+    {
+        "story_settings_defaults.policies[0].name",
+        "story_settings_defaults.policies[0].rule.words[0]",
+        "story_settings_defaults.policies[0].message",
+    }
+)
+"""Where it names her in the scenario's policy: its name, rule and message (#422)."""
+STORED_AS_GIVEN = OBJECT_PATHS | POLICY_PATHS
+HALVES = {"both": STORED_AS_GIVEN, "objects only": OBJECT_PATHS, "policies only": POLICY_PATHS}
+"""The three scenarios: naming her in both halves, or only in one."""
+
+
+def _scenario(half: str) -> dict[str, Any]:
+    return _stored_as_given(
+        e.NAME, objects=half != "policies only", policies=half != "objects only"
+    )
+
+
+def test_the_objects_stored_as_given_and_the_policies_are_indexed() -> None:
+    """#323, #422: ``indexed_fields`` yields every string of the objects stored as given and of
+    the scenario's policies, at the stored document's paths (the ones ``Redactor.document``
+    rewrites), so a name written there is indexed."""
+    from epistrel.core.catalog.scenario_models import ScenarioDraft
+    from epistrel.core.catalog.scenarios import indexed_fields
+
+    fields = indexed_fields(ScenarioDraft.model_validate(_stored_as_given(e.NAME)))
+    assert {f for f, v in fields.items() if v is not None and e.NAME in v} == STORED_AS_GIVEN
+    assert fields["starting_state.closed_sets[0].members[1]"] == "Bobby"
+    assert fields["story_settings_defaults.policies[0].rule.type"] == "wordlist"
+
+
+async def _scenario_refs(engine: AsyncEngine, subject: str, record_ids: set[str]) -> set[Any]:
+    """``(record_table, record_id, field)`` of the subject's mentions in these scenario records."""
+    found = await rows(
+        engine,
+        "SELECT record_table, record_id, field FROM subject_references "
+        "WHERE subject_kind = 'catalog_character' AND subject_id = :s "
+        "AND record_table IN ('scenario_catalog', 'scenario_versions')",
+        s=subject,
+    )
+    return {(r.record_table, r.record_id, r.field) for r in found if r.record_id in record_ids}
+
+
+def _every_path(scenario_id: str, version: int, paths: frozenset[str]) -> set[tuple[str, ...]]:
+    """Her mention rows at ``paths`` in a scenario's draft and its version."""
+    return {
+        *(("scenario_catalog", scenario_id, f) for f in paths),
+        *(("scenario_versions", f"{scenario_id}@{version}", f) for f in paths),
+    }
+
+
+async def _erased_from_the_scenario(
+    client: Any, engine: AsyncEngine, linda: str, scenario_id: str, version: int, half: str
+) -> None:
+    """Erase Linda at catalog scope: the response's, ``verify()``'s and the test's own catalog
+    scan's residue are 0, and every path that named her (``HALVES[half]``) is redacted in the
+    draft and the version, while Bobby's and ``BYSTANDER``'s mentions are kept."""
+    done = await e.erase(client, "catalog_character", linda)
+    assert done["residue"] == 0
+    assert done["ledger_entry"]["counts"]["residue"] == 0
+    assert await e.catalog_residue(engine, (e.NAME, e.ALIAS)) == {}
+    async with engine.connect() as conn:
+        ours = await verify(conn, None, Redactor((e.NAME, e.ALIAS)))
+    assert (ours.tables, ours.count) == ({}, 0)
+    draft = await scalar(
+        engine, "SELECT draft FROM catalog.scenario_catalog WHERE id = :i", i=scenario_id
+    )
+    content = await scalar(
+        engine,
+        "SELECT content FROM catalog.scenario_versions WHERE catalog_id = :i AND version = :v",
+        i=scenario_id,
+        v=version,
+    )
+    at = "[erased]" if half != "policies only" else BYSTANDER
+    named = "[erased]" if half != "objects only" else BYSTANDER
+    for document in (draft, content):
+        start = document["starting_state"]
+        policy = document["story_settings_defaults"]["policies"][0]
+        assert document["cast"]["roles"][0]["state_initial_values"]["mood"] == f"{at}'s calm"
+        assert start["states"][0]["name"] == f"{at}'s trust"
+        assert start["clock"]["note"] == f"{at} winds the clocks."
+        assert start["scheduled_events"][0]["what"] == f"{at} meets Bobby."
+        assert start["predicates"][0]["docs"] == f"{at} trusts Bobby."
+        assert start["closed_sets"][0]["members"] == [at, "Bobby"]
+        assert start["rules"][0] == {"when": "trusts", "then": "knows"}
+        assert policy["name"] == f"{named} stays offstage"
+        assert policy["rule"]["words"] == [named, "Bobby"]
+        assert policy["message"] == f"Never say where {named} lives."
+
+
+@pytest.mark.parametrize("half", sorted(HALVES))
+async def test_a_name_in_the_objects_stored_as_given_or_a_policy_is_erased(
+    erasure_settings: Settings, engine: AsyncEngine, half: str
+) -> None:
+    """#323, #422: a scenario (draft and published version) names catalog character Linda only
+    in the objects stored as given, only in its own policy, or in both (``_stored_as_given``).
+    Each path that names her has her subject-reference row, in the draft and in the version,
+    and no other path does; a catalog-scope erasure redacts every one
+    (``_erased_from_the_scenario``), residue 0 from the response, ``verify()`` and the
+    independent catalog scan alike. Complement: Bobby's and ``BYSTANDER``'s mentions stay."""
+    async with respond_client(erasure_settings, engine) as (client, _lib):
+        linda = await e.linda(client)
+        scenario_id, version = await g.published_scenario(client, _scenario(half))
+        found = await _scenario_refs(engine, linda, {scenario_id, f"{scenario_id}@{version}"})
+        assert found == _every_path(scenario_id, version, HALVES[half])
+        await _erased_from_the_scenario(client, engine, linda, scenario_id, version, half)
+
+
+async def test_a_scenario_stored_before_the_fix_is_reindexed_by_the_rebuild(
+    erasure_settings: Settings, engine: AsyncEngine
+) -> None:
+    """#323, #422: a scenario whose rows were written before the fix (its rows at
+    ``STORED_AS_GIVEN`` removed, as the old ``indexed_fields`` left none) is reported by the
+    catalog rebuild (``index.rebuild_scope``, the ``reindex_subjects --catalog`` tool), which
+    with ``write`` puts every row back; the catalog-scope erasure then leaves nothing."""
+    async with respond_client(erasure_settings, engine) as (client, _lib):
+        linda = await e.linda(client)
+        scenario_id, version = await g.published_scenario(client, _scenario("both"))
+        ours = {scenario_id, f"{scenario_id}@{version}"}
+        before = _every_path(scenario_id, version, STORED_AS_GIVEN)
+        assert await _scenario_refs(engine, linda, ours) == before
+        await execute_in_tx(
+            engine,
+            (
+                "DELETE FROM subject_references WHERE record_table IN "
+                "('scenario_catalog', 'scenario_versions') AND record_id = ANY(:r) "
+                "AND field = ANY(:f)",
+                {"r": sorted(ours), "f": sorted(STORED_AS_GIVEN)},
+            ),
+        )
+        assert await _scenario_refs(engine, linda, ours) == set()
+        missing = (await rebuild_scope(engine, None)).missing
+        assert {(r[4], r[5], r[6]) for r in missing if r[1] == linda and r[5] in ours} == before
+        await rebuild_scope(engine, None, write=True)
+        assert await _scenario_refs(engine, linda, ours) == before
+        await _erased_from_the_scenario(client, engine, linda, scenario_id, version, "both")
 
 
 async def test_a_legacy_key_without_a_sent_hash_conflicts_after_an_erasure(

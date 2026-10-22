@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable, Coroutine
+from collections.abc import AsyncIterator, Callable, Coroutine, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -59,6 +59,12 @@ class JobContext:
         version = await input_versions.read_version(conn, key)
         self.input_versions[key] = version
         return version
+
+    async def declare_inputs(self, conn: AsyncConnection, keys: Sequence[str]) -> None:
+        """``declare_input`` for each of ``keys``, in their order, read in one statement per
+        table (``input_versions.read_versions``, #452)."""
+        for key, version in (await input_versions.read_versions(conn, keys)).items():
+            self.input_versions[key] = version
 
 
 Stage = Callable[[Operation], None]

@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.config import Settings
 from tests import erasure_support as e
 from tests.event_support import execute_in_tx, rows, scalar
-from tests.respond_support import body, new_story, played, respond, respond_client
+from tests.respond_support import assert_kept, body, new_story, played, respond, respond_client
 
 pytestmark = pytest.mark.integration
 
@@ -94,8 +94,7 @@ async def test_erasing_will_black_spares_the_words_will_and_black(
         lib.models.stub.reset()
         lib.models.stub.script("generation", [LATER])
         later = await respond(client, story, body(ids["Wren"], "And the weather?"))
-        assert later.status_code == 200, later.text
-        assert LATER in later.text
+        assert_kept(later, LATER)
 
         budget = int(
             await scalar(
@@ -269,7 +268,7 @@ async def test_the_guard_refuses_every_folded_or_dashed_form(
         lib.models.stub.reset()
         lib.models.stub.script("generation", ["Ty sees Mary Smith and Jane Doe."])
         kept = await respond(client, story, body(ids["Wren"], "Who is there?"))
-        assert kept.status_code == 200, kept.text
+        assert_kept(kept, "Ty sees Mary Smith and Jane Doe.")
 
 
 async def test_a_devanagari_name_word_matches_only_a_whole_word(
@@ -303,7 +302,7 @@ async def test_a_devanagari_name_word_matches_only_a_whole_word(
         lib.models.stub.reset()
         lib.models.stub.script("generation", ["Ty reads the रामायण again."])
         kept = await respond(client, story, body(ids["Wren"], "What now?"))
-        assert kept.status_code == 200, kept.text
+        assert_kept(kept, "Ty reads the रामायण again.")
 
 
 async def test_an_erasure_re_indexes_the_story_before_it_redacts(

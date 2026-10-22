@@ -67,7 +67,7 @@ def test_deferred_only_items_and_public_fields_are_not_rendered() -> None:
     for absent in (
         body["public_card"]["public_description"],
         "Her children are home for the weekend.",
-        "Nobody leaves before the will is read.",
+        "inherits",
         "the reading of the will",
         "The brother forged the second sale.",
         scenarios.GUIDANCE_SECRET,

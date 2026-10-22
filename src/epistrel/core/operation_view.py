@@ -31,6 +31,17 @@ reached it (null while pending); an erasure's summary regeneration can also be `
   ``pending`` until the work after its commit records them.
 
 Any other operation has no label and ``stages: []``.
+
+**The read set (#136).** An operation that captured one reports ``read_set``: ``keys_count`` (the
+query keys of its structured lookups, FR-CONC-11; 0 for a Lite turn), ``retrieved_count`` (rows
+read as generation context only) and, to a read naming the ``omniscient`` viewpoint only, the
+keys themselves (``{subject, predicate, object, holder, window, result_hash}``: ids and hashes);
+``null`` for an operation with no read set.
+
+**Eval hooks (#155).** A committed structured turn's ``turn_report.eval_hooks`` (FR-OBS-2: the
+raw render's event ids, the verification verdicts, the repair rungs, the model calls by purpose
+and the latency by stage) is returned to a read naming the ``omniscient`` viewpoint only, its
+verdicts expanded from the report sections it names; ``null`` otherwise.
 """
 
 from __future__ import annotations
@@ -46,6 +57,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from epistrel.core.enums import OperationKind, OperationStatus
 from epistrel.core.errors import EpistrelError, IdempotencyConflict
 from epistrel.core.idempotency import StoredResult, stored_result
+from epistrel.core.readset import read_set_counts, stored_keys
 from epistrel.core.settings_schema import OMNISCIENT
 from epistrel.core.tables import offboarding_jobs, operations, rating_check_jobs
 from epistrel.core.tables.rating_checks import RatingCheckKind, RatingCheckStatus
@@ -96,6 +108,15 @@ class OperationNotFound(EpistrelError):
 
 
 @dataclass(frozen=True, slots=True)
+class ReadSetView:
+    """An operation's read set as the view reports it (see the module docstring)."""
+
+    keys_count: int
+    retrieved_count: int
+    keys: list[dict[str, Any]] | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class OperationView:
     id: str
     story_id: str | None
@@ -125,6 +146,11 @@ class OperationView:
     """What a long-running operation was for (see the module docstring), else ``None``."""
     stages: list[Stage] = field(default_factory=list)
     """A long-running operation's stages, in order (see the module docstring)."""
+    read_set: ReadSetView | None = None
+    """The operation's read set (#136), ``None`` when it captured none."""
+    eval_hooks: dict[str, Any] | None = None
+    """A structured turn's eval hooks (#155), its verdicts expanded, returned only to a read
+    naming the ``omniscient`` viewpoint."""
 
 
 INGESTED = "ingested"
@@ -188,6 +214,43 @@ async def read_operation(
         creation_report=_creation_report(row, viewpoint),
         label=label,
         stages=stages,
+        read_set=_read_set(row.read_set, viewpoint),
+        eval_hooks=expanded_eval_hooks(row.turn_report) if _omniscient(viewpoint) else None,
+    )
+
+
+def expanded_eval_hooks(report: Any) -> dict[str, Any] | None:
+    """A turn report's ``eval_hooks`` (#155) with its ``verdicts`` expanded from the report
+    sections it names (``{"sections": ["verify", ...]}``: the hooks reference the verdicts
+    rather than copy them); ``None`` when the report has none."""
+    if not isinstance(report, dict):
+        return None
+    hooks = report.get("eval_hooks")
+    if not isinstance(hooks, dict):
+        return None
+    pointer = hooks.get("verdicts")
+    sections = pointer.get("sections", []) if isinstance(pointer, dict) else []
+    verdicts: list[Any] = []
+    for name in sections:
+        section = report.get(name)
+        if isinstance(section, dict):
+            verdicts += list(section.get("verdicts") or [])
+    return {**hooks, "verdicts": verdicts}
+
+
+def _omniscient(viewpoint: str | None) -> bool:
+    return viewpoint is not None and viewpoint.strip().casefold() == OMNISCIENT
+
+
+def _read_set(document: Any, viewpoint: str | None) -> ReadSetView | None:
+    """Counts for every read; the keys for an omniscient one only (#136)."""
+    if document is None:
+        return None
+    counts = read_set_counts(document)
+    return ReadSetView(
+        keys_count=counts["keys_count"],
+        retrieved_count=counts["retrieved_count"],
+        keys=[k.view() for k in stored_keys(document)] if _omniscient(viewpoint) else None,
     )
 
 

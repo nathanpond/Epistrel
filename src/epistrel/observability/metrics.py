@@ -17,8 +17,31 @@ The registry holds:
   recurring task, 0 when none), ``epistrel_workers_alive`` (heartbeats within
   ``worker_heartbeat_timeout``) and ``epistrel_turn_queue_depth{story_id}`` (turns waiting
   behind the running one, per story with any; #76);
-- ``epistrel_turn_stage_seconds{stage}`` (``observability.stages``, #76): Lite turn latency by
-  stage.
+- ``epistrel_turn_stage_seconds{stage}`` (``observability.stages``, #76, #153): turn latency by
+  stage;
+- ``epistrel_quarantines_total{reason}`` (``author`` or ``repeated_implication``) and
+  ``epistrel_sanitizes_total``: #145's mutation primitives (``core.mutation``);
+- ``epistrel_thunks_total{event}`` (``introduced``, ``resolved``, ``expired``),
+  ``epistrel_ledger_total{event}`` (``created``, ``discharged``) and
+  ``epistrel_minimal_commits_total``: #146's commitment lifecycle (``core.commit.lifecycle``);
+- #147's hot set (FR-MEM-8): the scrape-time gauges ``epistrel_hot_overflow{scope}`` (the
+  summed excess of the open overflow episodes, ``character`` or ``story``; 0 when none is open)
+  and ``epistrel_hot_overflow_episodes_open{scope}``, and the counters
+  ``epistrel_hot_retirements_total{reason}`` (``covered``, ``floor``, ``uncovered``) and
+  ``epistrel_hot_counts_corrected_total`` (the daily reconcile);
+- ``epistrel_claims_detected_total{layer,category}`` and
+  ``epistrel_claims_checked_total{verdict,category}``: #148's claim detection, two separate
+  series (FR-VERIFY-13: detection and checking are reported apart), counted at a turn's commit;
+- ``epistrel_repairs_total{rung,class}``: #151's repair ladder, one per corrected beat, counted
+  at a turn's commit (``count_repair``): ``rung`` names the rung accepted (``narrowing``,
+  ``substitution``, ``regeneration``, ``safe_fallback``) and ``class`` its FR-REPAIR-4 class
+  (``cosmetic``, ``substitution``, ``cascade``), both bounded enums;
+- ``epistrel_verify_escalations_total{gate_reason,shape,flipped}`` and
+  ``epistrel_verify_shadow_total{shape,agreed}``: #155's escalation records, counted at a
+  turn's commit: the gate reason and the predicate shape (its four enum values joined by
+  ``__``, ``core__functional__fluent__affirmed``), whether the model flipped the tentative
+  verdict (``true``, ``false``, ``none``), and, for an escalation a proposed tightening would
+  have skipped, whether skipping agreed.
 
 Label values are enums, ULIDs, route names, HTTP statuses or sanitised model names (#44's rule),
 never content. prometheus-client's default process, platform and GC collectors are removed.
@@ -28,6 +51,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import threading
 from collections.abc import Iterator
 
@@ -71,6 +95,114 @@ OPERATIONS = Counter(
     ("kind", "outcome"),
 )
 
+QUARANTINES = Counter(
+    "epistrel_quarantines",
+    "Memories quarantined, by reason (author: an author's call; repeated_implication: the "
+    "output gate's convergence rule).",
+    ("reason",),
+)
+SANITIZES = Counter("epistrel_sanitizes", "Memory texts sanitized by a surrogate.")
+THUNKS = Counter(
+    "epistrel_thunks",
+    "Thunks by lifecycle event (introduced, resolved by a dependence, a binding rejected by "
+    "reconciliation, expired).",
+    ("event",),
+)
+LEDGER = Counter(
+    "epistrel_ledger",
+    "Promissory-ledger entries by event (created by a salient reference, discharged).",
+    ("event",),
+)
+MINIMAL_COMMITS = Counter(
+    "epistrel_minimal_commits",
+    "Salient references discharged by the deterministic minimal commit.",
+)
+RETIREMENTS = Counter(
+    "epistrel_hot_retirements",
+    "Memories retired from the hot set, by reason (covered, floor, uncovered).",
+    ("reason",),
+)
+HOT_COUNTS_CORRECTED = Counter(
+    "epistrel_hot_counts_corrected",
+    "Stories whose stored hot-set counters the daily reconcile found wrong and corrected.",
+)
+CLAIMS_DETECTED = Counter(
+    "epistrel_claims_detected",
+    "Claims claim detection found, by layer (declared, detector, extraction) and category "
+    "(FR-VERIFY-13): what was detected, apart from what was checked.",
+    ("layer", "category"),
+)
+CLAIMS_CHECKED = Counter(
+    "epistrel_claims_checked",
+    "Detected claims verification checked, by verdict (supported, contradicted, novel, "
+    "uncertain, denied) and category: what was checked, apart from what was detected.",
+    ("verdict", "category"),
+)
+REPAIRS = Counter(
+    "epistrel_repairs",
+    "Beats the repair ladder corrected, by the rung accepted (narrowing, substitution, "
+    "regeneration, safe_fallback) and FR-REPAIR-4 class (cosmetic, substitution, cascade).",
+    ("rung", "class"),
+)
+REPAIR_RUNGS: dict[int, str] = {
+    1: "narrowing",
+    2: "substitution",
+    3: "regeneration",
+    4: "safe_fallback",
+}
+"""The ``rung`` label of ``epistrel_repairs_total``: each rung's name (label values are enums,
+#44's rule)."""
+REPAIR_CLASSES = frozenset({"cosmetic", "substitution", "cascade"})
+
+
+VERIFY_ESCALATIONS = Counter(
+    "epistrel_verify_escalations",
+    "Entailment escalations recorded at a turn's commit, by gate reason, predicate shape "
+    "(layer|cardinality|temporal|polarity) and whether the model flipped the tentative verdict "
+    "(true, false, none: no valid answer).",
+    ("gate_reason", "shape", "flipped"),
+)
+VERIFY_SHADOW = Counter(
+    "epistrel_verify_shadow",
+    "Escalations a proposed gate tightening would have skipped, by predicate shape and whether "
+    "skipping agreed with the model.",
+    ("shape", "agreed"),
+)
+
+
+_SHAPE_LABEL = re.compile(r"^[a-z_]+$")
+
+
+def shape_label(shape: str) -> str:
+    """A predicate shape key as a label value: its four enum values joined by ``__`` (``|`` is
+    outside #44's label grammar); ``other`` for anything that is not four enum values."""
+    label = shape.replace("|", "__")
+    return label if shape.count("|") == 3 and _SHAPE_LABEL.match(label) else "other"
+
+
+def count_escalation(gate_reason: str, shape: str, flipped: bool | None) -> None:
+    """Count one recorded escalation (``epistrel_verify_escalations_total``; #155)."""
+    label = "none" if flipped is None else ("true" if flipped else "false")
+    VERIFY_ESCALATIONS.labels(
+        gate_reason=gate_reason, shape=shape_label(shape), flipped=label
+    ).inc()
+
+
+def count_shadow(shape: str, agreed: bool) -> None:
+    """Count one would-have-skipped escalation (``epistrel_verify_shadow_total``; #155)."""
+    VERIFY_SHADOW.labels(shape=shape_label(shape), agreed="true" if agreed else "false").inc()
+
+
+def count_repair(rung: int, repair_class: str) -> None:
+    """Count one corrected beat (``epistrel_repairs_total{rung,class}``); a rung or class
+    outside the ladder's is a programming error."""
+    if rung not in REPAIR_RUNGS or repair_class not in REPAIR_CLASSES:
+        raise ValueError(f"unknown repair rung {rung} or class {repair_class}")
+    REPAIRS.labels(rung=REPAIR_RUNGS[rung], **{"class": repair_class}).inc()
+
+
+HOT_SCOPES = ("character", "story")
+
 _GAUGES_SQL = text(
     """
     SELECT
@@ -86,6 +218,10 @@ _GAUGES_SQL = text(
     """
 )
 _QUEUED_SQL = text("SELECT kind, count(*) AS n FROM jobs WHERE status = 'queued' GROUP BY kind")
+_OVERFLOW_SQL = text(
+    "SELECT scope, count(*) AS n, coalesce(sum(excess), 0) AS excess FROM overflow_episodes "
+    "WHERE closed_turn IS NULL GROUP BY scope"
+)
 _TURN_QUEUE_SQL = text(
     """
     SELECT q.story_id, count(*) AS n FROM turn_queue q
@@ -143,8 +279,26 @@ class SchedulerGauges(Collector):
                 ).one()
                 queued = conn.execute(_QUEUED_SQL).all()
                 waiting = conn.execute(_TURN_QUEUE_SQL).all()
+                overflowing = {str(r.scope): r for r in conn.execute(_OVERFLOW_SQL)}
         except Exception:
             return
+        excess = GaugeMetricFamily(
+            "epistrel_hot_overflow",
+            "How far the hot sets with an open overflow episode are over their budgets, summed "
+            "over the stories (0: no episode open), by scope (character, story).",
+            labels=["scope"],
+        )
+        episodes = GaugeMetricFamily(
+            "epistrel_hot_overflow_episodes_open",
+            "Open hot-set overflow episodes, by scope (character, story).",
+            labels=["scope"],
+        )
+        for scope in HOT_SCOPES:
+            found = overflowing.get(scope)
+            excess.add_metric([scope], float(found.excess) if found is not None else 0.0)
+            episodes.add_metric([scope], float(found.n) if found is not None else 0.0)
+        yield excess
+        yield episodes
         family = GaugeMetricFamily(
             "epistrel_jobs_queued", "Queued background jobs by kind.", labels=["kind"]
         )
@@ -203,10 +357,22 @@ async def metrics() -> Response:
 
 __all__ = [
     "GAUGES",
+    "HOT_COUNTS_CORRECTED",
+    "HOT_SCOPES",
     "HTTP_DURATION",
+    "LEDGER",
+    "MINIMAL_COMMITS",
     "OPERATIONS",
+    "QUARANTINES",
+    "REPAIRS",
+    "REPAIR_CLASSES",
+    "REPAIR_RUNGS",
     "REQUEST_BUCKETS",
+    "RETIREMENTS",
+    "SANITIZES",
+    "THUNKS",
     "SchedulerGauges",
+    "count_repair",
     "render_metrics",
     "router",
 ]

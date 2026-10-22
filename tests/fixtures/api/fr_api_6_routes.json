@@ -884,6 +884,26 @@
       "method": "DELETE",
       "path": "/admin/feedback/exports/{export_id}",
       "why": "FR-FB-4: delete an export's file (#126)"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/evals/escalation-yield",
+      "why": "FR-OBS-2, NFR-PERF-5: escalation yield per gate reason and predicate shape (#155)"
+    },
+    {
+      "method": "PUT",
+      "path": "/admin/verify/gate",
+      "why": "FR-OBS-4: propose (shadow) or apply a per-shape gate tightening (#155)"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/verify/gate/{shape}/promote",
+      "why": "FR-OBS-4: promote a shadowed gate tightening (#155)"
+    },
+    {
+      "method": "DELETE",
+      "path": "/admin/verify/gate/{shape}",
+      "why": "FR-OBS-4: remove a gate tightening, the undo of its write (#155)"
     }
   ],
   "outside": [
@@ -963,6 +983,16 @@
       "requirement": "FR-LITE-3"
     },
     {
+      "method": "POST",
+      "path": "/stories/{story_id}/memories/{memory_id}/pin",
+      "requirement": "FR-MEM-8"
+    },
+    {
+      "method": "DELETE",
+      "path": "/stories/{story_id}/memories/{memory_id}/pin",
+      "requirement": "FR-MEM-8"
+    },
+    {
       "method": "GET",
       "path": "/stories/{story_id}/settings",
       "requirement": "FR-ADMIN-1"
@@ -996,6 +1026,56 @@
       "method": "POST",
       "path": "/admin/stories/{story_id}/rebuild",
       "requirement": "FR-STORE-2"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/stories/{story_id}/consolidate",
+      "requirement": "FR-MEM-3"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/stories/{story_id}/hot-set",
+      "requirement": "FR-MEM-8"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/stories/{story_id}/memories/{memory_id}/quarantine",
+      "requirement": "FR-GUARD-4"
+    },
+    {
+      "method": "DELETE",
+      "path": "/admin/stories/{story_id}/memories/{memory_id}/quarantine",
+      "requirement": "FR-GUARD-4"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/stories/{story_id}/memories/{memory_id}/sanitize",
+      "requirement": "FR-GUARD-4"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/stories/{story_id}/facts",
+      "requirement": "FR-GUARD-4"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/stories/{story_id}/facts",
+      "requirement": "FR-GUARD-4"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/stories/{story_id}/facts/{fact_id}/supersede",
+      "requirement": "FR-GUARD-4"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/stories/{story_id}/facts/{fact_id}/lock",
+      "requirement": "FR-GUARD-4"
+    },
+    {
+      "method": "DELETE",
+      "path": "/admin/stories/{story_id}/facts/{fact_id}/lock",
+      "requirement": "FR-GUARD-4"
     },
     {
       "method": "GET",
@@ -1056,6 +1136,66 @@
       "method": "GET",
       "path": "/admin/content-ratings/{rating_id}/versions",
       "requirement": "FR-RATE-1"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/predicates",
+      "requirement": "FR-PROP-4"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/predicates/{predicate_id}/approve",
+      "requirement": "FR-PROP-4"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/predicates/{predicate_id}/reject",
+      "requirement": "FR-PROP-4"
+    },
+    {
+      "method": "GET",
+      "path": "/engine-profiles/{profile_id}/guarantees",
+      "requirement": "FR-PROF-12"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/guarantees",
+      "requirement": "FR-PROF-12"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/scene",
+      "requirement": "FR-STORE-3"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/entities/{entity_id}/profile",
+      "requirement": "FR-RET-6"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/retrieve",
+      "requirement": "FR-RET-2"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/reembed/status",
+      "requirement": "FR-EMBED-3"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/reembed/retry",
+      "requirement": "FR-EMBED-3"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/inspect/ledger",
+      "requirement": "FR-COMMIT-13"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/evals/extraction-shadow",
+      "requirement": "FR-OBS-4"
     }
   ]
 }

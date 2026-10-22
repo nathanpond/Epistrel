@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import ast
+import fnmatch
 import re
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -126,21 +130,247 @@ def test_chaos_runs_weekly_and_on_dispatch_and_reports_a_red_run() -> None:
     assert "Weekly chaos run failed" in report["run"]
 
 
+CHAOS_SEEDED = ("test_x_03.py", "test_x_04.py", "test_x_05.py")
+
+
+def _seed_print_leads() -> dict[str, list[str]]:
+    """Per seeded chaos file, the whitespace each `seed=` print starts with. Each seed print
+    must also be the first print in its function (asserted here): it is the line pytest's `-s`
+    output prefixes."""
+    leads: dict[str, list[str]] = {}
+    for name in CHAOS_SEEDED:
+        tree = ast.parse((REPO_ROOT / "tests" / "chaos" / name).read_text())
+        for fn in ast.walk(tree):
+            if not isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            prints = sorted(
+                (
+                    c
+                    for c in ast.walk(fn)
+                    if isinstance(c, ast.Call)
+                    and isinstance(c.func, ast.Name)
+                    and c.func.id == "print"
+                    and isinstance(c.args[0], ast.JoinedStr)
+                ),
+                key=lambda c: c.lineno,
+            )
+            for i, call in enumerate(prints):
+                fstring = call.args[0]
+                assert isinstance(fstring, ast.JoinedStr)
+                parts = [v.value for v in fstring.values if isinstance(v, ast.Constant)]
+                if not any("seed=" in str(p) for p in parts):
+                    continue
+                assert i == 0, f"{name}:{call.lineno}: the seed print is not {fn.name}'s first"
+                first = fstring.values[0]
+                text = str(first.value) if isinstance(first, ast.Constant) else ""
+                leads.setdefault(name, []).append(text[: len(text) - len(text.lstrip())])
+    return leads
+
+
+def test_chaos_seed_lines_start_a_line_of_their_own() -> None:
+    """#309: under `-s` pytest writes the file path or progress dots ahead of a test's first
+    print, so each seed print starts with a newline to stand on a line of its own."""
+    leads = _seed_print_leads()
+    assert set(leads) == set(CHAOS_SEEDED)
+    late = {n: ls for n, ls in leads.items() if not all(lead.startswith("\n") for lead in ls)}
+    assert late == {}, "a chaos seed print does not start with a newline"
+
+
+def _chaos_greps() -> dict[str, str]:
+    """The `grep -E` pattern of each chaos.yml step that reads the seed lines, by step name."""
+    steps = {s.get("name"): s.get("run", "") for s in _steps(_workflow("chaos.yml"), "chaos")}
+    found = {}
+    for name, needle in (("Summarise", "X-0"), ("Report a red run", "seed=")):
+        (pattern,) = [
+            p
+            for p in re.findall(r"grep -E '([^']+)' build/chaos/chaos.log", steps[name])
+            if needle in p
+        ]
+        found[name] = pattern
+    return found
+
+
+def test_chaos_greps_find_the_seeds_in_pytest_s_output() -> None:
+    """#309: the step summary and a red run's issue list every seed, whatever pytest writes
+    before a test's first print, and the summary leaves out a failed test's source lines."""
+    leads = _seed_print_leads()
+    seeds = [
+        ("tests/chaos/test_x_03.py ", "test_x_03.py", "X-03 seed=1883324247 iterations=500 ops=10"),
+        ("..", "test_x_04.py", "X-04 seed=1869950226 iterations=500 keys=20"),
+        (".", "test_x_04.py", "X-04 slow-engine seed=1869950226 iterations=500 keys=6"),
+        ("tests/chaos/test_x_05.py ", "test_x_05.py", "X-05 seed=1072740067 iterations=500"),
+    ]
+    lines = [
+        (p, n, seed, seed.split(" seed=")[0] + " outcomes={'ok': 500}") for p, n, seed in seeds
+    ]
+    log = "".join(f"{p}{leads[n][0]}{seed}\n{tally}\n" for p, n, seed, tally in lines)
+    log += '>       print(f"X-03 seed={SEED} iterations={ITERATIONS} ops={OPS}")\n'
+    log += "E       AssertionError: seed=1883324247: no crash point fired\n"
+    expected = {
+        "Summarise": [line for _, _, seed, tally in lines for line in (seed, tally)],
+        "Report a red run": [seed for _, _, seed, _ in lines],
+    }
+    grep = shutil.which("grep")
+    assert grep is not None, "the workflow's greps need a grep on PATH"
+    for step, pattern in _chaos_greps().items():
+        out = subprocess.run(
+            [grep, "-E", pattern], input=log, capture_output=True, text=True, check=False
+        ).stdout.splitlines()
+        assert out == expected[step], f"{step}: {pattern!r} printed {out}"
+
+
 def test_perf_runs_nightly_and_on_dispatch_and_reports_a_red_run() -> None:
     """#76: P-03 at full size and its quick subset every night (03:00 UTC) and on dispatch, with
     the benchmark timings uploaded; a red run files or comments on an issue."""
     wf = _workflow("perf.yml")
     triggers = _on(wf)
-    assert triggers["schedule"] == [{"cron": "0 3 * * *"}]
+    assert {"cron": "0 3 * * *"} in triggers["schedule"]
     assert "workflow_dispatch" in triggers
     assert wf["permissions"] == {"contents": "read"}
     job = wf["jobs"]["perf"]
+    assert "'0 3 * * *'" in job["if"]
+    assert "inputs.suite == 'nightly'" in job["if"]
     assert job["permissions"] == {"contents": "read", "issues": "write"}
     run = next(s for s in _steps(wf, "perf") if s.get("id") == "perf")
     assert '-m "perf_quick or perf_long"' in run["run"]
     assert "--benchmark-json=" in run["run"]
     report = next(s for s in _steps(wf, "perf") if s.get("name") == "Report a red run")
     assert "Nightly perf run failed" in report["run"]
+
+
+def test_perf_runs_the_scale_suite_weekly_and_opens_a_docs_pr() -> None:
+    """#153: the scale suite every Sunday (03:00 UTC) and on dispatch (``suite: weekly``) on the
+    GitHub-hosted runner, labelled ``github-runner``, with the fixture cached by its key; only
+    the ``perf_weekly`` tests run there; a red run files or comments on an issue; the docs job
+    renders docs/perf.md and docs/capacity.md red or green and opens the rolling PR, and is the
+    only job that may write contents or pull requests.
+
+    Complement asserted: the nightly job does not run on the weekly schedule, the weekly job not
+    on the nightly one, and PR CI names no ``perf_weekly``."""
+    wf = _workflow("perf.yml")
+    triggers = _on(wf)
+    assert {"cron": "0 3 * * 0"} in triggers["schedule"]
+    assert triggers["workflow_dispatch"]["inputs"]["suite"]["options"] == ["nightly", "weekly"]
+    weekly, docs = wf["jobs"]["weekly"], wf["jobs"]["weekly-docs"]
+    assert "'0 3 * * 0'" in weekly["if"]
+    assert "'0 3 * * *'" not in weekly["if"]
+    assert "'0 3 * * 0'" not in wf["jobs"]["perf"]["if"]
+    assert weekly["permissions"] == {"contents": "read", "issues": "write"}
+    assert weekly["timeout-minutes"] == 180
+    assert weekly["env"]["EPISTREL_TEST_PERF_HOST"] == "github-runner"
+    assert "EPISTREL_TEST_PERF_CACHE_DIR" in weekly["env"]
+    steps = _steps(wf, "weekly")
+    (cache,) = [s for s in steps if str(s.get("uses", "")).startswith("actions/cache@")]
+    assert "steps.fixture.outputs.key" in cache["with"]["key"]
+    run = next(s for s in steps if s.get("id") == "weekly")
+    assert "-m perf_weekly" in run["run"]
+    for name in ("test_p_01.py", "test_p_02.py", "test_p_06.py"):
+        assert f"tests/perf/{name}" in run["run"]
+    report = next(s for s in steps if s.get("name") == "Report a red run")
+    assert "Weekly perf run failed" in report["run"]
+    assert docs["needs"] == ["weekly", "weekly-structured"]
+    assert "failure" in docs["if"]
+    assert docs["permissions"] == {"contents": "write", "pull-requests": "write"}
+    others = {n: j.get("permissions", {}) for n, j in wf["jobs"].items() if n != "weekly-docs"}
+    assert all(p.get("contents") == "read" for p in others.values()), others
+    assert all("pull-requests" not in p for p in others.values()), others
+    docs_steps = _steps(wf, "weekly-docs")
+    assert any("python -m epistrel.tools.perf_docs" in s.get("run", "") for s in docs_steps)
+    (pr,) = [s for s in docs_steps if str(s.get("uses", "")).startswith("peter-evans/")]
+    assert pr["with"]["branch"] == "perf/weekly"
+    assert pr["with"]["labels"] == "performance"
+    assert set(pr["with"]["add-paths"].split()) == {
+        "docs/perf.md",
+        "docs/capacity.md",
+        "perf/results/*-structured.md",
+        "perf/results/*-structured.json",
+    }
+    (pytest_step,) = [
+        s for s in _steps(_workflow("ci.yml"), "test") if "pytest" in s.get("run", "")
+    ]
+    assert "perf_weekly" not in pytest_step["run"]
+
+
+def test_perf_runs_the_structured_workload_weekly() -> None:
+    """#153 (P-04 M4): the structured variant runs on the weekly schedule and on dispatch, on the
+    GitHub-hosted runner as host class ``ci`` for 30 minutes, with Locust from the ``perf``
+    group and its seed cached by its key; it fails on failed, lost or duplicated turns (the
+    gate itself is reported there, not enforced), uploads the report, its sidecar and Locust's
+    HTML report, and files or comments on the weekly issue when red; the docs job commits the
+    report.
+
+    Complement asserted: it does not run on the nightly schedule, and it may not write
+    contents."""
+    wf = _workflow("perf.yml")
+    job = wf["jobs"]["weekly-structured"]
+    assert "'0 3 * * 0'" in job["if"]
+    assert "inputs.suite == 'weekly'" in job["if"]
+    assert "'0 3 * * *'" not in job["if"]
+    assert job["permissions"] == {"contents": "read", "issues": "write"}
+    assert job["timeout-minutes"] == 180
+    steps = _steps(wf, "weekly-structured")
+    assert any(s.get("run") == "uv sync --frozen --group perf" for s in steps)
+    (cache,) = [s for s in steps if str(s.get("uses", "")).startswith("actions/cache@")]
+    assert cache["with"]["path"] == "build/perf/cache"
+    assert "steps.seed.outputs.key" in cache["with"]["key"]
+    run = next(s for s in steps if s.get("id") == "structured")
+    assert (
+        "python -m perf.lite_smoke --scenario structured --minutes 30 --host-class ci" in run["run"]
+    )
+    check = next(s for s in steps if s.get("id") == "turns")
+    for field in ('f["failed"]', 'f["lost"]', 'f["duplicated"]', "sys.exit(1"):
+        assert field in check["run"]
+    (upload,) = [s for s in steps if str(s.get("uses", "")).startswith("actions/upload-artifact@")]
+    assert upload["with"]["name"] == "perf-structured"
+    assert any("locust.html" in s.get("run", "") for s in steps)
+    report = next(s for s in steps if s.get("name") == "Report a red run")
+    assert "Weekly perf run failed" in report["run"]
+    docs_steps = _steps(wf, "weekly-docs")
+    assert any(s.get("with", {}).get("name") == "perf-structured" for s in docs_steps)
+    assert any("perf/results/" in s.get("run", "") for s in docs_steps)
+
+
+def test_redteam_runs_nightly_and_on_dispatch_and_reports_a_red_run() -> None:
+    """#145: R-01's full corpus (`redteam_long`) and the PR subset every night (03:30 UTC) and
+    on dispatch, with the log uploaded; a red run files or comments on an issue. PR CI names
+    no `redteam_long`, so the conftest deselects the full corpus there (the complement)."""
+    wf = _workflow("redteam.yml")
+    triggers = _on(wf)
+    assert triggers["schedule"] == [{"cron": "30 3 * * *"}]
+    assert "workflow_dispatch" in triggers
+    assert wf["permissions"] == {"contents": "read"}
+    job = wf["jobs"]["redteam"]
+    assert job["permissions"] == {"contents": "read", "issues": "write"}
+    run = next(s for s in _steps(wf, "redteam") if s.get("id") == "redteam")
+    assert '-m "redteam or redteam_long"' in run["run"]
+    report = next(s for s in _steps(wf, "redteam") if s.get("name") == "Report a red run")
+    assert "Nightly red-team run failed" in report["run"]
+    (pytest_step,) = [
+        s for s in _steps(_workflow("ci.yml"), "test") if "pytest" in s.get("run", "")
+    ]
+    assert "redteam_long" not in pytest_step["run"]
+
+
+def test_soak_runs_weekly_and_on_dispatch_and_reports_a_red_run() -> None:
+    """#147: X-01's soak every Sunday (05:00 UTC) and on dispatch, under a two-hour budget, with
+    the log uploaded; a red run files or comments on an issue. PR CI names no `soak`, so the
+    conftest deselects it there (the complement)."""
+    wf = _workflow("soak.yml")
+    triggers = _on(wf)
+    assert triggers["schedule"] == [{"cron": "0 5 * * 0"}]
+    assert "workflow_dispatch" in triggers
+    assert wf["permissions"] == {"contents": "read"}
+    job = wf["jobs"]["soak"]
+    assert job["permissions"] == {"contents": "read", "issues": "write"}
+    assert job["timeout-minutes"] == 120
+    run = next(s for s in _steps(wf, "soak") if s.get("id") == "soak")
+    assert "-m soak" in run["run"]
+    report = next(s for s in _steps(wf, "soak") if s.get("name") == "Report a red run")
+    assert "Weekly soak run failed" in report["run"]
+    (pytest_step,) = [
+        s for s in _steps(_workflow("ci.yml"), "test") if "pytest" in s.get("run", "")
+    ]
+    assert "soak" not in pytest_step["run"]
 
 
 def test_pr_ci_runs_only_the_quick_chaos_tests() -> None:
@@ -153,3 +383,150 @@ def test_pr_ci_runs_only_the_quick_chaos_tests() -> None:
         '-m "not live_model and (not chaos or chaos_quick) and (not perf_long or perf_quick)"'
         in pytest_step["run"]
     )
+
+
+def test_p04_expiry_reminds_daily_and_files_one_issue() -> None:
+    """#283: every day (06:00 UTC) and on dispatch, `perf.lite_smoke.freshness` judges the newest
+    full-length P-04 report; when the reminder is due, one "P-04 report expires" issue is opened
+    with the rerun command.
+
+    Complement asserted: the issue step runs only when the reminder is due, and files nothing
+    while such an issue is open."""
+    wf = _workflow("p04-expiry.yml")
+    triggers = _on(wf)
+    assert triggers["schedule"] == [{"cron": "0 6 * * *"}]
+    assert "workflow_dispatch" in triggers
+    assert wf["permissions"] == {"contents": "read"}
+    job = wf["jobs"]["remind"]
+    assert job["permissions"] == {"contents": "read", "issues": "write"}
+    check = next(s for s in _steps(wf, "remind") if s.get("id") == "freshness")
+    assert "python -m perf.lite_smoke.freshness" in check["run"]
+    assert '"$GITHUB_OUTPUT"' in check["run"]
+    remind = next(s for s in _steps(wf, "remind") if s.get("name") == "Open the reminder")
+    assert remind["if"] == "steps.freshness.outputs.due == 'true'"
+    script = remind["run"]
+    assert "--search 'in:title \"P-04 report expires\"'" in script
+    assert script.index("exit 0") < script.index("gh issue create")
+    assert "uv run python -m perf.lite_smoke --minutes 30 --host-class mac" in script
+    assert '--title "$title"' in script
+
+
+def _shards() -> list[dict[str, str]]:
+    matrix = _workflow("ci.yml")["jobs"]["test"]["strategy"]["matrix"]
+    shards: list[dict[str, str]] = matrix["shard"]
+    return shards
+
+
+def _test_files_under(path: Path) -> set[Path]:
+    """The test modules pytest would collect under ``path`` (``python_files`` is the default
+    ``test_*.py``; ``norecursedirs`` keeps the gate fixtures out)."""
+    if path.is_file():
+        return {path}
+    fixtures = REPO_ROOT / "tests" / "gates" / "fixtures"
+    return {p for p in path.rglob("test_*.py") if fixtures not in p.parents}
+
+
+def _shard_files(spec: str) -> set[Path]:
+    """The test modules one shard's arguments select, with pytest's own semantics: positional
+    paths, minus ``--ignore`` paths, minus files whose absolute path (or a parent's) matches an
+    ``--ignore-glob`` pattern made absolute against the repository root."""
+    selected: set[Path] = set()
+    ignored: list[Path] = []
+    globs: list[str] = []
+    for word in spec.split():
+        if word.startswith("--ignore="):
+            ignored.append(REPO_ROOT / word.removeprefix("--ignore="))
+        elif word.startswith("--ignore-glob="):
+            globs.append(str(REPO_ROOT / word.removeprefix("--ignore-glob=")))
+        else:
+            assert not word.startswith("-"), f"unexpected shard option {word!r}"
+            target = REPO_ROOT / word
+            assert target.exists(), f"shard path {word!r} does not exist"
+            selected |= _test_files_under(target)
+
+    def kept(path: Path) -> bool:
+        chain = [path, *path.parents]
+        if any(p in ignored for p in chain):
+            return False
+        return not any(fnmatch.fnmatch(str(p), g) for p in chain for g in globs)
+
+    return {p for p in selected if kept(p)}
+
+
+def test_ci_shards_partition_the_test_files() -> None:
+    """#331: the sharded `test` job runs every test module under tests/ in exactly one shard.
+
+    Complement asserted: a module no shard names (or two shards both name) is reported; the
+    shard names are unique, since each names its coverage data file."""
+    shards = _shards()
+    names = [s["name"] for s in shards]
+    assert len(names) == len(set(names)), names
+    assert len(shards) > 1, names
+    owners: dict[Path, list[str]] = {}
+    for shard in shards:
+        for path in _shard_files(shard["paths"]):
+            owners.setdefault(path, []).append(shard["name"])
+    every = _test_files_under(REPO_ROOT / "tests")
+    missing = sorted(str(p.relative_to(REPO_ROOT)) for p in every - set(owners))
+    twice = {str(p.relative_to(REPO_ROOT)): o for p, o in owners.items() if len(o) > 1}
+    assert missing == [], f"no CI shard runs {missing}"
+    assert twice == {}, f"more than one CI shard runs {twice}"
+    assert set(owners) == every
+
+
+def test_ci_shard_partition_check_sees_a_gap() -> None:
+    """The partition check is not vacuous: without the catch-all shard, modules go missing; the
+    two integration halves are disjoint and together cover tests/integration."""
+    by_name = {s["name"]: _shard_files(s["paths"]) for s in _shards()}
+    integration = _test_files_under(REPO_ROOT / "tests" / "integration")
+    halves = [files for name, files in by_name.items() if name.startswith("integration-")]
+    assert len(halves) == 2
+    assert all(halves)
+    assert halves[0].isdisjoint(halves[1])
+    assert halves[0] | halves[1] == integration
+    others = set().union(*(files for name, files in by_name.items() if name != "rest"))
+    assert by_name["rest"]
+    assert by_name["rest"].isdisjoint(others)
+    assert _test_files_under(REPO_ROOT / "tests") - others == by_name["rest"]
+
+
+def test_scenario_and_perf_share_a_ci_shard() -> None:
+    """P-05 (tests/perf) gates the turn census of the S-tests (tests/scenario) run in the same
+    session, so the two directories must not be split across shards."""
+    scenario = _test_files_under(REPO_ROOT / "tests" / "scenario")
+    p05 = REPO_ROOT / "tests" / "perf" / "test_p_05.py"
+    (shard,) = [s["name"] for s in _shards() if p05 in _shard_files(s["paths"])]
+    assert scenario <= _shard_files(next(s["paths"] for s in _shards() if s["name"] == shard))
+
+
+def test_coverage_is_gated_once_on_the_combined_shards() -> None:
+    """#331: each shard writes its own coverage data file without a per-shard threshold; the
+    `coverage` job combines them all and fails under 90 %; `gate` is red if it does not
+    succeed."""
+    wf = _workflow("ci.yml")
+    test = wf["jobs"]["test"]
+    assert test["strategy"]["fail-fast"] is False
+    (pytest_step,) = [s for s in _steps(wf, "test") if "pytest" in s.get("run", "")]
+    assert "$SHARD_PATHS" in pytest_step["run"]
+    assert "set -f" in pytest_step["run"]
+    assert pytest_step["env"]["SHARD_PATHS"] == "${{ matrix.shard.paths }}"
+    assert pytest_step["env"]["COVERAGE_FILE"] == ".coverage.${{ matrix.shard.name }}"
+    assert "--cov=epistrel.core" in pytest_step["run"]
+    assert "--cov-fail-under" not in pytest_step["run"]
+    upload = next(s for s in _steps(wf, "test") if "upload-artifact" in str(s.get("uses")))
+    assert upload["with"]["path"] == ".coverage.${{ matrix.shard.name }}"
+    assert upload["with"]["include-hidden-files"] is True
+    assert upload["with"]["if-no-files-found"] == "error"
+
+    coverage = wf["jobs"]["coverage"]
+    assert coverage["needs"] == ["test"]
+    runs = [s.get("run", "") for s in coverage["steps"]]
+    download = next(s for s in coverage["steps"] if "download-artifact" in str(s.get("uses")))
+    assert download["with"] == {"pattern": "coverage-*", "merge-multiple": True}
+    assert "uv run coverage combine" in runs
+    assert any(r.startswith("uv run coverage report") and "--fail-under=90" in r for r in runs)
+    assert runs.index("uv run coverage combine") < next(
+        i for i, r in enumerate(runs) if r.startswith("uv run coverage report")
+    )
+    assert "coverage" in wf["jobs"]["gate"]["needs"]
+    assert "$COVERAGE" in wf["jobs"]["gate"]["steps"][0]["run"]

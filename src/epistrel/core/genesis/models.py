@@ -395,10 +395,26 @@ class ClassCapabilityCounts(BaseModel):
         return cls(by_class=by_class, by_capability=by_capability)
 
 
+MaterializedOutcome = Literal["canon", "memory", "deferred", "merge_conflict", "entity", "rule"]
+"""What structured genesis did with an item (#149): ``canon`` (facts written), ``memory`` (a
+seed memory written), ``deferred`` (a part waits for a capability the story lacks),
+``merge_conflict`` (a fact lost the merge and was not written), ``entity`` (a place, an entity
+or a name override recorded), ``rule`` (a story rule registered)."""
+
+
+class OutcomeCounts(BaseModel):
+    """How many ``materialized`` entries name each outcome (non-zero keys only; #149)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    by_outcome: dict[str, int] = Field(default_factory=dict)
+
+
 class CreationCounts(BaseModel):
-    """How many errors, merge ``conflicts`` (always 0 under Lite, which detects none: FR-SCN-7)
-    and warnings the creation found, and what it deferred and left inactive, by field class and
-    capability (#122)."""
+    """How many errors, merge ``conflicts`` (always 0 under Lite, which detects none: FR-SCN-7;
+    a structured creation's ``merge_conflict`` entries, #149) and warnings the creation found,
+    and what it deferred and left inactive, by field class and capability (#122). A structured
+    creation adds ``materialized``: its entries by outcome (absent under Lite)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -407,6 +423,23 @@ class CreationCounts(BaseModel):
     warnings: int = 0
     deferred: ClassCapabilityCounts = Field(default_factory=ClassCapabilityCounts)
     inactive: ClassCapabilityCounts = Field(default_factory=ClassCapabilityCounts)
+    materialized: OutcomeCounts | None = Field(default=None, exclude_if=lambda v: v is None)
+
+
+class MaterializedEntry(BaseModel):
+    """One item structured genesis materialized (#149): its dotted ``field_ref``, its location
+    (#111's shape), what happened to it (``outcomes``, in that order) and, for an item that
+    lost the fact merge, the ``winner`` and ``loser`` (seed ids, or ``<role>:<field>`` for a
+    character's definition prose) and the ``rule`` that decided it (#140's)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    field_ref: str
+    location: EntryLocation
+    outcomes: list[MaterializedOutcome]
+    winner: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    loser: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    rule: str | None = Field(default=None, exclude_if=lambda v: v is None)
 
 
 class DeferredItem(BaseModel):
@@ -477,7 +510,8 @@ class CreationReport(BaseModel):
     checks the deployment could not run) and, under the ``full`` projection only (``null``
     under ``card``), every entry: #111's ``errors`` and ``warnings`` with their location and
     exact text, every ``deferred`` item with its location and the capability it needs, and
-    every ``inactive`` setting."""
+    every ``inactive`` setting; a structured creation also lists every item it
+    ``materialized`` (#149: absent from a Lite report, and under ``card``)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -489,6 +523,9 @@ class CreationReport(BaseModel):
     warnings: list[Entry] | None = None
     deferred: list[DeferredItem] | None = None
     inactive: list[InactiveItem] | None = None
+    materialized: list[MaterializedEntry] | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
 
 
 __all__ = [
@@ -504,7 +541,10 @@ __all__ = [
     "CreationReport",
     "DeferredItem",
     "InactiveItem",
+    "MaterializedEntry",
+    "MaterializedOutcome",
     "MemberCastCard",
+    "OutcomeCounts",
     "PersonaRef",
     "PlayerAssignment",
     "Projection",

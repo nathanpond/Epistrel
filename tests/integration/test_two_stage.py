@@ -752,13 +752,13 @@ async def test_a_profile_edit_reports_the_guarantees_it_loses(scratch: Space) ->
                 Configuration(profile, 2, parse_settings({})),
                 facts,
             )
-            assert change.guarantees_lost == ("verification",)
+            assert change.guarantees_lost == ("verification", "claim_detectors")
             reports[profile] = await impact.following_report(conn, profile, change)
     lost = reports[followed]
     (entry,) = lost.report.affected_stories
     assert (entry.story_id, entry.capabilities_lost) == (story, ["verification"])
     assert (lost.report.affected_count, lost.keep) == (1, frozenset())
-    assert lost.report.guarantees_lost == ["verification"]
+    assert lost.report.guarantees_lost == ["verification", "claim_detectors"]
     assert lost.report.warnings == ["capabilities_lost", "guarantees_lost"]
     edits: list[str] = []
 
@@ -771,7 +771,7 @@ async def test_a_profile_edit_reports_the_guarantees_it_loses(scratch: Space) ->
 
     held = await impact.two_stage(report, apply, ignore_warnings=False)
     assert (held.applied, held.result, edits) == (False, None, [])
-    assert held.impact.guarantees_lost == ["verification"]
+    assert held.impact.guarantees_lost == ["verification", "claim_detectors"]
     confirmed = await impact.two_stage(report, apply, ignore_warnings=True)
     assert (confirmed.applied, confirmed.result, edits) == (True, "applied", ["applied"])
     alone = reports[unfollowed].report

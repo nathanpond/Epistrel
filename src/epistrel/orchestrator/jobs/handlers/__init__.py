@@ -5,7 +5,11 @@ recurring safety net), and the recurring
 sweeps ``retention_sweep`` / ``idempotency_purge`` (``retention``) and ``turn_queue_drain``
 (``turn_queue``), registered with their recurring tasks (``recurring``; #71). M3 adds the
 recurring ``media_sweep`` (#105), ``offboarding`` (#117), ``rating_check`` (#118) and the
-recurring ``erasure_reconcile_retry`` (#125). A kind
+recurring ``erasure_reconcile_retry`` (#125). M4 adds ``importance_scoring`` (#135, with its daily
+recurring safety net), the embedding port's ``embed`` and ``reembed`` (#138) and
+``consolidation`` (#143), and the hot set's ``hot_set_retirement`` and its daily
+``hot_counts_reconcile`` (#147), and claim detection's post-commit ``extraction_shadow``
+(#148, ``orchestrator.verify.extraction``). A kind
 no handler is registered for is refused at enqueue and ends ``failed`` if a worker claims one
 (a row a newer version wrote). Tests register their own handlers through ``register`` /
 ``unregister``.
@@ -13,10 +17,12 @@ no handler is registered for is refused at enqueue and ends ``failed`` if a work
 
 from __future__ import annotations
 
+from epistrel.orchestrator.jobs.handlers.consolidation import CONSOLIDATION_HANDLER
 from epistrel.orchestrator.jobs.handlers.erasure_reconcile import (
     ERASURE_RECONCILE_HANDLER,
     ERASURE_RECONCILE_TASK,
 )
+from epistrel.orchestrator.jobs.handlers.importance import IMPORTANCE_HANDLER, IMPORTANCE_TASK
 from epistrel.orchestrator.jobs.handlers.lite_summary import (
     LITE_SUMMARY_HANDLER,
     LITE_SUMMARY_TASK,
@@ -28,15 +34,22 @@ from epistrel.orchestrator.jobs.handlers.media_sweep import (
 from epistrel.orchestrator.jobs.handlers.offboarding import OFFBOARDING_HANDLER
 from epistrel.orchestrator.jobs.handlers.rating_check import RATING_CHECK_HANDLER
 from epistrel.orchestrator.jobs.handlers.rebuild import REBUILD_HANDLER
+from epistrel.orchestrator.jobs.handlers.reembed import EMBED_HANDLER, REEMBED_HANDLER
 from epistrel.orchestrator.jobs.handlers.retention import (
     IDEMPOTENCY_HANDLER,
     IDEMPOTENCY_TASK,
     RETENTION_HANDLER,
     RETENTION_TASK,
 )
+from epistrel.orchestrator.jobs.handlers.retirement import (
+    RECONCILE_HANDLER,
+    RECONCILE_TASK,
+    RETIREMENT_HANDLER,
+)
 from epistrel.orchestrator.jobs.handlers.turn_queue import TURN_QUEUE_HANDLER, TURN_QUEUE_TASK
 from epistrel.orchestrator.jobs.recurring import register_recurring
 from epistrel.orchestrator.jobs.types import JobHandler
+from epistrel.orchestrator.verify.extraction import SHADOW_HANDLER
 
 _REGISTRY: dict[str, JobHandler] = {}
 
@@ -69,6 +82,13 @@ for _handler in (
     OFFBOARDING_HANDLER,
     RATING_CHECK_HANDLER,
     ERASURE_RECONCILE_HANDLER,
+    IMPORTANCE_HANDLER,
+    EMBED_HANDLER,
+    REEMBED_HANDLER,
+    CONSOLIDATION_HANDLER,
+    RETIREMENT_HANDLER,
+    RECONCILE_HANDLER,
+    SHADOW_HANDLER,
 ):
     register(_handler)
 for _task in (
@@ -78,6 +98,8 @@ for _task in (
     LITE_SUMMARY_TASK,
     MEDIA_SWEEP_TASK_DEFINITION,
     ERASURE_RECONCILE_TASK,
+    IMPORTANCE_TASK,
+    RECONCILE_TASK,
 ):
     register_recurring(_task)
 

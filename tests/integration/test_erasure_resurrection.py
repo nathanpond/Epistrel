@@ -57,7 +57,7 @@ from tests.auth_support import ERASURE_LEDGER_DIR
 from tests.conformance.conftest import migrated_database
 from tests.event_support import rows, scalar
 from tests.model_support import config_key
-from tests.respond_support import body, respond, respond_client
+from tests.respond_support import assert_kept, body, respond, respond_client
 from tests.summary_support import run_due_jobs, segment_rows, summary_jobs
 
 pytestmark = pytest.mark.integration
@@ -161,11 +161,11 @@ async def resurrection_clauses(erasure_settings: Settings, engine: AsyncEngine) 
             return bool(n)
 
         await _until(erased)
-        # The erasure cleared the held turn's lease itself (#63); the held turn still runs. (The
-        # drainer, which read the queued turn as its head before the erasure, may briefly take
-        # the freed slot for it, find it failed, and give the slot back.)
+        # The erasure cleared the held turn's lease itself (#63); the held turn still runs. The
+        # drainer, which read the queued turn as its head before the erasure, does not take the
+        # freed slot for it: the turn is no longer queued (#329).
         lease = await scalar(engine, "SELECT in_flight_turn FROM stories WHERE id = :s", s=sid)
-        assert lease in (None, queued)
+        assert lease is None
         summarising.release()  # its output names her; its source turns moved under it
         done = await erasing
         generating.release()
@@ -191,13 +191,9 @@ async def resurrection_clauses(erasure_settings: Settings, engine: AsyncEngine) 
         assert record.error["details"]["control_operation_id"] == done["operation_id"]
         assert await _operation(engine, queued) == ("failed", 0)
 
-        async def slot_free() -> bool:
-            held_by = await scalar(
-                engine, "SELECT in_flight_turn FROM stories WHERE id = :s", s=sid
-            )
-            return held_by is None
-
-        await _until(slot_free)
+        assert (
+            await scalar(engine, "SELECT in_flight_turn FROM stories WHERE id = :s", s=sid) is None
+        )
 
         outcomes = await job_run
         assert outcomes[0] == CommitOutcome.DROPPED  # dropped and requeued (#70)
@@ -211,10 +207,12 @@ async def resurrection_clauses(erasure_settings: Settings, engine: AsyncEngine) 
         # does one whose player text names her (new consumer content is not refused).
         stub.reset()
         stub.script("generation", ["The kettle sings.", "The rain eases off."])
+        # Each commits its scripted reply on the first attempt: a 200 alone would pass an
+        # over-refusing guard, which regenerates into the stub's default text (#428).
         clean = await respond(client, sid, body(story.player, "Is the kettle on?"))
-        assert clean.status_code == 200, clean.text
+        assert_kept(clean, "The kettle sings.")
         typed = await respond(client, sid, body(story.player, f"Where did {e.NAME} go?"))
-        assert typed.status_code == 200, typed.text
+        assert_kept(typed, "The rain eases off.")
         assert e.NAME in typed.text
 
         # A model reply naming her, after the erasure: regenerated within the budget, then 409.
@@ -248,9 +246,9 @@ async def resurrection_clauses(erasure_settings: Settings, engine: AsyncEngine) 
         # A worker result built after the erasure that names her is refused (late result).
         stub.reset()
         stub.script("generation", ["The rain stops.", "The kettle whistles."])
-        for n in range(2):
+        for n, reply in enumerate(["The rain stops.", "The kettle whistles."]):
             ok = await respond(client, sid, body(story.player, f"Anything else ({n})?"))
-            assert ok.status_code == 200, ok.text
+            assert_kept(ok, reply)
         stub.script("lite_summary", [LATE])
         before = await segment_rows(engine, sid)
         (outcome,) = await run_due_jobs(engine, lib.models, sid, limit=1)
@@ -319,7 +317,8 @@ def test_every_content_write_path_is_guarded() -> None:
     """``CONTENT_WRITE_PATHS`` is exactly the subject index's writer modules plus ingest and the
     job commit, and each entry's claim holds in its module's source: an ``OPERATION`` path
     writes through ``Operation`` (whose ``_write`` runs ``check_content``), a catalog path calls
-    ``assert_not_erased``, the fork runs its ledger fence, and an exemption gives its reason."""
+    ``assert_not_erased``, the fork runs its ledger fence, a direct path (#131's structured
+    stores) calls ``check_content`` itself, and an exemption gives its reason."""
     registered = {p.module for p in guard.CONTENT_WRITE_PATHS}
     writers = {module for entry in SUBJECT_WRITERS for module in entry.writers}
     assert registered == writers | {"epistrel.core.ingest", "epistrel.orchestrator.jobs.queue"}
@@ -336,6 +335,8 @@ def test_every_content_write_path_is_guarded() -> None:
             assert "assert_not_erased(" in source, path.module
         elif path.how == guard.FORK_FENCE:
             assert "_erasure_fence(" in source, path.module
+        elif path.how == guard.DIRECT:
+            assert "check_content(" in source, path.module
         else:
             assert path.how == guard.EXEMPT, path.module
             assert path.why, path.module

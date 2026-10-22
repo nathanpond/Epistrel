@@ -8,7 +8,9 @@ as ``RuntimeFacts``.
   configuration (its own row's ``model``, else the ``default`` row's; ``/admin/model-config``,
   #52), read in the caller's transaction, so a turn's fingerprint comes from the snapshot its
   prompt was read in. No adapter reports a model version in M3, so ``reported_version`` is
-  ``null``. Endpoints and keys never enter a fingerprint.
+  ``null``. Endpoints and keys never enter a fingerprint. These are the deployment's models: a
+  configuration that routes a purpose (``models.purposes``) names its own model in the
+  fingerprint (``core.profiles.fingerprint.routed_models``, #325), as its calls use it.
 - **Templates** (``TEMPLATE_HASHES``): the SHA-256 of each delivered purpose's template file as
   it ships, by template name, computed once at import. Editing a template changes every
   fingerprint, as FR-PROF-16's "prompt-template versions" require.
@@ -24,7 +26,7 @@ from importlib import resources
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.profiles.fingerprint import ModelIdentity, RuntimeFacts
-from epistrel.orchestrator.models.config import ConfigRow, read_rows
+from epistrel.orchestrator.models.config import ConfigRow, parent_of, read_rows
 from epistrel.orchestrator.models.registry import DEFAULT_MODEL_KEY, STORY_PURPOSES
 
 TEMPLATE_PACKAGE = "epistrel.orchestrator.models"
@@ -35,8 +37,9 @@ def _template_hashes() -> dict[str, str]:
     folder = resources.files(TEMPLATE_PACKAGE).joinpath("templates")
     found: dict[str, str] = {}
     for purpose in STORY_PURPOSES.values():
-        source = folder.joinpath(purpose.template).read_bytes()
-        found[purpose.template.removesuffix(TEMPLATE_SUFFIX)] = hashlib.sha256(source).hexdigest()
+        for template in (purpose.template, *purpose.variants.values()):
+            source = folder.joinpath(template).read_bytes()
+            found[template.removesuffix(TEMPLATE_SUFFIX)] = hashlib.sha256(source).hexdigest()
     return dict(sorted(found.items()))
 
 
@@ -47,14 +50,18 @@ deployment-level purpose such as ``rating_suggestion`` is no part of a story's r
 
 def identities(rows: Mapping[str, ConfigRow]) -> dict[str, ModelIdentity]:
     """The model each story purpose resolves to under ``rows`` (``model_config``): its own
-    row's, else the ``default`` row's. Story purposes default to ``default``; a purpose that
-    defaults to another's row (``rating_suggestion``, #121) runs outside stories and is not
-    here."""
+    row's, else its parent purpose's (``config.parent_of``: ``lite_summary`` → consolidation's,
+    ``regeneration`` → generation's, #151), else the ``default`` row's. A purpose that runs
+    outside stories (``rating_suggestion``, #121) is not here."""
     default = rows.get(DEFAULT_MODEL_KEY)
     found: dict[str, ModelIdentity] = {}
     for name in sorted(STORY_PURPOSES):
-        own = rows.get(name)
-        model = own.model if own is not None and own.model is not None else None
+        model = None
+        current: str | None = name
+        while model is None and current is not None:
+            own = rows.get(current)
+            model = own.model if own is not None and own.model is not None else None
+            current = parent_of(current)
         if model is None and default is not None:
             model = default.model
         found[name] = ModelIdentity(id=model)

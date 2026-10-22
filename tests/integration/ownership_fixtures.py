@@ -420,6 +420,118 @@ async def _checking(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> di
     return {"job_id": started["job_id"]}
 
 
+async def _propose(client: httpx.AsyncClient, story_id: str, relation: str) -> str:
+    """An auto predicate of the story with a pending ``functional`` proposal (#131), written
+    as the structured pipeline does (no public call files one) on the app's own database;
+    idempotent for one relation (the same predicate and pending proposal)."""
+    from epistrel.core.propositions import registry
+    from epistrel.core.propositions.model import Cardinality
+
+    db = client._transport.app.state.epistrel.db  # type: ignore[attr-defined]
+    async with db.begin() as conn:
+        found = await registry.auto_register(conn, story_id, relation)
+        await registry.file_proposal(
+            conn, story_id, found.id, registry.ProposedChanges(cardinality=Cardinality.FUNCTIONAL)
+        )
+    return str(found.id)
+
+
+async def _proposed(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """The story's registry with one pending proposal, the same for every requester."""
+    await _propose(client, entity.id, "sails with")
+    return {}
+
+
+async def _fresh_proposal(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """A new auto predicate with a pending proposal, for one approval or rejection."""
+    return {"predicate_id": await _propose(client, entity.id, f"rides with {new_ulid()}")}
+
+
+async def _committing(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """The story on the seeded ``Structured (M4)`` profile, which runs commitment (#146's
+    ledger inspection answers 409 ``module_off`` otherwise), confirmed past the impact report's
+    warnings (capabilities gained)."""
+    from epistrel.core.seeds.profiles import STRUCTURED_M4_PROFILE_ID
+
+    await _send(
+        client,
+        kind,
+        entity,
+        "PUT",
+        "/engine-profile",
+        {"profile_id": STRUCTURED_M4_PROFILE_ID, "ignore_warnings": True},
+        200,
+    )
+    return {}
+
+
+async def _profiled(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """An entity of the story (#137's profile read), the same one for every requester: created
+    once as #139's resolver would, on the app's own database."""
+    from sqlalchemy import select
+
+    from epistrel.core.propositions import store
+    from epistrel.core.tables import entities
+
+    db = client._transport.app.state.epistrel.db  # type: ignore[attr-defined]
+    async with db.begin() as conn:
+        found = await conn.scalar(
+            select(entities.c.id).where(
+                entities.c.story_id == entity.id, entities.c.canonical_name == "Profiled"
+            )
+        )
+        if found is None:
+            found = await store.add_entity(conn, entity.id, "person", "Profiled")
+    return {"entity_id": str(found)}
+
+
+async def _a_memory(entity: Entity, client: httpx.AsyncClient, *, pinned: bool) -> str:
+    """A fresh memory of the story (#147's pin calls), written straight into ``memories`` on the
+    app's own database against the story's first operation."""
+    from epistrel.core.enums import MemoryKind, MemoryTrustTier, RecordProvenance
+    from epistrel.core.membership import insert_derived
+    from epistrel.core.tables.memories import memories
+
+    db = client._transport.app.state.epistrel.db  # type: ignore[attr-defined]
+    memory_id = new_ulid()
+    async with db.begin() as conn:
+        operation_id = await conn.scalar(
+            text(
+                "SELECT operation_id FROM operations WHERE story_id = :s "
+                "ORDER BY started_at LIMIT 1"
+            ),
+            {"s": entity.id},
+        )
+        await insert_derived(
+            conn,
+            memories,
+            [
+                {
+                    "id": memory_id,
+                    "story_id": entity.id,
+                    "kind": MemoryKind.SEMANTIC.value,
+                    "text": "Wren keeps the inn's ledger.",
+                    "provenance": RecordProvenance.AUTHOR.value,
+                    "trust_tier": MemoryTrustTier.AUTHOR.value,
+                    "operation_id": str(operation_id),
+                    "pinned": pinned,
+                    "pinned_by": OWNER if pinned else None,
+                }
+            ],
+        )
+    return memory_id
+
+
+async def _memory(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """A fresh memory for one pin (#147)."""
+    return {"memory_id": await _a_memory(entity, client, pinned=False)}
+
+
+async def _pinned_memory(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """A fresh pinned memory for one unpin (#147)."""
+    return {"memory_id": await _a_memory(entity, client, pinned=True)}
+
+
 @dataclass(frozen=True)
 class Call:
     """A request that succeeds (``expected``) when the entity's owner sends it. ``json`` is the
@@ -505,6 +617,23 @@ CALLS: dict[tuple[str, str], Call] = {
     ("GET", f"{S}/variants"): Call(200, prepare=_regenerated),
     ("GET", f"{S}/relations"): Call(200, prepare=_related),
     ("GET", f"{S}/effective-config"): Call(200, prepare=_played),
+    ("GET", f"{S}/guarantees"): Call(200, prepare=_played),
+    # The predicate registry (#131): listed, and a fresh proposal approved or rejected.
+    ("GET", f"{S}/predicates"): Call(200, prepare=_proposed),
+    ("POST", f"{S}/predicates/{{predicate_id}}/approve"): Call(200, {}, prepare=_fresh_proposal),
+    ("POST", f"{S}/predicates/{{predicate_id}}/reject"): Call(200, prepare=_fresh_proposal),
+    # The structured projections (#137): the scene and an entity's standing profile.
+    ("GET", f"{S}/scene"): Call(200, queries=(OMNISCIENT,)),
+    ("GET", f"{S}/entities/{{entity_id}}/profile"): Call(
+        200, queries=(OMNISCIENT,), prepare=_profiled
+    ),
+    # Commitments (#146): the thunks and the promissory ledger, omniscient.
+    ("GET", f"{S}/inspect/ledger"): Call(200, queries=(OMNISCIENT,), prepare=_committing),
+    # Author pins (#147): a fresh memory pinned, a fresh pinned memory unpinned.
+    ("POST", f"{S}/memories/{{memory_id}}/pin"): Call(200, prepare=_memory),
+    ("DELETE", f"{S}/memories/{{memory_id}}/pin"): Call(200, prepare=_pinned_memory),
+    # Retrieval (#141): the debugging read, omniscient.
+    ("GET", f"{S}/retrieve"): Call(200, queries=({"q": "the game", **OMNISCIENT},)),
     # -- stories: message ratings (#112). Each requester rates a fresh story's reply, retracts
     # the owner's rating (none of its own: still 204), and reads its own rating of a reply all
     # three rated alike.
@@ -586,6 +715,7 @@ CALLS: dict[tuple[str, str], Call] = {
     # -- engine profiles: reads of an edited profile, at its latest version and at version 1
     ("GET", P): Call(200, queries=({}, {"version": "1"}), prepare=_edited),
     ("GET", f"{P}/versions"): Call(200, prepare=_edited),
+    ("GET", f"{P}/guarantees"): Call(200, queries=({}, {"version": "1"}), prepare=_edited),
     ("GET", f"{P}/relations"): Call(200, prepare=_related),
 }
 """Every route under an owned entity's path, ``/admin`` excluded."""

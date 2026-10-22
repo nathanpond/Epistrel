@@ -5,18 +5,37 @@ one call, and a clean turn (one generation, no regeneration, retry or failure) m
 
 The measurement is the session's turn census (``tests/perf/census.py``): this test runs last
 (``tests/conftest.py`` orders it) and gates every turn the scenario suite played, plus turns of
-its own so the gate never passes empty."""
+its own so the gate never passes empty.
+
+The M4 part (NFR-PERF-5; #155): ``test_p_05__escalation`` plays structured turns on the stub
+with a scripted escalation rate and reads it back from ``GET /admin/evals/escalation-yield``,
+computed from the turns' ``turn_report.verify`` and reported with the 0.2 reference baseline,
+never as a gate."""
 
 from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
 from tests.auth_support import auth_settings
+from tests.escalation_support import (
+    camp_render,
+    camp_story,
+    clear_gates,
+    database_now,
+    entailment,
+    play_camp,
+    regenerated,
+    yield_report,
+)
+from tests.fixtures.bobby_education import bobby_education
 from tests.perf.census import CENSUS, CensusTurn
 from tests.policy_support import AUTHOR, story_item, words
 from tests.respond_support import FIRST, PLAYER, SECOND, body, new_story, played, respond_client
+from tests.structured_turn_support import turn_report
 
 TURNS = 5
 ASSISTED = {"type": "model_assisted", "prompt": "Is this text about OWLS?", "on_uncertain": "pass"}
@@ -77,3 +96,51 @@ async def test_p_05(stub_settings: Settings, engine: AsyncEngine) -> None:
     if CENSUS.s_tests_collected:
         assert s_turns, "the S-tests ran but no Lite turn was recorded"
         assert any(t.clean and t.reserved == 0 for t in s_turns)
+
+
+@pytest.mark.part("M4", "NFR-PERF-5")
+async def test_p_05__escalation(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """Two structured turns whose camp claim is ``uncertain(world_knowledge)`` (each escalated
+    once) and one whose rule decides it deterministically (none escalated): the report's rate
+    is the turns' escalated claims over their verified claims, as their reports count them, and
+    it carries ``reference_baseline: 0.2`` and ``is_gate: false``.
+
+    Complement asserted: the deterministic turn verified claims and escalated none, so the
+    scripted rate is below 1 and the denominator is every verified claim, not every escalation."""
+    await clear_gates(engine)
+    started = await database_now(engine)
+    reports = []
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        for escalates in (True, True, False):
+            stub.reset()
+            edu = (
+                await camp_story(client, engine)
+                if escalates
+                else await bobby_education(
+                    client, engine, never_in_florida=True, presence_rule=True
+                )
+            )
+            stub.script("generation", [camp_render()])
+            if escalates:
+                stub.script("entailment", [entailment("contradicted")])
+            stub.script("regeneration", [regenerated()])
+            await play_camp(client, edu)
+            reports.append(await turn_report(engine, edu.story_id))
+        found = await yield_report(
+            client,
+            **{
+                "from": started.isoformat(),
+                "to": (datetime.now(UTC) + timedelta(seconds=1)).isoformat(),
+            },
+        )
+    claims = sum(r["verify"]["claims"] for r in reports)
+    escalated = sum(r["verify"]["escalated"] for r in reports)
+    assert [r["verify"]["escalated"] for r in reports] == [1, 1, 0]
+    assert reports[2]["verify"]["claims"] >= 1
+    assert (found["claims"], found["escalated"]) == (claims, escalated)
+    assert found["escalation_rate"] == round(escalated / claims, 4)
+    assert 0 < found["escalation_rate"] < 1
+    assert (found["reference_baseline"], found["is_gate"]) == (0.2, False)

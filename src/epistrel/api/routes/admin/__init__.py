@@ -15,24 +15,31 @@ from epistrel.api.routes.admin import (
     erasure,
     feedback_export,
     model_config,
+    mutation,
     offboarding,
     policies,
     ratings,
+    reembed,
     settings,
     stories,
+    verify,
 )
 
 ADMIN_PREFIX = "/admin"
 
 router = APIRouter(prefix=ADMIN_PREFIX, tags=["admin"])
 router.include_router(stories.router)
+router.include_router(mutation.router)
 router.include_router(ratings.router)
 router.include_router(settings.router)
 router.include_router(policies.router)
 router.include_router(model_config.router)
+router.include_router(reembed.router)
 router.include_router(offboarding.router)
 router.include_router(erasure.router)
 router.include_router(feedback_export.router)
+router.include_router(verify.router)
+router.include_router(verify.gate_router)
 
 _SEGMENT = r"(?:^|/){}(?:/|$)"
 
@@ -46,6 +53,9 @@ _OPERATOR_SEGMENTS = (
     r"export(?:s)?",  # story export, feedback export
     r"import(?:s)?",  # story import
     r"commit[_-]fact",  # the low-level mutation calls
+    r"facts",  # #145: the low-level fact calls (commit_fact, supersede, lock)
+    r"quarantine",  # #145: the mutation primitives
+    r"sanitize",
     r"mutate",
     r"record[_-]utterance",
     r"ingest[_-]turn",

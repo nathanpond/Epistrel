@@ -1,6 +1,8 @@
 """``transcript_messages``: one row per beat, following its operation's membership.
 
-A beat is a ``player_input``, ``message_rendered``, ``think`` or ``latent`` event. Each becomes
+A beat is a ``player_input``, ``message_rendered``, ``think`` or ``latent`` event, or a structured
+turn's ``beat_say``/``beat_think``/``beat_do``/``beat_latent``/``beat_narration`` (#150), whose
+channel is its kind. Each becomes
 one row keyed by the event id (``message_id``); #57's ``say`` and ``do`` stay one row. The row
 carries its operation's membership, and ``truncate``, ``untruncate`` and ``swap`` flip the rows
 of the operations they name, so no row is re-read from the log. A regenerated turn (variant
@@ -25,9 +27,11 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.enums import Membership, OperationKind, Provenance
 from epistrel.core.events.types import (
+    BEAT_EVENT_PREFIX,
     Latent,
     MessageRendered,
     PlayerInput,
+    StructuredBeat,
     Swap,
     Think,
     Truncate,
@@ -36,9 +40,17 @@ from epistrel.core.events.types import (
 from epistrel.core.projections.base import LogEvent, Projection, Row, Rows
 from epistrel.core.tables import transcript_messages
 
-Beat = PlayerInput | MessageRendered | Think | Latent
+Beat = PlayerInput | MessageRendered | Think | Latent | StructuredBeat
 
 PRIVATE_CHANNELS: dict[type[Beat], str] = {Think: "think", Latent: "latent"}
+
+
+def channel_of(event: LogEvent, beat: Beat, role: str) -> str:
+    """A row's channel: a structured beat's kind (``beat_say`` → ``say``, #150), ``think`` or
+    ``latent`` for those shells, ``narration`` for narration, ``message`` otherwise."""
+    if isinstance(beat, StructuredBeat):
+        return event.type.removeprefix(BEAT_EVENT_PREFIX)
+    return PRIVATE_CHANNELS.get(type(beat)) or ("narration" if role == "narration" else "message")
 
 
 def role_of(event: LogEvent) -> str:
@@ -51,9 +63,7 @@ def role_of(event: LogEvent) -> str:
 
 def message_row(event: LogEvent, beat: Beat) -> Row:
     role = role_of(event)
-    channel = PRIVATE_CHANNELS.get(type(beat)) or (
-        "narration" if role == "narration" else "message"
-    )
+    channel = channel_of(event, beat, role)
     return {
         "message_id": event.id,
         "story_id": event.story_id,
@@ -119,7 +129,9 @@ class TranscriptProjection(Projection):
         shelved = shelved_from(event)
         if shelved is not None:
             _shelve(rows, shelved)
-        if isinstance(event.payload, PlayerInput | MessageRendered | Think | Latent):
+        if isinstance(
+            event.payload, PlayerInput | MessageRendered | Think | Latent | StructuredBeat
+        ):
             rows.put(message_row(event, event.payload))
             return
         for operation_ids, membership in membership_changes(event):

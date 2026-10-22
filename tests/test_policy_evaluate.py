@@ -14,7 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from epistrel.core.policies import evaluate as evaluate_module
-from epistrel.core.policies.evaluate import evaluate, words
+from epistrel.core.policies.evaluate import evaluate, matched_span, words
 from epistrel.core.policies.model import RULE_ADAPTER, PolicyKind, Scope, Target
 from tests.policy_support import policy
 from tests.policy_support import words as wordlist
@@ -52,6 +52,26 @@ def test_apostrophe_joins_a_word() -> None:
     assert _ids("don't", don) == []
     assert _ids("don, the", don) == ["don"]
     assert _ids("a policy word", policy(wordlist("!!!"), policy_id="none")) == []
+
+
+def test_a_script_s_own_marks_stay_inside_its_words() -> None:
+    """#417: a Devanagari vowel sign (Mc "ा", Mn "े") and the nukta of "ढ़" are word characters,
+    the erasure matcher's (``core.erasure.matcher.WORD_CHAR``), so a policy word is the whole
+    word: "राम" is not a word of "रामायण", "रामेश" or "काराम". Complement: "राम" alone still
+    breaks the policy, and a script-neutral diacritic (U+0334) still ends a word (#410)."""
+    assert words("रामायण पढ़ो") == ("रामायण", "पढ़ो")
+    assert words("राम") == ("राम",)
+    assert words("quenby\u0334s") == ("quenby", "s")
+    ram = policy(wordlist("राम"), policy_id="ram")
+    names = policy({"type": "entity_list", "names": ["राम दास"]}, policy_id="names")
+    for word in ("रामायण", "रामेश", "काराम", "रामा"):
+        assert _ids(f"Ty reads {word} now.", ram, names) == [], word
+    assert _ids("राम आया, रामायण पढ़ो।", ram, names) == ["ram"]
+    assert _ids("कल राम दास आया।", ram, names) == ["ram", "names"]
+    assert _ids("रामायण दास", names) == []
+    assert matched_span("रामायण और राम दास", ram) == "राम"
+    assert matched_span("कल राम दास आया।", names) == "राम दास"
+    assert matched_span("रामायण पढ़ो", policy(wordlist("पढ़ो"))) == "पढ़ो"
 
 
 def test_targets_and_order() -> None:

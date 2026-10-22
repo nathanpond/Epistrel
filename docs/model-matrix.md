@@ -35,32 +35,60 @@ turn** is the mean number of model calls by purpose, counting every attempt (fai
   `retry_budget` (every regeneration the story allows was flagged too) or `call_budget`.
 
 A call the deadline cuts is never retried. If it is an output check or a regeneration, the turn
-releases the safe fallback. If it is the input check or the first generation, the turn fails and
-the run writes no row.
+releases the safe fallback. If it is the input check or the first generation, the turn fails:
+the run writes no row for it, keeps the rows that finished, and lists the row under **Failed
+runs** (#454).
 
-**Not recorded.** Rows measured before the breakdown existed show *not recorded* in the
-**Calls** columns (`null` in the JSON). Those runs kept only the mean calls per turn, and
-nothing is derived from it. The next live run of the tier fills them.
+**Turn kinds (P-08 M4).** A row marked *structured turns* plays single-character structured
+turns (#150) on the `Structured (M4)` profile: render, detection, verification, composition and
+commit. One marked *repair-heavy turns* plays the same turns on a story with planted canon
+(each character owns a brass lantern), and on the stub half its renders deny it, so the repair
+ladder reaches rung 3 (a `regeneration` call). For these rows the **Designed per turn** column
+is the first render and the reserved guardrail calls, so **Extra calls** holds the stages a
+structured turn adds (salience, entailment, composition, regeneration) as well as retries.
+
+**Turn deadline override (#454).** A row whose turn path says *turn deadline … s (override)*
+ran its turns under that per-story `budgets.deadline_ms` override, not its profile's own
+deadline (the `Structured (M4)` profile's is 45 s). The matrix measures how long a turn takes,
+so the profile's deadline must not cut it. Whether the profile's deadline fits a tier is read
+from the p50 / p95 against it.
 
 ## Results
 
-| Tier | Policies | Protocol | `generation` | `guardrail_check` | `lite_summary` | E-06 | Turns | p50 | p95 | Calls per turn |
-|---|---|---|---|---|---|---|---|---|---|---|
-| local: cydonia-24b-v4.3 | minors policy on | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓) | ✓ (tokens 32/32, 128/128; temp 0: 10/10 identical) | 20 | 18.31 s | 45.06 s | 3.15 (generation 1.1, guardrail_check 2.05) |
-| local: cydonia-24b-v4.3 | policies off | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓) | ✓ (tokens 32/32, 128/128; temp 0: 10/10 identical) | 20 | 13.40 s | 16.87 s | 1 (generation 1) |
+| Tier | Policies | Protocol | `generation` | `guardrail_check` | `consolidation` | `lite_summary` | `importance_scoring` | `entailment` | `salience_detection` | `extraction_backstop` | `regeneration` | E-06 | Turns | p50 | p95 | Calls per turn |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| local: cydonia-24b-v4.3 | minors policy on | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (tokens 32/32, 128/128; temp 0: 10/10 identical) | 20 | 12.85 s | 15.42 s | 3 (generation 1, guardrail_check 2) |
+| local: cydonia-24b-v4.3 (structured turns) | minors policy on | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (tokens 32/32, 128/128; temp 0: 10/10 identical) | 20 | 114.18 s | 160.01 s | 9.2 (extraction_backstop 2.05, generation 2, guardrail_check 3.9, regeneration 0.25, salience_detection 1) |
+| local: cydonia-24b-v4.3 | policies off | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (tokens 32/32, 128/128; temp 0: 10/10 identical) | 20 | 10.45 s | 13.20 s | 1 (generation 1) |
+| local: cydonia-24b-v4.3 (structured turns) | policies off | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (tokens 32/32, 128/128; temp 0: 10/10 identical) | 20 | 126.36 s | 223.41 s | 6.1 (extraction_backstop 2.5, generation 2.15, regeneration 0.45, salience_detection 1) |
 
 ## Calls
 
 | Tier | Policies | Designed per turn | Extra calls | Failed calls | Turns with a deadline or error | p50 / p95 without them | Safe fallbacks |
 |---|---|---|---|---|---|---|---|
-| local: cydonia-24b-v4.3 | minors policy on | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
-| local: cydonia-24b-v4.3 | policies off | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
+| local: cydonia-24b-v4.3 | minors policy on | 3 (generation 1, guardrail_check 2) | 0 | 0 | 0 of 20 | 12.85 s / 15.42 s | 0 |
+| local: cydonia-24b-v4.3 (structured turns) | minors policy on | 3 (generation 1, guardrail_check 2) | 124 (extraction_backstop 41, generation 20, guardrail_check 38, regeneration 5, salience_detection 20) | 3 (extraction_backstop timeout 2, generation invalid_output 1) | 3 of 20 (turns 14, 16, 18) | 106.68 s / 145.54 s | 5 (repair 5) |
+| local: cydonia-24b-v4.3 | policies off | 1 (generation 1) | 0 | 0 | 0 of 20 | 10.45 s / 13.20 s | 0 |
+| local: cydonia-24b-v4.3 (structured turns) | policies off | 1 (generation 1) | 102 (extraction_backstop 50, generation 23, regeneration 9, salience_detection 20) | 5 (extraction_backstop timeout 5) | 4 of 20 (turns 7, 8, 9, 11) | 117.27 s / 223.41 s | 7 (repair 7) |
 
 ## Runs
 
 | Tier | Policies | Measured | Engine SHA | Hardware | Server | Turn path |
 |---|---|---|---|---|---|---|
-| local: cydonia-24b-v4.3 | minors policy on | 2026-10-12 | `cd0261d` | Apple M3 Max, 128 GB; context 16,384 | LM Studio 0.4.26 | respond (#57) |
-| local: cydonia-24b-v4.3 | policies off | 2026-10-12 | `cd0261d` | Apple M3 Max, 128 GB; context 16,384 | LM Studio 0.4.26 | respond (#57) |
+| local: cydonia-24b-v4.3 | minors policy on | 2026-10-22 | `e9d6a7f` | Apple M3 Max, 128 GB | LM Studio 0.4.26 | respond (#57) |
+| local: cydonia-24b-v4.3 (structured turns) | minors policy on | 2026-10-22 | `debd407` | Apple M3 Max, 128 GB | LM Studio 0.4.26 | structured respond (#150); turn deadline 300 s (override) |
+| local: cydonia-24b-v4.3 | policies off | 2026-10-22 | `e9d6a7f` | Apple M3 Max, 128 GB | LM Studio 0.4.26 | respond (#57) |
+| local: cydonia-24b-v4.3 (structured turns) | policies off | 2026-10-22 | `debd407` | Apple M3 Max, 128 GB | LM Studio 0.4.26 | structured respond (#150); turn deadline 300 s (override) |
+
+## Embedding
+
+The embedding endpoint (the `embedding` port, #138), measured when the run names one:
+**Protocol** is `GET /models` and one embedding; **Dimension** is what every vector of that
+model has (the deployment pins it at the first embedding); **Max batch** is the largest of 64,
+16 and 1 texts one request embeds; **p50** is over single-text calls.
+
+| Tier | Protocol | Reported model | Dimension | Max batch | p50 | Measured | Engine SHA |
+|---|---|---|---|---|---|---|---|
+| local: text-embedding-nomic-embed-text-v1.5 | ✓ | text-embedding-nomic-embed-text-v1.5 | 768 | 64 | 0.01 s | 2026-10-22 | `debd407` |
 
 Raw timings for every row are in [model-matrix.json](model-matrix.json).

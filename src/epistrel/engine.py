@@ -8,6 +8,7 @@ the database it was bound to (the REST app binds it for the life of the server).
 from __future__ import annotations
 
 import asyncio
+import collections.abc
 import contextlib
 import dataclasses
 import functools
@@ -15,6 +16,8 @@ import hashlib
 import inspect
 import logging
 import time
+import types
+import typing
 from collections.abc import AsyncIterable, Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
 from typing import Any, Protocol, overload
@@ -25,8 +28,8 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.config import ProcessMode, Settings
 from epistrel.core import config_changes as config_log
-from epistrel.core import control as control_ops
 from epistrel.core import (
+    config_vocabulary,
     deployment,
     feedback,
     feedback_export,
@@ -34,6 +37,7 @@ from epistrel.core import (
     fork,
     idempotency,
     ingest,
+    mutation,
     offboarding,
     operation_view,
     ownership,
@@ -46,6 +50,7 @@ from epistrel.core import (
     turn_gate,
     variants,
 )
+from epistrel.core import control as control_ops
 from epistrel.core import story_settings as settings_store
 from epistrel.core.catalog import characters as catalog_characters
 from epistrel.core.catalog import companion as catalog_companion
@@ -57,16 +62,20 @@ from epistrel.core.catalog import scenario_models
 from epistrel.core.catalog import scenarios as catalog_scenarios
 from epistrel.core.catalog import search as catalog_search
 from epistrel.core.catalog.report import ValidationResult
+from epistrel.core.commit import lifecycle as commitment
 from epistrel.core.concurrency import check_expected_revision
-from epistrel.core.context import SYSTEM_PRINCIPAL, RequestContext
-from epistrel.core.enums import EntryStatus, StoryStatus
+from epistrel.core.context import SYSTEM_PRINCIPAL, RequestContext, requesting_principal
+from epistrel.core.enums import EntryStatus, StoryStatus, ThunkState
 from epistrel.core.erasure import boundary as erasure_boundary
+from epistrel.core.erasure import catalog_block
 from epistrel.core.erasure import erase as erasure
 from epistrel.core.erasure import guard as erasure_guard
 from epistrel.core.erasure import ledger as erasure_ledger
 from epistrel.core.errors import (
+    EpistrelError,
     InvalidRequest,
     LedgerUnavailable,
+    ModuleOff,
     PrincipalRequired,
     StoryNotFound,
     SubjectNotFound,
@@ -92,24 +101,39 @@ from epistrel.core.media.poster import FfmpegTools, PosterExtractor
 from epistrel.core.media.signing import Signer
 from epistrel.core.media.store import BlobStore
 from epistrel.core.media.stores import make_store
-from epistrel.core.policies.model import Policy, Scope
+from epistrel.core.memory import consolidation as consolidation_core
+from epistrel.core.memory import pins as memory_pins
+from epistrel.core.memory.consolidation import ConsolidateRequest
+from epistrel.core.policies.model import Policy, Scope, WithheldPolicy
 from epistrel.core.ports import Ports
-from epistrel.core.profiles import effective, impact
+from epistrel.core.profiles import effective, guarantees, impact
 from epistrel.core.profiles import store as profiles
 from epistrel.core.profiles import story as story_profile
 from epistrel.core.profiles.fingerprint import RuntimeFacts
 from epistrel.core.profiles.impact import ImpactPreviewRequest, ImpactReport, TwoStageResult
+from epistrel.core.profiles.reservation import safety_minimum
 from epistrel.core.profiles.schema import Purposes
 from epistrel.core.profiles.validate import ProfileValidation
+from epistrel.core.projections import structured as structured_projections
+from epistrel.core.propositions import registry as predicate_registry
 from epistrel.core.ratings import change as rating_change
 from epistrel.core.ratings import reactivation
 from epistrel.core.ratings import suggest as rating_suggestion
+from epistrel.core.retrieval import lexical_backend
+from epistrel.core.retrieval import pipeline as retrieval_pipeline
 from epistrel.core.settings_schema import ConfigClass, StorySettings
 from epistrel.core.tables import events
 from epistrel.core.tables.media import MediaKind, MediaState
 from epistrel.core.tables.ownership import EntityType
 from epistrel.core.turn_gate import Concurrency, QueueItem
-from epistrel.core.viewpoint import is_omniscient, resolve_viewpoint, with_requested
+from epistrel.core.verify import shadow as verify_shadow
+from epistrel.core.verify import yield_queries
+from epistrel.core.viewpoint import (
+    is_omniscient,
+    require_omniscient,
+    resolve_viewpoint,
+    with_requested,
+)
 from epistrel.observability import instrument
 from epistrel.orchestrator import queue_drainer
 from epistrel.orchestrator.budget import (
@@ -119,12 +143,18 @@ from epistrel.orchestrator.budget import (
     TurnBudget,
     effective_max_calls,
 )
+from epistrel.orchestrator.embeddings.adapter import EMBEDDING as EMBEDDING_PORT
+from epistrel.orchestrator.embeddings.adapter import EmbeddingProbe
+from epistrel.orchestrator.embeddings.service import EmbeddingUnreachable
 from epistrel.orchestrator.jobs import queue as job_queue
+from epistrel.orchestrator.jobs.handlers import consolidation as consolidation_job
 from epistrel.orchestrator.jobs.handlers import erasure_reconcile as erasure_reconcile_job
+from epistrel.orchestrator.jobs.handlers import importance as importance_job
 from epistrel.orchestrator.jobs.handlers import lite_summary as lite_summary_job
 from epistrel.orchestrator.jobs.handlers import media_sweep as media_sweep_job
 from epistrel.orchestrator.jobs.handlers import offboarding as offboarding_job
 from epistrel.orchestrator.jobs.handlers import rating_check as rating_check_job
+from epistrel.orchestrator.jobs.handlers import reembed as reembed_job
 from epistrel.orchestrator.jobs.handlers import turn_queue as turn_queue_job
 from epistrel.orchestrator.jobs.handlers.rebuild import (
     REBUILD_KIND,
@@ -132,6 +162,7 @@ from epistrel.orchestrator.jobs.handlers.rebuild import (
     RebuildQueued,
 )
 from epistrel.orchestrator.jobs.handlers.rebuild import coalesce_key as rebuild_coalesce_key
+from epistrel.orchestrator.jobs.handlers.reembed import ReembedRetry
 from epistrel.orchestrator.jobs.worker import (
     Worker,
     WorkerConfig,
@@ -145,7 +176,7 @@ from epistrel.orchestrator.lite.schemas import (
     RespondRequest,
     RespondResult,
 )
-from epistrel.orchestrator.models import ModelAccessLayer
+from epistrel.orchestrator.models import ModelAccessLayer, ModelError, ModelParams
 from epistrel.orchestrator.models import config as model_config
 from epistrel.orchestrator.models import facts as model_facts
 from epistrel.orchestrator.models import metrics as model_metrics
@@ -162,6 +193,8 @@ from epistrel.orchestrator.policies.schemas import (
     StoryPolicyItem,
 )
 from epistrel.orchestrator.ratings import suggest as rating_suggestion_driver
+from epistrel.orchestrator.structured import pipeline as structured_turn
+from epistrel.orchestrator.verify import extraction as extraction_job
 from epistrel.testing import crash
 
 logger = logging.getLogger(__name__)
@@ -178,6 +211,18 @@ CODECS: dict[str, ResultCodec[Any]] = {
         projections.RebuildResult | RebuildQueued,
         status=lambda result: 202 if isinstance(result, RebuildQueued) else 200,
     ),
+    "consolidate_story": ResultCodec.of(consolidation_job.ConsolidationQueued, status=202),
+    # The mutation primitives and the low-level fact calls (#145): story-scoped control writes.
+    "quarantine_memory": ResultCodec.of(mutation.MemoryWrite),
+    "unquarantine_memory": ResultCodec.of(mutation.MemoryWrite),
+    # Author pins (#147): story-scoped control writes.
+    "pin_memory": ResultCodec.of(mutation.MemoryWrite),
+    "unpin_memory": ResultCodec.of(mutation.MemoryWrite),
+    "sanitize_memory": ResultCodec.of(mutation.MemoryWrite),
+    "commit_fact": ResultCodec.of(mutation.FactWrite, status=201),
+    "supersede_fact": ResultCodec.of(mutation.FactWrite, status=201),
+    "lock_fact": ResultCodec.of(mutation.FactWrite),
+    "unlock_fact": ResultCodec.of(mutation.FactWrite),
     # A blank story or one from a scenario (201); a scenario creation #109's two stages held
     # back (200, nothing written).
     "create_story": ResultCodec.of(
@@ -217,6 +262,9 @@ CODECS: dict[str, ResultCodec[Any]] = {
     ),
     "regenerate": ResultCodec.of(RegenerateResult),
     "archive_story": ResultCodec.of(stories.StatusChange),
+    # A predicate proposal's decision (#131): approving is a configuration change.
+    "approve_predicate": ResultCodec.of(predicate_registry.Decision, revision_field=_CONFIG),
+    "reject_predicate": ResultCodec.of(predicate_registry.Decision, revision_field=_CONFIG),
     "unarchive_story": ResultCodec.of(stories.StatusChange),
     "delete_story": ResultCodec.of(stories.DeletedStory, status=204),
     # A story's characters (#114): one added to a running story (story-scoped, like the edits),
@@ -249,6 +297,11 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "remove_model_api_key": ResultCodec.of(
         model_config.ConfigWrite, status=204, revision_field=_CONFIG
     ),
+    "retry_reembed": ResultCodec.of(ReembedRetry, revision_field=_CONFIG),
+    # Gate tightening (#155): deployment-scoped writes of a shape's threshold.
+    "set_verify_gate": ResultCodec.of(yield_queries.GateWrite, revision_field=_CONFIG),
+    "promote_verify_gate": ResultCodec.of(yield_queries.GateWrite, revision_field=_CONFIG),
+    "remove_verify_gate": ResultCodec.of(yield_queries.GateWrite, revision_field=_CONFIG),
     "create_character_draft": ResultCodec.of(
         catalog_characters.DraftWrite, status=201, revision_field=_CONFIG
     ),
@@ -386,6 +439,11 @@ def _body(model: Any) -> Any:
 
 
 _POLICY_ITEMS: TypeAdapter[list[StoryPolicyItem]] = TypeAdapter(list[StoryPolicyItem])
+_SETTING_FILTERS: dict[config_log.ConfigScope, TypeAdapter[list[str]]] = {
+    config_log.ConfigScope.DEPLOYMENT: TypeAdapter(list[config_vocabulary.DeploymentSettingFilter]),
+    config_log.ConfigScope.STORY: TypeAdapter(list[config_vocabulary.StorySettingFilter]),
+}
+"""The ``setting`` vocabulary per scope (#279), the one REST checks the query against (#435)."""
 
 
 def _policy_items(raw: Any) -> list[StoryPolicyItem]:
@@ -397,6 +455,34 @@ def _policy_items(raw: Any) -> list[StoryPolicyItem]:
 
 
 LIBRARY_ONLY_ATTRIBUTE = "__epistrel_library_only__"
+
+
+NUL_CHECKED_ATTRIBUTE = "__epistrel_nul_checked__"
+
+
+def refuses_nul[F: Callable[..., Any]](*own: str) -> Callable[[F], F]:
+    """Mark an ``Engine`` read whose arguments are refused when they hold a NUL character
+    (#278): PostgreSQL cannot compare text holding one, so a read passing it to SQL failed with a
+    database error. ``guard_nul_methods`` wraps every marked read; ``own`` names the arguments
+    the read checks itself, under its own fields. Every operation a ``GET`` route serves carries
+    it (``tests/test_nul_text.py``)."""
+
+    def mark(method: F) -> F:
+        setattr(method, NUL_CHECKED_ATTRIBUTE, own)
+        return method
+
+    return mark
+
+
+def nul_checked_methods(engine_class: type[Engine] | None = None) -> dict[str, tuple[str, ...]]:
+    """``{method: own}`` for every ``refuses_nul`` coroutine method of ``engine_class``."""
+    cls = engine_class or Engine
+    marked: dict[str, tuple[str, ...]] = {}
+    for name in dir(cls):
+        own = getattr(inspect.getattr_static(cls, name), NUL_CHECKED_ATTRIBUTE, None)
+        if isinstance(own, tuple):
+            marked[name] = own
+    return marked
 
 
 def library_only[F: Callable[..., Any]](reason: str) -> Callable[[F], F]:
@@ -497,6 +583,9 @@ class Engine:
         # EPISTREL_MODEL_ADAPTER. Tests reach the stub through ``engine.models.stub``.
         self.models = models or ModelAccessLayer.from_settings(settings)
         self.models.bind(db)
+        # The embedding jobs and the embedding-model change listener embed through this layer
+        # (#138; the last Engine constructed in a process binds them, like the jobs below).
+        reembed_job.bind(self.models.embeddings)
         # What Core asks of the Orchestrator (#103): the input gate, policy evaluation, model
         # calls and background jobs. The policy evaluation is the Orchestrator's (#111: the
         # catalog validation's input policies); the other no-op defaults stand until a story
@@ -562,6 +651,10 @@ class Engine:
         mode = mode or self.settings.mode
         turn_queue_job.bind(self.drainer.recover)
         lite_summary_job.bind(self.models)
+        importance_job.bind(self.models)
+        consolidation_job.bind(self.models)
+        extraction_job.bind(self.models)
+        reembed_job.bind(self.models.embeddings)
         rating_check_job.bind(self.models)
         media_sweep_job.bind(self.media)
         erasure_reconcile_job.bind(self._reconcile_run)
@@ -604,6 +697,8 @@ class Engine:
             turn_queue_job.bind(None)
         if lite_summary_job.bound() is self.models:
             lite_summary_job.bind(None)
+        if consolidation_job.bound() is self.models:
+            consolidation_job.bind(None)
         if rating_check_job.bound() is self.models:
             rating_check_job.bind(None)
         if media_sweep_job.bound() is self.media:
@@ -673,7 +768,12 @@ class Engine:
                     await call.claim({**material, "expected_revision": ctx.expected_revision})
                 value = await run(ctx)
             except Replayed as replay:
-                await self._replay_gate(replay.stored)
+                await self._replay_gate(
+                    replay.stored,
+                    None
+                    if story_id is not None
+                    else catalog_block.key_record(KeyScope.DEPLOYMENT, DEPLOYMENT_SCOPE_ID, key),
+                )
                 return codec.load(replay.stored)
             except QueuedOriginal as queued:
                 assert story_id is not None  # noqa: S101 - only story calls queue
@@ -699,10 +799,14 @@ class Engine:
 
     @staticmethod
     def require_principal(ctx: RequestContext) -> str:
-        """Every mutation carries a requesting principal (FR-AUTH-4); the library checks too."""
-        if ctx.principal is None or not ctx.principal.strip():
-            raise PrincipalRequired("a mutating call needs a requesting principal")
-        return ctx.principal
+        """Every mutation carries a requesting principal (FR-AUTH-4), checked by the rule REST
+        applies to ``X-Epistrel-Principal`` (#434): 1 to 256 characters without a control
+        character, never the reserved ``system``. The spaces and tabs around it are trimmed, and
+        the trimmed value is the one recorded."""
+        value, problem = requesting_principal(ctx.principal)
+        if problem is not None or value is None:
+            raise PrincipalRequired(f"the requesting principal {problem}")
+        return value
 
     # -- the turn queue (FR-CONC-5; #63) ---------------------------------------------------------
 
@@ -828,6 +932,26 @@ class Engine:
             idempotency_key=item.idempotency_key,
             viewpoint=item.request.get("viewpoint"),
         )
+        configuration = concurrency.configuration
+        if configuration is not None and structured_turn.is_structured(configuration):
+            # A structured story's queued turn (#150).
+            await self._as_queued(
+                item,
+                "respond",
+                lambda: structured_turn.run_queued(
+                    self.db,
+                    self.models,
+                    ctx,
+                    item.story_id,
+                    request,
+                    operation_id=item.operation_id,
+                    principal=item.principal,
+                    concurrency=concurrency,
+                    planned=item.request.get("turn_budget"),
+                    lexical=lexical_backend(self.settings.lexical_backend),
+                ),
+            )
+            return
         await self._as_queued(
             item,
             "respond",
@@ -901,6 +1025,323 @@ class Engine:
             ctx, "rebuild_projections", run, story_id=story_id, material={"story_id": story_id}
         )
 
+    async def consolidate(
+        self, ctx: RequestContext, story_id: str, request: ConsolidateRequest
+    ) -> consolidation_job.ConsolidationQueued:
+        """Consolidate turns ``from_turn``..``to_turn`` of ``request.scope`` now (FR-MEM-3,10;
+        #143): an explicit request, so a window already consolidated is rerun with new
+        provenance and its earlier outputs superseded. Handed to a worker as a
+        ``consolidation`` job (REST 202 ``{job_id, timeline_revision}``; the same request while
+        it waits is that job). 409 ``module_off`` when the story's configuration has
+        consolidation off; 422 ``scope_mismatch`` when the window's inputs span scopes no
+        output may combine (FR-MEM-9), refused before anything is queued."""
+        self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> consolidation_job.ConsolidationQueued:
+            revision = await self.check_expected_revision(ctx, story_id)
+            scope = request.scope or consolidation_core.Scope()
+            window = consolidation_core.Window(request.from_turn, request.to_turn)
+            async with self.db.begin() as conn:
+                dials = await consolidation_core.settings_of(conn, story_id)
+                if not dials.enabled:
+                    raise ModuleOff(
+                        "the story's configuration has consolidation off",
+                        {"story_id": story_id, "module": consolidation_core.CONSOLIDATION_MODULE},
+                    )
+                await consolidation_core.plan(conn, story_id, window, scope)
+                job_id = await consolidation_job.enqueue_window(
+                    conn, story_id, window, scope, explicit=True
+                )
+            return consolidation_job.ConsolidationQueued(job_id=job_id, timeline_revision=revision)
+
+        return await self._keyed(
+            ctx,
+            "consolidate_story",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, **request.model_dump(mode="json")},
+        )
+
+    # -- the mutation primitives and the low-level fact calls (FR-GUARD-4,5; #145) -----------
+
+    async def quarantine_memory(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        memory_id: str,
+        request: mutation.QuarantineRequest,
+    ) -> mutation.MemoryWrite:
+        """Quarantine a memory (FR-GUARD-4; #145): it leaves retrieval and every generation
+        context (working memory and history are untouched). A ``control`` operation that bumps
+        the revision; a quarantined memory answers unchanged. 404 for an unknown memory, 409
+        ``module_off`` when the story keeps no episodic memory."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> mutation.MemoryWrite:
+            return await mutation.quarantine(
+                self.db,
+                story_id,
+                memory_id,
+                request,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+                expected_revision=ctx.expected_revision,
+            )
+
+        return await self._keyed(
+            ctx,
+            "quarantine_memory",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "memory_id": memory_id, "body": _body(request)},
+        )
+
+    async def unquarantine_memory(
+        self, ctx: RequestContext, story_id: str, memory_id: str
+    ) -> mutation.MemoryWrite:
+        """Reverse a quarantine (#145): the memory is retrievable again (unchanged when it is
+        not quarantined)."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> mutation.MemoryWrite:
+            return await mutation.unquarantine(
+                self.db,
+                story_id,
+                memory_id,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+                expected_revision=ctx.expected_revision,
+            )
+
+        return await self._keyed(
+            ctx,
+            "unquarantine_memory",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "memory_id": memory_id},
+        )
+
+    async def pin_memory(
+        self, ctx: RequestContext, story_id: str, memory_id: str
+    ) -> mutation.MemoryWrite:
+        """Pin a memory (FR-MEM-8; #147): outside the hot-set budgets and never retired (a
+        retired memory is rehydrated to the hot set), in every structured render's context. A
+        ``control`` operation that bumps the revision; a pinned memory answers unchanged. 422
+        ``pin_limit_exceeded`` past ``max_pinned_per_character`` or ``max_pinned_per_story``
+        (the story's text pins count too); 404 for an unknown memory."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> mutation.MemoryWrite:
+            return await memory_pins.pin(
+                self.db,
+                story_id,
+                memory_id,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+                expected_revision=ctx.expected_revision,
+            )
+
+        return await self._keyed(
+            ctx,
+            "pin_memory",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "memory_id": memory_id},
+        )
+
+    async def unpin_memory(
+        self, ctx: RequestContext, story_id: str, memory_id: str
+    ) -> mutation.MemoryWrite:
+        """Remove a memory's pin (#147): it counts toward the hot-set budgets again, so an
+        unpin above budget opens an overflow episode (unchanged when it is not pinned)."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> mutation.MemoryWrite:
+            return await memory_pins.unpin(
+                self.db,
+                story_id,
+                memory_id,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+                expected_revision=ctx.expected_revision,
+            )
+
+        return await self._keyed(
+            ctx,
+            "unpin_memory",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "memory_id": memory_id},
+        )
+
+    @refuses_nul()
+    async def hot_set(self, ctx: RequestContext, story_id: str) -> memory_pins.HotSetView:
+        """The story's hot set (FR-MEM-8; #147): its counters (recounted now, and as stored),
+        budgets, pin ceilings and pins, its open overflow episodes and its latest retirements.
+        A read; 404 for an unknown story."""
+        return await memory_pins.hot_set_view(self.db, story_id)
+
+    async def sanitize_memory(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        memory_id: str,
+        request: mutation.SanitizeRequest,
+    ) -> mutation.MemoryWrite:
+        """Replace every occurrence of ``span`` in a memory's text by ``surrogate`` (FR-GUARD-4;
+        #145): the surrogate passes the input gate, the original stays in an audit event only,
+        and the memory is re-indexed and re-embedded. 422 ``span_not_found`` when the span is
+        not in the text."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> mutation.MemoryWrite:
+            return await mutation.sanitize(
+                self.db,
+                story_id,
+                memory_id,
+                request,
+                principal=principal,
+                gate=self._text_gate(ctx, story_id, EntryPoint.SANITIZE),
+                idempotency_key=ctx.idempotency_key,
+                expected_revision=ctx.expected_revision,
+            )
+
+        return await self._keyed(
+            ctx,
+            "sanitize_memory",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "memory_id": memory_id, "body": _body(request)},
+        )
+
+    async def commit_fact(
+        self, ctx: RequestContext, story_id: str, request: mutation.FactRequest
+    ) -> mutation.FactWrite:
+        """Commit an author fact (FR-GUARD-4's canonize; #133's ``commit_fact`` with
+        ``provenance = authority = author``; #145): #140's check runs first, a conflicting
+        functional fact is superseded (``superseded``), an ``uncertain`` verdict is a warning,
+        ``locked`` sets ``author_locked``, and an author memory makes it retrievable. A
+        position-less ``control`` operation that bumps the revision (201). 409 ``module_off``
+        for a Lite story."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> mutation.FactWrite:
+            return await mutation.commit_fact(
+                self.db,
+                story_id,
+                request,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+                expected_revision=ctx.expected_revision,
+            )
+
+        return await self._keyed(
+            ctx,
+            "commit_fact",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "body": _body(request)},
+        )
+
+    async def supersede_fact(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        fact_id: str,
+        request: mutation.SupersedeRequest,
+    ) -> mutation.FactWrite:
+        """Supersede a current fact version (#133's ``supersede``; #145): the successor keeps
+        the lineage, provenance, authority and lock unless given (201). 404 ``fact_not_found``,
+        409 ``fact_superseded``/``fact_inactive``, 422 ``key_mismatch``."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> mutation.FactWrite:
+            return await mutation.supersede_fact(
+                self.db,
+                story_id,
+                fact_id,
+                request,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+                expected_revision=ctx.expected_revision,
+            )
+
+        return await self._keyed(
+            ctx,
+            "supersede_fact",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "fact_id": fact_id, "body": _body(request)},
+        )
+
+    async def lock_fact(
+        self, ctx: RequestContext, story_id: str, fact_id: str
+    ) -> mutation.FactWrite:
+        """Lock a current fact version (``author_locked``, FR-VERIFY-11; #145): a supersede of
+        the same proposition with the lock set; a locked version answers unchanged."""
+        return await self._lock(ctx, story_id, fact_id, locked=True)
+
+    async def unlock_fact(
+        self, ctx: RequestContext, story_id: str, fact_id: str
+    ) -> mutation.FactWrite:
+        """Unlock a current fact version (#145; see ``lock_fact``)."""
+        return await self._lock(ctx, story_id, fact_id, locked=False)
+
+    async def _lock(
+        self, ctx: RequestContext, story_id: str, fact_id: str, *, locked: bool
+    ) -> mutation.FactWrite:
+        principal = self.require_principal(ctx)
+        name = "lock_fact" if locked else "unlock_fact"
+
+        async def run(ctx: RequestContext) -> mutation.FactWrite:
+            return await mutation.set_lock(
+                self.db,
+                story_id,
+                fact_id,
+                locked=locked,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+                expected_revision=ctx.expected_revision,
+            )
+
+        return await self._keyed(
+            ctx, name, run, story_id=story_id, material={"story_id": story_id, "fact_id": fact_id}
+        )
+
+    @refuses_nul()
+    async def list_facts(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        viewpoint: str | None = None,
+        as_of_story_time: int | None = None,
+        as_of_record_time: datetime | None = None,
+        subject: str | None = None,
+        predicate: str | None = None,
+        include_superseded: bool = False,
+        limit: int = mutation.DEFAULT_LIST_LIMIT,
+        cursor: str | None = None,
+    ) -> mutation.FactPage:
+        """The story's canon (FR-BITEMP-3; #145), ``omniscient`` only (403
+        ``omniscient_required`` otherwise): the current versions (every version with
+        ``include_superseded``), true at ``as_of_story_time``, as recorded at
+        ``as_of_record_time``, about ``subject`` and of ``predicate`` when given; a page of
+        ``limit`` by id, ``cursor`` continuing. 409 ``module_off`` for a Lite story."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        require_omniscient(ctx.viewpoint or "", field="query.viewpoint")
+        return await mutation.list_facts(
+            self.db,
+            story_id,
+            as_of_story_time=as_of_story_time,
+            as_of_record_time=as_of_record_time,
+            subject=subject,
+            predicate=predicate,
+            include_superseded=include_superseded,
+            limit=limit,
+            cursor=cursor,
+        )
+
     @library_only("a precondition every story mutation runs (`X-Epistrel-Expected-Revision`)")
     async def check_expected_revision(self, ctx: RequestContext, story_id: str) -> int:
         """Every story-scoped mutation starts here: a stale ``ctx.expected_revision`` is 409
@@ -911,6 +1352,7 @@ class Engine:
         """
         return await check_expected_revision(self.db, story_id, ctx.expected_revision)
 
+    @refuses_nul()
     async def history(
         self,
         ctx: RequestContext,
@@ -947,6 +1389,7 @@ class Engine:
             include_summary=include_summary,
         )
 
+    @refuses_nul()
     async def get_operation(
         self, ctx: RequestContext, operation_id: str, *, viewpoint: str | None = None
     ) -> operation_view.OperationView:
@@ -956,11 +1399,16 @@ class Engine:
         that viewpoint (``viewpoint`` or ``ctx.viewpoint``); another named viewpoint is 409
         ``idempotency_conflict``. Unknown is 404. An operation of a story the erasure reconciler
         holds blocked is 503 ``erasure_pending`` like every other read of that story (#333): its
-        stored result may carry what the pending erasure removes."""
+        stored result may carry what the pending erasure removes. So is one whose
+        deployment-scoped stored result, or creation report, a pending catalog-scope erasure
+        reaches (#346)."""
         ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
         view = await operation_view.read_operation(self.db, operation_id, viewpoint=ctx.viewpoint)
         if view.story_id is not None:
             await self._erasure_gate(view.story_id)
+        if (block := await self._catalog_block()) is not None:
+            async with self.db.connect() as conn:
+                block.check_records(await catalog_block.operation_records(conn, operation_id))
         return view
 
     # -- story lifecycle (FR-ADMIN-1, FR-STORE-14,16, FR-CAT-12) ----------------------------
@@ -991,6 +1439,10 @@ class Engine:
         principal = self.require_principal(ctx)
         if isinstance(spec, StoryFromScenario):
             request = spec
+            # A story copies the catalog entries it is created from, and a catalog-scope erasure
+            # never touches a story (FR-STORE-14): none may be reached by a pending one (#346).
+            for kind, entry_id in _catalog_entries_of(request):
+                await self._catalog_gate(kind, entry_id)
             return await self._keyed(
                 ctx,
                 "create_story",
@@ -1110,7 +1562,7 @@ class Engine:
         actor: str | None = None,
         budget: TurnBudget | None = None,
         reserved: int = 0,
-        reserve_output_for: Sequence[str] | None = None,
+        reserve_output_for: str | Sequence[str] | None = None,
     ) -> InputPass:
         """The input gate of a truth-changing path that accepts text (FR-GUARD-9,10): run it
         after the call's other prechecks (#44's order) and before its ``Operation`` opens. A
@@ -1204,6 +1656,19 @@ class Engine:
                     respond_async=respond_async,
                 )
 
+            if await self._plays_structured(story_id):
+                # The story's effective configuration runs the structured pipeline (#150).
+                return await structured_turn.respond(
+                    self.db,
+                    self.models,
+                    ctx,
+                    story_id,
+                    request,
+                    principal=principal,
+                    gate=gate,
+                    queue_turn=queue_turn,
+                    lexical=lexical_backend(self.settings.lexical_backend),
+                )
             return await lite.respond(
                 self.db,
                 self.models,
@@ -1220,6 +1685,18 @@ class Engine:
         return await self._keyed(
             ctx, "respond", run, story_id=story_id, respond_async=respond_async
         )
+
+    async def _plays_structured(self, story_id: str) -> bool:
+        """Whether ``story_id``'s effective configuration runs the ``structured`` pipeline
+        (#129's ``level_at_least``; #113's effective configuration): a turn is routed by it,
+        never by a request flag (#150). An unreadable story is ``False``: the Lite path's
+        prechecks then answer for it (404, …) exactly as before."""
+        try:
+            async with self.db.connect() as conn:
+                found = await effective.effective_configuration(conn, story_id, validate=False)
+        except EpistrelError:
+            return False
+        return structured_turn.is_structured(found)
 
     async def ingest(
         self,
@@ -1291,6 +1768,7 @@ class Engine:
 
     # -- story-level text: pinned memories and custom instructions (FR-LITE-3) ---------------
 
+    @refuses_nul()
     async def pinned_memories(
         self, ctx: RequestContext, story_id: str
     ) -> story_texts.PinnedMemories:
@@ -1327,6 +1805,178 @@ class Engine:
             material={"story_id": story_id, "body": _body(request)},
         )
 
+    # -- commitments (FR-COMMIT-13; #146) -------------------------------------------------------
+
+    @refuses_nul()
+    async def inspect_ledger(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        viewpoint: str | None = None,
+        state: ThunkState | None = None,
+        discharged: bool | None = None,
+        limit: int = commitment.INSPECT_LIMIT_DEFAULT,
+        after_id: str | None = None,
+    ) -> commitment.LedgerPage:
+        """The story's thunks and promissory ledger (docs/02 §9's ``inspect/ledger``; FR-ADMIN-5
+        is M5's), ``omniscient`` only (403 ``omniscient_required`` otherwise): a page of
+        ``limit`` thunks by id after ``after_id`` (only those in effective ``state`` when
+        given), with their ledger entries (``discharged`` filters them). 409 ``module_off`` when
+        the story does not run commitment."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        require_omniscient(ctx.viewpoint or "", field="query.viewpoint")
+        return await commitment.inspect_ledger(
+            self.db,
+            story_id,
+            state=state,
+            discharged=discharged,
+            limit=limit,
+            after_id=after_id,
+        )
+
+    # -- the structured projections (FR-STORE-3, FR-RET-6; #137) ---------------------------------
+
+    @refuses_nul()
+    async def scene(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        as_of: int | None = None,
+        viewpoint: str | None = None,
+    ) -> structured_projections.SceneView:
+        """The scene as of turn ``as_of`` (default the head; 422 beyond it): the player
+        character's location and the entities present there, for ``viewpoint`` (or
+        ``ctx.viewpoint``, else the story's default output viewpoint; 422
+        ``viewpoint_unresolved`` when none resolves). A character viewpoint is not shown an
+        entity placed by a fact it may not read."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        async with self.db.connect() as conn:
+            return await structured_projections.scene_view(
+                conn, story_id, as_of=as_of, viewpoint=ctx.viewpoint
+            )
+
+    @refuses_nul()
+    async def entity_profile(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        entity_id: str,
+        *,
+        as_of: int | None = None,
+        viewpoint: str | None = None,
+    ) -> structured_projections.ProfileView:
+        """``entity_id``'s standing profile as of turn ``as_of`` (FR-RET-6): its
+        relationships in both directions, where it is and what it holds, for ``viewpoint`` as
+        ``scene`` resolves it. 404 ``not_found`` for an entity that is not the story's."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        async with self.db.connect() as conn:
+            return await structured_projections.profile_view(
+                conn, story_id, entity_id, as_of=as_of, viewpoint=ctx.viewpoint
+            )
+
+    # -- retrieval (FR-RET-2..7; #141) ----------------------------------------------------------
+
+    @refuses_nul()
+    async def retrieve(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        q: str,
+        viewpoint: str | None = None,
+        as_of: int | None = None,
+        actor_character_id: str | None = None,
+        include_quarantined: bool = False,
+    ) -> retrieval_pipeline.RetrievalResult:
+        """What a structured render's context would retrieve for ``q`` asked by
+        ``actor_character_id`` (default the player) just after turn ``as_of`` (default the
+        head), for debugging: the located episodes and assessments, the ranked memories with
+        their scores, the profiles and canon, the assembled context and the per-stage timings.
+        ``omniscient`` only (403 ``omniscient_required`` for a character viewpoint: it shows
+        ranking over private records). A read: no operation, no memory touched. A story whose
+        ``episodic`` module is off answers an empty result (``skipped: ["episodic"]``). A
+        quarantined memory (#145) is never retrieved unless ``include_quarantined``."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        embedder = self.models.embeddings
+        async with self.db.connect() as conn:
+            return await retrieval_pipeline.read_retrieve(
+                conn,
+                story_id,
+                q=q,
+                viewpoint=ctx.viewpoint,
+                as_of=as_of,
+                actor_character_id=actor_character_id,
+                embed=embedder.query_embedder(),
+                embed_batch=embedder.batch_embedder(),
+                lexical=lexical_backend(self.settings.lexical_backend),
+                include_quarantined=include_quarantined,
+            )
+
+    # -- the predicate registry (FR-PROP-3,4; #131) ---------------------------------------------
+
+    @library_only("lifecycle: the REST app runs it at start-up")
+    async def sync_vocabulary(self) -> int:
+        """Re-sync the core vocabulary's rows from ``vocabulary`` (new predicates and doc
+        changes reach an existing deployment); answers how many rows changed."""
+        return await predicate_registry.sync_core(self.db)
+
+    @refuses_nul()
+    async def list_predicates(
+        self, ctx: RequestContext, story_id: str
+    ) -> predicate_registry.PredicateList:
+        """The story's predicate registry: the core vocabulary, its author and auto predicates
+        with their pending proposals, and its implication rules."""
+        return await predicate_registry.list_predicates(self.db, story_id)
+
+    async def approve_predicate(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        predicate_id: str,
+        request: predicate_registry.ApproveRequest,
+    ) -> predicate_registry.Decision:
+        """Apply the predicate's pending strengthening proposal (or the fields
+        ``request.changes`` names): an interpretive configuration change. The answer reports
+        the story's propositions the new semantics would flag; none is changed."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> predicate_registry.Decision:
+            await self.check_expected_revision(ctx, story_id)
+            return await predicate_registry.approve(
+                self.db, story_id, predicate_id, request.changes, principal=principal
+            )
+
+        return await self._keyed(
+            ctx,
+            "approve_predicate",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "predicate_id": predicate_id, "body": _body(request)},
+        )
+
+    async def reject_predicate(
+        self, ctx: RequestContext, story_id: str, predicate_id: str
+    ) -> predicate_registry.Decision:
+        """Close the predicate's pending proposal unapplied."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> predicate_registry.Decision:
+            await self.check_expected_revision(ctx, story_id)
+            return await predicate_registry.reject(
+                self.db, story_id, predicate_id, principal=principal
+            )
+
+        return await self._keyed(
+            ctx,
+            "reject_predicate",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "predicate_id": predicate_id},
+        )
+
+    @refuses_nul()
     async def custom_instructions(
         self, ctx: RequestContext, story_id: str
     ) -> story_texts.CustomInstructions:
@@ -1372,23 +2022,31 @@ class Engine:
 
         return gate
 
+    @refuses_nul()
     async def story_settings(
         self, ctx: RequestContext, story_id: str
     ) -> tuple[StorySettings, policy_store.StoryGuardrails]:
         """The story's settings (defaults filled in) and its guardrails: effective policies
-        with their kind and source, inactive ones, and the model calls they add (FR-GUARD-9)."""
+        with their kind and source, inactive ones, and the model calls they add (FR-GUARD-9).
+        A policy whose text a pending catalog-scope erasure reaches is a ``WithheldPolicy`` (no
+        name, message or rule) until it has been reapplied (#447, ADR-161)."""
         story = await stories.get_story(self.db, story_id)
         guardrails = await policy_store.story_guardrails(self.db, story_id)
+        if (block := await self._catalog_block()) is not None:
+            guardrails = guardrails.withholding(block.records(catalog_block.POLICIES))
         return StorySettings.from_row(story.settings), guardrails
 
     @library_only("served as `effective_budget` in `GET`/`PATCH /stories/{id}/settings`")
+    @refuses_nul()
     async def effective_budget(self, ctx: RequestContext, story_id: str) -> EffectiveBudget:
         """The turn budget the story's next turn would plan with (#69), from its effective
         configuration's ``budgets`` (#113): the call cap and where it comes from (``story``: its
         overrides, ``profile``: its profile's version, ``deployment``: the deployment's
         ``profile_defaults``, or ``formula`` when the cap is ``null``), the turn deadline, the
         guardrail calls G it reserves (the input check of a turn whose actor has no
-        character-scoped input policy) and the safety minimum ``1 + G``."""
+        character-scoped input policy) and the safety minimum: ``1 + G`` for Lite, ``1 + B + C +
+        G`` for a structured story (#156: its render's extraction and its composed message's
+        detection, ``core.profiles.reservation``)."""
         concurrency = await turn_gate.read_concurrency(self.db, story_id)
         guardrails = await policy_store.story_guardrails(self.db, story_id)
         reserved = {
@@ -1405,7 +2063,15 @@ class Engine:
             source=source,
             turn_deadline=concurrency.turn_deadline,
             reserved=reserved,
-            minimum_required=1 + sum(reserved.values()),
+            minimum_required=(
+                1 + sum(reserved.values())
+                if concurrency.configuration is None
+                else safety_minimum(
+                    concurrency.configuration.settings,
+                    guardrail_input=guardrails.calls_input,
+                    guardrail_output=guardrails.calls_output,
+                )
+            ),
         )
 
     async def update_story_settings(
@@ -1484,6 +2150,7 @@ class Engine:
             material={"story_id": story_id, "body": _body(request)},
         )
 
+    @refuses_nul()
     async def get_rating_check(
         self, ctx: RequestContext, story_id: str, job_id: str
     ) -> rating_change.RatingCheckView:
@@ -1493,6 +2160,7 @@ class Engine:
         that is not one of its checks."""
         return await rating_change.get_check(self.db, story_id, job_id)
 
+    @refuses_nul()
     async def get_story(
         self, ctx: RequestContext, story_id: str, *, viewpoint: str | None = None
     ) -> stories.StoryView:
@@ -1515,6 +2183,7 @@ class Engine:
         return await stories.get_story(self.db, story_id, omniscient=True)
 
     @library_only("served as `undo_available`/`dormant_chains` in `GET /stories/{id}`")
+    @refuses_nul()
     async def undo_state(self, ctx: RequestContext, story_id: str) -> timeline.UndoState:
         """Whether the story's latest truncation can be undone, and the discarded tails that
         have newer turns over them (``GET /stories/{id}``, #65)."""
@@ -1680,6 +2349,7 @@ class Engine:
             ctx, "fork", run, material={"story_id": story_id, "body": _body(request)}
         )
 
+    @refuses_nul()
     async def variants(self, ctx: RequestContext, story_id: str) -> list[variants.Chain]:
         """The story's variant chains (``GET /stories/{id}/variants``, #66); a chain that is
         not active says whether making it active would first check its turns
@@ -1698,7 +2368,8 @@ class Engine:
         #66); the old variant goes dormant in the same commit and can be swapped back. The
         input is re-gated (#56); a busy story is 423 ``story_busy``; queued turns fail with
         ``timeline_changed``. Omitted overrides reuse the recorded render set, viewpoint and
-        generation settings."""
+        generation settings. A structured story's regenerate (#154) reverts what the replaced
+        variant committed and reopens the thunks it resolved."""
         principal = self.require_principal(ctx)
         request = request or RegenerateRequest()
         ctx = with_requested(ctx, output_viewpoint, request.output_viewpoint)
@@ -1716,6 +2387,19 @@ class Engine:
             )
 
         async def run(ctx: RequestContext) -> RegenerateResult:
+            if await self._plays_structured(story_id):
+                # A structured story's regenerate (#154): the commit boundary reverts what the
+                # replaced variant committed.
+                return await structured_turn.regenerate(
+                    self.db,
+                    self.models,
+                    ctx,
+                    story_id,
+                    request,
+                    principal=principal,
+                    gate=gate,
+                    lexical=lexical_backend(self.settings.lexical_backend),
+                )
             return await lite.regenerate(
                 self.db, self.models, ctx, story_id, request, principal=principal, gate=gate
             )
@@ -1732,13 +2416,14 @@ class Engine:
             },
         )
 
+    @refuses_nul()
     async def list_stories(
         self,
         ctx: RequestContext,
         *,
         status: StoryStatus | None = None,
         owner: str | None = None,
-        relation: Sequence[str] = (),
+        relation: str | Sequence[str] = (),
     ) -> list[stories.StoryView]:
         """Every story, newest first, unless the request filters: by ``status``, by ``owner``
         (a principal), or by ``relation`` (each ``name:principal``, or ``name:`` for any
@@ -1891,14 +2576,17 @@ class Engine:
 
     # -- content ratings and deployment settings (FR-RATE-1,2; deployment-scoped) --------------
 
+    @refuses_nul()
     async def list_content_ratings(
         self, ctx: RequestContext, *, include_retired: bool = False
     ) -> list[ratings.Rating]:
         return await ratings.list_ratings(self.db, include_retired=include_retired)
 
+    @refuses_nul()
     async def get_content_rating(self, ctx: RequestContext, rating_id: str) -> ratings.RatingDetail:
         return await ratings.get_rating(self.db, rating_id)
 
+    @refuses_nul()
     async def content_rating_versions(
         self, ctx: RequestContext, rating_id: str
     ) -> list[ratings.Rating]:
@@ -1937,6 +2625,7 @@ class Engine:
             material={"rating_id": rating_id},
         )
 
+    @refuses_nul()
     async def deployment_settings(self, ctx: RequestContext) -> deployment.DeploymentState:
         return await deployment.read_settings(self.db)
 
@@ -1953,22 +2642,32 @@ class Engine:
             material={"body": patch.model_dump(mode="json", exclude_unset=True)},
         )
 
+    @refuses_nul()
     async def config_changes(
         self,
         ctx: RequestContext,
         *,
         scope: config_log.ConfigScope,
         story_id: str | None = None,
-        settings: Sequence[str] = (),
+        settings: str | Sequence[str] = (),
         change_class: ConfigClass | None = None,
         since: datetime | None = None,
         after: str | None = None,
         limit: int = config_log.DEFAULT_PAGE,
     ) -> config_log.ConfigChangePage:
         """A page of the configuration log (FR-CONC-14, #64): the deployment's changes, or a
-        story's (404 for an unknown story), newest first."""
+        story's (404 for an unknown story), newest first. Each ``settings`` name is checked
+        against the scope's closed vocabulary, as REST checks ``setting`` (#279, #435): an
+        unknown name is 422 ``validation_error`` at ``query.setting``, never an empty page. A
+        deployment change whose values a pending catalog-scope erasure reaches is left out until
+        it has been reapplied (#429, as #346's lists)."""
+        try:
+            _SETTING_FILTERS[scope].validate_python(list(settings))
+        except ValidationError as exc:
+            raise InvalidRequest.from_errors(exc.errors(), prefix=("query", "setting")) from None
         if story_id is not None:
             await check_expected_revision(self.db, story_id, None)
+        block = await self._catalog_block()
         return await config_log.list_config_changes(
             self.db,
             scope=scope,
@@ -1978,12 +2677,14 @@ class Engine:
             since=since,
             after=after,
             limit=limit,
+            excluded=() if block is None else block.records(catalog_block.CONFIG_CHANGES),
         )
 
     # -- the policy store (FR-GUARD-1,8,9; NFR-SEC-1) ----------------------------------------
     # The writes below are the only callers of ``orchestrator.policies.admin``: the operator
     # surface (``/admin/policies``) and story settings (#63). Nothing on a turn's path calls them.
 
+    @refuses_nul()
     async def policies_list(
         self,
         ctx: RequestContext,
@@ -1994,31 +2695,46 @@ class Engine:
     ) -> list[Policy]:
         """Policies ordered by scope, scope id and name. The story and character policies of a
         story the erasure reconciler holds blocked are left out (they may still name the
-        subject); the ledger is compared first, as for ``list_stories`` (#363)."""
+        subject); the ledger is compared first, as for ``list_stories`` (#363). So is a policy
+        whose text a pending catalog-scope erasure reaches, until it has been reapplied (#429)."""
         if not self._erasure_marked:
             await self._mark_erasures()
-        return await policy_store.list_policies(
+        listed = await policy_store.list_policies(
             self.db,
             scope=scope,
             story_id=story_id,
             include_retired=include_retired,
             exclude_blocked=True,
         )
+        if (block := await self._catalog_block()) is None:
+            return listed
+        return [p for p in listed if not block.hides_record(catalog_block.POLICIES, p.id)]
 
+    @refuses_nul()
     async def policies_get(self, ctx: RequestContext, policy_id: str) -> Policy:
         """One policy, retired or not. A policy of a blocked story is 503 ``erasure_pending``,
-        as every call naming the story is (#363)."""
+        as every call naming the story is (#363), and so is one whose text a pending
+        catalog-scope erasure reaches (#429)."""
         if not self._erasure_marked:
             await self._mark_erasures()
         policy = await policy_store.get_policy(self.db, policy_id)
         if policy.story_id is not None:
             await erasure_ledger.check_story(self.db, policy.story_id)
+        await self._policy_gate(policy_id)
         return policy
 
     @library_only("served as `effective_policies` in `GET /stories/{id}/settings`")
-    async def policies_effective(self, ctx: RequestContext, story_id: str) -> tuple[Policy, ...]:
-        """The story's effective policies: global, the rating closure, story, character."""
-        return await policy_store.effective_policies(self.db, story_id)
+    @refuses_nul()
+    async def policies_effective(
+        self, ctx: RequestContext, story_id: str
+    ) -> tuple[Policy | WithheldPolicy, ...]:
+        """The story's effective policies: global, the rating closure, story, character. One
+        whose text a pending catalog-scope erasure reaches is a ``WithheldPolicy`` (no name,
+        message or rule; still enforced) until it has been reapplied (#447, ADR-161)."""
+        found = await policy_store.effective_policies(self.db, story_id)
+        if (block := await self._catalog_block()) is None:
+            return found
+        return policy_store.withhold(found, block.records(catalog_block.POLICIES))
 
     async def policies_create(
         self, ctx: RequestContext, fields: PolicyFields
@@ -2036,7 +2752,10 @@ class Engine:
     async def policies_update(
         self, ctx: RequestContext, policy_id: str, fields: PolicyReplacement
     ) -> policy_admin.PolicyWrite:
+        """Replace a global or rating policy's content. 503 ``erasure_pending`` while a pending
+        catalog-scope erasure reaches its text (#429): the change would record it again."""
         principal = self.require_principal(ctx)
+        await self._policy_gate(policy_id)
         return await self._keyed(
             ctx,
             "policies_update",
@@ -2047,7 +2766,10 @@ class Engine:
     async def policies_retire(
         self, ctx: RequestContext, policy_id: str
     ) -> policy_admin.PolicyWrite:
+        """Retire a global or rating policy. 503 ``erasure_pending`` while a pending
+        catalog-scope erasure reaches its text (#429): the result carries it."""
         principal = self.require_principal(ctx)
+        await self._policy_gate(policy_id)
         return await self._keyed(
             ctx,
             "policies_retire",
@@ -2080,12 +2802,14 @@ class Engine:
     # Deployment-scoped: every write bumps ``config_revision`` and records a prospective
     # ``config_changes`` row; the next model call reads the new configuration (no restart).
 
+    @refuses_nul()
     async def model_configuration(
         self, ctx: RequestContext
     ) -> tuple[int, dict[str, model_config.ConfigEntry]]:
         """``config_revision`` and every configurable purpose, ``default`` included."""
         return await self.models.configuration()
 
+    @refuses_nul()
     async def model_config_entry(
         self, ctx: RequestContext, purpose: str
     ) -> tuple[int, model_config.ConfigEntry]:
@@ -2094,15 +2818,150 @@ class Engine:
     async def replace_model_config(
         self, ctx: RequestContext, purpose: str, body: model_config.ConfigReplacement
     ) -> model_config.ConfigWrite:
+        """Replace a purpose's own configuration. For the ``embedding`` port (#138) a new
+        model is probed first (422 ``embedding_unreachable`` when it does not answer): the
+        write then moves the embedding pin and enqueues the re-embed jobs in its transaction
+        (``reembed_job.on_embedding_model_changed``)."""
+        principal = self.require_principal(ctx)
+        probe = await self._probe_embedding_change(purpose, body)
+        with reembed_job.changing(self.models.embeddings, probe):
+            return await self._keyed(
+                ctx,
+                "replace_model_config",
+                lambda _: model_config.replace_config(
+                    self.db, purpose, body, keybox=self.models.keybox, principal=principal
+                ),
+                material={"purpose": purpose, "body": _body(body)},
+            )
+
+    async def _probe_embedding_change(
+        self, purpose: str, body: model_config.ConfigReplacement
+    ) -> EmbeddingProbe | None:
+        """The probe of the embedding model ``body`` names when it is a different one; ``None``
+        for any other purpose, an unset model or the same model."""
+        if purpose != EMBEDDING_PORT or body.model is None:
+            return None
+        if body.params is not None:
+            model_config.check_port_params(purpose, body.params)
+        _, rows = await model_config.snapshot(self.db)
+        own = rows.get(purpose)
+        if own is not None and own.model == body.model:
+            return None
+        candidate = model_config.EffectiveConfig(
+            purpose=purpose,
+            base_url=body.base_url,
+            model=body.model,
+            api_key_ciphertext=None if own is None else own.api_key_ciphertext,
+            params=body.params or ModelParams(),
+            revision=0,
+        )
+        try:
+            return await self.models.embeddings.probe(candidate)
+        except ModelError as exc:
+            raise EmbeddingUnreachable(str(exc.details.get("reason", "unknown"))) from None
+
+    # -- claim detection's shadow sample (FR-OBS-4, FR-VERIFY-13; #148) -----------------------
+
+    @refuses_nul()
+    async def extraction_shadow_report(
+        self,
+        ctx: RequestContext,
+        *,
+        window_from: datetime | None = None,
+        window_to: datetime | None = None,
+        story_id: str | None = None,
+        limit: int = 50,
+        after: str | None = None,
+    ) -> verify_shadow.ShadowReport:
+        """What ``gated`` claim extraction missed over a window (30 days by default; one story
+        or every one), with detection and checking counted separately, and one page of the
+        samples (by id, after ``after``)."""
+        del ctx
+        async with self.db.connect() as conn:
+            return await verify_shadow.report(
+                conn,
+                window_from=window_from,
+                window_to=window_to,
+                story_id=story_id,
+                limit=limit,
+                after=after,
+            )
+
+    # -- escalation yield and gate tightening (FR-OBS-2,4, NFR-PERF-5; #155) -------------------
+
+    @refuses_nul()
+    async def escalation_yield(
+        self,
+        ctx: RequestContext,
+        *,
+        window_from: datetime | None = None,
+        window_to: datetime | None = None,
+    ) -> yield_queries.YieldReport:
+        """Escalation yield over a window (the last 30 days by default): per gate reason, per
+        predicate shape and per both, the escalations, flips and rates, and the overall
+        escalation rate with its reference baseline."""
+        del ctx
+        async with self.db.connect() as conn:
+            return await yield_queries.yield_report(
+                conn, window_from=window_from, window_to=window_to
+            )
+
+    async def set_verify_gate(
+        self, ctx: RequestContext, request: yield_queries.GateRequest
+    ) -> yield_queries.GateWrite:
+        """Propose a shape's gate threshold in ``shadow``, or put it ``live`` (confirmed with
+        ``ignore_warnings``; without it nothing is written and the key is released)."""
         principal = self.require_principal(ctx)
         return await self._keyed(
             ctx,
-            "replace_model_config",
-            lambda _: model_config.replace_config(
-                self.db, purpose, body, keybox=self.models.keybox, principal=principal
-            ),
-            material={"purpose": purpose, "body": _body(body)},
+            "set_verify_gate",
+            lambda _: yield_queries.set_gate(self.db, request, actor=principal),
+            material=request.model_dump(mode="json"),
+            keep=lambda written: written.applied,
         )
+
+    async def promote_verify_gate(self, ctx: RequestContext, shape: str) -> yield_queries.GateWrite:
+        """Promote a shape's shadowed threshold (409 ``gate_not_promotable`` below the rule)."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "promote_verify_gate",
+            lambda _: yield_queries.promote_gate(self.db, shape, actor=principal),
+            material={"shape": shape},
+        )
+
+    async def remove_verify_gate(self, ctx: RequestContext, shape: str) -> yield_queries.GateWrite:
+        """Remove a shape's threshold: proposed or live, the shape is not tightened any more."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "remove_verify_gate",
+            lambda _: yield_queries.remove_gate(self.db, shape, actor=principal),
+            material={"shape": shape},
+        )
+
+    # -- the re-embed run (FR-EMBED-3,4; #138) ------------------------------------------------
+
+    @refuses_nul()
+    async def reembed_status(
+        self, ctx: RequestContext, *, limit: int = 50, after: str | None = None
+    ) -> reembed_job.ReembedStatus:
+        """The last embedding-model change's re-embed run: its versions, start and finish, and
+        one page of stories (by id, after ``after``) with their job's status and progress."""
+        async with self.db.connect() as conn:
+            return await reembed_job.status(conn, limit=limit, after=after)
+
+    async def retry_reembed(self, ctx: RequestContext) -> ReembedRetry:
+        """Enqueue a new re-embed job for every story whose latest one failed."""
+        self.require_principal(ctx)
+
+        async def run(_: RequestContext) -> ReembedRetry:
+            async with self.db.begin() as conn:
+                retried = await reembed_job.retry(conn)
+                revision = await model_config.current_revision(conn)
+            return ReembedRetry(retried=retried, config_revision=revision)
+
+        return await self._keyed(ctx, "retry_reembed", run, material={})
 
     async def remove_model_override(
         self, ctx: RequestContext, purpose: str
@@ -2261,6 +3120,7 @@ class Engine:
             material={"character_id": character_id},
         )
 
+    @refuses_nul()
     async def get_character(
         self,
         ctx: RequestContext,
@@ -2277,12 +3137,14 @@ class Engine:
             self.db, character_id, version=version, draft=draft, projection=projection
         )
 
+    @refuses_nul()
     async def list_character_versions(
         self, ctx: RequestContext, character_id: str
     ) -> list[catalog_characters.VersionSummary]:
         """Every published version of the entry, oldest first: number, time and publisher."""
         return await catalog_characters.versions(self.db, character_id)
 
+    @refuses_nul()
     async def get_companion(
         self,
         ctx: RequestContext,
@@ -2422,6 +3284,7 @@ class Engine:
             material={"scenario_id": scenario_id},
         )
 
+    @refuses_nul()
     async def get_scenario(
         self,
         ctx: RequestContext,
@@ -2438,6 +3301,7 @@ class Engine:
             self.db, scenario_id, version=version, draft=draft, projection=projection
         )
 
+    @refuses_nul()
     async def list_scenario_versions(
         self, ctx: RequestContext, scenario_id: str
     ) -> list[catalog_scenarios.VersionSummary]:
@@ -2523,6 +3387,7 @@ class Engine:
             },
         )
 
+    @refuses_nul("q", "label", "content_rating", "listing_status", "owner", "relation")
     async def search_catalog(
         self,
         ctx: RequestContext,
@@ -2548,7 +3413,8 @@ class Engine:
         hold) narrow the list only when given (FR-AUTH-8). A plain string ``label`` or
         ``relation`` is one value, as one query parameter is. Companion scenarios are listed
         only with ``include_companions``. ``cursor`` (a page's ``next_cursor``) continues with
-        the same filters."""
+        the same filters. An entry a pending catalog-scope erasure reaches is left out until it
+        has been reapplied (#346), so a page may hold fewer than ``limit``."""
         service = catalog_kinds.service_of(entity_type)
         query = catalog_search.catalog_query(
             q=q,
@@ -2560,7 +3426,17 @@ class Engine:
             status=status,
             include_companions=include_companions,
         )
-        return await catalog_search.search(self.db, service, query, limit=limit, cursor=cursor)
+        page = await catalog_search.search(self.db, service, query, limit=limit, cursor=cursor)
+        kind = (
+            catalog_block.CHARACTER
+            if service.entity_type is EntityType.CHARACTER
+            else catalog_block.SCENARIO
+        )
+        if (block := await self._catalog_block()) is None:
+            return page
+        return dataclasses.replace(
+            page, items=[i for i in page.items if not block.hides(kind, str(i.id))]
+        )
 
     # -- personas (FR-CAT-6, FR-AUTH-5; FR-API-6; #114) -----------------------------------------
     # Deployment-scoped like the catalog: each write is one transaction recording a story-less
@@ -2581,10 +3457,12 @@ class Engine:
             material={"body": _body(request)},
         )
 
+    @refuses_nul()
     async def get_persona(self, ctx: RequestContext, persona_id: str) -> catalog_personas.Persona:
         """The persona; 404 for an unknown one."""
         return await catalog_personas.get(self.db, persona_id)
 
+    @refuses_nul("owner", "relation", "cursor")
     async def list_personas(
         self,
         ctx: RequestContext,
@@ -2597,10 +3475,11 @@ class Engine:
         """A page of personas, newest first: every principal's unless ``owner`` (a principal)
         or ``relation`` (``name:principal``, or ``name:`` for any principal; one, or several that
         must all hold) narrow it (FR-AUTH-8). A plain string ``relation`` is one value.
-        ``cursor`` (a page's ``next_cursor``) continues with the same filters."""
+        ``cursor`` (a page's ``next_cursor``) continues with the same filters. A persona a
+        pending catalog-scope erasure reaches is left out until it has been reapplied (#346)."""
         values = (relation,) if isinstance(relation, str) else tuple(relation)
         refuse_nul({"owner": owner, "relation": list(values), "cursor": cursor}, ("query",))
-        return await catalog_personas.list_personas(
+        page = await catalog_personas.list_personas(
             self.db,
             owner=ownership.owner_filter(owner),
             relations=[
@@ -2609,6 +3488,11 @@ class Engine:
             ],
             limit=limit,
             cursor=cursor,
+        )
+        if (block := await self._catalog_block()) is None:
+            return page
+        return dataclasses.replace(
+            page, items=[p for p in page.items if not block.hides(catalog_block.PERSONA, p.id)]
         )
 
     async def update_persona(
@@ -2750,6 +3634,7 @@ class Engine:
             {"relation": name, "principal": related},
         )
 
+    @refuses_nul()
     async def list_relations(
         self, ctx: RequestContext, entity_type: EntityType | str, entity_id: str
     ) -> ownership.Relations:
@@ -2763,6 +3648,7 @@ class Engine:
     # offboarding request is deployment-scoped and keyed per deployment; its job runs as
     # ``system``.
 
+    @refuses_nul("principal_id", "cursors")
     async def lookup_principal(
         self,
         ctx: RequestContext,
@@ -2777,13 +3663,17 @@ class Engine:
         count, newest first. ``cursors`` maps a page (``stories``, ``related.stories``, …) to its
         previous page's ``next_cursor``. An unknown principal answers empty pages. A story the
         erasure reconciler holds blocked is listed without its name (#359); the ledger is
-        compared first, as for ``list_stories`` (#360)."""
+        compared first, as for ``list_stories`` (#360). So is a catalog entry, persona or
+        media asset a pending catalog-scope erasure reaches (#346)."""
         found = principals.lookup_principal_id(principal_id)
         given = dict(cursors or {})
         refuse_nul({"principal": found, "cursors": given}, ("query",))
         if not self._erasure_marked:
             await self._mark_erasures()
-        return await principals.lookup(self.db, found, limit=limit, cursors=given)
+        lookup = await principals.lookup(self.db, found, limit=limit, cursors=given)
+        if (block := await self._catalog_block()) is None:
+            return lookup
+        return principals.without_names(lookup, block.hides)
 
     async def offboard_principal(
         self, ctx: RequestContext, request: offboarding.OffboardingRequest
@@ -2842,6 +3732,7 @@ class Engine:
             keep=offboarding.stored,
         )
 
+    @refuses_nul()
     async def get_offboarding(
         self, ctx: RequestContext, job_id: str
     ) -> offboarding.OffboardingView:
@@ -2868,7 +3759,8 @@ class Engine:
         lists. 422 ``invalid_erasure_scope`` for a story character scoped to the catalog, and
         ``unknown_erasure_candidate`` for a confirmed id the erasure does not meet; 503
         ``erasure_pending`` for a story the erasure reconciler holds blocked, dry run or not
-        (#383); 404 for an unknown story or, on a real run, an unknown subject; 409
+        (#383), and for a catalog-scope request while a catalog-scope erasure is pending
+        (#346); 404 for an unknown story or, on a real run, an unknown subject; 409
         ``revision_conflict`` for a stale expected revision (story scope); 503
         ``config_key_missing`` without ``EPISTREL_CONFIG_KEY``."""
         principal = self.require_principal(ctx)
@@ -2884,6 +3776,11 @@ class Engine:
             # method has no ``story_id`` parameter, so ``gate_story_methods`` cannot see it.
             await self._erasure_gate(story_id)
             await check_expected_revision(self.db, story_id, ctx.expected_revision)
+        elif await self._catalog_block() is not None:
+            # A catalog-scope erasure, dry run or not, reads the whole catalog (its candidate
+            # snippets quote it): refused while another is pending there (#346, as #383).
+            async with self.db.connect() as conn:
+                await erasure_ledger.refuse_catalog_pending(conn)
         compressor = self.ports.summary_compressor
         if request.dry_run:
             return await erasure.dry_run(
@@ -2960,21 +3857,46 @@ class Engine:
             self._erasure_marked = True
             return report
 
-    async def _replay_gate(self, stored: idempotency.StoredResult) -> None:
+    async def _replay_gate(
+        self, stored: idempotency.StoredResult, record: tuple[str, str] | None = None
+    ) -> None:
         """A stored result naming a story (``create_story``'s, under a deployment-scoped key
         the story gate never sees) is answered only while the story is not blocked: 503
-        ``erasure_pending`` otherwise, as every read of it is (#369). The reapply purges the
-        result, so a later replay answers the reference."""
+        ``erasure_pending`` otherwise, as every read of it is (#369). A deployment-scoped
+        result (``record``, its index record) a pending catalog-scope erasure reaches is 503
+        too (#346). The reapply purges the result, so a later replay answers the reference."""
         body = stored.body
         story_id = body.get("story_id") if isinstance(body, Mapping) else None
         if isinstance(story_id, str):
             await self._erasure_gate(story_id)
+        if record is not None and (block := await self._catalog_block()) is not None:
+            block.check_records([record])
 
     async def _erasure_gate(self, story_id: str) -> None:
         """Every call naming a story: 503 ``erasure_pending`` while it is blocked."""
         if not self._erasure_marked:
             await self._mark_erasures()
         await erasure_ledger.check_story(self.db, story_id)
+
+    async def _catalog_block(self) -> catalog_block.CatalogBlock | None:
+        """What the pending catalog-scope erasures reach (#346, ADR-157), the ledger compared
+        first as for a story; ``None`` while none is pending."""
+        if not self._erasure_marked:
+            await self._mark_erasures()
+        async with self.db.connect() as conn:
+            return await catalog_block.read(conn)
+
+    async def _policy_gate(self, policy_id: str) -> None:
+        """A call naming a policy: 503 ``erasure_pending`` while a pending catalog-scope erasure
+        reaches its text (#429)."""
+        if (block := await self._catalog_block()) is not None:
+            block.check_records([(catalog_block.POLICIES, policy_id)])
+
+    async def _catalog_gate(self, kind: str, entry_id: str) -> None:
+        """Every call naming a catalog entry: 503 ``erasure_pending`` while a pending
+        catalog-scope erasure reaches it."""
+        if (block := await self._catalog_block()) is not None:
+            block.check_entry(kind, entry_id)
 
     async def _reapply_one(self, pending: erasure_ledger.Pending) -> str:
         """#124's erasure again, with the entry's own id, principal ``system`` and no new
@@ -3019,6 +3941,7 @@ class Engine:
         erasure_ledger.log_summary(marked, report)
         return report
 
+    @refuses_nul()
     async def erasure_status(self, ctx: RequestContext) -> erasure_ledger.ReconcileStatus:
         """The erasure ledger's reconciliation (FR-ADMIN-7): the entries this database has not
         applied yet (``pending``, each with its story) and their count, how many are applied,
@@ -3043,6 +3966,7 @@ class Engine:
             pending_count=pending,
         )
 
+    @refuses_nul()
     async def erasure_boundary(self, ctx: RequestContext) -> erasure_boundary.ErasureBoundary:
         """What an erasure covers and what it cannot reach (FR-ADMIN-8), as data: the same
         text as ``docs/OPERATIONS.md`` and the API description."""
@@ -3139,10 +4063,12 @@ class Engine:
             await media.discard(staged)
             await media.discard(poster)
 
+    @refuses_nul()
     async def get_media(self, ctx: RequestContext, media_id: str) -> media.MediaAsset:
         """An asset's metadata, ``live`` or ``retired``; 404 for an unknown asset."""
         return await media.get(self.db, media_id)
 
+    @refuses_nul()
     async def get_media_content(
         self,
         ctx: RequestContext,
@@ -3151,7 +4077,7 @@ class Engine:
         exp: int | None = None,
         sig: str | None = None,
         byte_range: media.ByteRange | None = None,
-        if_none_match: Sequence[str] = (),
+        if_none_match: str | Sequence[str] = (),
         if_range: str | None = None,
         with_bytes: bool = True,
     ) -> media.MediaContent:
@@ -3180,6 +4106,7 @@ class Engine:
             with_bytes=with_bytes,
         )
 
+    @refuses_nul()
     async def get_media_url(
         self, ctx: RequestContext, media_id: str, *, ttl: int | None = None
     ) -> media.MediaUrl:
@@ -3194,12 +4121,13 @@ class Engine:
             self.db, self.media, media_id, ttl_s=ttl, settings=settings, signer=self.signer
         )
 
+    @refuses_nul()
     async def list_media(
         self,
         ctx: RequestContext,
         *,
         owner: str | None = None,
-        relation: Sequence[str] = (),
+        relation: str | Sequence[str] = (),
         kind: MediaKind | None = None,
         state: MediaState = MediaState.LIVE,
         limit: int = media.DEFAULT_PAGE,
@@ -3207,8 +4135,9 @@ class Engine:
     ) -> media.MediaPage:
         """``live`` assets (``state=retired``: the deleted ones), newest first, a page at a time
         (``cursor``). ``owner``, ``relation`` and ``kind`` narrow the list only when given
-        (FR-AUTH-8)."""
-        return await media.list_assets(
+        (FR-AUTH-8). An asset a pending catalog-scope erasure reaches is left out until it has
+        been reapplied (#346)."""
+        page = await media.list_assets(
             self.db,
             owner=ownership.owner_filter(owner),
             relations=[ownership.parse_relation_filter(value) for value in relation],
@@ -3216,6 +4145,11 @@ class Engine:
             state=state,
             limit=limit,
             cursor=cursor,
+        )
+        if (block := await self._catalog_block()) is None:
+            return page
+        return dataclasses.replace(
+            page, items=[a for a in page.items if not block.hides(catalog_block.MEDIA, a.id)]
         )
 
     async def delete_media(self, ctx: RequestContext, media_id: str) -> media.MediaRetirement:
@@ -3260,6 +4194,7 @@ class Engine:
             material={"body": _body(request)},
         )
 
+    @refuses_nul()
     async def get_upload(self, ctx: RequestContext, upload_id: str) -> media_uploads.UploadSession:
         """A session's state and the parts it has received, so an interrupted upload resumes
         by sending the others. 404 for an unknown session."""
@@ -3339,7 +4274,8 @@ class Engine:
     def purposes(self) -> Purposes:
         """The model purposes a profile may route: the Orchestrator's delivered story purposes,
         the ones it reserves for later milestones (naming one is naming something undelivered),
-        and the deployment-level ones no profile routes (``rating_suggestion``, #121)."""
+        and the deployment-level ones no profile routes (``rating_suggestion``, #121;
+        ``quality_judge``, #134)."""
         return Purposes.of(
             list(model_registry.STORY_PURPOSES),
             list(model_registry.RESERVED),
@@ -3368,6 +4304,7 @@ class Engine:
             material={"body": _body(request)},
         )
 
+    @refuses_nul()
     async def get_profile(
         self, ctx: RequestContext, profile_id: str, *, version: int | None = None
     ) -> profiles.EngineProfile:
@@ -3375,12 +4312,23 @@ class Engine:
         unknown profile or version."""
         return await profiles.get_profile(self.db, profile_id, version=version)
 
+    @refuses_nul()
+    async def get_profile_guarantees(
+        self, ctx: RequestContext, profile_id: str, *, version: int | None = None
+    ) -> guarantees.GuaranteeTable:
+        """The guarantee table (FR-VERIFY-15, FR-PROF-12; #132) of the profile at its latest
+        version (``version``: that one) over the deployment's defaults, story overrides
+        excluded: each step, deterministic or model-dependent with its metric, and whether the
+        profile provides it. 404 for an unknown profile or version."""
+        return await profiles.profile_guarantees(self.db, profile_id, version=version)
+
+    @refuses_nul()
     async def list_profiles(
         self,
         ctx: RequestContext,
         *,
         owner: str | None = None,
-        relation: Sequence[str] = (),
+        relation: str | Sequence[str] = (),
         include_deleted: bool = False,
         limit: int = profiles.DEFAULT_PAGE,
         cursor: str | None = None,
@@ -3460,8 +4408,16 @@ class Engine:
         """Validate ``request.settings`` (a dry run that writes nothing), or the profile's latest
         version, against the delivered modules and the dependency graph (FR-PROF-2,4): the
         result when valid, else 422 ``invalid_profile`` naming the missing dependencies and
-        undelivered settings. 404 for an unknown profile."""
-        return await profiles.validate_stored(self.db, profile_id, request, purposes=self.purposes)
+        undelivered settings. A valid result warns (``below_safety_minimum``, #156) when the
+        profile's call cap is below a turn's safety minimum with the deployment's global
+        model-assisted policies. 404 for an unknown profile."""
+        return await profiles.validate_stored(
+            self.db,
+            profile_id,
+            request,
+            purposes=self.purposes,
+            guardrail_calls=await policy_store.deployment_guardrail_calls(self.db),
+        )
 
     async def delete_profile(self, ctx: RequestContext, profile_id: str) -> profiles.DeletedProfile:
         """Delete the profile (FR-PROF-1): it leaves listings and new assignment, and every
@@ -3477,12 +4433,14 @@ class Engine:
             material={"profile_id": profile_id},
         )
 
+    @refuses_nul()
     async def list_profile_versions(
         self, ctx: RequestContext, profile_id: str
     ) -> list[profiles.ProfileVersion]:
         """Every version of the profile, oldest first: number, time and author."""
         return await profiles.list_versions(self.db, profile_id)
 
+    @refuses_nul()
     async def profile_schema(self, ctx: RequestContext) -> profiles.ProfileSchema:
         """What a profile may set on this deployment (FR-PROF-2): the JSON Schema of the
         delivered modules and levels, every delivered setting's three tags, the delivered
@@ -3515,6 +4473,7 @@ class Engine:
             purposes=self.purposes,
         )
 
+    @refuses_nul()
     async def get_effective_config(
         self, ctx: RequestContext, story_id: str
     ) -> effective.EffectiveConfig:
@@ -3524,6 +4483,15 @@ class Engine:
         effective value (defaults, then the profile's version, then the overrides), the
         fingerprint, the capabilities and the quality status. 404 for an unknown story."""
         return await effective.read(self.db, story_id, await self._runtime_facts())
+
+    @refuses_nul()
+    async def get_story_guarantees(
+        self, ctx: RequestContext, story_id: str
+    ) -> guarantees.GuaranteeTable:
+        """The guarantee table (FR-VERIFY-15, FR-PROF-12; #132) of the story's effective
+        configuration, its overrides included, with the profile and version it runs on. 404 for
+        an unknown story."""
+        return await effective.read_guarantees(self.db, story_id)
 
     async def assign_engine_profile(
         self, ctx: RequestContext, story_id: str, request: story_profile.ProfileAssignment
@@ -3627,6 +4595,7 @@ class Engine:
         principal = self.require_principal(ctx)
         return await feedback.retract(self.db, story_id, message_id, principal=principal)
 
+    @refuses_nul()
     async def get_feedback(
         self, ctx: RequestContext, story_id: str, message_id: str
     ) -> feedback.Feedback:
@@ -3634,14 +4603,18 @@ class Engine:
         (``rating`` null when it has none). It needs the principal, whose rating it is (400
         ``principal_required``), and no viewpoint: a rating is never story content. 404 for an
         unknown story or message."""
-        if ctx.principal is None or not ctx.principal.strip():
-            raise PrincipalRequired("reading a rating needs the requesting principal: it is theirs")
-        return await feedback.read(self.db, story_id, message_id, principal=ctx.principal)
+        value, problem = requesting_principal(ctx.principal)
+        if problem is not None or value is None:
+            raise PrincipalRequired(
+                f"reading a rating needs the requesting principal: it is theirs ({problem})"
+            )
+        return await feedback.read(self.db, story_id, message_id, principal=value)
 
     # -- feedback reporting and export (FR-FB-3,4, FR-ADMIN-8; #126) -------------------------------
     # Flag-only: these read feedback for people to look at; nothing in a turn, a profile or a
     # guardrail reads them (the import-linter contract ``feedback-is-flag-only``).
 
+    @refuses_nul()
     async def feedback_aggregates(
         self,
         ctx: RequestContext,
@@ -3660,6 +4633,7 @@ class Engine:
             self.db, group_by, start=start, end=end, story_id=story_id
         )
 
+    @refuses_nul()
     async def feedback_review(
         self,
         ctx: RequestContext,
@@ -3713,6 +4687,7 @@ class Engine:
             material={"body": request.model_dump(mode="json", by_alias=True)},
         )
 
+    @refuses_nul()
     async def list_feedback_exports(
         self,
         ctx: RequestContext,
@@ -3723,12 +4698,14 @@ class Engine:
         """The export log (FR-FB-4), newest first: who exported what, and when."""
         return await feedback_export.list_exports(self.db, limit=limit, cursor=cursor)
 
+    @refuses_nul()
     async def get_feedback_export(
         self, ctx: RequestContext, export_id: str
     ) -> feedback_export.FeedbackExport:
         """One export's record; 404 for an unknown export."""
         return await feedback_export.read(self.db, export_id)
 
+    @refuses_nul()
     async def get_feedback_export_content(
         self, ctx: RequestContext, export_id: str
     ) -> feedback_export.FeedbackExportContent:
@@ -3809,6 +4786,317 @@ def gate_story_methods(engine_class: type) -> None:
             setattr(engine_class, name, _erasure_gated(member))
 
 
+CATALOG_PARAMETERS: Mapping[str, str] = {
+    "character_id": catalog_block.CHARACTER,
+    "scenario_id": catalog_block.SCENARIO,
+    "persona_id": catalog_block.PERSONA,
+    "media_id": catalog_block.MEDIA,
+    "upload_id": catalog_block.UPLOAD,
+}
+"""The parameters that name a catalog entry (in a method without a ``story_id``), and its kind
+(#346). ``entity_type`` with ``entity_id`` or ``entry_id`` names one when the type is a catalog
+kind (``CATALOG_ENTITY_TYPES``)."""
+CATALOG_ENTITY_TYPES = frozenset(
+    {catalog_block.CHARACTER, catalog_block.SCENARIO, catalog_block.PERSONA, catalog_block.MEDIA}
+)
+CATALOG_GATED_ATTRIBUTE = "__epistrel_catalog_gated__"
+
+
+def _names_an_entry(parameters: Mapping[str, Any]) -> bool:
+    """Whether a method with ``parameters`` can name a catalog entry (#346). A method naming a
+    story is the story's: its ``character_id`` is a story character."""
+    if "story_id" in parameters:
+        return False
+    return any(name in parameters for name in CATALOG_PARAMETERS) or (
+        "entity_type" in parameters and bool({"entity_id", "entry_id"} & parameters.keys())
+    )
+
+
+def _named_entry(arguments: Mapping[str, Any]) -> tuple[str, str] | None:
+    """The catalog entry a call's bound ``arguments`` name, as ``(kind, id)``."""
+    for name, kind in CATALOG_PARAMETERS.items():
+        value = arguments.get(name)
+        if isinstance(value, str):
+            return kind, value
+    entity_type = arguments.get("entity_type")
+    entity_id = arguments.get("entity_id", arguments.get("entry_id"))
+    if isinstance(entity_id, str) and isinstance(entity_type, str):
+        kind = str(entity_type)
+        if kind in CATALOG_ENTITY_TYPES:
+            return kind, entity_id
+    return None
+
+
+def _catalog_entries_of(request: StoryFromScenario) -> list[tuple[str, str]]:
+    """The catalog entries a story created from a scenario copies: the scenario, the catalog
+    characters filling its roles, and the players' saved personas."""
+    found = [(catalog_block.SCENARIO, str(request.scenario.id))]
+    found += [
+        (catalog_block.CHARACTER, str(slot.catalog_id))
+        for slot in request.slots.values()
+        if slot.catalog_id is not None
+    ]
+    for player in request.players.values():
+        persona_id = getattr(player.persona, "id", None)
+        if isinstance(persona_id, str):
+            found.append((catalog_block.PERSONA, persona_id))
+    return found
+
+
+def _catalog_gated[F: Callable[..., Awaitable[Any]]](method: F) -> F:
+    signature = inspect.signature(method)
+
+    @functools.wraps(method)
+    async def gated(self: Engine, *args: Any, **kwargs: Any) -> Any:
+        entry = _named_entry(signature.bind_partial(self, *args, **kwargs).arguments)
+        if entry is not None:
+            await self._catalog_gate(*entry)
+        return await method(self, *args, **kwargs)
+
+    setattr(gated, CATALOG_GATED_ATTRIBUTE, True)
+    return gated  # type: ignore[return-value]
+
+
+def gate_catalog_methods(engine_class: type) -> None:
+    """Put the catalog's restore-window block (#346, ADR-157) in front of every public coroutine
+    method of ``engine_class`` that can name a catalog entry (``_names_an_entry``), reads and
+    writes alike, deletes included (deleting the subject would take the terms its reapply
+    redacts by): one check in the Engine, so REST and the library refuse alike."""
+    for name, member in list(vars(engine_class).items()):
+        if name.startswith("_") or not inspect.iscoroutinefunction(member):
+            continue
+        if getattr(member, CATALOG_GATED_ATTRIBUTE, False):
+            continue
+        if _names_an_entry(inspect.signature(member).parameters):
+            setattr(engine_class, name, _catalog_gated(member))
+
+
+NUL_GATED_PARAMETERS = frozenset({"story_id", "entity_id", "entry_id", *CATALOG_PARAMETERS})
+"""What the erasure and catalog gates (#125, #346) look up before a method runs: in a method
+that is not a ``refuses_nul`` read (a mutation), these are the arguments checked for NUL ahead
+of the gates, which would otherwise pass one to SQL before ``_keyed`` refuses it (#278)."""
+
+
+def _plain(value: Any) -> Any:
+    """``value`` as the JSON-like data ``refuse_nul`` walks: strings, and sequences and mappings
+    of them (``None`` for anything else: a model, bytes, a number)."""
+    if isinstance(value, str | dict | list | tuple):
+        return value
+    if isinstance(value, Mapping):
+        return dict(value)
+    if isinstance(value, Sequence | set | frozenset) and not isinstance(value, bytes | bytearray):
+        return list(value)
+    return None
+
+
+def nul_location_of(parameter: inspect.Parameter) -> tuple[str, ...]:
+    """The field a NUL in ``parameter`` is refused at: its name when positional (as ``_keyed``
+    names a ``story_id``), ``query.<name>`` when keyword-only (as the reads with their own
+    filters name theirs)."""
+    keyword = parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    return ("query", parameter.name) if keyword else (parameter.name,)
+
+
+def nul_guarded_parameters(method: Callable[..., Any]) -> list[inspect.Parameter]:
+    """The parameters of an ``Engine`` coroutine method that ``guard_nul_methods`` checks: every
+    one of a ``refuses_nul`` read but ``self``, ``ctx`` and its ``own``; a gated method's
+    ``NUL_GATED_PARAMETERS``; none otherwise."""
+    parameters = inspect.signature(method).parameters
+    own = getattr(method, NUL_CHECKED_ATTRIBUTE, None)
+    if isinstance(own, tuple):
+        return [p for name, p in parameters.items() if name not in {"self", "ctx", *own}]
+    if getattr(method, ERASURE_GATED_ATTRIBUTE, False) or getattr(
+        method, CATALOG_GATED_ATTRIBUTE, False
+    ):
+        return [p for name, p in parameters.items() if name in NUL_GATED_PARAMETERS]
+    return []
+
+
+def _nul_guarded[F: Callable[..., Awaitable[Any]]](
+    method: F, checked: Sequence[inspect.Parameter]
+) -> F:
+    signature = inspect.signature(method)
+    locations = [(parameter.name, nul_location_of(parameter)) for parameter in checked]
+
+    @functools.wraps(method)
+    async def guarded(*args: Any, **kwargs: Any) -> Any:
+        try:
+            bound = signature.bind(*args, **kwargs)
+        except TypeError:
+            return await method(*args, **kwargs)  # the call's own TypeError
+        for name, loc in locations:
+            if name in bound.arguments:
+                refuse_nul(_plain(bound.arguments[name]), loc)
+        return await method(*args, **kwargs)
+
+    return guarded  # type: ignore[return-value]
+
+
+def guard_nul_methods(engine_class: type) -> None:
+    """Refuse a NUL character (422 ``validation_error``, ``string_nul``: ``refuse_nul``, as #73
+    made it for request bodies) in the arguments of every ``refuses_nul`` read and in the
+    arguments the gates look up, before the gates run (#278). Run after the gates are in place,
+    so the check is in front of them."""
+    for name, member in list(vars(engine_class).items()):
+        if name.startswith("_") or not inspect.iscoroutinefunction(member):
+            continue
+        checked = nul_guarded_parameters(member)
+        if checked:
+            setattr(engine_class, name, _nul_guarded(member, checked))
+
+
+REPEATED_ATTRIBUTE = "__epistrel_repeated__"
+
+_STRING_COLLECTIONS: tuple[Any, ...] = (
+    Sequence,
+    collections.abc.Iterable,
+    collections.abc.Collection,
+    collections.abc.Set,
+    list,
+    tuple,
+    set,
+    frozenset,
+)
+
+
+def _is_strings(annotation: Any) -> bool:
+    """Whether ``annotation`` (or a member of its union) is a collection of ``str``:
+    ``Sequence[str]``, ``Iterable[str]``, ``list[str]``, ``tuple[str, ...]`` and the like."""
+    if isinstance(annotation, types.UnionType) or typing.get_origin(annotation) is typing.Union:
+        return any(_is_strings(member) for member in typing.get_args(annotation))
+    arguments = typing.get_args(annotation)
+    return (
+        typing.get_origin(annotation) in _STRING_COLLECTIONS
+        and bool(arguments)
+        and all(argument is str or argument is Ellipsis for argument in arguments)
+    )
+
+
+def repeated_parameters(method: Callable[..., Any]) -> tuple[str, ...]:
+    """The parameters of ``method`` typed as a collection of strings (a repeatable filter, or
+    a list of ids): the ones ``normalise_repeated_methods`` takes a plain string in as one
+    value."""
+    hints = typing.get_type_hints(inspect.unwrap(method))
+    return tuple(
+        name
+        for name in inspect.signature(method).parameters
+        if name in hints and _is_strings(hints[name])
+    )
+
+
+def _repeated_normalised[F: Callable[..., Awaitable[Any]]](method: F, names: Sequence[str]) -> F:
+    signature = inspect.signature(method)
+
+    @functools.wraps(method)
+    async def normalised(*args: Any, **kwargs: Any) -> Any:
+        try:
+            bound = signature.bind(*args, **kwargs)
+        except TypeError:
+            return await method(*args, **kwargs)  # the call's own TypeError
+        for name in names:
+            if isinstance(bound.arguments.get(name), str):
+                bound.arguments[name] = (bound.arguments[name],)
+        return await method(*bound.args, **bound.kwargs)
+
+    setattr(normalised, REPEATED_ATTRIBUTE, tuple(names))
+    return normalised  # type: ignore[return-value]
+
+
+def normalise_repeated_methods(engine_class: type) -> None:
+    """Take a plain string as one value in every collection-of-strings parameter of every
+    public coroutine method of ``engine_class`` (#324, as #110 made it for the catalog search):
+    a ``str`` is itself a ``Sequence[str]``, so ``relation="editor:p-c"`` was read one character
+    at a time. One query parameter is one value over REST; the library now agrees. Run first,
+    so the method's body (and nothing in front of it) sees the value as given."""
+    for name, member in list(vars(engine_class).items()):
+        if name.startswith("_") or not inspect.iscoroutinefunction(member):
+            continue
+        if names := repeated_parameters(member):
+            setattr(engine_class, name, _repeated_normalised(member, names))
+
+
+STRICT_SCALARS_ATTRIBUTE = "__epistrel_strict_scalars__"
+
+_SCALARS: tuple[type, ...] = (int, float, bool)
+
+
+def _union_members(annotation: Any) -> tuple[Any, ...]:
+    if isinstance(annotation, types.UnionType) or typing.get_origin(annotation) is typing.Union:
+        return tuple(m for a in typing.get_args(annotation) for m in _union_members(a))
+    return (annotation,)
+
+
+def scalar_parameters(method: Callable[..., Any]) -> dict[str, Any]:
+    """The parameters of ``method`` typed ``int``, ``float`` or ``bool`` (alone or in a union,
+    with ``None`` or not): their names and annotations, which ``strict_scalar_methods`` checks."""
+    hints = typing.get_type_hints(inspect.unwrap(method))
+    return {
+        name: hints[name]
+        for name in inspect.signature(method).parameters
+        if name in hints and any(m in _SCALARS for m in _union_members(hints[name]))
+    }
+
+
+def scalar_location_of(parameter: inspect.Parameter) -> tuple[str, str]:
+    """Where a mistyped scalar is refused: ``query.<name>`` for a keyword-only parameter (a
+    query parameter over REST), ``path.<name>`` for a positional one (a path parameter)."""
+    keyword = parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    return ("query" if keyword else "path", parameter.name)
+
+
+def _strict_scalars[F: Callable[..., Awaitable[Any]]](method: F, checked: Mapping[str, Any]) -> F:
+    signature = inspect.signature(method)
+    checks: list[tuple[str, bool, TypeAdapter[Any], tuple[str, str]]] = []
+    for name, annotation in checked.items():
+        members = _union_members(annotation)
+        optional = type(None) in members
+        kept = tuple(m for m in members if m is not type(None))
+        adapter: TypeAdapter[Any] = TypeAdapter(
+            kept[0] if len(kept) == 1 else typing.Union[kept]  # noqa: UP007 - built at runtime
+        )
+        checks.append((name, optional, adapter, scalar_location_of(signature.parameters[name])))
+
+    @functools.wraps(method)
+    async def strict(*args: Any, **kwargs: Any) -> Any:
+        try:
+            bound = signature.bind(*args, **kwargs)
+        except TypeError:
+            return await method(*args, **kwargs)  # the call's own TypeError
+        for name, optional, adapter, loc in checks:
+            if name not in bound.arguments:
+                continue
+            value = bound.arguments[name]
+            if value is None and optional:
+                continue
+            try:
+                adapter.validate_python(value, strict=True)
+            except ValidationError as refused:
+                errors = [{**error, "loc": ()} for error in refused.errors(include_url=False)]
+                raise InvalidRequest.from_errors(errors[:1], prefix=loc) from None
+        return await method(*args, **kwargs)
+
+    setattr(strict, STRICT_SCALARS_ATTRIBUTE, tuple(checked))
+    return strict  # type: ignore[return-value]
+
+
+def strict_scalar_methods(engine_class: type) -> None:
+    """Refuse a mistyped ``int``, ``float`` or ``bool`` argument of every public coroutine
+    method of ``engine_class`` (FR-API-3, FR-API-4; #445), as REST refuses ``?limit=true`` at
+    ``query.limit``: pydantic's strict mode, so ``True`` is no integer, ``"7"`` and ``2.0`` are
+    none either, and ``1`` is no boolean. 422 ``validation_error`` at ``query.<name>`` (or
+    ``path.<name>``). Run after the gates, so the check is in front of them (only the NUL guard,
+    run last, comes first)."""
+    for name, member in list(vars(engine_class).items()):
+        if name.startswith("_") or not inspect.iscoroutinefunction(member):
+            continue
+        if checked := scalar_parameters(member):
+            setattr(engine_class, name, _strict_scalars(member, checked))
+
+
+normalise_repeated_methods(Engine)
 gate_story_methods(Engine)
+gate_catalog_methods(Engine)
+strict_scalar_methods(Engine)
+guard_nul_methods(Engine)
 # One span, summary line and count per outermost call of every public coroutine method (#74).
 instrument.instrument_engine(Engine)

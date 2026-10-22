@@ -6,9 +6,10 @@
 The guide lists every delivered purpose in registry order: what it does, whether it is on the
 hot path, the ``model_config`` row it defaults to, its template, its capability floor, the
 structured result it returns, and its data-flow row (each input field it receives with that
-field's content category, and the categories it never receives). Then come the reserved
-purposes, the content categories, and one hosted-provider retention note. CI runs ``--check``
-in the ``lint`` job, and the comparison is byte for byte.
+field's content category, and the categories it never receives). Then come the delivered
+ports (``embedding``, #138: its own row, floor and data-flow row, and its retention note),
+the reserved purposes, the content categories, and one hosted-provider retention note. CI runs
+``--check`` in the ``lint`` job, and the comparison is byte for byte.
 
 A purpose without a capability floor or without a data-flow row (no declared input) cannot be
 rendered: ``GuideError`` names it, so the generator and the check both fail.
@@ -16,15 +17,17 @@ rendered: ``GuideError`` names it, so the generator and the check both fail.
 
 from __future__ import annotations
 
-import json
 import sys
 from collections.abc import Iterable, Mapping, Sequence
+from typing import Any
 
 from epistrel.orchestrator.models.registry import (
     DELIVERED,
+    PORTS,
     RESERVED,
     CapabilityFloor,
     ContentCategory,
+    Port,
     Purpose,
     ReservedPurpose,
     StructuredOutput,
@@ -62,6 +65,70 @@ CATEGORY_DESCRIPTIONS: Mapping[ContentCategory, str] = {
     ContentCategory.DIRECTOR_NOTES: (
         "A scenario story's director notes: plot hooks, objectives, guidance, planned reveals, "
         "milestones and endings (#122)."
+    ),
+    ContentCategory.EVAL_TEXT: (
+        "Text an eval case supplies or an eval's scratch story produced, compared by the quality "
+        "judge; never a live story's content (#134)."
+    ),
+    ContentCategory.MEMORY_TEXT: (
+        "One memory record of the story: its text (an attributed line of a beat) and its kind, "
+        "scored by importance scoring (#135) and embedded by the embedding port, as is a "
+        "retrieval query (#138); compressed by consolidation with the canon facts of its "
+        "window, each rendered as one line (#143)."
+    ),
+    ContentCategory.RECORD_META: (
+        "The labels of each record consolidation compresses: its index, kind, holder, "
+        "visibility, position and speaker; never other text (#143)."
+    ),
+    ContentCategory.SCOPE_META: (
+        "The viewpoint scope, level and turns one consolidation call covers (#143)."
+    ),
+    ContentCategory.CLAIM_TEXT: (
+        "One claim the deterministic check left uncertain, normalized and rendered with entity "
+        "names and its valid-time in story-minutes, judged by entailment (#142)."
+    ),
+    ContentCategory.CANON_RECORD: (
+        "One of the claim holder's records, rendered the same way with its holder and "
+        "valid-time: only those the check fetched for the claim and the claim subject's own "
+        "facts (#142). A regeneration (#151) gets the canon facts the rejected beat "
+        "contradicted and their neighborhood, rendered the same way."
+    ),
+    ContentCategory.RENDER_TEXT: (
+        "The beats of one render (index, kind, speaker's name, text). Salience detection "
+        "(#146) reads the observable ones only (`say`, `do`, narration; never a `think` or "
+        "`latent` beat or the player's input); the extraction backstop (#148) reads every beat "
+        "it detects claims in, its own render's `think` and `latent` beats included, or the "
+        "composed message; a regeneration (#151) reads the rejected beat it rewrites and its "
+        "kind. Never another render's text."
+    ),
+    ContentCategory.SCENE: (
+        "The names of the entities present in the render's scene and the last six observable "
+        "beats before it, read by salience detection (#146) and the extraction backstop "
+        "(#148). A structured render (#150) gets its scene (the place and who is present); the "
+        "age repair gets each introduced character's name and the render's clue about it."
+    ),
+    ContentCategory.WORKING_MEMORY: (
+        "A structured render's working memory (#150): the latest beats as the rendering "
+        "character perceived them (its own thoughts included, never another character's or "
+        "any `latent` beat), and this turn's narration and player input."
+    ),
+    ContentCategory.RETRIEVED_MEMORIES: (
+        "What retrieval (#141) assembled for a structured render (#150) and the rendering "
+        "character may know: open threads, pins, occasions, profiles and ranked memories."
+    ),
+    ContentCategory.CANON_FACTS: (
+        "The canon facts retrieval found for a structured render (#150), filtered for the "
+        "rendering character's viewpoint, without its own true age."
+    ),
+    ContentCategory.CONSTRAINT: (
+        "A repair's constraint on the beat it regenerates (#151): its kind (`do_not_assert`, "
+        "`avoid_binding`, `policy`), its text and the ids of the records it cites."
+    ),
+    ContentCategory.VERIFIED_BEAT: (
+        "A structured turn's composition (#152): its verified beats as the output viewpoint "
+        "receives them (index, kind, actor's name, text; never a `think` or `latent` beat for "
+        "a character viewpoint) and their deterministic assembly, which the polish may only "
+        "order and join."
     ),
 }
 
@@ -101,14 +168,28 @@ Each purpose sends the inputs listed in its row to the endpoint configured for i
 `base_url`, inherited from the `default` row unless the purpose overrides it). When that
 endpoint is a hosted provider, those inputs leave the deployment and are kept under that
 provider's terms, outside Epistrel's erasure boundary (FR-ADMIN-8, FR-IMG-13). This includes the
-true ages `guardrail_check` receives for age-conditioned policies. A deployment that needs any
-of this data kept in-house points the purposes concerned at self-hosted models.
+true ages `guardrail_check` receives for age-conditioned policies, and the memory texts and
+retrieval queries the `embedding` port sends (its own row: it inherits no endpoint). A
+deployment that needs any of this data kept in-house points the purposes concerned at
+self-hosted models.
 `GET /admin/model-config` names the endpoint for every purpose (FR-MODEL-1).
 """
 
 
 class GuideError(Exception):
     """A purpose the guide cannot describe (no capability floor, or no data-flow row)."""
+
+
+def _has_free_text(node: Any) -> bool:
+    """Whether a JSON Schema holds a string that is not one of a fixed set of values (an
+    ``enum`` or ``const``, such as a verdict's literal, is no free text)."""
+    if isinstance(node, Mapping):
+        if node.get("type") == "string" and "enum" not in node and "const" not in node:
+            return True
+        return any(_has_free_text(v) for v in node.values())
+    if isinstance(node, list):
+        return any(_has_free_text(v) for v in node)
+    return False
 
 
 def _code(text: str) -> str:
@@ -168,7 +249,12 @@ def _purpose(purpose: Purpose) -> list[str]:
             if purpose.default_model_key == "default"
             else "then the `default` row, per field, unless the purpose has its own"
         ),
-        f"- **Template:** {_code(purpose.template)}",
+        f"- **Template:** {_code(purpose.template)}"
+        + (
+            "; variants: " + ", ".join(f"{name} {_code(t)}" for name, t in purpose.variants.items())
+            if purpose.variants
+            else ""
+        ),
         "- **Capability floor:** structured output: "
         f"{STRUCTURED_LABELS[floor.structured_output]}; minimum context "
         f"{floor.min_context_tokens:,} tokens",
@@ -178,7 +264,7 @@ def _purpose(purpose: Purpose) -> list[str]:
         lines.append("- **Returns:** free text")
     else:
         fields = ", ".join(_code(name) for name in schema.model_fields)
-        free_text = '"type": "string"' in json.dumps(schema.model_json_schema())
+        free_text = _has_free_text(schema.model_json_schema())
         lines.append(
             f"- **Returns:** {_code(schema.__name__)} ({fields}), validated strictly; "
             + ("its free text is author-facing" if free_text else "no free-text field")
@@ -188,6 +274,47 @@ def _purpose(purpose: Purpose) -> list[str]:
         lines.append(f"| {_code(path)} | {_code(category)} |")
     never = ", ".join(_code(c.value) for c in ContentCategory if c in purpose.never_receives)
     lines += ["", f"**Never receives:** {never or '—'}", ""]
+    return lines
+
+
+def _ports(ports: Iterable[Port]) -> list[str]:
+    lines = [
+        "## Ports delivered",
+        "",
+        "A port is configured like a purpose but called through its own adapter, never as a chat",
+        "completion. Its `model_config` row is its own, with no fallback to the `default` row.",
+        "",
+    ]
+    for port in ports:
+        floor = port.floor
+        lines += [
+            f"### {_code(port.name)}",
+            "",
+            port.description,
+            "",
+            f"- **Hot path:** {'yes' if port.hot_path else 'no'}",
+            f"- **Default model:** the {_code(port.default_model_key)} row of `model_config` "
+            "only (an unset model is `model_unavailable` `not_configured`); its `params` take "
+            "`timeout` only",
+            "- **Capability floor:** inputs of at least "
+            f"{floor.min_input_tokens:,} tokens; vectors of {floor.min_dimension:,} to "
+            f"{floor.max_dimension:,} dimensions; batches of up to {floor.max_batch} texts",
+            "- **Returns:** one vector per text, stamped with the deployment's pinned "
+            "`embedding_model_version`",
+            f"- **Engine profiles:** {'routable' if port.story_scoped else 'not routable'} "
+            "(one deployment-wide model and dimension, FR-EMBED-3)",
+            "- **Retention:** the memory texts and retrieval queries it embeds leave the "
+            "deployment when this row names a hosted provider",
+            "",
+            "**Receives**",
+            "",
+            "| Field | Content category |",
+            "|---|---|",
+        ]
+        for path, category in _leaf_paths(field_categories(port.input_schema)):
+            lines.append(f"| {_code(path)} | {_code(category)} |")
+        never = ", ".join(_code(c.value) for c in ContentCategory if c in port.never_receives)
+        lines += ["", f"**Never receives:** {never or '—'}", ""]
     return lines
 
 
@@ -222,8 +349,10 @@ def _categories() -> list[str]:
 def render(
     delivered: Mapping[str, Purpose] = DELIVERED,
     reserved: Mapping[str, ReservedPurpose] = RESERVED,
+    ports: Mapping[str, Port] = PORTS,
 ) -> str:
-    """The model guide for ``delivered`` and ``reserved`` (the registry's by default)."""
+    """The model guide for ``delivered``, ``ports`` and ``reserved`` (the registry's by
+    default)."""
     purposes = list(delivered.values())
     found = problems(purposes)
     if found:
@@ -231,6 +360,7 @@ def render(
     lines = [BANNER, "", INTRO, *_summary(purposes)]
     for purpose in purposes:
         lines += _purpose(purpose)
+    lines += _ports(ports.values())
     lines += _reserved(reserved.values())
     lines += _categories()
     return "\n".join(lines) + "\n" + RETENTION

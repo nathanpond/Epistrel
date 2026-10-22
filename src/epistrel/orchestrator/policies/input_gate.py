@@ -24,6 +24,9 @@ operation, event or revision change to roll back.
   caller reserves, e.g. #57's generation call). If the budget cannot cover that before the
   first call, the request is refused 422 ``budget_below_safety_minimum`` with
   ``minimum_required`` — no call is made and nothing is written (NFR-PERF-6).
+- **A withheld policy** (#447, ADR-161): when a violated policy's text is reached by a pending
+  catalog-scope erasure, the refusal is 503 ``erasure_pending`` instead, and no audit row is
+  written; a retry after the reapply gets the 422.
 - **The audit row** holds the policy ids, story, principal, entry point and total text length;
   never the text (NFR-SEC-4). A ``ModelUnavailable`` during a check propagates (503) and writes
   no audit row: nothing was decided.
@@ -51,7 +54,11 @@ from epistrel.core.policies.model import (
 )
 from epistrel.orchestrator.budget import DEFAULT_TURN_DEADLINE_S, TurnBudget
 from epistrel.orchestrator.models.access import ModelAccessLayer
-from epistrel.orchestrator.policies.check import check_text, guardrail_violation
+from epistrel.orchestrator.policies.check import (
+    check_text,
+    guardrail_violation,
+    refuse_withheld,
+)
 from epistrel.orchestrator.policies.metrics import GUARDRAIL_VIOLATIONS
 from epistrel.orchestrator.policies.store import GuardContext
 
@@ -69,6 +76,8 @@ class EntryPoint(StrEnum):
     STORY_CREATE = "story_create"
     STORY_CHARACTER = "story_character"
     """A character added to a running story (FR-CAT-7; #114)."""
+    SANITIZE = "sanitize"
+    """A sanitize's surrogate (FR-GUARD-4; #145)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,6 +241,9 @@ async def enforce_input(
             model_calls=budget.used - used_before,
             elapsed_ms=round((time.monotonic() - started) * 1000),
         )
+    # A violated policy a pending catalog-scope erasure reaches is not named (#447): 503
+    # ``erasure_pending``, with no audit row, as a refusal that decided nothing yet.
+    await refuse_withheld(db, found.policy_ids)
     for entry in found.violations:
         GUARDRAIL_VIOLATIONS.labels(kind=entry.violation.kind.value, stage=STAGE).inc()
     await audit.record(

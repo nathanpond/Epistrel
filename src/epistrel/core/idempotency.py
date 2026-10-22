@@ -68,7 +68,7 @@ from epistrel.core.enums import OperationStatus
 from epistrel.core.erasure.index import drop_many, index_records
 from epistrel.core.erasure.records import idempotency_id, idempotency_record
 from epistrel.core.errors import IdempotencyConflict, InvalidRequest, OriginalInFlightTimeout
-from epistrel.core.ids import new_ulid
+from epistrel.core.ids import random_ulid
 from epistrel.core.settings_schema import IdempotencySettings
 from epistrel.core.tables import (
     deployment_state,
@@ -298,6 +298,18 @@ def calling(call: IdempotentCall) -> Iterator[IdempotentCall]:
         _CURRENT.reset(token)
 
 
+@contextlib.contextmanager
+def detached() -> Iterator[None]:
+    """Run work that commits operations of its own (#145's auto-quarantine, inside a turn) under
+    no idempotent call: they never bind the request's key, so the key keeps the turn's
+    operation and its stored result (#150)."""
+    token = _CURRENT.set(None)
+    try:
+        yield
+    finally:
+        _CURRENT.reset(token)
+
+
 class IdempotentCall:
     """One mutating request under its key; see the module docstring."""
 
@@ -323,7 +335,7 @@ class IdempotentCall:
         self.wait_s = wait_s
         self.request_hash: str | None = None
         self.sent_hash: str | None = None
-        self.token = new_ulid()
+        self.token = random_ulid()
         self.claimed = False
         self.window = IdempotencySettings()
         self.result_in_commit: ResultInCommit | None = None
@@ -785,6 +797,7 @@ __all__ = [
     "StoredResult",
     "calling",
     "current_call",
+    "detached",
     "drop_results",
     "idempotency_settings",
     "mark_replayed",

@@ -1,0 +1,45 @@
+{#- The composition of a structured turn's message (FR-RESP-8, FR-RATE-4; #152).
+
+The polish pass: the turn's verified beats, as the output viewpoint receives them, joined into
+one message. The ``system`` block holds the rating guidance (always first, FR-RATE-4), the
+custom instructions and the rules of composition; the ``user`` block lists each beat (its
+index, kind, actor and text) and their deterministic assembly as the draft. The answer is the
+call's ``response_schema`` (``{text}``). The engine checks it (claim detection, traceability,
+attribution, no private thought) and releases the draft instead when it fails. -#}
+{% macro line(entry) -%}
+{% if entry.text %}{{ entry.text }}{% else %}{{ entry.name }}:{% if entry.say %} "{{ entry.say }}"{% endif %}{% if entry.do %} *{{ entry.do }}*{% endif %}{% endif %}
+{%- endmacro %}
+{% block system %}
+{% if rating_guidance %}
+## Content rating guidance
+{{ rating_guidance }}
+
+{% endif %}
+{% if custom_instructions %}
+## Custom instructions
+{{ custom_instructions }}
+
+{% endif %}
+## Composition
+Join the beats below into one message for the reader, in their order. You may smooth the prose and add short connective stage text, nothing more:
+- every line keeps the words and the speaker its beat gives it: never move a line to someone else, never change who does what;
+- add no fact, event, object, place, number or time that no beat states;
+- leave out no beat.
+{% if composition_omniscient %}
+- a thought keeps its label, written as `[Name thinks] …`, and a hidden fact as `[latent] …`.
+{% else %}
+- the reader cannot see anyone's thoughts: do not describe what a character thinks, feels inside or knows privately.
+{% endif %}
+Answer with the message as `text`.
+{% endblock %}
+{% block user %}
+## Beats
+{% for b in composition_beats %}
+[{{ b.index }}] {{ b.kind }}{% if b.name %} — {{ b.name }}{% endif %}: {{ b.text }}
+{% endfor %}
+
+## Draft
+<draft>
+{{ composition_draft }}
+</draft>
+{% endblock %}

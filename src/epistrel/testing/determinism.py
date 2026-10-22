@@ -52,7 +52,15 @@ OPERATIONAL_TABLES = frozenset(
 and a rating change's check and its verdict cache (#118)."""
 
 VOLATILE_KEYS = frozenset(
-    {"elapsed_ms", "latency_ms", "queued_ms", "first_call_offset_ms", "worker_id", "attempt"}
+    {
+        "elapsed_ms",
+        "latency_ms",
+        "latency_ms_by_stage",
+        "queued_ms",
+        "first_call_offset_ms",
+        "worker_id",
+        "attempt",
+    }
 )
 """Keys dropped wherever they appear (columns, ``jsonb`` and response bodies): wall-clock
 durations (a turn's queue wait and first-call delay too, #76) and which worker or attempt ran a
@@ -95,6 +103,27 @@ _SUBJECT_RANK = (
     "OR c.persona_id::text = t.subject_id))"
 )
 """A subject by the cast ordinal of the story character it is (or that links it)."""
+_STRUCTURED_RANK = (
+    "t.since_turn NULLS FIRST, t.since_slot NULLS FIRST, t.valid_from NULLS FIRST, "
+    "t.valid_to NULLS LAST, t.closed_turn NULLS LAST, t.closed_slot NULLS LAST"
+)
+"""A structured projection row (#137) by its source fact's position and valid-time."""
+_RELATION_RANK = (
+    "(SELECT e.canonical_name FROM entities e WHERE e.id = t.subject_id), "
+    "(SELECT e.canonical_name FROM entities e WHERE e.id = t.object_id), "
+    "(SELECT p.name FROM predicates p WHERE p.id = t.predicate_id)"
+)
+_PLACED_RANK = (
+    "(SELECT e.canonical_name FROM entities e WHERE e.id = t.entity_id), "
+    "(SELECT e.canonical_name FROM entities e "
+    "WHERE e.id = coalesce(t.location_id, t.container_id))"
+)
+
+_THUNK_PREDICATE_RANK = "(SELECT p.name FROM predicates p WHERE p.id = t.predicate_id)"
+_ENTRY_THUNK_RANK = (
+    "(SELECT h.proposition_sketch::text FROM thunks h WHERE h.id = t.thunk_id) NULLS FIRST"
+)
+"""A thunk by its predicate's name, and a ledger entry by its thunk's sketch (#146)."""
 
 ORDER: dict[str, str] = {
     "deployment_state": "t.id",
@@ -134,12 +163,68 @@ ORDER: dict[str, str] = {
     "feedback_history": (
         f"{_STORY_RANK}, t.turn, t.variant, t.principal, t.replaced_at, t.rated_at, t.kind"
     ),
+    # The structured stores (#131): entities by name, story predicates by name, propositions,
+    # closed sets and proposals in the order they were written.
+    "entities": f"{_STORY_RANK}, t.kind, t.canonical_name",
+    "entity_aliases": f"{_STORY_RANK}, t.alias, t.created_at",
+    "predicates": f"{_STORY_RANK}, t.name",
+    "propositions": f"{_STORY_RANK}, t.created_at, t.valid_span, t.polarity",
+    "closed_sets": f"{_STORY_RANK}, t.created_at, t.valid_from NULLS FIRST",
+    "predicate_proposals": f"{_STORY_RANK}, t.created_at, t.status",
+    # Bitemporal canon (#133): versions in recording order, then by valid-time.
+    "facts": (
+        f"{_STORY_RANK}, t.tx_from, t.narrative_turn NULLS FIRST, t.valid_from NULLS FIRST, "
+        "t.valid_to NULLS LAST"
+    ),
+    # Memory records (#135): by narrative position, beat and kind, then by text.
+    "memories": (
+        f"{_STORY_RANK}, t.narrative_turn NULLS FIRST, t.turn_variant NULLS FIRST, "
+        "t.beat NULLS FIRST, t.kind, t.created_at, t.text"
+    ),
+    # The structured projections (#137): by the source fact's position and valid-time, then
+    # the names of what the row joins; scenes by turn and variant.
+    "relationships": f"{_STORY_RANK}, {_STRUCTURED_RANK}, {_RELATION_RANK}",
+    "placement": f"{_STORY_RANK}, {_STRUCTURED_RANK}, {_PLACED_RANK}",
+    "scene_state": f"{_STORY_RANK}, t.turn, t.variant",
+    # Commitments (#146): thunks and ledger entries by narrative position and beat, then by
+    # what they are about (the predicate's name, the open slot, the sketch).
+    "thunks": (
+        f"{_STORY_RANK}, t.narrative_turn NULLS FIRST, t.turn_variant NULLS FIRST, "
+        f"t.beat NULLS FIRST, {_THUNK_PREDICATE_RANK}, t.open_slot, t.proposition_sketch::text"
+    ),
+    "promissory_ledger": (
+        f"{_STORY_RANK}, t.narrative_turn NULLS FIRST, t.turn_variant NULLS FIRST, "
+        f"t.beat NULLS FIRST, t.kind, t.discharged_mode NULLS FIRST, {_ENTRY_THUNK_RANK}"
+    ),
+    # The hot set's overflow episodes (#147): by the turn each opened, then the set.
+    "overflow_episodes": f"{_STORY_RANK}, t.opened_turn, t.scope, t.closed_turn NULLS LAST",
+    # Claim detection's shadow samples (#148): by the sampled turn, then what they found.
+    "extraction_shadow": (
+        f"{_STORY_RANK}, t.narrative_turn NULLS FIRST, t.turn_variant NULLS FIRST, t.status, "
+        "t.extraction_claims, t.missed_count, t.missed::text"
+    ),
+    # Escalation records (#155): by the turn, then the pass and the claim.
+    "escalations": (
+        f"{_STORY_RANK}, t.narrative_turn NULLS FIRST, t.turn_variant NULLS FIRST, t.pass, "
+        "t.claim_id NULLS FIRST, t.gate_reason, t.predicate_shape, t.final_kind"
+    ),
+    # Speech acts (#150): by the beat's position, then the labels.
+    "utterances": (
+        f"{_STORY_RANK}, t.narrative_turn NULLS FIRST, t.turn_variant NULLS FIRST, "
+        "t.objective_relation, t.belief_relation, t.intent, t.created_at"
+    ),
+    # The read set's change index (#136): by revision, then valid window and change kind.
+    "proposition_changes": (
+        f"{_STORY_RANK}, t.timeline_revision, t.tx_time, t.valid_window, t.change, t.holder"
+    ),
 }
 """Each compared table's ``ORDER BY`` (``t`` is the table): natural keys, never an id."""
 
 WHERE: dict[str, str] = {
     "config_changes": "t.scope = 'story'",
     "subject_references": "t.scope = 'story'",
+    # The core vocabulary is the engine's, not a story's.
+    "predicates": "t.story_id IS NOT NULL",
 }
 """Rows of a compared table that are not story state are left out."""
 

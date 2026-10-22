@@ -22,7 +22,8 @@
 - ``GET /stories/{id}/settings``: the settings with defaults filled in, and the story's
   guardrails — ``effective_policies`` (scope, source, applies_to, age_condition, kind),
   ``inactive_policies`` (age-conditioned ones whose condition is false for the cast) and
-  ``guardrail_calls`` — so the model-call cost of guardrails is predictable (FR-GUARD-9).
+  ``guardrail_calls`` — so the model-call cost of guardrails is predictable (FR-GUARD-9). A
+  policy a pending catalog-scope erasure reaches is listed with a ``null`` name (#447).
 - ``PATCH /stories/{id}/settings``: a JSON merge patch over the settings (#63), plus the story's
   own ``policies``; answers the read's shape with the revisions.
 
@@ -72,7 +73,7 @@ from epistrel.core.genesis.create import CreationHeld
 from epistrel.core.genesis.models import CreationReport, StoryFromScenario, is_scenario_body
 from epistrel.core.ingest import IngestRequest, IngestResult
 from epistrel.core.ownership import RELATION_FILTER_PATTERN, relation_filter_problem
-from epistrel.core.policies.model import Policy, PolicyKind, Scope, Target
+from epistrel.core.policies.model import Policy, PolicyKind, Scope, Target, WithheldPolicy
 from epistrel.core.profiles.effective import ProfileVersionRef
 from epistrel.core.profiles.impact import ImpactReport
 from epistrel.core.settings_schema import ConfigClass, StorySettings
@@ -350,7 +351,7 @@ class StoryBody(StorySummaryBody):
 
 
 class StoryList(BaseModel):
-    """The stories, oldest first."""
+    """The stories, newest first."""
 
     items: list[StorySummaryBody]
 
@@ -374,7 +375,9 @@ class EffectivePolicyBody(BaseModel):
     source and kind: a ``model_assisted`` policy costs a model call per check (FR-GUARD-9)."""
 
     id: str
-    name: str
+    name: str | None
+    """``null`` while a pending catalog-scope erasure reaches the policy's text (it is still
+    enforced; #447, ADR-161)."""
     scope: Scope
     source: str
     """``global``, ``rating:<id>`` (the rating that contributes it), ``story`` or
@@ -384,7 +387,9 @@ class EffectivePolicyBody(BaseModel):
     kind: PolicyKind
 
     @classmethod
-    def of(cls, policy: Policy, guardrails: StoryGuardrails) -> EffectivePolicyBody:
+    def of(
+        cls, policy: Policy | WithheldPolicy, guardrails: StoryGuardrails
+    ) -> EffectivePolicyBody:
         return cls(
             id=policy.id,
             name=policy.name,
@@ -539,7 +544,9 @@ SETTINGS_PATCH_DESCRIPTION = (
     "`turn_concurrency` (`reject` | `queue`), `turn_queue_max` (1-50; `null`: the deployment's "
     "default, 5), `default_output_viewpoint` (`character:<id>` of the cast, never "
     "`omniscient`), `regenerate_retry_budget` (0-10), `lite_summary_chunk` (2-200 rows per "
-    "summary segment) and `audit_retention_days` (1-3650; `null`: the deployment's). An "
+    "summary segment), `audit_retention_days` (1-3650; `null`: the deployment's) and "
+    "`allow_new_arrivals` (whether a director pass, or a render as scene texture, may introduce "
+    "new arrivals; default `true`). An "
     "unknown key is 422. The engine's dials are the story's engine profile's, overridden per "
     "story with `PATCH /stories/{id}/profile-overrides` (FR-PROF-5): a key that moved there "
     "(`generation_settings`, `lite_window_messages`, `lite_summary_max_tokens`, "
@@ -548,11 +555,11 @@ SETTINGS_PATCH_DESCRIPTION = (
     "`details.replacement`. `policies` (optional) upserts the story's own policies; an item "
     "that would relax a policy refuses the whole request with 422 `cannot_relax` before "
     "anything is written."
-    "\n\nEvery setting but `default_output_viewpoint` is prospective: it applies to requests "
-    "that arrive after the write, never to a turn already running; `default_output_viewpoint` "
-    "is interpretive (a turn in flight is checked against it when it commits). A write that "
-    "changes something moves the story's `config_revision`. The answer carries the budget the "
-    "story's next turn plans with (`effective_budget`)."
+    "\n\nEvery setting but `default_output_viewpoint` and `allow_new_arrivals` is prospective: "
+    "it applies to requests that arrive after the write, never to a turn already running; "
+    "those two are interpretive (a turn in flight is checked against them when it commits). A "
+    "write that changes something moves the story's `config_revision`. The answer carries the "
+    "budget the story's next turn plans with (`effective_budget`)."
 )
 
 
@@ -676,7 +683,11 @@ CREATE_DESCRIPTION = (
     "`strict`), `slot_required`, `locked_slot_reassigned`, `player_role_fixed`, "
     "`persona_required`, `entry_archived`, `not_published`, `override_not_allowed`, "
     "`eligibility_failed`, `cast_limit_exceeded`, `rating_check_failed`, then the input gate's "
-    "`guardrail_violation`, with the full creation report in `details.report`. A scenario "
+    "`guardrail_violation`, then, for a story whose profile runs the `structured` pipeline, "
+    "`seed_unnormalizable` (a canon seed naming an entity the cast and world lack), with the "
+    "full creation report in `details.report`. A structured story's knowledge seeds, story "
+    "rules, places and entities are materialized in the same transaction (#149): the report "
+    "lists each item's outcome under `materialized` and the merge conflicts it dropped. A scenario "
     "rating mismatch is a warning (FR-RATE-5). Owners and listing statuses are never checked "
     "(FR-AUTH-8). When the engine profile leaves a capability the scenario recommends unmet, "
     "the answer is 200 with `applied: false` and the reports, unless the request sets "
@@ -826,7 +837,9 @@ async def ingest(
         "`effective_policies` (scope, source, applies_to, age_condition, kind), "
         "`inactive_policies` (age-conditioned ones whose condition is false for the cast) and "
         "`guardrail_calls`, so the model-call cost of guardrails is predictable (FR-GUARD-9); "
-        "and `effective_budget`, the budget the next turn plans with."
+        "and `effective_budget`, the budget the next turn plans with. A policy whose text a "
+        "pending catalog-scope erasure reaches is listed with a `null` `name` until the "
+        "erasure is reapplied; it is still enforced (ADR-161)."
     ),
 )
 async def story_settings(

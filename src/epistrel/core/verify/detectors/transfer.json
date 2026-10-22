@@ -1,0 +1,279 @@
+{
+  "category": "transfer",
+  "language": "en",
+  "description": "Transfer language: an item changes hands. give-like verbs: holds(recipient, item) and not holds(giver, item); the recipient follows 'to' or is the first of two mentions after the verb, the giver precedes the verb. take-like verbs: holds(taker, item) and not holds(giver, item); the giver follows 'from'.",
+  "predicate": "holds",
+  "recipient_cues": [
+    "to",
+    "for"
+  ],
+  "giver_cues": [
+    "from",
+    "off"
+  ],
+  "lemmas": [
+    {
+      "lemma": "give",
+      "forms": [
+        "give",
+        "gives",
+        "gave",
+        "given",
+        "giving"
+      ],
+      "direction": "give"
+    },
+    {
+      "lemma": "hand",
+      "forms": [
+        "hand",
+        "hands",
+        "handed",
+        "handing"
+      ],
+      "direction": "give"
+    },
+    {
+      "lemma": "pass",
+      "forms": [
+        "pass",
+        "passes",
+        "passed",
+        "passing"
+      ],
+      "direction": "give"
+    },
+    {
+      "lemma": "sell",
+      "forms": [
+        "sell",
+        "sells",
+        "sold",
+        "selling"
+      ],
+      "direction": "give"
+    },
+    {
+      "lemma": "lend",
+      "forms": [
+        "lend",
+        "lends",
+        "lent",
+        "lending"
+      ],
+      "direction": "give"
+    },
+    {
+      "lemma": "send",
+      "forms": [
+        "send",
+        "sends",
+        "sent",
+        "sending"
+      ],
+      "direction": "give"
+    },
+    {
+      "lemma": "toss",
+      "forms": [
+        "toss",
+        "tosses",
+        "tossed",
+        "tossing"
+      ],
+      "direction": "give"
+    },
+    {
+      "lemma": "throw",
+      "forms": [
+        "throw",
+        "throws",
+        "threw",
+        "thrown",
+        "throwing"
+      ],
+      "direction": "give"
+    },
+    {
+      "lemma": "deliver",
+      "forms": [
+        "deliver",
+        "delivers",
+        "delivered",
+        "delivering"
+      ],
+      "direction": "give"
+    },
+    {
+      "lemma": "offer",
+      "forms": [
+        "offer",
+        "offers",
+        "offered",
+        "offering"
+      ],
+      "direction": "give"
+    },
+    {
+      "lemma": "donate",
+      "forms": [
+        "donate",
+        "donates",
+        "donated",
+        "donating"
+      ],
+      "direction": "give"
+    },
+    {
+      "lemma": "slide",
+      "forms": [
+        "slide",
+        "slides",
+        "slid",
+        "sliding"
+      ],
+      "direction": "give"
+    },
+    {
+      "lemma": "pay",
+      "forms": [
+        "pay",
+        "pays",
+        "paid",
+        "paying"
+      ],
+      "direction": "give"
+    },
+    {
+      "lemma": "bequeath",
+      "forms": [
+        "bequeath",
+        "bequeaths",
+        "bequeathed",
+        "bequeathing"
+      ],
+      "direction": "give"
+    },
+    {
+      "lemma": "entrust",
+      "forms": [
+        "entrust",
+        "entrusts",
+        "entrusted",
+        "entrusting"
+      ],
+      "direction": "give"
+    },
+    {
+      "lemma": "buy",
+      "forms": [
+        "buy",
+        "buys",
+        "bought",
+        "buying"
+      ],
+      "direction": "give"
+    },
+    {
+      "lemma": "steal",
+      "forms": [
+        "steal",
+        "steals",
+        "stole",
+        "stolen",
+        "stealing"
+      ],
+      "direction": "take"
+    },
+    {
+      "lemma": "receive",
+      "forms": [
+        "receive",
+        "receives",
+        "received",
+        "receiving"
+      ],
+      "direction": "take"
+    },
+    {
+      "lemma": "borrow",
+      "forms": [
+        "borrow",
+        "borrows",
+        "borrowed",
+        "borrowing"
+      ],
+      "direction": "take"
+    },
+    {
+      "lemma": "purchase",
+      "forms": [
+        "purchase",
+        "purchases",
+        "purchased",
+        "purchasing"
+      ],
+      "direction": "take"
+    },
+    {
+      "lemma": "inherit",
+      "forms": [
+        "inherit",
+        "inherits",
+        "inherited",
+        "inheriting"
+      ],
+      "direction": "take"
+    },
+    {
+      "lemma": "rob",
+      "forms": [
+        "rob",
+        "robs",
+        "robbed",
+        "robbing"
+      ],
+      "direction": "take"
+    },
+    {
+      "lemma": "accept",
+      "forms": [
+        "accept",
+        "accepts",
+        "accepted",
+        "accepting"
+      ],
+      "direction": "take"
+    },
+    {
+      "lemma": "confiscate",
+      "forms": [
+        "confiscate",
+        "confiscates",
+        "confiscated",
+        "confiscating"
+      ],
+      "direction": "take"
+    },
+    {
+      "lemma": "swipe",
+      "forms": [
+        "swipe",
+        "swipes",
+        "swiped",
+        "swiping"
+      ],
+      "direction": "take"
+    },
+    {
+      "lemma": "pilfer",
+      "forms": [
+        "pilfer",
+        "pilfers",
+        "pilfered",
+        "pilfering"
+      ],
+      "direction": "take"
+    }
+  ]
+}

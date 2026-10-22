@@ -45,7 +45,6 @@ from tests.scenario_support import (
     CARD_ROLES,
     FULL_KEYS,
     GROUPS,
-    M3_UNAVAILABLE,
     PRINCIPAL,
     PRIVATE_PHRASES,
     READ,
@@ -68,6 +67,7 @@ from tests.scenario_support import (
     seed,
     set_cast_limits,
     stored_form,
+    undeliverable_checks,
     version_rows,
 )
 from tests.story_support import rest
@@ -261,7 +261,7 @@ async def test_draft_save_publish_and_versions(
     }
     report = first.json()["report"]
     assert (report["errors"], report["warnings"]) == ([], [])
-    assert set(report["unavailable"]) >= set(M3_UNAVAILABLE)
+    assert set(report["unavailable"]) >= set(undeliverable_checks())
     stored = await entry_row(engine, sid)
     assert (stored.status, stored.current_version, stored.draft_revision) == ("published", 1, 3)
     (pair,) = await rows(
@@ -322,7 +322,12 @@ async def test_save_is_a_json_merge_patch(client: httpx.AsyncClient) -> None:
     )
     assert [r["id"] for r in replaced.json()["cast"]["roles"]] == ["aunt", "player"]
     reset = await save(client, sid, 3, world=None, metadata={"labels": ["Dark Theme", "RPG"]})
-    assert reset.json()["world"] == {"description": None, "locations": [], "entities": []}
+    assert reset.json()["world"] == {
+        "description": None,
+        "locations": [],
+        "entities": [],
+        "event_types": None,
+    }
     assert reset.json()["metadata"]["labels"] == ["dark theme", "rpg"]
     nothing = await save(client, sid, 4)
     assert (nothing.status_code, nothing.json()["draft_revision"]) == (200, 5)

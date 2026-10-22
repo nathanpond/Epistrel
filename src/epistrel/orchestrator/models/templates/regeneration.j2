@@ -1,0 +1,110 @@
+{#- The repair ladder's regeneration of one beat (FR-REPAIR-1,2, docs/02 §5's Regeneration row;
+#151).
+
+Edit in place: the ``system`` block holds the generation inputs of the render the beat came
+from (the rating guidance always first, FR-RATE-4; the custom instructions; a scenario story's
+scenario text; the rendering character's definition, or for a narrator beat the director's
+notes; the pinned memories; the scene, the working memory, the retrieved context and the
+canon it may know), then ``## Repair``: the beat as it was rendered, the canon facts it
+contradicted, the facts that hang on them (their neighborhood) and one line per constraint the
+rewrite must keep. The ``user`` block is the player input. The rewritten beat comes back as the
+call's ``response_schema`` (one beat of the same kind: its text and the propositions it
+declares). -#}
+{% block system %}
+{% if rating_guidance %}
+## Content rating guidance
+{{ rating_guidance }}
+
+{% endif %}
+{% if custom_instructions %}
+## Custom instructions
+{{ custom_instructions }}
+
+{% endif %}
+{% if scenario_text %}
+{{ scenario_text }}
+
+{% endif %}
+{% for character in character_definitions %}
+## You are {{ character.name }}
+{{ character.definition }}
+{% if character.deflection_style %}
+When {{ character.name }} refuses or changes the subject: {{ character.deflection_style }}
+{% endif %}
+
+{% endfor %}
+{% if director_notes %}
+## Director guidance (not facts)
+{{ director_notes }}
+
+{% endif %}
+{% if pinned_memories %}
+## Pinned memories
+{% for memory in pinned_memories %}
+- {{ memory }}
+{% endfor %}
+
+{% endif %}
+{% if summary_segments %}
+## Earlier in the story
+{% for segment in summary_segments %}
+{{ segment }}
+{% endfor %}
+
+{% endif %}
+{% if scene %}
+## Scene
+{{ scene }}
+
+{% endif %}
+{% if working_memory %}
+## What you remember
+{% for beat in working_memory %}
+- {{ beat }}
+{% endfor %}
+
+{% endif %}
+{% if retrieved_memories %}
+## Retrieved
+{% for item in retrieved_memories %}
+- {{ item }}
+{% endfor %}
+
+{% endif %}
+{% if canon_facts %}
+## Canon
+{% for fact in canon_facts %}
+- {{ fact }}
+{% endfor %}
+
+{% endif %}
+## Repair
+This `{{ beat_kind }}` beat{% if voiced_characters %} of {{ voiced_characters | join(", ") }}{% endif %} broke the story's facts:
+{{ rejected_text }}
+{% if contradicted_facts %}
+
+It contradicted:
+{% for fact in contradicted_facts %}
+- {{ fact }}
+{% endfor %}
+{% endif %}
+{% if neighborhood %}
+
+These facts hang together with them and must stay true:
+{% for fact in neighborhood %}
+- {{ fact }}
+{% endfor %}
+{% endif %}
+
+Rewrite only this beat, as a `{{ beat_kind }}` beat in the same voice, so that it keeps every constraint below and asserts nothing the facts above deny. Declare each factual claim it makes as a proposition (subject, relation, object).
+{% for constraint in constraints %}
+- {{ constraint.text }}
+{% endfor %}
+{% for constraint in policy_constraints %}
+{{ constraint }}
+{% endfor %}
+{% include "steering_resolution.j2" %}
+{% endblock %}
+{% block user %}
+{{ player_input.name }}:{% if player_input.say %} "{{ player_input.say }}"{% endif %}{% if player_input.do %} *{{ player_input.do }}*{% endif %}
+{% endblock %}

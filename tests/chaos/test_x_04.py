@@ -282,7 +282,7 @@ async def test_x_04__slow_engine(pg_url: str, engine: AsyncEngine) -> None:
 
 
 async def _storm(pg_url: str, engine: AsyncEngine, storm: Storm) -> None:
-    print(f"{storm.label} seed={SEED} iterations={ITERATIONS} keys={storm.keys}")
+    print(f"\n{storm.label} seed={SEED} iterations={ITERATIONS} keys={storm.keys}")
     rng = random.Random(SEED)  # noqa: S311 - a replayable seed, not a secret
     settings: Settings = auth_settings(pg_url, model_adapter="stub")
     async with respond_client(settings, engine) as (client, _):

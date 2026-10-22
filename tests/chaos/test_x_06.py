@@ -1,15 +1,19 @@
 """X-06: chaos — database disruption (docs/04 §12; NFR-REL-2,3; #75).
 
-A dedicated PostgreSQL container (bound to a fixed host port, so a restarted server is at the
-same address) serves a child engine (``EngineProcess``, ``api`` mode, the stub adapter) and
-nothing else. Between requests the harness kills the server (``docker kill``: no clean
-shutdown) and starts it again. While it is down, every request is answered 503
-``database_unavailable``: nothing is written and the engine itself stays up. Once it is back,
-the engine answers again within ``RECOVERY_S`` without being restarted (its pool reconnects).
-Every request refused during the outage is retried under its key and answered. Afterwards
-nothing is in flight, no key is left in flight, and the story satisfies the crash predicate
-(``tests.crash_support``): dense ``seq``, every event's operation committed, consistent
-counters, and projections equal to a rebuild.
+A dedicated PostgreSQL container serves a child engine (``EngineProcess``, ``api`` mode, the
+stub adapter) and nothing else. Between requests the harness kills the server (every server
+process ``SIGKILL``ed: no clean shutdown) and starts it again. The outage happens inside the
+container, which never stops (#448): its PID 1 is a shell that runs the server again whenever
+it exits, unless a down flag is set. So the host port Docker assigned at the first start is
+held for the whole test and a restarted server is at the same address; a port picked before
+binding, or released during an outage, could be taken by another process on the host.
+
+While the server is down, every request is answered 503 ``database_unavailable``: nothing is
+written and the engine itself stays up. Once it is back, the engine answers again within
+``RECOVERY_S`` without being restarted (its pool reconnects). Every request refused during the
+outage is retried under its key and answered. Afterwards nothing is in flight, no key is left in
+flight, and the story satisfies the crash predicate (``tests.crash_support``): dense ``seq``,
+every event's operation committed, consistent counters, and projections equal to a rebuild.
 
 ``EPISTREL_CHAOS_DISRUPTIONS`` is the number of outages: 1 in PR CI, 3 in the weekly run.
 The test needs Docker. With ``EPISTREL_TEST_DATABASE_URL`` set it fails rather than skips:
@@ -31,7 +35,7 @@ import pytest
 from alembic import command
 
 from epistrel.core.db import make_engine
-from epistrel.testing.faults import EngineProcess, free_port
+from epistrel.testing.faults import EngineProcess
 from tests.auth_support import CREDENTIAL_A, auth_settings
 from tests.conftest import OVERRIDE_VAR, PG_IMAGE, alembic_config
 from tests.crash_support import in_flight_keys, integrity, recover
@@ -44,11 +48,19 @@ RECOVERY_S = 20.0
 """How long after the server is back the engine may take to answer again."""
 TURNS_BETWEEN = 3
 LEASE_S = 1.0
+DOWN_FLAG = "/x06-down"
+SUPERVISOR = (
+    f"while :; do if [ -e {DOWN_FLAG} ]; then sleep 0.1; "
+    "else docker-entrypoint.sh postgres; fi; done"
+)
+"""The container's PID 1 (root): the server, run again whenever it exits unless ``DOWN_FLAG``
+is set."""
 
 
 @contextmanager
 def dedicated_postgres() -> Iterator[tuple[Any, str]]:
-    """A PostgreSQL container of its own on a fixed host port, migrated to head."""
+    """A PostgreSQL container of its own, its host port assigned by Docker and held until it
+    stops, migrated to head."""
     if os.environ.get(OVERRIDE_VAR):
         pytest.fail(
             f"X-06 kills and restarts its own PostgreSQL container; it needs Docker and cannot "
@@ -57,8 +69,7 @@ def dedicated_postgres() -> Iterator[tuple[Any, str]]:
         )
     from testcontainers.community.postgres import PostgresContainer
 
-    port = free_port()
-    container = PostgresContainer(PG_IMAGE, driver="psycopg").with_bind_ports(5432, port)
+    container = PostgresContainer(PG_IMAGE, driver="psycopg").with_command(["sh", "-c", SUPERVISOR])
     container.start()
     try:
         url = container.get_connection_url()
@@ -66,6 +77,21 @@ def dedicated_postgres() -> Iterator[tuple[Any, str]]:
         yield container, url
     finally:
         container.stop()
+
+
+def _kill_server(container: Any) -> None:
+    """Every server process ``SIGKILL``ed (no clean shutdown), the flag holding it down. The
+    signal goes as the ``postgres`` user, so the root supervisor survives it."""
+    wrapped = container.get_wrapped_container()
+    flagged = wrapped.exec_run(["touch", DOWN_FLAG])
+    assert flagged.exit_code == 0, flagged.output
+    wrapped.exec_run(["sh", "-c", "kill -9 -1"], user="postgres")
+
+
+def _start_server(container: Any) -> None:
+    """Lift the flag: the supervisor starts the server again (crash recovery)."""
+    lifted = container.get_wrapped_container().exec_run(["rm", "-f", DOWN_FLAG])
+    assert lifted.exit_code == 0, lifted.output
 
 
 def _libpq(url: str) -> str:
@@ -119,7 +145,7 @@ async def test_x_06() -> None:
                         played = await _post(client, f"{path}/respond", body(player, key), key)
                         assert played.status_code == 200, played.text
                         head += 1
-                    container.get_wrapped_container().kill()
+                    _kill_server(container)
                     pending = [
                         (
                             f"{path}/respond",
@@ -136,7 +162,7 @@ async def test_x_06() -> None:
                     read = await client.get(path, headers=READ)
                     assert read.status_code == 503, read.text
                     assert child.exited is None, "the engine died with its database"
-                    container.get_wrapped_container().start()
+                    _start_server(container)
                     await _server_ready(url)
                     await _answers_again(client, path)
                     for route, payload, key in pending:

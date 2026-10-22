@@ -32,6 +32,17 @@ FR-CONC-6, NFR-REL-5; #71).
   ``core.feedback``, which nothing in the Orchestrator imports (FR-FB-3: feedback is
   flag-only). Until #123 indexes a rating's text there are no subject-index rows to drop with
   it; #123 drops them here too.
+- the structured read set's change index (``proposition_changes``, #136) older than
+  ``readset_change_retention_days`` (7): in the transaction that deletes a story's rows it moves
+  the story's ``changes_pruned_through_revision`` to the highest revision deleted, so a turn
+  whose base is below it conflicts rather than rebasing against a partial index.
+- the escalation records (``escalations``, #155) older than ``escalation_retention_days`` (90),
+  by when they were recorded: ids, codes and confidences of committed turns' entailment calls,
+  derived rows no story view reads, so they leave no marker.
+- claim detection's shadow samples (``extraction_shadow``, #148) older than
+  ``extraction_shadow_retention_days`` (90; #455), by when they were recorded: statuses, counts,
+  spans, predicate ids and shape hashes, never story text, read only by the shadow report, so
+  they leave no marker either.
 
 No M2 operation kind writes only audit events, so no operation row is deleted. Every delete
 runs in chunks of ``CHUNK`` rows, each its own transaction, at most ``MAX_CHUNKS`` per table and
@@ -87,8 +98,11 @@ from epistrel.core.profiles import store as profiles
 from epistrel.core.ratings import change as rating_change
 from epistrel.core.settings_schema import STORY_LIFETIME, FeedbackSettings, RetentionSettings
 from epistrel.core.tables import audit_log, events, idempotency_keys, jobs, operations, stories
+from epistrel.core.tables.detection import extraction_shadow
+from epistrel.core.tables.escalations import escalations
 from epistrel.core.tables.events import ALLOW_AUDIT_EXPIRY_GUC
 from epistrel.core.tables.feedback import feedback_history, message_feedback
+from epistrel.core.tables.readset import proposition_changes
 from epistrel.orchestrator.jobs.recurring import NoPayload, RecurringTask, recording
 from epistrel.orchestrator.jobs.types import JobContext, JobHandler, JobOutput
 
@@ -245,6 +259,46 @@ async def _purge_offboarding(db: AsyncEngine, before: datetime) -> int:
     return deleted
 
 
+async def _prune_changes(db: AsyncEngine, before: datetime) -> int:
+    """``proposition_changes`` rows recorded before ``before`` (#136), with each story's pruning
+    watermark moved in the same transaction."""
+    pc = proposition_changes
+    deleted = 0
+    for _ in range(MAX_CHUNKS):
+        async with db.begin() as conn:
+            chunk = (
+                select(pc.c.id)
+                .where(pc.c.tx_time < before)
+                .limit(CHUNK)
+                .with_for_update(skip_locked=True)
+                .scalar_subquery()
+            )
+            gone = (
+                await conn.execute(
+                    delete(pc)
+                    .where(pc.c.id.in_(chunk))
+                    .returning(pc.c.story_id, pc.c.timeline_revision)
+                )
+            ).all()
+            highest: dict[str, int] = {}
+            for story_id, revision in gone:
+                highest[story_id] = max(highest.get(story_id, 0), int(revision))
+            for story_id in sorted(highest):
+                await conn.execute(
+                    update(stories)
+                    .where(stories.c.id == story_id)
+                    .values(
+                        changes_pruned_through_revision=func.greatest(
+                            stories.c.changes_pruned_through_revision, highest[story_id]
+                        )
+                    )
+                )
+        deleted += len(gone)
+        if len(gone) < CHUNK:
+            break
+    return deleted
+
+
 async def sweep_retention(db: AsyncEngine, now: datetime | None = None) -> dict[str, int]:
     """One retention run (see the module docstring); returns how many rows of each it deleted."""
     moment = now or clock.now()
@@ -270,7 +324,38 @@ async def sweep_retention(db: AsyncEngine, now: datetime | None = None) -> dict[
             db, moment - timedelta(days=settings.rating_check_retention_days)
         ),
         **await _expire_feedback(db, moment),
+        "proposition_changes": await _prune_changes(
+            db, moment - timedelta(days=settings.readset_change_retention_days)
+        ),
+        "escalations": await _chunked(
+            db, escalations, _expired_escalations(moment, settings), audit=False
+        ),
+        "extraction_shadow": await _chunked(
+            db, extraction_shadow, _expired_shadow_samples(moment, settings), audit=False
+        ),
     }
+
+
+def _expired_escalations(moment: datetime, settings: RetentionSettings) -> Any:
+    """Escalation records (#155) older than ``escalation_retention_days``."""
+    before = moment - timedelta(days=settings.escalation_retention_days)
+    return (
+        select(escalations.c.id)
+        .where(escalations.c.at < before)
+        .limit(CHUNK)
+        .with_for_update(skip_locked=True)
+    )
+
+
+def _expired_shadow_samples(moment: datetime, settings: RetentionSettings) -> Any:
+    """Shadow samples (#148) older than ``extraction_shadow_retention_days`` (#455)."""
+    before = moment - timedelta(days=settings.extraction_shadow_retention_days)
+    return (
+        select(extraction_shadow.c.id)
+        .where(extraction_shadow.c.created_at < before)
+        .limit(CHUNK)
+        .with_for_update(skip_locked=True)
+    )
 
 
 async def purge_idempotency(db: AsyncEngine, now: datetime | None = None) -> dict[str, int]:

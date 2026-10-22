@@ -180,6 +180,38 @@ class Policy:
 
 
 @dataclass(frozen=True, slots=True)
+class WithheldPolicy:
+    """An effective policy as a story's settings show it while a pending catalog-scope erasure
+    reaches its text (#447, ADR-161): its id, scope and shape, never its name, message or rule.
+    It is still enforced; the reapply redacts the stored policy, after which it is shown whole."""
+
+    id: str
+    scope: Scope
+    scope_id: str | None
+    story_id: str | None
+    applies_to: tuple[Target, ...]
+    kind: PolicyKind
+    effect: Effect
+    age_condition: str | None
+    version: int
+    name: None = None
+
+    @classmethod
+    def of(cls, policy: Policy) -> WithheldPolicy:
+        return cls(
+            id=policy.id,
+            scope=policy.scope,
+            scope_id=policy.scope_id,
+            story_id=policy.story_id,
+            applies_to=policy.applies_to,
+            kind=policy.kind,
+            effect=policy.effect,
+            age_condition=policy.age_condition,
+            version=policy.version,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class Violation:
     """A policy a text breaks. No spans: the caller already holds the text (#49)."""
 

@@ -1,16 +1,28 @@
 """check-licenses: every runtime dependency's license is Apache-2.0-compatible (invariant 2).
 
 Records come from `pip-licenses --format=json --from=mixed` run against a runtime-only
-environment; only packages in #41's runtime closure are judged. Unknown spellings normalise to
-UNKNOWN, which fails — the safe direction. An exception admits an UNKNOWN or not-allowed
+environment; only packages in #41's runtime closure are judged. A value is read as an SPDX
+expression (parentheses, AND tighter than OR, WITH keeping its left-hand id; #310). Unknown
+spellings, and expressions that do not parse, normalise to UNKNOWN, which fails — the safe
+direction. An exception admits an UNKNOWN or not-allowed
 license, never one that names a deny family (#94): by an id that starts with the family, after
-any leading `LicenseRef-` or `GNU` (`GPL-3.0-only`, `GPLv3`, `GNU-GPL`, `GPL.v3`,
-`LicenseRef-GPL-3.0`), or by its long name with any separators or none (`GNU Public License`,
-`Server-Side Public License`, `EuropeanUnionPublicLicence`); any `Affero` is the AGPL. A GPL
-qualified as another license (`Lesser GPL`, `Library GPL`, `Nethack GPL`) is that license. A
-bare `GNU` names no single family, so an exception can admit it (#313). A table entry settles
-its own spelling. A license text (a value spanning several lines) is judged by its title line
-only, since full texts cite or bundle other licenses in their body.
+any leading `LicenseRef-` or `GNU` (`GPL-3.0-only`, `GPLv3`, `GPLver.3`, `GNU-GPL`, `GPL.v3`,
+`LicenseRef-GPL-3.0`), by any word of a `LicenseRef-` id's body (`LicenseRef-KDE-Accepted-GPL`,
+`LicenseRef-scancode-gpl-2.0-classpath`; #320, the owner's decision), by a deprecated SPDX id
+of the family (`eCos-2.0`, the GPL; #433), or by its long name with any separators or none
+(`GNU Public License`, `Server-Side Public License`, `EuropeanUnionPublicLicence`,
+`European Public Licence`; #433); any `Affero` is the AGPL. A GPL qualified as another license
+(`Lesser GPL`, `Library GPL`, `Nethack GPL`, `LicenseRef-Library-GPL`) is that license. A
+`LicenseRef-` copy of an SPDX id with `GPL` inside it (`LicenseRef-CNRI-Python-GPL-Compatible`)
+reads as the GPL, the cost of #320's reading; the bare SPDX id does not. A value that names
+`GNU` but no specific license (`GNU`, `GNU v3`, `GNU License`) is the GPL, the fail-safe reading
+(#313, the owner's decision); a package that is really LGPL and says only that needs a
+normalisation-table entry. A table entry settles its own spelling. A license text (a
+value spanning several lines) is judged by its title line only, since full texts cite or bundle
+other licenses in their body. So a text whose first line does not name its license, such as the
+FSF notice that opens "This program is free software;", reads UNKNOWN: it fails without an
+exception, and an exception admits it (#312, the owner's decision to keep the rule). Whoever
+writes an exception reads the package's license first.
 """
 
 from __future__ import annotations
@@ -171,17 +183,40 @@ FAMILY_NAMES: tuple[tuple[str, re.Pattern[str]], ...] = (
             rf" (?:gnu ?(?:general ?)?|general ?){_PUBLIC_LICENSE}"
         ),
     ),
-    ("EUPL", re.compile(rf" (?:european ?union|eu) ?{_PUBLIC_LICENSE}")),
+    # `Union` is optional: `European Public Licence` names only the EUPL too (#433).
+    ("EUPL", re.compile(rf" (?:european ?(?:union ?)?|eu) ?{_PUBLIC_LICENSE}")),
     ("SSPL", re.compile(rf" server ?side ?{_PUBLIC_LICENSE}")),
 )
+# A bare GNU (#313): the word `gnu`, alone or joined to a version or `License` (`GNUv3`,
+# `GNULicense`), matched against `_words`, so `gnuplot` is not one. It names the GPL unless the
+# value also names one of the other GNU licenses: the LGPL (`Lesser`, `Library`, `LGPL…`), the
+# AGPL, the GFDL (`Free Documentation`, `FDL`, `GFDL…`), the GNU All-permissive License, or the
+# Nethack GPL. Only counts while the GPL is denied.
+BARE_GNU_RE = re.compile(r" gnu(?:v?\d+|licen[cs]e)?(?= )")
+OTHER_GNU_LICENSE_RE = re.compile(
+    r" (?:lesser|library|lgpl|affero|agpl|documentation|fdl|gfdl|permissive|allpermissive|nethack)"
+)
+# Deprecated SPDX ids in a deny family whose id does not start with the family (#433), as
+# (family, id stem): `eCos-2.0` is GPL-2.0-or-later WITH eCos-exception-2.0. The stem matches
+# alone or before a version (`eCos`, `eCos-2.0`, `LicenseRef-eCos-2.0`), not the exception id
+# `eCos-exception-2.0`; its `LicenseRef-` copy reads as the GPL, as #320's copies do. Every
+# other deprecated GPL-family id in packaging 26.3's SPDX list (`GPL-2.0-with-GCC-exception`, …)
+# starts with `GPL`; `wxWindows` is LGPL-family.
+DEPRECATED_FAMILY_IDS: tuple[tuple[str, str], ...] = (("GPL", "ECOS"),)
 # Runs of free text that may be ids (`GPL-3.0-only`, `GNU-GPL`, `GPL.v3`).
 TOKEN_RE = re.compile(r"[A-Za-z0-9.+-]+")
+# A PEP 639 `LicenseRef-` id, any case. Its body is free to put the family after a prefix, as
+# ScanCode LicenseDB (`LicenseRef-scancode-gpl-2.0-classpath`) and KDE's policy
+# (`LicenseRef-KDE-Accepted-GPL`) do, so `named_family` reads the body as words (#320).
+LICENSEREF_RE = re.compile(r"licenseref-([A-Za-z0-9.+-]*)", re.IGNORECASE)
 # A GPL id right after one of these words, joined by spaces or `_`, is another license: `Lesser
 # GPL` is the LGPL, `Affero GPL` the AGPL and `Nethack GPL` the NGPL. `Library GPL` is the LGPL
 # when it starts a phrase or follows `GNU` (`LGPL (Library GPL)`), since `Python library GPL v3`
-# is the GPL. Another separator ends the qualifier, so `Library: GPL v3` is the GPL too.
+# is the GPL. Another separator ends the qualifier, so `Library: GPL v3` is the GPL too. A
+# `LicenseRef-` id's body is a phrase of its own, so `LicenseRef-Library-GPL` is the LGPL (#320).
 GPL_QUALIFIER_RE = re.compile(
-    r"(?:(?<![a-z])(?:lesser|affero|nethack)|(?:(?:^|[^\w\s])[\s_]*|(?<![a-z])gnu[\s_]+)library)"
+    r"(?:(?<![a-z])(?:lesser|affero|nethack)"
+    r"|(?:(?:^|[^\w\s])[\s_]*|(?<![a-z])(?:gnu|licenseref)[\s_]+)library)"
     r"[\s_]+$",
     re.IGNORECASE,
 )
@@ -249,26 +284,118 @@ def _is_text(raw: str) -> bool:
     return len(raw.strip().splitlines()) > 1
 
 
+# One `;`-part of a value, as tokens: a parenthesis or a run of non-space text. `AND`, `OR` and
+# `WITH` (upper case, as SPDX writes them) are operators; consecutive other tokens form one term,
+# so a classifier spelling such as `Apache Software License` stays a single term.
+SPDX_TOKEN_RE = re.compile(r"[()]|[^\s()]+")
+SPDX_OPERATORS = frozenset({"AND", "OR", "WITH"})
+# Fail-closed bounds: a deeper nesting, or an AND of ORs that expands to more alternatives, reads
+# UNKNOWN rather than being judged in part.
+MAX_DEPTH = 16
+MAX_ALTERNATIVES = 64
+
+
+class _Malformed(Exception):
+    """The part is not a well-formed SPDX expression; it reads UNKNOWN as a whole."""
+
+
+class _SpdxParser:
+    """Recursive descent over one part, to an OR of ANDs (#310):
+
+        or   := and ("OR" and)*
+        and  := with ("AND" with)*
+        with := term ("WITH" term)? | "(" or ")"
+
+    `AND` binds tighter than `OR`, so `MIT OR Apache-2.0 AND GPL-3.0-only` is
+    `MIT OR (Apache-2.0 AND GPL-3.0-only)`. `WITH` keeps its left-hand id, as the split it
+    replaces did, and only follows a term (`(MIT OR BSD) WITH x` is malformed, as in SPDX). A
+    term is read by `normalise_id`. Anything else is `_Malformed`: an unbalanced parenthesis, a
+    missing operand, two terms or a term and a parenthesis with no operator between them
+    (`GPL (>= 2)`, `LGPL (Library GPL)`), a trailing operator, or a part past the bounds.
+    """
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.tokens = [(m.start(), m.end(), m[0]) for m in SPDX_TOKEN_RE.finditer(text)]
+        self.pos = 0
+
+    def parse(self) -> list[list[str]]:
+        result = self._or(0)
+        if self.pos != len(self.tokens):
+            raise _Malformed  # a `)` without its `(`, or a term right after a `)`
+        return result
+
+    def _peek(self) -> str | None:
+        return self.tokens[self.pos][2] if self.pos < len(self.tokens) else None
+
+    def _or(self, depth: int) -> list[list[str]]:
+        alternatives = self._and(depth)
+        while self._peek() == "OR":
+            self.pos += 1
+            alternatives = alternatives + self._and(depth)
+            if len(alternatives) > MAX_ALTERNATIVES:
+                raise _Malformed
+        return alternatives
+
+    def _and(self, depth: int) -> list[list[str]]:
+        alternatives = self._with(depth)
+        while self._peek() == "AND":
+            self.pos += 1
+            right = self._with(depth)
+            if len(alternatives) * len(right) > MAX_ALTERNATIVES:
+                raise _Malformed
+            alternatives = [left + more for left in alternatives for more in right]
+        return alternatives
+
+    def _with(self, depth: int) -> list[list[str]]:
+        if self._peek() == "(":
+            if depth >= MAX_DEPTH:
+                raise _Malformed
+            self.pos += 1
+            inner = self._or(depth + 1)
+            if self._peek() != ")":
+                raise _Malformed
+            self.pos += 1
+            return inner
+        spdx = self._term()
+        if self._peek() == "WITH":
+            self.pos += 1
+            self._term()  # the exception; the left-hand id is what allow and deny judge
+        return [[spdx]]
+
+    def _term(self) -> str:
+        start = self.pos
+        while self.pos < len(self.tokens) and self.tokens[self.pos][2] not in (
+            SPDX_OPERATORS | {"(", ")"}
+        ):
+            self.pos += 1
+        if self.pos == start:
+            raise _Malformed  # an operator, a parenthesis or the end where a license belongs
+        return normalise_id(self.text[self.tokens[start][0] : self.tokens[self.pos - 1][1]])
+
+
 def _parse_part(part: str) -> list[list[str]]:
     """One `;`-part: a name found whole in the table is that id (a classifier such as `GNU General
-    Public License v3 (GPLv3)`); other parentheses → UNKNOWN; the rest splits on OR/AND/WITH."""
+    Public License v3 (GPLv3)`); the rest is an SPDX expression (`_SpdxParser`), and a part that
+    is not one reads UNKNOWN as a whole, never in part (#310)."""
     text = part.strip()
     if text.lower() in NORMALISATION:
         return [[NORMALISATION[text.lower()]]]
-    if "(" in text or ")" in text:
+    try:
+        return _SpdxParser(text).parse()
+    except _Malformed:
         return [[UNKNOWN]]
-    return [
-        [normalise_id(re.split(r"\s+WITH\s+", term)[0]) for term in re.split(r"\s+AND\s+", alt)]
-        for alt in re.split(r"\s+OR\s+", text)
-    ]
 
 
 def parse_expression(raw: str) -> list[list[str]]:
     """OR of ANDs: `GPL-2.0 OR MIT` → [[GPL-2.0], [MIT]]; `MIT AND PSF-2.0` → [[MIT, PSF-2.0]].
 
     `;` is OR and is split first: pip-licenses `--from=mixed` joins a package's license
-    classifiers with `"; "`, so each part is looked up whole before the parenthesis rule applies
-    to it (#94). `WITH` keeps the left-hand id. A license text (several lines) is UNKNOWN.
+    classifiers with `"; "`, so each part is looked up whole before it is parsed as an SPDX
+    expression (#94): `(MIT OR GPL-2.0-only)` → [[MIT], [GPL-2.0-only]], and
+    `GPL-3.0-only AND (MIT OR Apache-2.0)` → [[GPL-3.0-only, MIT], [GPL-3.0-only, Apache-2.0]]
+    (#310). `WITH` keeps the left-hand id. A part that does not parse, or a license text (several
+    lines), is UNKNOWN.
     """
     if _is_text(raw):
         return [[UNKNOWN]]
@@ -277,13 +404,18 @@ def parse_expression(raw: str) -> list[list[str]]:
 
 def denied_family(spdx: str, deny: tuple[str, ...]) -> str | None:
     """The deny family of an id: `GPL`, `GPL-3.0-only`, `GPL-2.0+` and the common `GPLv3`,
-    `GPL3`, `GPLVersion3` and `GPL.v3` spellings are GPL, after a leading `GNU` (`GNU-GPL`) or
-    PEP 639 `LicenseRef-` (`LicenseRef-GPL-3.0`) too; `LGPL-2.1-only` and `AGPL-3.0` are not (each
-    family on its own). Only a leading prefix is dropped: the SPDX id `CNRI-Python-GPL-Compatible`
-    names a permissive license."""
+    `GPL3`, `GPLVersion3`, `GPLver3`, `GPLv.3` and `GPL.v3` spellings are GPL, after a leading
+    `GNU` (`GNU-GPL`) or PEP 639 `LicenseRef-` (`LicenseRef-GPL-3.0`) too; `LGPL-2.1-only` and
+    `AGPL-3.0` are not (each family on its own). Only a leading prefix is dropped: the SPDX id
+    `CNRI-Python-GPL-Compatible` names a permissive license. A deprecated SPDX id listed in
+    `DEPRECATED_FAMILY_IDS` is its family (`eCos-2.0` is GPL; #433). (`named_family` reads a
+    `LicenseRef-` id's body word by word, #320.)"""
     upper = re.sub(r"^(?:LICENSEREF-)?(?:GNU[-.+]?)?", "", spdx.upper())
     for fam in sorted(deny, key=len, reverse=True):  # LGPL before GPL
-        if re.match(rf"{re.escape(fam)}(?:$|[-+.]|(?:V|VERSION)?\d)", upper):
+        if re.match(rf"{re.escape(fam)}(?:$|[-+.]|(?:V|VER|VERSION)?\.?\d)", upper):
+            return fam
+    for fam, alias in DEPRECATED_FAMILY_IDS:
+        if fam in deny and re.match(rf"{alias}(?:$|[-+.]?(?:V|VER|VERSION)?\.?\d)", upper):
             return fam
     return None
 
@@ -297,7 +429,12 @@ def _words(text: str) -> str:
 def named_family(text: str, deny: tuple[str, ...]) -> str | None:
     """A deny family named in free `text` or an id, by identifier (`GNU GPL v3`, `GNU-GPL`,
     `(GPL-3.0-only)`, `LicenseRef-GPLv3`) or by long name (`GNU Public License`,
-    `GNU-General-Public-License`, `Affero GPL`). A qualified GPL (`Lesser GPL`) is not the GPL."""
+    `GNU-General-Public-License`, `Affero GPL`). A qualified GPL (`Lesser GPL`) is not the GPL.
+    A bare GNU (`GNU`, `GNU v3`, `GNU License`) is (#313). A `LicenseRef-` id's body is read as
+    words, `-` as a space, so a family after a prefix counts (`LicenseRef-KDE-Accepted-GPL`,
+    `LicenseRef-scancode-agpl-3.0-plus`); the cost is that a `LicenseRef-` copy of an SPDX id
+    with `GPL` inside it (`LicenseRef-CNRI-Python-GPL-Compatible`) reads as the GPL (#320)."""
+    text = LICENSEREF_RE.sub(lambda m: "LicenseRef " + m[1].replace("-", " "), text)
     for token in TOKEN_RE.finditer(text):
         family = denied_family(token[0].strip(".+-"), deny)
         if family == "GPL" and GPL_QUALIFIER_RE.search(text[: token.start()]):
@@ -308,17 +445,22 @@ def named_family(text: str, deny: tuple[str, ...]) -> str | None:
     for family, name in FAMILY_NAMES:
         if family in deny and name.search(words):
             return family
+    if "GPL" in deny and BARE_GNU_RE.search(words) and not OTHER_GNU_LICENSE_RE.search(words):
+        return "GPL"
     return None
 
 
 def unread_family(raw: str, deny: tuple[str, ...]) -> str | None:
     """A deny family named where `parse_expression` reads UNKNOWN, so no exception can admit it.
 
-    Searched: each `;`-part that is not in the table and does not parse (free text, an SPDX
-    expression with parentheses, an unlisted classifier), and a license text's title line. A
+    Searched: each `;`-part that is not in the table and does not parse (free text, a malformed
+    SPDX expression, an unlisted classifier), and a license text's title line. A
     table entry is authoritative for its spelling. A text's body is not searched: permissive
     texts name the GPL in passing (MPL-2.0's "Secondary License"), and numpy's and scipy's
-    `License` fields carry the GPL notice of the runtime library bundled in their wheels.
+    `License` fields carry the GPL notice of the runtime library bundled in their wheels. The
+    cost (#312): a text that opens without its license's name, such as the FSF notice "This
+    program is free software; you can redistribute it …", names no family here, so it reads
+    UNKNOWN and an exception admits it.
     """
     if _is_text(raw):
         return named_family(raw.strip().splitlines()[0], deny)

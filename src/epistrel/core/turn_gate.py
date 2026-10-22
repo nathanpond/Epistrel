@@ -4,7 +4,8 @@
 Every story has one **turn slot**: ``stories.in_flight_turn`` names the turn holding it and
 ``stories.in_flight_lease_until`` its lease. A turn takes the slot in its own short transaction
 before its operation begins (``acquire``) and gives it back inside the transaction that commits
-or fails it (``Operation`` calls ``release``). No database lock is held across model calls
+or fails it (``Operation`` calls ``release``; a queued turn that fails keeps it until its
+drainer drops its queue row, #436). No database lock is held across model calls
 (FR-CONC-2): the slot is a durable marker, and a lease that ran out (a crash) is reclaimed by
 the next request, which marks the dead turn ``failed`` (or, for a queued turn, puts it back in
 the queue; after ``MAX_RUNS`` interrupted runs it fails). The lease is the turn's deadline (its
@@ -261,7 +262,16 @@ async def acquire(
 
     One short transaction under the story row lock. A holder whose lease ran out is reclaimed
     first (``_reclaim``). A ``newcomer`` (any request, as opposed to the queue's drainer
-    starting the head of the queue) does not take a free slot while turns are queued."""
+    starting the head of the queue) does not take a free slot while turns are queued.
+
+    The drainer read its head before it waited for the slot, and the item may have ended in
+    the meantime (#329): a control action failed it (``fail_queued``), or a reclaim failed it
+    after ``MAX_RUNS``. So ``newcomer=False`` takes the slot only while, under the story row
+    lock, the item's queue row exists and its operation is still ``queued``; otherwise it
+    raises ``NotQueued`` with the slot left free. An item whose row is still there although its
+    operation is no longer ``queued`` (it ended, but its row was never dropped) is finished
+    here as ``fail_item`` would, without running it."""
+    ended = False
     async with db.begin() as conn:
         row = await _lock_story(conn, story_id)
         holder = row.in_flight_turn
@@ -277,15 +287,52 @@ async def acquire(
             depth = await _depth(conn, story_id)
             if depth:
                 return Held(None, None, 1, depth)
-        await conn.execute(
-            update(stories)
-            .where(stories.c.id == story_id)
-            .values(
-                in_flight_turn=operation_id,
-                in_flight_lease_until=func.clock_timestamp() + _interval(lease_s),
+        else:
+            status = await _queued_status(conn, operation_id)
+            if status != OperationStatus.QUEUED.value:
+                if status is not None:
+                    error = TurnInterrupted(
+                        "the queued turn ended before it could start",
+                        {"operation_id": operation_id},
+                    )
+                    await _fail(conn, operation_id, error)
+                    await _forget_item(conn, operation_id)
+                ended = True
+        if not ended:
+            await conn.execute(
+                update(stories)
+                .where(stories.c.id == story_id)
+                .values(
+                    in_flight_turn=operation_id,
+                    in_flight_lease_until=func.clock_timestamp() + _interval(lease_s),
+                )
             )
-        )
+    if ended:
+        wakeups.wake(story_id)
+        raise NotQueued(operation_id)
     return None
+
+
+class NotQueued(Exception):
+    """The drainer's head item is no longer waiting (``acquire(newcomer=False)``; #329): read
+    the head again."""
+
+    def __init__(self, operation_id: str) -> None:
+        super().__init__(f"operation {operation_id} is no longer queued")
+        self.operation_id = operation_id
+
+
+async def _queued_status(conn: AsyncConnection, operation_id: str) -> str | None:
+    """The status of the operation behind ``operation_id``'s queue row (locked), or ``None``
+    when the row is gone."""
+    found = await conn.scalar(
+        select(operations.c.status)
+        .select_from(turn_queue)
+        .join(operations, operations.c.operation_id == turn_queue.c.operation_id)
+        .where(turn_queue.c.operation_id == operation_id)
+        .with_for_update(of=turn_queue)
+    )
+    return None if found is None else str(found)
 
 
 def _interval(seconds: float) -> Any:
@@ -350,6 +397,29 @@ async def release(conn: AsyncConnection, story_id: str, operation_id: str) -> No
         .values(in_flight_turn=None, in_flight_lease_until=None)
     )
     await conn.execute(select(func.pg_notify(NOTIFY_CHANNEL, story_id)))
+
+
+async def clear_lease(conn: AsyncConnection, story_id: str) -> None:
+    """Free the slot for a control action (an erasure, #127), in the caller's transaction:
+    the turn holding it goes on and abandons at its commit through its own revalidation, and
+    the story's next turn need not wait for it.
+
+    A holder that is a queued turn a drainer already started (its ``turn_queue`` row is still
+    there; ``fail_queued`` dropped those still waiting) keeps its lease (#436). Newcomers wait
+    behind its queue row anyway, but a drainer of the story in another process could not tell
+    the running turn from one whose process died: it would find the slot free and end the turn
+    (``acquire(newcomer=False)``) while it still runs. If its process does die, the lease runs
+    out and ``_reclaim`` deals with it as before."""
+    await conn.execute(
+        update(stories)
+        .where(
+            stories.c.id == story_id,
+            ~select(turn_queue.c.operation_id)
+            .where(turn_queue.c.operation_id == stories.c.in_flight_turn)
+            .exists(),
+        )
+        .values(in_flight_turn=None, in_flight_lease_until=None)
+    )
 
 
 async def release_now(db: AsyncEngine, story_id: str, operation_id: str) -> None:
@@ -707,12 +777,14 @@ __all__ = [
     "RESPOND",
     "Concurrency",
     "Held",
+    "NotQueued",
     "Outcome",
     "QueueItem",
     "TurnAccepted",
     "TurnInterrupted",
     "Wakeups",
     "acquire",
+    "clear_lease",
     "close_item",
     "enqueue",
     "error_record",

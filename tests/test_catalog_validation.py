@@ -40,6 +40,7 @@ from epistrel.core.catalog.report import (
 from epistrel.core.catalog.scenario_models import ScenarioDraft
 from epistrel.core.config_changes import DeploymentState
 from epistrel.core.policies.evaluate import matched_span
+from epistrel.core.profiles.schema import DELIVERED
 from epistrel.core.seeds.ratings import EVERYONE_ID
 from epistrel.core.tables.ownership import EntityType
 from tests.character_support import complete
@@ -211,13 +212,13 @@ async def test_runner_lists_what_the_deployment_cannot_run() -> None:
     nor appear), but a check the deployment cannot run is still listed. A check for another
     entry type does not run."""
     always = _probe("always")
-    needs = _probe("needs", capability="structured")
+    needs = _probe("needs", capability="states")
     report = await validation.run(_subject({}), _context(), checks=[always, needs])
     assert (always.ran, needs.ran, report.unavailable) == (True, False, ["needs"])
 
-    granted = _probe("needs", capability="structured")
+    granted = _probe("needs", capability="states")
     report = await validation.run(
-        _subject({}), _context(DEPLOYMENT_CAPABILITIES | {"structured"}), checks=[granted]
+        _subject({}), _context(DEPLOYMENT_CAPABILITIES | {"states"}), checks=[granted]
     )
     assert (granted.ran, report.unavailable) == (True, [])
 
@@ -234,8 +235,8 @@ async def test_runner_lists_what_the_deployment_cannot_run() -> None:
 
 def test_the_checks_and_the_capabilities() -> None:
     """The ordered checks, each named once: the document check first (it gates), the three
-    capability-gated ones last. In M3 the deployment's capabilities are the ``lite`` pipeline
-    and the delivered modules: neither the structured pipeline nor States."""
+    capability-gated ones last. The deployment's capabilities are each delivered level of the
+    pipeline and every other delivered module (``DELIVERED``): not States."""
     names = [check.name for check in validation.CHECKS]
     assert names == [
         "document",
@@ -261,18 +262,23 @@ def test_the_checks_and_the_capabilities() -> None:
         "fact_consistency": "structured",
         "state_schema": "states",
     }
-    delivered = {"lite", "rolling_summary", "pins", "polish", "budgets", "models"}
+    delivered = set(DELIVERED["pipeline"]) | {name for name in DELIVERED if name != "pipeline"}
     assert delivered == DEPLOYMENT_CAPABILITIES
+    assert {"lite", "rolling_summary", "pins", "polish", "budgets", "models"} <= delivered
+    assert "states" not in delivered
 
 
 async def test_capability_checks_never_pass_silently() -> None:
-    """Even given their capability, M3's capability-gated checks list themselves: none is
-    implemented before M4 and M6, so none can pass a scenario silently."""
+    """Even given its capability, a capability-gated check not implemented yet lists itself
+    (the State-schema check, M6), so none can pass a scenario silently; the seed checks #149
+    implements run and find nothing to report in an empty scenario."""
     gated = [check for check in validation.CHECKS if check.capability is not None]
     context = _context(DEPLOYMENT_CAPABILITIES | {"structured", "states"})
+    implemented = {"seed_normalization", "fact_consistency"}
     for check in gated:
         found = await check.run(_subject({}, EntityType.SCENARIO), context)
-        assert (found.entries, found.unavailable) == ([], [check.name])
+        listed = [] if check.name in implemented else [check.name]
+        assert (found.entries, found.unavailable) == ([], listed)
 
 
 async def test_a_character_runs_its_rules() -> None:
@@ -389,7 +395,7 @@ def test_policy_texts_cover_the_private_prose() -> None:
         "drivers.planned_reveals[0].truth.text",
         "drivers.planned_reveals[0].conditions",
         "drivers.endings[1]",
-        "starting_state.rules[0].text",
+        "starting_state.rules[0].when",
     }
     assert expected <= set(texts)
     assert texts["cast.roles[0].seeded_memories[0].text"].role == "mother"

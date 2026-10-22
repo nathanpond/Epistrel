@@ -1,8 +1,9 @@
 """``OperationBatch``: several operations of one story committed all or none (#58).
 
 Each operation keeps its own row, position and events, exactly as if it had committed alone;
-the batch only shares the commit: one transaction, one story lock (``lock_timeout`` 5 s), the
-operations written in order, so the second sees the first's turn index and ``seq`` values.
+the batch only shares the commit: one transaction, one story lock (``lock_timeout`` 5 s; past
+it, 423 ``story_busy``, #472), the operations written in order, so the second sees the first's
+turn index and ``seq`` values.
 ``before`` steps run under the lock ahead of the first operation; ``after`` steps run once
 every operation is written. Any exception rolls everything back and settles every operation
 (``abandoned`` after a revalidation, else ``failed``), so no event of the batch survives.
@@ -14,12 +15,18 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.core.concurrency import Decide
 from epistrel.core.errors import StoryNotFound
-from epistrel.core.events.operation import LOCK_TIMEOUT, CommitStep, Operation
+from epistrel.core.events.operation import (
+    CommitStep,
+    Operation,
+    lock_timed_out,
+    set_lock_timeout,
+    story_lock_busy,
+)
 from epistrel.core.tables import stories
 
 
@@ -61,7 +68,7 @@ class OperationBatch:
         """Write every operation in one transaction under the story lock, or none of them."""
         try:
             async with self.db.connect() as conn, conn.begin():
-                await conn.execute(text(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'"))
+                await set_lock_timeout(conn)
                 locked = await conn.scalar(
                     select(stories.c.id).where(stories.c.id == self.story_id).with_for_update()
                 )
@@ -77,6 +84,8 @@ class OperationBatch:
             for op in self.operations:
                 if op.in_flight:
                     await op.settle(exc)
+            if lock_timed_out(exc):
+                raise story_lock_busy(self.story_id) from exc
             raise
         for op in self.operations:
             await op.settle(None)

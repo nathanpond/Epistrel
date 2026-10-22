@@ -19,7 +19,9 @@
    Its budget (#69, ``budget.plan_lite_budget``) is the request's ``budget.max_calls``, else the
    configuration's ``budgets.model_calls``, else ``9 + G``, and the configuration's
    ``budgets.deadline_ms`` (or the request's ``budget.deadline_s``), its clock started when the
-   request arrived. It reserves the generation call and G, the model-assisted guardrail calls
+   request arrived. Every model call of the turn is routed by the configuration's
+   ``models.purposes`` (``access.routing``, #325): a routed purpose's model and params. It
+   reserves the generation call and G, the model-assisted guardrail calls
    (one per input policy for the input, one per output policy for the first output check); a
    cap below ``1 + G`` is 422 ``budget_below_safety_minimum`` before any model call. Then **the
    input
@@ -79,7 +81,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Awaitable, Callable, Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from functools import partial
 from types import SimpleNamespace
@@ -96,7 +98,6 @@ from epistrel.core.erasure.index import index_records
 from epistrel.core.erasure.records import operation_record
 from epistrel.core.errors import RevisionConflict, StoryArchived, TimelineChanged
 from epistrel.core.events import Operation
-from epistrel.core.events.types import GuardrailOutputRejected, RejectedViolation
 from epistrel.core.history import turn_beats
 from epistrel.core.profiles.effective import ProfileVersionRef, StoryProfile
 from epistrel.core.profiles.fingerprint import Stamp
@@ -126,6 +127,8 @@ from epistrel.orchestrator.budget import GUARDRAIL_OUTPUT, TurnBudget, plan_lite
 from epistrel.orchestrator.lite.cast import ResolvedCast, resolve_cast
 from epistrel.orchestrator.lite.prompt import assemble, model_params, prompt_hash
 from epistrel.orchestrator.lite.schemas import (
+    PIN_QUARANTINED,
+    QUARANTINED_CONTEXT,
     SAFE_FALLBACK,
     BudgetOverride,
     BudgetReport,
@@ -138,23 +141,26 @@ from epistrel.orchestrator.lite.schemas import (
     RegenerateResult,
     RespondRequest,
     RespondResult,
+    TurnWarning,
 )
-from epistrel.orchestrator.models.access import ModelAccessLayer
+from epistrel.orchestrator.models.access import ModelAccessLayer, routing
 from epistrel.orchestrator.models.adapter import ModelResult
+from epistrel.orchestrator.models.config import routes_of
 from epistrel.orchestrator.models.errors import EmptyCompletion, ModelError
 from epistrel.orchestrator.models.facts import runtime_facts
 from epistrel.orchestrator.models.metrics import CallLog, recording
+from epistrel.orchestrator.policies.check import refuse_withheld
 from epistrel.orchestrator.policies.input_gate import input_policies, model_assisted
 from epistrel.orchestrator.policies.output_gate import (
     Draft,
     FallbackLines,
     Gated,
-    Rejected,
     gate_output,
     output_policies,
     output_reservation,
     raised_temperature,
     regeneration_cost,
+    rejected_event,
 )
 from epistrel.orchestrator.policies.rebase import output_recheck
 from epistrel.orchestrator.policies.store import guard_context
@@ -267,7 +273,7 @@ async def respond(
         started=started,
     )
     timing = TurnTiming(front=started)
-    with recording() as calls, reporting_costs(calls, budget):
+    with recording() as calls, reporting_costs(calls, budget), _routed(concurrency):
         gating = time.perf_counter()
         await gate(
             budget,
@@ -320,6 +326,12 @@ def _captured(concurrency: Concurrency) -> StoryProfile:
     """The configuration ``read_concurrency`` captured at the turn's start."""
     assert concurrency.configuration is not None  # noqa: S101 - read_concurrency always sets it
     return concurrency.configuration
+
+
+def _routed(concurrency: Concurrency) -> AbstractContextManager[None]:
+    """Every model call of the turn (its input and output checks and its generations) routed
+    by the configuration captured at its start (``models.purposes``, FR-PROF-5; #325)."""
+    return routing(routes_of(_captured(concurrency).settings))
 
 
 def polish_budget(settings: ProfileSettings) -> int:
@@ -378,7 +390,7 @@ async def run_queued(
         started=front,
     )
     budget.release_to(1 + budget.reserved.get(GUARDRAIL_OUTPUT, 0))  # gated when queued
-    with recording() as calls, reporting_costs(calls, budget):
+    with recording() as calls, reporting_costs(calls, budget), _routed(concurrency):
         return await _play(
             db,
             models,
@@ -434,7 +446,7 @@ async def regenerate(
         started=started,
     )
     timing = TurnTiming(front=started)
-    with recording() as calls, reporting_costs(calls, budget):
+    with recording() as calls, reporting_costs(calls, budget), _routed(concurrency):
         gating = time.perf_counter()
         await gate(budget, joined_input(recorded.say, recorded.do), cast.actor.id, cast.render_ids)
         timing.policy_check_s += time.perf_counter() - gating
@@ -538,7 +550,7 @@ async def _play(
         op.config_revisions = {
             **(op.config_revisions or {}),
             "generation_settings": resolved.model_dump(mode="json"),
-            **stamped[0].record(captured.profile_id, captured.version, facts),
+            **stamped[0].record(captured.profile_id, captured.version),
             "overrides_revision": configuration.overrides_revision,
         }
         return inputs, resolved
@@ -612,6 +624,7 @@ async def _play(
             budget=budget,
             retry_budget=polish_budget(configuration.settings),
             fallback=_fallback_lines(inputs, cast),
+            withheld=partial(refuse_withheld, db),
         )
         timing.policy_check_s += time.perf_counter() - gating - (produced[0] - before)
         gated[:] = [outcome]
@@ -627,7 +640,7 @@ async def _play(
             prompt_hash=outcome.draft.prompt_hash,
             finish_reason=outcome.draft.finish_reason,
             fallback_used=outcome.fallback_used,
-            rejected=[_audit_record(r) for r in outcome.rejected],
+            rejected=[rejected_event(r) for r in outcome.rejected],
         )
         if regenerating is not None:
             op.add_commit_step(fail_queue)
@@ -700,7 +713,7 @@ async def _play(
             "budget": BudgetReport(**budget.report()),
             "queued_ms": timing.queued_ms,
             "first_call_offset_ms": timing.first_call_offset_ms(calls),
-            **_guardrail_fields(gated[0] if gated else None),
+            **guardrail_fields(gated[0] if gated else None),
             **_stamp_fields(stamped[0] if stamped else None),
             "profile": ProfileVersionRef(id=captured.profile_id, version=captured.version),
             "config_revision": configuration.config_revision,
@@ -741,26 +754,10 @@ def _fallback_lines(inputs: TurnInputs, cast: ResolvedCast) -> FallbackLines:
     )
 
 
-def _audit_record(rejected: Rejected) -> GuardrailOutputRejected:
-    """A rejected text as its ``guardrail_output_rejected`` audit event."""
-    violations = rejected.check.violations
-    return GuardrailOutputRejected(
-        text=rejected.text,
-        reason=rejected.reason,
-        attempt=rejected.attempt,
-        policy_ids=tuple(v.policy_id for v in violations),
-        violations=tuple(
-            RejectedViolation(
-                policy_id=v.policy_id, name=v.name, message=v.message, kind=v.kind.value
-            )
-            for v in violations
-        ),
-        confidence=rejected.check.confidence,
-    )
-
-
-def _guardrail_fields(outcome: Gated | None) -> dict[str, Any]:
-    """The result's ``guardrail`` report and ``degradation`` for the released reply."""
+def guardrail_fields(outcome: Gated | None) -> dict[str, Any]:
+    """The result's ``guardrail`` report, ``degradation`` and ``warnings`` for the released
+    reply (#68; #145 adds ``quarantined_context`` and the ``pin_quarantined`` warnings, which a
+    Lite reply never has). #150's structured respond builds its fields with it too."""
     if outcome is None:  # pragma: no cover - a committed turn always went through the gate
         return {}
     report = GuardrailReport(
@@ -774,8 +771,11 @@ def _guardrail_fields(outcome: Gated | None) -> dict[str, Any]:
     )
     return {
         "guardrail": report,
-        "degradation": [SAFE_FALLBACK] if outcome.fallback_used else [],
+        "degradation": [d.step for d in _degradation_details(outcome)],
         "degradation_details": _degradation_details(outcome),
+        "warnings": [
+            TurnWarning(kind=PIN_QUARANTINED, memory_id=m) for m in outcome.pins_quarantined
+        ],
     }
 
 
@@ -791,9 +791,19 @@ def _stamp_fields(stamped: Stamp | None) -> dict[str, Any]:
 
 
 def _degradation_details(outcome: Gated | None) -> list[DegradationStep]:
-    if outcome is None or not outcome.fallback_used:
+    """The degradation steps of the released reply: the records its rejections quarantined
+    (``quarantined_context``, FR-GUARD-5; never for a Lite story, whose replies carry no
+    records) and the safe fallback, each with its cause."""
+    if outcome is None:
         return []
-    return [DegradationStep(step=SAFE_FALLBACK, cause=outcome.fallback_cause or "retry_budget")]
+    steps: list[DegradationStep] = []
+    if outcome.quarantined:
+        steps.append(DegradationStep(step=QUARANTINED_CONTEXT, cause="repeated_implication"))
+    if outcome.fallback_used:
+        steps.append(
+            DegradationStep(step=SAFE_FALLBACK, cause=outcome.fallback_cause or "retry_budget")
+        )
+    return steps
 
 
 def turn_report(
@@ -896,6 +906,7 @@ __all__ = [
     "Gate",
     "QueueTurn",
     "TurnTiming",
+    "guardrail_fields",
     "plan_budget",
     "polish_budget",
     "queued_ms",

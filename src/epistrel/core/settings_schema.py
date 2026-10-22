@@ -43,14 +43,17 @@ from pydantic import (
     Field,
     PlainValidator,
     StrictBool,
+    StrictFloat,
     StrictInt,
     WithJsonSchema,
     field_validator,
 )
 from pydantic.fields import FieldInfo
 
+from epistrel.core.context import CONTROL_CHARACTERS as _CONTROLS
 from epistrel.core.errors import InvalidRequest
-from epistrel.core.seeds.profiles import LITE_PRESET_ID, lite_settings
+from epistrel.core.seeds.profiles import LITE_PRESET_ID
+from epistrel.core.seeds.profiles import profile_defaults as seeded_profile_defaults
 
 
 class ConfigClass(StrEnum):
@@ -76,7 +79,7 @@ LengthName = Literal["short", "medium", "long"]
 LENGTH_TOKENS: Mapping[str, int] = {"short": 150, "medium": 400, "long": 800}
 """``max_tokens`` of each named response length."""
 MAX_LENGTH_TOKENS = 4_000
-Length = LengthName | Annotated[int, Field(ge=1, le=MAX_LENGTH_TOKENS)]
+Length = LengthName | Annotated[StrictInt, Field(ge=1, le=MAX_LENGTH_TOKENS)]
 """A response length: a name (``short``/``medium``/``long``) or a token cap."""
 
 DEFAULT_LITE_WINDOW_MESSAGES = 30
@@ -101,8 +104,8 @@ class GenerationSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    temperature: Annotated[float | None, PROSPECTIVE] = Field(default=None, ge=0.0, le=2.0)
-    top_p: Annotated[float | None, PROSPECTIVE] = Field(default=None, ge=0.0, le=1.0)
+    temperature: Annotated[StrictFloat | None, PROSPECTIVE] = Field(default=None, ge=0.0, le=2.0)
+    top_p: Annotated[StrictFloat | None, PROSPECTIVE] = Field(default=None, ge=0.0, le=1.0)
     length: Annotated[Length | None, PROSPECTIVE] = None
 
 
@@ -150,7 +153,7 @@ class LiteDefaults(BaseModel):
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    lite_summary_chunk: Annotated[int, PROSPECTIVE] = Field(
+    lite_summary_chunk: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_LITE_SUMMARY_CHUNK, ge=2, le=MAX_LITE_SUMMARY_CHUNK
     )
     """Transcript rows per level-0 summary segment (#72); chunks are whole turns, two rows
@@ -176,10 +179,10 @@ class StoryTextCaps(BaseModel):
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    max_pinned_memories: Annotated[int, PROSPECTIVE] = Field(
+    max_pinned_memories: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_MAX_PINNED_MEMORIES, ge=1, le=MAX_PINNED_MEMORIES_LIMIT
     )
-    max_custom_instructions_chars: Annotated[int, PROSPECTIVE] = Field(
+    max_custom_instructions_chars: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_MAX_CUSTOM_INSTRUCTIONS_CHARS, ge=1, le=MAX_CUSTOM_INSTRUCTIONS_CHARS_LIMIT
     )
 
@@ -197,7 +200,7 @@ class IdempotencySettings(BaseModel):
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    idempotency_result_window: Annotated[int, PROSPECTIVE] = Field(
+    idempotency_result_window: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_IDEMPOTENCY_RESULT_WINDOW_HOURS,
         ge=1,
         le=MAX_IDEMPOTENCY_RESULT_WINDOW_HOURS,
@@ -267,7 +270,7 @@ class TurnQueueDefaults(BaseModel):
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    turn_queue_max: Annotated[int, PROSPECTIVE] = Field(
+    turn_queue_max: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_TURN_QUEUE_MAX, ge=TURN_QUEUE_MAX_MIN, le=TURN_QUEUE_MAX_LIMIT
     )
 
@@ -283,7 +286,7 @@ class StorySettings(BaseModel):
 
     model_config = ConfigDict(extra="allow", frozen=True, use_attribute_docstrings=True)
 
-    regenerate_retry_budget: Annotated[int, PROSPECTIVE] = Field(
+    regenerate_retry_budget: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_REGENERATE_RETRY_BUDGET, ge=0, le=10
     )
     """How many times a turn whose read set was touched is regenerated before the call fails
@@ -294,7 +297,7 @@ class StorySettings(BaseModel):
     (423 ``story_busy``), ``queue`` queues it in a per-story FIFO (#63). Stored in its own
     ``stories`` column. Prospective: a change applies to requests that arrive after it."""
 
-    turn_queue_max: Annotated[int | None, PROSPECTIVE] = Field(
+    turn_queue_max: Annotated[StrictInt | None, PROSPECTIVE] = Field(
         default=None, ge=TURN_QUEUE_MAX_MIN, le=TURN_QUEUE_MAX_LIMIT
     )
     """How many turns may wait behind the running one under ``queue`` (``None``: the
@@ -306,17 +309,25 @@ class StorySettings(BaseModel):
     actor (FR-RESP-12): ``character:<id>``, never ``omniscient`` (#59 resolves it).
     Interpretive: a Lite turn depends on it (#64)."""
 
-    lite_summary_chunk: Annotated[int | None, PROSPECTIVE] = Field(
+    lite_summary_chunk: Annotated[StrictInt | None, PROSPECTIVE] = Field(
         default=None, ge=2, le=MAX_LITE_SUMMARY_CHUNK
     )
     """The story's override of the transcript rows per level-0 summary segment (#72)."""
 
-    audit_retention_days: Annotated[int | None, PROSPECTIVE] = Field(
+    audit_retention_days: Annotated[StrictInt | None, PROSPECTIVE] = Field(
         default=None, ge=AUDIT_RETENTION_MIN_DAYS, le=AUDIT_RETENTION_MAX_DAYS
     )
     """How many days this story's audit records are kept before the ``retention_sweep`` deletes
     them (FR-STORE-30; #71), 1 to 3650. ``None``: the deployment's ``audit_retention_days``
     (default 90). Never affects story history. Prospective."""
+
+    allow_new_arrivals: Annotated[StrictBool, INTERPRETIVE] = True
+    """Whether new arrivals may be introduced (FR-VERIFY-11; #144): a director pass's arrival
+    (a ``located_at``/``present_at`` claim on a person with no prior placement) is permitted
+    novelty, and a render may bring in a new unmodeled person as scene texture, only while this
+    is on. Genesis copies the scenario's ``story_settings_defaults.allow_new_arrivals``; a story
+    without it reads true. Interpretive: a structured turn's permission checks depend on it
+    (#136's re-check at commit)."""
 
     @field_validator("default_output_viewpoint")
     @classmethod
@@ -349,10 +360,10 @@ class StructuredSettings(BaseModel):
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    structured_retry_budget: Annotated[int, PROSPECTIVE] = Field(
+    structured_retry_budget: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_STRUCTURED_RETRY_BUDGET, ge=0, le=10
     )
-    uncertain_below: Annotated[float, INTERPRETIVE] = Field(
+    uncertain_below: Annotated[StrictFloat, INTERPRETIVE] = Field(
         default=DEFAULT_UNCERTAIN_BELOW, ge=0.0, le=1.0
     )
 
@@ -385,7 +396,7 @@ class GuardrailSettings(BaseModel):
     default_safe_fallback: Annotated[str, PROSPECTIVE] = Field(
         default=DEFAULT_SAFE_FALLBACK, min_length=1, max_length=SAFE_FALLBACK_MAX_CHARS
     )
-    rating_check_model_calls_per_record: Annotated[int, PROSPECTIVE] = Field(
+    rating_check_model_calls_per_record: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_RATING_CHECK_MODEL_CALLS, ge=0, le=RATING_CHECK_MODEL_CALLS_MAX
     )
 
@@ -401,6 +412,14 @@ DEFAULT_OFFBOARDING_REPORT_RETENTION_DAYS = 90
 """How long a finished offboarding's report is kept (#117)."""
 DEFAULT_RATING_CHECK_RETENTION_DAYS = 30
 """How long a finished rating check's status and violations are kept (#118)."""
+DEFAULT_READSET_CHANGE_RETENTION_DAYS = 7
+"""How long the structured read set's change index keeps a row (#136): a turn whose base is older
+than that cannot rebase and conflicts instead."""
+DEFAULT_ESCALATION_RETENTION_DAYS = 90
+"""How long an ``escalations`` row is kept (#155)."""
+DEFAULT_EXTRACTION_SHADOW_RETENTION_DAYS = 90
+"""How long an ``extraction_shadow`` row is kept (#455): longer than the shadow report's 30-day
+default window, so a gate tightening's validation can read a full one (FR-OBS-4)."""
 
 
 class RetentionSettings(BaseModel):
@@ -410,24 +429,38 @@ class RetentionSettings(BaseModel):
     finished (``done``/``failed``) job rows for ``job_retention_days``, and a finished principal
     offboarding's status and report (``offboarding_jobs``, #117) for
     ``offboarding_report_retention_days``, and a finished rating check's status and violations
-    (``rating_check_jobs``, #118) for ``rating_check_retention_days``. Prospective: each sweep
-    applies the values in force when it runs; story history never expires."""
+    (``rating_check_jobs``, #118) for ``rating_check_retention_days``, and the structured read
+    set's change index (``proposition_changes``, #136) for ``readset_change_retention_days``, and
+    the escalation records (``escalations``, #155) for ``escalation_retention_days``, and claim
+    detection's shadow samples (``extraction_shadow``, #148, #455) for
+    ``extraction_shadow_retention_days``.
+    Prospective: each sweep applies the values in force when it runs; story history never
+    expires."""
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    audit_retention_days: Annotated[int, PROSPECTIVE] = Field(
+    audit_retention_days: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_AUDIT_RETENTION_DAYS,
         ge=AUDIT_RETENTION_MIN_DAYS,
         le=AUDIT_RETENTION_MAX_DAYS,
     )
-    job_retention_days: Annotated[int, PROSPECTIVE] = Field(
+    job_retention_days: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_JOB_RETENTION_DAYS, ge=1, le=AUDIT_RETENTION_MAX_DAYS
     )
-    offboarding_report_retention_days: Annotated[int, PROSPECTIVE] = Field(
+    offboarding_report_retention_days: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_OFFBOARDING_REPORT_RETENTION_DAYS, ge=1, le=AUDIT_RETENTION_MAX_DAYS
     )
-    rating_check_retention_days: Annotated[int, PROSPECTIVE] = Field(
+    rating_check_retention_days: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_RATING_CHECK_RETENTION_DAYS, ge=1, le=AUDIT_RETENTION_MAX_DAYS
+    )
+    readset_change_retention_days: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_READSET_CHANGE_RETENTION_DAYS, ge=1, le=AUDIT_RETENTION_MAX_DAYS
+    )
+    escalation_retention_days: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_ESCALATION_RETENTION_DAYS, ge=1, le=AUDIT_RETENTION_MAX_DAYS
+    )
+    extraction_shadow_retention_days: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_EXTRACTION_SHADOW_RETENTION_DAYS, ge=1, le=AUDIT_RETENTION_MAX_DAYS
     )
 
 
@@ -439,10 +472,10 @@ class WorkerHealthSettings(BaseModel):
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    worker_heartbeat_timeout: Annotated[float, PROSPECTIVE] = Field(
+    worker_heartbeat_timeout: Annotated[StrictFloat, PROSPECTIVE] = Field(
         default=DEFAULT_WORKER_HEARTBEAT_TIMEOUT_S, ge=1.0, le=3600.0
     )
-    timer_lag_alert: Annotated[float, PROSPECTIVE] = Field(
+    timer_lag_alert: Annotated[StrictFloat, PROSPECTIVE] = Field(
         default=DEFAULT_TIMER_LAG_ALERT_S, ge=1.0, le=86_400.0
     )
 
@@ -511,32 +544,32 @@ class MediaSettings(BaseModel):
     media_allowed_types: Annotated[list[MimeType], PROSPECTIVE] = Field(
         default_factory=lambda: list(DEFAULT_MEDIA_ALLOWED_TYPES), min_length=1, max_length=50
     )
-    media_max_bytes: Annotated[int, PROSPECTIVE] = Field(
+    media_max_bytes: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_MEDIA_MAX_BYTES, ge=1, le=MEDIA_MAX_BYTES_LIMIT
     )
     media_moderation_webhook_url: Annotated[HttpUrl | None, PROSPECTIVE] = None
-    media_moderation_timeout_ms: Annotated[int, PROSPECTIVE] = Field(
+    media_moderation_timeout_ms: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_MEDIA_MODERATION_TIMEOUT_MS,
         ge=MEDIA_MODERATION_TIMEOUT_MIN_MS,
         le=MEDIA_MODERATION_TIMEOUT_MAX_MS,
     )
-    media_sweep_interval: Annotated[int, PROSPECTIVE] = Field(
+    media_sweep_interval: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_MEDIA_SWEEP_INTERVAL_S,
         ge=MEDIA_SWEEP_INTERVAL_MIN_S,
         le=MEDIA_SWEEP_INTERVAL_MAX_S,
     )
     public_base_url: Annotated[HttpUrl | None, PROSPECTIVE] = None
-    media_signed_url_ttl: Annotated[int, PROSPECTIVE] = Field(
+    media_signed_url_ttl: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_MEDIA_SIGNED_URL_TTL_S,
         ge=MEDIA_SIGNED_URL_TTL_MIN_S,
         le=MEDIA_SIGNED_URL_TTL_MAX_S,
     )
-    media_multipart_threshold: Annotated[int, PROSPECTIVE] = Field(
+    media_multipart_threshold: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_MEDIA_MULTIPART_THRESHOLD,
         ge=MEDIA_MULTIPART_THRESHOLD_MIN,
         le=MEDIA_MAX_BYTES_LIMIT,
     )
-    media_upload_ttl: Annotated[int, PROSPECTIVE] = Field(
+    media_upload_ttl: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_MEDIA_UPLOAD_TTL_S, ge=MEDIA_UPLOAD_TTL_MIN_S, le=MEDIA_UPLOAD_TTL_MAX_S
     )
 
@@ -580,7 +613,7 @@ class CatalogValidationSettings(BaseModel):
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    validation_model_calls: Annotated[int, PROSPECTIVE] = Field(
+    validation_model_calls: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_VALIDATION_MODEL_CALLS, ge=0, le=MAX_VALIDATION_MODEL_CALLS
     )
     require_primary_image: Annotated[bool, PROSPECTIVE] = False
@@ -711,6 +744,210 @@ class ErasureSettings(BaseModel):
     erasure_shared_media: Annotated[ErasureSharedMedia, INTERPRETIVE] = DEFAULT_ERASURE_SHARED_MEDIA
 
 
+DEFAULT_IMPORTANCE_HALF_LIFE_TURNS = 200
+"""A memory's importance halves every this many committed turns (FR-MEM-7; #135)."""
+IMPORTANCE_HALF_LIFE_MAX = 1_000_000
+
+
+class MemorySettings(BaseModel):
+    """How memory importance decays (FR-MEM-7; #135), stored under
+    ``deployment_state.settings``: ``memory_importance_half_life_turns`` committed turns of the
+    active chain halve a memory's importance (``core.memory.records.decayed_importance``, read
+    by #141's ranking and #147's retirement). Prospective: a ranking or retirement run reads
+    the value when it starts."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    memory_importance_half_life_turns: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_IMPORTANCE_HALF_LIFE_TURNS, ge=1, le=IMPORTANCE_HALF_LIFE_MAX
+    )
+
+
+DEFAULT_MAX_PINNED_PER_CHARACTER = 200
+DEFAULT_MAX_PINNED_PER_STORY = 2_000
+MAX_PINNED_PER_CHARACTER_LIMIT = 10_000
+MAX_PINNED_PER_STORY_LIMIT = 100_000
+
+
+class HotSetSettings(BaseModel):
+    """The ceilings on author pins (FR-MEM-8; #147), stored under ``deployment_state.settings``:
+    a character may hold at most ``max_pinned_per_character`` pinned memories and a story at
+    most ``max_pinned_per_story`` (its pinned memories and its Lite text pins together, #60).
+    Pins are outside the hot-set budgets (``memory.hot_set.*``), so these bound the hot set:
+    hot memories per character ≤ the character budget + ``max_pinned_per_character``, and hot
+    vectors per story ≤ the vector budget + ``max_pinned_per_story``. Prospective: a pin is
+    admitted against the ceilings in force when it commits, and a lowered ceiling unpins
+    nothing."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    max_pinned_per_character: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_MAX_PINNED_PER_CHARACTER, ge=1, le=MAX_PINNED_PER_CHARACTER_LIMIT
+    )
+    max_pinned_per_story: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_MAX_PINNED_PER_STORY, ge=1, le=MAX_PINNED_PER_STORY_LIMIT
+    )
+
+
+DEFAULT_EMBEDDING_BATCH_MAX = 64
+"""The most texts one ``/embeddings`` request carries (FR-EMBED-1; #138)."""
+EMBEDDING_BATCH_CEILING = 256
+DEFAULT_REEMBED_BATCH_SIZE = 500
+"""The most memories one embed or re-embed run embeds (FR-EMBED-4; #138)."""
+REEMBED_BATCH_CEILING = 10_000
+DEFAULT_HNSW_M = 16
+DEFAULT_HNSW_EF_CONSTRUCTION = 64
+"""pgvector's own HNSW defaults: the index the first embedding creates (#138, #141)."""
+DEFAULT_HNSW_EF_SEARCH = 40
+"""pgvector's own ``hnsw.ef_search`` default: the candidate list of one vector search (#141)."""
+
+
+class EmbeddingSettings(BaseModel):
+    """How the embedding port batches its work and indexes its vectors (FR-EMBED-1,4; #138),
+    stored under ``deployment_state.settings``: ``embedding_batch_max`` texts per
+    ``/embeddings`` request, ``reembed_batch_size`` memories per embed or re-embed run, and the
+    HNSW index's ``m`` and ``ef_construction`` (read when the index is built: at the first
+    embedding and when a model change retypes the column). Prospective: a run reads them when
+    it starts."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    embedding_batch_max: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_EMBEDDING_BATCH_MAX, ge=1, le=EMBEDDING_BATCH_CEILING
+    )
+    reembed_batch_size: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_REEMBED_BATCH_SIZE, ge=1, le=REEMBED_BATCH_CEILING
+    )
+    embedding_hnsw_m: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_HNSW_M, ge=2, le=100
+    )
+    embedding_hnsw_ef_construction: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_HNSW_EF_CONSTRUCTION, ge=4, le=1_000
+    )
+    embedding_hnsw_ef_search: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_HNSW_EF_SEARCH, ge=1, le=1_000
+    )
+    """``SET LOCAL hnsw.ef_search`` of every retrieval's vector arm (#141). Unlike ``m`` and
+    ``ef_construction`` it needs no rebuild: a change applies to the next search. Changing
+    ``m`` or ``ef_construction`` applies to an index built afterwards; an existing index keeps
+    its parameters until an operator rebuilds it (``REINDEX INDEX
+    ix_memories_embedding_hnsw``, docs/OPERATIONS.md) or a model change retypes the column."""
+
+
+DEFAULT_RETRIEVAL_VECTOR_K = 50
+DEFAULT_RETRIEVAL_LEXICAL_K = 50
+DEFAULT_RETRIEVAL_RRF_K = 60
+DEFAULT_REHYDRATE_MAX_ROWS = 20
+
+
+class RetrievalSettings(BaseModel):
+    """How a retrieval's search arms are sized and fused (FR-RET-4,5, FR-MEM-8; #141), stored
+    under ``deployment_state.settings``: the vector arm's and the lexical arm's top-k
+    (``retrieval_vector_k``, ``retrieval_lexical_k``), the reciprocal-rank fusion constant
+    (``retrieval_rrf_k``) and the most retired records one retrieval rehydrates
+    (``retrieval_rehydrate_max_rows``). The ranking weights, the recency half-life and the
+    token budget are engine-profile dials (``memory.episodic``). Prospective: a retrieval
+    reads them when it starts."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    retrieval_vector_k: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_RETRIEVAL_VECTOR_K, ge=1, le=1_000
+    )
+    retrieval_lexical_k: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_RETRIEVAL_LEXICAL_K, ge=1, le=1_000
+    )
+    retrieval_rrf_k: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_RETRIEVAL_RRF_K, ge=1, le=1_000
+    )
+    retrieval_rehydrate_max_rows: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_REHYDRATE_MAX_ROWS, ge=0, le=500
+    )
+
+
+DEFAULT_NEIGHBORHOOD_MAX_FACTS = 50
+DEFAULT_ENTAILMENT_MAX_RECORDS = 30
+ENTAILMENT_MAX_RECORDS_LIMIT = 200
+"""The most records an ``entailment`` request may carry (``EntailmentInputs.records``)."""
+
+
+DEFAULT_EXTRACTION_SHADOW_SAMPLE_RATE = 0.1
+DEFAULT_PROTECTED_INDEX_MAX = 5_000
+PROTECTED_INDEX_MAX_LIMIT = 100_000
+
+
+DEFAULT_CASCADE_THRESHOLD = 5
+CASCADE_THRESHOLD_LIMIT = 1_000
+DEFAULT_GATE_PROMOTION_MIN_CASES = 200
+GATE_PROMOTION_MIN_CASES_LIMIT = 1_000_000
+DEFAULT_GATE_PROMOTION_MIN_AGREEMENT = 0.98
+
+
+class VerifySettings(BaseModel):
+    """How much the verifier reads around a claim (FR-VERIFY-3,6; #142), stored under
+    ``deployment_state.settings``: the most rows one ``fact_neighborhood`` returns
+    (``neighborhood_max_facts``) and the most holder records one entailment request carries
+    (``entailment_max_records``), claim detection's shadow sample rate and protected-index
+    cap (#148), and the neighborhood size above which a repair is a ``cascade``
+    (``cascade_threshold``, #151), and when a shadowed gate tightening may be promoted
+    (``gate_promotion_min_cases`` escalations of the shape in its shadow window, of which a
+    share of at least ``gate_promotion_min_agreement`` agreed with the model; #155). The gate,
+    the confidence floor, the safe disposition and
+    ``extraction_mode`` are engine-profile dials (``verification``). Prospective: a verify
+    reads them when it runs."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    neighborhood_max_facts: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_NEIGHBORHOOD_MAX_FACTS, ge=1, le=1_000
+    )
+    entailment_max_records: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_ENTAILMENT_MAX_RECORDS, ge=1, le=ENTAILMENT_MAX_RECORDS_LIMIT
+    )
+    extraction_shadow_sample_rate: Annotated[StrictFloat, PROSPECTIVE] = Field(
+        default=DEFAULT_EXTRACTION_SHADOW_SAMPLE_RATE, ge=0.0, le=1.0
+    )
+    """The share of ``gated`` renders whose extraction still runs after the turn commits, to
+    record what gating missed (FR-OBS-4; #148). Not quality-relevant: it changes no render."""
+    protected_index_max: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_PROTECTED_INDEX_MAX, ge=1, le=PROTECTED_INDEX_MAX_LIMIT
+    )
+    """The most protected-content terms one turn's index holds (#148); past it the index is cut
+    (thunk candidates kept first) and the turn report says so."""
+    cascade_threshold: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_CASCADE_THRESHOLD, ge=1, le=CASCADE_THRESHOLD_LIMIT
+    )
+    """A repair whose neighborhood holds more facts than this is a ``cascade`` (FR-REPAIR-4;
+    #151): a signal on ``turn_report.repairs``, which changes no render."""
+    gate_promotion_min_cases: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_GATE_PROMOTION_MIN_CASES, ge=1, le=GATE_PROMOTION_MIN_CASES_LIMIT
+    )
+    """The fewest escalations of a shape its shadow window must hold before its proposed
+    tightening may be promoted (FR-OBS-4, NFR-PERF-5; #155)."""
+    gate_promotion_min_agreement: Annotated[StrictFloat, PROSPECTIVE] = Field(
+        default=DEFAULT_GATE_PROMOTION_MIN_AGREEMENT, ge=0.0, le=1.0
+    )
+    """The least share of the shadow window's would-have-skipped escalations whose skip agreed
+    with the model, for a promotion (#155)."""
+
+
+DEFAULT_THUNKS_MAX_OPEN = 500
+THUNKS_MAX_OPEN_LIMIT = 100_000
+
+
+class CommitmentSettings(BaseModel):
+    """How many open thunks a story keeps (FR-COMMIT-10; #146), stored under
+    ``deployment_state.settings``: past ``thunks_max_open``, introducing one more expires the
+    oldest open thunk that is not salient (``core.commit.lifecycle``), and the turn-time match
+    scans at most that many. Prospective: an introduction reads it when it runs."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    thunks_max_open: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_THUNKS_MAX_OPEN, ge=1, le=THUNKS_MAX_OPEN_LIMIT
+    )
+
+
 # -- the deployment's settings (FR-CONC-14,15; #64) ---------------------------------------------
 
 DEFAULT_MINOR_AGE_THRESHOLD = 18
@@ -729,8 +966,6 @@ DEFAULT_LISTING_STATUS_VALUES = ("private", "in_review", "public")
 """The listing status values a deployment starts with; a new catalog entry takes the first."""
 LISTING_STATUS_VALUE_MAX = 40
 LISTING_STATUS_VALUES_MAX = 50
-_CONTROLS = r"\x00-\x1f\x7f-\x9f"
-"""Every control character (Unicode ``Cc``: C0, DEL and C1), as a regular expression range."""
 LISTING_STATUS_PATTERN = (
     rf"^[\t ]*[^{_CONTROLS}\t ]([^{_CONTROLS}]{{0,{LISTING_STATUS_VALUE_MAX - 2}}}"
     rf"[^{_CONTROLS}\t ])?[\t ]*$"
@@ -802,6 +1037,12 @@ class DeploymentSettings(
     CatalogValidationSettings,
     FeedbackSettings,
     ErasureSettings,
+    MemorySettings,
+    HotSetSettings,
+    CommitmentSettings,
+    EmbeddingSettings,
+    RetrievalSettings,
+    VerifySettings,
 ):
     """Every deployment setting ``/admin/settings`` reads and writes (#64): the
     ``deployment_state`` columns (``DEPLOYMENT_COLUMNS``) and the ``settings`` document's
@@ -813,19 +1054,19 @@ class DeploymentSettings(
     default_content_rating_id: Annotated[str, INTERPRETIVE] = Field(min_length=1, max_length=64)
     """The rating a story created without one gets (FR-RATE-1). Interpretive."""
 
-    minor_age_threshold: Annotated[int, INTERPRETIVE] = Field(
+    minor_age_threshold: Annotated[StrictInt, INTERPRETIVE] = Field(
         default=DEFAULT_MINOR_AGE_THRESHOLD, ge=MINOR_AGE_THRESHOLD_MIN, le=MINOR_AGE_THRESHOLD_MAX
     )
     """Below this true age a character is a minor (docs/02 §4.12). Interpretive."""
 
-    max_characters_at_start_default: Annotated[int, PROSPECTIVE] = Field(
+    max_characters_at_start_default: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_MAX_CHARACTERS_AT_START, ge=CAST_LIMIT_MIN, le=CAST_LIMIT_MAX
     )
     """The most character slots, player slots included, a story created from a scenario starts
     with when the scenario sets none (FR-SCN-4; default 16). Prospective: a story created after
     a change uses the new value."""
 
-    max_characters_at_start_ceiling: Annotated[int | None, PROSPECTIVE] = Field(
+    max_characters_at_start_ceiling: Annotated[StrictInt | None, PROSPECTIVE] = Field(
         default=None, ge=CAST_LIMIT_MIN, le=CAST_LIMIT_MAX
     )
     """An optional deployment-wide ceiling (``null``: none) on every starting-cast limit: a
@@ -866,17 +1107,17 @@ class DeploymentSettings(
     when it is written."""
 
     profile_defaults: Annotated[dict[str, Any], PROSPECTIVE] = Field(
-        default_factory=lite_settings, json_schema_extra=_profile_settings_schema
+        default_factory=seeded_profile_defaults, json_schema_extra=_profile_settings_schema
     )
     """The deployment's defaults for every engine profile setting (FR-PROF-5; #113): the bottom
     layer of each story's effective configuration, under its profile's version and its own
     overrides. A complete settings document (every delivered setting named), seeded from the
-    Lite preset. A write is a partial merge (an object merges into an object; any other value,
-    ``null`` included, replaces) that must leave a complete document every profile and story can
-    still run under (422 ``validation_error`` or ``invalid_profile`` otherwise). Each changed
-    setting is recorded as ``profile_defaults.<path>`` with its own class. Prospective: a story's
-    next turn runs under the new defaults, wherever its profile and overrides leave a setting
-    out."""
+    Lite preset with every other delivered module off. A write is a partial merge (an object
+    merges into an object; any other value, ``null`` included, replaces) that must leave a
+    complete document every profile and story can still run under (422 ``validation_error``
+    or ``invalid_profile`` otherwise). Each changed setting is recorded as
+    ``profile_defaults.<path>`` with its own class. Prospective: a story's next turn runs under
+    the new defaults, wherever its profile and overrides leave a setting out."""
 
     @field_validator("listing_status_values")
     @classmethod

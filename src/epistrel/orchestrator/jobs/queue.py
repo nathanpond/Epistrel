@@ -48,7 +48,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from epistrel.core import clock
 from epistrel.core.context import SYSTEM_PRINCIPAL
 from epistrel.core.enums import StoryStatus
-from epistrel.core.events.operation import LOCK_TIMEOUT, Operation, Withdrawn
+from epistrel.core.events.operation import Operation, Withdrawn, set_lock_timeout
 from epistrel.core.ids import new_ulid
 from epistrel.core.input_versions import stale_inputs
 from epistrel.core.tables import jobs, stories
@@ -425,7 +425,7 @@ async def commit_job(
         for more, positioned in zip(extra, output.positioned, strict=True):
             positioned.stage(more)
         async with db.connect() as conn, conn.begin():
-            await conn.execute(text(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'"))
+            await set_lock_timeout(conn)
             await op.write_in(conn)
             for more in extra:
                 await more.write_in(conn)

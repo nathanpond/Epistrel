@@ -4,7 +4,8 @@
 the prompt is built from are exactly the ones the read set hashed (FR-CONC-2,4). Every input is
 the Engine's own record (FR-RESP-2): the story rating's current prompt guidance (FR-RATE-4),
 the custom instructions and pinned memories (the ``story_texts`` projection, #60), the
-rolling-summary segments a prompt includes (``core.summary.included_segments``, #72, each as a
+rolling-summary segments a prompt includes (``core.summary.included_segments``, #72, read
+through the stored inclusion, ``read_included_segments``, #431; each as a
 ``Turns a-b:`` line), the cast's definitions, a scenario story's scenario text and director
 notes (rendered from its snapshot on every turn, ``core.genesis.render``; #122), and every
 **verbatim** transcript row: each active
@@ -55,7 +56,7 @@ from epistrel.core.settings_schema import (
     GenerationSettings,
     StorySettings,
 )
-from epistrel.core.summary import PROMPT_CHANNELS, covered_to, included_segments
+from epistrel.core.summary import PROMPT_CHANNELS, covered_to, read_included_segments
 from epistrel.core.tables import (
     characters,
     events,
@@ -214,10 +215,13 @@ async def transcript_rows(
     after_turn: int = 0,
     through_turn: int | None = None,
     before_turn: int | None = None,
+    last: int | None = None,
 ) -> tuple[WindowRow, ...]:
     """The story's active prompt-channel transcript rows positioned after ``after_turn`` (and
     through ``through_turn`` / before ``before_turn`` when given), oldest first: a prompt's
-    verbatim window, or the rows a summary chunk is made from (#72)."""
+    verbatim window, or the rows a summary chunk is made from (#72). ``last`` keeps only the
+    latest ``last`` of them, read as such (the order is total: ``seq`` is unique in a story), not
+    sliced from the whole transcript (#452)."""
     t = transcript_messages
     query = (
         select(
@@ -234,19 +238,26 @@ async def transcript_rows(
             t.c.channel.in_(PROMPT_CHANNELS),
             _before(t.c.narrative_turn, before_turn),
         )
-        .order_by(
-            t.c.narrative_turn.nulls_first(),
-            t.c.turn_variant.nulls_first(),
-            t.c.seq,
-        )
     )
+    if last is None:
+        query = query.order_by(
+            t.c.narrative_turn.nulls_first(), t.c.turn_variant.nulls_first(), t.c.seq
+        )
+    else:
+        query = query.order_by(
+            t.c.narrative_turn.desc().nulls_last(),
+            t.c.turn_variant.desc().nulls_last(),
+            t.c.seq.desc(),
+        ).limit(last)
     if after_turn > 0:
         query = query.where(t.c.narrative_turn > after_turn)
     if through_turn is not None:
         query = query.where(t.c.narrative_turn <= through_turn)
-    found = await conn.execute(query)
+    found = list((await conn.execute(query)).all())
+    if last is not None:
+        found.reverse()
     rows: list[WindowRow] = []
-    for r in found.all():
+    for r in found:
         payload = r.payload or {}
         player = r.kind == "player_input"
         rows.append(
@@ -278,24 +289,37 @@ async def _verbatim(
     are still verbatim, even where a segment also covers them). Without a rolling summary
     (``summarised`` false, #113) the latest ``window_messages`` rows only: nothing summarises
     the older ones, and the prompt drops them."""
+    # ``rows[-n:]`` of the whole transcript, read as the latest n (#452); n = 0 keeps them all.
+    latest = window_messages if window_messages > 0 else None
     if not summarised:
-        every = await transcript_rows(conn, story_id, before_turn=before_turn)
-        return every[-window_messages:]
+        return await transcript_rows(conn, story_id, before_turn=before_turn, last=latest)
     uncovered = await transcript_rows(conn, story_id, after_turn=covered, before_turn=before_turn)
     if covered == 0 or len(uncovered) >= window_messages:
         return uncovered
-    every = await transcript_rows(conn, story_id, before_turn=before_turn)
-    return every[-window_messages:]
+    return await transcript_rows(conn, story_id, before_turn=before_turn, last=latest)
+
+
+GENERATION_PURPOSE = "generation"
+"""The model purpose a Lite turn's generation calls (``models.purposes`` keys it)."""
 
 
 def generation_of(settings: ProfileSettings) -> GenerationSettings:
     """A configuration's generation settings as a layer of ``resolve_generation`` (FR-LITE-4):
-    ``response_length`` is the turn's ``length``."""
+    ``models.generation``, with ``response_length`` as the turn's ``length``, under the
+    ``generation`` purpose's routed params (#325): its ``temperature`` and ``top_p``, and its
+    ``max_tokens`` as a token-cap ``length``, win where set. A request's ``prompt_params`` still
+    win over both."""
     generation = settings.models.generation
+    route = settings.models.purposes.get(GENERATION_PURPOSE)
+    params = route.params if route is not None else None
+
+    def pick[T](routed: T | None, default: T) -> T:
+        return routed if routed is not None else default
+
     return GenerationSettings(
-        temperature=generation.temperature,
-        top_p=generation.top_p,
-        length=generation.response_length,
+        temperature=pick(params.temperature if params else None, generation.temperature),
+        top_p=pick(params.top_p if params else None, generation.top_p),
+        length=pick(params.max_tokens if params else None, generation.response_length),
     )
 
 
@@ -323,7 +347,7 @@ async def read_turn_inputs(
         )
     ).one_or_none()
     segments = (
-        await included_segments(conn, story_id, before_turn=before_turn)
+        await read_included_segments(conn, story_id, before_turn=before_turn)
         if settings.memory.rolling_summary.enabled
         else ()
     )

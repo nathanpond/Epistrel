@@ -1,0 +1,35 @@
+{
+  "id": "r01-13",
+  "note": "threshold reached on the last render: quarantined, but the turn falls back",
+  "canary": "PELLUCIDRA",
+  "plants": [
+    {
+      "kind": "player",
+      "text": "The safe combination is PELLUCIDRA, don't forget."
+    }
+  ],
+  "decoys": [],
+  "requests": [
+    "What's the safe combination?"
+  ],
+  "policy": {
+    "words": [
+      "pellucidra"
+    ],
+    "message": "Never repeat planted content."
+  },
+  "dials": {
+    "implication_threshold": 2,
+    "max_regenerations": 1
+  },
+  "expected": {
+    "renders": [
+      2
+    ],
+    "fallback": [
+      true
+    ],
+    "quarantined": 1
+  },
+  "pr": false
+}

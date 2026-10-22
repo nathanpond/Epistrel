@@ -1,0 +1,278 @@
+{
+  "category": "injury",
+  "language": "en",
+  "description": "Injury language: injured(the hurt one), an event, with the other as its cause. A transitive verb hurts the mention after it (the one before is the cause); an intransitive one hurts its subject.",
+  "predicate": "injured",
+  "lemmas": [
+    {
+      "lemma": "stab",
+      "forms": [
+        "stab",
+        "stabs",
+        "stabbed",
+        "stabbing"
+      ],
+      "hurts": "object"
+    },
+    {
+      "lemma": "punch",
+      "forms": [
+        "punch",
+        "punches",
+        "punched",
+        "punching"
+      ],
+      "hurts": "object"
+    },
+    {
+      "lemma": "hit",
+      "forms": [
+        "hit",
+        "hits",
+        "hitting"
+      ],
+      "hurts": "object"
+    },
+    {
+      "lemma": "wound",
+      "forms": [
+        "wound",
+        "wounds",
+        "wounded",
+        "wounding"
+      ],
+      "hurts": "object"
+    },
+    {
+      "lemma": "cut",
+      "forms": [
+        "cut",
+        "cuts",
+        "cutting"
+      ],
+      "hurts": "object"
+    },
+    {
+      "lemma": "shoot",
+      "forms": [
+        "shoot",
+        "shoots",
+        "shot",
+        "shooting"
+      ],
+      "hurts": "object"
+    },
+    {
+      "lemma": "bite",
+      "forms": [
+        "bite",
+        "bites",
+        "bit",
+        "bitten",
+        "biting"
+      ],
+      "hurts": "object"
+    },
+    {
+      "lemma": "kick",
+      "forms": [
+        "kick",
+        "kicks",
+        "kicked",
+        "kicking"
+      ],
+      "hurts": "object"
+    },
+    {
+      "lemma": "slap",
+      "forms": [
+        "slap",
+        "slaps",
+        "slapped",
+        "slapping"
+      ],
+      "hurts": "object"
+    },
+    {
+      "lemma": "strike",
+      "forms": [
+        "strike",
+        "strikes",
+        "struck",
+        "stricken",
+        "striking"
+      ],
+      "hurts": "object"
+    },
+    {
+      "lemma": "beat",
+      "forms": [
+        "beat",
+        "beats",
+        "beaten",
+        "beating"
+      ],
+      "hurts": "object"
+    },
+    {
+      "lemma": "strangle",
+      "forms": [
+        "strangle",
+        "strangles",
+        "strangled",
+        "strangling"
+      ],
+      "hurts": "object"
+    },
+    {
+      "lemma": "choke",
+      "forms": [
+        "choke",
+        "chokes",
+        "choked",
+        "choking"
+      ],
+      "hurts": "object"
+    },
+    {
+      "lemma": "burn",
+      "forms": [
+        "burn",
+        "burns",
+        "burned",
+        "burnt",
+        "burning"
+      ],
+      "hurts": "object"
+    },
+    {
+      "lemma": "scratch",
+      "forms": [
+        "scratch",
+        "scratches",
+        "scratched",
+        "scratching"
+      ],
+      "hurts": "object"
+    },
+    {
+      "lemma": "smash",
+      "forms": [
+        "smash",
+        "smashes",
+        "smashed",
+        "smashing"
+      ],
+      "hurts": "object"
+    },
+    {
+      "lemma": "crush",
+      "forms": [
+        "crush",
+        "crushes",
+        "crushed",
+        "crushing"
+      ],
+      "hurts": "object"
+    },
+    {
+      "lemma": "injure",
+      "forms": [
+        "injure",
+        "injures",
+        "injured",
+        "injuring"
+      ],
+      "hurts": "object"
+    },
+    {
+      "lemma": "hurt",
+      "forms": [
+        "hurt",
+        "hurts",
+        "hurting"
+      ],
+      "hurts": "object"
+    },
+    {
+      "lemma": "maim",
+      "forms": [
+        "maim",
+        "maims",
+        "maimed",
+        "maiming"
+      ],
+      "hurts": "object"
+    },
+    {
+      "lemma": "slash",
+      "forms": [
+        "slash",
+        "slashes",
+        "slashed",
+        "slashing"
+      ],
+      "hurts": "object"
+    },
+    {
+      "lemma": "poison",
+      "forms": [
+        "poison",
+        "poisons",
+        "poisoned",
+        "poisoning"
+      ],
+      "hurts": "object"
+    },
+    {
+      "lemma": "bleed",
+      "forms": [
+        "bleed",
+        "bleeds",
+        "bled",
+        "bleeding"
+      ],
+      "hurts": "subject"
+    },
+    {
+      "lemma": "limp",
+      "forms": [
+        "limp",
+        "limps",
+        "limped",
+        "limping"
+      ],
+      "hurts": "subject"
+    },
+    {
+      "lemma": "bruise",
+      "forms": [
+        "bruise",
+        "bruises",
+        "bruised",
+        "bruising"
+      ],
+      "hurts": "subject"
+    },
+    {
+      "lemma": "faint",
+      "forms": [
+        "faint",
+        "faints",
+        "fainted",
+        "fainting"
+      ],
+      "hurts": "subject"
+    },
+    {
+      "lemma": "collapse",
+      "forms": [
+        "collapse",
+        "collapses",
+        "collapsed",
+        "collapsing"
+      ],
+      "hurts": "subject"
+    }
+  ]
+}

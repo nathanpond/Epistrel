@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Any, Self
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StrictInt
 from sqlalchemy import and_, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -61,8 +61,8 @@ class ChainRef(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    turn: int = Field(ge=1)
-    variant: int = Field(ge=1)
+    turn: StrictInt = Field(ge=1)
+    variant: StrictInt = Field(ge=1)
 
     @classmethod
     def parse(cls, raw: str, *, field: str = "query.variant") -> Self:

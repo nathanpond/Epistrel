@@ -13,14 +13,18 @@ those whose age condition is false (``age.partition``).
 
 The set is cached in-process, keyed by the deployment ``config_revision`` (global and rating
 policy writes and rating edits move it), the story's ``config_revision`` (story-scoped writes
-move it), and the version ids of every rating in the story rating's closure.
+move it), the version ids of every rating in the story rating's closure, and the deployment's and
+the story's ``policy_erasure_revision`` (an erasure that rewrites or deletes a policy moves the
+one of its scope, and no configuration revision: #469). Every part of the key is read from the
+database in the read's own snapshot, so an entry cached in any process is never served after a
+write or an erasure that changes the set commits.
 """
 
 from __future__ import annotations
 
 from collections import OrderedDict
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Collection, Sequence
+from dataclasses import dataclass, replace
 from typing import Any
 
 from sqlalchemy import exists, or_, select
@@ -29,15 +33,25 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from epistrel.core.config_changes import read_settings
 from epistrel.core.enums import StoryStatus
 from epistrel.core.errors import PolicyNotFound, StoryNotFound
-from epistrel.core.policies.model import SCOPE_RANK, ModelAssistedRule, Policy, Scope, Target
+from epistrel.core.policies.model import (
+    SCOPE_RANK,
+    ModelAssistedRule,
+    Policy,
+    Scope,
+    Target,
+    WithheldPolicy,
+)
 from epistrel.core.policies.rows import policy_of, select_policies
 from epistrel.core.ratings import closure_versions, effective_guardrails, load_graph
-from epistrel.core.tables import characters, policies, stories
+from epistrel.core.tables import characters, deployment_state, policies, stories
+from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 from epistrel.orchestrator.policies.age import CastMember, partition
 
 CACHE_SIZE = 1_024
 
-type CacheKey = tuple[int, str, int, tuple[tuple[str, str], ...]]
+type CacheKey = tuple[int, int, str, int, int, tuple[tuple[str, str], ...]]
+"""``(deployment config_revision, deployment policy_erasure_revision, story_id, story
+config_revision, story policy_erasure_revision, closure version ids)``."""
 
 _EFFECTIVE: OrderedDict[CacheKey, tuple[Policy, ...]] = OrderedDict()
 
@@ -107,19 +121,30 @@ async def effective_policies(db: AsyncEngine, story_id: str) -> tuple[Policy, ..
         async with conn.begin():
             story = (
                 await conn.execute(
-                    select(stories.c.config_revision, stories.c.content_rating_id).where(
-                        stories.c.id == story_id
-                    )
+                    select(
+                        stories.c.config_revision,
+                        stories.c.policy_erasure_revision,
+                        stories.c.content_rating_id,
+                    ).where(stories.c.id == story_id)
                 )
             ).one_or_none()
             if story is None:
                 raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
-            deployment = await read_settings(conn)
+            deployment = (
+                await conn.execute(
+                    select(
+                        deployment_state.c.config_revision,
+                        deployment_state.c.policy_erasure_revision,
+                    ).where(deployment_state.c.id == DEPLOYMENT_ROW_ID)
+                )
+            ).one()
             graph = await load_graph(conn)
             key: CacheKey = (
-                deployment.config_revision,
+                int(deployment.config_revision),
+                int(deployment.policy_erasure_revision),
                 story_id,
                 int(story.config_revision),
+                int(story.policy_erasure_revision),
                 closure_versions(story.content_rating_id, graph),
             )
             cached = _EFFECTIVE.get(key)
@@ -214,13 +239,25 @@ class StoryGuardrails:
     ``calls_input`` is per text checked with no character acting (a character-scoped input
     policy adds one call when its character acts); ``calls_output`` per output checkpoint."""
 
-    active: tuple[Policy, ...]
-    inactive: tuple[Policy, ...]
+    active: tuple[Policy | WithheldPolicy, ...]
+    inactive: tuple[Policy | WithheldPolicy, ...]
     sources: dict[str, str]
     calls_input: int
     calls_output: int
 
-    def source(self, policy: Policy) -> str:
+    def withholding(self, withheld: Collection[str]) -> StoryGuardrails:
+        """These guardrails with each policy in ``withheld`` (the ids a pending catalog-scope
+        erasure reaches) shown as a ``WithheldPolicy``: no name, message or rule until it is
+        reapplied (#447, ADR-161). The call counts are the enforced set's, unchanged."""
+        if not withheld:
+            return self
+        return replace(
+            self,
+            active=withhold(self.active, withheld),
+            inactive=withhold(self.inactive, withheld),
+        )
+
+    def source(self, policy: Policy | WithheldPolicy) -> str:
         """``global``, ``rating:<id>`` (the contributing rating), ``story`` or
         ``character:<id>``."""
         if policy.scope is Scope.RATING:
@@ -228,6 +265,15 @@ class StoryGuardrails:
         if policy.scope is Scope.CHARACTER:
             return f"character:{policy.scope_id}"
         return policy.scope.value
+
+
+def withhold(
+    found: Sequence[Policy | WithheldPolicy], withheld: Collection[str]
+) -> tuple[Policy | WithheldPolicy, ...]:
+    """``found`` in order, each policy in ``withheld`` as its ``WithheldPolicy`` (#447)."""
+    return tuple(
+        WithheldPolicy.of(p) if isinstance(p, Policy) and p.id in withheld else p for p in found
+    )
 
 
 def _assisted_count(found: Sequence[Policy], target: Target) -> int:
@@ -251,6 +297,13 @@ async def story_guardrails(db: AsyncEngine, story_id: str) -> StoryGuardrails:
         calls_input=_assisted_count(active, Target.TEXT_INPUT),
         calls_output=_assisted_count(active, Target.TEXT_OUTPUT),
     )
+
+
+async def deployment_guardrail_calls(db: AsyncEngine) -> tuple[int, int]:
+    """G as the deployment's global policies state it (the profile validator's budget warning,
+    #156): its active model-assisted policies applying to input and to output."""
+    found = await list_policies(db, scope=Scope.GLOBAL)
+    return _assisted_count(found, Target.TEXT_INPUT), _assisted_count(found, Target.TEXT_OUTPUT)
 
 
 async def rating_sources(db: AsyncEngine, story_id: str) -> dict[str, str]:

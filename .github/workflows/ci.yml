@@ -46,6 +46,34 @@ jobs:
       - name: model-guide
         run: uv run python -m epistrel.tools.model_guide --check
         if: always()
+      # Capability map (#129, FR-PROF-13): docs/capability-map.md is exactly what CAPABILITY_MAP renders.
+      - name: capability-map
+        run: uv run python -m epistrel.tools.capability_map --check
+        if: always()
+      # Guarantee table (#132, FR-VERIFY-15): docs/guarantees.md is exactly what GUARANTEES renders,
+      # and every delivered model purpose has a model-dependent row.
+      - name: guarantees
+        run: uv run python -m epistrel.tools.guarantees --check
+        if: always()
+      # Core vocabulary (#131, FR-PROP-5): docs/predicates.md is exactly what the vocabulary renders.
+      - name: predicates
+        run: uv run python -m epistrel.tools.predicates --check
+        if: always()
+      # Evals (#134, NFR-QUAL-8): every model-dependent guarantee row's metric has a suite (or is
+      # pending with the story that ships it), every floored metric has a floor, and
+      # docs/evals/INDEX.md is exactly what the committed reports regenerate.
+      - name: evals-check
+        run: uv run python -m epistrel.evals --check
+        if: always()
+      # Labeled sets (#157): every set loads under its suite's schema and meets its size, matches
+      # its authoring module, has a PROVENANCE.md with the owner's review line, and the review
+      # digest is current. A set the owner has not approved yet passes on a branch and fails on
+      # main, so no unapproved set reaches a release.
+      - name: evals-check-sets
+        run: uv run python -m epistrel.evals --check-sets
+        if: always()
+        env:
+          EPISTREL_REQUIRE_APPROVED_SETS: ${{ github.ref == 'refs/heads/main' && '1' || '0' }}
       # Milestone gate (#37): every requirement in docs/03 is assigned to exactly one milestone in §22.
       - run: uv run python -m tools.gates check-assignment
         if: always()
@@ -93,10 +121,42 @@ jobs:
       - run: uv run mypy
 
   test:
+    # The suite runs as a directory-sharded matrix (#331): one run took 39 minutes on the runner
+    # once M3 had grown it to 1963 tests. The wall clock is now the slowest shard, `c01` (C-01's
+    # schemathesis file, about 11 minutes of tests in that run). The shards partition the test
+    # files exactly once, and `rest` is `tests/` minus the directories the others name, so a new
+    # directory runs without an edit here (tests/test_workflows.py guards both). `rest` keeps
+    # tests/scenario and tests/perf together: P-05 gates the turn census of the S-tests it ran with.
+    # #153: `rest` reached 23m52s of its 25 minutes once the scale suite's smoke joined it, so
+    # tests/property and tests/chaos (about 10.5 min of tests on the runner) and the scale
+    # smoke (P-01, P-02, P-06 on the 1k fixture, about 5 min; no census) run in shards of their
+    # own, leaving `rest` at about 7.5 min of tests.
+    # #157/#158: the eval suites' tests (tests/eval about 12 min, tests/evals about 4 min on the
+    # runner) took `rest` past its 25 minutes, so they run in an `eval` shard, and the stub eval
+    # run is a job of its own (`evals` below).
+    name: test (${{ matrix.shard.name }})
     runs-on: ubuntu-latest
-    # M3's suite (1883 tests) reached 45 % in 20 minutes on the runner, against 12-16 minutes for
-    # M2's whole run: 60 leaves headroom while a faster CI run is triaged.
-    timeout-minutes: 60
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - name: c01
+            paths: tests/conformance/test_c_01.py
+          - name: conformance
+            paths: tests/conformance --ignore=tests/conformance/test_c_01.py
+          - name: integration-a-h
+            paths: tests/integration --ignore-glob=tests/integration/test_[!a-h]*
+          - name: integration-i-z
+            paths: tests/integration --ignore-glob=tests/integration/test_[a-h]*
+          - name: property-chaos
+            paths: tests/property tests/chaos
+          - name: perf-scale
+            paths: tests/perf/test_p_01.py tests/perf/test_p_02.py tests/perf/test_p_06.py
+          - name: eval
+            paths: tests/eval tests/evals
+          - name: rest
+            paths: tests --ignore=tests/conformance --ignore=tests/integration --ignore=tests/property --ignore=tests/chaos --ignore=tests/perf/test_p_01.py --ignore=tests/perf/test_p_02.py --ignore=tests/perf/test_p_06.py --ignore=tests/eval --ignore=tests/evals
     steps:
       - uses: actions/checkout@v7
         with:
@@ -113,15 +173,91 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       # Integration tests start pgvector/pgvector:pg16 through testcontainers on the runner's Docker.
       # The S3 adapter's tests start MinIO the same way (tests/conftest.py MINIO_IMAGE).
-      # Coverage is gated on epistrel.core only (the deterministic layer); the flags live here and in
-      # the README, not in pytest's addopts, so a plain `uv run pytest` stays fast locally.
+      # Coverage is measured on epistrel.core only (the deterministic layer) and gated once, on the
+      # combined data, by the `coverage` job; the flags live here and in the README, not in
+      # pytest's addopts, so a plain `uv run pytest` stays fast locally.
       # `live_model` tests (E-06, P-08) need a real endpoint; the model matrix tool runs them
       # locally and records the result, reported not gated (#54). Of the chaos suite only the
       # `chaos_quick` tests run here, at their quick defaults, inside the one coverage gate; the
       # weekly chaos.yml runs every `chaos` test at full strength (#75). Of the performance tests
       # only the `perf_quick` ones run here (P-03's quick subset); the `perf_long` ones (P-03 on
       # the 20,000-event story) run in the nightly perf.yml (#76).
-      - run: uv run pytest -m "not live_model and (not chaos or chaos_quick) and (not perf_long or perf_quick)" --cov=epistrel.core --cov-report=term-missing --cov-fail-under=90
+      # SHARD_PATHS is split into words but never globbed (`set -f`): pytest matches the
+      # --ignore-glob patterns itself.
+      - name: pytest
+        env:
+          SHARD_PATHS: ${{ matrix.shard.paths }}
+          COVERAGE_FILE: .coverage.${{ matrix.shard.name }}
+        run: |
+          set -f
+          uv run pytest $SHARD_PATHS -m "not live_model and (not chaos or chaos_quick) and (not perf_long or perf_quick)" --cov=epistrel.core --cov-report=
+      - uses: actions/upload-artifact@v7
+        with:
+          name: coverage-${{ matrix.shard.name }}
+          path: .coverage.${{ matrix.shard.name }}
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || '' }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v10.2.0  # exact: setup-uv publishes no floating major tag past v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.14"
+          enable-cache: true
+      - run: uv sync --frozen
+      # The eval harness on the stub (#134, NFR-QUAL-8): every registered suite, two seeds, scripted
+      # per case, through scratch stories on a throwaway PostgreSQL (testcontainers, like the suite);
+      # a seeded sample of 100 cases per suite (#157's full sets run locally) keeps it in budget.
+      # No real model is ever called in CI (docs/evals/README.md). The step fails on a harness error
+      # (a malformed labeled set, a suite that cannot run, a write outside its scratch stories) and,
+      # with --fail-on-gate, when a suite marked ci_gate misses its deterministic stub floors. One
+      # job of its own, outside the test matrix (#157/#158 grew it past a shard's budget).
+      # E-10 runs its full set (`--full e10`, about 30 s): its measured gap is 8 of 300 cases, and
+      # a sample of 100 can draw 5 of them and sit exactly on the 95 % floor.
+      - name: evals (stub)
+        run: uv run python -m epistrel.evals run --adapter stub --all --seeds 2 --sample 100 --full e10 --fail-on-gate
+      - name: upload the stub eval report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: evals-stub-report
+          path: |
+            build/evals/stub-report.md
+            build/evals/*.json
+            build/evals/*.jsonl
+          if-no-files-found: warn
+          retention-days: 14
+
+  coverage:
+    # The one coverage gate (#331): every shard's data combined, then epistrel.core ≥ 90 %.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [test]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || '' }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v10.2.0  # exact: setup-uv publishes no floating major tag past v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.14"
+          enable-cache: true
+      - run: uv sync --frozen
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: coverage-*
+          merge-multiple: true
+      - run: uv run coverage combine
+      - run: uv run coverage report --show-missing --fail-under=90
 
   docker:
     runs-on: ubuntu-latest
@@ -142,23 +278,28 @@ jobs:
           cache-to: type=gha,mode=max,scope=ci
 
   gate:
-    # One context for the ruleset to require: red if any job above did not succeed.
+    # One context for the ruleset to require: red if any job above did not succeed (for the
+    # sharded `test`, any shard).
     name: gate
     runs-on: ubuntu-latest
     timeout-minutes: 10
     if: always()
-    needs: [lint, types, test, docker]
+    needs: [lint, types, test, evals, coverage, docker]
     steps:
       - name: Summarise
         env:
           LINT: ${{ needs.lint.result }}
           TYPES: ${{ needs.types.result }}
           TEST: ${{ needs.test.result }}
+          EVALS: ${{ needs.evals.result }}
+          COVERAGE: ${{ needs.coverage.result }}
           DOCKER: ${{ needs.docker.result }}
         run: |
           printf '%s\n' '| job | result |' '|---|---|' \
-            "| lint | $LINT |" "| types | $TYPES |" "| test | $TEST |" "| docker | $DOCKER |" >> "$GITHUB_STEP_SUMMARY"
-          for r in "$LINT" "$TYPES" "$TEST" "$DOCKER"; do
-            [ "$r" = "success" ] || { echo "gate: a job did not succeed ($LINT/$TYPES/$TEST/$DOCKER)"; exit 1; }
+            "| lint | $LINT |" "| types | $TYPES |" "| test | $TEST |" "| evals | $EVALS |" \
+            "| coverage | $COVERAGE |" \
+            "| docker | $DOCKER |" >> "$GITHUB_STEP_SUMMARY"
+          for r in "$LINT" "$TYPES" "$TEST" "$EVALS" "$COVERAGE" "$DOCKER"; do
+            [ "$r" = "success" ] || { echo "gate: a job did not succeed ($LINT/$TYPES/$TEST/$EVALS/$COVERAGE/$DOCKER)"; exit 1; }
           done
           echo "gate: all jobs succeeded"

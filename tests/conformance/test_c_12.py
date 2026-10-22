@@ -1,12 +1,14 @@
-"""C-12: the output viewpoint contract (FR-RESP-12, FR-AUTH-2) [M2] (#59).
+"""C-12: the output viewpoint contract (FR-RESP-12, FR-AUTH-2) [M2] (#59); the structured
+pipeline's part (FR-RESP-8,12) [M4] (#152).
 
 Every respond and history read is produced for one output viewpoint, resolved the same way
-over REST and in the library: ``test_c_12`` runs every check through both surfaces (the
-``surface`` fixture in ``conftest.py``; NFR-SEC-5's parity half).
+over REST and in the library: ``test_c_12`` and ``test_c_12__structured`` run every check
+through both surfaces (the ``surface`` fixture in ``conftest.py``; NFR-SEC-5's parity half).
 """
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -20,6 +22,7 @@ from epistrel.core.viewpoint import PRIVATE_CHANNELS, validate_default_viewpoint
 from tests.conformance.conftest import Surface
 from tests.respond_support import FIRST, PLAYER, SECOND, body
 from tests.story_support import character, count, story_body
+from tests.structured_turn_support import beat, render, structured_story, turn_report
 
 PRIVATE_TEXT = "C12-PRIVATE-BEAT"
 AUDIT_REASON = "c12-audit-record"
@@ -169,3 +172,95 @@ async def test_c_12(surface: Surface, engine: AsyncEngine) -> None:
     assert (await surface.get_story(story, viewpoint="character:nobody")).code == (
         "viewpoint_unresolved"
     )
+
+
+THOUGHT = "He must never learn about the lake."
+LATENT = "The boathouse key is under the third plank."
+LINE = "Hello, Bobby. Sit with me."
+ACTION = "She sits down by the fire and warms her hands."
+COMPOSITION = "composition.j2"
+
+
+def _jenni_turn() -> str:
+    return render(
+        beat("think", THOUGHT),
+        beat("say", LINE, intent="sincere"),
+        beat("do", ACTION),
+        beat("latent", LATENT),
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.part("M4", "FR-RESP-8,12")
+async def test_c_12__structured(
+    surface: Surface, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """A structured story with shared character knowledge: a
+    character-viewpoint response and history read omit every ``think`` and ``latent`` beat and
+    return every other beat in full; the composed message is checked against exactly those
+    beats; an ``omniscient`` read returns the thought labelled (``[Jenni thinks] …``) and an
+    omniscient composition is checked the same way (attribution: a thought without its label
+    fails). Run over REST and the library.
+
+    Complement asserted: the ``omniscient`` read **does** return the ``think`` and ``latent``
+    beats, and a history read for the other viewpoint recomposes the message for it."""
+    story, ids = await structured_story(surface.client, "Bobby", "Jenni")
+    bobby, jenni = ids["Bobby"], ids["Jenni"]
+    stub = surface.engine.models.stub
+    stub.script("generation", [_jenni_turn()])
+
+    played = (await surface.respond(story, body(bobby, "Jenni?"))).json
+    assert played["output_viewpoint"] == _vp(bobby)
+    assert _no_filtering(played)
+    assert [(b["channel"], b["text"]) for b in played["beats"]] == [
+        ("say", "Jenni?"),
+        ("say", LINE),
+        ("do", ACTION),
+        ("message", played["message"]["text"]),
+    ]
+    message = played["message"]["text"]
+    assert played["message"]["mode"] == "polished"
+    assert message == f'Jenni: "{LINE}"\n\n*{ACTION}*'
+    assert THOUGHT not in message
+    assert LATENT not in message
+    report = (await turn_report(engine, story))["composition"]
+    assert report["check"]["failures"] == []
+    assert report["check"]["traced"] == report["check"]["claims"]
+
+    # The character read: the same beats, the same message.
+    read = (await surface.history(story, viewpoint=_vp(bobby))).json
+    assert _no_filtering(read)
+    assert all(i["channel"] not in PRIVATE_CHANNELS for i in read["items"])
+    texts = [(i["channel"], i["text"]) for i in read["items"]]
+    assert ("say", LINE) in texts
+    assert ("do", ACTION) in texts
+    assert ("message", message) in texts
+
+    # Complement: the omniscient read returns the private beats and the labelled thought.
+    omniscient = (await surface.history(story, viewpoint="omniscient")).json
+    private = {(i["channel"], i["text"]) for i in omniscient["items"]}
+    assert {("think", THOUGHT), ("latent", LATENT)} <= private
+    (recomposed,) = [i["text"] for i in omniscient["items"] if i["channel"] == "message"]
+    assert recomposed == (
+        f'[Jenni thinks] {THOUGHT}\n\nJenni: "{LINE}"\n\n*{ACTION}*\n\n[latent] {LATENT}'
+    )
+
+    # An omniscient turn: the thought may appear, labelled, and the other checks still apply.
+    stub.script("generation", [_jenni_turn()])
+    seen = (await surface.respond(story, body(bobby, "Jenni?"), viewpoint="omniscient")).json
+    assert seen["message"]["mode"] == "polished"
+    assert f"[Jenni thinks] {THOUGHT}" in seen["message"]["text"]
+    assert {b["channel"] for b in seen["beats"]} >= {"think", "latent"}
+    for_bobby = (await surface.history(story, viewpoint=_vp(bobby))).json
+    turns = [i for i in for_bobby["items"] if i["channel"] == "message"]
+    assert THOUGHT not in turns[-1]["text"]
+    assert turns[-1]["text"] == message
+    unlabelled = f'{THOUGHT} "{LINE}" Jenni says. {ACTION} [latent] {LATENT}'
+    stub.script("generation", [_jenni_turn()])
+    stub.script(COMPOSITION, [json.dumps({"text": unlabelled})])
+    fallen = (await surface.respond(story, body(bobby, "Jenni?"), viewpoint="omniscient")).json
+    assert fallen["message"]["mode"] == "deterministic"
+    assert "composition_fallback" in fallen["degradation"]
+    rejected = (await turn_report(engine, story))["composition"]["rejected"]
+    assert "attribution" in {f["kind"] for f in rejected["failures"]}
+    assert jenni in {b["actor_character_id"] for b in fallen["beats"]}

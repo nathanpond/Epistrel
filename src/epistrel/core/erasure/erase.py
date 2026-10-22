@@ -49,14 +49,17 @@ complete erasure:
    subject authored (its ``character_id`` is theirs, or it is a reply whose
    ``render_character_ids`` are theirs alone) becomes ``[erased]`` whole, keeping its type,
    position and operation, with ``redacted_at``; their ids leave ``render_character_ids`` and
-   the events' ``character_id``;
+   the events' ``character_id``; a memory the subject holds or voiced is deleted with a marker,
+   and every other memory naming them is redacted with its vector nulled (#135);
    the story's default viewpoint is cleared when it names them; stored idempotency results that
    name them are purged (``result`` null: a replay answers the reference); the projections are
    refolded and the story's index rebuilt (the subject's rows go last); nothing in flight can
    write them back (#127, ``_stop_in_flight``: queued turns fail ``timeline_changed``, the turn
    slot's lease is cleared, and the redacted events' operations have their ``membership_tx``
    moved so a background job that read them drops its output); the residue is scanned;
-   the ``erasure_ledger`` row and a deployment ``audit_log`` row are written. Stages
+   the ``erasure_ledger`` row and a deployment ``audit_log`` row are written; when a policy
+   of the story was rewritten or deleted, the story's ``policy_erasure_revision`` moves, so no
+   process's effective-policy cache serves its old text (#469). Stages
    ``redacted`` and ``ledger_written`` go to the operation's ``stage_log``.
 2. one ``consolidation`` operation regenerates the level-0 rolling-summary segments whose text
    was redacted (``redact.regenerate_summaries``: #72's compression over the redacted window,
@@ -76,7 +79,10 @@ the subject are rewritten (several subjects: the subject leaves ``depicted_subje
 and alt text are redacted) or, depicting only the subject, purged with their bytes once no other
 asset shares them, unless a record the erasure leaves untouched references them and the
 deployment's ``erasure_shared_media`` is ``retire`` (the asset is kept ``retired``, redacted);
-deployment-scoped stored results naming the subject are purged. Stories are otherwise never
+deployment-scoped stored results naming the subject are purged. The transaction takes the
+deployment row first (as configuration writes do) and, when a policy was rewritten, moves the
+deployment's ``policy_erasure_revision`` (#469: the effective-policy cache's key; the
+``config_revision`` stays, as for any catalog write). Stories are otherwise never
 touched (FR-STORE-14): ``referencing_stories`` lists those that reference the subject (with
 their characters), for the operator to erase separately. The one exception is the public card
 a catalog character's genesis creation report copied, which is public catalog data until this
@@ -127,6 +133,7 @@ from epistrel.core.enums import (
     OperationKind,
     OperationStatus,
     Provenance,
+    ThunkState,
 )
 from epistrel.core.erasure import index
 from epistrel.core.erasure import ledger as ledger_store
@@ -148,6 +155,7 @@ from epistrel.core.erasure.records import (
     idempotency_id,
     media_record,
     persona_record,
+    predicate_words,
     upload_session_record,
 )
 from epistrel.core.erasure.redact import ERASED, Candidate, Redactor, regenerate_summaries
@@ -161,6 +169,7 @@ from epistrel.core.errors import (
 )
 from epistrel.core.events.registry import validate
 from epistrel.core.ids import Ulid, new_ulid
+from epistrel.core.memory import retirement
 from epistrel.core.ports import SummaryCompressor
 from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX, ErasureSettings
 from epistrel.core.tables import (
@@ -185,7 +194,9 @@ from epistrel.core.tables import (
 )
 from epistrel.core.tables.audit_log import AuditKind
 from epistrel.core.tables.catalog import CATALOG_SCHEMA, ERASURE_GUC
+from epistrel.core.tables.commitments import thunks
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
+from epistrel.core.tables.facts import facts
 from epistrel.core.tables.media import (
     MediaState,
     ReferenceScope,
@@ -194,7 +205,16 @@ from epistrel.core.tables.media import (
     media_upload_sessions,
     subject_references,
 )
+from epistrel.core.tables.memories import memories
 from epistrel.core.tables.ownership import EntityType
+from epistrel.core.tables.propositions import (
+    closed_sets,
+    entities,
+    entity_aliases,
+    predicate_proposals,
+    predicates,
+    propositions,
+)
 from epistrel.observability.logging import get_logger
 
 log = get_logger(__name__)
@@ -202,7 +222,20 @@ log = get_logger(__name__)
 STORY = "story"
 CATALOG = "catalog"
 MARKER = "erasure_marker"
-BEATS = frozenset({"player_input", "message_rendered", "think", "latent"})
+BEATS = frozenset(
+    {
+        "player_input",
+        "message_rendered",
+        "think",
+        "latent",
+        # A structured turn's typed beats (#150).
+        "beat_say",
+        "beat_think",
+        "beat_do",
+        "beat_latent",
+        "beat_narration",
+    }
+)
 """Event types that are beats: one the subject authored is erased whole."""
 BEAT_TEXTS = ("text", "say", "do")
 SUMMARY_EVENT = "lite_summary_segment"
@@ -505,6 +538,38 @@ async def config_revision(conn: AsyncConnection) -> int:
     return int(found or 0)
 
 
+def _touched_policies(tally: _Tally) -> bool:
+    return bool(tally.records.get(policies.name))
+
+
+async def _lock_deployment_row(conn: AsyncConnection) -> None:
+    """Take the deployment row ``FOR UPDATE`` first, as every configuration write does, so a
+    catalog erasure's ``policy_erasure_revision`` bump cannot deadlock with a policy write."""
+    from epistrel.core.tables import deployment_state
+
+    await conn.execute(
+        select(deployment_state.c.id)
+        .where(deployment_state.c.id == DEPLOYMENT_ROW_ID)
+        .with_for_update()
+    )
+
+
+async def _bump_policy_erasure_revision(conn: AsyncConnection, story_id: str | None) -> None:
+    """Move the ``policy_erasure_revision`` of the story (story scope) or the deployment
+    (catalog scope) by one: the effective-policy cache keys on it, so no process serves a
+    policy's text from before the erasure once it commits (#469). The configuration revisions
+    stay where they are (an erasure records no configuration change)."""
+    from epistrel.core.tables import deployment_state
+
+    if story_id is None:
+        statement = update(deployment_state).where(deployment_state.c.id == DEPLOYMENT_ROW_ID)
+        column = deployment_state.c.policy_erasure_revision
+    else:
+        statement = update(stories).where(stories.c.id == story_id)
+        column = stories.c.policy_erasure_revision
+    await conn.execute(statement.values({column: column + 1}))
+
+
 # -- the subject ---------------------------------------------------------------------------------
 
 
@@ -775,6 +840,7 @@ async def _story_pass(conn: AsyncConnection, run: _StoryRun) -> _Tally:
         tally,
         write=write,
     )
+    await _redact_structured(conn, story_id, refs, removed, redactor, tally, run)
     await _purge_story_results(conn, story_id, refs, redactor, tally, write=write)
     await _redact_transient(conn, story_id, redactor, tally, write=write)
     for target in ERASURE_TARGETS:
@@ -1195,6 +1261,279 @@ async def _redact_policies(
     )
 
 
+async def _redact_structured(
+    conn: AsyncConnection,
+    story_id: str,
+    refs: Mapping[str, set[str]],
+    removed: set[str],
+    redactor: Redactor,
+    tally: _Tally,
+    run: _StoryRun,
+) -> None:
+    """The structured stores (#131): an erased character's entity loses its aliases (deleted,
+    each with a marker); every other record naming the subject is redacted in place. A story
+    predicate's name keeps its id as a suffix when redacted, so names stay unique per story.
+    Facts (#133), memories (#135) and thunks (#146) go first: see ``_erase_facts``,
+    ``_erase_memories`` and ``_erase_thunks``."""
+    await _erase_facts(conn, story_id, refs, removed, tally, run)
+    await _erase_memories(conn, story_id, refs, removed, redactor, tally, run)
+    await _erase_thunks(conn, story_id, refs, removed, redactor, tally, run)
+    owned = list(
+        await conn.scalars(
+            select(entity_aliases.c.id)
+            .join(entities, entities.c.id == entity_aliases.c.entity_id)
+            .where(
+                entity_aliases.c.story_id == story_id,
+                entities.c.character_id.in_(sorted(removed)),
+            )
+        )
+    )
+    for alias_id in owned:
+        await _delete(
+            conn,
+            run,
+            tally,
+            entity_aliases.name,
+            str(alias_id),
+            delete(entity_aliases).where(entity_aliases.c.id == alias_id),
+        )
+    for table, columns, others in (
+        (entity_aliases, ("alias",), {str(a) for a in owned}),
+        (entities, ("canonical_name", "descriptors"), set()),
+        (propositions, ("literal", "qualifiers"), set()),
+        (closed_sets, ("key",), set()),
+        (predicate_proposals, ("proposed", "decision"), set()),
+        (predicates, ("docs",), set()),
+    ):
+        await _redact_json_rows(
+            conn,
+            table,
+            table.c.id,
+            set(refs.get(table.name, set())) - others,
+            columns,
+            redactor,
+            tally,
+            write=run.write,
+        )
+    wanted = sorted(refs.get(predicates.name, set()))
+    rows = await conn.execute(
+        select(predicates.c.id, predicates.c.name).where(predicates.c.id.in_(wanted))
+    )
+    for row in rows:
+        words = predicate_words(str(row.name))
+        new = redactor.text(words, (predicates.name, str(row.id), "name"))
+        if new == words:
+            continue
+        tally.record(predicates.name, 1)
+        if run.write:
+            renamed = "_".join(new.replace("[", "").replace("]", "").split())
+            await conn.execute(
+                update(predicates)
+                .where(predicates.c.id == row.id)
+                .values(name=f"{renamed}_{str(row.id).lower()}")
+            )
+
+
+async def _erase_facts(
+    conn: AsyncConnection,
+    story_id: str,
+    refs: Mapping[str, set[str]],
+    removed: set[str],
+    tally: _Tally,
+    run: _StoryRun,
+) -> None:
+    """Facts (#133): every version whose subject or object is an erased character's entity is
+    deleted, each with a marker (a fact about the subject is about the subject, whatever its
+    wording); a version whose ``characters`` visibility names an erased character loses that
+    name, and is deleted with a marker when no character is left to see it."""
+    if not removed:
+        return
+    erased_entities = select(entities.c.id).where(
+        entities.c.story_id == story_id, entities.c.character_id.in_(sorted(removed))
+    )
+    about = list(
+        await conn.scalars(
+            select(facts.c.id)
+            .select_from(facts.outerjoin(propositions, propositions.c.id == facts.c.proposition_id))
+            .where(
+                facts.c.story_id == story_id,
+                or_(
+                    facts.c.subject_id.in_(erased_entities),
+                    propositions.c.object_id.in_(erased_entities),
+                ),
+            )
+            .order_by(facts.c.id)
+        )
+    )
+    for fact_id in about:
+        await _delete(
+            conn, run, tally, facts.name, str(fact_id), delete(facts).where(facts.c.id == fact_id)
+        )
+    wanted = sorted(set(refs.get(facts.name, set())) - {str(f) for f in about})
+    if not wanted:
+        return
+    rows = await conn.execute(
+        select(facts.c.id, facts.c.visibility).where(facts.c.id.in_(wanted)).order_by(facts.c.id)
+    )
+    for row in rows:
+        named = [c for c in row.visibility.get("characters") or () if c not in removed]
+        if named == list(row.visibility.get("characters") or ()):
+            continue
+        if not named:
+            await _delete(
+                conn, run, tally, facts.name, str(row.id), delete(facts).where(facts.c.id == row.id)
+            )
+            continue
+        tally.record(facts.name, 1)
+        if run.write:
+            await conn.execute(
+                update(facts)
+                .where(facts.c.id == row.id)
+                .values(visibility={**row.visibility, "characters": named})
+            )
+
+
+async def _erase_thunks(
+    conn: AsyncConnection,
+    story_id: str,
+    refs: Mapping[str, set[str]],
+    removed: set[str],
+    redactor: Redactor,
+    tally: _Tally,
+    run: _StoryRun,
+) -> None:
+    """Thunks (#146): every thunk about the subject (an argument or a candidate is an erased
+    character's entity, or its sketch mentions them) has its sketch redacted in place and is
+    expired, so no later dependence resolves it and the ledger no longer counts it (its
+    ledger entries hold ids only)."""
+    t = thunks.c
+    erased: list[str] = []
+    if removed:
+        erased = [
+            str(e)
+            for e in await conn.scalars(
+                select(entities.c.id).where(
+                    entities.c.story_id == story_id,
+                    entities.c.character_id.in_(sorted(removed)),
+                )
+            )
+        ]
+    about: set[str] = set(refs.get(thunks.name, set()))
+    if erased:
+        named = or_(
+            t.subject_id.in_(erased),
+            t.object_id.in_(erased),
+            *(
+                t.proposition_sketch["candidates"].contains([{"entity_id": e}])
+                for e in sorted(erased)
+            ),
+        )
+        about |= {
+            str(i) for i in await conn.scalars(select(t.id).where(t.story_id == story_id, named))
+        }
+    if not about:
+        return
+    rows = await conn.execute(
+        select(t.id, t.proposition_sketch, t.state)
+        .where(t.story_id == story_id, t.id.in_(sorted(about)))
+        .order_by(t.id)
+    )
+    for row in rows:
+        sketch, changed = redactor.document(
+            row.proposition_sketch, (thunks.name, str(row.id)), "proposition_sketch"
+        )
+        if isinstance(sketch, Mapping) and erased:
+            sketch = {
+                **sketch,
+                "candidates": [
+                    c
+                    for c in sketch.get("candidates") or ()
+                    if not (isinstance(c, Mapping) and c.get("entity_id") in erased)
+                ],
+            }
+        tally.record(thunks.name, changed)
+        if run.write:
+            await conn.execute(
+                update(thunks)
+                .where(t.id == row.id)
+                .values(proposition_sketch=sketch, state=ThunkState.EXPIRED.value)
+            )
+
+
+async def _erase_memories(
+    conn: AsyncConnection,
+    story_id: str,
+    refs: Mapping[str, set[str]],
+    removed: set[str],
+    redactor: Redactor,
+    tally: _Tally,
+    run: _StoryRun,
+) -> None:
+    """Memories (#135): a memory an erased character holds or voiced (its holder or its beat's
+    actor) is deleted, with a marker; every other memory naming the subject has its certain
+    mentions redacted in place (a candidate only when confirmed), and its vector and
+    embedding-model version are nulled in this transaction, so no vector of the old text is
+    left (the embed job re-embeds the redacted text)."""
+    m = memories.c
+    owned = (
+        list(
+            await conn.scalars(
+                select(m.id)
+                .where(
+                    m.story_id == story_id,
+                    or_(
+                        m.holder_character_id.in_(sorted(removed)),
+                        m.character_id.in_(sorted(removed)),
+                    ),
+                )
+                .order_by(m.id)
+            )
+        )
+        if removed
+        else []
+    )
+    for memory_id in owned:
+        await _delete(
+            conn,
+            run,
+            tally,
+            memories.name,
+            str(memory_id),
+            delete(memories).where(m.id == memory_id),
+        )
+    if owned and run.write:
+        # The hot set's counters lost rows: the next reader recounts them (#147).
+        await retirement.invalidate(conn, story_id)
+    wanted = sorted(set(refs.get(memories.name, set())) - {str(i) for i in owned})
+    if not wanted:
+        return
+    rows = await conn.execute(
+        select(m.id, m.text, m.quarantine_reason)
+        .where(m.story_id == story_id, m.id.in_(wanted))
+        .order_by(m.id)
+    )
+    for row in rows:
+        new = redactor.text(row.text, (memories.name, str(row.id), "text"))
+        # A quarantine's reason is free text too (#145).
+        reason = (
+            None
+            if row.quarantine_reason is None
+            else redactor.text(
+                row.quarantine_reason, (memories.name, str(row.id), "quarantine_reason")
+            )
+        )
+        if new == row.text and reason == row.quarantine_reason:
+            continue
+        tally.record(memories.name, 1)
+        if run.write:
+            values: dict[str, Any] = {"quarantine_reason": reason}
+            if new != row.text:
+                values.update(text=new, embedding=None, embedding_model_version=None)
+                # A dropped vector leaves the story's vector counter (#147).
+                await retirement.invalidate(conn, story_id)
+            await conn.execute(update(memories).where(m.id == row.id).values(**values))
+
+
 async def _purge_results(
     conn: AsyncConnection, keys: Sequence[Any], tally: _Tally, *, write: bool
 ) -> None:
@@ -1360,6 +1699,42 @@ async def _catalog_records(
     return found
 
 
+def _cast_from(catalog_id: str) -> Any:
+    """The genesis operations whose creation report casts the catalog character ``catalog_id``
+    (its public card, emptied by a catalog-scope erasure: #382)."""
+    return operations.c.turn_report.contains(
+        {"creation_report": {"cast": [{"source": {"catalog_id": catalog_id}}]}}
+    )
+
+
+async def catalog_reach(
+    conn: AsyncConnection, subject_kind: str, subject_id: str, confirmed: Sequence[str] = ()
+) -> dict[str, set[str]]:
+    """``{record_table: {record_id}}``: what a catalog-scope erasure of the subject would touch
+    now (a pending one's reapply, #346, ADR-157). The catalog pass's own discovery (the index's
+    rows, and every catalog record the subject's terms or the ``confirmed`` candidates match:
+    ``_catalog_records``), the subject's own entry and a catalog character's companion
+    scenarios (deleted with it), and the genesis operations whose creation report carries its
+    public card (``operations``). Reads only, and reads the subject's terms as the erasure
+    does, so a subject already gone reaches only what the index still names."""
+    request = ErasureRequest.model_validate(
+        {"subject": {"kind": subject_kind, "id": subject_id}, "scope": {"catalog": True}}
+    )
+    subject = await _subject(conn, request)
+    found = await _catalog_records(conn, subject, subject.redactor(confirmed))
+    if subject.kind is SubjectKind.PERSONA:
+        found.setdefault(personas.name, set()).add(subject.id)
+    elif subject.kind is SubjectKind.CATALOG_CHARACTER:
+        found.setdefault(character_catalog.name, set()).add(subject.id)
+        companions = await conn.scalars(
+            select(scenario_catalog.c.id).where(scenario_catalog.c.companion_of == subject.id)
+        )
+        found.setdefault(scenario_catalog.name, set()).update(str(c) for c in companions)
+        carded = await conn.scalars(select(operations.c.operation_id).where(_cast_from(subject.id)))
+        found.setdefault(operations.name, set()).update(str(o) for o in carded)
+    return found
+
+
 async def _catalog_pass(conn: AsyncConnection, run: _CatalogRun) -> _Tally:
     subject, redactor, write = run.subject, run.redactor, run.write
     tally = _Tally()
@@ -1439,11 +1814,7 @@ async def _catalog_pass(conn: AsyncConnection, run: _CatalogRun) -> _Tally:
         refs.get(operations.name, set()),
         redactor,
         tally,
-        reports=operations.c.turn_report.contains(
-            {"creation_report": {"cast": [{"source": {"catalog_id": subject.id}}]}}
-        )
-        if carded
-        else None,
+        reports=_cast_from(subject.id) if carded else None,
         edit=lambda report: catalog_erased_report(report, subject.id) if carded else report,
         write=write,
     )
@@ -2135,6 +2506,8 @@ async def _erase_story(
             tally = await _story_pass(conn, run)
             if strict:
                 check_confirmed(redactor)
+            if _touched_policies(tally):
+                await _bump_policy_erasure_revision(conn, story_id)
             await _insert_markers(conn, run)
             found["failed_queue"] = await _stop_in_flight(conn, story_id, run)
             await projections.replace_with_fold(conn, story_id)
@@ -2213,10 +2586,11 @@ async def _stop_in_flight(conn: AsyncConnection, story_id: str, run: _StoryRun) 
     """Nothing in flight writes the subject back (FR-ADMIN-9; #127). The erasure is a control
     action, so a turn generating meanwhile abandons at its commit (#47); here, in the erasure's
     own transaction: the turns waiting in the queue fail with ``timeline_changed``; the turn
-    slot's lease is cleared (the turn holding it abandons on its own); and the operations whose
-    events were redacted have their ``membership_tx`` moved, so a background job that read them
-    (#72's summary job declares its source turns, #70) drops its output at commit and is
-    requeued. Returns the failed queued turns."""
+    slot's lease is cleared (the turn holding it abandons on its own; a queued turn a drainer
+    already started keeps it, #436); and the operations whose events were redacted have their
+    ``membership_tx`` moved, so a background job that read them (#72's summary job declares its
+    source turns, #70) drops its output at commit and is requeued. Returns the failed queued
+    turns."""
     redacted = select(events.c.operation_id).where(
         events.c.story_id == story_id, events.c.redacted_at == run.now
     )
@@ -2242,11 +2616,7 @@ async def _stop_in_flight(conn: AsyncConnection, story_id: str, run: _StoryRun) 
             },
         ),
     )
-    await conn.execute(
-        update(stories)
-        .where(stories.c.id == story_id)
-        .values(in_flight_turn=None, in_flight_lease_until=None)
-    )
+    await turn_gate.clear_lease(conn, story_id)
     return failed
 
 
@@ -2265,6 +2635,7 @@ async def _erase_catalog(
     strict: bool,
 ) -> ErasureResult:
     async with db.begin() as conn:
+        await _lock_deployment_row(conn)
         settings = await _settings(conn)
         referencing = await _referencing_stories(conn, subject)
         operation_id = await control.record_control_operation(conn, actor=principal)
@@ -2274,6 +2645,8 @@ async def _erase_catalog(
         tally = await _catalog_pass(conn, run)
         if strict:
             check_confirmed(redactor)
+        if _touched_policies(tally):
+            await _bump_policy_erasure_revision(conn, None)
         referencing = _merged(referencing, run.media_stories)
         residue = await verify(conn, None, redactor)
         counts = {**tally.counts(), "residue": residue.count, **_candidate_counts(redactor)}
@@ -2331,6 +2704,7 @@ __all__ = [
     "StoryScope",
     "SubjectRef",
     "append_stage",
+    "catalog_reach",
     "check_request",
     "dry_run",
     "erase",

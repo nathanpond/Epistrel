@@ -77,10 +77,15 @@ RESPOND_DESCRIPTION = (
 
 
 class MessageBody(BaseModel):
-    """The finished reply: the id of its transcript row and its text."""
+    """The finished reply: the id of its transcript row and its text. A structured turn's says
+    how it was composed (`mode`): `polished` (the polish passed the composition check) or
+    `deterministic` (the checked beats assembled as they are); absent for a Lite reply."""
 
     message_id: str
     text: str
+    mode: Literal["polished", "deterministic"] | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
 
 
 class GuardrailViolationBody(BaseModel):
@@ -117,6 +122,14 @@ class DegradationBody(BaseModel):
     cause: str
 
 
+class WarningBody(BaseModel):
+    """Something the turn did that the consumer should know: ``pin_quarantined`` names an
+    author pin the output gate's convergence rule quarantined (#145)."""
+
+    kind: str
+    memory_id: str | None = None
+
+
 class RespondResponse(MutationResponse):
     """One finished turn: the reply, the turn's beats for the resolved viewpoint, its position,
     the story's new revision, the model calls it made, where its time went, and the
@@ -145,11 +158,17 @@ class RespondResponse(MutationResponse):
     quality_status: QualityStatus | None
     profile: ProfileVersionRef | None
     config_revision: int | None
+    warnings: list[WarningBody] = Field(default_factory=list, exclude_if=lambda w: not w)
+    """Present only when the turn has one (#145's ``pin_quarantined``)."""
 
     @classmethod
     def of(cls, result: RespondResult) -> RespondResponse:
         return cls(
-            message=MessageBody(message_id=result.message.message_id, text=result.message.text),
+            message=MessageBody(
+                message_id=result.message.message_id,
+                text=result.message.text,
+                mode=result.message.mode,
+            ),
             beats=[item_model(b) for b in result.beats],
             turn=result.turn,
             variant=result.variant,
@@ -170,6 +189,7 @@ class RespondResponse(MutationResponse):
             quality_status=result.quality_status,
             profile=result.profile,
             config_revision=result.config_revision,
+            warnings=[WarningBody(kind=w.kind, memory_id=w.memory_id) for w in result.warnings],
             budget=(
                 None
                 if result.budget is None

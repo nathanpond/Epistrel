@@ -10,6 +10,6 @@ and the ``Check`` base class. ``core.catalog.validation`` runs them, in the expl
 ``state_schema``.
 
 Each check names the entry types it applies to (``kinds``) and the capability it needs
-(``capability``; ``None`` for the always-run checks). ``scenario``, ``cast_members`` and
-``character_documents`` are helpers the checks share, not checks.
+(``capability``; ``None`` for the always-run checks). ``scenario``, ``cast_members``,
+``character_documents`` and ``seed_world`` (#149) are helpers the checks share, not checks.
 """

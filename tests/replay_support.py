@@ -363,10 +363,12 @@ async def replay_rest(c03: Any, settings: Any, db: AsyncEngine) -> Replays:
     seen = Replays()
     ids: dict[str, Any] = {}
     base = bearer() | {"X-Epistrel-Principal": c03.PRINCIPAL}
-    async with c03.surface_engine(settings) as (_, app):
+    async with c03.surface_engine(settings) as (lib, app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             for index, step in enumerate(steps(c03)):
+                if step.prepare is not None:
+                    await step.prepare(lib, ids)
                 call = step.rest(ids)
                 path = call.path.format(**ids)
                 route = route_of(app, call.method, path)
@@ -450,6 +452,8 @@ async def replay_library(c03: Any, settings: Any, db: AsyncEngine) -> Replays:
     ids: dict[str, Any] = {}
     async with c03.surface_engine(settings) as (engine, app):
         for index, step in enumerate(steps(c03)):
+            if step.prepare is not None:
+                await step.prepare(engine, ids)
             call = step.rest(ids)
             route = route_of(app, call.method, call.path.format(**ids))
             mutating = is_mutating(route)

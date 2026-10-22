@@ -117,7 +117,7 @@ def test_closure_package_missing_from_env_warns_and_extras_are_ignored() -> None
         ("MIT AND PSF-2.0", "ok"),
         ("Apache Software License; MIT License", "ok"),
         ("GPL-2.0-or-later WITH Classpath-exception-2.0", "denied"),
-        ("(MIT OR Apache-2.0)", "unknown"),
+        ("(MIT OR Apache-2.0)", "ok"),
         ("Artistic-2.0", "not allowed"),
     ],
 )
@@ -136,10 +136,126 @@ def test_classifier_spellings_normalise() -> None:
 
 def test_parenthesised_classifier_is_looked_up_whole() -> None:
     """certifi's metadata reads `Mozilla Public License 2.0 (MPL 2.0)`: a known whole value is
-    its id (#74). Complement: other parentheses are still UNKNOWN."""
+    its id (#74). Complement: other parentheses are read as an SPDX expression (#310), and an
+    unlisted classifier with parentheses, which is not one, is UNKNOWN."""
     assert parse_expression("Mozilla Public License 2.0 (MPL 2.0)") == [["MPL-2.0"]]
     assert judge("certifi", "Mozilla Public License 2.0 (MPL 2.0)", CONFIG).status == "ok"
-    assert parse_expression("(MIT OR GPL-3.0)") == [["UNKNOWN"]]
+    assert parse_expression("(MIT OR GPL-3.0)") == [["MIT"], ["GPL-3.0"]]
+    assert parse_expression("Some Other License (SOL)") == [[UNKNOWN]]
+
+
+@pytest.mark.parametrize(
+    ("raw", "alternatives"),
+    [
+        ("(MIT OR GPL-2.0-only)", [["MIT"], ["GPL-2.0-only"]]),
+        (
+            "Apache-2.0 AND (MIT OR BSD-3-Clause)",
+            [["Apache-2.0", "MIT"], ["Apache-2.0", "BSD-3-Clause"]],
+        ),
+        (
+            "GPL-3.0-only AND (MIT OR Apache-2.0)",
+            [["GPL-3.0-only", "MIT"], ["GPL-3.0-only", "Apache-2.0"]],
+        ),
+        # AND binds tighter than OR, with or without parentheses.
+        ("MIT OR Apache-2.0 AND GPL-3.0-only", [["MIT"], ["Apache-2.0", "GPL-3.0-only"]]),
+        (
+            "(MIT OR Apache-2.0) AND GPL-3.0-only",
+            [["MIT", "GPL-3.0-only"], ["Apache-2.0", "GPL-3.0-only"]],
+        ),
+        ("(MIT OR (BSD-3-Clause AND GPL-3.0-only))", [["MIT"], ["BSD-3-Clause", "GPL-3.0-only"]]),
+        ("((MIT))", [["MIT"]]),
+        ("(MIT)OR(Apache-2.0)", [["MIT"], ["Apache-2.0"]]),
+        # `WITH` keeps its left-hand id, inside parentheses too.
+        ("(GPL-2.0-or-later WITH Classpath-exception-2.0) OR MIT", [["GPL-2.0-or-later"], ["MIT"]]),
+        ("MIT AND (Apache-2.0 WITH LLVM-exception)", [["MIT", "Apache-2.0"]]),
+        # Terms are normalised as before: a classifier spelling is one term.
+        ("(MIT License OR Apache Software License)", [["MIT"], ["Apache-2.0"]]),
+        ("Apache Software License AND MIT", [["Apache-2.0", "MIT"]]),
+    ],
+)
+def test_spdx_expressions_with_parentheses_parse(raw: str, alternatives: list[list[str]]) -> None:
+    """A real SPDX expression parser: parentheses, AND tighter than OR, and WITH, to the OR of
+    ANDs `judge` reads (#310)."""
+    assert parse_expression(raw) == alternatives
+
+
+@pytest.mark.parametrize(
+    ("raw", "status", "detail"),
+    [
+        # OR passes when any branch is allowed, as `GPL-2.0 OR MIT` does (user decision on #42).
+        ("(MIT OR GPL-2.0-only)", "ok", ""),
+        ("(GPL-2.0-only OR MIT)", "ok", ""),
+        ("(GPL-2.0-or-later WITH Classpath-exception-2.0) OR MIT", "ok", ""),
+        ("Apache-2.0 AND (MIT OR BSD-3-Clause)", "ok", ""),
+        ("MIT OR Apache-2.0 AND GPL-3.0-only", "ok", ""),
+        # AND is denied when any branch it needs is: by id, not by name (#310).
+        ("GPL-3.0-only AND (MIT OR Apache-2.0)", "denied", "GPL"),
+        ("(MIT OR Apache-2.0) AND GPL-3.0-only", "denied", "GPL"),
+        ("MIT AND (GPL-3.0-only OR AGPL-3.0-only)", "denied", "GPL"),
+        ("(MIT AND SSPL-1.0) OR (Apache-2.0 AND EUPL-1.2)", "denied", "SSPL"),
+        ("(GPL-2.0-or-later WITH Classpath-exception-2.0)", "denied", "GPL"),
+        ("(Artistic-2.0 OR Zlib)", "ok", ""),
+        ("(Artistic-2.0 OR MPL-1.1)", "not allowed", ""),
+    ],
+)
+def test_parenthesised_expressions_judge_by_branch(raw: str, status: str, detail: str) -> None:
+    verdict = judge("pkg", raw, CONFIG)
+    assert (verdict.status, verdict.detail) == (status, detail)
+    if status == "denied":
+        cfg = LicensesConfig(CONFIG.allow, CONFIG.deny, {"pkg": "vendor says fine"})
+        verdict = judge("pkg", raw, cfg)
+        assert (verdict.status, verdict.detail) == (
+            "denied",
+            f"exception refused: {detail} family",
+        )
+
+
+DEEP = "(" * 17 + "MIT" + ")" * 17
+WIDE = " AND ".join(f"(MIT OR Apache-2.0 OR BSD-{n}-Clause)" for n in range(2, 6))
+
+
+@pytest.mark.parametrize(
+    ("raw", "status"),
+    [
+        ("(MIT OR Apache-2.0", "unknown"),
+        ("MIT OR Apache-2.0)", "unknown"),
+        ("()", "unknown"),
+        ("(MIT OR)", "unknown"),
+        ("(OR MIT)", "unknown"),
+        ("(MIT OR OR Apache-2.0)", "unknown"),
+        ("(MIT AND) OR Apache-2.0", "unknown"),
+        ("(MIT) Apache-2.0", "unknown"),
+        ("MIT (Apache-2.0)", "unknown"),
+        ("(MIT OR Apache-2.0) WITH LLVM-exception", "unknown"),
+        ("(MIT WITH) OR Apache-2.0", "unknown"),
+        ("(MIT WITH OR Apache-2.0)", "unknown"),
+        ("MIT OR Apache-2.0 OR", "unknown"),
+        (DEEP, "unknown"),
+        (WIDE, "unknown"),
+        # Malformed and naming a deny family: denied, whichever branch would have been allowed.
+        ("(MIT OR GPL-3.0-only", "denied"),
+        ("(MIT) GPL-3.0-only", "denied"),
+        ("MIT OR (GPL (>= 2))", "denied"),
+        ("(MIT OR Apache-2.0) WITH GPL-3.0-only", "denied"),
+    ],
+)
+def test_a_malformed_expression_fails_closed(raw: str, status: str) -> None:
+    """An expression that does not parse reads UNKNOWN as a whole, so no allowed branch inside it
+    passes the value; a deny family named in it denies it, and its exception is refused (#310).
+    Complement: within the bounds, the same shapes parse (`test_spdx_expressions_with_...`)."""
+    assert parse_expression(raw) == [[UNKNOWN]]
+    verdict = judge("pkg", raw, CONFIG)
+    assert verdict.status == status
+    cfg = LicensesConfig(CONFIG.allow, CONFIG.deny, {"pkg": "vendor says fine"})
+    expected = "excepted" if status == "unknown" else "denied"
+    assert judge("pkg", raw, cfg).status == expected
+
+
+def test_expression_bounds_are_inclusive() -> None:
+    """Complement of `DEEP` and `WIDE`: 16 levels of parentheses and 64 alternatives parse."""
+    assert parse_expression("(" * 16 + "MIT" + ")" * 16) == [["MIT"]]
+    wide = " AND ".join(f"(MIT OR BSD-{n}-Clause)" for n in range(2, 8))
+    assert len(parse_expression(wide)) == 64
 
 
 @pytest.mark.parametrize(("spelling", "spdx"), sorted(NORMALISATION.items()))
@@ -273,6 +389,74 @@ def test_classifier_values_are_read_per_classifier(raw: str, status: str, detail
         ("Library: GPL v3", "GPL"),
         ("Python library GPL v3", "GPL"),
         ("Library AGPL v3", "AGPL"),
+        # A value that names GNU but no specific license is the GPL, the fail-safe reading (#313,
+        # option 2): the spellings the issue names, as an id, joined, after `LicenseRef-`, as a
+        # free-text part beside an allowed one, and as a license text's title line.
+        ("GNU", "GPL"),
+        ("gnu", "GPL"),
+        ("GNU v3", "GPL"),
+        ("GNU License", "GPL"),
+        ("GNU license v2 or later", "GPL"),
+        ("GNU-v3", "GPL"),
+        ("GNUv3", "GPL"),
+        ("GNU3", "GPL"),
+        ("GNULicense", "GPL"),
+        ("LicenseRef-GNU", "GPL"),
+        ("GNU General License", "GPL"),
+        ("The GNU license", "GPL"),
+        ("MIT AND GNU", "GPL"),
+        ("MIT; GNU License", "GPL"),
+        ("GNU LICENSE\n   Version 3\n", "GPL"),
+        # A `LicenseRef-` body is read as words, so a family after a prefix is found (#320,
+        # option 2): ScanCode LicenseDB's `LicenseRef-scancode-<key>` ids, KDE's policy ids, and
+        # other vendor schemes; the issue's values.
+        ("LicenseRef-scancode-gpl-2.0-classpath", "GPL"),
+        ("LicenseRef-scancode-gpl-2.0-plus-openssl", "GPL"),
+        ("LicenseRef-scancode-agpl-3.0-plus", "AGPL"),
+        ("LicenseRef-scancode-sspl-1.0", "SSPL"),
+        ("LicenseRef-scancode-eupl-1.2", "EUPL"),
+        ("LicenseRef-KDE-Accepted-GPL", "GPL"),
+        ("LicenseRef-MongoDB-SSPL", "SSPL"),
+        ("LicenseRef-Modified-GPL-3.0", "GPL"),
+        ("LicenseRef-Qt-GPL", "GPL"),
+        ("LicenseRef-FSF-GPL", "GPL"),
+        ("LicenseRef-Dual-GPL-Commercial", "GPL"),
+        ("MIT AND LicenseRef-scancode-gpl-2.0-plus-openssl", "GPL"),
+        ("licenseref-kde-accepted-gpl", "GPL"),
+        ("DocumentRef-spdx:LicenseRef-KDE-Accepted-GPL", "GPL"),
+        ("LicenseRef-KDE-Accepted-GPLv3", "GPL"),
+        ("LicenseRef-scancode-gnu-gpl-2.0", "GPL"),
+        ("LicenseRef-Vendor-Affero-GPL", "AGPL"),
+        # The cost the issue names: a `LicenseRef-` copy of an SPDX id with `GPL` inside it is
+        # read as the GPL. The bare SPDX ids keep their verdicts (the complement below).
+        ("LicenseRef-CNRI-Python-GPL-Compatible", "GPL"),
+        ("LicenseRef-SMAIL-GPL", "GPL"),
+        ("LicenseRef-Qt-GPL-exception-1.0", "GPL"),
+        ("LicenseRef-i2p-gpl-java-exception", "GPL"),
+        # An id that starts with the family is the family, `ver` and a `.` before the version
+        # included (#320).
+        ("GPLver3", "GPL"),
+        ("GPLv.3", "GPL"),
+        ("GPLver.3", "GPL"),
+        ("GPLVersion.3", "GPL"),
+        ("AGPLver3", "AGPL"),
+        ("EUPLv.1.2", "EUPL"),
+        ("GNU-GPLver.2", "GPL"),
+        ("LicenseRef-GPLver3", "GPL"),
+        # The EUPL's long name without `Union`, and the deprecated SPDX id `eCos-2.0`
+        # (GPL-2.0-or-later WITH eCos-exception-2.0), bare and as a `LicenseRef-` copy (#433).
+        ("European Public License", "EUPL"),
+        ("European Public Licence 1.2", "EUPL"),
+        ("European-Public-Licence-v1.2", "EUPL"),
+        ("EuropeanPublicLicence1.2", "EUPL"),
+        ("MIT; European Public License", "EUPL"),
+        ("eCos-2.0", "GPL"),
+        ("ecos-2.0", "GPL"),
+        ("LicenseRef-eCos-2.0", "GPL"),
+        ("MIT AND eCos-2.0", "GPL"),
+        ("eCos License version 2.0", "GPL"),
+        # The cost, as #320's: the `LicenseRef-` copy of the exception id reads as the GPL.
+        ("LicenseRef-eCos-exception-2.0", "GPL"),
     ],
 )
 def test_an_exception_never_admits_a_denied_family_whatever_the_spelling(
@@ -281,8 +465,8 @@ def test_an_exception_never_admits_a_denied_family_whatever_the_spelling(
     """A deny family is found whether it is a table spelling (alone, `;`-joined, any case), an
     SPDX-like id (`GNU-GPL`, `GPL.v3`, `LicenseRef-GPL-3.0`, a long name joined by hyphens), or
     named where the parser reads UNKNOWN: free text (`GNU Public License`, `Affero GPL`,
-    `ServerSide Public License`), an SPDX expression with parentheses, the title line of a
-    license text (#94)."""
+    `ServerSide Public License`), an SPDX expression with parentheses (read by id since #310), the
+    title line of a license text (#94)."""
     verdict = judge("pkg", raw, CONFIG)
     assert (verdict.status, verdict.detail) == ("denied", family)
     cfg = LicensesConfig(CONFIG.allow, CONFIG.deny, {"pkg": "vendor says fine"})
@@ -321,7 +505,7 @@ NUMPY_TEXT = (
     [
         ("Artistic-2.0", "not allowed"),
         ("Other/Proprietary License", "unknown"),
-        ("(MIT OR Apache-2.0)", "unknown"),
+        ("(MIT OR Apache-2.0", "unknown"),
         ("GNU Lesser General Public License v2 (LGPLv2)", "not allowed"),
         ("LGPLv2+", "not allowed"),
         ("GNU Lesser General Public License v2.1", "unknown"),
@@ -345,9 +529,35 @@ NUMPY_TEXT = (
         ("NetHack General Public License (NGPL)", "unknown"),
         # Only a leading `LicenseRef-` is dropped, as `GNU` is.
         ("LicenseRef-LGPL-2.1", "not allowed"),
-        ("LicenseRef-CNRI-Python-GPL-Compatible", "not allowed"),
+        # A `LicenseRef-` body read as words (#320) keeps a qualified GPL another license:
+        # `Library` right after `LicenseRef` starts the license's name, as at a phrase start.
+        ("LicenseRef-Library-GPL", "not allowed"),
+        ("LicenseRef-Lesser-GPL-3.0", "not allowed"),
+        ("LicenseRef-Nethack-GPL", "not allowed"),
+        ("LicenseRef-KDE-Accepted-LGPL", "not allowed"),
+        ("LicenseRef-scancode-lgpl-2.1-plus", "not allowed"),
+        ("LicenseRef-scancode-gfdl-1.3", "not allowed"),
+        ("LicenseRef-scancode-gnuplot", "not allowed"),
+        ("LicenseRef-scancode-mit-old-style", "not allowed"),
+        ("SMAIL-GPL", "not allowed"),
+        ("Qt-GPL-exception-1.0", "not allowed"),
+        # #433's readings stop at the EUPL's name and the eCos license id: other `European`
+        # licenses and the eCos exception's own id are not denied.
+        ("European Space Agency Public License", "unknown"),
+        ("eCos-exception-2.0", "not allowed"),
         # `licensed` is not `license`.
         ("Free for the general public, licensed as MIT", "unknown"),
+        # A value that names a specific GNU license other than the GPL is not a bare GNU (#313),
+        # and `gnu` must be a word of its own.
+        ("GNU Lesser License v3", "unknown"),
+        ("GNU Library License", "unknown"),
+        ("GNU LGPLv3", "unknown"),
+        ("GNU Free Documentation License v1.3", "unknown"),
+        ("GNU FDL", "unknown"),
+        ("GNU GFDL-1.3", "unknown"),
+        ("GNU All-permissive License", "unknown"),
+        ("GNU-Nethack-License", "not allowed"),
+        ("GNUplot License", "unknown"),
     ],
 )
 def test_an_exception_still_admits_what_names_no_denied_family(raw: str, status: str) -> None:
@@ -359,6 +569,38 @@ def test_an_exception_still_admits_what_names_no_denied_family(raw: str, status:
     assert judge("pkg", raw, CONFIG).status == status
     cfg = LicensesConfig(CONFIG.allow, CONFIG.deny, {"pkg": "vendor says fine"})
     assert judge("pkg", raw, cfg).status == "excepted"
+
+
+# The FSF's notice for a GPL program (#312): its first line does not name the license.
+FSF_NOTICE = (
+    "This program is free software; you can redistribute it and/or modify\n"
+    "it under the terms of the GNU General Public License as published by\n"
+    "the Free Software Foundation; either version 3 of the License, or\n"
+    "(at your option) any later version."
+)
+
+
+def test_a_license_text_is_judged_by_its_first_line_only() -> None:
+    """The rule the owner kept for #312 (option 1): a license text is judged by its first line,
+    so a GPL notice that does not open with the license's name reads UNKNOWN. It still fails
+    without an exception, and an exception admits it, so the maintainer who writes one reads the
+    text first. The same notice behind a title line that names the GPL is denied and its
+    exception refused."""
+    cfg = LicensesConfig(CONFIG.allow, CONFIG.deny, {"pkg": "vendor says fine"})
+    assert parse_expression(FSF_NOTICE) == [[UNKNOWN]]
+    assert judge("pkg", FSF_NOTICE, CONFIG).status == "unknown"
+    assert judge("pkg", FSF_NOTICE, cfg).status == "excepted"
+    titled = "GNU General Public License v3\n" + FSF_NOTICE
+    assert (judge("pkg", titled, CONFIG).status, judge("pkg", titled, CONFIG).detail) == (
+        "denied",
+        "GPL",
+    )
+    assert judge("pkg", titled, cfg).detail == "exception refused: GPL family"
+    finding = evaluate(_records(fastapi=FSF_NOTICE), {"fastapi": {"epistrel"}}, CONFIG).findings
+    assert finding == [
+        "fastapi: 'This program is free software; you can redistribute it and/o…' UNKNOWN"
+        " license [invariant 2] via (direct)"
+    ]
 
 
 def test_a_table_spelling_is_read_as_listed_not_searched(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -412,6 +654,24 @@ def test_family_names_follow_the_configured_deny_list(raw: str) -> None:
     verdict = judge("pkg", raw, cfg)
     assert (verdict.status, verdict.detail) == ("denied", "exception refused: LGPL family")
     assert judge("pkg", raw, CONFIG).status == "unknown"
+
+
+@pytest.mark.parametrize("raw", ["GNU", "GNU v3", "GNU License"])
+def test_a_bare_gnu_is_the_gpl_only_while_the_gpl_is_denied(raw: str) -> None:
+    """A bare GNU value is read as the GPL family (#313), so it counts only for a deny list that
+    names the GPL; without it the value is judged as before (UNKNOWN or not allowed)."""
+    cfg = LicensesConfig(CONFIG.allow, ("AGPL", "SSPL", "EUPL"), {"pkg": "vendor says fine"})
+    assert judge("pkg", raw, cfg).status == "excepted"
+    verdict = judge("pkg", raw, LicensesConfig(CONFIG.allow, CONFIG.deny, {"pkg": "fine"}))
+    assert verdict.detail == "exception refused: GPL family"
+
+
+def test_a_table_entry_settles_a_bare_gnu_spelling(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The remedy for a package that is really LGPL but declares only `GNU` (#313): a table entry
+    is authoritative for its spelling, so `GNU License` → `LGPL-2.1-or-later` passes."""
+    assert judge("pkg", "GNU License", CONFIG).detail == "GPL"
+    monkeypatch.setitem(NORMALISATION, "gnu license", "LGPL-2.1-or-later")
+    assert judge("pkg", "GNU License", CONFIG).status == "ok"
 
 
 # Every license classifier in trove-classifiers 2026.9.21.13, as pip-licenses reports it (the

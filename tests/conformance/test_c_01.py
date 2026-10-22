@@ -78,6 +78,7 @@ from schemathesis.specs.openapi.checks import (
     status_code_conformance,
 )
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.api import create_app
 from epistrel.api.auth import EXEMPT_ROUTES
@@ -107,9 +108,10 @@ from tests.conformance.conftest import migrated_database
 from tests.conftest import REPO_ROOT
 from tests.media_support import files, metadata, png
 from tests.model_support import config_key
-from tests.respond_support import AUTHOR, body
+from tests.respond_support import AUTHOR, body, respond, respond_client
 from tests.scenario_support import scenario as catalog_scenario
 from tests.story_support import story_body
+from tests.structured_turn_support import beat, render, structured_story
 
 SCHEMA_PATH = REPO_ROOT / "docs" / "openapi.json"
 COMMITTED: dict[str, Any] = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
@@ -794,3 +796,73 @@ def test_c_01__malformed(live: Live) -> None:
     """Each kind of malformed input is refused with 422 naming its field and writes no row;
     complement: the well-formed request writes."""
     assert _malformed(live) == []
+
+
+@pytest.mark.integration
+@pytest.mark.part("M4", "FR-TURN-1")
+async def test_c_01__structured(
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """C-01 (M4): a structured turn with malformed channels is rejected the same way. A body
+    naming a channel the request has no field for (``player_input.think``), or two render
+    characters (one primary in M4), is 422 ``validation_error`` naming the field, with no
+    operation row; a render missing its required channel is retried, then refused 503
+    ``model_unavailable`` (``invalid_structure``) with no event and the revision unchanged.
+    Complement: the well-formed turn commits, its beats typed by channel."""
+    settings = auth_settings(pg_url, model_adapter="stub")
+    async with respond_client(settings, engine) as (client, epistrel):
+        story, ids = await structured_story(client, "Wren", "Ada", "Brann")
+        wren = ids["Wren"]
+
+        async def turn_rows() -> int:
+            async with engine.connect() as conn:
+                found = await conn.scalar(
+                    text("SELECT count(*) FROM operations WHERE story_id = :s AND kind = 'turn'"),
+                    {"s": story},
+                )
+            return int(found or 0)
+
+        async def revision() -> int:
+            async with engine.connect() as conn:
+                found = await conn.scalar(
+                    text("SELECT timeline_revision FROM stories WHERE id = :s"), {"s": story}
+                )
+            return int(found)
+
+        malformed = [
+            (
+                {"actor_character_id": wren, "player_input": {"say": "hi", "think": "no"}},
+                "body.player_input.think",
+            ),
+            (body(wren, "both?", render_character_ids=[ids["Ada"], ids["Brann"]]), None),
+        ]
+        for payload, field in malformed:
+            refused = await respond(client, story, payload)
+            assert refused.status_code == 422, refused.text
+            error = refused.json()["error"]
+            assert error["code"] == "validation_error"
+            assert error["details"]["field"] == (field or "body.render_character_ids")
+            assert await turn_rows() == 0
+
+        before = await revision()
+        epistrel.models.stub.script("generation", [render(beat("think", "Hmm."))] * 3)
+        refused = await respond(client, story, body(wren, "Ada?"))
+        assert refused.status_code == 503, refused.text
+        assert refused.json()["error"]["details"]["reason"] == "invalid_structure"
+        async with engine.connect() as conn:
+            events = await conn.scalar(
+                text(
+                    "SELECT count(*) FROM events e JOIN operations o "
+                    "ON o.operation_id = e.operation_id WHERE e.story_id = :s AND o.kind = 'turn'"
+                ),
+                {"s": story},
+            )
+        assert events == 0
+        assert await revision() == before
+
+        epistrel.models.stub.script("generation", [render(beat("say", "Hello.", intent="sincere"))])
+        played = await respond(client, story, body(wren, "Ada?"))
+        assert played.status_code == 200, played.text
+        channels = [b["channel"] for b in played.json()["beats"]]
+        assert channels == ["say", "say", "message"]
+        assert await revision() == before + 1

@@ -85,7 +85,7 @@ from epistrel.core.context import SYSTEM_PRINCIPAL
 from epistrel.core.errors import ConfigConflict, InvalidRequest, ProfileDeleted, ProfileNotFound
 from epistrel.core.ids import ULID_PATTERN, new_ulid
 from epistrel.core.ownership import Owner, RelationFilter
-from epistrel.core.profiles import effective, impact, schema
+from epistrel.core.profiles import effective, guarantees, impact, schema
 from epistrel.core.profiles.effective import Configuration
 from epistrel.core.profiles.fingerprint import RuntimeFacts
 from epistrel.core.profiles.impact import Delta, ImpactReport, TwoStageRequest, TwoStageResult
@@ -832,6 +832,19 @@ async def get_profile(
         return await _read(conn, profile_id, version)
 
 
+async def profile_guarantees(
+    db: AsyncEngine, profile_id: str, *, version: int | None = None
+) -> guarantees.GuaranteeTable:
+    """The guarantee table (FR-VERIFY-15, FR-PROF-12; #132) of the profile at its latest version
+    (or ``version``) over the deployment's ``profile_defaults``, as a story following it with no
+    overrides runs; 404 for an unknown profile or version. A deleted profile still answers."""
+    async with db.connect() as conn:
+        found = await _read(conn, profile_id, version)
+        defaults = await effective.profile_defaults(conn)
+    settings = effective.merged_settings(defaults, found.settings)
+    return guarantees.table(found.id, found.version, settings)
+
+
 async def list_versions(db: AsyncEngine, profile_id: str) -> list[ProfileVersion]:
     """Every version of the profile, oldest first; 404 for an unknown profile."""
     async with db.connect() as conn:
@@ -926,11 +939,13 @@ async def validate_stored(
     request: ProfileValidate | None = None,
     *,
     purposes: Purposes | None = None,
+    guardrail_calls: tuple[int, int] = (0, 0),
 ) -> ProfileValidation:
     """Validate ``request.settings`` (a dry run), or the profile's latest version: the result
-    when it is valid; 422 ``invalid_profile`` naming what is missing or undelivered, or
-    ``validation_error`` for the settings' shape, when it is not. 404 for an unknown
-    profile."""
+    when it is valid (with its ``warnings``, #156: ``guardrail_calls`` is the deployment's
+    model-assisted input and output policies); 422 ``invalid_profile`` naming what is missing
+    or undelivered, or ``validation_error`` for the settings' shape, when it is not. 404 for an
+    unknown profile."""
     async with db.connect() as conn:
         head = await _head(conn, profile_id)
         if request is not None and request.settings is not None:
@@ -941,7 +956,12 @@ async def validate_stored(
             field = ("settings",)
         defaults = await effective.profile_defaults(conn)
     effective.check_document(document, purposes=purposes, field=field)
-    result = validate_profile(effective.layered(defaults, document), purposes=purposes, field=field)
+    result = validate_profile(
+        effective.layered(defaults, document),
+        purposes=purposes,
+        field=field,
+        guardrail_calls=guardrail_calls,
+    )
     if not result.valid:
         raise refusal(result)
     return result
@@ -984,6 +1004,7 @@ __all__ = [
     "get_profile",
     "list_profiles",
     "list_versions",
+    "profile_guarantees",
     "profile_schema",
     "profile_setting",
     "purge_deleted",

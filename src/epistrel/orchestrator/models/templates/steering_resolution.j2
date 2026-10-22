@@ -1,0 +1,7 @@
+{#- The deferral bias (FR-COMMIT-11; #154), included by the structured character and narrator
+renders and the repair's regeneration: a fixed steering line (``resolution_steering``, category
+``constraint``), present only when an open thunk an earlier turn introduced is in the context.
+Generation steering, not a hard check: reconciliation is the check (FR-COMMIT-14). -#}
+{% if resolution_steering %}
+{{ resolution_steering }}
+{% endif %}

@@ -38,6 +38,37 @@ HISTORY_DESCRIPTION = (
 )
 
 
+class BeatPropositionModel(BaseModel):
+    """A proposition a structured beat asserts, with its verdict (#150)."""
+
+    proposition: dict[str, Any] | None
+    verdict: str | None
+
+
+class UtteranceLabelsModel(BaseModel):
+    """An utterance's three independent labels (FR-TURN-6; #150)."""
+
+    objective_relation: Literal["true", "false", "unresolved"]
+    belief_relation: Literal["consistent", "inconsistent", "unknown"]
+    intent: Literal["sincere", "deceptive", "joking", "unspecified"]
+
+
+class BeatVisibilityModel(BaseModel):
+    """A ``latent`` beat's scope (FR-TURN-4; #150)."""
+
+    scope: Literal["objective", "public", "characters"]
+    characters: list[str] = Field(default_factory=list)
+
+
+class DetectedClaimModel(BaseModel):
+    """A claim detection found in a beat beyond what it declared (#148, #150)."""
+
+    start: int
+    end: int
+    category: str
+    verdict: str | None = None
+
+
 class HistoryItemModel(BaseModel):
     """One history item: a beat, a narration, a reply message or an audit record, with its
     position (turn, variant, beat), channel, text and the operation that recorded it."""
@@ -58,6 +89,35 @@ class HistoryItemModel(BaseModel):
         exclude_if=lambda redacted: not redacted,
         description="Present (`true`) when an erasure rewrote the item in place: each span "
         "that named the erased subject reads `[erased]` (#124).",
+    )
+    propositions: list[BeatPropositionModel] | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="A structured turn's beat (#150): each proposition it asserts (the "
+        "normalized proposition) with its verdict (`supported`, `contradicted`, `novel`, "
+        "`uncertain`, `denied`; `null` with verification off). Absent from a Lite item.",
+    )
+    effects: list[dict[str, Any]] | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="A structured turn's beat (#150): its state effects (empty in M4).",
+    )
+    labels: UtteranceLabelsModel | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="A `say` of a structured turn (#150): the utterance's three independent "
+        "labels (FR-TURN-6).",
+    )
+    visibility: BeatVisibilityModel | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="A `latent` beat (#150; omniscient reads only): its declared scope.",
+    )
+    detected: list[DetectedClaimModel] | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="A structured turn's beat (#150): claims detection found in it that it "
+        "did not declare, as spans, categories and verdicts.",
     )
 
 

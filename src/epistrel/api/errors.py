@@ -7,7 +7,12 @@ A lost database connection (SQLAlchemy's ``OperationalError`` or ``InterfaceErro
 went away, restarted, or refused the connection) is 503 ``database_unavailable`` with
 ``details.reason`` ``connection``, and the connection pool is disposed so the next request
 connects afresh (NFR-REL-3, X-06; #75). A transaction that was cut off rolled back; the client
-retries under the same ``Idempotency-Key``.
+retries under the same ``Idempotency-Key``. An ``OperationalError`` the server answered on a
+live connection (a SQLSTATE outside class 08 and the shutdown codes: a statement timeout) is
+answered the same way, but the pool is kept (#452): disposing it would drop every healthy
+connection and make each request under load connect again. A story commit that times out on
+the story lock never reaches this handler: the commit raises 423 ``story_busy`` with
+``Retry-After`` instead (#472).
 """
 
 from __future__ import annotations
@@ -53,11 +58,26 @@ async def validation_error_handler(request: Request, exc: Exception) -> JSONResp
     return JSONResponse(error.envelope(), status_code=error.http_status)
 
 
+SERVER_GONE = frozenset({"57P01", "57P02", "57P03"})
+"""``admin_shutdown``, ``crash_shutdown``, ``cannot_connect_now``: the server is going away."""
+
+
+def connection_lost(exc: Exception) -> bool:
+    """Whether ``exc`` (an ``OperationalError`` or ``InterfaceError``) means the connection
+    is gone: an interface error, a driver error with no SQLSTATE (refused, reset, timed out
+    connecting), a connection exception (class 08) or a server shutdown. A SQLSTATE the server
+    sent on a live connection (``lock_not_available``, ``query_canceled``) is not."""
+    if isinstance(exc, InterfaceError):
+        return True
+    sqlstate = getattr(getattr(exc, "orig", None), "sqlstate", None)
+    return sqlstate is None or str(sqlstate).startswith("08") or sqlstate in SERVER_GONE
+
+
 async def database_error_handler(request: Request, exc: Exception) -> JSONResponse:
     """A lost database connection: 503 ``database_unavailable``, and a fresh pool (see the
-    module docstring)."""
+    module docstring); the pool is kept when the connection was not lost."""
     engine = getattr(request.app.state, "engine", None)
-    if engine is not None:
+    if engine is not None and connection_lost(exc):
         await engine.dispose()
     error = DatabaseUnavailable(
         "the database is unavailable; retry with the same Idempotency-Key",
@@ -84,7 +104,7 @@ async def http_error_handler(request: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(body, status_code=exc.status_code, headers=exc.headers)
 
 
-__all__ = ["field_path", "install"]
+__all__ = ["connection_lost", "field_path", "install"]
 
 
 def install(app: FastAPI) -> None:

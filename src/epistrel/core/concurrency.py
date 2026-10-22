@@ -23,6 +23,11 @@ The order is abandon > regenerate > configuration re-check: a prospective change
 dependency, so it never reaches the re-check.
 
 ``run_with_revalidation`` drives that loop; the respond pipeline (#57) calls it.
+
+A **structured** turn's read set (``KeyedReadSetSource``: ``core.readset.StructuredReadSet``,
+#136) adds query keys to the Lite members: a change since the base that matches one touches it
+too (FR-CONC-11,12), its rebase re-runs ``core.readset.REBASE_CHECKS``, and a configuration
+re-check runs them as well, under the new configuration (FR-CONC-16, M4).
 """
 
 from __future__ import annotations
@@ -31,12 +36,12 @@ import hashlib
 import json
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import summary
+from epistrel.core import own_predicates, summary
 from epistrel.core.enums import Membership, OperationKind, OperationStatus
 from epistrel.core.errors import (
     ErasedSubjectReferenced,
@@ -227,6 +232,26 @@ class ReadSetSource(Protocol):
     async def hashes(self, conn: AsyncConnection, story_id: str) -> ReadSet: ...
 
 
+@runtime_checkable
+class KeyedReadSetSource(ReadSetSource, Protocol):
+    """A structured turn's read set (``core.readset.StructuredReadSet``, #136): the Lite members
+    plus the query keys and retrieved rows of the current attempt, checked at commit against the
+    change index (FR-CONC-11,12)."""
+
+    keyed: bool
+    rebased_to: int | None
+
+    def start_attempt(self) -> None: ...
+
+    def counts(self) -> dict[str, int]: ...
+
+    def document(self, lite: ReadSet | None) -> dict[str, Any]: ...
+
+    async def touched(
+        self, conn: AsyncConnection, story_id: str, base_revision: int
+    ) -> list[str]: ...
+
+
 MemberLoader = Callable[[AsyncConnection, str, "LiteReadSet"], Awaitable[Any]]
 """Loads one member's JSON value for a story; hashed by ``hash_member``."""
 
@@ -297,7 +322,7 @@ async def _segments(conn: AsyncConnection, story_id: str, spec: LiteReadSet) -> 
     the covered range also fixes where the verbatim window starts."""
     return [
         [s.segment_id, s.covers_from, s.covers_to]
-        for s in await summary.included_segments(conn, story_id)
+        for s in await summary.read_included_segments(conn, story_id)
     ]
 
 
@@ -459,7 +484,7 @@ async def run_with_revalidation(
     checked twice. Up to ``budget + 1`` re-check rounds run (one always may) and regenerations
     spend ``budget``; past either bound the call is 409 ``revision_conflict``.
     """
-    op.read_set_source = read_set if read_set is not None else LiteReadSet()
+    op.use_read_set(read_set if read_set is not None else LiteReadSet())
     inputs = await op.begin(read=begin)
     limit = budget if budget is not None else op.story_settings.regenerate_retry_budget
     regenerations = 0
@@ -476,7 +501,8 @@ async def run_with_revalidation(
     try:
         while True:
             if generate_next:
-                await generate(op, inputs)
+                with own_predicates.recording(op.own_predicates):
+                    await generate(op, inputs)
             generate_next = True
             try:
                 await op.commit(decide=decide)
@@ -496,11 +522,16 @@ async def run_with_revalidation(
                         raise await conflict(state.current_revision, "config_changed") from None
                     rechecks += 1
                     await op.recapture_config()
-                    passed = (
-                        True
-                        if config_recheck is None
-                        else await config_recheck(op, outcome.changed)
-                    )
+                    with own_predicates.recording(op.own_predicates):
+                        passed = (
+                            True
+                            if config_recheck is None
+                            else await config_recheck(op, outcome.changed)
+                        )
+                        if passed and isinstance(op.read_set_source, KeyedReadSetSource):
+                            # A structured turn's verification and permission checks re-run
+                            # under the new configuration too (FR-CONC-16, M4; #136).
+                            passed = await op.rebase_recheck()
                     op.attempts[-1]["recheck"] = "passed" if passed else "failed"
                     if passed:
                         generate_next = False
@@ -519,6 +550,12 @@ async def run_with_revalidation(
                 inputs = await op.restart(read=begin)
                 continue
             return RevalidationResult(operation=op, attempts=list(op.attempts))
+    except RevisionConflict:
+        # A structured turn whose read set outgrew ``readset_max_keys`` (#136): a conflict,
+        # not a failure.
+        if op.in_flight:
+            await op.abandon()
+        raise
     except BaseException as exc:
         if op.in_flight:
             await op.fail(exc)

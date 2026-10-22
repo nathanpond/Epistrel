@@ -12,8 +12,9 @@ constants, never ``docs/`` (which the image does not ship):
 
 ``CALL_LATENCY_MS`` comes from the model matrix (``docs/model-matrix.json``, #54's
 measurements): each row's median turn latency over the model calls a turn made, and the largest
-of those, so an estimate errs long. At 2026-10-12 that is ``cydonia-24b-v4.3`` on the local
-tier with no model-assisted policy: 13,398 ms at one generation call per turn.
+of those, so an estimate errs long. At 2026-10-22 that is ``cydonia-24b-v4.3`` on the local
+tier playing structured turns with no model-assisted policy: 20,715 ms (a 126.36 s median turn
+over 6.1 calls).
 ``tests/test_profile_facts.py`` derives it from the matrix again, so a re-measured matrix fails
 until the constant follows it.
 """
@@ -26,7 +27,7 @@ CHUNK_MESSAGES = 30
 """Transcript messages one backfill call reads (FR-PROF-9's scene-sized chunks)."""
 CHARS_PER_TOKEN = 4
 """Characters per token, the usual rough rule for English text."""
-CALL_LATENCY_MS = 13_398
+CALL_LATENCY_MS = 20_715
 """One model call's latency, in milliseconds (see the module docstring)."""
 
 

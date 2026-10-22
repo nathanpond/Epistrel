@@ -18,6 +18,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core.propositions import store
 from tests import erasure_support as e
 from tests import genesis_support as g
 from tests import lite_genesis_support as lg
@@ -220,7 +221,27 @@ async def test_i_27__lite(stub_settings: Settings, engine: AsyncEngine) -> None:
             "story_heads": 1,
             "story_texts": 1,
             "policies": 1,
+            # #139: every character is an entity in every profile (its id the character's),
+            # with its name as an alias; the role overrides add "Mum" and "Tommy".
+            "entities": 4,
+            "entity_aliases": 6,
         }
+        async with engine.connect() as conn:
+            entity_rows = (
+                await conn.execute(
+                    text(
+                        "SELECT e.id, e.character_id, a.alias, a.source FROM entities e "
+                        "JOIN entity_aliases a ON a.entity_id = e.id WHERE e.story_id = :s"
+                    ),
+                    {"s": story_id},
+                )
+            ).all()
+        assert {str(r.id) for r in entity_rows} == {c["id"] for c in made["characters"]}
+        assert all(str(r.id) == str(r.character_id) for r in entity_rows)
+        assert sorted(r.alias for r in entity_rows if r.source != "canonical") == [
+            "Mum",
+            "Tommy",
+        ]
 
         # The full report: every deferred item with its location and capability.
         assert report["story_id"] == story_id
@@ -308,6 +329,22 @@ async def test_i_27__lite(stub_settings: Settings, engine: AsyncEngine) -> None:
         sent = everything_sent(stub)
         for phrase in lg.PUBLIC_PHRASES:
             assert phrase not in sent, phrase
+        # Lite stays untouched (#139): the prompt never reads the entity stores. A sentinel
+        # alias and descriptor recorded on the mother's entity reach no captured prompt
+        # (the role's "also called" aliases are scenario text Lite renders on its own).
+        stub.reset()
+        async with engine.begin() as conn:
+            await store.add_aliases(conn, story_id, by_role["mother"], [ENTITY_SENTINEL])
+            await conn.execute(
+                text("UPDATE entities SET descriptors = CAST(:d AS jsonb) WHERE id = :e"),
+                {"d": json.dumps([DESCRIPTOR_SENTINEL]), "e": by_role["mother"]},
+            )
+        again = await respond(client, story_id, body_of(player, "Where is everyone?"))
+        assert again.status_code == 200, again.text
+        sent = everything_sent(stub)
+        assert sent
+        for sentinel in (ENTITY_SENTINEL, DESCRIPTOR_SENTINEL):
+            assert sentinel not in sent, sentinel
 
         # The genesis operation keeps the full report, for an omniscient read only.
         async with engine.connect() as conn:
@@ -326,6 +363,8 @@ async def test_i_27__lite(stub_settings: Settings, engine: AsyncEngine) -> None:
         assert plain.json()["creation_report"] is None
 
 
+ENTITY_SENTINEL = "Zq-entity-alias-heron"
+DESCRIPTOR_SENTINEL = "zqdescriptorwren"
 CARD_LABEL = "zq-label-kestrel"
 CARD_PHRASE = "Zq-card-phrase: famous for her marmalade"
 """Planted on the cast catalog character's public card (#339): a label and a public

@@ -17,6 +17,7 @@ import pytest
 from pydantic import ValidationError
 
 from epistrel.core.profiles import schema
+from epistrel.core.profiles.capabilities import CAPABILITY
 from epistrel.core.profiles.effective import Configuration
 from epistrel.core.profiles.estimates import (
     CALL_LATENCY_MS,
@@ -26,7 +27,6 @@ from epistrel.core.profiles.estimates import (
 )
 from epistrel.core.profiles.fingerprint import (
     FINGERPRINT_PATTERN,
-    GUARANTEES,
     TEMPLATES_KEY,
     UNCERTIFIED,
     ModelIdentity,
@@ -36,9 +36,10 @@ from epistrel.core.profiles.fingerprint import (
     canonical_json,
     capabilities,
     fingerprint,
-    guarantees,
     quality_relevant_settings,
+    routed_models,
 )
+from epistrel.core.profiles.guarantees import GUARANTEES, guarantees
 from epistrel.core.profiles.impact import (
     CAMEL_CASE,
     WARNING_KINDS,
@@ -118,6 +119,33 @@ def test_the_fingerprint_follows_what_is_quality_relevant() -> None:
     assert other != base
 
 
+def test_a_routed_model_is_the_fingerprints_model() -> None:
+    """A configuration that routes a purpose to a model names that model for it in the
+    fingerprint and in what an operation records, as its calls use it (#325; FR-PROF-16): a
+    profile's model wins over the deployment's. Two configurations that route ``generation``
+    to different models have different fingerprints, and an unrouted purpose keeps the
+    deployment's model. A route that names no model, or names a purpose the deployment does not
+    list, leaves the models as they are."""
+    routed = _settings(nest("models.purposes.generation.model", "m-9"))
+    stamped = Configuration(LITE_PRESET_ID, 1, routed).stamp(FACTS)
+    assert stamped.models == {
+        "generation": ModelIdentity(id="m-9"),
+        "guardrail_check": ModelIdentity(id="m-2"),
+    }
+    assert stamped.record(LITE_PRESET_ID, 1)["models"] == {
+        "generation": {"id": "m-9", "reported_version": None},
+        "guardrail_check": {"id": "m-2", "reported_version": None},
+    }
+    assert routed_models(FACTS.models, routed) == stamped.models
+    elsewhere = _settings(nest("models.purposes.generation.model", "m-8"))
+    assert _print(routed) != _print(elsewhere)
+    assert stamped.fingerprint == _print(routed)
+    params_only = _settings(nest("models.purposes.generation.params.temperature", 0.3))
+    assert routed_models(FACTS.models, params_only) == dict(FACTS.models)
+    unlisted = _settings(nest("models.purposes.lite_summary.model", "m-7"))
+    assert routed_models(FACTS.models, unlisted) == dict(FACTS.models)
+
+
 def test_quality_relevant_settings_are_the_tagged_ones_and_the_templates() -> None:
     relevant = quality_relevant_settings(_settings(), FACTS.templates)
     tags = schema.setting_tags()
@@ -129,25 +157,45 @@ def test_quality_relevant_settings_are_the_tagged_ones_and_the_templates() -> No
 
 
 def test_capabilities_and_guarantees() -> None:
-    """Lite enables its pipeline (by level) and the delivered modules it turns on, and holds
-    none of the guarantee table's guarantees; each holds once its module is on."""
+    """Lite enables its pipeline (by level) and the delivered modules it turns on, and provides
+    none of the four guarantees the boundary names for it. Each row of the guarantee table holds
+    exactly where the modules (and the setting) it needs are on, when they are delivered, and
+    nowhere while one is not; a row held under a capability-map entry needs at least what that
+    entry needs, and a row outside stories is neither provided nor withheld."""
     assert list(capabilities(_settings())) == LITE_CAPABILITIES
     assert "rolling_summary" not in capabilities(
         _settings(nest("memory.rolling_summary.enabled", False))
     )
-    assert guarantees(_settings()) == ()
+    labeled = {row.id for row in GUARANTEES if row.label is not None}
+    assert len(labeled) == 4
+    assert not labeled & set(guarantees(_settings()))
     structured = parse_settings({"pipeline": "structured"})
     assert "structured" in capabilities(structured)
-    for guarantee in GUARANTEES:
-        module = schema.MODULE[guarantee.held_by.module]
-        assert module.switch is not None
-        value = next(
-            v
-            for v, level in module.levels
-            if not guarantee.held_by.levels or level in guarantee.held_by.levels
-        )
-        held = parse_settings(nest(module.switch, value))
-        assert guarantee.name in guarantees(held)
+    for row in GUARANTEES:
+        if row.capability is not None:
+            entry = CAPABILITY[row.capability]
+            assert set(entry.requires) <= set(row.requires), row.id
+        document: dict[str, Any] = {"pipeline": "structured"}
+        for need in row.requires:
+            module = schema.MODULE[need.module]
+            assert module.switch is not None
+            value = (
+                1
+                if module.positive
+                else next(v for v, level in module.levels if need.level in (None, level))
+            )
+            document = merged(document, nest(module.switch, value))
+        if row.setting is not None:
+            document = merged(document, nest(row.setting.path, row.setting.values[0]))
+        held = parse_settings(document)
+        if not row.in_story:
+            assert row.provided(held) is None
+            assert row.id not in guarantees(held)
+            continue
+        assert (row.id in guarantees(held)) is row.delivered, row.id
+        if row.setting is not None and row.delivered:
+            other = merged(document, nest(row.setting.path, "rules"))
+            assert row.id not in guarantees(parse_settings(other)), row.id
     assert QualityStatus(status=QualityStatusValue.uncertified) == UNCERTIFIED
     assert {s.value for s in QualityStatusValue} == {"certified", "uncertified", "stale"}
 
@@ -206,7 +254,8 @@ def test_a_delta_names_levels_raised_and_lowered() -> None:
     moved = delta(lite, structured, FACTS)
     assert ("structured" in moved.gained, "lite" in moved.lost) == (True, True)
     gone = delta(one, lite, FACTS)
-    assert gone.guarantees_lost == ("verification",)
+    assert gone.guarantees_lost == ("verification", "claim_detectors")
+    assert down.guarantees_lost == ()
 
 
 def test_an_entry_keeps_the_configuration_it_cannot_leave() -> None:
@@ -269,8 +318,10 @@ def test_the_estimate_and_its_measured_latency() -> None:
 
 
 def test_model_ids_and_template_hashes() -> None:
-    """Each delivered purpose's model is its own row's, else the ``default`` row's; the
-    template hashes are the shipped files' SHA-256, one per delivered purpose."""
+    """Each delivered purpose's model is its own row's, else its parent purpose's
+    (``regeneration`` shares generation's, #151), else the ``default`` row's; the
+    template hashes are the shipped files' SHA-256, one per delivered purpose's template and
+    template variant (#150: ``generation``'s structured, narrator and age-repair renders)."""
     now = datetime.now(UTC)
 
     def row(purpose: str, model: str | None) -> ConfigRow:
@@ -281,16 +332,20 @@ def test_model_ids_and_template_hashes() -> None:
     )
     assert set(found) == set(STORY_PURPOSES)
     assert found["generation"].id == "big"
-    assert {found[name].id for name in STORY_PURPOSES if name != "generation"} == {"base"}
+    assert found["regeneration"].id == "big"
+    others = set(STORY_PURPOSES) - {"generation", "regeneration"}
+    assert {found[name].id for name in others} == {"base"}
     assert all(model.reported_version is None for model in found.values())
     assert identities({})["generation"].id is None
     folder = resources.files("epistrel.orchestrator.models").joinpath("templates")
     assert dict(TEMPLATE_HASHES) == {
-        purpose.template.removesuffix(".j2"): hashlib.sha256(
-            folder.joinpath(purpose.template).read_bytes()
+        template.removesuffix(".j2"): hashlib.sha256(
+            folder.joinpath(template).read_bytes()
         ).hexdigest()
         for purpose in STORY_PURPOSES.values()
+        for template in (purpose.template, *purpose.variants.values())
     }
+    assert {"structured_generation", "narrator_generation", "age_repair"} <= set(TEMPLATE_HASHES)
 
 
 def test_both_spellings_of_ignore_warnings() -> None:
@@ -366,7 +421,7 @@ async def test_a_lost_guarantee_is_reported_and_held() -> None:
     lite = Configuration(LITE_PRESET_ID, 2, parse_settings({}))
     gone = delta(declared, lite, FACTS)
     report = single_report(affected("S", gone, history=False), gone)
-    assert report.guarantees_lost == ["verification"]
+    assert report.guarantees_lost == ["verification", "claim_detectors"]
     assert report.warnings == ["capabilities_lost", "guarantees_lost"]
     calls: list[str] = []
 
@@ -379,7 +434,7 @@ async def test_a_lost_guarantee_is_reported_and_held() -> None:
 
     held = await two_stage(lose, apply, ignore_warnings=False)
     assert (held.applied, held.result, calls) == (False, None, [])
-    assert held.impact.guarantees_lost == ["verification"]
+    assert held.impact.guarantees_lost == ["verification", "claim_detectors"]
     forced = await two_stage(lose, apply, ignore_warnings=True)
     assert (forced.applied, forced.result, calls) == (True, "applied", ["applied"])
     entailment = Configuration(

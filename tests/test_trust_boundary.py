@@ -1,6 +1,6 @@
 """The trust boundary: service credential, requesting principal, `/admin`, no MCP (docs/04
 S-TRUST-BOUNDARY, M2): the auth half (#44) and the respond half (#57). M3 (#128): an `/admin`
-erasure succeeds under any principal ID."""
+erasure succeeds under any principal ID. M4 (#145): so does a low-level `commit_fact`."""
 
 from __future__ import annotations
 
@@ -33,7 +33,9 @@ from tests.auth_support import (
     bearer,
     make_test_router,
 )
+from tests.canon_support import at as canon_at
 from tests.conftest import DUMMY_DSN, REPO_ROOT
+from tests.consolidation_support import story as consolidation_story
 from tests.erasure_support import erasure_settings
 from tests.erasure_support import request as erasure_request
 from tests.event_support import rows
@@ -114,6 +116,13 @@ def test_s_trust_boundary__auth(client: TestClient, app: FastAPI, spy: AsyncMock
         assert response.status_code == 400
         assert _code(response) == "principal_required"
         assert client.post(WRITE, json={"value": "nope"}, headers=headers).status_code == 400
+    # A C1 control (U+0080 to U+009F) refuses too (#321): Starlette decodes header bytes as
+    # latin-1, so the byte 0x85 arrives as U+0085.
+    auth = {key.encode(): value.encode() for key, value in bearer().items()}
+    for c1 in (b"p\x85a", b"\x80", b"a\x9f"):
+        response = client.post(WRITE, json=body, headers={**auth, b"X-Epistrel-Principal": c1})
+        assert response.status_code == 400
+        assert _code(response) == "principal_required"
     spy.assert_not_called()
 
     # The principal is opaque: the same call under two principals differs only in attribution.
@@ -151,6 +160,42 @@ def test_in_process_library_needs_no_credential() -> None:
     assert asyncio.run(run()) == "p-9"
     with pytest.raises(PrincipalRequired):
         asyncio.run(engine.noop(RequestContext()))
+
+
+LIBRARY_REFUSED_PRINCIPALS = (
+    "",
+    " \t ",
+    "a\tb",
+    "a\x01b",
+    "p\x7f",
+    "p\x85a",
+    "\x9f",
+    "x" * 257,
+    "system",
+    " system\t",
+)
+
+
+def test_library_refuses_the_principals_rest_refuses() -> None:
+    """FR-AUTH-4, FR-API-3 (#434): the library applies the principal rule that REST applies to
+    ``X-Epistrel-Principal`` (``test_s_trust_boundary__auth``): 1 to 256 characters, no control
+    character (C0, DEL or C1), ``system`` reserved for background work, and the spaces and tabs
+    around it trimmed. Before #434 the library refused only a blank one, so it recorded
+    principals REST could never send, and ``system`` work could not be told from a caller's.
+
+    Complement asserted: the longest acceptable principal is taken, one padded with spaces and
+    tabs is recorded trimmed, and a principal that only starts with ``system`` is not reserved."""
+    engine = Engine.from_settings(auth_settings(DUMMY_DSN))
+    for principal in LIBRARY_REFUSED_PRINCIPALS:
+        with pytest.raises(PrincipalRequired):
+            asyncio.run(engine.noop(RequestContext(principal=principal)))
+    longest = "x" * 256
+    for given, recorded in (
+        (longest, longest),
+        (" \tp-9\t ", "p-9"),
+        ("system:evals", "system:evals"),
+    ):
+        assert asyncio.run(engine.noop(RequestContext(principal=given))) == recorded
 
 
 def test_exempt_routes_answer_without_credential(client: TestClient) -> None:
@@ -354,6 +399,72 @@ async def test_s_trust_boundary__m3(pg_url: str, engine: AsyncEngine) -> None:
         refused = await client.post(
             f"{ADMIN_PREFIX}/erasure",
             json=erasure_request("character", ids[FIRST], story),
+            headers=bearer(),
+        )
+        assert refused.status_code == 400
+        assert refused.json()["error"]["code"] == "principal_required"
+        assert await count(engine, "SELECT count(*) FROM operations") == before
+
+
+@pytest.mark.integration
+@pytest.mark.part("M4", "FR-AUTH-1")
+async def test_s_trust_boundary__m4(
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """A low-level ``commit_fact`` succeeds under any principal ID: two principals each commit
+    the same author fact to their own structured story and get the same answer apart from the
+    ids, each recorded on its own ``control`` operation; a ``commit_fact`` with no principal is
+    refused before anything is written.
+
+    Complement asserted: each fact is in its story's canon only after the call."""
+    async with respond_client(auth_settings(pg_url, model_adapter="stub"), engine) as (client, _):
+        answers: dict[str, dict[str, Any]] = {}
+        for principal in ("u-1", "u-2"):
+            w = await consolidation_story(engine)
+            proposition = canon_at(w.people["Bobby"], w.places["garden"], 0, None)
+            path = f"{ADMIN_PREFIX}/stories/{w.story_id}/facts"
+            assert (
+                await count(engine, "SELECT count(*) FROM facts WHERE story_id = :s", s=w.story_id)
+                == 0
+            )
+            response = await client.post(
+                path,
+                json={"proposition": proposition.model_dump(mode="json")},
+                headers={**bearer(), "X-Epistrel-Principal": principal},
+            )
+            assert response.status_code == 201, response.text
+            answers[principal] = response.json()
+            assert (
+                await count(engine, "SELECT count(*) FROM facts WHERE story_id = :s", s=w.story_id)
+                == 1
+            )
+            recorded = await rows(
+                engine,
+                "SELECT principal, kind::text AS kind FROM operations WHERE operation_id = :o",
+                o=answers[principal]["operation_id"],
+            )
+            assert [(r.principal, r.kind) for r in recorded] == [(principal, "control")]
+        shapes = {
+            principal: (
+                found["fact"]["provenance"],
+                found["fact"]["authority"],
+                found["superseded"],
+                found["warnings"],
+                found["timeline_revision"],
+            )
+            for principal, found in answers.items()
+        }
+        assert shapes["u-1"] == shapes["u-2"] == ("author", "author", [], [], shapes["u-1"][4])
+
+        w = await consolidation_story(engine)
+        before = await count(engine, "SELECT count(*) FROM operations")
+        refused = await client.post(
+            f"{ADMIN_PREFIX}/stories/{w.story_id}/facts",
+            json={
+                "proposition": canon_at(w.people["Bobby"], w.places["garden"], 0, None).model_dump(
+                    mode="json"
+                )
+            },
             headers=bearer(),
         )
         assert refused.status_code == 400

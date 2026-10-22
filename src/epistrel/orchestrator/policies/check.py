@@ -17,14 +17,23 @@ test-only guarded reply (``epistrel.testing.ops``) calls it too.
 ``guardrail_violation`` turns violations into the 422 a caller raises. For an age-conditioned
 policy it says that a minor is involved or present and nothing else: the policy's own message,
 its id and its name — never a character's name, label or age.
+
+``refuse_withheld`` is what a gate calls before it serves a violation: while a pending
+catalog-scope erasure reaches a violated policy's text (#447, ADR-161), the violation is not
+served (its name and message may name the erased subject) and the caller gets 503
+``erasure_pending`` instead, as a read of the policy by id does (#429). A retry after the
+reapply gets the real outcome.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from sqlalchemy.ext.asyncio import AsyncEngine
+
+from epistrel.core.erasure import catalog_block
 from epistrel.core.errors import GuardrailViolation
 from epistrel.core.policies.evaluate import evaluate
 from epistrel.core.policies.model import ModelAssistedRule, Policy, Target, Violation
@@ -143,6 +152,19 @@ def guardrail_violation(
     return GuardrailViolation(f"{message}.", {"violations": found, **(extra or {})})
 
 
+async def refuse_withheld(db: AsyncEngine, policy_ids: Iterable[str]) -> None:
+    """503 ``erasure_pending`` (``details.story_id`` null) when a pending catalog-scope erasure
+    reaches any of ``policy_ids``' text (#447, ADR-161). Called only once a violation is found,
+    so a passing text costs nothing; otherwise one query when nothing is pending."""
+    wanted = sorted(set(policy_ids))
+    if not wanted:
+        return
+    async with db.connect() as conn:
+        block = await catalog_block.read(conn)
+    if block is not None:
+        block.check_records([(catalog_block.POLICIES, policy_id) for policy_id in wanted])
+
+
 __all__ = [
     "DEFAULT_MINOR_AGE_THRESHOLD",
     "MINOR_INVOLVED",
@@ -150,4 +172,5 @@ __all__ = [
     "DecidedBy",
     "check_text",
     "guardrail_violation",
+    "refuse_withheld",
 ]

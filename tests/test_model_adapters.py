@@ -68,6 +68,58 @@ async def test_stub_answers_a_schema_with_a_conformant_object() -> None:
     assert (verdict.violation, verdict.confidence) == (False, 1.0)
 
 
+async def test_stub_render_claims_land_on_their_share_of_renders() -> None:
+    """#153: with ``render_claims`` (the ``stub_render_claims`` setting) a structured render's
+    default ``say`` declares one claim on its share of the renders, chosen by the request's
+    hash: over 400 renders, 10% ± 5% deny the lantern and 10% ± 5% claim the music box, never
+    both on one render, and the same request gets the same claim in every adapter.
+
+    Complement asserted: the default adapter declares none, an answer without a ``say`` (the
+    narrator's) is unchanged, and shares summing past 1 are refused by the setting."""
+    from epistrel.config import Settings
+    from epistrel.orchestrator.structured.render import render_schema
+    from epistrel.testing import structured_load
+
+    claims = structured_load.render_claims(*structured_load.P04_SHARES)
+    schema = render_schema(actor_id="a" * 26, player_id="p" * 26, cast_ids=[], max_beats=6)
+    loaded, plain = StubAdapter(render_claims=claims), StubAdapter()
+    seen = {"contradicted": 0, "novel": 0, "none": 0}
+    for i in range(400):
+        prompt = (Message(role="user", content=f"render {i}"),)
+        answer = json.loads(
+            (await loaded.complete("generation", prompt, ModelParams(), schema)).text
+        )
+        again = await StubAdapter(render_claims=claims).complete(
+            "generation", prompt, ModelParams(), schema
+        )
+        assert json.loads(again.text) == answer
+        props = [p for b in answer["beats"] for p in b.get("propositions", [])]
+        assert len(props) <= 1
+        if not props:
+            seen["none"] += 1
+        elif props[0].get("negated"):
+            assert props[0]["object"] == structured_load.PLANTED_ITEM
+            seen["contradicted"] += 1
+        else:
+            assert props[0]["object"] == structured_load.NOVEL_ITEM
+            seen["novel"] += 1
+        bare = json.loads((await plain.complete("generation", prompt, ModelParams(), schema)).text)
+        assert all(not b.get("propositions") for b in bare["beats"])
+    assert 20 <= seen["contradicted"] <= 60, seen
+    assert 20 <= seen["novel"] <= 60, seen
+    narrator = render_schema(actor_id=None, player_id=None, cast_ids=[], max_beats=6)
+    told = await loaded.complete("generation", HELLO, ModelParams(), narrator)
+    assert "propositions" not in told.text
+    with pytest.raises(ValidationError, match="sum to at most 1"):
+        Settings.model_validate(
+            {
+                "database_url": "postgresql+psycopg://u:p@h/d",
+                "service_credentials": ["c" * 32],
+                "stub_render_claims": [{**c, "share": 0.6} for c in claims],
+            }
+        )
+
+
 async def test_stub_when_filters_by_purpose_and_needs_every_substring() -> None:
     """``when`` with a purpose answers only that purpose; a tuple needs all its substrings.
     Complement asserted: an unmatched request gets the default answer."""
@@ -117,7 +169,14 @@ async def test_stub_scripts_matches_faults_and_latches() -> None:
 
 
 def test_model_params_bounds_and_override() -> None:
-    for bad in ({"temperature": 2.5}, {"top_p": -0.1}, {"max_tokens": 4_001}, {"seed": 1}):
+    for bad in (
+        {"temperature": 2.5},
+        {"top_p": -0.1},
+        {"max_tokens": 4_001},
+        {"seed": -1},
+        {"seed": 2**31},
+        {"frequency_penalty": 1},
+    ):
         with pytest.raises(ValidationError):
             ModelParams.model_validate(bad)
     base = ModelParams(temperature=0.8, top_p=0.95, max_tokens=400)

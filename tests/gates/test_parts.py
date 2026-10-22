@@ -68,7 +68,7 @@ def test_bad_milestone_is_a_finding() -> None:
     _, findings = _collect("tests_bad_milestone")
     assert findings == [
         "bad milestone tests/gates/fixtures/tests_bad_milestone/test_bad.py::test_i_99: "
-        "M9 is not a §22 milestone"
+        "M99 is not a §22 milestone"
     ]
 
 
@@ -155,7 +155,34 @@ def test_real_tests_pass_today() -> None:
         ("test_conc_linear", "CONC-LINEAR"),
         ("test_", None),
         ("helper", None),
+        # IDs a §15 Tests entry (`[A-Z][A-Z0-9-]*`) cannot hold map to nothing (#307).
+        ("test_1x", None),
+        ("test__x", None),
+        ("test_9_lives", None),
+        ("test_i_1x", "I-1X"),
     ],
 )
 def test_test_id_mapping(name: str, expected: str | None) -> None:
     assert derive_test_id(name) == expected
+
+
+def test_unmappable_part_is_a_check_parts_finding() -> None:
+    """#307: a marker part whose name derives an ID §15 cannot hold (`test_1x` → `1X`) is
+    reported by check-parts itself, not accepted and then asked for in §15."""
+    summary, findings = _collect("tests_unmappable")
+    prefix = "tests/gates/fixtures/tests_unmappable/test_unmappable.py::"
+    assert findings == [
+        f"unmappable part {prefix}{name}: name does not map to a docs/04 test ID"
+        for name in ("test_1x", "test__x", "test_9_lives")
+    ]
+    assert f"{prefix}test_i_1x 2 FR-STORE-10 marker" in summary
+    assert f"{prefix}test_2y 2 FR-STORE-10 docstring" in summary
+
+
+def test_unmappable_part_via_cli_exits_one() -> None:
+    proc = _cli("check-parts", "--tests", str(FIXTURES / "tests_unmappable"))
+    assert proc.returncode == 1, proc.stdout
+    assert proc.stdout.splitlines()[0] == (
+        "unmappable part tests/gates/fixtures/tests_unmappable/test_unmappable.py::test_1x: "
+        "name does not map to a docs/04 test ID"
+    )

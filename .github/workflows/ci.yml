@@ -170,7 +170,23 @@ jobs:
       - run: uv sync --frozen
       # The video poster and probe tests run ffmpeg and ffprobe (#107), and fail without them: the
       # image installs Debian's ffmpeg, the runner Ubuntu's. A separate GPL program, never linked.
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      # #500: the Azure mirror once stalled this download for about 21 minutes, and the shards hit
+      # their 25 minutes. Each apt-get call has a hard `timeout` (and apt's own per-request retry
+      # and 30 s stall timeout), the install gets three attempts, and the step its own budget.
+      - name: install ffmpeg
+        timeout-minutes: 10
+        run: |
+          apt=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=60)
+          for attempt in 1 2 3; do
+            if sudo timeout --kill-after=10 60 apt-get "${apt[@]}" update \
+              && sudo timeout --kill-after=10 120 apt-get "${apt[@]}" install -y --no-install-recommends ffmpeg; then
+              exit 0
+            fi
+            echo "::warning::ffmpeg install attempt $attempt failed or timed out"
+            sudo dpkg --configure -a || true
+            sleep 10
+          done
+          exit 1
       # Integration tests start pgvector/pgvector:pg16 through testcontainers on the runner's Docker.
       # The S3 adapter's tests start MinIO the same way (tests/conftest.py MINIO_IMAGE).
       # Coverage is measured on epistrel.core only (the deterministic layer) and gated once, on the

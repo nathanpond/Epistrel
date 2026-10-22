@@ -530,3 +530,29 @@ def test_coverage_is_gated_once_on_the_combined_shards() -> None:
     )
     assert "coverage" in wf["jobs"]["gate"]["needs"]
     assert "$COVERAGE" in wf["jobs"]["gate"]["steps"][0]["run"]
+
+
+def _all_steps(node: Any) -> list[dict[str, Any]]:
+    if isinstance(node, dict):
+        found = [s for s in node.get("steps", ()) if isinstance(s, dict)]
+        return found + [s for v in node.values() for s in _all_steps(v)]
+    if isinstance(node, list):
+        return [s for v in node for s in _all_steps(v)]
+    return []
+
+
+@pytest.mark.parametrize("path", WORKFLOWS, ids=lambda p: p.name)
+def test_apt_steps_cannot_eat_the_job_budget(path: Path) -> None:
+    """#500: a stalled mirror held the ffmpeg install for about 21 minutes and the shards hit
+    their 25. A step that runs apt-get has its own ``timeout-minutes``, bounds every apt-get call
+    with ``timeout`` and apt's stall timeout, and retries."""
+    for step in _all_steps(_load(path)):
+        run = str(step.get("run", ""))
+        calls = re.findall(r"^.*\bapt-get\b.*$", run, flags=re.MULTILINE)
+        if not calls:
+            continue
+        assert isinstance(step.get("timeout-minutes"), int), step
+        assert all(re.search(r"\btimeout\b[^|;&]*apt-get", call) for call in calls), step
+        assert "Acquire::http::Timeout=" in run, step
+        assert "Acquire::Retries=" in run, step
+        assert re.search(r"\bfor attempt in\b", run), step

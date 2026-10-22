@@ -8599,3 +8599,12 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Issue:** #153
 - **Decision (core):** `erasure.index.story_subjects` reads the story's scenario snapshot, character snapshots and characters in one statement (scalar `jsonb_agg` subqueries) instead of three. A turn indexes about 7 records, each reading its subjects. A per-transaction cache of the subjects was **rejected**: a character added in the same transaction would be missed, and the erasure index would silently fail to record a reference. A per-operation cache of the content guard's reads (content rating, policies) was also **rejected**: it is a guardrail input, for about 4 statements a turn.
   **Issue:** #153
+
+## /n8-exec M4 (verify fixes, pass 1) — 2026-10-22
+
+- **Owner decision (2026-10-22):** #496 (#472 answers 423, the bug asked for 409): "whatever you recommend" → 423 is kept. #472's AC was amended and #496 closed.
+  **Issue:** #496, #472
+- **Owner decision (2026-10-22):** #494 takes option (a), "connect it now": resolution levels are wired into the structured pipeline in this pass (detail rule, pipeline wiring, end-to-end test, U-30's M4 part). The scope is the decision comment on #494.
+  **Issue:** #494, #154
+- **Decision (method):** the fix pass runs five worktree agents in parallel (#491; #494; #498's S-PROMOTE, C-20 and P-10 parts; the guard tests #492, #493, #495, #497; #499, #500, #501). Their commits are cherry-picked onto `milestone/m4-verify-fixes-1`, and each agent's head gets a full suite plus every CI gate before its issues' completion comments. `current_milestone` goes to 4 in the last commit (#498).
+  **Why:** the items are independent apart from U-30 (#494 and #498), which is assigned to #494 alone.

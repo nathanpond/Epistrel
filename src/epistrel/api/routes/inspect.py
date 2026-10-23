@@ -21,7 +21,7 @@ inspection reads' own authorization rules. Thin handlers over ``Engine.inspect_l
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
@@ -309,14 +309,27 @@ class BeliefItemBody(BaseModel):
         )
 
 
+class IdentityItemBody(BaseModel):
+    """One ``same_as`` the character holds (#171, FR-PROP-7): the two entities (id order),
+    whether it is a canon fact the character may read (``canon``) or its own belief
+    (``belief``), and that record's id."""
+
+    entities: list[str]
+    source: Literal["canon", "belief"]
+    record_id: str
+
+
 class BeliefsBody(BaseModel):
-    """A page of one character's belief projection, the story's revision, and ``next_after``
-    (the proposition id to continue after; ``null`` on the last page)."""
+    """A page of one character's belief projection, the story's revision, ``next_after`` (the
+    proposition id to continue after; ``null`` on the last page) and ``identities``: who the
+    character holds to be one referent (#171; its ``same_as`` beliefs are also ordinary
+    ``beliefs`` rows)."""
 
     character: str
     beliefs: list[BeliefItemBody]
     revision: int
     next_after: str | None
+    identities: list[IdentityItemBody] = []
 
     @classmethod
     def of(cls, page: BeliefInspection) -> BeliefsBody:
@@ -325,6 +338,10 @@ class BeliefsBody(BaseModel):
             beliefs=[BeliefItemBody.of(state, belief) for state, belief in page.items],
             revision=page.revision,
             next_after=page.next_after,
+            identities=[
+                IdentityItemBody(entities=list(i.entities), source=i.source, record_id=i.record_id)
+                for i in sorted(page.identities, key=lambda i: (i.entities, i.record_id))
+            ],
         )
 
 
@@ -338,7 +355,9 @@ class BeliefsBody(BaseModel):
         "the belief record it rests on and the proposition held, `omniscient` only (403 "
         "`omniscient_required`). A page by proposition id (`limit`, at most 500; `after` "
         "continues); `proposition_id` keeps one. A belief is its holder's truth, whether or "
-        "not canon agrees (FR-EPI-3). 422 for a character outside the story's cast."
+        "not canon agrees (FR-EPI-3). `identities` lists who the character holds to be one "
+        "referent (FR-PROP-7): the canon `same_as` facts it may read and its own `same_as` "
+        "beliefs. 422 for a character outside the story's cast."
     ),
 )
 async def inspect_beliefs(

@@ -29,7 +29,7 @@ import unicodedata
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any, Literal
+from typing import Any, Literal, NoReturn
 
 from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -42,7 +42,7 @@ from epistrel.core.erasure.records import (
     entity_record,
     proposition_record,
 )
-from epistrel.core.errors import InvalidRequest
+from epistrel.core.errors import IdentityMergeNotYet, InvalidRequest
 from epistrel.core.ids import new_ulid
 from epistrel.core.propositions.codec import proposition_row
 from epistrel.core.propositions.model import ENTITY_KINDS, GENDERS, NONE, Predicate, Proposition
@@ -363,6 +363,19 @@ async def declare_closed_set(
     return closed_id
 
 
+async def merge_entities(
+    conn: AsyncConnection, story_id: str, source_id: str, target_id: str
+) -> NoReturn:
+    """Fold ``source_id`` into ``target_id`` (``entities.merged_into``): an amendment, M7's
+    (FR-PROP-7, FR-DIRECT-8; ``POST /stories/{id}/entities/merge`` is not served in M5). Always
+    422 ``identity_merge_not_yet`` here: M5 records identity as a held ``same_as`` and files an
+    identity proposal, never a merge (#171)."""
+    raise IdentityMergeNotYet(
+        "merging entities is an amendment, not served yet",
+        {"entities": sorted((source_id, target_id)), "story_id": story_id},
+    )
+
+
 __all__ = [
     "AliasSpec",
     "AssertedBy",
@@ -371,5 +384,6 @@ __all__ = [
     "add_entity",
     "alias_key",
     "declare_closed_set",
+    "merge_entities",
     "write_proposition",
 ]

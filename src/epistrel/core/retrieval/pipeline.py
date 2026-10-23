@@ -14,7 +14,11 @@ embedding calls are excluded and counted in ``model_calls``):
    expression as story-time (a subject-anchored one, "when he was seven", reads the subject's
    timeline through ``KeyedLookup``) and its event type. Q-02's eval runs the same function.
    The context reads only the relationships the text's relational descriptions need (#451:
-   none without a relation noun, else its possessors', ``load_context(text=…)``).
+   none without a relation noun, else its possessors', ``load_context(text=…)``). The resolved
+   entities are expanded through the reader's identities (#171,
+   ``core.resolution.identity.identities_for`` for the viewpoint's holder, depth 1): "the
+   stranger" reaches Bobby's records, and the alias arm Bobby's aliases, only for a reader who
+   holds that they are one. Entity profiles stay one per entity.
 2. **occasion** (FR-RET-3): when the text gives a time window or an event type, the episode
    layer (episodic memories, ``event_type``/``participants``) is queried by
    ``(story-time window as turns, event_type, participants && the resolved entities)``, up to
@@ -120,6 +124,7 @@ from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.propositions.model import Polarity
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.resolution import context as resolution
+from epistrel.core.resolution import identity
 from epistrel.core.resolution.entities import (
     PLAYER,
     EntityIndex,
@@ -298,6 +303,10 @@ def resolve_query(
             anchor = _anchor_of(expression, mentions)
         time = resolve_time(expression, position, timeline, basis=basis)
     entities = tuple(dict.fromkeys(m.entity_id for m in mentions if m.entity_id is not None))
+    if context.identities:
+        # #171: the holder's ``same_as`` classes (depth 1): "the stranger" reaches Bobby's
+        # records for a reader who holds that they are one, and only for one.
+        entities = context.identities.expand(entities)
     return QueryResolution(
         mentions=mentions,
         expression=expression,
@@ -882,6 +891,16 @@ async def retrieve(
     index = await resolution.load_index(conn, story_id)
     speaker = await _speaker(index, query.actor)
     basis = await resolution.load_time_basis(conn, story_id)
+    # #171: the reader's identities (its holder's ``same_as``) expand the query's entities.
+    holder = identity.holder_of_viewpoint(viewpoint)
+    identities = await identity.identities_for(
+        lookup,
+        story_id,
+        holder,
+        beliefs=partitioned and not player,
+        through_position=(now_turn, 0),
+        viewpoint=None if holder != identity.CANON else canon_viewpoint,
+    )
     context = await resolution.load_context(
         conn,
         story_id,
@@ -890,6 +909,7 @@ async def retrieve(
         index=index,
         lookup=lookup,
         text=query.text,
+        identities=identities,
     )
     resolved = resolve_query(
         query.text,
@@ -1049,6 +1069,9 @@ async def retrieve(
             for m in resolved.mentions
             if m.entity_id is not None and m.kind is not MentionKind.FIRST_PERSON
         )
+        if identities:
+            # #171: the exact-alias arm reaches the class's aliases for this holder only.
+            named = dict.fromkeys(identities.expand(named))
         for entity_id in named:
             entry = index.get(entity_id)
             if entry is None:

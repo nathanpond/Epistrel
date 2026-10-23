@@ -400,6 +400,16 @@ class ViewpointCannotAssignTruth(EpistrelError):
     http_status = 422
 
 
+class IdentityMergeNotYet(EpistrelError):
+    """A canon ``same_as`` would make two modeled characters one referent, or a caller asked to
+    merge entities (FR-PROP-7; #171): merges and splits are amendments, M7's
+    (``entities/merge``, ``entities/split``). Nothing is written; a turn's render files an
+    identity proposal instead. ``details``: ``entities`` (the pair)."""
+
+    code = "identity_merge_not_yet"
+    http_status = 422
+
+
 class UnknownChain(EpistrelError):
     """A ``{turn, variant}`` chain selector names no variant of the story, or names a chain
     that continues in more than one way (#66). Nothing is written. ``details``:

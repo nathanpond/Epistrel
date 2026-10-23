@@ -9,7 +9,10 @@ already fetched (``Record``: a proposition with its id and, for canon, the fact 
 **Normalization of the record set.** Subjects and objects are expanded through the holder's
 ``same_as`` records to depth 1 (each id stands for the least id among itself and its direct
 ``same_as`` partners), symmetric predicates are put in their canonical direction, and the claim
-is canonicalized the same way (``registry.canonical``).
+is canonicalized the same way (``registry.canonical``). The expansion is holder-aware (#171,
+``core.resolution.identity``): a canon holder's ``same_as`` are the facts its viewpoint reads, a
+``belief(A)`` holder's are A's ``same_as`` beliefs and the facts A may read, so "the stranger" is
+Bobby in canon and for Bobby, and stays the stranger for Jenni.
 
 **The rules, in FR-PROP-10's order; the first conclusive one wins.** Coverage comes first, then
 the contradiction rules. When the holder's records are themselves inconsistent, the winning
@@ -187,6 +190,7 @@ from epistrel.core.readset import (
     holder_of,
     register_rebase_check,
 )
+from epistrel.core.resolution.identity import pair_of, representatives
 from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX, OMNISCIENT
 from epistrel.core.tables import closed_sets as closed_sets_table
 
@@ -553,12 +557,11 @@ class _Context:
         registry: Registry,
         options: Options,
     ) -> _Context:
-        reps: dict[str, str] = {}
-        for record in records:
-            p = record.proposition
-            if p.predicate_id == SAME_AS and p.polarity is Polarity.AFFIRMED and p.object_id:
-                for a, b in ((p.subject_id, p.object_id), (p.object_id, p.subject_id)):
-                    reps[a] = min(reps.get(a, a), b)
+        # #171: the holder's identities, depth 1 (``core.resolution.identity``): the records
+        # are the holder's, so the expansion is holder-aware.
+        reps = representatives(
+            pair for r in records if (pair := pair_of(r.proposition)) is not None
+        )
         ctx = cls(registry, options, reps, [], list(closed), {}, {})
         ctx.records = [(r, ctx.norm(r.proposition)) for r in records]
         containment = {

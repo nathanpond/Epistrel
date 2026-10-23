@@ -35,7 +35,9 @@ sibling introduces Jenni's backstory too.
   speech, thoughts or backstory;
 - ``other_character_secret``: a render asserting another modeled character's secrets,
   backstory, actions or thoughts, or a director pass asserting anything about a modeled
-  character beyond an arrival;
+  character beyond an arrival or an identity (#171: a director's ``same_as`` linking one
+  non-player modeled character to an unmodeled entity, "the stranger is Bobby", is permitted
+  with basis ``identity``);
 - ``player_authority``: player input about another character (``player_authority =
   own_character``): the player's text stands and is not repaired, but it is never canonized;
 - ``policy``: an arrival while the story's ``allow_new_arrivals`` is off (a director pass's
@@ -53,7 +55,8 @@ author-locked canon still win.
 
 A permitted claim carries its basis: ``own`` (the asserter's own actions, thoughts and minor
 backstory within its constraints), ``texture`` (incidental scene texture, an unmodeled person
-included), ``arrival``, ``world`` (a director's world fact), ``author`` or ``resolution``. An
+included), ``arrival``, ``world`` (a director's world fact), ``identity`` (#171), ``author`` or
+``resolution``. An
 **arrival** is a ``located_at``/``present_at`` claim on a person with no prior placement (no
 current fact of either predicate).
 
@@ -134,6 +137,7 @@ class Basis(StrEnum):
     WORLD = "world"
     AUTHOR = "author"
     RESOLUTION = "resolution"
+    IDENTITY = "identity"
 
 
 @dataclass(frozen=True, slots=True)
@@ -287,6 +291,10 @@ def permission(
             return Permitted(Basis.ARRIVAL) if facts.allow_new_arrivals else Denied(Reason.POLICY)
         if any(e.is_player for e in modeled):
             return Denied(Reason.PLAYER_CHARACTER)
+        if name == "same_as" and len(modeled) == 1 and len(_argument_ids(claim)) == 2:
+            # #171 (FR-PROP-7): a narrated reveal that an unmodeled entity is a modeled
+            # character ("the stranger is Bobby"); two characters as one is M7's merge.
+            return _texture(facts, Basis.IDENTITY)
         if modeled:
             return Denied(Reason.OTHER_CHARACTER_SECRET)
         return _texture(facts, Basis.WORLD)

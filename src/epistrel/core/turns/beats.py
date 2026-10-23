@@ -149,6 +149,11 @@ class AssertedClaim:
     attribution_objective: str | None = None
     """#167: whether the attributed holder actually believes it (``true``/``false``/
     ``unresolved``): the utterance's label, never a context input."""
+    beyond: str | None = None
+    """#171: canon's verdict beyond the speaker's view (``supported``/``contradicted``) when that
+    view leaves a first-person claim open (#166's ``hidden``): Jenni's "I've never met that
+    stranger" is false in canon though her view holds no ``same_as``. Only the objective label
+    reads it (classified labels are omniscient reads only); the claim's verdict is unchanged."""
 
     @property
     def attributed(self) -> bool:
@@ -263,9 +268,17 @@ def speech_labels(claims: Iterable[AssertedClaim], intent: Intent) -> SpeechLabe
 def objective_relation_of(claims: Iterable[AssertedClaim]) -> ObjectiveRelation:
     """An utterance's objective relation (FR-TURN-6): over its claims' verdicts, any
     ``contradicted`` → ``false``; all ``supported`` (at least one) → ``true``; otherwise →
-    ``unresolved`` (undecided, novel, denied, none at all, or verification off)."""
-    # #167: an attribution claim asserts someone's belief, not its proposition.
-    verdicts = [c.verdict for c in claims if not c.attributed]
+    ``unresolved`` (undecided, novel, denied, none at all, or verification off). A claim the
+    speaker's view leaves open counts as canon decides it beyond that view (``beyond``, #171)."""
+    # #167: an attribution claim asserts someone's belief, not its proposition; #171: canon
+    # beyond the speaker's view decides a claim that view leaves open.
+    verdicts = [
+        c.beyond
+        if c.beyond is not None and c.verdict not in (SUPPORTED, CONTRADICTED)
+        else c.verdict
+        for c in claims
+        if not c.attributed
+    ]
     if CONTRADICTED in verdicts:
         return "false"
     if verdicts and all(v == SUPPORTED for v in verdicts):

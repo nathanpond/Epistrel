@@ -48,6 +48,7 @@ from epistrel.core.resolution.entities import (
     ResolutionContext,
     relation_owners,
 )
+from epistrel.core.resolution.identity import Identities
 from epistrel.core.resolution.time import Position, SubjectTimeline, TimeBasis, turn_of
 from epistrel.core.settings_schema import OMNISCIENT
 from epistrel.core.tables import characters, entities, entity_aliases, stories
@@ -110,6 +111,7 @@ async def load_context(
     lookup: KeyedLookup | None = None,
     shared: SharedContext | None = None,
     text: str | None = None,
+    identities: Identities | None = None,
 ) -> ResolutionContext:
     """The ``ResolutionContext`` of a text spoken by ``speaker`` (an entity id, ``narrator`` or
     ``player``) at ``position`` (see the module docstring). The scene and the relationships are
@@ -121,7 +123,11 @@ async def load_context(
     With ``text``, the context is for resolving that text only: its ``relations`` are the rows
     touching the possessors ``relation_owners`` finds (#451), and resolving ``text`` against it
     answers what it answers against every person's relationships. Without, every person's
-    relationships are read (a context reused for several texts); ``shared`` applies then."""
+    relationships are read (a context reused for several texts); ``shared`` applies then.
+
+    ``identities`` (#171): the ``same_as`` the speaker's holder holds
+    (``core.resolution.identity.identities_for``), which give the mentions their
+    representatives."""
     lookup = lookup or KeyedLookup(conn, StructuredReadSet())
     index = index or await load_index(conn, story_id)
     player = await conn.scalar(
@@ -164,7 +170,12 @@ async def load_context(
             if scene is not None and scene.present:
                 present = frozenset(e.entity_id for e in scene.present)
     context = ResolutionContext(
-        index=index, beats=beats, present=present, player_id=player_id, relations=relations
+        index=index,
+        beats=beats,
+        present=present,
+        player_id=player_id,
+        relations=relations,
+        identities=identities,
     )
     if text is None or head < 0:
         return context

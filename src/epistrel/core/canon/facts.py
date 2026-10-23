@@ -101,7 +101,12 @@ from epistrel.core.enums import (
 from epistrel.core.erasure import guard
 from epistrel.core.erasure.index import index_records
 from epistrel.core.erasure.records import event_record, fact_record
-from epistrel.core.errors import InvalidRequest, ViewpointCannotAssignTruth, ViewpointUnresolved
+from epistrel.core.errors import (
+    IdentityMergeNotYet,
+    InvalidRequest,
+    ViewpointCannotAssignTruth,
+    ViewpointUnresolved,
+)
 from epistrel.core.events.registry import validate
 from epistrel.core.events.types import FactCommitted
 from epistrel.core.events.types import FactSuperseded as FactSupersededEvent
@@ -118,7 +123,13 @@ from epistrel.core.propositions.model import (
     Proposition,
     TemporalKind,
 )
-from epistrel.core.propositions.registry import Registry, canonical, load
+from epistrel.core.propositions.registry import (
+    Registry,
+    canonical,
+    file_identity_proposal,
+    load,
+)
+from epistrel.core.resolution.identity import pair_of
 from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX, OMNISCIENT
 from epistrel.core.tables import characters, entities, events, predicates, propositions
 from epistrel.core.tables.facts import facts
@@ -902,9 +913,17 @@ async def commit_fact(
     refine its narrative position, which is the operation's; ``thunk_id`` names the thunk a
     dependence resolved with it (#146's ``core.commit.lifecycle.depend``); ``resolution_level`` is
     FR-COMMIT-9's level (#154; ``None`` reads as ``consequential``). ``holder`` is always
-    ``canon``: any other is 422 ``viewpoint_cannot_assign_truth`` (``refuse_holder``, #169)."""
+    ``canon``: any other is 422 ``viewpoint_cannot_assign_truth`` (``refuse_holder``, #169).
+
+    An affirmed ``same_as`` between two entities (FR-PROP-7, #171) files an identity proposal
+    for the pair in the same transaction (``registry.file_identity_proposal``: the engine never
+    merges them itself); one between two of the story's characters is 422
+    ``identity_merge_not_yet`` (merging two modeled characters is M7's amendment)."""
     refuse_holder(holder)
-    return await _write(
+    pair = pair_of(proposition)
+    if pair is not None:
+        await refuse_character_merge(conn, story_id, pair)
+    fact = await _write(
         conn,
         _Write(
             story_id=story_id,
@@ -927,6 +946,37 @@ async def commit_fact(
         ),
         registry,
     )
+    if pair is not None:
+        await file_identity_proposal(
+            conn, story_id, pair, reason="canon_same_as", fact_ids=[fact.id]
+        )
+    return fact
+
+
+async def characters_among(
+    conn: AsyncConnection, story_id: str, entity_ids: Iterable[str]
+) -> frozenset[str]:
+    """Which of ``entity_ids`` are the story's characters (#171)."""
+    wanted = sorted(set(entity_ids))
+    if not wanted:
+        return frozenset()
+    rows = await conn.scalars(
+        select(characters.c.id).where(
+            characters.c.story_id == story_id, characters.c.id.in_(wanted)
+        )
+    )
+    return frozenset(str(r) for r in rows)
+
+
+async def refuse_character_merge(
+    conn: AsyncConnection, story_id: str, pair: tuple[str, str]
+) -> None:
+    """422 ``identity_merge_not_yet`` when both of ``pair`` are the story's characters (#171)."""
+    if len(await characters_among(conn, story_id, pair)) == 2:
+        raise IdentityMergeNotYet(
+            "two characters are one referent only through a merge, which is not served yet",
+            {"entities": list(pair)},
+        )
 
 
 async def supersede(

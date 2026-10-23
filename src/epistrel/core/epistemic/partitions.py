@@ -667,6 +667,9 @@ class BeliefInspection:
     revision: int
     items: tuple[tuple[BeliefState, Belief], ...]
     next_after: str | None
+    identities: tuple[Any, ...] = ()
+    """#171: the ``same_as`` the holder holds (``core.resolution.identity.Identity``): the
+    canon facts its viewpoint reads and its own ``same_as`` beliefs (also among ``items``)."""
 
 
 async def inspect(
@@ -704,7 +707,18 @@ async def inspect(
             limit=limit,
             after=after,
         )
-    return BeliefInspection(story_id, character, revision, page.items, page.next_after)
+        # #171: who the holder holds to be one (canon it reads, and its own beliefs).
+        from epistrel.core.readset import KeyedLookup, StructuredReadSet
+        from epistrel.core.resolution.identity import identities_for
+
+        held = await identities_for(
+            KeyedLookup(conn, StructuredReadSet()),
+            story_id,
+            character,
+            beliefs=not await is_player(conn, story_id, character),
+            characters=(),
+        )
+    return BeliefInspection(story_id, character, revision, page.items, page.next_after, held.held)
 
 
 # -- the projection ---------------------------------------------------------------------------

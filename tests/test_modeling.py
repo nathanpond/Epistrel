@@ -18,7 +18,7 @@ from __future__ import annotations
 from epistrel.core.epistemic import modeling
 from epistrel.core.epistemic.modeling import BeatView, EntityInfo
 from epistrel.core.memory.retirement import Budgets
-from epistrel.core.resolution.types import Mention, MentionKind
+from epistrel.core.resolution.types import Mention, MentionKind, Reason, ReasonCode
 from epistrel.core.retrieval import rank
 from epistrel.core.turns import CastEntry, StoryCast
 
@@ -94,6 +94,44 @@ def test_candidates_model_the_unmodeled_side_of_an_interaction() -> None:
     hit = modeling.candidates([BeatView("do", 2, "Jenni greets Mrs. Patel.", JENNI)], ENTITIES)
     assert [c.entity_id for c in hit] == [PATEL]
     assert mention.resolved
+
+
+def test_an_uncertain_recurring_match_names_its_candidates() -> None:
+    """#171 (carried from #163): "the driver" that the resolver found ambiguous between two
+    modeled drivers is minted as a new character, its candidate naming both (an identity
+    proposal each once it is modeled); an unmodeled candidate is not named."""
+    first, second, other = (
+        "01JCHAR00000000000000DRIV1",
+        "01JCHAR00000000000000DRIV2",
+        "01JENTI00000000000000DRIV3",
+    )
+    known = {
+        **ENTITIES,
+        first: EntityInfo(first, "person", "the delivery driver", character_id=first),
+        second: EntityInfo(second, "person", "the bus driver", character_id=second),
+        other: EntityInfo(other, "person", "the cab driver"),
+    }
+    text = "Jenni waves to the driver."
+    start = text.index("the driver")
+    doubt = Mention(
+        (start, start + len("the driver")),
+        MentionKind.DESCRIPTION,
+        None,
+        (first, second, other),
+        0.0,
+        Reason(ReasonCode.AMBIGUOUS, "descriptor"),
+        "descriptor",
+    )
+    (found,) = modeling.candidates([BeatView("do", 2, text, JENNI, (doubt,))], known)
+    assert (found.entity_id, found.name, found.uncertain_of) == (
+        None,
+        "the driver",
+        (first, second),
+    )
+    # A resolved mention is that entity: nothing uncertain.
+    sure = Mention(doubt.span, MentionKind.DESCRIPTION, other, (other,), 0.6, None, "descriptor")
+    (found,) = modeling.candidates([BeatView("do", 2, text, JENNI, (sure,))], known)
+    assert (found.entity_id, found.uncertain_of) == (other, ())
 
 
 def test_salience_models_what_a_beat_names_and_nothing_else() -> None:

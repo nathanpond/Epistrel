@@ -74,6 +74,7 @@ logger = logging.getLogger(__name__)
 
 KEYED_READERS: tuple[str, ...] = (
     "epistrel.core.resolution.context",
+    "epistrel.core.resolution.identity",
     "epistrel.core.retrieval.pipeline",
     "epistrel.core.verify.rules",
     "epistrel.core.verify.normalize",
@@ -392,6 +393,8 @@ class KeyedLookup:
     def __init__(self, conn: AsyncConnection, read_set: StructuredReadSet) -> None:
         self.conn = conn
         self.read_set = read_set
+        self.memo: dict[Any, Any] = {}
+        """Derived reads computed once per lookup (#171's ``identities_for`` per holder)."""
 
     async def canon_at(
         self,

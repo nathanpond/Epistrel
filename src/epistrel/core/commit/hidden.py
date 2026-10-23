@@ -32,6 +32,11 @@ the hidden fact's ledger entries (``lifecycle.discharge_hidden``) and marks the 
 (``divergences.revealed_by_event_id``, #166). Nothing here asks whether the claim is true: the
 caller hands over claims that match the fact.
 
+**Identity** (``commit_identity``, #171): a narrated ``same_as`` is held, not shared: its canon
+fact is scoped to the narration's perceivers and the characters it names, so "the stranger is
+Bobby" is canon's and Bobby's, never Jenni's from elsewhere; a reveal widens it like any hidden
+fact.
+
 ``hidden_facts`` is ``GET /stories/{id}/inspect/ledger``'s ``hidden_facts`` (omniscient only):
 the current canon facts scoped away from the shared view, the engine's true ages aside. Log
 lines carry identifiers and counts only (invariant 3).
@@ -171,6 +176,68 @@ def single_value_violations(values: Iterable[KeyedValue]) -> list[tuple[KeyedVal
 
 
 # -- writing -------------------------------------------------------------------------------------
+
+
+async def commit_identity(
+    conn: AsyncConnection,
+    operation: canon.FactOperation,
+    proposition: Proposition,
+    *,
+    perceivers: Sequence[str],
+    selves: Sequence[str],
+    event_id: str | None,
+    beat: int | None,
+    provenance: RecordProvenance = RecordProvenance.DIRECTOR,
+    settings: Any = None,
+    registry: Registry | None = None,
+) -> HiddenCommit:
+    """A narrated ``same_as`` under partitions (FR-PROP-7; #171): identity is held, so the canon
+    fact is scoped to who perceived the narration (``perceivers``, routing's co-located
+    characters) and to the modeled characters it names (``selves``: a character always knows who
+    it is). Routing writes the perceivers' observations (#164's sink observes a narration's
+    claims); each of ``selves`` that did not perceive it gets its own here, as
+    ``commit_hidden``'s noticers do. Widening it later is #169's reveal (``reveal``). With
+    ``partitions`` off it is an ordinary objective fact."""
+    from epistrel.core.epistemic import partitions, testimony, transitions
+
+    story_id = str(operation.story_id)
+    registry = registry or await load(conn, story_id)
+    sources = [event_id] if event_id is not None else []
+    on = await partitions_on(conn, story_id, settings)
+    fact = await canon.commit_fact(
+        conn,
+        story_id,
+        proposition,
+        provenance=provenance,
+        visibility=scope_of([*perceivers, *selves]) if on else OBJECTIVE,
+        operation=operation,
+        source_event_ids=sources,
+        beat=beat,
+        registry=registry,
+    )
+    written: list[str] = []
+    if on and event_id is not None:
+        position = testimony.witness_position(
+            operation.narrative_turn or 0, operation.turn_variant or 0, beat or 0
+        )
+        for self_id in sorted(set(selves) - set(perceivers)):
+            if await partitions.is_player(conn, story_id, self_id):
+                continue
+            result = await transitions.transition(
+                conn,
+                operation,
+                holder=self_id,
+                kind=transitions.Kind.OBSERVATION,
+                proposition=fact.proposition,
+                antecedent=transitions.Antecedent.record("events", event_id),
+                position=position,
+                confidence=transitions.Confidence(transitions.Level.KNOWN),
+                settings=settings,
+                registry=registry,
+            )
+            written.append(result.transition.id)
+    log.debug("identity commit: fact=%s observations=%d", fact.id, len(written))
+    return HiddenCommit(fact.id, fact.visibility, tuple(written))
 
 
 async def partitions_on(conn: AsyncConnection, story_id: str, settings: Any = None) -> bool:
@@ -446,6 +513,7 @@ __all__ = [
     "Observed",
     "Reveal",
     "commit_hidden",
+    "commit_identity",
     "determined_otherwise",
     "hidden_facts",
     "knows",

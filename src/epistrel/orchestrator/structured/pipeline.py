@@ -144,6 +144,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import idempotency, pause, turn_gate
+from epistrel.core.canon import facts as canon_facts
 from epistrel.core.canon.canonize import CanonRequest, canonize_all
 from epistrel.core.commit import boundary, hidden, lifecycle, matching
 from epistrel.core.commit import epistemic as knowledge_flags
@@ -191,10 +192,16 @@ from epistrel.core.profiles.reservation import extraction_on
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Polarity, Proposition
-from epistrel.core.propositions.registry import Registry, canonical, consider_proposals
+from epistrel.core.propositions.registry import (
+    Registry,
+    canonical,
+    consider_proposals,
+    file_identity_proposal,
+)
 from epistrel.core.propositions.registry import load as load_registry
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
+from epistrel.core.resolution import identity as identity_rules
 from epistrel.core.resolution.context import load_context
 from epistrel.core.resolution.entities import NARRATOR, PLAYER
 from epistrel.core.resolution.types import Mention
@@ -1100,7 +1107,17 @@ async def plan_modeling(
     if not char_modeling.modeling_on(settings) or not read.allow_new_arrivals:
         return None
     async with db.connect() as conn:
-        known = await char_modeling.load_entities(conn, story_id)
+        # #171: an entity canon holds to be a modeled character is that character.
+        canon_ids = await identity_rules.identities_for(
+            KeyedLookup(conn, StructuredReadSet()), story_id, identity_rules.CANON
+        )
+        known = await char_modeling.load_entities(
+            conn,
+            story_id,
+            linked=identity_rules.linked_characters(
+                canon_ids, [e for pair in canon_ids.pairs() for e in pair]
+            ),
+        )
     found = char_modeling.candidates(
         _modeling_views(checked, read, say=say, do=do),
         known,
@@ -1402,6 +1419,9 @@ def _asserted(c: CheckedClaim) -> AssertedClaim:
             if c.result is None or c.result.attribution is None
             else c.result.attribution.objective
         ),
+        beyond=None
+        if speech is None or speech.hidden not in (VerdictKind.SUPPORTED, VerdictKind.CONTRADICTED)
+        else speech.hidden.value,
     )
 
 
@@ -2737,6 +2757,103 @@ async def hidden_committed(
     return found
 
 
+async def identity_requests_of(
+    conn: AsyncConnection,
+    story_id: str,
+    checked: Checked,
+    kept: Sequence[CanonRequest],
+    latent: Sequence[CanonRequest],
+    *,
+    partitioned: bool,
+) -> tuple[list[CanonRequest], list[CanonRequest], list[CanonRequest], list[str]]:
+    """#171 (FR-PROP-7): the turn's canon requests without its identity claims that commit
+    elsewhere. A ``same_as`` between two of the story's characters is not committed (merging
+    them is M7's amendment): an identity proposal is filed (``characters``) and its id
+    reported. Under partitions a narration's ``same_as`` is set aside for
+    ``identities_committed``. Answers the kept requests, the kept latent requests, the
+    narrated identities and the refused proposals' ids."""
+    pairs = {
+        id(r): pair
+        for r in (*kept, *latent)
+        if (pair := identity_rules.pair_of(r.claim)) is not None
+    }
+    if not pairs:
+        return list(kept), list(latent), [], []
+    cast = await canon_facts.characters_among(
+        conn, story_id, {e for pair in pairs.values() for e in pair}
+    )
+    narrated = {b.beat for b in checked.beats if b.kind == NARRATION}
+    refused: list[str] = []
+    narrated_requests: list[CanonRequest] = []
+
+    def keep(requests: Sequence[CanonRequest]) -> list[CanonRequest]:
+        out: list[CanonRequest] = []
+        for request in requests:
+            pair = pairs.get(id(request))
+            if pair is not None and set(pair) <= cast:
+                refused.append(pair[0] + ":" + pair[1])
+                continue
+            if pair is not None and partitioned and request.beat in narrated:
+                narrated_requests.append(request)
+                continue
+            out.append(request)
+        return out
+
+    kept_out, latent_out = keep(kept), keep(latent)
+    proposals: list[str] = []
+    for key in dict.fromkeys(refused):
+        a, b = key.split(":")
+        proposals.append(await file_identity_proposal(conn, story_id, (a, b), reason="characters"))
+    return kept_out, latent_out, narrated_requests, proposals
+
+
+async def identities_committed(
+    conn: AsyncConnection,
+    op: Operation,
+    checked: Checked,
+    read: TurnRead,
+    requests: Sequence[CanonRequest],
+    *,
+    ids: Mapping[int, str],
+    level: perception.Level,
+    settings: ProfileSettings,
+    registry: Any,
+) -> list[hidden.HiddenCommit]:
+    """#171: each narrated ``same_as`` through ``core.commit.hidden.commit_identity``: its
+    perceivers the characters where the narration happens (``perception.noticers`` over the
+    scene at the turn's start: its declared ``location``, else the scene's; everyone at
+    perception ``none``), its selves the characters it names."""
+    if not requests:
+        return []
+    story_id = str(op.story_id)
+    state, _ = await scene_loader.load_scene(conn, story_id, read.turn)
+    beats = {b.beat: b for b in checked.beats if b.kind == NARRATION}
+    found: list[hidden.HiddenCommit] = []
+    for request in requests:
+        beat = beats.get(request.beat or -1)
+        pair = identity_rules.pair_of(request.claim)
+        if beat is None or pair is None:  # pragma: no cover - identity_requests_of kept them
+            continue
+        routed = perception.RouteBeat(
+            kind="narration", beat=beat.beat, actor=None, qualifiers=beat.qualifiers
+        )
+        found.append(
+            await hidden.commit_identity(
+                conn,
+                op,
+                request.claim,
+                perceivers=perception.noticers(routed, state, state.characters, level),
+                selves=sorted(set(pair) & set(state.characters)),
+                event_id=ids.get(beat.beat),
+                beat=beat.beat,
+                provenance=request.provenance,
+                settings=settings,
+                registry=registry,
+            )
+        )
+    return found
+
+
 def _content_perceivers(results: Sequence[perception.PerceptionResult]) -> dict[int, set[str]]:
     """Each routed beat's content-fidelity perceivers (a partial eavesdrop is not content)."""
     found: dict[int, set[str]] = {}
@@ -3649,6 +3766,12 @@ async def play(
         )
         routed = {c.claim_id for c, _ in details if c.claim_id is not None}
         kept = [r for r in checked.requests if r.claim_id is None or r.claim_id not in routed]
+        # #171 (FR-PROP-7): identity is held. A ``same_as`` between two characters is M7's
+        # merge (an identity proposal instead); under partitions a narrated one is scoped to
+        # its perceivers and the characters it names, after routing (``commit_identity``).
+        kept, latent_requests, identity_requests, identity_refused = await identity_requests_of(
+            conn, story_id, checked, kept, latent_requests, partitioned=partitioned
+        )
         canonized = await canonize_all(
             conn,
             story_id,
@@ -3729,6 +3852,18 @@ async def play(
                     op,
                     checked,
                     read,
+                    ids=ids,
+                    level=level,
+                    settings=settings,
+                    registry=registry,
+                )
+                # #171: the narrated identities, held by who perceived them.
+                hidden_commits += await identities_committed(
+                    conn,
+                    op,
+                    checked,
+                    read,
+                    identity_requests,
                     ids=ids,
                     level=level,
                     settings=settings,
@@ -3913,6 +4048,7 @@ async def play(
                     "canonized": len(canonized),
                     "hidden_commits": [h.report() for h in hidden_commits],
                     "reveals": [r.report() for r in reveals],
+                    **({"identity_refused": identity_refused} if identity_refused else {}),
                     "follow_up": {
                         **checked.follow_up,
                         "path": _close_path(checked.follow_up, closed.minimal_commits),
@@ -3937,6 +4073,7 @@ async def play(
                     if partitioned
                     else {}
                 ),
+                **({"identity_refused": identity_refused} if identity_refused else {}),
             }
         fixed["commit"] = commit_report
         # FR-PROP-4: the auto predicates this turn's propositions used may now earn a

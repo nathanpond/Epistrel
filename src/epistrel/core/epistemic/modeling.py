@@ -59,7 +59,7 @@ import json
 import logging
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import cache
 from importlib import resources
 from types import SimpleNamespace
@@ -211,6 +211,9 @@ class Party:
     entity_id: str | None
     phrase: str
     span: tuple[int, int] = (0, 0)
+    uncertain_of: tuple[str, ...] = ()
+    """#171: the entities an ambiguous mention of the phrase had as candidates (a description
+    that uncertainly matched existing ones); empty otherwise."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -302,7 +305,20 @@ def _party_at(
     if mention is not None:
         assert mention.entity_id is not None  # noqa: S101 - a resolved mention
         return Party(mention.entity_id, text[mention.span[0] : mention.span[1]], mention.span)
-    return _name_at(text, pos, entities) or _description_at(text, pos, lex, bare=bare)
+    found = _name_at(text, pos, entities) or _description_at(text, pos, lex, bare=bare)
+    if found is not None and found.entity_id is None:
+        # #171: a description the resolver found ambiguous among existing entities.
+        doubt = next(
+            (
+                m.candidates
+                for m in mentions
+                if m.entity_id is None and m.candidates and m.span[0] == pos
+            ),
+            (),
+        )
+        if doubt:
+            found = replace(found, uncertain_of=tuple(doubt))
+    return found
 
 
 def _party_before(
@@ -472,6 +488,9 @@ class Candidate:
     definition: str
     name: str
     entity_id: str | None = None
+    uncertain_of: tuple[str, ...] = ()
+    """#171: the modeled characters a minted description uncertainly matched (an identity
+    proposal each, once it is modeled)."""
 
     @property
     def key(self) -> str:
@@ -537,6 +556,9 @@ def candidates(
                         beat.text,
                         _name_of(other, entities),
                         other.entity_id,
+                        tuple(
+                            e for e in other.uncertain_of if e in entities and entities[e].modeled
+                        ),
                     )
                     found.setdefault(candidate.key, candidate)
     for phrase in salient:
@@ -566,8 +588,12 @@ def candidates(
 # -- reading -------------------------------------------------------------------------------------
 
 
-async def load_entities(conn: AsyncConnection, story_id: str) -> dict[str, EntityInfo]:
-    """The story's entities with their names and the characters they are."""
+async def load_entities(
+    conn: AsyncConnection, story_id: str, *, linked: Mapping[str, str] | None = None
+) -> dict[str, EntityInfo]:
+    """The story's entities with their names and the characters they are; ``linked`` maps an
+    entity canon's ``same_as`` makes a modeled character to that character (#171,
+    ``core.resolution.identity.linked_characters``)."""
     rows = list(
         await conn.execute(
             select(
@@ -582,7 +608,7 @@ async def load_entities(conn: AsyncConnection, story_id: str) -> dict[str, Entit
         )
     ):
         aliases.setdefault(str(row.entity_id), []).append(str(row.alias))
-    return {
+    found = {
         str(r.id): EntityInfo(
             id=str(r.id),
             kind=str(r.kind),
@@ -592,6 +618,13 @@ async def load_entities(conn: AsyncConnection, story_id: str) -> dict[str, Entit
         )
         for r in rows
     }
+    # #171: an entity canon links to a modeled character through ``same_as`` is that
+    # character (the stranger, once canon holds that he is Bobby): it is never modeled anew.
+    # The caller reads the links (this module never reads canon, FR-EPI-1).
+    for entity_id, character_id in (linked or {}).items():
+        if entity_id in found and found[entity_id].character_id is None:
+            found[entity_id] = replace(found[entity_id], character_id=character_id)
+    return found
 
 
 # -- writing ---------------------------------------------------------------------------------------
@@ -622,6 +655,7 @@ class Modeled:
     position: Position
     via: Via = "verb"
     definition: str = ""
+    uncertain_of: tuple[str, ...] = ()
 
     def report(self) -> dict[str, Any]:
         return {
@@ -850,6 +884,7 @@ async def maybe_model(
         position=position,
         via=candidate.via,
         definition=candidate.definition,
+        uncertain_of=candidate.uncertain_of if adopted is None else (),
     )
 
 
@@ -884,6 +919,20 @@ async def model_all(
             made.append(found)
     if made and operation.story_id is not None:
         await reindex_story(conn, operation.story_id)
+        # #171: a minted character that uncertainly matched an existing one may be it: an
+        # identity proposal per pair, never a merge (M7's amendments merge).
+        from epistrel.core.propositions.registry import file_identity_proposal
+
+        for m in made:
+            for other in m.uncertain_of:
+                if other != m.character_id:
+                    await file_identity_proposal(
+                        conn,
+                        operation.story_id,
+                        (m.character_id, other),
+                        reason="uncertain_match",
+                        evidence={"beat": m.beat},
+                    )
     return made
 
 

@@ -45,6 +45,12 @@ in text order:
 
 Confidence: 1.0 an alias, 0.8 a pronoun or person, 0.6 a description. No fuzzy matching in M4.
 The lexicon (``lexicon.json``) is English-only and a data table. No visibility filter in M4.
+
+**Identity** (M5, #171): registered aliases are holder-agnostic, but which entities are one
+referent is not. ``ResolutionContext.identities`` (``core.resolution.identity.identities_for``,
+loaded for the speaker's holder) gives each resolved mention its ``representative_id``: "the
+stranger" is Bobby for canon and for Bobby once the reveal is theirs, and stays the stranger
+for Jenni.
 """
 
 from __future__ import annotations
@@ -53,7 +59,7 @@ import json
 import re
 import unicodedata
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import cache
 from importlib import resources
 from itertools import pairwise
@@ -61,6 +67,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from epistrel.core.resolution.identity import Identities
 from epistrel.core.resolution.types import APOSTROPHE, Mention, MentionKind, Reason, ReasonCode
 
 NARRATOR = "narrator"
@@ -375,6 +382,10 @@ class ResolutionContext:
     present: frozenset[str] | None = None
     player_id: str | None = None
     relations: Sequence[Relation] = ()
+    identities: Identities | None = None
+    """The ``same_as`` the speaker's holder holds (#171, ``core.resolution.identity``): each
+    resolved mention's ``representative_id``. ``None``: none read (every entity stands for
+    itself)."""
 
 
 # -- tokens ----------------------------------------------------------------------------------
@@ -803,8 +814,22 @@ def _resolve(text: str, speaker: str, context: ResolutionContext) -> _State:
 
 def resolve_mentions(text: str, speaker: str, context: ResolutionContext) -> list[Mention]:
     """Every mention in ``text``, in order, as ``speaker`` (an entity id, ``narrator`` or
-    ``player``) says it, against ``context`` (see the module docstring for the rules)."""
-    return sorted(_resolve(text, speaker, context).mentions, key=lambda m: m.span)
+    ``player``) says it, against ``context`` (see the module docstring for the rules). With
+    ``context.identities`` (#171), a resolved mention whose entity the speaker's holder links to
+    another carries its class's ``representative_id``; its ``entity_id`` stays the entity the
+    words name."""
+    found = sorted(_resolve(text, speaker, context).mentions, key=lambda m: m.span)
+    identities = context.identities
+    if not identities:
+        return found
+    out: list[Mention] = []
+    for mention in found:
+        if mention.entity_id is not None:
+            rep = identities.rep(mention.entity_id)
+            if rep != mention.entity_id:
+                mention = replace(mention, representative_id=rep)
+        out.append(mention)
+    return out
 
 
 def has_relation_noun(text: str) -> bool:

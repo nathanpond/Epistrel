@@ -1523,10 +1523,12 @@ class Verifier:
                     for e in found.evidence
                     if e.fact_id is not None and e.proposition_id is not None
                 )
-        relation = speech_acts.belief_relation_of(found.kind)
         hidden = None
         open_ = result.kind not in (VerdictKind.SUPPORTED, VerdictKind.CONTRADICTED)
-        if open_ and relation != "consistent" and declared != speech_acts.JOKING:
+        if open_ and declared != speech_acts.JOKING:
+            # #171: asked for a belief-consistent claim too, so an established false belief
+            # beyond the speaker's view ("I've never met that stranger", canon holding that the
+            # stranger is Bobby) is a sincere error, labelled false, and stands.
             hidden = await beliefs.hidden(claim, believer, at)
         # #167: contradicting a belief the speaker keeps secret is a deception, whatever the
         # render declared (FR-SCN-8's disclosure; a joke stays a joke).

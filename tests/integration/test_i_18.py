@@ -514,6 +514,11 @@ def _story_settings(cast: list[str]) -> st.SearchStrategy[dict[str, Any]]:
         "turn_concurrency": st.sampled_from(["reject", "queue"]),
         "allow_new_arrivals": st.none() | st.booleans(),
         "default_output_viewpoint": st.none() | st.sampled_from([f"character:{c}" for c in cast]),
+        # M5's multi-character settings (#174-#176); ``state:<name>`` is refused until M6.
+        "interaction_mode": st.none() | st.sampled_from(["sequential", "simultaneous"]),
+        "sequence_order": st.none() | st.sampled_from(["request", "director"]),
+        "simultaneous_tie_break": st.none() | st.sampled_from(["request_order", "director"]),
+        "reactive_interjections": st.booleans(),
     }
     return st.fixed_dictionaries(
         {

@@ -8696,3 +8696,31 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Issue:** #498, #114
 - **Decision (Rule 3, core):** the full suite at `c39ea8e` failed once: C-01's schemathesis run found that `GET /admin/evals/escalation-yield?to=0001-01-01T00:00Z` answers 500 (`OverflowError` in `to - 30 days`). That code is unchanged since `ab13059`, and the bug blocks the gate. Filed as #503, fixed in this pass: `clock.window_start` clamps the default window start at `datetime.min`, in both reports that default this way (escalation yield and extraction shadow). Regression tests are in `test_escalations.py` (both routes answer 200, empty) and `test_idempotency.py` (the helper). The integration test failed on the unfixed code.
   **Issue:** #503
+
+- **Decision (owner-approved API change, S-PROMOTE M4):** `PromoteRequest.seed_memories: list[ULID]`. It is optional, defaults to `[]`, holds at most `SEED_MEMORIES_MAX = 50` ids, and refuses a duplicate id with 422 `validation_error`.
+  **Why:** The owner chose option 1 on #498. 50 stays well under a scenario's `SEEDS_MAX` (200), so the author can still add seeds of their own to the companion.
+  **Issue:** #498
+- **Decision (Rule 2, error code):** A new error, `seed_memory_invalid` (422, `SeedMemoryInvalid`). Its `details` are `{field: body.seed_memories[n], memory_id, reason}`, where `reason` is one of `not_in_story`, `inactive`, `quarantined` or `not_known`. It is registered in `ERROR_STATUS`, and `promote_character` lists it in `OPERATION_ERRORS`, together with `erased_subject_referenced`.
+  **Why:** The brief asked for a precise code. `validation_error` would not tell a client which id failed or why.
+  **Issue:** #498
+- **Decision (Rule 2, "can know"):** A memory is seedable when three things hold. It is active (`membership`). It is not quarantined. Either the promoted character is its `holder_character_id`, or it has no holder and its visibility is `objective`/`public` or `characters` naming the character. A quarantined memory is refused.
+  **Why:** This follows how memories record who may know them (`core.tables.memories`, consolidation's scope clause). Every M4 render memory is holder-less and public. Quarantine marks text that was implicated in guardrail violations, so copying it into the catalog would launder it.
+  **Issue:** #498
+- **Decision (Rule 2, seed shape):** Each seed goes into `starting_state.seeded_memories` as `{text, holder: npc, audience: [self], disclosure: open}`. Seeds are added in the order requested, and the server assigns their ids. `valid_time` and `kind` are omitted. Provenance `seed` is applied at genesis, as for every scenario seed.
+  **Why:** FR-SCN-8 says that a seed with no stated valid-time is before the story began. The Seed model has no provenance field, because genesis records seeds with `seed` provenance.
+  **Issue:** #498
+- **Decision (Rule 2, companion draft write):** The seeded companion draft stays at draft revision 1. It goes through `scenarios.stored_document(companion=True)` and the scenario size check, and it is re-indexed in the subject index (catalog scope).
+  **Why:** The companion is created in the same transaction, so no reader ever saw an unseeded revision 1. The save rules and indexing match every other scenario-draft write.
+  **Issue:** #498
+- **Decision (Rule 2, erasure, write paths):** `epistrel.core.catalog.promote` is registered as a `scenario_catalog` writer in `SUBJECT_WRITERS`, and as a `DIRECT` path in `CONTENT_WRITE_PATHS`. It calls `check_content` on the copied texts and their holder/actor ids against the story's erasures. The memory rows are read `FOR SHARE`, so a concurrent erasure's rewrite cannot slip between the read and the commit.
+  **Why:** Story text now flows into a catalog record, so the existing enumeration tests should cover the path the way they cover every other content path.
+  **Issue:** #498
+- **Decision (Rule 2, idempotency):** The key's fingerprint includes `seed_memories` when the list is non-empty. When it is empty, the field is dropped from the fingerprint, so an M3-shaped body hashes as it did before the field existed.
+  **Why:** FR-CONC-6. Without this, a retry of an M3 promotion keyed before the deploy would get a fingerprint mismatch.
+  **Issue:** #498
+- **Decision (M3 refusal test):** In `test_promotion_refusals_and_options`, the case `{"seed_memories": []}` → 422 `validation_error` is replaced by two cases: `{"seed_memories": [<unknown id>]}` → 422 `seed_memory_invalid`, and `{"seed_facts": []}` → 422 `validation_error`. The second keeps the refusal of fields the request does not have.
+  **Why:** The contract changed. The other refusals are kept.
+  **Issue:** #498
+- **Decision (filed, out of scope):** #504 (needs-triage). No erasure reaches a story-only character named in text that a promotion copied into the catalog. The gap existed for the M3 definition copy, and #498 widens it.
+  **Why:** Closing it changes the erasure boundary (FR-ADMIN-2, FR-STORE-14), which is a Rule 4 design question.
+  **Issue:** #498

@@ -1,7 +1,8 @@
-"""Helpers for the testimony tests (#162): the ``partitions`` module, the perception levels and
-the ``testimony`` dial delivered for a test (#181 delivers them for real), a structured story
-switched to partitions with testimony at ``model`` or ``defaulted``, a room of characters, the
-claim the says carry, and the witnesses' first-order and speech-act beliefs read back."""
+"""Helpers for the testimony tests (#162): the ``partitions`` module, the perception levels, the
+``testimony`` dial and ``lazy_resolution`` (#164) delivered for a test (#181 delivers them for
+real), a structured story switched to partitions with testimony at ``model`` or ``defaulted``, a
+room of characters, the claim the says carry, and the witnesses' first-order and speech-act
+beliefs read back."""
 
 from __future__ import annotations
 
@@ -38,6 +39,7 @@ def _delivered() -> types.MappingProxyType[str, frozenset[str]]:
             "partitions": frozenset({schema.ON}),
             "perception": ps.LEVELS,
             "testimony": TESTIMONY_LEVELS,
+            "lazy_resolution": frozenset({schema.ON}),
         }
     )
 
@@ -66,11 +68,17 @@ async def enable_testimony(
     partitions: bool = True,
     salience: str | None = None,
     model_calls: int | None = None,
+    lazy: bool = True,
 ) -> None:
-    """The story's overrides: partitions with ``testimony`` at perception ``level`` (and the
-    commitment's salience, the call budget, when given)."""
+    """The story's overrides: partitions with ``testimony`` at perception ``level`` and lazy
+    resolution (#164) on unless ``lazy`` is false (and the commitment's salience, the call
+    budget, when given)."""
     settings: dict[str, Any] = {
-        "character_knowledge": {"partitions": partitions, "testimony": testimony}
+        "character_knowledge": {
+            "partitions": partitions,
+            "testimony": testimony,
+            "lazy_resolution": lazy,
+        }
         if partitions
         else {"partitions": False},
         "perception": {"level": level if partitions else "none"},

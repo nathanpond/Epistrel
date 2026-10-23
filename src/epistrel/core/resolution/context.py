@@ -48,7 +48,7 @@ from epistrel.core.resolution.entities import (
     ResolutionContext,
     relation_owners,
 )
-from epistrel.core.resolution.time import Position, SubjectTimeline, TimeBasis
+from epistrel.core.resolution.time import Position, SubjectTimeline, TimeBasis, turn_of
 from epistrel.core.settings_schema import OMNISCIENT
 from epistrel.core.tables import characters, entities, entity_aliases, stories
 
@@ -137,7 +137,7 @@ async def load_context(
         ContextBeat(b.text, b.character_id)
         for b in await working_memory(conn, story_id, perceiver, position, CONTEXT_BEATS)
     ]
-    turn = position if isinstance(position, int) else position[0]
+    turn = turn_of(position)
     head = (
         int(
             await conn.scalar(select(stories.c.next_turn_index).where(stories.c.id == story_id))

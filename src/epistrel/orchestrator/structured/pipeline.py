@@ -157,9 +157,12 @@ from epistrel.core.enums import (
     RecordProvenance,
     StoryStatus,
 )
+from epistrel.core.epistemic import exposure as exposure_records
 from epistrel.core.epistemic import modeling as char_modeling
+from epistrel.core.epistemic import observation as _observation  # noqa: F401 - registers the sink
 from epistrel.core.epistemic import perception
 from epistrel.core.epistemic import scene as scene_loader
+from epistrel.core.epistemic import transitions as belief_transitions
 from epistrel.core.erasure.index import index_records
 from epistrel.core.erasure.records import operation_record
 from epistrel.core.errors import InvalidRequest, RevisionConflict, StoryArchived, TimelineChanged
@@ -2061,6 +2064,10 @@ def _route_beat(
         beat=beat.beat,
         actor=None if beat.kind == NARRATION else beat.character_id,
         qualifiers=beat.qualifiers if qualifiers is None else qualifiers,
+        # #164: what a ``do`` or a narration states, observed by its content perceivers.
+        claims=tuple(c.proposition for c in beat.claims if c.proposition is not None)
+        if beat.kind in (DO, NARRATION)
+        else (),
     )
 
 
@@ -3159,35 +3166,46 @@ async def play(
             )
         else:
             results: list[perception.PerceptionResult] = []
-            fixed["perception"] = await route_committed(
-                conn,
-                op,
-                checked,
-                read,
-                say=say,
-                do=do,
-                ids=ids,
-                level=level,
-                settings=settings,
-                routed=results,
-                joined=joined,
-                participants=participants,
-            )
-            # #162: every witness's speech act, and the testimony its salience calls for.
-            told = await adjudicate.testify_committed(
-                conn,
-                op,
-                results,
-                checked=checked,
-                actor=read.actor.id,
-                say=say,
-                cast=list(read.names),
-                ids=ids,
-                adjudications=checked.adjudications,
-                read_set=read_set,
-            )
+            with belief_transitions.tallying() as tally:
+                # #164: the observation sink writes each perceiver's observations here.
+                fixed["perception"] = await route_committed(
+                    conn,
+                    op,
+                    checked,
+                    read,
+                    say=say,
+                    do=do,
+                    ids=ids,
+                    level=level,
+                    settings=settings,
+                    routed=results,
+                    joined=joined,
+                    participants=participants,
+                )
+                # #162: every witness's speech act, and the testimony its salience calls for;
+                # #164: the other witnesses' exposures, and the lazy resolutions it needs.
+                told = await adjudicate.testify_committed(
+                    conn,
+                    op,
+                    results,
+                    checked=checked,
+                    actor=read.actor.id,
+                    say=say,
+                    cast=list(read.names),
+                    ids=ids,
+                    adjudications=checked.adjudications,
+                    read_set=read_set,
+                )
             if told is not None:
-                fixed["epistemic"] = {"testimony": told}
+                fixed["epistemic"] = {
+                    "testimony": told.testimony,
+                    **told.exposures,
+                    "transitions": tally.report(),
+                }
+                if told.capped:
+                    checked.degradation.append(
+                        (exposure_records.LAZY_RESOLUTION_CAPPED, "lazy_resolution")
+                    )
         commit_report: dict[str, Any] = {}
         if lifecycle.commitment_enabled(settings):
             position = (read.turn, 0)

@@ -73,6 +73,7 @@ from sqlalchemy import (
     literal,
     or_,
     select,
+    tuple_,
     update,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, INT8RANGE, Range, array
@@ -105,7 +106,7 @@ from epistrel.core.events.registry import validate
 from epistrel.core.events.types import FactCommitted
 from epistrel.core.events.types import FactSuperseded as FactSupersededEvent
 from epistrel.core.ids import new_ulid
-from epistrel.core.membership import active_as_of, active_only, insert_derived
+from epistrel.core.membership import Through, active_as_of, active_only, bound_of, insert_derived
 from epistrel.core.projections import structured
 from epistrel.core.propositions import store
 from epistrel.core.propositions.codec import proposition_from_row
@@ -402,18 +403,26 @@ def _fact_of(row: Any, **extra: Any) -> Fact:
     )
 
 
-Position = tuple[int, int]
-"""A narrative position bound ``(turn, slot_k)``; slot 0 is the turn itself (``N``), slot k
-the k-th inter-turn slot after it (``N⁺k``)."""
+Position = Through
+"""A narrative position bound: ``(turn, slot_k)`` (slot 0 is the turn itself, ``N``; slot k the
+k-th inter-turn slot after it, ``N⁺k``), or a full ``core.membership.Position`` (#164: an
+exposure frame bounds canon at its beat and step, FR-STORE-31)."""
 
 
 def _through(t: Any, position: Position) -> ColumnElement[bool]:
-    """Row ``t`` was written at or before ``position``, or has no position (FR-STORE-26)."""
-    turn, slot = position
+    """Row ``t`` was written at or before ``position`` in ``(turn, slot_k, beat, step)`` order,
+    or has no position (FR-STORE-26). A ``(turn, slot_k)`` bound is the end of that turn or
+    slot, so it admits every beat and step of it."""
+    bound = bound_of(position)
+    key = tuple_(
+        t.c.narrative_turn,
+        func.coalesce(t.c.slot_k, 0),
+        func.coalesce(t.c.beat, 0),
+        t.c.step,
+    )
     return or_(
         t.c.narrative_turn.is_(None),
-        t.c.narrative_turn < turn,
-        and_(t.c.narrative_turn == turn, func.coalesce(t.c.slot_k, 0) <= slot),
+        key <= tuple_(*(literal(v) for v in bound.key())),
     )
 
 
@@ -980,7 +989,7 @@ def _canon_where(
     *,
     story_time: int | None = None,
     record_time: datetime | None = None,
-    through_position: tuple[int, int] | None = None,
+    through_position: Position | None = None,
     viewpoint: str = OMNISCIENT,
     subject: str | None = None,
     predicate: str | None = None,
@@ -1029,7 +1038,7 @@ async def canon(
     *,
     story_time: int | None = None,
     record_time: datetime | None = None,
-    through_position: tuple[int, int] | None = None,
+    through_position: Position | None = None,
     viewpoint: str = OMNISCIENT,
     subject: str | None = None,
     predicate: str | None = None,
@@ -1098,7 +1107,7 @@ _ABSENT = object()
 
 
 async def canon_refs(
-    conn: AsyncConnection, story_id: str, *, through_position: tuple[int, int] | None = None
+    conn: AsyncConnection, story_id: str, *, through_position: Position | None = None
 ) -> list[FactRef]:
     """``canon``'s omniscient read through ``through_position`` (the corrected record now), as
     ``FactRef``s in the same order. The cost per version is a few columns, not a ``Fact``: a
@@ -1158,7 +1167,7 @@ async def canon_links(
     conn: AsyncConnection,
     story_id: str,
     *,
-    through_position: tuple[int, int] | None = None,
+    through_position: Position | None = None,
     viewpoint: str = OMNISCIENT,
     subject: str | None = None,
     object: str | None = None,
@@ -1211,7 +1220,7 @@ async def canon_at(
     story_id: str,
     *,
     story_time: int,
-    through_position: tuple[int, int] | None = None,
+    through_position: Position | None = None,
     viewpoint: str = OMNISCIENT,
     reading: Reading = "every",
     subject: str | None = None,

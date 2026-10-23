@@ -156,6 +156,7 @@ from epistrel.core.tables.commitments import promissory_ledger, thunks
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 from epistrel.core.tables.detection import extraction_shadow
 from epistrel.core.tables.escalations import escalations
+from epistrel.core.tables.exposures import exposures
 from epistrel.core.tables.facts import facts
 from epistrel.core.tables.feedback import feedback_history, message_feedback
 from epistrel.core.tables.hot_set import overflow_episodes
@@ -218,6 +219,8 @@ STORY_TABLES: tuple[Table, ...] = (
     beliefs,
     belief_transitions,
     belief_state,
+    # Exposures (#164): a derived table, before the operations it references.
+    exposures,
     # Memory records (#135): a derived table, before the operations it references.
     memories,
     # Speech acts (#150): a derived table, before the operations it references.

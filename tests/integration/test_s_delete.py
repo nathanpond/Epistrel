@@ -32,7 +32,13 @@ from epistrel.orchestrator.jobs import timers
 from epistrel.orchestrator.jobs.handlers.rebuild import REBUILD_KIND
 from epistrel.orchestrator.policies.input_gate import EntryPoint, GateText
 from epistrel.orchestrator.policies.schemas import StoryPolicyItem
-from tests import canon_support, escalation_support, memory_support, partition_support
+from tests import (
+    canon_support,
+    escalation_support,
+    exposure_support,
+    memory_support,
+    partition_support,
+)
 from tests import erasure_support as erasure
 from tests import genesis_support as g
 from tests.event_support import interleave, play_turn, rows
@@ -212,6 +218,19 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
             object_id=ann,
             valid_time=Interval.of(0, None),
         ),
+    )
+    # Exposures (#164): the other character exposed to the player's claim.
+    await exposure_support.expose(
+        engine,
+        story_id,
+        character_id,
+        Proposition(
+            subject_id=me,
+            predicate_id=canon_support.KNOWS,
+            object_id=ann,
+            valid_time=Interval.of(0, None),
+        ),
+        source=str(player),
     )
     # Memory records (#135): a memory of the story, written by its own operation.
     await memory_support.derived_memory(engine, story_id, "Ann sails at dawn.", [])

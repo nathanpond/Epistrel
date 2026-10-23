@@ -83,7 +83,9 @@ callers check the module first. A belief never writes a fact: nothing here commi
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
@@ -608,6 +610,10 @@ def _conflicts(stored: Proposition, belief: Belief, registry: Registry) -> bool:
     return (hi is None or lo_b is None or lo_b < hi) and (hi_b is None or lo is None or lo < hi_b)
 
 
+conflicts = _conflicts
+"""Whether a belief contradicts a stored proposition (#164's fold-forward reads it)."""
+
+
 async def _replay(
     conn: AsyncConnection,
     story_id: str,
@@ -730,11 +736,20 @@ async def transition(
     settings: Any = None,
     registry: Registry | None = None,
     belief_kind: BeliefKind = BeliefKind.FIRST_ORDER,
+    frame: Position | None = None,
+    resolution: bool = False,
 ) -> TransitionResult:
     """Record one belief transition of ``holder`` in ``op``'s commit transaction (a commit
     step) and apply it to the partition; see the module docstring. ``position`` is the
     dependent step (callers apply the witness ``step + 1`` rule); ``held_from`` defaults to it.
-    ``settings`` is the story's effective configuration (read when ``None``)."""
+    ``settings`` is the story's effective configuration (read when ``None``).
+
+    ``frame`` (#164's lazy resolution): the partition the transition is decided against is the
+    holder's as of that position (beliefs held there and still open now), not now's, so a
+    belief written at an exposure position neither matches nor closes a belief held only from a
+    later position (the resolver folds those forward itself). ``resolution`` marks the belief
+    written as a lazy resolution (``beliefs.resolution_operation_id`` = ``op``)."""
+    tally = _TALLY.get()
     try:
         result = await _transition(
             conn,
@@ -754,13 +769,53 @@ async def transition(
             settings=settings,
             registry=registry,
             belief_kind=BeliefKind(belief_kind),
+            frame=frame,
+            resolution=resolution,
         )
     except SelfAttestation, AntecedentInvalid, ConfidenceInconsistent:
         BELIEF_TRANSITIONS_REFUSED.inc()
+        if tally is not None:
+            tally.refused += 1
         raise
     if not result.replayed:
         BELIEF_TRANSITIONS.labels(kind=result.transition.kind.value).inc()
+        if tally is not None:
+            kind_name = result.transition.kind.value
+            tally.by_kind[kind_name] = tally.by_kind.get(kind_name, 0) + 1
     return result
+
+
+@dataclass(slots=True)
+class Tally:
+    """The transitions one commit wrote, by kind, and the ones refused
+    (``turn_report.epistemic.transitions``)."""
+
+    by_kind: dict[str, int] = field(default_factory=dict)
+    refused: int = 0
+
+    def report(self) -> dict[str, Any]:
+        return {"by_kind": dict(sorted(self.by_kind.items())), "refused": self.refused}
+
+
+_TALLY: ContextVar[Tally | None] = ContextVar("epistrel_transition_tally", default=None)
+
+
+@contextmanager
+def tallying() -> Iterator[Tally]:
+    """Within the block, every ``transition()`` call is counted in the yielded ``Tally``."""
+    found = Tally()
+    token = _TALLY.set(found)
+    try:
+        yield found
+    finally:
+        _TALLY.reset(token)
+
+
+def refused() -> None:
+    """Count a transition a caller refused before calling ``transition()`` (a sink's own guard)."""
+    tally = _TALLY.get()
+    if tally is not None:
+        tally.refused += 1
 
 
 async def _transition(
@@ -782,6 +837,8 @@ async def _transition(
     settings: Any,
     registry: Registry | None,
     belief_kind: BeliefKind = BeliefKind.FIRST_ORDER,
+    frame: Position | None = None,
+    resolution: bool = False,
 ) -> TransitionResult:
     story_id = op.story_id
     if story_id is None:
@@ -857,6 +914,20 @@ async def _transition(
             for a in await partitions.speech_acts(conn, story_id, holder, speaker=source)
             if a.belief.proposition.subject_id == stored.subject_id
             and a.belief.proposition.predicate_id == stored.predicate_id
+        ]
+    elif frame is not None:
+        # #164: the holder's partition as of the exposure frame, as far as it is still open.
+        held = [
+            b
+            for b in await partitions.partition(
+                conn,
+                story_id,
+                holder,
+                through=frame,
+                subjects=[stored.subject_id],
+                predicate=stored.predicate_id,
+            )
+            if b.tx_to is None and b.held_to is None
         ]
     else:
         held = await partitions.partition(
@@ -994,6 +1065,7 @@ async def _transition(
             belief_id=belief_id,
             lineage_id=priors[0].lineage_id if priors else None,
             kind=belief_kind,
+            resolution=resolution,
         )
         if priors:
             await _close(conn, priors, at=start, by=belief_id)
@@ -1328,17 +1400,21 @@ __all__ = [
     "HistoryEntry",
     "RefusingOracle",
     "StagedRecord",
+    "Tally",
     "Transition",
     "TransitionResult",
     "check_order",
+    "conflicts",
     "decayed",
     "decayed_beliefs",
     "follow_operations",
     "forget_covered",
     "history",
     "project",
+    "refused",
     "resolve_confidence",
     "settle",
+    "tallying",
     "transition",
     "transitions_of",
 ]

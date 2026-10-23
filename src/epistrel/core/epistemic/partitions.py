@@ -96,6 +96,7 @@ from epistrel.core.ids import new_ulid
 from epistrel.core.membership import (
     Position,
     active_only,
+    included_through,
     insert_derived,
     position_key,
     position_literal,
@@ -172,6 +173,7 @@ class Belief(BaseModel):
     state: BeliefHoldState = BeliefHoldState.HELD
     corrected_by: str | None = None
     lineage_id: str = ""
+    resolution_operation_id: str | None = None
     closed_id: str | None = None
 
     def held_at(self, position: Position) -> bool:
@@ -280,6 +282,9 @@ def _belief_of(row: Any) -> Belief:
         state=BeliefHoldState(m["state"]),
         corrected_by=None if m["corrected_by"] is None else str(m["corrected_by"]),
         lineage_id=str(m["lineage_id"]),
+        resolution_operation_id=(
+            None if m.get("resolution_operation_id") is None else str(m["resolution_operation_id"])
+        ),
     )
 
 
@@ -339,6 +344,10 @@ async def partition(
         *(_open() if through is None else _held_then()),
         *held_at_clause(through),
     ]
+    if through is not None:
+        # #164: a lazily resolved belief holds from its exposure, but is in the record only from
+        # the turn that resolved it (FR-BELIEF-13,14).
+        where.append(included_through(beliefs, through.turn))
     if subjects is not None:
         where.append(p.subject_id.in_(list(subjects)))
     if entities_ is not None:
@@ -830,6 +839,7 @@ async def _insert_belief(
     belief_id: str | None = None,
     lineage_id: str | None = None,
     kind: BeliefKind = BeliefKind.FIRST_ORDER,
+    resolution: bool = False,
 ) -> Belief:
     """Write ``proposition`` as a belief of ``holder`` (first-order unless ``kind`` says
     otherwise: #162's ``speech_act`` row holds that someone said it, never reusing or closing a
@@ -946,6 +956,8 @@ async def _insert_belief(
         "beat": beat,
         "step": step,
         "lineage_id": lineage_id or belief_id,
+        # #164: a lazy resolution's inclusion operation is the needing turn that wrote it.
+        "resolution_operation_id": operation.operation_id if resolution else None,
     }
     await insert_derived(conn, beliefs, [row])
     await index_records(

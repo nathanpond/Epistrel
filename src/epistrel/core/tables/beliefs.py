@@ -27,6 +27,12 @@ proposition (``propositions``, #131: viewpoint-free, FR-PROP-2) wrapped with
 (``held``, ``decayed``, ``corrected``), ``corrected_by`` (the belief that corrected it) and
 ``lineage_id`` (the first belief of its correction chain).
 
+**Lazy resolution** (#164): a belief resolved from an exposure holds from the exposure position
+(``held_from_*``) but is written by the narrative turn that needed it (``operation_id``, its
+``narrative_turn``), which ``resolution_operation_id`` repeats: #130's
+``DerivedTable.inclusion_operation_column``, so a view through a turn before the resolving one
+excludes it (FR-BELIEF-13,14).
+
 **``belief_transitions``** (#160) — one row per belief-set change, the typed cause of a belief:
 see ``core.epistemic.transitions``. A derived record of its operation, append-only (the
 membership pair may change, and an erasure clears ``source_character_id``).
@@ -162,6 +168,7 @@ beliefs = Table(
     ),
     Column("corrected_by", ulid_type(), nullable=True),
     Column("lineage_id", ulid_type(), nullable=False),
+    Column("resolution_operation_id", ulid_type(), nullable=True),
     CheckConstraint(
         "polarity IN (" + ", ".join(f"'{p}'" for p in POLARITIES) + ")", name="polarity"
     ),
@@ -208,7 +215,12 @@ Index(
 )
 
 BELIEFS = register_derived(
-    DerivedTable(beliefs, valid_time=("valid_from", "valid_to"), tx_time=("tx_from", "tx_to"))
+    DerivedTable(
+        beliefs,
+        valid_time=("valid_from", "valid_to"),
+        tx_time=("tx_from", "tx_to"),
+        inclusion_operation_column="resolution_operation_id",
+    )
 )
 """``beliefs`` in ``core.membership.DERIVED_TABLES``: truncation, untruncation, swap, regenerate
 and fork move its rows with their operations (ADR-167: the derived table; ``belief_state`` is the

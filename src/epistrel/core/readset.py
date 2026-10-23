@@ -67,7 +67,7 @@ if TYPE_CHECKING:
     from epistrel.core.canon.facts import Fact, FactChange, FactLink, Reading
     from epistrel.core.epistemic.partitions import Belief
     from epistrel.core.events.operation import Operation
-    from epistrel.core.membership import Position
+    from epistrel.core.membership import Position, Through
     from epistrel.core.projections.structured import ProfileView, RelationshipView, SceneView
 
 logger = logging.getLogger(__name__)
@@ -173,6 +173,10 @@ class QueryKey(_Model):
     """How the window was read: ``every``/``any`` (true at one story-time, #133's readings) or
     ``overlap`` (any fact whose window may meet it); part of what the key asked."""
     symmetric: bool = False
+    through: tuple[int, int, int, int] | None = None
+    """The narrative bound the read was made through, as ``core.membership.Position.key()``
+    (``(turn, slot_k, beat, step)``; ``None``: the corrected record now). #164's exposure frames
+    read through the exposure position, and the read set is their proof (EXPOSURE-FRAME)."""
     result_hash: str = EMPTY_RESULT
 
     @model_validator(mode="after")
@@ -202,6 +206,7 @@ class QueryKey(_Model):
             self.valid_window,
             self.reading,
             self.symmetric,
+            self.through,
         )
 
     def view(self) -> dict[str, Any]:
@@ -353,6 +358,12 @@ def _bounds(
     return (None, None)
 
 
+def _through_key(through: Through | None) -> tuple[int, int, int, int] | None:
+    from epistrel.core.membership import bound_of
+
+    return None if through is None else bound_of(through).key()
+
+
 def _meets(a: tuple[int | None, int | None], b: tuple[int | None, int | None]) -> bool:
     """``[lo, hi)`` ranges that may share a minute (``None`` open)."""
     lo = [x for x in (a[0], b[0]) if x is not None]
@@ -393,7 +404,7 @@ class KeyedLookup:
         window: tuple[int | None, int | None] | None = None,
         viewpoint: str = OMNISCIENT,
         reading: Reading = "every",
-        through_position: tuple[int, int] | None = None,
+        through_position: Through | None = None,
     ) -> list[Fact]:
         """The current canon facts of ``predicate`` for ``subjects`` (one id, a ``same_as``-
         expanded set, or ``None`` for any), with ``object`` (an entity id, a literal, or
@@ -482,6 +493,7 @@ class KeyedLookup:
                 valid_window=bounds,
                 reading=reading if story_time is not None else "overlap",
                 symmetric=symmetric,
+                through=_through_key(through_position),
                 result_hash=result_hash((f.id, f.tx_from) for f in result),
             )
         )
@@ -559,6 +571,7 @@ class KeyedLookup:
                 viewpoint=viewpoint,
                 valid_window=bounds,
                 symmetric=symmetric,
+                through=_through_key(through),
                 result_hash=result_hash((b.id, b.tx_from) for b in result),
             )
         )
@@ -573,7 +586,7 @@ class KeyedLookup:
         predicate: str | None = None,
         ids: Sequence[str] | None = None,
         viewpoint: str = OMNISCIENT,
-        through_position: tuple[int, int] | None = None,
+        through_position: Through | None = None,
         limit: int | None = None,
     ) -> list[Fact]:
         """The current canon facts (at any valid-time) with ``subject``, ``object``,
@@ -607,7 +620,7 @@ class KeyedLookup:
         subject: str | None = None,
         object: str | None = None,
         viewpoint: str = OMNISCIENT,
-        through_position: tuple[int, int] | None = None,
+        through_position: Through | None = None,
     ) -> list[FactLink]:
         """``canon_rows``' read with ``subject`` or ``object`` (the same selection, order and
         retrieved rows), as lean ``FactLink``s: a neighborhood ranks every neighbor this way
@@ -638,7 +651,7 @@ class KeyedLookup:
         subjects: Sequence[str],
         story_time: int,
         viewpoint: str = OMNISCIENT,
-        through_position: tuple[int, int] | None = None,
+        through_position: Through | None = None,
         limit: int | None = None,
     ) -> list[Fact]:
         """The current canon facts about each of ``subjects`` true at ``story_time`` as

@@ -14,8 +14,9 @@ and ``character_knowledge.testimony = model``:
   his records contradict the claim, so no model is asked and he rejects: his prior belief
   stands and he holds only the ``said`` belief;
 - Sarah (in the kitchen) perceives nothing and gets nothing;
-- a background witness (Kid, a minor, not addressed) is never salient and forms no belief here
-  (its exposure record is #164's);
+- a background witness (Kid, a minor, not addressed) is never salient and forms no belief here:
+  it gets one exposure record of the claim, resolved only when a later turn needs it (#164's
+  ``test_s_testimony__exposure``; with lazy resolution on, as ``testimony_support`` sets it);
 - the player's character has no partition; the speaker does not testify to itself.
 
 Every testimony transition cites the say beat's event and sits at its step 1. Complements:
@@ -218,3 +219,67 @@ async def test_s_testimony__rules_and_inert(
         found = await rows(engine, "SELECT id FROM beliefs WHERE story_id = :s", s=story)
         assert found == []
         assert "epistemic" not in await turn_report(engine, story)
+
+
+async def _exposures_of(engine: AsyncEngine, story: str, witness: str, sent: str) -> list[Any]:
+    return await rows(
+        engine,
+        "SELECT x.* FROM exposures x JOIN propositions p ON p.id = x.proposition_id "
+        "WHERE x.story_id = :s AND x.witness_character_id = :w AND p.predicate_id = :p",
+        s=story,
+        w=witness,
+        p=sent,
+    )
+
+
+@pytest.mark.part("M5", "FR-BELIEF-9")
+async def test_s_testimony__exposure(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+    testimony_delivered: None,
+) -> None:
+    """The background witness (Kid: a minor, neither salient nor addressed) gets exactly one
+    exposure record of the sending claim, unresolved, at the say beat's step 1, and no belief
+    until a later turn needs it (#164). The salient witnesses' exposures are recorded resolved,
+    for audit; Sarah (absent) and the speaker have none."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        story, ids, things = await _setup(client, engine)
+        await _play(client, epistrel, story, ids)
+        (kid,) = await _exposures_of(engine, story, ids["Kid"], things["sent"])
+        assert (kid.state, kid.kind, kid.fidelity) == ("unresolved", "content", "full")
+        assert kid.source_character_id == ids["Jenni"]
+        assert (kid.position_turn, kid.position_beat, kid.position_step) == (1, 2, 1)
+        assert kid.resolution_operation_id is None
+        for name in ("Bobby", "Marcus"):
+            (audited,) = await _exposures_of(engine, story, ids[name], things["sent"])
+            assert audited.state == "resolved", name
+            assert audited.resolved_by_transition is not None, name
+        for name in ("Sarah", "Jenni", "Wren"):
+            assert await _exposures_of(engine, story, ids[name], things["sent"]) == [], name
+        report = (await turn_report(engine, story))["epistemic"]
+        assert report["exposures_written"] >= 3
+        assert report["resolutions"] == {"defaulted": 0, "adjudicated": 0}
+
+
+@pytest.mark.part("M5", "FR-BELIEF-1")
+async def test_s_testimony__exposure_is_not_belief(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+    testimony_delivered: None,
+) -> None:
+    """Complement of the exposure: after the assertion turn the ``beliefs`` table has no row for
+    the background witness, not even the speech act; only a later turn that needs it resolves
+    one."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        story, ids, things = await _setup(client, engine)
+        await _play(client, epistrel, story, ids)
+        assert await _exposures_of(engine, story, ids["Kid"], things["sent"])
+        held = await rows(
+            engine,
+            "SELECT id FROM beliefs WHERE story_id = :s AND holder_character_id = :h",
+            s=story,
+            h=ids["Kid"],
+        )
+        assert held == []

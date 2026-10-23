@@ -484,6 +484,27 @@ class BeliefTransitioned(EventPayload):
     prior_belief_ids: tuple[str, ...] = ()
 
 
+@register("exposure_recorded", category=EventCategory.DERIVED)
+class ExposureRecorded(EventPayload):
+    """A non-salient witness's exposure records (FR-BELIEF-5; #164): the exposures one beat
+    wrote, by id. Identifiers only; each row names its witness, proposition, source and
+    position."""
+
+    exposure_ids: tuple[str, ...]
+
+
+@register("belief_resolved", category=EventCategory.DERIVED)
+class BeliefResolved(EventPayload):
+    """An exposure resolved lazily inside the narrative turn that needed it (FR-BELIEF-7,12;
+    #164): the exposure, the transition that resolved it (the first-order belief's, else the
+    speech act's) and how (``defaulted`` or ``adjudicated``). Identifiers only; the transition
+    names the belief, dated at the exposure position."""
+
+    exposure_id: str
+    transition_id: str
+    resolution: str = "defaulted"
+
+
 @register("character_weight_set", category=EventCategory.CONTROL)
 class CharacterWeightSet(EventPayload):
     """The author set a character's narrative weight (FR-EPI-10; #163's

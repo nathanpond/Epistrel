@@ -153,6 +153,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.enums import FactCommitState
 from epistrel.core.membership import Position as NarrativePosition
+from epistrel.core.membership import Through, bound_of
 from epistrel.core.profiles.capabilities import level_at_least, module_on
 from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.propositions.model import (
@@ -1503,16 +1504,14 @@ async def closed_sets_for(
     return found
 
 
-def belief_through(
-    position: Any, through_position: tuple[int, int] | None
-) -> NarrativePosition | None:
+def belief_through(position: Any, through_position: Through | None) -> NarrativePosition | None:
     """The narrative position a belief holder's partition is read at: the claim's ``position``
     when it is one (#159's ``core.membership.Position``), else the end of ``through_position``
     (``(turn, slot)``), else now (``None``)."""
     if isinstance(position, NarrativePosition):
         return position
     if through_position is not None:
-        return NarrativePosition.end_of(*through_position)
+        return bound_of(through_position)
     return None
 
 
@@ -1523,7 +1522,7 @@ async def check_with(
     *,
     holder: Holder = CANON,
     position: Any = None,
-    through_position: tuple[int, int] | None = None,
+    through_position: Through | None = None,
     viewpoint: str = OMNISCIENT,
     registry: Registry | None = None,
     options: Options = Options(),  # noqa: B008 - frozen

@@ -73,6 +73,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.enums import HolderKind, OperationKind, OperationStatus
 from epistrel.core.errors import InvalidRequest, StoryEntityNotFound, StoryNotFound
+from epistrel.core.membership import Position as NarrativePosition
 from epistrel.core.membership import active_only, active_operation
 from epistrel.core.projections.base import LogEvent, Projection, Row, Rows
 from epistrel.core.resolution.time import TimeBasis, story_time_at
@@ -105,7 +106,16 @@ CONTAINER_OBJECT_TYPE = "item"
 """A ``placement`` predicate whose object is an item places the object in its subject (``holds``:
 the holder is the container); any other places the subject at its object (``located_at``)."""
 
-Position = tuple[int, int]
+Position = tuple[int, int] | NarrativePosition
+"""A projection read's bound: ``(turn, slot_k)`` (canon's), or the shared
+``core.membership.Position``, read at its turn and slot (#164)."""
+
+
+def _turn_slot(position: Position) -> tuple[int, int]:
+    if isinstance(position, NarrativePosition):
+        return (position.turn, position.slot_k)
+    return position
+
 
 AFTER_WRITE: list[Callable[[str], None]] = []
 """Test-only fault point: called with the story id after every incremental projection write,
@@ -210,7 +220,7 @@ def derive(story_id: str, versions: Iterable[FactVersion], known: frozenset[str]
 def through(row: Mapping[str, Any], position: Position) -> bool:
     """Whether ``row`` is in the record as of ``position``: written at or before it (or
     position-less) and closed by no version at or before it."""
-    turn, slot = position
+    turn, slot = _turn_slot(position)
     since = row["since_turn"]
     if since is not None and (since, row["since_slot"] or 0) > (turn, slot):
         return False

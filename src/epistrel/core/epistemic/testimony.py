@@ -62,11 +62,17 @@ from epistrel.core.enums import (
 from epistrel.core.epistemic import partitions, transitions
 from epistrel.core.epistemic.partitions import BeliefOperation
 from epistrel.core.errors import InvalidRequest
-from epistrel.core.membership import Position, active_only
+from epistrel.core.membership import (
+    Position,
+    active_only,
+    position_key,
+    position_literal,
+    recorded_through,
+)
 from epistrel.core.propositions.model import Proposition
 from epistrel.core.propositions.registry import Registry
 from epistrel.core.readset import KeyedLookup
-from epistrel.core.tables import characters
+from epistrel.core.tables import characters, stories
 from epistrel.core.tables.beliefs import belief_transitions, beliefs
 from epistrel.core.verify.rules import Holder, Record, Verdict, VerdictKind, check_with
 from epistrel.observability.metrics import TESTIMONY_OUTCOMES
@@ -129,13 +135,32 @@ def nudged(seed: float, confirmed: int = 0, rejected: int = 0, overturned: int =
     return round(min(1.0, max(0.0, value)), 3)
 
 
-async def trust(conn: AsyncConnection, story_id: str, witness: str, speaker: str) -> float:
-    """``witness``'s trust in ``speaker`` now (see the module docstring)."""
+async def trust(
+    conn: AsyncConnection,
+    story_id: str,
+    witness: str,
+    speaker: str,
+    *,
+    through: Position | None = None,
+) -> float:
+    """``witness``'s trust in ``speaker`` now, or as of ``through`` (#164's exposure frame: the
+    relationships as of its turn and only the outcomes recorded at or before it; see the module
+    docstring)."""
     from epistrel.core.projections.structured import relationships_views
     from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX
 
+    as_of = None
+    if through is not None:
+        # The relationships as of the frame's turn; a frame in the turn being committed (lazy
+        # resolution off) reads them now, its own turn not being the head yet.
+        head = await conn.scalar(select(stories.c.next_turn_index).where(stories.c.id == story_id))
+        as_of = through.turn if 0 <= through.turn <= int(head or 0) - 1 else None
     _, views = await relationships_views(
-        conn, story_id, [witness], viewpoint=f"{CHARACTER_VIEWPOINT_PREFIX}{witness}"
+        conn,
+        story_id,
+        [witness],
+        as_of=as_of,
+        viewpoint=f"{CHARACTER_VIEWPOINT_PREFIX}{witness}",
     )
     seed = seed_trust(
         (v.predicate, v.qualifiers)
@@ -151,6 +176,11 @@ async def trust(conn: AsyncConnection, story_id: str, witness: str, speaker: str
         t.kind == Kind.TESTIMONY.value,
         active_only(belief_transitions),
     ]
+    if through is not None:
+        mine += [
+            position_key(belief_transitions, "position") <= position_literal(through),
+            recorded_through(belief_transitions, through.turn),
+        ]
     rejected = await conn.scalar(
         select(func.count()).select_from(belief_transitions).where(*mine, t.outcome == REJECT)
     )
@@ -166,6 +196,11 @@ async def trust(conn: AsyncConnection, story_id: str, witness: str, speaker: str
             b.id.in_(produced),
             b.state == BeliefHoldState.CORRECTED.value,
             active_only(beliefs),
+            *(
+                ()
+                if through is None
+                else (position_key(beliefs, "held_to") <= position_literal(through),)
+            ),
         )
     )
     o = belief_transitions.alias("observed")
@@ -175,6 +210,14 @@ async def trust(conn: AsyncConnection, story_id: str, witness: str, speaker: str
             o.c.kind == Kind.OBSERVATION.value,
             o.c.belief_id.in_(produced),
             active_only(o),
+            *(
+                ()
+                if through is None
+                else (
+                    position_key(o, "position") <= position_literal(through),
+                    recorded_through(o, through.turn),
+                )
+            ),
         )
     )
     return nudged(seed, int(confirmed or 0), int(rejected or 0), int(overturned or 0))
@@ -369,9 +412,12 @@ async def consistency_of(
     propositions: Sequence[Proposition],
     *,
     registry: Registry | None = None,
+    through: Position | None = None,
 ) -> list[Consistency]:
-    """Each proposition's verdict over ``witness``'s records now (#140's ``check`` through
-    ``check_with``'s ``belief(witness)`` holder), with the witness's own belief it rests on."""
+    """Each proposition's verdict over ``witness``'s records now, or through ``through`` (#164's
+    exposure frame: the partition held there and the canon written at or before it), by #140's
+    ``check`` through ``check_with``'s ``belief(witness)`` holder, with the witness's own belief
+    it rests on."""
     found: list[Consistency] = []
     for proposition in propositions:
         fetched: list[Record] = []
@@ -380,6 +426,8 @@ async def consistency_of(
             story_id,
             proposition,
             holder=Holder.belief(witness),
+            position=through,
+            through_position=through,
             registry=registry,
             fetched=fetched,
         )

@@ -279,6 +279,34 @@ class BeliefHoldState(StrEnum):
     CORRECTED = "corrected"
 
 
+class ExposureKind(StrEnum):
+    """What a witness's exposure record holds (FR-BELIEF-5; #164): the ``content`` of an
+    utterance it heard (a claim it may later come to believe), or only its ``envelope`` (reserved:
+    an envelope is an eager ``spoke_to``/``spoke`` observation and writes no exposure). Postgres
+    enum ``exposure_kind``."""
+
+    CONTENT = "content"
+    ENVELOPE = "envelope"
+
+
+class ExposureFidelity(StrEnum):
+    """How much of the utterance the witness caught: ``full``, or ``partial`` (a render-limited
+    eavesdropper: only the claims inside its ``partial_text``). Postgres enum
+    ``exposure_fidelity``."""
+
+    FULL = "full"
+    PARTIAL = "partial"
+
+
+class ExposureState(StrEnum):
+    """An exposure's stored state: ``unresolved`` until a narrative turn needing the witness's
+    belief resolves it (``resolved``). The effective state is read through the resolving
+    operation's membership (``core.epistemic.exposure``). Postgres enum ``exposure_state``."""
+
+    UNRESOLVED = "unresolved"
+    RESOLVED = "resolved"
+
+
 class CharacterWeight(StrEnum):
     """A modeled character's narrative weight (FR-EPI-10; #163): ``minor`` (modeled lazily by
     interaction or salience: a sparse partition, a smaller consolidation window and hot budget,

@@ -685,6 +685,21 @@ OVERRIDES: dict[str, dict[str, str]] = {
     "beliefs": {
         "provenance": f'{_ID}(t."provenance"::text)',
         "corrected_by": f'{_ID}(t."corrected_by"::text)',
+        "resolution_operation_id": _mapped_or_null("resolution_operation_id"),
+    },
+    # Exposures (#164): a resolution made after N is not copied, so the exposure is unresolved
+    # there (its state is read through the resolving operation, as a thunk's is).
+    "exposures": {
+        "resolved_by_transition": (
+            f"CASE WHEN {_mapped_or_null('resolution_operation_id')} IS NULL THEN NULL "
+            f'ELSE {_ID}(t."resolved_by_transition"::text) END'
+        ),
+        "resolution_operation_id": _mapped_or_null("resolution_operation_id"),
+        "state": (
+            "CASE WHEN t.state = 'resolved' AND "
+            f"{_mapped_or_null('resolution_operation_id')} IS NULL THEN 'unresolved' "
+            "ELSE t.state END"
+        ),
     },
     "belief_transitions": {
         "prior_belief_ids": (

@@ -28,6 +28,7 @@ from epistrel.core.tables.escalations import (
     gate_thresholds,
 )
 from epistrel.core.tables.events import events
+from epistrel.core.tables.exposures import exposures
 from epistrel.core.tables.facts import facts
 from epistrel.core.tables.genesis import genesis_deferred
 from epistrel.core.tables.hot_set import overflow_episodes
@@ -95,6 +96,7 @@ __all__ = [
     "erasure_ledger",
     "escalations",
     "events",
+    "exposures",
     "extraction_shadow",
     "facts",
     "gate_threshold_history",

@@ -1780,6 +1780,23 @@ Everything else keeps the safe disposition: detector findings, the excluded reso
 
 ---
 
+### ADR-172 — A non-salient witness's exposure is resolved lazily in its own frame, by the turn that needs it
+**Status:** Accepted.
+**Context:** M5's exposure records (#164; FR-BELIEF-5,6,7,8,12,13,14, FR-STORE-31) defer belief formation for witnesses #162 leaves unresolved, and must not let anything the story revealed after the hearing decide what the witness made of it. The resolution is narrative state of the turn that makes it, yet it holds from the hearing, so a view through an earlier turn, a truncation, a swap and a fork must each see it, or not, by the right anchor.
+**Decision:**
+- `exposures` (migration 0072) holds one row per (witness, beat, proposition) heard, with its source, the beat's event, the fidelity and the five-column exposure position (`(turn, beat, 1)`, the witness rule; an inter-turn slot `(turn, slot_k)`). An exposure writes no belief. Salient witnesses' exposures are written resolved, for audit; envelopes, `do`s and narrations are eager observations, not exposures (`core.epistemic.observation`, a perception sink).
+- `core.epistemic.exposure.resolve_exposure(exposure, needing_operation)` runs only in a narrative turn's commit. It decides by #162's default in the frame through E: #140's check over the partition and the canon read with `through_position = E` (canon positions gain `step`; `core.membership.Position` is the bound the M4 readers now accept), trust as of E. It writes the `said` and first-order beliefs at `held_from = E` in the needing operation, then folds later dated contradicting beliefs forward as a correction dated at each one's own position.
+- Two anchors: valid-from is `held_from`, inclusion is the needing operation (`beliefs.resolution_operation_id`, #130's new `DerivedTable.inclusion_operation_column`). A partition read through a turn before the resolving one excludes it; truncation, swap and fork follow the operation as for any derived row.
+- An exposure's state is read through its resolutions' `belief_resolved` events, which follow their operations, so a swap back to a chain that resolved it brings its resolution back. Read-only inspection never resolves.
+- Every keyed read of a resolution carries its `through` bound in the read set, which is the proof that nothing after E was read; the resolver imports no semantic retrieval.
+**Consequences:**
+- Deferral saves work, not information: a bystander resolved years later decides from what it knew then, and a later observation corrects it in its own frame.
+- The need sites are #162's testimony of an eager witness today; #166's verification and #170's context assembly call `resolve_needed` too. With `lazy_resolution` off, exposures are resolved at once, by the default.
+- Adjudicated lazy resolution (the needing turn's model call for a primary witness) is not built; every lazy resolution is `defaulted`.
+- Tests: `tests/property/test_exposure_frame.py` (EXPOSURE-FRAME M5), `tests/scenario/test_s_pollution.py` (S-POLLUTION M5, S-INTRA-TURN-FRAME M5), `tests/scenario/test_s_resolution_anchors.py` (S-RESOLUTION-ANCHORS M5, S-UNDO-SWAP M5), `tests/scenario/test_s_testimony.py::test_s_testimony__exposure` (S-TESTIMONY M5).
+
+---
+
 *Every ADR above is Accepted as a record; the indexes at the top show which are amended or partly superseded. No decisions are open.*
 
 ---

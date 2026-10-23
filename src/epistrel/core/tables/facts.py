@@ -105,6 +105,7 @@ facts = Table(
     *derived_columns(),
     Column("beat", SmallInteger, nullable=True),
     Column("slot_k", SmallInteger, nullable=True),
+    Column("step", SmallInteger, nullable=False, server_default=text("0")),
     Column("superseded_by", ulid_type(), nullable=True),
     Column("supersedes", ARRAY(ulid_type()), nullable=False, server_default=text("'{}'")),
     Column("anchored_to", ulid_type(), nullable=True),

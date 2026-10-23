@@ -678,6 +678,7 @@ _MUTATION = "epistrel.core.mutation"
 _COMMITMENTS = "epistrel.core.commit.lifecycle"
 _PARTITIONS = "epistrel.core.epistemic.partitions"
 _TRANSITIONS = "epistrel.core.epistemic.transitions"
+_EXPOSURES = "epistrel.core.epistemic.exposure"
 
 SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
     SubjectWriter(
@@ -783,6 +784,9 @@ SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
     SubjectWriter("beliefs", (_PARTITIONS,), f"{_RECORDS}:read_beliefs"),
     # Belief transitions (#160): the holder and the source are declared subjects.
     SubjectWriter("belief_transitions", (_TRANSITIONS,), f"{_RECORDS}:read_belief_transitions"),
+    # Exposures (#164): the witness, the source and the proposition's subject and object
+    # characters are declared subjects.
+    SubjectWriter("exposures", (_EXPOSURES,), f"{_RECORDS}:read_exposures"),
 )
 """Every indexed table (see the module docstring); the coverage test's source of truth."""
 

@@ -139,6 +139,7 @@ from epistrel.core.erasure.index import index_records
 from epistrel.core.erasure.records import memory_record
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.ids import new_ulid
+from epistrel.core.membership import Position as NarrativePosition
 from epistrel.core.membership import active_only, active_operation, insert_derived
 from epistrel.core.profiles.capabilities import module_on
 from epistrel.core.profiles.effective import effective_configuration
@@ -1031,8 +1032,9 @@ class WorkingBeat:
     text: str
 
 
-Position = int | tuple[int, int]
-"""A narrative position: a turn, or ``(turn, beat)``."""
+Position = int | tuple[int, int] | NarrativePosition
+"""A narrative position: a turn, ``(turn, beat)``, or the shared ``core.membership.Position``
+(its turn and beat bound the beats; #164)."""
 
 
 def _working(row: Any) -> list[WorkingBeat]:
@@ -1075,7 +1077,11 @@ async def working_memory(
     ]
     if through_position is not None:
         turn, beat = (
-            (through_position, None) if isinstance(through_position, int) else through_position
+            (through_position, None)
+            if isinstance(through_position, int)
+            else (through_position.turn, through_position.beat)
+            if isinstance(through_position, NarrativePosition)
+            else through_position
         )
         if beat is None:
             where.append(e.c.narrative_turn <= turn)

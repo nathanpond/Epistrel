@@ -90,7 +90,7 @@ from epistrel.core.resolution.entities import (
     ResolutionContext,
     resolve_mentions,
 )
-from epistrel.core.resolution.time import Position, TimeBasis, find_time_expressions
+from epistrel.core.resolution.time import Position, TimeBasis, find_time_expressions, turn_of
 from epistrel.core.resolution.types import Mention, MentionKind, ReasonCode
 from epistrel.core.verify.introduce import Introductions
 from epistrel.core.verify.normalize import ClaimSketch, Unnormalizable, normalize
@@ -1198,7 +1198,7 @@ def _protected(beat: _Beat, index: ProtectedIndex | None) -> list[DetectedClaim]
 def detect_render(beats: Sequence[DetectBeat], position: Position, env: DetectionEnv) -> Detection:
     """One render's detection, layers (a) and (b), over every beat (see the module docstring).
     ``position`` is the render's ``(turn, beat)``; each beat is normalized at its own beat."""
-    turn = position if isinstance(position, int) else position[0]
+    turn = turn_of(position)
     claims: list[DetectedClaim] = []
     found: list[BeatDetection] = []
     truncated = False

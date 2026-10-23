@@ -58,7 +58,8 @@ language you don't understand", "<Speaker> speaks into the phone", "<Speaker> sa
 
 **Sinks** (``PERCEPTION_SINKS``). Each routed turn's ``PerceptionResult`` list is handed to every
 registered sink in the commit transaction: ``core.memory.records`` writes the memories here
-(#161); #160's observation transitions, #162's testimony and #164's exposures attach their own.
+(#161) and ``core.epistemic.observation`` the observation transitions (#164); #162's testimony
+and #164's exposures run from the pipeline on the same results.
 Routing results themselves are never stored: a history read re-routes from the stored beats
 and their persisted qualifiers.
 
@@ -270,6 +271,9 @@ class RouteBeat:
     sound: str | None = None
     moves: tuple[tuple[str, str | None], ...] = ()
     source: object | None = None
+    claims: tuple[Any, ...] = ()
+    """The propositions a ``do`` or a narration states (#164: ``core.epistemic.observation``
+    records them as each content perceiver's observation); empty for every other beat."""
 
 
 def with_declared(scene: SceneState, claims: Iterable[Any]) -> SceneState:

@@ -47,12 +47,14 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core.epistemic import modeling, partitions, perception, testimony
+from epistrel.core.enums import BeliefKind, ExposureFidelity
+from epistrel.core.epistemic import exposure, modeling, partitions, perception, testimony
 from epistrel.core.epistemic import scene as scene_loader
 from epistrel.core.profiles.capabilities import module_on
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.propositions.model import Proposition
-from epistrel.core.propositions.registry import Registry, load
+from epistrel.core.propositions.registry import Registry, canonical, load
+from epistrel.core.propositions.store import write_proposition
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.tables import entities
 from epistrel.core.verify.rules import VerdictKind
@@ -500,10 +502,10 @@ async def testify_committed(
     ids: Mapping[int, str],
     adjudications: Adjudications | None,
     read_set: StructuredReadSet,
-) -> dict[str, Any] | None:
+) -> Testified | None:
     """Write the turn's testimony in its commit step, after routing (see the module
-    docstring); answers ``turn_report.epistemic.testimony`` (``None`` when partitions are off
-    under the configuration now)."""
+    docstring); answers ``turn_report.epistemic``'s testimony and exposure parts (``None`` when
+    partitions are off under the configuration now)."""
     from epistrel.core.profiles.effective import effective_configuration
 
     story_id = str(op.story_id)
@@ -516,8 +518,22 @@ async def testify_committed(
     marked = salient_beats(checked)
     registry = await load(conn, story_id)
     lookup = KeyedLookup(conn, read_set)
+    lazy = exposure.lazy_on(current)
+    budget = exposure.Pass(cap=exposure.max_lazy_resolutions(current))
+    stored: dict[tuple[int, Any], str] = {}
+    exposed = 0
+    now: list[str] = []
     by_kind: dict[str, int] = {}
     witnesses = adjudicated = defaulted = deferred = 0
+
+    async def stored_id(beat: int, proposition: Proposition) -> str:
+        key = (beat, proposition.normalized_key())
+        if key not in stored:
+            stored[key] = await write_proposition(
+                conn, story_id, proposition, registry, base_revision=op.base_revision
+            )
+        return stored[key]
+
     for result in results:
         heard = says.get(result.beat.beat)
         if result.beat.kind != "say" or heard is None or result.beat.actor != heard.speaker:
@@ -525,15 +541,53 @@ async def testify_committed(
         if not heard.claims:
             continue  # a say that claims nothing: its memory row is the whole speech act
         event_id = ids.get(heard.beat)
+        position = exposure.exposure_position(
+            op.narrative_turn or 0, op.turn_variant or 0, heard.beat
+        )
         for witness, partial in witnesses_of(result.perceived, heard.speaker, holders):
             witnesses += 1
             eager = witness in heard.addressed or await is_salient(
                 conn, story_id, heard, witness, marked=marked, minors=minors
             )
-            if not eager:
-                deferred += 1
-                continue
             act = heard.speech_act(event_id, partial)
+            fidelity = ExposureFidelity.FULL if partial is None else ExposureFidelity.PARTIAL
+            if not eager:
+                # #164: an exposure record, not a belief; resolved when a later turn needs it
+                # (at once, by the default, with lazy resolution off).
+                deferred += 1
+                if event_id is None or not act.propositions:
+                    continue
+                written_ids = await exposure.record_exposures(
+                    conn,
+                    op,
+                    [
+                        exposure.Exposed(
+                            witness=witness,
+                            proposition_id=await stored_id(heard.beat, p),
+                            proposition=p,
+                            source=heard.speaker,
+                            source_event_id=event_id,
+                            position=position,
+                            fidelity=fidelity,
+                        )
+                        for p in act.propositions
+                    ],
+                )
+                exposed += len(written_ids)
+                if not lazy:
+                    now += written_ids
+                continue
+            # #164: this turn needs the witness's belief: its waiting exposures on the claims'
+            # keys resolve first, each in its own frame.
+            await exposure.resolve_needed(
+                conn,
+                op,
+                witness,
+                list(act.propositions),
+                budget=budget,
+                settings=current,
+                registry=registry,
+            )
             intent = testimony.perceived(heard.intent)
             consistency = await testimony.consistency_of(
                 lookup, story_id, witness, list(act.propositions), registry=registry
@@ -553,18 +607,74 @@ async def testify_committed(
                 outcomes = [t if t is not None else o for t, o in zip(taken, outcomes, strict=True)]
                 if any(t is not None for t in taken):
                     adjudicated += 1
-            await testimony.commit_testimony(
+            made = await testimony.commit_testimony(
                 conn, op, act, outcomes, settings=current, registry=registry
             )
             for outcome in outcomes:
                 by_kind[outcome.decision] = by_kind.get(outcome.decision, 0) + 1
-    return {
-        "witnesses": witnesses,
-        "adjudicated": adjudicated,
-        "defaulted": defaulted,
-        "deferred": deferred,
-        "outcomes_by_kind": dict(sorted(by_kind.items())),
-    }
+            if event_id is not None and act.propositions:
+                # The salient witness's exposures, resolved now, for audit.
+                exposed += len(
+                    await exposure.record_exposures(
+                        conn,
+                        op,
+                        [
+                            exposure.Exposed(
+                                witness=witness,
+                                proposition_id=await stored_id(heard.beat, p),
+                                proposition=p,
+                                source=heard.speaker,
+                                source_event_id=event_id,
+                                position=position,
+                                fidelity=fidelity,
+                                resolved_by_transition=_resolving(made, p, registry),
+                            )
+                            for p in act.propositions
+                        ],
+                    )
+                )
+    if now:
+        await exposure.resolve_written(
+            conn, op, now, budget=budget, settings=current, registry=registry
+        )
+    return Testified(
+        testimony={
+            "witnesses": witnesses,
+            "adjudicated": adjudicated,
+            "defaulted": defaulted,
+            "deferred": deferred,
+            "outcomes_by_kind": dict(sorted(by_kind.items())),
+        },
+        exposures=exposure.report(exposed, budget),
+        capped=budget.capped,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class Testified:
+    """What the commit's testimony step wrote: ``turn_report.epistemic.testimony``, the exposure
+    counts (``exposures_written``, ``resolutions``) and whether the lazy-resolution cap left
+    exposures waiting (``lazy_resolution_capped``)."""
+
+    testimony: dict[str, Any]
+    exposures: dict[str, Any]
+    capped: bool = False
+
+
+def _resolving(made: Sequence[Any], proposition: Proposition, registry: Registry) -> str | None:
+    """The transition that resolved a salient witness's claim: its first-order transition when
+    it wrote one, else its ``said`` belief's."""
+    key = canonical(proposition, registry).normalized_key()
+    mine = [
+        m
+        for m in made
+        if canonical(m.belief.proposition, registry).normalized_key()
+        in (key, canonical(proposition.negation(), registry).normalized_key())
+    ]
+    first = next((m for m in mine if m.belief.kind is BeliefKind.FIRST_ORDER), None)
+    said = next((m for m in mine if m.belief.kind is BeliefKind.SPEECH_ACT), None)
+    chosen = first or said or (made[0] if made else None)
+    return None if chosen is None else str(chosen.transition.id)
 
 
 __all__ = [
@@ -573,6 +683,7 @@ __all__ = [
     "Adjudications",
     "Claim",
     "Heard",
+    "Testified",
     "adjudicate_turn",
     "heard_of",
     "is_salient",

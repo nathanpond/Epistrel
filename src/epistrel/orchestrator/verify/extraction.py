@@ -95,7 +95,7 @@ from epistrel.core.resolution.context import (
     load_time_basis,
 )
 from epistrel.core.resolution.entities import NARRATOR, PLAYER, ResolutionContext
-from epistrel.core.resolution.time import Position
+from epistrel.core.resolution.time import Position, turn_of
 from epistrel.core.settings_schema import OMNISCIENT, VerifySettings
 from epistrel.core.tables import events, operations
 from epistrel.core.tables.commitments import thunks
@@ -253,7 +253,7 @@ async def load_env(
     basis = await load_time_basis(conn, story_id)
     index = await load_index(conn, story_id)
     lookup = KeyedLookup(conn, read_set)
-    turn = position if isinstance(position, int) else position[0]
+    turn = turn_of(position)
     contexts: dict[str, ResolutionContext] = {}
     protected: dict[str, ProtectedIndex | None] = {}
     # The speakers share one canon read and one scene and relationships read (#452).
@@ -384,7 +384,7 @@ async def to_claims(
 ) -> list[DetectedClaim]:
     """The model's claims as layer (c) claims: located, confident enough, normalized."""
     found: list[DetectedClaim] = []
-    turn = position if isinstance(position, int) else position[0]
+    turn = turn_of(position)
     unknown = 0
     for item in answer.claims:
         if item.confidence < EXTRACTION_MIN_CONFIDENCE:

@@ -106,7 +106,7 @@ from epistrel.core.propositions.codec import proposition_from_row
 from epistrel.core.propositions.model import Instant, Interval, Proposition
 from epistrel.core.propositions.registry import Registry, canonical, load
 from epistrel.core.tables import characters, entities, events, propositions
-from epistrel.core.tables.beliefs import belief_state, beliefs
+from epistrel.core.tables.beliefs import belief_state, belief_transitions, beliefs
 from epistrel.core.visibility import Visibility, private_to
 
 BELIEF_COMMITTED = "belief_committed"
@@ -372,6 +372,58 @@ async def read_belief(conn: AsyncConnection, story_id: str, belief_id: str) -> B
         )
     ).one_or_none()
     return None if found is None else _belief_of(found)
+
+
+@dataclass(frozen=True, slots=True)
+class SpeechActBelief:
+    """A holder's belief about a speech act (#162's minimal ``kind = speech_act`` row; #167 adds
+    the full shape): that ``speaker`` said the proposition (``believes(H, said(S, X))``), with
+    the testimony outcome its producing transition recorded."""
+
+    belief: Belief
+    speaker_id: str | None
+    outcome: str | None
+
+
+async def speech_acts(
+    conn: AsyncConnection,
+    story_id: str,
+    holder: str,
+    *,
+    speaker: str | None = None,
+    held: bool = True,
+) -> list[SpeechActBelief]:
+    """``holder``'s speech-act beliefs (``said`` rows), each with its speaker (the producing
+    transition's source) and outcome; only ``speaker``'s when given; ``held``: the active, open
+    rows only. By id."""
+    b = beliefs.c
+    t = belief_transitions.c
+    query = (
+        _select()
+        .add_columns(t.source_character_id.label("said_by"), t.outcome.label("said_outcome"))
+        .join(belief_transitions, t.id == b.provenance)
+        .where(
+            b.story_id == story_id,
+            b.holder_character_id == holder,
+            b.kind == BeliefKind.SPEECH_ACT.value,
+        )
+        .order_by(b.id)
+    )
+    if held:
+        query = query.where(active_only(beliefs), b.tx_to.is_(None), b.held_to_turn.is_(None))
+    if speaker is not None:
+        query = query.where(t.source_character_id == speaker)
+    found = []
+    for row in await conn.execute(query):
+        m = row._mapping
+        found.append(
+            SpeechActBelief(
+                _belief_of(row),
+                None if m["said_by"] is None else str(m["said_by"]),
+                m["said_outcome"],
+            )
+        )
+    return found
 
 
 def _state_of(row: Any) -> BeliefState:
@@ -777,8 +829,11 @@ async def _insert_belief(
     registry: Registry | None = None,
     belief_id: str | None = None,
     lineage_id: str | None = None,
+    kind: BeliefKind = BeliefKind.FIRST_ORDER,
 ) -> Belief:
-    """Write ``proposition`` as a first-order belief of ``holder`` in ``operation``'s commit
+    """Write ``proposition`` as a belief of ``holder`` (first-order unless ``kind`` says
+    otherwise: #162's ``speech_act`` row holds that someone said it, never reusing or closing a
+    first-order belief) in ``operation``'s commit
     transaction (see the module docstring); answers the belief, with the open belief it closed
     in ``closed_id``. 422 ``holder_has_no_partition`` for the player's character; 422
     ``unknown_predicate``; 409 ``erased_subject_referenced`` for an erased subject."""
@@ -817,23 +872,25 @@ async def _insert_belief(
     # The holder's open belief in the same proposition (subject, predicate, object, qualifiers
     # and polarity; its time is the belief's own): the new row reuses its proposition and closes
     # it. Otherwise the proposition is stored as canon's are (#131's store).
-    candidates = [
-        _belief_of(r)
-        for r in await conn.execute(
-            _select()
-            .where(
-                b.story_id == story_id,
-                b.holder_character_id == holder,
-                p.subject_id == stored.subject_id,
-                p.predicate_id == stored.predicate_id,
-                b.polarity == stored.polarity.value,
-                *_open(),
-                b.held_to_turn.is_(None),
+    candidates: list[Belief] = []
+    if kind is BeliefKind.FIRST_ORDER:
+        candidates = [
+            _belief_of(r)
+            for r in await conn.execute(
+                _select()
+                .where(
+                    b.story_id == story_id,
+                    b.holder_character_id == holder,
+                    p.subject_id == stored.subject_id,
+                    p.predicate_id == stored.predicate_id,
+                    b.polarity == stored.polarity.value,
+                    *_open(),
+                    b.held_to_turn.is_(None),
+                )
+                .order_by(b.id)
+                .with_for_update(of=beliefs)
             )
-            .order_by(b.id)
-            .with_for_update(of=beliefs)
-        )
-    ]
+        ]
     prior = next(
         (x for x in candidates if x.proposition.normalized_key() == stored.normalized_key()), None
     )
@@ -870,7 +927,7 @@ async def _insert_belief(
         "id": belief_id,
         "story_id": story_id,
         "holder_character_id": holder,
-        "kind": BeliefKind.FIRST_ORDER.value,
+        "kind": BeliefKind(kind).value,
         "proposition_id": proposition_id,
         "polarity": stored.polarity.value,
         "confidence_level": BeliefConfidenceLevel(level).value,
@@ -930,6 +987,7 @@ __all__ = [
     "BeliefOperation",
     "BeliefState",
     "Key",
+    "SpeechActBelief",
     "StatePage",
     "at_least",
     "belief_states",
@@ -945,4 +1003,5 @@ __all__ = [
     "refresh",
     "register_belief_hook",
     "remove_belief_hook",
+    "speech_acts",
 ]

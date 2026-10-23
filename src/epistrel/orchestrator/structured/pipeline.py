@@ -258,6 +258,7 @@ from epistrel.orchestrator.budget import (
 from epistrel.orchestrator.commit import resolution, salience
 from epistrel.orchestrator.commit.salience import SALIENCE_SKIPPED
 from epistrel.orchestrator.compose import compose as composing
+from epistrel.orchestrator.epistemic import adjudicate
 from epistrel.orchestrator.lite import pipeline as lite
 from epistrel.orchestrator.lite.cast import ResolvedCast, resolve_cast
 from epistrel.orchestrator.lite.prompt import prompt_hash
@@ -1073,6 +1074,9 @@ class Checked:
     )
     """Each beat as rendered whose qualifiers were repaired, with its repairs (#161): staged as
     ``render_rejected`` (rung 1)."""
+    adjudications: adjudicate.Adjudications | None = None
+    """The salient witnesses' testimony adjudications (#162), by ``(beat, witness)``: the commit
+    applies them to the default it recomputes."""
 
 
 def _verdict_of(result: CheckedClaim) -> str | None:
@@ -2109,6 +2113,7 @@ async def route_committed(
     ids: Mapping[int, str],
     level: perception.Level,
     settings: ProfileSettings,
+    routed: list[perception.PerceptionResult] | None = None,
 ) -> dict[str, Any]:
     """Route the committed turn (#161), in its commit step after canon (so the moves the turn
     committed are in #137's placement projection): every beat through
@@ -2125,6 +2130,8 @@ async def route_committed(
         _routed_beats(checked, read, say=say, do=do, ids=ids, moves=moves), state, level
     )
     await perception.deliver(conn, op, results)
+    if routed is not None:
+        routed.extend(results)
     leftovers = [
         b
         for b in _episodic(checked, read, say=None, do=None, ids=ids)
@@ -2732,6 +2739,23 @@ async def play(
         clock.add("repair", time.perf_counter() - repairing)
         scene_loader.remember_level(read_set, scene_loader.level_of(settings))
         checked = await validate_perception(db, story_id, read, checked, settings)
+        # #162: salient witnesses' testimony, adjudicated as optional work before the polish.
+        checked.adjudications = await adjudicate.adjudicate_turn(
+            db,
+            models,
+            story_id,
+            turn=read.turn,
+            actor=read.actor.id,
+            primary=read.character.id,
+            cast=list(read.names),
+            names=read.names,
+            checked=checked,
+            say=say,
+            settings=settings,
+            budget=budget,
+            read_set=read_set,
+        )
+        checked.degradation += checked.adjudications.degradation
         found[:] = [checked]
         composing_at = time.perf_counter()
         composition = await compose_turn(
@@ -2934,9 +2958,34 @@ async def play(
                 conn, op, _episodic(checked, read, say=say, do=do, ids=ids), settings=settings
             )
         else:
+            results: list[perception.PerceptionResult] = []
             fixed["perception"] = await route_committed(
-                conn, op, checked, read, say=say, do=do, ids=ids, level=level, settings=settings
+                conn,
+                op,
+                checked,
+                read,
+                say=say,
+                do=do,
+                ids=ids,
+                level=level,
+                settings=settings,
+                routed=results,
             )
+            # #162: every witness's speech act, and the testimony its salience calls for.
+            told = await adjudicate.testify_committed(
+                conn,
+                op,
+                results,
+                checked=checked,
+                actor=read.actor.id,
+                say=say,
+                cast=list(read.names),
+                ids=ids,
+                adjudications=checked.adjudications,
+                read_set=read_set,
+            )
+            if told is not None:
+                fixed["epistemic"] = {"testimony": told}
         commit_report: dict[str, Any] = {}
         if lifecycle.commitment_enabled(settings):
             position = (read.turn, 0)
@@ -3057,6 +3106,8 @@ async def play(
         report["commit"] = fixed.get("commit", {})
         if "perception" in fixed:
             report["perception"] = fixed["perception"]
+        if "epistemic" in fixed:
+            report["epistemic"] = fixed["epistemic"]
         if checked.repairs:
             report["repairs"] = repairs_report(checked)
         report["eval_hooks"] = eval_hooks(

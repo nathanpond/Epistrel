@@ -1,5 +1,6 @@
 """C-04: model-adapter conformance (docs/04), the M2 parts this Model Access Layer delivers, and
-the M4 part: the guide's embedding-port row (#138, ``test_c_04__embedding_row``).
+the M4 part: the guide's embedding-port row (#138, ``test_c_04__embedding_row``), and the M5 part:
+the ``belief_adjudication`` row (#162, ``test_c_04__adjudication_row``).
 
 Both adapters — the ``openai`` SDK adapter against a local OpenAI-compatible server and the
 deterministic stub — run the same suite (``tests/conformance/suite.py``).
@@ -25,10 +26,11 @@ from epistrel.core.policies.model import Policy
 from epistrel.engine import Engine
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models import metrics, registry
+from epistrel.orchestrator.models.access import build_inputs
 from epistrel.orchestrator.models.config import ConfigRow, KeyBox, describe
 from epistrel.orchestrator.models.errors import ModelUnavailable
 from epistrel.orchestrator.models.openai_compatible import OpenAICompatibleAdapter
-from epistrel.orchestrator.models.prompts import example_instance
+from epistrel.orchestrator.models.prompts import example_instance, payload_fields, render
 from epistrel.orchestrator.models.registry import (
     DELIVERED,
     GuardrailVerdict,
@@ -563,3 +565,65 @@ def test_c_04__embedding_row() -> None:
     generation = describe("generation", rows, keybox)
     assert generation.model == "house-model"
     assert generation.sources["model"] == "default"
+
+
+@pytest.mark.part("M5", "FR-MODEL-2,13")
+def test_c_04__adjudication_row() -> None:
+    """The guide gains the ``belief_adjudication`` purpose's row (#162): a delivered, hot-path,
+    story-scoped purpose defaulting to the entailment model (its own row, then entailment's,
+    then the default's), with its floor, its data-flow row (``belief_record`` and
+    ``utterance_text`` only) and every other category under "never receives". The registry no
+    longer reserves it, its template references only declared fields, and a request built from
+    its schema carries only fields the schema declares.
+
+    Complements: the purpose declaring a category it never receives fails the registry's check,
+    and resolution with no entailment row falls through to the default's."""
+    guide = (Path(__file__).resolve().parents[2] / "docs" / "models.md").read_text("utf-8")
+    assert guide == model_guide.render()
+    section = guide.split("### `belief_adjudication`", 1)[1].split("\n### ", 1)[0]
+    assert "the `entailment` row of `model_config`, then the `default` row" in section
+    assert "| `witness_beliefs.statement` | `belief_record` |" in section
+    assert "| `utterance.text` | `utterance_text` |" in section
+    assert "| `perceived_intent` | `utterance_text` |" in section
+    never = section.split("**Never receives:**", 1)[1]
+    for category in ("canon_facts", "memory_text", "character_definition", "subject_true_age"):
+        assert f"`{category}`" in never
+    assert "`belief_record`" not in never
+    assert "| `belief_adjudication` |" not in guide.split("## Reserved purposes", 1)[1]
+
+    purpose = registry.DELIVERED["belief_adjudication"]
+    assert purpose.status is registry.PurposeStatus.DELIVERED
+    assert purpose.default_model_key == "entailment"
+    assert registry.DELIVERED["entailment"].default_model_key == registry.DEFAULT_MODEL_KEY
+    assert purpose.hot_path
+    assert purpose.story_scoped
+    assert "belief_adjudication" in registry.STORY_PURPOSES
+    assert "belief_adjudication" not in registry.RESERVED
+    assert registry.schema_categories(purpose.input_schema) == {
+        registry.ContentCategory.BELIEF_RECORD,
+        registry.ContentCategory.UTTERANCE_TEXT,
+    }
+    with pytest.raises(registry.RegistryError, match="never receives"):
+        registry.validate_purpose(
+            replace(purpose, never_receives=frozenset(registry.ContentCategory))
+        )
+
+    stamp = datetime(2026, 10, 23, tzinfo=UTC)
+    rows = {
+        "default": ConfigRow("default", "http://house/v1", "house-model", "k", {}, stamp),
+        "entailment": ConfigRow("entailment", None, "judge-model", None, {}, stamp),
+    }
+    keybox = KeyBox(None)
+    found = describe("belief_adjudication", rows, keybox)
+    assert found.model == "judge-model"
+    assert found.sources["model"] == "inherited"  # entailment's row
+    assert found.base_url == "http://house/v1"  # the default's, through entailment
+    plain = describe("belief_adjudication", {"default": rows["default"]}, keybox)
+    assert plain.model == "house-model"
+    assert plain.sources["model"] == "default"
+
+    built = build_inputs(purpose, example_instance(purpose.input_schema))
+    assert set(payload_fields(built)) <= registry.declared_paths(purpose.input_schema)
+    (system, user) = render(purpose, built)
+    assert registry.RULE_DEFAULT_MARKER in system.content
+    assert "Claims:" in user.content

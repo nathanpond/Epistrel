@@ -21,10 +21,10 @@ from __future__ import annotations
 
 import types
 import typing
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
@@ -94,6 +94,15 @@ class ContentCategory(StrEnum):
     beats as the output viewpoint receives them (each beat's index, kind, actor's name and
     text; never a ``think`` or ``latent`` beat for a character viewpoint) and their
     deterministic assembly, which the polish may only order and join."""
+    BELIEF_RECORD = "belief_record"
+    """What ``belief_adjudication`` (#162) is told about one witness: its name, the records the
+    deterministic consistency check read for the claim (the witness's own beliefs and the canon
+    the witness may read, each rendered like a claim), its trust in the speaker, its prior
+    outcomes with that speaker and the rules' default decision. Never another character's
+    private record, never canon the witness cannot know."""
+    UTTERANCE_TEXT = "utterance_text"
+    """The say a witness heard (#162): the speaker's name, the words as the witness perceived
+    them, the visible manner, the claims they carry and the intent as the witness reads it."""
 
 
 class StructuredOutput(StrEnum):
@@ -514,6 +523,88 @@ class EntailmentVerdict(BaseModel):
 
     verdict: Literal["supported", "contradicted", "novel"] = "novel"
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+ADJUDICATION_MAX_RECORDS = 30
+"""The most witness records one ``belief_adjudication`` request carries."""
+ADJUDICATION_MAX_CLAIMS = 20
+"""The most claims of one say one ``belief_adjudication`` request carries."""
+AdjudicationDecision = Literal["accept", "reject", "suspend", "speech_act_only"]
+
+
+class AdjudicationBelief(InputSchema):
+    """One of the witness's records the consistency check read for the claim (#162): a belief
+    of its own or canon it may read, rendered like a claim, with its level."""
+
+    statement: Annotated[str, Field(max_length=1_000), C.BELIEF_RECORD]
+    source: Annotated[Literal["belief", "canon"], C.BELIEF_RECORD] = "belief"
+    confidence: Annotated[str | None, Field(max_length=32), C.BELIEF_RECORD] = None
+
+
+class AdjudicationPriors(InputSchema):
+    """What the witness brings to the claim besides its records (#162): its earlier outcomes
+    with this speaker, how sure it already is of the claim, and the rules' default decision."""
+
+    outcomes: Annotated[list[AdjudicationDecision], Field(max_length=20), C.BELIEF_RECORD] = Field(
+        default_factory=list
+    )
+    existing_confidence: Annotated[str | None, Field(max_length=32), C.BELIEF_RECORD] = None
+    rule_default: Annotated[AdjudicationDecision, C.BELIEF_RECORD] = "suspend"
+
+
+class AdjudicationUtterance(InputSchema):
+    """The say the witness heard (#162): the speaker, the words, the manner and the claims."""
+
+    speaker: Annotated[str, Field(max_length=200), C.UTTERANCE_TEXT]
+    text: Annotated[str, Field(max_length=4_000), C.UTTERANCE_TEXT]
+    manner: Annotated[str | None, Field(max_length=200), C.UTTERANCE_TEXT] = None
+    claims: Annotated[list[str], Field(max_length=ADJUDICATION_MAX_CLAIMS), C.UTTERANCE_TEXT] = (
+        Field(default_factory=list)
+    )
+
+
+class BeliefAdjudicationInputs(InputSchema):
+    """One salient witness's view of one say (FR-BELIEF-3; #162): what it already holds about
+    the claims, its trust in the speaker, its priors, the utterance and the intent it reads."""
+
+    witness: Annotated[str, Field(max_length=200), C.BELIEF_RECORD]
+    witness_beliefs: Annotated[
+        list[AdjudicationBelief], Field(max_length=ADJUDICATION_MAX_RECORDS)
+    ] = Field(default_factory=list)
+    trust: Annotated[float, Field(ge=0.0, le=1.0), C.BELIEF_RECORD] = 0.5
+    priors: AdjudicationPriors = Field(default_factory=AdjudicationPriors)
+    utterance: AdjudicationUtterance
+    perceived_intent: Annotated[Literal["sincere", "joking"], C.UTTERANCE_TEXT] = "sincere"
+
+
+RULE_DEFAULT_MARKER = "Rule default: "
+"""The line of the ``belief_adjudication`` prompt that names the rules' default decision; the
+stub's default answer echoes it."""
+
+
+class BeliefAdjudicationResult(BaseModel):
+    """The structured result of one ``belief_adjudication`` call: what the witness makes of the
+    say's claims, how sure the model is, and short reasons. The defaults (``suspend`` at
+    confidence 0) are below the engine's threshold, so the rules' default stands."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    decision: AdjudicationDecision = "suspend"
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    reasons: list[str] = Field(default_factory=list, max_length=5)
+
+    @classmethod
+    def stub_example(cls, digest: str, messages: Sequence[Any]) -> dict[str, Any]:
+        """The stub's default answer: the rules' default decision the prompt names, at 0.9."""
+        del digest
+        decision = "suspend"
+        for message in messages:
+            for line in str(getattr(message, "content", "")).splitlines():
+                if line.startswith(RULE_DEFAULT_MARKER):
+                    decision = line[len(RULE_DEFAULT_MARKER) :].strip()
+        if decision not in ("accept", "reject", "suspend", "speech_act_only"):
+            decision = "suspend"
+        return {"decision": decision, "confidence": 0.9, "reasons": ["stub: the rules' default"]}
 
 
 CONSOLIDATION_MAX_RECORDS = 200
@@ -987,6 +1078,28 @@ ENTAILMENT = Purpose(
     response_schema=EntailmentVerdict,
 )
 
+BELIEF_ADJUDICATION = Purpose(
+    name="belief_adjudication",
+    description=(
+        "Decides what one salient witness makes of a say it heard: accept, reject, suspend or "
+        "only note that it was said, from its own records, its trust in the speaker and the "
+        "intent it reads; optional work within the turn budget, defaulted by the rules "
+        "otherwise (FR-BELIEF-3)."
+    ),
+    # FR-MODEL-2: defaults to the entailment model (its own row, then entailment's, then the
+    # default's).
+    default_model_key=ENTAILMENT.name,
+    capability_floor=CapabilityFloor(structured_output=StructuredOutput.PARSE_VALIDATE_RETRY),
+    input_schema=BeliefAdjudicationInputs,
+    template="belief_adjudication.j2",
+    hot_path=True,
+    # The witness's own view and the say it heard only: never another character's private
+    # record, canon the witness cannot know, a definition, a memory, a policy, an age, a
+    # transcript or eval text.
+    never_receives=_EVERYTHING - {C.BELIEF_RECORD, C.UTTERANCE_TEXT},
+    response_schema=BeliefAdjudicationResult,
+)
+
 SALIENCE_DETECTION = Purpose(
     name="salience_detection",
     description=(
@@ -1041,9 +1154,6 @@ REGENERATION = Purpose(
 ``response_schema`` the ladder passes (``orchestrator.repair.ladder.RegeneratedBeat``)."""
 
 RESERVED_PURPOSES: tuple[ReservedPurpose, ...] = (
-    ReservedPurpose(
-        "belief_adjudication", "Adjudicated belief transitions.", "M5", defaults_to="entailment"
-    ),
     ReservedPurpose(
         "time_estimation",
         "Best-guess duration of a narrated skip.",
@@ -1209,6 +1319,7 @@ DELIVERED: Mapping[str, Purpose] = _build(
         QUALITY_JUDGE,
         IMPORTANCE_SCORING,
         ENTAILMENT,
+        BELIEF_ADJUDICATION,
         SALIENCE_DETECTION,
         EXTRACTION_BACKSTOP,
         REGENERATION,
@@ -1235,6 +1346,9 @@ def get_purpose(name: str) -> Purpose:
 
 
 __all__ = [
+    "ADJUDICATION_MAX_CLAIMS",
+    "ADJUDICATION_MAX_RECORDS",
+    "BELIEF_ADJUDICATION",
     "CONSOLIDATION",
     "CONSOLIDATION_MAX_RECORDS",
     "CONSOLIDATION_STATEMENTS_MAX",
@@ -1254,6 +1368,7 @@ __all__ = [
     "REGENERATION",
     "REGENERATION_MAX_RECORDS",
     "RESERVED",
+    "RULE_DEFAULT_MARKER",
     "SALIENCE_DETECTION",
     "SALIENCE_LAST_BEATS",
     "SALIENCE_MAX_BEATS",
@@ -1261,7 +1376,13 @@ __all__ = [
     "SALIENCE_QUOTE_MAX",
     "STORY_PURPOSES",
     "SUBJECT_LABEL_PATTERN",
+    "AdjudicationBelief",
+    "AdjudicationDecision",
+    "AdjudicationPriors",
+    "AdjudicationUtterance",
     "AgeClue",
+    "BeliefAdjudicationInputs",
+    "BeliefAdjudicationResult",
     "CapabilityFloor",
     "CharacterDefinition",
     "ConsolidationInputs",

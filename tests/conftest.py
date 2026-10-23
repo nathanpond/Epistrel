@@ -298,6 +298,22 @@ async def perception_delivered(
         await perception_support.forget_perception(engine)
 
 
+@pytest.fixture
+async def testimony_delivered(
+    monkeypatch: pytest.MonkeyPatch, engine: AsyncEngine
+) -> AsyncIterator[None]:
+    """``partitions``, perception and the ``testimony`` dial delivered for the test (#162;
+    ``tests.testimony_support``), the overrides taken back afterwards as for
+    ``perception_delivered``."""
+    from tests import testimony_support
+
+    testimony_support.deliver_testimony(monkeypatch)
+    try:
+        yield
+    finally:
+        await testimony_support.forget(engine)
+
+
 # -- embedding jobs on the shared database (#138) -------------------------------------------------
 
 EMBEDDING_JOB_KINDS = ("embed", "reembed")

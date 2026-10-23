@@ -1,5 +1,6 @@
-"""U-05 (M4): speech-act handling (docs/04 §3; FR-TURN-5,6; #150). Every U-05 (M4) part lives in
-this file (traceability counts a test ID per milestone in one file).
+"""U-05: speech-act handling (docs/04 §3). The M4 parts (FR-TURN-5,6; #150) and the M5 parts
+(FR-TURN-6,7: #162's hearer clause, ``test_u_05__hearer_intent``; the divergence record is a later
+M5 story's) live in this file (traceability counts a test ID per milestone in one file).
 
 A structured story's ``say`` beats are stored as utterances, never promoted to canon by being
 said, with labels derived independently: the objective relation from the claim's verdict
@@ -13,6 +14,10 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core.propositions.model import Interval, Polarity, Proposition
+from epistrel.core.propositions.vocabulary import FRIEND_OF
+from tests import perception_support as ps
+from tests import testimony_support as ts
 from tests.auth_support import auth_settings
 from tests.event_support import rows
 from tests.respond_support import body, respond, respond_client
@@ -95,3 +100,73 @@ async def test_u_05(
             p=AGE,
         )
         assert [r.literal["value"] for r in ages] == [64]
+
+
+@pytest.mark.part("M5", "FR-TURN-7")
+async def test_u_05__hearer_intent(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+    testimony_delivered: None,
+) -> None:
+    """FR-TURN-7's hearer clause (#162), under ``testimony = defaulted``: Jenni tells Bobby (who
+    trusts her) that Olivia sent the text.
+
+    - ``joking``: Bobby holds that Jenni said it (``speech_act_only``) and believes nothing;
+    - ``deceptive``, undetected (nothing Bobby holds contradicts it): accepted on his normal
+      trust rules, a ``testimony`` belief at ``believed``, exactly as ``sincere`` is;
+    - ``deceptive``, detected (Bobby saw for himself that Olivia did not send it): rejected, his
+      observation stands.
+    """
+    cases = (
+        ("joking", False, "speech_act_only", None),
+        ("sincere", False, "accept", "believed"),
+        ("deceptive", False, "accept", "believed"),
+        ("deceptive", True, "reject", None),
+    )
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        for intent, knows, decision, level in cases:
+            story, ids, things = await ts.room(client, engine, "Wren", "Jenni", "Bobby")
+            await ts.enable_testimony(engine, story, "defaulted")
+            await ps._author(
+                engine,
+                story,
+                Proposition(
+                    subject_id=ids["Bobby"],
+                    predicate_id=FRIEND_OF,
+                    object_id=ids["Jenni"],
+                    valid_time=Interval.of(None, None),
+                ),
+            )
+            if knows:
+                await ts.observed(engine, story, ids["Bobby"], ts.sent(things, Polarity.NEGATED))
+            stub = epistrel.models.stub
+            stub.reset()
+            stub.script(
+                "generation",
+                [
+                    render(
+                        beat(
+                            "say",
+                            ts.CLAIM_LINE,
+                            intent=intent,
+                            addressee=ids["Bobby"],
+                            propositions=[claim("Olivia", "sent", "the text")],
+                        )
+                    )
+                ],
+            )
+            response = await respond(client, story, body(ids["Wren"], "What happened?"))
+            assert response.status_code == 200, response.text
+            assert not [c for c in stub.calls if c.purpose == "belief_adjudication"]
+            found = await ts.beliefs_of(engine, story, ids["Bobby"])
+            (heard,) = [b for b in ts.said(found) if b.predicate_id == things["sent"]]
+            assert (heard.outcome, heard.source_character_id) == (decision, ids["Jenni"]), intent
+            held = [b for b in ts.first_order(found) if b.predicate_id == things["sent"]]
+            if level is None:
+                expected = [("negated", "observation")] if knows else []
+                assert [(b.polarity, b.cause) for b in held] == expected, intent
+            else:
+                assert [(b.polarity, b.cause, b.confidence_level) for b in held] == [
+                    ("affirmed", "testimony", level)
+                ], intent

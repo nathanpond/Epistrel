@@ -59,6 +59,11 @@ takes the kind's default (``observation`` and ``author``: known; the rest: belie
   the belief leaves ``belief_state``.
 - A testimony's ``outcome``: ``reject`` believes the negation, ``suspend`` and
   ``speech_act_only`` hold it at ``unknown``.
+- ``belief_kind = speech_act`` (#162; testimony only, a source required) writes the witness's
+  belief that the source *said* the proposition (``believes(H, said(S, X))``): a row of its own
+  kind, never contradicting or closing a first-order belief and never in ``belief_state``; the
+  same claim from the same source changes that row in place. ``core.epistemic.testimony`` gives
+  every witness one, whatever it made of the claim.
 - Citing the same antecedent twice for the same belief and kind answers the first transition
   (idempotent).
 
@@ -97,6 +102,7 @@ from epistrel.core.enums import (
     AntecedentKind,
     BeliefConfidenceLevel,
     BeliefHoldState,
+    BeliefKind,
     BeliefTransitionKind,
     Membership,
     ThunkState,
@@ -723,6 +729,7 @@ async def transition(
     oracle: AntecedentOracle = DEFAULT_ORACLE,
     settings: Any = None,
     registry: Registry | None = None,
+    belief_kind: BeliefKind = BeliefKind.FIRST_ORDER,
 ) -> TransitionResult:
     """Record one belief transition of ``holder`` in ``op``'s commit transaction (a commit
     step) and apply it to the partition; see the module docstring. ``position`` is the
@@ -746,6 +753,7 @@ async def transition(
             oracle=oracle,
             settings=settings,
             registry=registry,
+            belief_kind=BeliefKind(belief_kind),
         )
     except SelfAttestation, AntecedentInvalid, ConfidenceInconsistent:
         BELIEF_TRANSITIONS_REFUSED.inc()
@@ -773,6 +781,7 @@ async def _transition(
     oracle: AntecedentOracle,
     settings: Any,
     registry: Registry | None,
+    belief_kind: BeliefKind = BeliefKind.FIRST_ORDER,
 ) -> TransitionResult:
     story_id = op.story_id
     if story_id is None:
@@ -790,10 +799,23 @@ async def _transition(
             f"a {kind.value} transition happens at its position's story-time",
             {"field": "story_time", "reason": "backdating"},
         )
+    said = belief_kind is BeliefKind.SPEECH_ACT
+    if said and kind is not Kind.TESTIMONY:
+        raise InvalidRequest(
+            "a speech-act belief is a testimony's: someone said it",
+            {"field": "belief_kind", "reason": "not_admitted"},
+        )
+    if belief_kind not in (BeliefKind.FIRST_ORDER, BeliefKind.SPEECH_ACT):
+        raise InvalidRequest(
+            "attributed and nested beliefs are #167's",
+            {"field": "belief_kind", "reason": "not_admitted"},
+        )
     level, scalar = resolve_confidence(kind, confidence)
     if polarity is not None:
         proposition = proposition.model_copy(update={"polarity": Polarity(polarity)})
-    if outcome == "reject":
+    if said:
+        pass  # the speech act itself: what was said, whatever the witness made of it (#162)
+    elif outcome == "reject":
         proposition = proposition.negation()
     elif outcome in ("suspend", "speech_act_only"):
         level, scalar = Level.UNKNOWN, None
@@ -826,14 +848,24 @@ async def _transition(
     )
     when = story_time if story_time is not None else await _story_time(conn, story_id, position)
 
-    held = await partitions.partition(
-        conn,
-        story_id,
-        holder,
-        subjects=[stored.subject_id],
-        predicate=stored.predicate_id,
-    )
     key = stored.normalized_key()
+    if said:
+        # A speech act never contradicts a belief: the same claim from the same speaker is the
+        # same ``said`` row (strengthened in place), any other is a new one (#162).
+        held = [
+            a.belief
+            for a in await partitions.speech_acts(conn, story_id, holder, speaker=source)
+            if a.belief.proposition.subject_id == stored.subject_id
+            and a.belief.proposition.predicate_id == stored.predicate_id
+        ]
+    else:
+        held = await partitions.partition(
+            conn,
+            story_id,
+            holder,
+            subjects=[stored.subject_id],
+            predicate=stored.predicate_id,
+        )
     existing = next(
         (
             b
@@ -842,10 +874,12 @@ async def _transition(
         ),
         None,
     )
-    if kind is Kind.FORGETTING:
+    if said:
+        priors: list[Belief] = []
+    elif kind is Kind.FORGETTING:
         if existing is None or antecedent.ref.get("id") != existing.id:
             raise _invalid("forgetting_cites_its_belief", antecedent)
-        priors: list[Belief] = []
+        priors = []
     else:
         priors = [b for b in held if b is not existing and _conflicts(stored, b, found)]
     if kind is Kind.CORRECTION and not priors:
@@ -959,6 +993,7 @@ async def _transition(
             registry=found,
             belief_id=belief_id,
             lineage_id=priors[0].lineage_id if priors else None,
+            kind=belief_kind,
         )
         if priors:
             await _close(conn, priors, at=start, by=belief_id)

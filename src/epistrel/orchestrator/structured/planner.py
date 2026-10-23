@@ -57,6 +57,7 @@ from epistrel.orchestrator.budget import (
     POLISH,
     REPAIR,
     SALIENCE,
+    TESTIMONY,
     TurnBudget,
     lite_default_calls,
 )
@@ -78,8 +79,19 @@ ENTAILMENT_SAFE_DISPOSITION = "entailment_safe_disposition"
 BEAT_REPLACED = "beat_replaced_safe_fallback"
 SALIENCE_SKIPPED = "salience_skipped"
 NARRATOR_SKIPPED = "narrator_skipped"
-LADDER = (SKIP_POLISH, REPAIR_DETERMINISTIC, ENTAILMENT_SAFE_DISPOSITION, BEAT_REPLACED)
-"""NFR-PERF-7's order as M4 has it: what goes first when the budget or the deadline runs
+TESTIMONY_DEFAULTED = "testimony_defaulted"
+"""NFR-PERF-7 step 3 (#162): a salient witness's testimony adjudication the budget (or the
+per-turn cap) could not fit, decided by the rules' default instead."""
+ADJUDICATION_UNAVAILABLE = "adjudication_unavailable"
+"""#162: a testimony adjudication whose model failed; the rules' default decided it."""
+LADDER = (
+    SKIP_POLISH,
+    REPAIR_DETERMINISTIC,
+    TESTIMONY_DEFAULTED,
+    ENTAILMENT_SAFE_DISPOSITION,
+    BEAT_REPLACED,
+)
+"""NFR-PERF-7's order as M5 has it: what goes first when the budget or the deadline runs
 short (``safe_fallback`` stands in for ``repair_deterministic`` when no deterministic rung
 applied)."""
 
@@ -112,6 +124,22 @@ class TurnPlan:
         }
 
 
+def adjudicates(settings: ProfileSettings) -> bool:
+    """Whether a turn under ``settings`` may adjudicate testimony with a model (#162): per-
+    character partitions with ``character_knowledge.testimony = model`` delivered, and model
+    salience (under ``commitment.salience = rules``, or with commitment off, salience is
+    rule-based and adjudication is never called)."""
+    from epistrel.core.profiles import schema
+
+    return (
+        module_on(settings, "partitions")
+        and schema.level_of(settings, "testimony") == "model"
+        and schema.is_delivered("testimony", "model")
+        and settings.commitment.enabled
+        and settings.commitment.salience != "rules"
+    )
+
+
 def optional_work(settings: ProfileSettings) -> tuple[str, ...]:
     """The optional work ``settings`` turns on, most important first."""
     found: list[str] = []
@@ -122,6 +150,8 @@ def optional_work(settings: ProfileSettings) -> tuple[str, ...]:
         found.append(ENTAILMENT)
     if commitment:
         found.append(FOLLOW_UP)
+    if adjudicates(settings):
+        found.append(TESTIMONY)
     if module_on(settings, "repair"):
         found.append(REPAIR)
     if settings.repair.polish.enabled:
@@ -281,8 +311,9 @@ RANK = {
     SKIP_POLISH: 0,
     REPAIR_DETERMINISTIC: 1,
     SAFE_FALLBACK: 1,
-    ENTAILMENT_SAFE_DISPOSITION: 2,
-    BEAT_REPLACED: 3,
+    TESTIMONY_DEFAULTED: 2,
+    ENTAILMENT_SAFE_DISPOSITION: 3,
+    BEAT_REPLACED: 4,
 }
 
 
@@ -297,6 +328,7 @@ def ladder_steps(steps: Sequence[str]) -> list[str]:
 
 
 __all__ = [
+    "ADJUDICATION_UNAVAILABLE",
     "BEAT_REPLACED",
     "DEFAULT_LATENCY_ESTIMATE_S",
     "ENTAILMENT_SAFE_DISPOSITION",
@@ -308,7 +340,9 @@ __all__ = [
     "SAFE_FALLBACK",
     "SALIENCE_SKIPPED",
     "SKIP_POLISH",
+    "TESTIMONY_DEFAULTED",
     "TurnPlan",
+    "adjudicates",
     "budget_report",
     "default_calls",
     "ladder_rank",

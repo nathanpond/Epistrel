@@ -127,6 +127,19 @@ BELIEF_TRANSITIONS = Counter(
     "correction, forgetting, revision, author, resolution).",
     ("kind",),
 )
+TESTIMONY_OUTCOMES = Counter(
+    "epistrel_testimony",
+    "Testimony outcomes written, one per witness and proposition heard (#162): accept, reject, "
+    "suspend, speech_act_only.",
+    ("outcome",),
+)
+ADJUDICATIONS = Counter(
+    "epistrel_adjudications",
+    "Testimony adjudications of salient witnesses (#162), by result: adjudicated (the model's "
+    "decision taken), kept (the default stood: low confidence or a guarded verdict), defaulted "
+    "(the budget or the per-turn cap left no call), unavailable (the model failed).",
+    ("result",),
+)
 BELIEF_TRANSITIONS_REFUSED = Counter(
     "epistrel_belief_transitions_refused",
     "Belief transitions refused (self-attestation, an invalid antecedent, inconsistent "
@@ -394,6 +407,7 @@ async def metrics() -> Response:
 
 
 __all__ = [
+    "ADJUDICATIONS",
     "BELIEF_TRANSITIONS",
     "BELIEF_TRANSITIONS_REFUSED",
     "GAUGES",
@@ -412,6 +426,7 @@ __all__ = [
     "REQUEST_BUCKETS",
     "RETIREMENTS",
     "SANITIZES",
+    "TESTIMONY_OUTCOMES",
     "THUNKS",
     "SchedulerGauges",
     "count_perception_repair",

@@ -36,10 +36,11 @@ purpose maps to that kind (``kind_of``: ``extraction_backstop`` is ``extraction`
 ``composed`` while ``charging(COMPOSED)``), and every other call sees them as spent
 (``can_afford``, ``can_afford_unreserved``). A named slot the turn did not use is released
 (``release_named``) and may then fund optional work. Optional work (``salience``,
-``entailment``, ``follow_up``, ``repair``, ``polish``, in that priority) spends only what no
-reservation holds: the adapter refuses a first ``entailment`` or ``salience_detection``
-attempt that would dip below the line, and the pipeline asks ``try_optional(kind, cost)``
-before a follow-up render, a model repair or the polish. ``pending`` pre-allocates the
+``entailment``, ``follow_up``, ``testimony`` (#162), ``repair``, ``polish``, in that
+priority) spends only what no reservation holds: the adapter refuses a first ``entailment``
+or ``salience_detection`` attempt that would dip below the line, and the pipeline asks
+``try_optional(kind, cost)`` before a follow-up render, a testimony adjudication, a model
+repair or the polish. ``pending`` pre-allocates the
 higher-priority salience calls so an earlier entailment call cannot starve them, and
 ``latency_estimate_s`` treats a call that could not start before ``deadline - estimate`` as
 unaffordable (``can_start``). Once an optional kind is refused, no less important kind runs
@@ -74,14 +75,17 @@ COMPOSED = "composed"
 SALIENCE = "salience"
 ENTAILMENT = "entailment"
 FOLLOW_UP = "follow_up"
+TESTIMONY = "testimony"
+"""#162: a salient witness's ``belief_adjudication`` call."""
 REPAIR = "repair"
 POLISH = "polish"
-OPTIONAL_PRIORITY = (SALIENCE, ENTAILMENT, FOLLOW_UP, REPAIR, POLISH)
+OPTIONAL_PRIORITY = (SALIENCE, ENTAILMENT, FOLLOW_UP, TESTIMONY, REPAIR, POLISH)
 """Optional work, most important first: the pool is spent in this order (NFR-PERF-7 gives
-polish up first, then repairs, then entailment)."""
+polish up first, then repairs, then testimony adjudication, then entailment)."""
 PURPOSE_KINDS = {
     "extraction_backstop": EXTRACTION,
     "entailment": ENTAILMENT,
+    "belief_adjudication": TESTIMONY,
     "salience_detection": SALIENCE,
     "regeneration": REPAIR,
     "guardrail_check": "guardrail",

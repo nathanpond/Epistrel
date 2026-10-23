@@ -21,15 +21,15 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-CONC | §2.3 | 045, 052, 057, 062, 072, 144, 169 |
 | FR-MEM | §4 | 070, 071, 072, 075, 169 |
 | FR-EPI | §5 | 024, 167, 168 |
-| FR-BELIEF | §5.1 | 026, 069, 075, 168 |
-| FR-TURN | §6 | 043, 169 |
+| FR-BELIEF | §5.1 | 026, 069, 075, 168, 170 |
+| FR-TURN | §6 | 043, 169, 170 |
 | FR-COMMIT | §7 | 018, 022, 043, 053, 129 |
 | FR-RET | §8 | 129, 167 |
 | FR-PROP | §8.1 | 160, 162, 163, 165, 167 |
 | FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162, 163, 165 |
 | FR-GUARD | §11 | 087, 095, 096, 114, 161, 169 |
 | FR-REWRITE | §12.1 | 144 |
-| FR-MODEL | §13 | 129, 136, 144, 150 |
+| FR-MODEL | §13 | 129, 136, 144, 150, 170 |
 | FR-EXT | §15 | 051, 054, 056, 061, 066, 072, 074, 092, 133, 140, 144 |
 | FR-STATE | §15.1 | 055, 072, 144 |
 | FR-CLOCK | §15.2 | 060, 063, 064, 067, 068, 073, 074, 076, 144 |
@@ -46,7 +46,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-IMG | §18.7 | 098, 099, 100, 101, 102, 103, 104, 105, 108, 109, 110, 114, 116, 117, 118, 119, 120, 121, 124, 125, 129, 130, 131, 135, 136, 145 |
 | FR-FB | §18.8 | 111 |
 | FR-OBS | §19 | 129, 158, 162 |
-| NFR-PERF | §20 | 080, 123, 126, 133, 137, 145, 146, 147, 162 |
+| NFR-PERF | §20 | 080, 123, 126, 133, 137, 145, 146, 147, 162, 170 |
 | NFR-DETERM | §20 | 045, 080 |
 | NFR-SCALE | §20 | 070, 072, 075, 137 |
 | NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 112, 114, 115, 158, 164, 166 |
@@ -232,6 +232,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 167 | Visibility is decided by scope alone, and beliefs are a derived table with a rebuildable projection | Current | — |
 | 168 | A belief and its producing transition name each other, and one function writes every belief | Current | — |
 | 169 | Perception routing is one pure function over authoritative state, and it writes one memory per perceiver | Current | — |
+| 170 | Testimony is a speech-act belief for every witness and a separate, gated transition; trust is derived, never stored | Current | — |
 
 ---
 
@@ -1743,6 +1744,22 @@ Everything else keeps the safe disposition: detector findings, the excluded reso
 - Memory rows grow with the room: a beat perceived by four characters writes four rows. Identical texts are embedded separately until #138's job shares embeddings by content hash.
 - Belief acquisitions attach to the same results through `PERCEPTION_SINKS` (#160, #162, #164), so they cannot disagree with the memories.
 - Tests: `tests/property/test_perception_authority.py` (PERCEPTION-AUTHORITY), `tests/test_u_17.py` (U-17), `tests/scenario/test_s_whisper.py` (S-WHISPER M5), `tests/integration/test_perception_revalidation.py` (CONFIG-REVALIDATION M5), `tests/scenario/test_s_minors.py` (S-MINORS M5), `tests/redteam/test_r_07.py` (R-07 M5).
+
+---
+
+### ADR-170 — Testimony is a speech-act belief for every witness and a separate, gated transition; trust is derived, never stored
+**Status:** Accepted.
+**Context:** M5's testimony (#162; FR-BELIEF-1,2,3,9, FR-TURN-7) must record that an assertion was heard without making anyone believe it, gate each witness's acceptance by trust, priors and consistency, adjudicate salient witnesses with a model only as optional work, and keep the per-event fan-out proportionate to salience. The planner suggested a stored `character_trust` table nudged by later outcomes.
+**Decision:**
+- Every content witness of a `say` (#161's routing; never the speaker, never the player's character) gets, per claim, a minimal `beliefs` row of `kind = speech_act` (`believes(H, said(S, X))`: held `known`, its producing testimony transition naming the speaker and the witness's decision as `outcome`). It never contradicts, closes or reuses a first-order belief and never enters `belief_state`. #167 adds the full speech-act shape.
+- The decision is `core.epistemic.testimony.testimony()`, deterministic and pure over #140's `check()` on the witness's partition (and the canon it may read), the witness's trust in the speaker and the intent it reads (`joking`, else sincere: a hearer never reads `deceptive`). Its first-order effect, if any, is a separate `testimony`, `revision` or `correction` transition citing the say beat's event, so #160's antecedent and self-attestation guards apply.
+- Trust is derived when needed: seeded from #137's `relationships` projection as the witness may read it (kin and friends high, enemies low, a `trust` qualifier overriding), then moved ±0.1 by the witness's own transitions with that speaker (rejections, overturned testimony beliefs, observation-confirmed ones). No trust table exists, so trust follows truncation, swaps, forks and erasure with the transitions.
+- `belief_adjudication` (defaulting to the entailment model) runs before composition for salient witnesses only (a salience-marked beat, or a claim touching the witness's partition; never minors, never under rule-based salience), at most two per turn, as the optional budget kind `testimony` (after follow-up, before repair). The commit recomputes the default over committed state and takes the model's decision only at confidence 0.6 or more, never over a `contradicted` verdict and never accepting a joke. An unfunded adjudication lists `testimony_defaulted`, ranked between repairs and entailment (NFR-PERF-7 step 3).
+- Witnesses neither salient nor addressed are not resolved here: their exposure record and lazy resolution are #164's.
+**Consequences:**
+- Hearing is recorded for everyone and believing is per witness, in the same commit, from the same routing results as the memories.
+- A model can make a witness more cautious or accept an open claim, but it cannot make anyone believe what their own records contradict.
+- Tests: `tests/scenario/test_s_testimony.py` (S-TESTIMONY M5), `tests/conformance/test_c_04.py::test_c_04__adjudication_row` (C-04 M5), `tests/perf/test_p_09_m5.py` (P-09 M5), `tests/test_u_05.py::test_u_05__hearer_intent` (U-05 M5).
 
 ---
 

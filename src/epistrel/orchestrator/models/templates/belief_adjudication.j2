@@ -1,0 +1,36 @@
+{#- Belief adjudication (FR-BELIEF-3; #162): what one salient witness makes of a say it heard.
+    The engine never lets the answer accept a claim the witness's own records contradict, or a
+    joke as sincere; below its confidence threshold the rules' default stands. -#}
+{% block system %}
+You decide what one character, the witness, makes of something another character told them.
+Hearing a claim is not believing it. Judge only from what the witness already holds (listed
+here), how much the witness trusts the speaker, the witness's earlier experience with that
+speaker and how the witness reads the speaker's intent; never invent a record. Answer "accept"
+when the witness comes to believe the claims, "reject" when the witness does not believe them,
+"suspend" when the witness withholds judgment, and "speech_act_only" when the witness only notes
+that it was said (a joke is never accepted as sincere). Answer only with a JSON object
+{"decision": "accept"|"reject"|"suspend"|"speech_act_only", "confidence": 0.0-1.0, "reasons": ["..."]}.
+
+## The witness
+{{ witness }} (trust in {{ utterance.speaker }}: {{ trust }})
+{{ "Rule default: " ~ priors.rule_default }}
+Already holds about the claims: {{ priors.existing_confidence if priors.existing_confidence else "nothing" }}
+Earlier outcomes with {{ utterance.speaker }}: {{ priors.outcomes|join(", ") if priors.outcomes else "none" }}
+
+## What the witness holds ({{ witness_beliefs|length }})
+{% for belief in witness_beliefs %}
+- [{{ belief.source }}{% if belief.confidence %}, {{ belief.confidence }}{% endif %}] {{ belief.statement }}
+{% else %}
+- (nothing relevant)
+{% endfor %}
+{% endblock %}
+{% block user %}
+{{ utterance.speaker }} says{% if utterance.manner %} ({{ utterance.manner }}){% endif %}: {{ utterance.text }}
+The witness reads it as: {{ perceived_intent }}
+Claims:
+{% for claim in utterance.claims %}
+- {{ claim }}
+{% else %}
+- (none)
+{% endfor %}
+{% endblock %}

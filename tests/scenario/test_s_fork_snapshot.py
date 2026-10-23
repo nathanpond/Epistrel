@@ -5,6 +5,7 @@ exactly the revision it names, never a mix."""
 from __future__ import annotations
 
 import asyncio
+import random
 from typing import Any
 
 import pytest
@@ -116,11 +117,19 @@ class _SerializationFailure(Exception):
 async def test_s_fork_snapshot__retry(engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch) -> None:
     """A snapshot copy that hits a serialization failure is retried from scratch, and after
     ``SNAPSHOT_ATTEMPTS`` failures the fork is 503 ``database_unavailable`` with no story
-    written. Complement: any other database error is not retried."""
+    written. Each retry waits a jittered pause that doubles per failure, and the last failure
+    waits none (#510). Complement: any other database error is not retried."""
     story = await new_story(engine)
     await play_turn(engine, story, "turn 1")
     original = forking._copy
     calls: list[int] = []
+    pauses: list[int] = []
+
+    def pause(failures: int, rng: Any = None) -> float:
+        pauses.append(failures)
+        return 0.0
+
+    monkeypatch.setattr(forking, "snapshot_backoff_s", pause)
 
     def failing(times: int, error: Exception) -> Any:
         async def copy(*args: Any, **kwargs: Any) -> Any:
@@ -135,9 +144,11 @@ async def test_s_fork_snapshot__retry(engine: AsyncEngine, monkeypatch: pytest.M
     monkeypatch.setattr(forking, "_copy", failing(2, _SerializationFailure()))
     done = await fork(engine, story)
     assert len(calls) == 3
+    assert pauses == [1, 2]
     assert await scalar(engine, "SELECT count(*) FROM stories") == stories_before + 1
 
     calls.clear()
+    pauses.clear()
     monkeypatch.setattr(
         forking, "_copy", failing(forking.SNAPSHOT_ATTEMPTS, _SerializationFailure())
     )
@@ -145,6 +156,7 @@ async def test_s_fork_snapshot__retry(engine: AsyncEngine, monkeypatch: pytest.M
         await fork(engine, story)
     assert (refused.value.http_status, refused.value.code) == (503, "database_unavailable")
     assert len(calls) == forking.SNAPSHOT_ATTEMPTS
+    assert pauses == list(range(1, forking.SNAPSHOT_ATTEMPTS))  # none after the last
     assert await scalar(engine, "SELECT count(*) FROM stories") == stories_before + 1
 
     calls.clear()
@@ -153,3 +165,16 @@ async def test_s_fork_snapshot__retry(engine: AsyncEngine, monkeypatch: pytest.M
         await fork(engine, story)
     assert len(calls) == 1
     assert done.story_id
+
+
+def test_snapshot_backoff_doubles_with_jitter() -> None:
+    """#510: the pause before snapshot attempt n + 1 is ``SNAPSHOT_BACKOFF_S·2^(n-1)`` within
+    ± ``SNAPSHOT_BACKOFF_JITTER``, and two draws of it differ (the jitter spreads concurrent
+    forks' retries apart)."""
+    rng = random.Random(510)  # noqa: S311 - a fixed seed, not a secret
+    for failures in (1, 2, 3):
+        base = forking.SNAPSHOT_BACKOFF_S * 2 ** (failures - 1)
+        drawn = [forking.snapshot_backoff_s(failures, rng) for _ in range(50)]
+        low, high = 1 - forking.SNAPSHOT_BACKOFF_JITTER, 1 + forking.SNAPSHOT_BACKOFF_JITTER
+        assert all(base * low <= d <= base * high for d in drawn), (failures, drawn)
+        assert len(set(drawn)) > 1

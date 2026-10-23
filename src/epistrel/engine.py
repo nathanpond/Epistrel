@@ -66,6 +66,7 @@ from epistrel.core.commit import lifecycle as commitment
 from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.context import SYSTEM_PRINCIPAL, RequestContext, requesting_principal
 from epistrel.core.enums import EntryStatus, StoryStatus, ThunkState
+from epistrel.core.epistemic import author as belief_author
 from epistrel.core.epistemic import partitions
 from epistrel.core.erasure import boundary as erasure_boundary
 from epistrel.core.erasure import catalog_block
@@ -224,6 +225,8 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "supersede_fact": ResultCodec.of(mutation.FactWrite, status=201),
     "lock_fact": ResultCodec.of(mutation.FactWrite),
     "unlock_fact": ResultCodec.of(mutation.FactWrite),
+    # Author beliefs (#160): a story-scoped control write.
+    "write_belief": ResultCodec.of(belief_author.BeliefWrite, status=201),
     # A blank story or one from a scenario (201); a scenario creation #109's two stages held
     # back (200, nothing written).
     "create_story": ResultCodec.of(
@@ -1239,6 +1242,36 @@ class Engine:
         return await self._keyed(
             ctx,
             "commit_fact",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "body": _body(request)},
+        )
+
+    async def write_belief(
+        self, ctx: RequestContext, story_id: str, request: belief_author.BeliefRequest
+    ) -> belief_author.BeliefWrite:
+        """Set what a modeled character believes (FR-EPI-7's author direction; #160): an
+        ``author`` belief transition citing the call's own author act, with dual confidence
+        (FR-BELIEF-4: 422 ``confidence_inconsistent`` for a level its scalar does not project
+        onto). A held belief it contradicts is closed (a correction keeps its history). A
+        position-less ``control`` operation that bumps the revision (201). 409 ``module_off``
+        unless the story keeps partitions; 422 ``holder_has_no_partition`` for the player's
+        character."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> belief_author.BeliefWrite:
+            return await belief_author.write_belief(
+                self.db,
+                story_id,
+                request,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+                expected_revision=ctx.expected_revision,
+            )
+
+        return await self._keyed(
+            ctx,
+            "write_belief",
             run,
             story_id=story_id,
             material={"story_id": story_id, "body": _body(request)},

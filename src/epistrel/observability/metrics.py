@@ -24,6 +24,8 @@ The registry holds:
 - ``epistrel_thunks_total{event}`` (``introduced``, ``resolved``, ``expired``),
   ``epistrel_ledger_total{event}`` (``created``, ``discharged``) and
   ``epistrel_minimal_commits_total``: #146's commitment lifecycle (``core.commit.lifecycle``);
+- ``epistrel_belief_transitions_total{kind}`` and ``epistrel_belief_transitions_refused_total``:
+  #160's belief transitions (``core.epistemic.transitions``);
 - #147's hot set (FR-MEM-8): the scrape-time gauges ``epistrel_hot_overflow{scope}`` (the
   summed excess of the open overflow episodes, ``character`` or ``story``; 0 when none is open)
   and ``epistrel_hot_overflow_episodes_open{scope}``, and the counters
@@ -116,6 +118,17 @@ LEDGER = Counter(
 MINIMAL_COMMITS = Counter(
     "epistrel_minimal_commits",
     "Salient references discharged by the deterministic minimal commit.",
+)
+BELIEF_TRANSITIONS = Counter(
+    "epistrel_belief_transitions",
+    "Belief transitions written, by kind (observation, testimony, inference, discovery, "
+    "correction, forgetting, revision, author, resolution).",
+    ("kind",),
+)
+BELIEF_TRANSITIONS_REFUSED = Counter(
+    "epistrel_belief_transitions_refused",
+    "Belief transitions refused (self-attestation, an invalid antecedent, inconsistent "
+    "confidence).",
 )
 RETIREMENTS = Counter(
     "epistrel_hot_retirements",
@@ -356,6 +369,8 @@ async def metrics() -> Response:
 
 
 __all__ = [
+    "BELIEF_TRANSITIONS",
+    "BELIEF_TRANSITIONS_REFUSED",
     "GAUGES",
     "HOT_COUNTS_CORRECTED",
     "HOT_SCOPES",

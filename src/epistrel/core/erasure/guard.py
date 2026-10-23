@@ -393,6 +393,7 @@ CONTENT_WRITE_PATHS: tuple[WritePath, ...] = (
     WritePath("epistrel.core.mutation", DIRECT),
     WritePath("epistrel.core.commit.lifecycle", DIRECT),
     WritePath("epistrel.core.epistemic.partitions", DIRECT),
+    WritePath("epistrel.core.epistemic.transitions", DIRECT),
     WritePath("epistrel.core.turns.beats", DIRECT),
     WritePath(
         "epistrel.core.verify.shadow",

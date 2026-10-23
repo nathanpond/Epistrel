@@ -16,6 +16,16 @@ never read as canon and canon never as a belief. This scan reads, by AST (it nev
 A verifier that combines the two (#140's ``check`` over ``belief(A)``: A's partition plus the
 canon A may read) does so through ``KeyedLookup``, outside both packages.
 
+Two more rules hold the epistemic model's writes (#160):
+
+- **one writer of beliefs**: ``partitions._insert_belief`` is named nowhere under ``src/``
+  except ``core/epistemic/partitions.py`` (its definition) and ``core/epistemic/transitions.py``
+  (``transition()``, every belief's typed cause); #164's resolver, #167's nested beliefs and
+  #173's seeds all route through ``transition()``;
+- **a belief never writes a fact**: no module of ``core/epistemic/`` names ``commit_fact`` or
+  ``supersede`` (canon's writers; reading canon through ``canon()`` elsewhere is not a write),
+  so no false belief can silently become canon (FR-EPI-3, X-02).
+
 Run: ``python -m tools.gates check-epistemic-separation`` (exit 0 clean, 1 findings); enforced
 in CI by ``tests/gates/test_epistemic_separation.py``.
 """
@@ -100,6 +110,45 @@ def _reads(tree: ast.AST, side: Side) -> Iterator[tuple[int, str]]:
             yield node.lineno, f"SQL read of {', '.join(sorted(side.tables))}"
 
 
+SOURCE_ROOT = "src/epistrel"
+BELIEF_WRITER = "_insert_belief"
+WRITER_MODULES = frozenset(
+    {"src/epistrel/core/epistemic/partitions.py", "src/epistrel/core/epistemic/transitions.py"}
+)
+CANON_WRITERS = frozenset({"commit_fact", "supersede"})
+
+
+def _names(tree: ast.AST, wanted: frozenset[str]) -> Iterator[tuple[int, str]]:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id in wanted:
+            yield node.lineno, node.id
+        elif isinstance(node, ast.Attribute) and node.attr in wanted:
+            yield node.lineno, node.attr
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name in wanted:
+                    yield node.lineno, alias.name
+
+
+def writes(root: Path = REPO_ROOT) -> list[str]:
+    """The findings of the two write rules (see the module docstring)."""
+    findings: list[str] = []
+    for path in sorted((root / SOURCE_ROOT).rglob("*.py")):
+        rel = path.relative_to(root).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
+        if rel not in WRITER_MODULES:
+            findings.extend(
+                f"{rel}:{line}: names {name}; transition() is the only writer of beliefs (#160)"
+                for line, name in sorted(set(_names(tree, frozenset({BELIEF_WRITER}))))
+            )
+        if rel.startswith(EPISTEMIC_SIDE.package + "/"):
+            findings.extend(
+                f"{rel}:{line}: names {name}; a belief never writes canon (FR-EPI-3, #160)"
+                for line, name in sorted(set(_names(tree, CANON_WRITERS)))
+            )
+    return findings
+
+
 def scan(root: Path = REPO_ROOT, sides: Sequence[Side] = SIDES) -> list[str]:
     """Every finding over the packages of ``sides``."""
     findings: list[str] = []
@@ -117,11 +166,11 @@ def scan(root: Path = REPO_ROOT, sides: Sequence[Side] = SIDES) -> list[str]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     del argv
-    findings = scan()
+    findings = [*scan(), *writes()]
     for line in findings:
         print(line)
     print(f"check-epistemic-separation: {len(SIDES)} side(s), {len(findings)} finding(s)")
     return 1 if findings else 0
 
 
-__all__ = ["CANON_SIDE", "EPISTEMIC_SIDE", "SIDES", "Side", "main", "scan"]
+__all__ = ["CANON_SIDE", "EPISTEMIC_SIDE", "SIDES", "Side", "main", "scan", "writes"]

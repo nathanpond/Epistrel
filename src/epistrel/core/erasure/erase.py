@@ -193,7 +193,7 @@ from epistrel.core.tables import (
     turn_queue,
 )
 from epistrel.core.tables.audit_log import AuditKind
-from epistrel.core.tables.beliefs import beliefs
+from epistrel.core.tables.beliefs import belief_transitions, beliefs
 from epistrel.core.tables.catalog import CATALOG_SCHEMA, ERASURE_GUC
 from epistrel.core.tables.commitments import thunks
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
@@ -1399,8 +1399,9 @@ async def _erase_beliefs(
     conn: AsyncConnection, story_id: str, removed: set[str], tally: _Tally, run: _StoryRun
 ) -> None:
     """Beliefs (#159): every belief an erased character holds (its partition) is deleted, each
-    with a marker. Beliefs other characters hold about the subject stay until #178 widens this
-    to the subject rule; ``belief_state`` is refolded by the ``rebuilt`` stage."""
+    with a marker, and its transitions (#160) with it. Beliefs other characters hold about the
+    subject stay until #178 widens this to the subject rule; ``belief_state`` is refolded by the
+    ``rebuilt`` stage."""
     if not removed:
         return
     held = list(
@@ -1422,6 +1423,44 @@ async def _erase_beliefs(
             str(belief_id),
             delete(beliefs).where(beliefs.c.id == belief_id),
         )
+    # Their transitions (#160) go with them, each with a marker; a transition another holder's
+    # belief rests on loses the erased source (the testimony stays, its witness does not).
+    t = belief_transitions.c
+    gone = list(
+        await conn.scalars(
+            select(t.id)
+            .where(t.story_id == story_id, t.holder_character_id.in_(sorted(removed)))
+            .order_by(t.id)
+        )
+    )
+    for transition_id in gone:
+        await _delete(
+            conn,
+            run,
+            tally,
+            belief_transitions.name,
+            str(transition_id),
+            delete(belief_transitions).where(t.id == transition_id),
+        )
+    sourced = list(
+        await conn.scalars(
+            select(t.id)
+            .where(
+                t.story_id == story_id,
+                t.source_character_id.in_(sorted(removed)),
+                t.holder_character_id.not_in(sorted(removed)),
+            )
+            .order_by(t.id)
+        )
+    )
+    for transition_id in sourced:
+        tally.record(belief_transitions.name, 1)
+        if run.write:
+            await conn.execute(
+                update(belief_transitions)
+                .where(t.id == transition_id)
+                .values(source_character_id=None)
+            )
 
 
 async def _erase_thunks(

@@ -16,18 +16,18 @@ CHECK): no other character ever reads it.
 ``holder_has_no_partition``; other characters hold beliefs *about* the player as usual.
 
 **Writes.** ``_insert_belief`` is the only writer, module-private: #160's ``transition()`` is its
-only production caller (with the acquisition it records); #159's fixtures call it directly. It
-runs inside an ``Operation``'s commit transaction (a commit step): the erasure guard, the
-proposition, then the row (``tx_from`` the transaction's time, ``held_from`` the writing position
-unless given, valid-time from the proposition's declared bounds unless given). The holder's open
-belief in the same proposition (subject, predicate, object, qualifiers and polarity; the time is
-the belief's own) lends the new row its proposition and is closed at the new row's ``held_from``
-(``held_to``, written once): the holder's belief changed there. Otherwise the proposition is
-stored through #131's store, as canon's are (one row per write: the store has no shape upsert).
-It appends a ``derived`` ``belief_committed`` event, indexes the row's subjects for erasure, and
-runs
-``BELIEF_HOOKS`` in the same transaction (the ``belief_state`` projection, then #136's change
-index with ``holder = 'belief'``); a hook's exception aborts the commit.
+only caller (``tools.gates check-epistemic-separation``), and passes the producing transition as
+``provenance`` (NOT NULL; ADR-168). It runs inside an ``Operation``'s commit transaction (a commit
+step): the erasure guard, the proposition, then the row (``tx_from`` the transaction's time,
+``held_from`` the writing position unless given, valid-time from the proposition's declared bounds
+unless given). The holder's open belief in the same proposition (subject, predicate, object,
+qualifiers and polarity; the time is the belief's own) lends the new row its proposition and is
+closed at the new row's ``held_from`` (``held_to``, written once): the holder's belief changed
+there. Otherwise the proposition is stored through #131's store, as canon's are (one row per write:
+the store has no shape upsert). It appends a ``derived`` ``belief_committed`` event, indexes the
+row's subjects for erasure, and runs ``BELIEF_HOOKS`` in the same transaction (the ``belief_state``
+projection, then #136's change index with ``holder = 'belief'``); a hook's exception aborts the
+commit.
 
 **Reads.**
 
@@ -79,6 +79,7 @@ from epistrel.core.canon.errors import UnknownPredicate
 from epistrel.core.enums import (
     Authority,
     BeliefConfidenceLevel,
+    BeliefHoldState,
     BeliefKind,
     EventCategory,
     Membership,
@@ -89,7 +90,7 @@ from epistrel.core.erasure import guard
 from epistrel.core.erasure.index import index_records
 from epistrel.core.erasure.records import belief_record, event_record
 from epistrel.core.errors import InvalidRequest
-from epistrel.core.events.registry import validate
+from epistrel.core.events.registry import EventPayload, validate
 from epistrel.core.events.types import BeliefCommitted
 from epistrel.core.ids import new_ulid
 from epistrel.core.membership import (
@@ -157,7 +158,7 @@ class Belief(BaseModel):
     held_to: Position | None
     tx_from: datetime
     tx_to: datetime | None
-    provenance: str | None
+    provenance: str
     visibility: Visibility
     operation_id: str
     source_event_ids: tuple[str, ...] = ()
@@ -167,6 +168,10 @@ class Belief(BaseModel):
     step: int
     membership: Membership
     membership_tx: datetime
+    accessibility: float = 1.0
+    state: BeliefHoldState = BeliefHoldState.HELD
+    corrected_by: str | None = None
+    lineage_id: str = ""
     closed_id: str | None = None
 
     def held_at(self, position: Position) -> bool:
@@ -261,7 +266,7 @@ def _belief_of(row: Any) -> Belief:
         held_to=Position.of_columns(m, "held_to"),
         tx_from=m["tx_from"],
         tx_to=m["tx_to"],
-        provenance=None if m["provenance"] is None else str(m["provenance"]),
+        provenance=str(m["provenance"]),
         visibility=Visibility.model_validate(m["visibility"]),
         operation_id=str(m["operation_id"]),
         source_event_ids=tuple(str(e) for e in m["source_event_ids"] or ()),
@@ -271,6 +276,10 @@ def _belief_of(row: Any) -> Belief:
         step=int(m["step"]),
         membership=Membership(m["membership"]),
         membership_tx=m["membership_tx"],
+        accessibility=float(m["accessibility"]),
+        state=BeliefHoldState(m["state"]),
+        corrected_by=None if m["corrected_by"] is None else str(m["corrected_by"]),
+        lineage_id=str(m["lineage_id"]),
     )
 
 
@@ -278,6 +287,18 @@ def _open() -> list[ColumnElement[bool]]:
     """The active first-order beliefs not closed in transaction-time."""
     b = beliefs.c
     return [active_only(beliefs), b.tx_to.is_(None), b.kind == BeliefKind.FIRST_ORDER.value]
+
+
+def _held_then() -> list[ColumnElement[bool]]:
+    """The active first-order beliefs a past read may see: open in transaction-time, or closed
+    by a correction (#160: the prior keeps its ``held_from``/``held_to`` span, so the holder can
+    be shown to have held it until the correction)."""
+    b = beliefs.c
+    return [
+        active_only(beliefs),
+        or_(b.tx_to.is_(None), b.state == BeliefHoldState.CORRECTED.value),
+        b.kind == BeliefKind.FIRST_ORDER.value,
+    ]
 
 
 def held_at_clause(position: Position | None) -> list[ColumnElement[bool]]:
@@ -315,7 +336,7 @@ async def partition(
     where: list[ColumnElement[bool]] = [
         b.story_id == story_id,
         b.holder_character_id == holder,
-        *_open(),
+        *(_open() if through is None else _held_then()),
         *held_at_clause(through),
     ]
     if subjects is not None:
@@ -694,12 +715,13 @@ async def _append_event(
     conn: AsyncConnection,
     story_id: str,
     operation: BeliefOperation,
-    payload: BeliefCommitted,
+    payload: EventPayload,
     beat: int | None,
+    type_: str = BELIEF_COMMITTED,
 ) -> str:
-    """Append the write's ``derived`` event to its operation (the caller holds the story lock:
-    a commit step)."""
-    body = validate(BELIEF_COMMITTED, payload).model_dump(mode="json")
+    """Append the write's ``derived`` event (``type_``) to its operation (the caller holds the
+    story lock: a commit step)."""
+    body = validate(type_, payload).model_dump(mode="json")
     last = await conn.scalar(
         select(func.coalesce(func.max(events.c.seq), 0)).where(events.c.story_id == story_id)
     )
@@ -715,7 +737,7 @@ async def _append_event(
             turn_variant=operation.turn_variant,
             beat=beat,
             principal=operation.principal,
-            type=BELIEF_COMMITTED,
+            type=type_,
             payload=body,
             provenance=_event_provenance(operation).value,
             authority=Authority.AUTHORITATIVE.value,
@@ -751,8 +773,10 @@ async def _insert_belief(
     source_event_ids: Sequence[str] = (),
     beat: int | None = None,
     step: int = 0,
-    provenance: str | None = None,
+    provenance: str,
     registry: Registry | None = None,
+    belief_id: str | None = None,
+    lineage_id: str | None = None,
 ) -> Belief:
     """Write ``proposition`` as a first-order belief of ``holder`` in ``operation``'s commit
     transaction (see the module docstring); answers the belief, with the open belief it closed
@@ -825,7 +849,7 @@ async def _insert_belief(
             {"field": "held_from", "reason": "held_already", "belief_id": closed.id},
         )
     lo, hi = _bounds(valid_time if valid_time is not None else stored.valid_time)
-    belief_id = new_ulid()
+    belief_id = belief_id or new_ulid()
     event_id = await _append_event(
         conn,
         story_id,
@@ -864,6 +888,7 @@ async def _insert_belief(
         "turn_variant": operation.turn_variant,
         "beat": beat,
         "step": step,
+        "lineage_id": lineage_id or belief_id,
     }
     await insert_derived(conn, beliefs, [row])
     await index_records(

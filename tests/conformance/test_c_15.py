@@ -1216,10 +1216,12 @@ def replay_surfaces(pg_url: str, tmp_path_factory: pytest.TempPathFactory) -> An
         )
 
 
-REPLAY_EXCLUDED: dict[str, str] = {}
-"""Mutating routes the replay does not reach, each with the reason (none: every mutating route
-is replayed; ``replay_support.REPLACED_NOT_STORED`` names the one replayed without a stored
-result)."""
+REPLAY_EXCLUDED: dict[str, str] = {
+    "write_belief": "#160's author belief needs the partitions module, which no profile delivers "
+    "before #181; C-03 reaches it as 409 module_off, and #181's step replays it",
+}
+"""Mutating routes the replay does not reach, each with the reason
+(``replay_support.REPLACED_NOT_STORED`` names the one replayed without a stored result)."""
 
 
 @pytest.mark.integration

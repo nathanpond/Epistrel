@@ -679,6 +679,19 @@ OVERRIDES: dict[str, dict[str, str]] = {
             "WITH ORDINALITY AS s(id, n) ORDER BY s.n) AS char(26)[])"
         ),
     },
+    # Belief transitions (#160): a belief's producing transition and its corrector, and the
+    # beliefs a transition closed, are the fork's copies (a corrector after N is not copied:
+    # the settle after the copy reopens what it closed).
+    "beliefs": {
+        "provenance": f'{_ID}(t."provenance"::text)',
+        "corrected_by": f'{_ID}(t."corrected_by"::text)',
+    },
+    "belief_transitions": {
+        "prior_belief_ids": (
+            f"CAST(ARRAY(SELECT {_ID}(s.id::text) FROM unnest(t.prior_belief_ids) "  # noqa: S608
+            "WITH ORDINALITY AS s(id, n) ORDER BY s.n) AS char(26)[])"
+        ),
+    },
     # Speech acts (#150): the propositions an utterance asserts are the fork's copies.
     "utterances": {
         "proposition_ids": (
@@ -827,7 +840,11 @@ async def _rebuild_segments(conn: AsyncConnection, fork_id: str) -> int:
 
 async def _rebuild_structured(conn: AsyncConnection, fork_id: str) -> dict[str, int]:
     """The fork's structured projection rows, folded from its copied canon (#137) and its
-    copied beliefs (#159)."""
+    copied beliefs (#159), once each copied belief is settled on the transitions the fork
+    copied (#160: a later change in place, or a later correction, is not the fork's)."""
+    from epistrel.core.epistemic.transitions import settle
+
+    await settle(conn, fork_id, None, project=False)
     folded = await projections.fold(conn, fork_id, only=projections.STORED_STATE)
     counts: dict[str, int] = {}
     for projection in projections.STORED_STATE:

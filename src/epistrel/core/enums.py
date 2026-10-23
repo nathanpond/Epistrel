@@ -239,6 +239,46 @@ class BeliefKind(StrEnum):
     NESTED = "nested"
 
 
+class BeliefTransitionKind(StrEnum):
+    """The typed cause of a belief-set change (FR-EPI-7, FR-BELIEF-2; #160): the acquisition
+    operations ``observation``, ``testimony``, ``inference``, ``discovery``, ``correction``,
+    ``forgetting`` and ``revision``, plus ``author`` (author direction, a seed) and ``resolution``
+    (a thunk binding's knowledge obligation, FR-COMMIT-14). Postgres enum
+    ``belief_transition_kind``."""
+
+    OBSERVATION = "observation"
+    TESTIMONY = "testimony"
+    INFERENCE = "inference"
+    DISCOVERY = "discovery"
+    CORRECTION = "correction"
+    FORGETTING = "forgetting"
+    REVISION = "revision"
+    AUTHOR = "author"
+    RESOLUTION = "resolution"
+
+
+class AntecedentKind(StrEnum):
+    """What a belief transition's antecedent is (FR-EPI-14 (a) to (d); #160): a committed
+    ``record``, a verified ``staged_beat`` earlier in the same turn, a verified ``render_step``
+    earlier in the same render, or a reconciled thunk ``resolution``. Postgres enum
+    ``antecedent_kind``."""
+
+    RECORD = "record"
+    STAGED_BEAT = "staged_beat"
+    RENDER_STEP = "render_step"
+    RESOLUTION = "resolution"
+
+
+class BeliefHoldState(StrEnum):
+    """Whether a belief is ``held``, ``decayed`` (a forgetting transition lowered it; #143's
+    consolidation reads these) or ``corrected`` (a correction closed it; #160). Postgres enum
+    ``belief_hold_state``."""
+
+    HELD = "held"
+    DECAYED = "decayed"
+    CORRECTED = "corrected"
+
+
 PG_ENUM_TYPES: dict[str, type[StrEnum]] = {
     "event_category": EventCategory,
     "operation_kind": OperationKind,
@@ -260,6 +300,9 @@ PG_ENUM_TYPES: dict[str, type[StrEnum]] = {
     "retrieval_tier": RetrievalTier,
     "belief_confidence_level": BeliefConfidenceLevel,
     "belief_kind": BeliefKind,
+    "belief_transition_kind": BeliefTransitionKind,
+    "antecedent_kind": AntecedentKind,
+    "belief_hold_state": BeliefHoldState,
 }
 """Postgres enum type name (``<schema>.<name>`` outside ``public``) → the Python enum whose
 values it holds (creation order)."""

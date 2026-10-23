@@ -16,17 +16,27 @@ proposition (``propositions``, #131: viewpoint-free, FR-PROP-2) wrapped with
   ``held_from_*``/``held_to_*``, the narrative positions (``core.membership.Position``'s five
   columns) between which the holder holds it (``held_to`` all ``NULL`` while held); and
   ``tx_from``/``tx_to``, the transaction-time of the record (#160's corrections close it);
-- **where it came from**: ``provenance`` (#160's acquisition, nullable until #160 adds the
-  foreign key), ``source_event_ids`` (the causing beat event, or the record's own
-  ``belief_committed`` event), the derived-record columns (#130) with ``beat`` and ``step``;
+- **where it came from**: ``provenance`` (the ``belief_transitions`` row that produced it: NOT NULL,
+  a deferred foreign key and a constraint trigger, ADR-168), ``source_event_ids`` (the causing beat
+  event, or the record's own ``belief_committed`` event), the derived-record columns (#130) with
+  ``beat`` and ``step``;
 - **who may read it**: ``visibility``, always ``{"scope": "characters", "characters":
   [holder]}`` (CHECK ``holder_only``): a belief is private by construction.
 
+**How it is held now** (#160): ``accessibility`` (``1.0``; forgetting lowers it), ``state``
+(``held``, ``decayed``, ``corrected``), ``corrected_by`` (the belief that corrected it) and
+``lineage_id`` (the first belief of its correction chain).
+
+**``belief_transitions``** (#160) — one row per belief-set change, the typed cause of a belief:
+see ``core.epistemic.transitions``. A derived record of its operation, append-only (the
+membership pair may change, and an erasure clears ``source_character_id``).
+
 One open row per ``(story_id, holder, proposition)`` among the active first-order rows
 (``ux_beliefs_open``). Append-only (``epistrel_beliefs_append_only``): an UPDATE may set
-``tx_to`` and the ``held_to_*`` group once (``NULL`` to a value) and change
-``membership``/``membership_tx``; a DELETE passes only under an erasure or the story's deletion.
-``core.epistemic.partitions`` is the only writer.
+``tx_to`` and the ``held_to_*`` group once (``NULL`` to a value; #160's follower may reopen a
+corrected belief), change ``membership``/``membership_tx`` and the in-place state; a DELETE
+passes only under an erasure or the story's deletion. ``core.epistemic.partitions`` writes the
+rows, called only by ``core.epistemic.transitions``.
 
 **``belief_state``** — the queryable belief projection (FR-EPI-6): one row per holder and
 proposition the holder currently holds at ``suspected`` or above (``unknown`` and closed beliefs
@@ -45,6 +55,7 @@ from sqlalchemy import (
     BigInteger,
     CheckConstraint,
     Column,
+    ForeignKey,
     Index,
     PrimaryKeyConstraint,
     SmallInteger,
@@ -52,9 +63,15 @@ from sqlalchemy import (
     Text,
     text,
 )
-from sqlalchemy.dialects.postgresql import INT8RANGE, JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, INT8RANGE, JSONB
 
-from epistrel.core.enums import BeliefConfidenceLevel, BeliefKind
+from epistrel.core.enums import (
+    AntecedentKind,
+    BeliefConfidenceLevel,
+    BeliefHoldState,
+    BeliefKind,
+    BeliefTransitionKind,
+)
 from epistrel.core.membership import (
     DerivedTable,
     active_only_predicate,
@@ -78,8 +95,15 @@ MUTABLE_BELIEF_COLUMNS: tuple[str, ...] = (
     "held_to_step",
     "membership",
     "membership_tx",
+    "confidence_level",
+    "confidence_scalar",
+    "accessibility",
+    "state",
+    "corrected_by",
 )
-"""The columns an UPDATE of ``beliefs`` may change (``tx_to`` and the ``held_to`` group once)."""
+"""The columns an UPDATE of ``beliefs`` may change: ``tx_to`` and the ``held_to`` group once
+(reopened only by #160's membership follower), the membership pair, and the in-place state a
+revision or a forgetting changes (#160)."""
 
 HOLDER_ONLY_CHECK = (
     "visibility = jsonb_build_object('scope', 'characters', 'characters', "
@@ -119,11 +143,25 @@ beliefs = Table(
     *position_group("held_to", nullable=True),
     Column("tx_from", TIMESTAMP(timezone=True), nullable=False),
     Column("tx_to", TIMESTAMP(timezone=True), nullable=True),
-    Column("provenance", ulid_type(), nullable=True),
+    Column(
+        "provenance",
+        ulid_type(),
+        ForeignKey("belief_transitions.id", deferrable=True, initially="DEFERRED", use_alter=True),
+        nullable=False,
+    ),
     Column("visibility", JSONB, nullable=False),
     *derived_columns(),
     Column("beat", SmallInteger, nullable=True),
     Column("step", SmallInteger, nullable=False, server_default=text("0")),
+    Column("accessibility", NUMERIC(4, 3), nullable=False, server_default=text("1.0")),
+    Column(
+        "state",
+        pg_enum(BeliefHoldState, "belief_hold_state"),
+        nullable=False,
+        server_default=text("'held'"),
+    ),
+    Column("corrected_by", ulid_type(), nullable=True),
+    Column("lineage_id", ulid_type(), nullable=False),
     CheckConstraint(
         "polarity IN (" + ", ".join(f"'{p}'" for p in POLARITIES) + ")", name="polarity"
     ),
@@ -145,6 +183,8 @@ beliefs = Table(
     CheckConstraint(VISIBILITY_SCOPE_CHECK, name="visibility_scope"),
     CheckConstraint(VISIBILITY_CHARACTERS_CHECK, name="visibility_characters"),
     CheckConstraint(HOLDER_ONLY_CHECK, name="holder_only"),
+    CheckConstraint("accessibility >= 0 AND accessibility <= 1", name="accessibility"),
+    CheckConstraint("(state = 'corrected') = (corrected_by IS NOT NULL)", name="corrected_pair"),
     *derived_indexes("beliefs"),
 )
 Index(
@@ -156,6 +196,8 @@ Index(
 Index("ix_beliefs_story_proposition", beliefs.c.story_id, beliefs.c.proposition_id)
 Index("ix_beliefs_valid_span", beliefs.c.valid_span, postgresql_using="gist")
 Index("ix_beliefs_visibility", beliefs.c.visibility, postgresql_using="gin")
+Index("ux_beliefs_provenance", beliefs.c.provenance, unique=True)
+Index("ix_beliefs_story_lineage", beliefs.c.story_id, beliefs.c.lineage_id)
 Index(
     "ux_beliefs_open",
     beliefs.c.story_id,
@@ -171,6 +213,97 @@ BELIEFS = register_derived(
 """``beliefs`` in ``core.membership.DERIVED_TABLES``: truncation, untruncation, swap, regenerate
 and fork move its rows with their operations (ADR-167: the derived table; ``belief_state`` is the
 rebuildable projection over it)."""
+
+TRANSITION_SOURCE_KINDS: tuple[str, ...] = ("testimony", "observation", "discovery")
+"""The kinds whose transition may name a ``source_character_id`` (testimony needs one)."""
+
+OUTCOMES: tuple[str, ...] = ("accept", "reject", "suspend", "speech_act_only")
+"""A testimony transition's ``outcome`` (``NULL`` for every other kind)."""
+
+MUTABLE_TRANSITION_COLUMNS: tuple[str, ...] = ("membership", "membership_tx")
+"""The columns an UPDATE of ``belief_transitions`` may change (an erasure also clears
+``source_character_id``)."""
+
+belief_transitions = Table(
+    "belief_transitions",
+    metadata,
+    Column("id", ulid_type(), primary_key=True),
+    Column("story_id", ulid_type(), nullable=False),
+    Column("holder_character_id", ulid_type(), nullable=False),
+    Column(
+        "belief_id",
+        ulid_type(),
+        ForeignKey("beliefs.id", deferrable=True, initially="DEFERRED"),
+        nullable=False,
+    ),
+    Column("kind", pg_enum(BeliefTransitionKind, "belief_transition_kind"), nullable=False),
+    Column("antecedent_kind", pg_enum(AntecedentKind, "antecedent_kind"), nullable=False),
+    Column("antecedent_ref", JSONB, nullable=False),
+    Column("source_character_id", ulid_type(), nullable=True),
+    Column("valid_at", BigInteger, nullable=True),
+    Column(
+        "confidence_level",
+        pg_enum(BeliefConfidenceLevel, "belief_confidence_level"),
+        nullable=False,
+    ),
+    Column("confidence_scalar", NUMERIC(4, 3), nullable=True),
+    Column("accessibility", NUMERIC(4, 3), nullable=False, server_default=text("1.0")),
+    Column(
+        "state",
+        pg_enum(BeliefHoldState, "belief_hold_state"),
+        nullable=False,
+        server_default=text("'held'"),
+    ),
+    Column("outcome", Text, nullable=True),
+    Column("prior_belief_ids", ARRAY(ulid_type()), nullable=False, server_default=text("'{}'")),
+    Column("prior", JSONB(none_as_null=True), nullable=True),
+    *position_group("position", nullable=False),
+    Column("tx_from", TIMESTAMP(timezone=True), nullable=False),
+    Column("tx_to", TIMESTAMP(timezone=True), nullable=True),
+    *derived_columns(),
+    CheckConstraint(
+        "source_character_id IS NULL OR kind IN ("
+        + ", ".join(f"'{k}'" for k in TRANSITION_SOURCE_KINDS)
+        + ")",
+        name="source_kind",
+    ),
+    CheckConstraint(
+        "outcome IS NULL OR (kind = 'testimony' AND outcome IN ("
+        + ", ".join(f"'{o}'" for o in OUTCOMES)
+        + "))",
+        name="outcome",
+    ),
+    CheckConstraint(
+        "confidence_scalar IS NULL OR (confidence_scalar >= 0 AND confidence_scalar <= 1)",
+        name="confidence_scalar",
+    ),
+    CheckConstraint("accessibility >= 0 AND accessibility <= 1", name="accessibility"),
+    CheckConstraint("jsonb_typeof(antecedent_ref) = 'object'", name="antecedent_ref"),
+    CheckConstraint("tx_to IS NULL", name="tx_open"),
+    *derived_indexes("belief_transitions"),
+)
+Index(
+    "ix_belief_transitions_story_holder_belief",
+    belief_transitions.c.story_id,
+    belief_transitions.c.holder_character_id,
+    belief_transitions.c.belief_id,
+)
+Index("ix_belief_transitions_story_kind", belief_transitions.c.story_id, belief_transitions.c.kind)
+Index(
+    "ix_belief_transitions_prior",
+    belief_transitions.c.prior_belief_ids,
+    postgresql_using="gin",
+)
+
+BELIEF_TRANSITIONS = register_derived(
+    DerivedTable(
+        belief_transitions,
+        valid_time=("valid_at", "valid_at"),
+        tx_time=("tx_from", "tx_to"),
+    )
+)
+"""``belief_transitions`` in ``core.membership.DERIVED_TABLES`` (#160): a transition follows its
+operation, and ``core.epistemic.transitions``' follower re-settles the beliefs it touched."""
 
 belief_state = Table(
     "belief_state",
@@ -194,10 +327,15 @@ Index("ix_belief_state_story_proposition", belief_state.c.story_id, belief_state
 
 __all__ = [
     "BELIEFS",
+    "BELIEF_TRANSITIONS",
     "HOLDER_ONLY_CHECK",
     "MUTABLE_BELIEF_COLUMNS",
+    "MUTABLE_TRANSITION_COLUMNS",
     "OPEN_WHERE",
+    "OUTCOMES",
     "POLARITIES",
+    "TRANSITION_SOURCE_KINDS",
     "belief_state",
+    "belief_transitions",
     "beliefs",
 ]

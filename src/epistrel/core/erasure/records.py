@@ -43,7 +43,7 @@ from epistrel.core.tables import (
     scenario_versions,
     stories,
 )
-from epistrel.core.tables.beliefs import beliefs
+from epistrel.core.tables.beliefs import belief_transitions, beliefs
 from epistrel.core.tables.commitments import thunks
 from epistrel.core.tables.facts import facts
 from epistrel.core.tables.media import SubjectKind, media_upload_sessions
@@ -354,6 +354,18 @@ def belief_record(row: Any) -> Record:
         if found is not None:
             declared.append((SubjectKind.CHARACTER, str(found), field))
     return Record(beliefs.name, str(row.id), _str(row.story_id), {}, tuple(declared))
+
+
+def belief_transition_record(row: Any) -> Record:
+    """A belief transition (#160): no text of its own; its holder and its source (who
+    testified, what was observed of whom) are declared subjects."""
+    declared: list[Declared] = [
+        (SubjectKind.CHARACTER, str(row.holder_character_id), "holder_character_id")
+    ]
+    source = getattr(row, "source_character_id", None)
+    if source is not None:
+        declared.append((SubjectKind.CHARACTER, str(source), "source_character_id"))
+    return Record(belief_transitions.name, str(row.id), _str(row.story_id), {}, tuple(declared))
 
 
 def thunk_record(row: Any) -> Record:
@@ -702,6 +714,11 @@ async def read_beliefs(conn: AsyncConnection, story_id: str | None) -> list[Reco
     return [belief_record(r) for r in found]
 
 
+async def read_belief_transitions(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    """A story's belief transitions, as ``belief_transition_record`` indexes them."""
+    return await _story_rows(conn, belief_transitions, story_id, belief_transition_record)
+
+
 async def read_thunks(conn: AsyncConnection, story_id: str | None) -> list[Record]:
     """A story's thunks, as ``thunk_record`` indexes them."""
     return await _story_rows(conn, thunks, story_id, thunk_record)
@@ -736,6 +753,7 @@ async def index_rows(conn: AsyncConnection, table: Any, where: Any, build: Any) 
 __all__ = [
     "alias_record",
     "belief_record",
+    "belief_transition_record",
     "character_draft_record",
     "character_ids",
     "character_record",
@@ -759,6 +777,7 @@ __all__ = [
     "proposal_record",
     "proposition_record",
     "rating_record_id",
+    "read_belief_transitions",
     "read_beliefs",
     "read_thunks",
     "snapshot_record",

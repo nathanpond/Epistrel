@@ -34,6 +34,7 @@ from sqlalchemy import text
 
 from epistrel.api import create_app
 from epistrel.api.config_changes import ConfigChangesBody
+from epistrel.api.routes.admin.beliefs import BeliefWritten
 from epistrel.api.routes.admin.feedback_export import FeedbackExportWrittenBody
 from epistrel.api.routes.admin.model_config import (
     ModelConfigBody,
@@ -145,6 +146,7 @@ from epistrel.core.config_changes import ConfigScope
 from epistrel.core.context import RequestContext
 from epistrel.core.db import make_engine
 from epistrel.core.deployment import SettingsPatch
+from epistrel.core.epistemic.author import BeliefRequest
 from epistrel.core.errors import EpistrelError
 from epistrel.core.feedback import FeedbackRequest
 from epistrel.core.feedback_export import FeedbackExportRequest
@@ -386,6 +388,10 @@ async def _commit_fact(
     return await _fact_written(
         engine.commit_fact(CTX, story_id, FactRequest.model_validate({"proposition": proposition}))
     )
+
+
+async def _belief_written(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(BeliefWritten.of(await call))
 
 
 async def _fact_written(call: Awaitable[Any]) -> dict[str, Any]:
@@ -1180,6 +1186,23 @@ def _steps() -> list[Step]:
                 )
             ),
             group=MUTATION_GROUP,
+        ),
+        # An author belief (#160): the fork's profile keeps no partitions (#181 delivers the
+        # module), so both surfaces answer 409 module_off.
+        Step(
+            "write_belief",
+            lambda ids: Rest(
+                "POST",
+                "/admin/stories/{fork}/beliefs",
+                {"holder": ids["fork_ada"], "proposition": _knows(ids, "fork")},
+            ),
+            lambda e, ids: _belief_written(
+                e.write_belief(
+                    CTX,
+                    ids["fork"],
+                    BeliefRequest(holder=ids["fork_ada"], proposition=_knows(ids, "fork")),
+                )
+            ),
         ),
         Step(
             "delete_story",

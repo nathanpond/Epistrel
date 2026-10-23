@@ -8,6 +8,8 @@ outputs are ``audit``; truncate, untruncate, swap, fork, settings and story/char
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import ConfigDict, Field, JsonValue
 
 from epistrel.core.enums import EventCategory
@@ -466,6 +468,30 @@ class BeliefCommitted(EventPayload):
     belief_id: str
     proposition_id: str
     closes: str | None = None
+
+
+@register("belief_transition", category=EventCategory.DERIVED)
+class BeliefTransitioned(EventPayload):
+    """A belief-set change with its typed cause (FR-EPI-7,13, FR-BELIEF-2; #160): the transition
+    (``transition_id``), the belief it produced or changed, its ``kind``, its ``antecedent``
+    (``{kind, ref}``) and the beliefs a correction closed (``prior_belief_ids``). Identifiers
+    only; the transition follows its operation's membership, so this event does too."""
+
+    transition_id: str
+    belief_id: str
+    kind: str
+    antecedent: dict[str, Any]
+    prior_belief_ids: tuple[str, ...] = ()
+
+
+@register("belief_authored", category=EventCategory.CONTROL)
+class BeliefAuthored(EventPayload):
+    """An author directed a character's belief (FR-EPI-7's author direction; #160's
+    ``POST /admin/stories/{id}/beliefs``): the author act an ``author`` transition cites. The
+    holder is ``holder_character_id``; the belief and its transition carry the rest."""
+
+    holder_character_id: str
+    disclosure: str | None = None
 
 
 # -- commitments (FR-COMMIT-1..3,5..7,10,13; #146) ---------------------------------------------

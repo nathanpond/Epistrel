@@ -183,6 +183,10 @@ ORDER: dict[str, str] = {
         f"{_STORY_RANK}, {_HOLDER_RANK}, t.held_from_turn, t.held_from_slot_k, "
         "t.held_from_beat, t.held_from_step, t.confidence_level, t.polarity, t.tx_from"
     ),
+    "belief_transitions": (
+        f"{_STORY_RANK}, {_HOLDER_RANK}, t.position_turn, t.position_slot_k, t.position_beat, "
+        "t.position_step, t.kind, t.confidence_level, t.tx_from"
+    ),
     "belief_state": (
         f"{_STORY_RANK}, {_HOLDER_RANK}, t.since_turn, t.since_slot_k, t.since_beat, "
         "t.since_step, t.current_level, t.polarity"

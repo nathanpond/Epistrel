@@ -7,7 +7,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from tools.gates.__main__ import main as gates_main
-from tools.gates.epistemic import CANON_SIDE, EPISTEMIC_SIDE, main, scan
+from tools.gates.epistemic import CANON_SIDE, EPISTEMIC_SIDE, main, scan, writes
 
 CANON_READS_BELIEFS = '''"""Canon that mentions SELECT * FROM beliefs in prose only here."""
 from sqlalchemy import select, text
@@ -53,6 +53,7 @@ def _tree(tmp_path: Path, files: dict[str, str]) -> Path:
 
 def test_the_repository_keeps_canon_and_partitions_apart() -> None:
     assert scan() == []
+    assert writes() == []
     assert main([]) == 0
     assert gates_main(["check-epistemic-separation"]) == 0
 
@@ -77,3 +78,41 @@ def test_prose_and_other_tables_are_not_reads(tmp_path: Path) -> None:
         {f"{CANON_SIDE.package}/clean.py": CLEAN, f"{EPISTEMIC_SIDE.package}/clean.py": CLEAN},
     )
     assert scan(root) == []
+
+
+ROGUE_WRITER = '''"""Writes a belief around transition() (``_insert_belief`` in prose is fine)."""
+from epistrel.core.epistemic import partitions
+from epistrel.core.epistemic.partitions import _insert_belief
+
+
+async def write(conn):
+    return await partitions._insert_belief(conn), _insert_belief
+'''
+
+BELIEF_WRITES_CANON = '''"""A belief module that commits a fact."""
+from epistrel.core.canon.store import commit_fact
+
+
+async def leak(conn, membership):
+    await commit_fact(conn)
+    return membership.supersede
+'''
+
+
+def test_only_transition_writes_beliefs_and_no_belief_writes_canon(tmp_path: Path) -> None:
+    """#160: ``_insert_belief`` named outside the two writer modules, and canon's writers named
+    under ``core/epistemic``, are findings; the writer modules themselves are not."""
+    root = _tree(
+        tmp_path,
+        {
+            "src/epistrel/core/rogue.py": ROGUE_WRITER,
+            f"{EPISTEMIC_SIDE.package}/leak.py": BELIEF_WRITES_CANON,
+            f"{EPISTEMIC_SIDE.package}/transitions.py": ROGUE_WRITER,
+        },
+    )
+    found = writes(root)
+    rogue = sorted(int(f.split(":")[1]) for f in found if "rogue.py" in f)
+    leak = sorted(int(f.split(":")[1]) for f in found if "leak.py" in f)
+    assert rogue == [3, 7]
+    assert leak == [2, 6, 7]
+    assert not [f for f in found if "transitions.py" in f]

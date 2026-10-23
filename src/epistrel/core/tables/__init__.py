@@ -9,7 +9,7 @@ naming them (``tests/integration/test_feedback.py``) sees each one (FR-FB-2).
 from epistrel.core.tables import feedback as _feedback  # noqa: F401 - registers the tables
 from epistrel.core.tables.audit_log import audit_log
 from epistrel.core.tables.base import NAMING_CONVENTION, metadata
-from epistrel.core.tables.beliefs import belief_state, beliefs
+from epistrel.core.tables.beliefs import belief_state, belief_transitions, beliefs
 from epistrel.core.tables.catalog import (
     character_catalog,
     character_versions,
@@ -75,6 +75,7 @@ __all__ = [
     "NAMING_CONVENTION",
     "audit_log",
     "belief_state",
+    "belief_transitions",
     "beliefs",
     "character_catalog",
     "character_snapshots",

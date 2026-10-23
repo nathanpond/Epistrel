@@ -296,6 +296,115 @@
         "title": "Audience",
         "type": "string"
       },
+      "AuthoredBeliefBody": {
+        "description": "The belief after the call: its proposition, dual confidence, accessibility and hold\nstate, the transition that produced it (``provenance``), the positions between which the\nholder holds it, valid-time (story-minutes) and its lineage.",
+        "properties": {
+          "accessibility": {
+            "title": "Accessibility",
+            "type": "number"
+          },
+          "confidence_level": {
+            "title": "Confidence Level",
+            "type": "string"
+          },
+          "confidence_scalar": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence Scalar"
+          },
+          "held_from": {
+            "$ref": "#/components/schemas/epistrel__api__routes__admin__beliefs__PositionBody"
+          },
+          "held_to": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/epistrel__api__routes__admin__beliefs__PositionBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "holder_character_id": {
+            "title": "Holder Character Id",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "lineage_id": {
+            "title": "Lineage Id",
+            "type": "string"
+          },
+          "polarity": {
+            "title": "Polarity",
+            "type": "string"
+          },
+          "proposition": {
+            "$ref": "#/components/schemas/Proposition"
+          },
+          "proposition_id": {
+            "title": "Proposition Id",
+            "type": "string"
+          },
+          "provenance": {
+            "title": "Provenance",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "valid_from": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid From"
+          },
+          "valid_to": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid To"
+          }
+        },
+        "required": [
+          "id",
+          "holder_character_id",
+          "proposition_id",
+          "proposition",
+          "polarity",
+          "confidence_level",
+          "confidence_scalar",
+          "accessibility",
+          "state",
+          "provenance",
+          "held_from",
+          "held_to",
+          "valid_from",
+          "valid_to",
+          "lineage_id"
+        ],
+        "title": "AuthoredBeliefBody",
+        "type": "object"
+      },
       "Backfill": {
         "description": "Whether the change needs a backfill for this story, and its estimate when it does. In M3\none is needed exactly when the upgrade is unavailable (no backfill exists until M7).",
         "properties": {
@@ -403,6 +512,17 @@
         ],
         "title": "BeatVisibilityModel",
         "type": "object"
+      },
+      "BeliefConfidenceLevel": {
+        "description": "A belief's categorical confidence (FR-BELIEF-4's dual confidence; #159 creates it, #160\nprojects the scalar onto it): ``unknown`` (suspended: the holder neither holds nor denies\nit), ``suspected``, ``believed`` or ``known``, weakest first. Postgres enum\n``belief_confidence_level``.",
+        "enum": [
+          "unknown",
+          "suspected",
+          "believed",
+          "known"
+        ],
+        "title": "BeliefConfidenceLevel",
+        "type": "string"
       },
       "BeliefItemBody": {
         "description": "One belief the character holds now: the ``belief_state`` row (``current_level``,\n``current_scalar``, ``polarity``, ``since``) joined with its belief record (``kind``,\n``confidence_scalar``, ``provenance``: #160's acquisition, ``held_from``/``held_to``,\n``valid_from``/``valid_to`` in story-minutes) and the proposition it holds.",
@@ -512,6 +632,140 @@
           "tx_from"
         ],
         "title": "BeliefItemBody",
+        "type": "object"
+      },
+      "BeliefRequest": {
+        "additionalProperties": false,
+        "description": "An author belief: the holder (a modeled character), #131's normalized proposition (JSON,\nnever prose), an optional polarity replacing the proposition's, the confidence (a level, a\nscalar in ``[0, 1]`` with at most three decimals, both or neither) and how the holder\ntreats it (``disclosure``, FR-SCN-8's ``open``/``guarded``/``secret``; recorded on the\nauthor act).",
+        "examples": [
+          {
+            "confidence_scalar": 0.6,
+            "disclosure": "secret",
+            "holder": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3",
+            "proposition": {
+              "object_id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C4",
+              "predicate_id": "01JPRED0000000000000000015",
+              "subject_id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C6",
+              "valid_time": {
+                "kind": "interval",
+                "start": {
+                  "inner": 0,
+                  "outer": 0
+                }
+              }
+            }
+          }
+        ],
+        "properties": {
+          "confidence_level": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BeliefConfidenceLevel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "confidence_scalar": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence Scalar"
+          },
+          "disclosure": {
+            "anyOf": [
+              {
+                "enum": [
+                  "open",
+                  "guarded",
+                  "secret"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disclosure"
+          },
+          "holder": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "title": "Holder",
+            "type": "string"
+          },
+          "polarity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Polarity"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "proposition": {
+            "$ref": "#/components/schemas/Proposition"
+          }
+        },
+        "required": [
+          "holder",
+          "proposition"
+        ],
+        "title": "BeliefRequest",
+        "type": "object"
+      },
+      "BeliefWritten": {
+        "description": "The belief, its transition, the held beliefs it closed (``closed``), the story's\nrevision and the ``control`` operation.",
+        "properties": {
+          "belief": {
+            "$ref": "#/components/schemas/AuthoredBeliefBody"
+          },
+          "closed": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Closed",
+            "type": "array"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "operation_id": {
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          },
+          "transition": {
+            "$ref": "#/components/schemas/TransitionBody"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "belief",
+          "transition",
+          "closed",
+          "operation_id"
+        ],
+        "title": "BeliefWritten",
         "type": "object"
       },
       "BeliefsBody": {
@@ -11550,7 +11804,7 @@
             "type": "string"
           },
           "introduced_position": {
-            "$ref": "#/components/schemas/PositionBody"
+            "$ref": "#/components/schemas/epistrel__api__routes__inspect__PositionBody"
           },
           "kind": {
             "title": "Kind",
@@ -16381,51 +16635,6 @@
           "message"
         ],
         "title": "PolicyReplacement",
-        "type": "object"
-      },
-      "PositionBody": {
-        "description": "A narrative position: the turn, its variant and the beat (``null`` when position-less).",
-        "properties": {
-          "beat": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Beat"
-          },
-          "turn": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Turn"
-          },
-          "variant": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Variant"
-          }
-        },
-        "required": [
-          "turn",
-          "variant",
-          "beat"
-        ],
-        "title": "PositionBody",
         "type": "object"
       },
       "PredicateBody": {
@@ -30654,7 +30863,7 @@
             "type": "string"
           },
           "position": {
-            "$ref": "#/components/schemas/PositionBody"
+            "$ref": "#/components/schemas/epistrel__api__routes__inspect__PositionBody"
           },
           "rejected_bindings": {
             "default": [],
@@ -30734,6 +30943,64 @@
         ],
         "title": "ThunkState",
         "type": "string"
+      },
+      "TransitionBody": {
+        "description": "The ``author`` transition: its kind, antecedent (the call's author act), story-time\n(``valid_at``, story-minutes), the confidence it left and its position.",
+        "properties": {
+          "antecedent": {
+            "additionalProperties": true,
+            "title": "Antecedent",
+            "type": "object"
+          },
+          "confidence_level": {
+            "title": "Confidence Level",
+            "type": "string"
+          },
+          "confidence_scalar": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence Scalar"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "position": {
+            "$ref": "#/components/schemas/epistrel__api__routes__admin__beliefs__PositionBody"
+          },
+          "valid_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid At"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "antecedent",
+          "valid_at",
+          "confidence_level",
+          "confidence_scalar",
+          "position"
+        ],
+        "title": "TransitionBody",
+        "type": "object"
       },
       "TruncateRequest": {
         "additionalProperties": false,
@@ -32143,6 +32410,85 @@
           "weighted_flip_rate"
         ],
         "title": "YieldClusterBody",
+        "type": "object"
+      },
+      "epistrel__api__routes__admin__beliefs__PositionBody": {
+        "description": "A narrative position: turn, variant, inter-turn slot, beat and step.",
+        "properties": {
+          "beat": {
+            "title": "Beat",
+            "type": "integer"
+          },
+          "slot_k": {
+            "title": "Slot K",
+            "type": "integer"
+          },
+          "step": {
+            "title": "Step",
+            "type": "integer"
+          },
+          "turn": {
+            "title": "Turn",
+            "type": "integer"
+          },
+          "variant": {
+            "title": "Variant",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "turn",
+          "variant",
+          "slot_k",
+          "beat",
+          "step"
+        ],
+        "title": "PositionBody",
+        "type": "object"
+      },
+      "epistrel__api__routes__inspect__PositionBody": {
+        "description": "A narrative position: the turn, its variant and the beat (``null`` when position-less).",
+        "properties": {
+          "beat": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Beat"
+          },
+          "turn": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Turn"
+          },
+          "variant": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Variant"
+          }
+        },
+        "required": [
+          "turn",
+          "variant",
+          "beat"
+        ],
+        "title": "PositionBody",
         "type": "object"
       },
       "epistrel__core__memory__consolidation__Scope": {
@@ -36764,6 +37110,200 @@
           }
         ],
         "summary": "Change deployment settings",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/stories/{story_id}/beliefs": {
+      "post": {
+        "description": "Set what modeled character `holder` believes: #131's normalized `proposition` (JSON, never prose), an optional `polarity` replacing its own, and the confidence: `confidence_level`, `confidence_scalar` (0 to 1, at most three decimals), both (they must agree: the scalar projects onto the level by the bands `<0.2` unknown, `<0.5` suspected, `<0.9` believed, else known; 422 `confidence_inconsistent` otherwise) or neither (`known`). `disclosure` (`open`, `guarded`, `secret`) is recorded on the author act. The belief is an `author` transition citing the call's own author act (FR-EPI-7); a belief the holder already holds changes in place, and a held belief it contradicts is closed (`closed`, kept in its history). 409 `module_off` unless the story keeps partitions; 422 `holder_has_no_partition` for the player's character or a non-character.\n\nA position-less `control` operation that bumps the story's timeline revision, so a turn generating meanwhile revalidates before it commits. Any principal may call it. `Idempotency-Key` and `X-Epistrel-Expected-Revision` are optional.",
+        "operationId": "write_belief",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BeliefRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BeliefWritten"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_paused`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `confidence_inconsistent`, `holder_has_no_partition`, `unknown_predicate`, `validation_error`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Direct a character's belief",
         "tags": [
           "admin"
         ]

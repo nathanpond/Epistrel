@@ -511,6 +511,10 @@ async def test_story_isolation_schema(engine: AsyncEngine) -> None:
         allowed = {
             ("story_id", "stories", "id"),
             ("operation_id", "operations", "operation_id"),
+            # #160's mandatory provenance: a belief and the transition that produced it name each
+            # other (deferred keys); the provenance trigger holds both to one story and holder.
+            ("provenance", "belief_transitions", "id"),
+            ("belief_id", "beliefs", "id"),
         }
         found = {
             (column, target, target_column) for _, column, target, target_column in foreign_keys

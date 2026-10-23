@@ -156,6 +156,8 @@ A structured story with `commitment.enabled` tracks what its prose leaves undeci
 
 `thunks_max_open` (deployment setting, default 500) caps the open thunks a story keeps; past it, the oldest one that nothing drew attention to expires. `GET /stories/{id}/inspect/ledger?viewpoint=omniscient` lists the thunks and the ledger. The counters `epistrel_thunks_total{event}`, `epistrel_ledger_total{event}` and `epistrel_minimal_commits_total` count the lifecycle.
 
+Character beliefs change only through typed transitions (#160): `epistrel_belief_transitions_total{kind}` counts them by kind, and `epistrel_belief_transitions_refused_total` counts the refused ones (an antecedent that does not precede its step, an invalid antecedent, or a level its scalar contradicts). `POST /admin/stories/{id}/beliefs` sets a character's belief as an author act (409 `module_off` unless the story keeps partitions).
+
 ## Consolidation
 
 A structured story with `memory.consolidation.enabled` compresses old episodic memories into standing facts and reflections in the background (the `consolidation` job and model purpose). Two engine-profile dials start a run, whichever is reached first: `memory.consolidation.window_memories` (default 50) uncovered episodic memories, or `memory.consolidation.cadence_turns` (default 20) turns since the last consolidated turn. A window holds at most `window_memories` memories, and every fifth window is folded again into higher-level reflections.

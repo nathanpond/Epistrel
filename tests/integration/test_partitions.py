@@ -30,9 +30,6 @@ from tests.respond_support import respond_client
 
 pytestmark = pytest.mark.integration
 
-ACQUISITION = "01JT0000000000000000000001"
-"""A stand-in for #160's acquisition id (``beliefs.provenance`` is nullable until #160)."""
-
 
 @pytest.mark.part("M5", "FR-EPI-1,3,5,6")
 async def test_u_03__partitions(engine: AsyncEngine, settings: Settings) -> None:
@@ -57,7 +54,6 @@ async def test_u_03__partitions(engine: AsyncEngine, settings: Settings) -> None
         story,
         ann,
         c.at(people["Bobby"], places["garden"], 0, None),
-        provenance=ACQUISITION,
         scalar=0.8,
     )
     true = await ps.believe(engine, story, bobby, c.at(people["Bobby"], places["kitchen"], 0, None))
@@ -72,8 +68,12 @@ async def test_u_03__partitions(engine: AsyncEngine, settings: Settings) -> None
     # Storage: the holder's own record, private by construction, with its provenance and times.
     assert (false.holder_character_id, false.kind) == (ann, BeliefKind.FIRST_ORDER)
     assert false.visibility == private_to(ann) == Visibility(scope="characters", characters=(ann,))
+    acquisition = await ps.rows_of(
+        engine, "SELECT id, kind FROM belief_transitions WHERE belief_id = :b", b=false.id
+    )
+    assert [(r.id, r.kind) for r in acquisition] == [(false.provenance, "author")]
     assert (false.provenance, false.confidence_level, false.confidence_scalar) == (
-        ACQUISITION,
+        acquisition[0].id,
         BeliefConfidenceLevel.BELIEVED,
         0.8,
     )
@@ -131,11 +131,12 @@ async def test_u_03__partitions(engine: AsyncEngine, settings: Settings) -> None
             engine,
             "INSERT INTO beliefs (id, story_id, holder_character_id, proposition_id, polarity, "
             "confidence_level, valid_span, held_from_turn, tx_from, visibility, operation_id, "
-            "membership_tx) SELECT '01JT00000000000000000000X1', story_id, holder_character_id, "
+            "membership_tx, provenance, lineage_id) SELECT '01JT00000000000000000000X1', "
+            "story_id, holder_character_id, "
             "proposition_id, polarity, confidence_level, valid_span, held_from_turn, tx_from, "
             "jsonb_build_object('scope', 'characters', 'characters', "
             "jsonb_build_array(CAST(:other AS text))), "
-            "operation_id, membership_tx FROM beliefs WHERE id = :id",
+            "operation_id, membership_tx, provenance, lineage_id FROM beliefs WHERE id = :id",
             other=bobby,
             id=false.id,
         )
@@ -148,10 +149,11 @@ async def test_u_03__partitions(engine: AsyncEngine, settings: Settings) -> None
             '\'{"scope": "characters", "characters": []}\' FROM beliefs WHERE id = :id',
             id=false.id,
         )
-    # Append-only: a belief is never changed in place (its level changes by a new row).
+    # Append-only: what a belief holds is never changed in place (#160's transitions change only
+    # its confidence, accessibility and hold state).
     with pytest.raises(DBAPIError, match="append-only"):
         await ps.execute(
-            engine, "UPDATE beliefs SET confidence_level = 'known' WHERE id = :id", id=false.id
+            engine, "UPDATE beliefs SET polarity = 'negated' WHERE id = :id", id=false.id
         )
     with pytest.raises(DBAPIError, match="append-only"):
         await ps.execute(engine, "DELETE FROM beliefs WHERE id = :id", id=false.id)
@@ -168,7 +170,7 @@ async def test_u_03__partitions(engine: AsyncEngine, settings: Settings) -> None
         assert (item["belief_id"], item["current_level"], item["provenance"]) == (
             false.id,
             "believed",
-            ACQUISITION,
+            false.provenance,
         )
         assert item["proposition"]["object_id"] == places["garden"]
         assert (item["kind"], item["held_to"], body["next_after"]) == ("first_order", None, None)

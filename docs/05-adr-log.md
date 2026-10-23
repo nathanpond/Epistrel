@@ -20,8 +20,8 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-STORE | §2 | 045, 072, 075, 076, 079, 080, 122, 128, 129, 132, 138, 143, 144, 167 |
 | FR-CONC | §2.3 | 045, 052, 057, 062, 072, 144 |
 | FR-MEM | §4 | 070, 071, 072, 075 |
-| FR-EPI | §5 | 024, 167 |
-| FR-BELIEF | §5.1 | 026, 069, 075 |
+| FR-EPI | §5 | 024, 167, 168 |
+| FR-BELIEF | §5.1 | 026, 069, 075, 168 |
 | FR-TURN | §6 | 043 |
 | FR-COMMIT | §7 | 018, 022, 043, 053, 129 |
 | FR-RET | §8 | 129, 167 |
@@ -230,6 +230,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 165 | The render's own declared claims surface like extraction claims, and an unknown name or a pronoun with no antecedent counts as untracked | Current | — |
 | 166 | NFR-QUAL-7 (generation conformance) also moves to M9 | Current | — |
 | 167 | Visibility is decided by scope alone, and beliefs are a derived table with a rebuildable projection | Current | — |
+| 168 | A belief and its producing transition name each other, and one function writes every belief | Current | — |
 
 ---
 
@@ -1710,6 +1711,21 @@ Everything else keeps the safe disposition: detector findings, the excluded reso
 - With `partitions` off (every Lite story and M4's structured profile), memories are not filtered and canon keeps its own filter, as in M4.
 - The projection can be dropped and refolded at any time, and the derived rows carry the truth. #160's correction reopens a prior belief through the same membership follower.
 - Tests: `tests/property/test_visibility.py` (VISIBILITY), `tests/integration/test_i_11.py` (I-11), `tests/integration/test_belief_projection.py` (I-01 M5), `tests/integration/test_belief_holder.py` (U-15 M5).
+
+---
+
+### ADR-168 — A belief and its producing transition name each other, and one function writes every belief
+**Status:** Accepted.
+**Context:** FR-EPI-7 makes provenance mandatory: no belief exists without a typed acquisition, and FR-EPI-13,14 require that acquisition's antecedent to be verified and to precede the dependent step. #159 left `beliefs.provenance` nullable for #160. Two shapes were possible: a nullable link checked by application code, or a link the schema enforces. A transition also has to name the belief it produced or changed, so the two rows would reference each other. Separately, #131's proposition store has no shape upsert, so "the same belief again" cannot be found by a stored hash.
+**Decision:**
+- `beliefs.provenance` is NOT NULL and a foreign key to `belief_transitions.id`, and `belief_transitions.belief_id` is a foreign key to `beliefs.id`. Both are `DEFERRABLE INITIALLY DEFERRED`, so the transition is written first, naming the belief id it is about to produce. A constraint trigger after each belief insert refuses a belief whose producing transition is missing, belongs to another story or holder, or names another belief. A unique index keeps one belief per producing transition. Both rows are story-scoped, so these are the only foreign keys between story tables besides `story_id` and `operation_id`.
+- `core.epistemic.transitions.transition()` is the only caller of `partitions._insert_belief` (the `check-epistemic-separation` gate scans for any other), and no module of `core/epistemic` names canon's writers. A held belief (the same `normalized_key` and polarity among the holder's open beliefs) changes in place, and its previous state is kept on the transition. A belief it contradicts is closed whole. A transition is a derived record of its operation, and a membership follower re-settles the beliefs its transitions touched from the active transitions, so a truncated correction reopens its prior.
+- The committed-record probe of an antecedent (`core.antecedents`) lives outside `core.canon` and `core.epistemic`, because it reads facts and beliefs alike and answers only existence and position.
+**Consequences:**
+- A belief cannot be written without its cause, by any path, raw SQL included.
+- Story deletion, erasure and fork handle the pair inside one transaction; the fork maps both ids and settles the copied beliefs on the copied transitions.
+- `belief_state` stays a rebuildable projection: an in-place change and a closure refresh it in the writing transaction, and the fold derives the same rows.
+- Tests: `tests/property/test_belief_provenance.py` (BELIEF-PROVENANCE), `tests/property/test_confidence_projection.py` (CONFIDENCE-PROJECTION), `tests/integration/test_u_12.py` (U-12 M5), `tests/soak/test_x_02.py` (X-02 M5).
 
 ---
 

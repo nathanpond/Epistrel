@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import projections
 from epistrel.core.enums import BeliefConfidenceLevel
-from epistrel.core.epistemic import partitions
+from epistrel.core.epistemic import partitions, transitions
 from epistrel.core.events import Operation
 from epistrel.core.membership import Position
 from epistrel.core.tables.beliefs import belief_state
@@ -54,7 +54,8 @@ async def _agree(engine: AsyncEngine, story_id: str) -> list[dict[str, Any]]:
 async def test_i_01__belief_projection(
     engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Ann comes to suspect, then to know, that Bobby is in the garden: each write moves
+    """Ann comes to suspect (a discovery from a canon clue), then to know (in place, #160), that
+    Bobby is in the garden: each write moves
     ``belief_state`` in its own transaction (seen inside it before commit, by nobody else
     until then), the old level's row closed (``held_to``) and the projection holding the new
     level since the new position. An induced failure after the write rolls the belief and its
@@ -68,11 +69,29 @@ async def test_i_01__belief_projection(
     ann = w.characters["Ann"]
     garden = c.at(w.people["Bobby"], w.places["garden"], 0, None)
     seen: dict[str, Any] = {}
+    clue = await c.commit(engine, story, c.at(w.people["Bobby"], w.places["garden"], 0, None))
+    settings = await ps.partitioned(engine, story)
+
+    async def discover(
+        conn: AsyncConnection, op: Operation, proposition: Any, level: BeliefConfidenceLevel
+    ) -> partitions.Belief:
+        assert op.narrative_turn is not None
+        with ps.delivered():
+            found = await transitions.transition(
+                conn,
+                op,
+                holder=ann,
+                kind=transitions.Kind.DISCOVERY,
+                proposition=proposition,
+                antecedent=transitions.Antecedent.record("facts", clue.id),
+                position=Position(op.narrative_turn, op.turn_variant or 0),
+                confidence=transitions.Confidence(level),
+                settings=settings,
+            )
+        return found.belief
 
     async def suspect(conn: AsyncConnection, op: Operation) -> partitions.Belief:
-        found = await partitions._insert_belief(
-            conn, story, ann, garden, operation=op, level=BeliefConfidenceLevel.SUSPECTED
-        )
+        found = await discover(conn, op, garden, BeliefConfidenceLevel.SUSPECTED)
         seen["inside"] = await _states(conn, story)
         async with engine.connect() as other:
             seen["outside"] = await _states(other, story)
@@ -84,20 +103,27 @@ async def test_i_01__belief_projection(
     (row,) = await _agree(engine, story)
     assert (row["belief_id"], row["current_level"]) == (first.id, "suspected")
 
+    # #160: holding it more strongly is a change in place, with the old level in its history.
     second = await ps.believe(engine, story, ann, garden, level=BeliefConfidenceLevel.KNOWN)
-    assert second.proposition_id == first.proposition_id
-    assert second.closed_id == first.id
+    assert (second.id, second.proposition_id, second.closed_id) == (
+        first.id,
+        first.proposition_id,
+        None,
+    )
     (row,) = await _agree(engine, story)
     assert (row["belief_id"], row["current_level"], row["since_turn"]) == (
         second.id,
         "known",
-        second.held_from.turn,
+        first.held_from.turn,
     )
     async with engine.connect() as conn:
-        closed = await partitions.read_belief(conn, story, first.id)
-        assert closed is not None
-        assert closed.held_to == second.held_from
-        # Held at a position before the second belief, the first one still answers.
+        steps = await transitions.transitions_of(conn, story, belief_ids=[first.id])
+        assert [(t.kind.value, t.confidence_level.value) for t in steps] == [
+            ("discovery", "suspected"),
+            ("author", "known"),
+        ]
+        assert steps[1].prior is not None
+        assert steps[1].prior["level"] == "suspected"
         (then,) = await partitions.partition(
             conn, story, ann, through=Position.end_of(first.held_from.turn)
         )
@@ -105,19 +131,17 @@ async def test_i_01__belief_projection(
 
     # An induced failure after the write: the belief and its projection row roll back together.
     async def fail_after(conn: AsyncConnection, op: Operation) -> None:
-        await partitions._insert_belief(
+        await discover(
             conn,
-            story,
-            ann,
+            op,
             c.at(w.people["Ann"], w.places["school"], 0, None),
-            operation=op,
-            level=BeliefConfidenceLevel.BELIEVED,
+            BeliefConfidenceLevel.BELIEVED,
         )
         raise Boom("after the belief write")
 
     with pytest.raises(Boom):
         await c.run(engine, story, fail_after)
-    assert len(await ps.belief_rows(engine, story)) == 2
+    assert len(await ps.belief_rows(engine, story)) == 1
     assert len(await _agree(engine, story)) == 1
 
     # Truncating the turn of a belief drops its projection row; untruncating restores it.
@@ -131,13 +155,14 @@ async def test_i_01__belief_projection(
     assert await untruncate(engine, story) is not None
     assert {r["belief_id"] for r in await _agree(engine, story)} == {second.id, school.id}
 
-    # ``unknown`` (a suspended belief) holds no row.
+    # ``unknown`` (a suspended belief, revised down in place) holds no row.
     await ps.believe(
         engine,
         story,
         ann,
         c.at(w.people["Ann"], w.places["school"], 0, None),
         level=BeliefConfidenceLevel.UNKNOWN,
+        cause=transitions.Kind.REVISION,
     )
     assert [r["belief_id"] for r in await _agree(engine, story)] == [second.id]
 

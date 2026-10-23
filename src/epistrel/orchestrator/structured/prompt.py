@@ -10,8 +10,10 @@ and nothing else (#170, NFR-PRIV-4): its own age, belief state and private memor
 per-character partitions,
 the scene (#137: the place and who is present, with apparent age bands), its viewpoint-filtered
 working memory (FR-MEM-11: this turn's narration and the player's input included, as it
-perceived them), #141's retrieved context and the canon retrieval found. Nothing from another
-character's private records is there, and the director's notes are the narrator's alone.
+perceived them), ``## Just now`` (#174: in a ``sequential`` turn, the verified beats the earlier
+primaries rendered, as it perceived them), #141's retrieved context and the canon retrieval
+found. Nothing from another character's private records is there, and the director's notes are
+the narrator's alone.
 ``python -m tools.gates check-character-context`` keeps ``structured_generation.j2`` rendered
 only from inputs this function built.
 
@@ -22,7 +24,8 @@ definition. ``age_inputs`` builds the age repair's: the guidance, the custom ins
 scene and each introduced character with its clue.
 
 **The cap** (``render.prompt_token_budget``, ``len // 4`` tokens): over it, retrieved items
-are dropped from the end first, then canon lines, then working memory from the oldest beat. The
+are dropped from the end first, then canon lines, then working memory from the oldest beat
+(``## Just now`` counts against the cap and is never dropped). The
 belief state and the private memories sit with the definition and the pins (U-31's top tier):
 they are never dropped before a retrieved item (they are bounded at the source,
 ``context.BELIEFS_MAX`` and ``context.PRIVATE_MAX``).
@@ -57,6 +60,9 @@ class RenderSections:
     segments: tuple[str, ...] = ()
     scene: str = ""
     working_memory: tuple[str, ...] = ()
+    just_now: tuple[str, ...] = ()
+    """#174: a ``sequential`` turn's earlier primaries' staged beats, as the character perceived
+    them (``## Just now``): counted against the cap, never dropped by it."""
     retrieved: tuple[str, ...] = ()
     canon: tuple[str, ...] = ()
     constraints: tuple[str, ...] = field(default_factory=tuple)
@@ -98,6 +104,7 @@ def _size(sections: RenderSections) -> int:
         *sections.pins,
         *sections.segments,
         *sections.working_memory,
+        *sections.just_now,
         *sections.retrieved,
         *sections.canon,
     )
@@ -140,6 +147,7 @@ def character_inputs(
             sections,
             scene=context.scene,
             working_memory=context.working_memory,
+            just_now=context.just_now,
             retrieved=context.retrieved,
             canon=context.canon,
         ),
@@ -169,6 +177,7 @@ def character_inputs(
         player_input=_player(actor, say, do),
         scene=s.scene,
         working_memory=list(s.working_memory),
+        just_now=list(s.just_now),
         retrieved_memories=list(s.retrieved),
         canon_facts=list(s.canon),
     )

@@ -23,6 +23,18 @@ the author's: the river bridge's ``condition`` is ``collapsed`` (an author predi
 
 ``__turn_boundaries``: within a turn a position is ``(turn, beat, step)``, yet truncation and
 fork stay at turn boundaries (``N`` or ``N⁺k``, FR-STORE-31).
+
+``__beats`` (#174; FR-EPI-13,14 (b), FR-MULTI-11): Cal, Bobby and Jenni at the riverbank, a
+``sequential`` turn with per-character renders, Bobby then Jenni. Beat 2: Bobby says "The river
+bridge collapsed." and the beat verifies (canon supports it). Jenni renders after it with the
+beat under ``## Just now``, and her testimony acceptance is formed at staging, before the
+database commit: her own say of the collapse is ``consistent`` with her record set. At the
+commit her belief is a ``testimony`` transition citing Bobby's staged beat (``antecedent =
+staged_beat``, ``{operation_id, variant, beat}``) at ``(turn, 2, 1)``, and both beats are one
+turn. Variant: in a world where the bridge is author-locked ``intact``, Bobby's claim is refused
+(``locked_canon``) and his beat is regenerated without it before Jenni renders: her prompt never
+holds the rejected version and she forms no belief from it (no antecedent). Variant: a turn
+abandoned because Jenni's render fails leaves no belief, no transition and no beat of it.
 """
 
 from __future__ import annotations
@@ -38,6 +50,8 @@ from epistrel.config import Settings
 from epistrel.core.enums import OperationKind
 from epistrel.core.propositions import registry, store
 from epistrel.core.propositions.model import Interval, Proposition
+from tests import multi_support as ms
+from tests import perception_support as ps
 from tests import testimony_support as ts
 from tests.auth_support import auth_settings
 from tests.canon_support import commit
@@ -370,3 +384,200 @@ async def test_s_same_turn_belief__turn_boundaries(
         assert truncated.status_code == 200, truncated.text
         assert truncated.json()["to_turn"] == 1
         assert await _revision(engine, story) == int(before) + 1
+
+
+@dataclass(frozen=True)
+class Riverbank:
+    story_id: str
+    cal: str
+    bobby: str
+    jenni: str
+    bridge: str
+    collapsed: str
+
+
+async def _riverbank(client: Any, engine: AsyncEngine, *, collapsed: bool = True) -> Riverbank:
+    """``__beats``'s story (see the module docstring)."""
+    story, ids = await structured_story(client, "Cal", "Bobby", "Jenni")
+    await ts.enable_testimony(engine, story, "defaulted", level="co_location")
+    await ms.per_character(engine, story)
+    bank = await ps.place_entity(engine, story, "riverbank")
+    for name in ("Cal", "Bobby", "Jenni"):
+        await ps.put(engine, story, ids[name], bank)
+    async with engine.begin() as conn:
+        bridge = await store.add_entity(conn, story, "place", "the river bridge")
+        states = {
+            name: await store.add_entity(conn, story, "other", name)
+            for name in ("collapsed", "intact")
+        }
+        rules = registry.ScenarioRules.parse(
+            {
+                "predicates": [
+                    {
+                        "name": "condition",
+                        "subject_type": "place",
+                        "object_type": "other",
+                        "cardinality": "multi",
+                        "temporal_kind": "permanent",
+                        "docs": "A structure's condition.",
+                    }
+                ]
+            }
+        )
+        reg = await registry.register_author(conn, story, rules)
+    condition = reg.named("condition")
+    assert condition is not None
+    await commit(
+        engine,
+        story,
+        Proposition(
+            subject_id=bridge,
+            predicate_id=condition.id,
+            object_id=states["collapsed" if collapsed else "intact"],
+            valid_time=ALWAYS,
+        ),
+        kind=OperationKind.CONTROL,
+        provenance="author",
+        author_locked=not collapsed,
+    )
+    return Riverbank(story, ids["Cal"], ids["Bobby"], ids["Jenni"], bridge, states["collapsed"])
+
+
+COLLAPSED = "The river bridge collapsed."
+GONE = "The river bridge is gone, so we'll take the ferry."
+
+
+def _salient(beat_number: int) -> str:
+    return json.dumps(
+        {
+            "salient": [
+                {
+                    "beat": beat_number,
+                    "span": COLLAPSED,
+                    "proposition_sketch": {
+                        "subject": "the river bridge",
+                        "relation": "condition",
+                        "object": "collapsed",
+                    },
+                }
+            ],
+            "texture": [],
+        }
+    )
+
+
+async def _jenni_on_bridge(engine: AsyncEngine, world: Riverbank) -> list[Any]:
+    return await rows(
+        engine,
+        "SELECT t.kind, t.source_character_id, t.antecedent_kind, t.antecedent_ref, "
+        "t.position_beat, t.position_step, t.operation_id FROM belief_transitions t "
+        "JOIN beliefs b ON b.id = t.belief_id JOIN propositions p ON p.id = b.proposition_id "
+        "WHERE t.story_id = :s AND t.holder_character_id = :h AND p.subject_id = :bridge "
+        "AND p.object_id = :o AND b.kind = 'first_order'",
+        s=world.story_id,
+        h=world.jenni,
+        bridge=world.bridge,
+        o=world.collapsed,
+    )
+
+
+def _sequential(world: Riverbank) -> dict[str, Any]:
+    return body(world.cal, "Can we cross?", render_character_ids=[world.bobby, world.jenni])
+
+
+@pytest.mark.part("M5", "FR-EPI-13,14; FR-MULTI-11; FR-STORE-31")
+async def test_s_same_turn_belief__beats(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+    multi_delivered: None,
+) -> None:
+    """The beat part (see the module docstring)."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+
+        # -- Bobby's verified beat is Jenni's antecedent, before the commit.
+        world = await _riverbank(client, engine)
+        stub.reset()
+        ms.renders_for(
+            stub, "Bobby", ms.render(beat("say", COLLAPSED, intent="sincere", propositions=[SEEN]))
+        )
+        ms.renders_for(
+            stub, "Jenni", ms.render(beat("say", GONE, intent="sincere", propositions=[SEEN]))
+        )
+        stub.script("salience_detection", [_salient(2)])
+        response = await respond(client, world.story_id, _sequential(world))
+        assert response.status_code == 200, response.text
+        (prompt,) = ms.render_prompts(stub, "Jenni")
+        assert f"## Just now\n- Bobby says: {COLLAPSED}" in prompt
+        report = await turn_report(engine, world.story_id)
+        assert report["multi"]["accepted"] == 1  # formed at staging
+        # Her say of it is consistent with her record set: the staged acceptance was there.
+        (said,) = [v for v in report["verify_primaries"][0]["verdicts"] if "speech" in v]
+        assert said["speech"]["belief_relation"] == "consistent"
+        (believed,) = [t for t in await _jenni_on_bridge(engine, world) if t.kind == "testimony"]
+        operation = await scalar(
+            engine,
+            "SELECT operation_id FROM operations WHERE story_id = :s AND kind = 'turn'",
+            s=world.story_id,
+        )
+        assert (believed.source_character_id, believed.antecedent_kind) == (
+            world.bobby,
+            "staged_beat",
+        )
+        assert believed.antecedent_ref == {
+            "operation_id": operation,
+            "variant": 1,
+            "beat": 2,
+        }
+        assert (believed.position_beat, believed.position_step) == (2, 1)
+        beats = await rows(
+            engine,
+            "SELECT DISTINCT operation_id FROM events WHERE story_id = :s AND type = 'beat_say'",
+            s=world.story_id,
+        )
+        assert [b.operation_id for b in beats] == [operation]  # one turn
+
+        # -- Bobby's claim refused and regenerated away: Jenni has no antecedent.
+        world = await _riverbank(client, engine, collapsed=False)
+        stub.reset()
+        ms.renders_for(
+            stub, "Bobby", ms.render(beat("say", COLLAPSED, intent="sincere", propositions=[SEEN]))
+        )
+        ms.renders_for(stub, "Jenni", ms.render(beat("say", FERRY, intent="sincere")))
+        stub.script(
+            "regeneration", [json.dumps({"text": "We should turn back.", "propositions": []})]
+        )
+        response = await respond(client, world.story_id, _sequential(world))
+        assert response.status_code == 200, response.text
+        (prompt,) = ms.render_prompts(stub, "Jenni")
+        assert "Bobby says: We should turn back." in prompt
+        assert "collapsed" not in prompt  # never the rejected version
+        report = await turn_report(engine, world.story_id)
+        assert report["multi"]["regenerated_beats"] == [2]
+        assert report["multi"]["accepted"] == 0
+        assert await _jenni_on_bridge(engine, world) == []
+
+        # -- An abandoned turn keeps nothing formed from its staged beats.
+        world = await _riverbank(client, engine)
+        stub.reset()
+        ms.renders_for(
+            stub, "Bobby", ms.render(beat("say", COLLAPSED, intent="sincere", propositions=[SEEN]))
+        )
+        ms.renders_for(stub, "Jenni", "not a render")
+        stub.script("salience_detection", [_salient(2)])
+        before = await scalar(
+            engine, "SELECT count(*) FROM belief_transitions WHERE story_id = :s", s=world.story_id
+        )
+        response = await respond(client, world.story_id, _sequential(world))
+        assert response.status_code == 503, response.text
+        assert await _jenni_on_bridge(engine, world) == []
+        after = await scalar(
+            engine, "SELECT count(*) FROM belief_transitions WHERE story_id = :s", s=world.story_id
+        )
+        assert after == before
+        assert not await rows(
+            engine,
+            "SELECT id FROM events WHERE story_id = :s AND type LIKE 'beat_%'",
+            s=world.story_id,
+        )

@@ -13,7 +13,7 @@ in it has been checked (FR-RESP-1).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Annotated, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, model_validator
 
@@ -27,6 +27,8 @@ from epistrel.core.settings_schema import (
     MIN_CALLS_PER_TURN,
     MIN_DEADLINE_S,
     GenerationSettings,
+    InteractionMode,
+    SequenceOrder,
 )
 from epistrel.orchestrator.models.metrics import ModelCall
 
@@ -111,6 +113,9 @@ class RespondRequest(BaseModel):
       ``temperature`` and ``top_p``, for this request only (FR-RESP-3).
     - ``scene_context``: non-authoritative; never stored or placed in a prompt.
     - ``budget``: this turn's ``max_calls``/``deadline_s``, within the story's (#69).
+    - ``interaction_mode``/``sequence_order``: a structured story with per-character renders
+      (#174): several ``render_character_ids`` render ``sequential``ly, in request order or the
+      director's.
     """
 
     model_config = ConfigDict(
@@ -138,6 +143,24 @@ class RespondRequest(BaseModel):
     prompt_params: GenerationSettings | None = None
     scene_context: SceneContext | None = None
     budget: BudgetOverride | None = None
+    interaction_mode: InteractionMode | None = None
+    """#174: this turn's interaction mode over the story's (``sequential`` renders each
+    primary seeing what the earlier ones did); needs per-character renders (409 ``module_off``
+    otherwise)."""
+    sequence_order: SequenceOrder | None = None
+    """#174: who orders this turn's primaries over the story's setting (``request`` or
+    ``director``); needs per-character renders (409 ``module_off`` otherwise)."""
+
+
+TURN_OVERRIDES = ("interaction_mode", "sequence_order")
+"""#174's per-request overrides of a story's multi-character settings."""
+
+
+def body_of(request: RespondRequest, *exclude: str) -> dict[str, Any]:
+    """``request`` as JSON, #174's overrides left out when unset (a turn that names none hashes,
+    and is stored, as it did before them)."""
+    unset = {k for k in TURN_OVERRIDES if getattr(request, k) is None}
+    return request.model_dump(mode="json", exclude={*exclude, *unset})
 
 
 class RegenerateRequest(BaseModel):
@@ -198,10 +221,12 @@ PIN_QUARANTINED = "pin_quarantined"
 @dataclass(frozen=True, slots=True)
 class TurnWarning:
     """Something the turn did that the consumer should know (#145: ``pin_quarantined``, an
-    author pin the output gate's convergence rule quarantined, with its ``memory_id``)."""
+    author pin the output gate's convergence rule quarantined, with its ``memory_id``; #174:
+    ``primary_not_present``, a named primary not in the scene, with its ``character_id``)."""
 
     kind: str
     memory_id: str | None = None
+    character_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,6 +317,9 @@ class RespondResult:
     before #113."""
     replayed: bool = False
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
+    order: list[str] = field(default_factory=list)
+    """#174: a structured turn with several primaries, their ids in the order they rendered
+    (the request's, or the director's); empty otherwise."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -307,6 +335,7 @@ __all__ = [
     "PIN_QUARANTINED",
     "QUARANTINED_CONTEXT",
     "SAFE_FALLBACK",
+    "TURN_OVERRIDES",
     "BudgetOverride",
     "BudgetReport",
     "DegradationStep",
@@ -321,4 +350,5 @@ __all__ = [
     "RespondResult",
     "SceneContext",
     "TurnWarning",
+    "body_of",
 ]

@@ -32,11 +32,11 @@ per model tier are in [model-matrix.md](model-matrix.md).
 
 ### `generation`
 
-Writes the reply of a Lite turn from the story's prompt sections; in a structured story (#150) the typed beats of one character's or the narrator's render (a `response_schema`: constrained decoding or parse-validate-retry), the age repair and the composition of the turn's verified beats into its message (#152).
+Writes the reply of a Lite turn from the story's prompt sections; in a structured story (#150) the typed beats of one character's or the narrator's render (a `response_schema`: constrained decoding or parse-validate-retry), the age repair, the composition of the turn's verified beats into its message (#152) and the director's ordering of a sequential turn's primaries (#174).
 
 - **Hot path:** yes
 - **Default model:** the `default` row of `model_config`, unless the purpose has its own
-- **Template:** `lite_generation.j2`; variants: structured `structured_generation.j2`, narrator `narrator_generation.j2`, age_repair `age_repair.j2`, composition `composition.j2`
+- **Template:** `lite_generation.j2`; variants: structured `structured_generation.j2`, narrator `narrator_generation.j2`, age_repair `age_repair.j2`, composition `composition.j2`, director_order `director_order.j2`
 - **Capability floor:** structured output: not required; minimum context 8,192 tokens
 - **Returns:** free text
 
@@ -71,9 +71,13 @@ Writes the reply of a Lite turn from the story's prompt sections; in a structure
 | `player_input.do` | `player_input` |
 | `scene` | `scene` |
 | `working_memory` | `working_memory` |
+| `just_now` | `working_memory` |
 | `retrieved_memories` | `retrieved_memories` |
 | `canon_facts` | `canon_facts` |
 | `open_references` | `scene` |
+| `director_candidates.id` | `character_definition` |
+| `director_candidates.name` | `character_definition` |
+| `director_candidates.card` | `character_definition` |
 | `introductions.name` | `scene` |
 | `introductions.clue` | `scene` |
 | `composition_beats.index` | `verified_beat` |
@@ -373,9 +377,13 @@ Rewrites one beat of a structured render that contradicted canon or asserted wha
 | `player_input.do` | `player_input` |
 | `scene` | `scene` |
 | `working_memory` | `working_memory` |
+| `just_now` | `working_memory` |
 | `retrieved_memories` | `retrieved_memories` |
 | `canon_facts` | `canon_facts` |
 | `open_references` | `scene` |
+| `director_candidates.id` | `character_definition` |
+| `director_candidates.name` | `character_definition` |
+| `director_candidates.card` | `character_definition` |
 | `introductions.name` | `scene` |
 | `introductions.clue` | `scene` |
 | `composition_beats.index` | `verified_beat` |

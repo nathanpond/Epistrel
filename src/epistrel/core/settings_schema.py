@@ -208,6 +208,12 @@ class IdempotencySettings(BaseModel):
 
 
 TurnConcurrency = Literal["reject", "queue"]
+InteractionMode = Literal["sequential", "simultaneous"]
+"""FR-MULTI-5 (#174): how a turn's primaries render, one after another seeing what the earlier
+ones did (``sequential``), or each against the turn's starting state (``simultaneous``, #175)."""
+SequenceOrder = Literal["request", "director"]
+"""FR-MULTI-6 (#174): who orders a ``sequential`` turn's primaries."""
+DEFAULT_INTERACTION_MODE: InteractionMode = "sequential"
 TURN_QUEUE_MAX_MIN = 1
 TURN_QUEUE_MAX_LIMIT = 50
 DEFAULT_TURN_QUEUE_MAX = 5
@@ -328,6 +334,19 @@ class StorySettings(BaseModel):
     is on. Genesis copies the scenario's ``story_settings_defaults.allow_new_arrivals``; a story
     without it reads true. Interpretive: a structured turn's permission checks depend on it
     (#136's re-check at commit)."""
+
+    interaction_mode: Annotated[InteractionMode | None, PROSPECTIVE] = None
+    """How a turn with several primaries renders them (FR-MULTI-5; #174): ``sequential`` (each
+    later primary renders seeing the checked beats of those before it) or ``simultaneous``
+    (#175). ``None``: the scenario's setting when genesis kept it inactive (``inactive``,
+    capability ``multi_character``, #122), else ``sequential``. A request overrides it.
+    Prospective."""
+
+    sequence_order: Annotated[SequenceOrder | None, PROSPECTIVE] = None
+    """Who orders a ``sequential`` turn's primaries (FR-MULTI-6; #174): ``request`` (the
+    request's ``render_character_ids`` order) or ``director`` (one optional narrator call;
+    request order when it cannot be made). ``None``: ``request``. A request overrides it.
+    Prospective."""
 
     @field_validator("default_output_viewpoint")
     @classmethod

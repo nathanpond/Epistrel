@@ -124,10 +124,12 @@ class DegradationBody(BaseModel):
 
 class WarningBody(BaseModel):
     """Something the turn did that the consumer should know: ``pin_quarantined`` names an
-    author pin the output gate's convergence rule quarantined (#145)."""
+    author pin the output gate's convergence rule quarantined (#145); ``primary_not_present`` a
+    named primary of a sequential turn that is not in the scene (#174)."""
 
     kind: str
-    memory_id: str | None = None
+    memory_id: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    character_id: str | None = Field(default=None, exclude_if=lambda v: v is None)
 
 
 class RespondResponse(MutationResponse):
@@ -160,6 +162,9 @@ class RespondResponse(MutationResponse):
     config_revision: int | None
     warnings: list[WarningBody] = Field(default_factory=list, exclude_if=lambda w: not w)
     """Present only when the turn has one (#145's ``pin_quarantined``)."""
+    order: list[str] = Field(default_factory=list, exclude_if=lambda o: not o)
+    """A structured turn with several primaries (#174): their ids in the order they rendered
+    (the request's, or the director's under ``sequence_order = director``); absent otherwise."""
 
     @classmethod
     def of(cls, result: RespondResult) -> RespondResponse:
@@ -189,7 +194,11 @@ class RespondResponse(MutationResponse):
             quality_status=result.quality_status,
             profile=result.profile,
             config_revision=result.config_revision,
-            warnings=[WarningBody(kind=w.kind, memory_id=w.memory_id) for w in result.warnings],
+            warnings=[
+                WarningBody(kind=w.kind, memory_id=w.memory_id, character_id=w.character_id)
+                for w in result.warnings
+            ],
+            order=list(result.order),
             budget=(
                 None
                 if result.budget is None

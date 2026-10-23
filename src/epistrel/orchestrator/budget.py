@@ -65,6 +65,8 @@ from epistrel.core.settings_schema import (
     MIN_DEADLINE_S,
 )
 
+PER_PRIMARY_CALLS = 5
+"""NFR-PERF-6's per-primary share of the default cap (``4 + 5 per primary + G``)."""
 GUARDRAIL_INPUT = "guardrail_input"
 GUARDRAIL_OUTPUT = "guardrail_output"
 
@@ -73,13 +75,15 @@ EXTRACTION = "extraction"
 COMPOSED = "composed"
 """C: the composed message's detection (owner: ``extraction_backstop`` while charging it)."""
 SALIENCE = "salience"
+DIRECTOR_ORDER = "director_order"
+"""#174: the director's ordering of a sequential turn's primaries (one ``generation`` call)."""
 ENTAILMENT = "entailment"
 FOLLOW_UP = "follow_up"
 TESTIMONY = "testimony"
 """#162: a salient witness's ``belief_adjudication`` call."""
 REPAIR = "repair"
 POLISH = "polish"
-OPTIONAL_PRIORITY = (SALIENCE, ENTAILMENT, FOLLOW_UP, TESTIMONY, REPAIR, POLISH)
+OPTIONAL_PRIORITY = (SALIENCE, DIRECTOR_ORDER, ENTAILMENT, FOLLOW_UP, TESTIMONY, REPAIR, POLISH)
 """Optional work, most important first: the pool is spent in this order (NFR-PERF-7 gives
 polish up first, then repairs, then testimony adjudication, then entailment)."""
 PURPOSE_KINDS = {
@@ -94,9 +98,10 @@ PURPOSE_KINDS = {
 """What kind of call a purpose's call is, unless the caller is ``charging`` another kind."""
 
 
-def lite_default_calls(guardrail_calls: int) -> int:
-    """The Lite default ``max_model_calls_per_turn``: ``4 + 5 + G`` (one primary, O = 0)."""
-    return LITE_BASE_CALLS + guardrail_calls
+def lite_default_calls(guardrail_calls: int, primaries: int = 1) -> int:
+    """The default ``max_model_calls_per_turn``: ``4 + 5 per primary + G`` (O = 0; one primary
+    under Lite, #174's B under a sequential structured turn)."""
+    return LITE_BASE_CALLS + PER_PRIMARY_CALLS * (max(1, primaries) - 1) + guardrail_calls
 
 
 @dataclass
@@ -413,6 +418,7 @@ def plan_lite_budget(
 __all__ = [
     "COMPOSED",
     "DEFAULT_TURN_DEADLINE_S",
+    "DIRECTOR_ORDER",
     "ENTAILMENT",
     "EXTRACTION",
     "FOLLOW_UP",
@@ -422,6 +428,7 @@ __all__ = [
     "MIN_CALLS_PER_TURN",
     "MIN_DEADLINE_S",
     "OPTIONAL_PRIORITY",
+    "PER_PRIMARY_CALLS",
     "POLISH",
     "PURPOSE_KINDS",
     "REPAIR",

@@ -1178,6 +1178,26 @@ class WorkingBeat:
     character_id: str | None
     text: str
     fidelity: WorkingFidelity = "content"
+    staged: bool = False
+    """#174: a beat of the turn in progress, staged (verified, not yet committed): what an
+    earlier primary of a ``sequential`` turn rendered (``core.epistemic.stage``)."""
+
+
+class StagedWindow(Protocol):
+    """The turn's staged beats as ``working_memory(…, stage=)`` reads them (#174's
+    ``core.epistemic.stage.TurnStage``)."""
+
+    turn: int
+
+    def perceived_for(
+        self,
+        character_id: str,
+        *,
+        level: perception.Level,
+        scene: perception.SceneState | None,
+        names: Mapping[str, str],
+        places: Mapping[str, str],
+    ) -> list[WorkingBeat]: ...
 
 
 Position = int | tuple[int, int] | NarrativePosition
@@ -1388,11 +1408,51 @@ async def working_memory(
     *,
     level: perception.Level = perception.NONE,
     scene_loader: SceneLoader | None = None,
+    stage: StagedWindow | None = None,
 ) -> list[WorkingBeat]:
     """The last ``n`` beats of the active timeline at or before ``through_position`` (the head
     when ``None``), oldest first, as ``character_id`` perceives them at perception ``level``
     (see the module docstring: ``none`` and ``character_id=None`` read as M4 did; above it, the
-    window is re-routed). Read from ``events``; nothing is stored."""
+    window is re-routed). Read from ``events``; nothing is stored. ``stage`` (#174): the turn's
+    staged beats as the character perceived them (routed over the turn's scene) follow the
+    window, flagged ``staged`` and not counted in ``n``."""
+    window = await _committed_memory(
+        conn,
+        story_id,
+        character_id,
+        through_position,
+        n,
+        level=level,
+        scene_loader=scene_loader,
+    )
+    if stage is None or character_id is None:
+        return window
+    scene: perception.SceneState | None = None
+    if level != perception.NONE:
+        if scene_loader is None:
+            from epistrel.core.epistemic import scene as scenes
+
+            scene, _ = await scenes.load_scene(conn, story_id, stage.turn)
+        else:
+            scene, _ = await scene_loader(conn, story_id, stage.turn)
+    names = await _names(conn, story_id)
+    places = await _place_names(conn, story_id)
+    return [
+        *window,
+        *stage.perceived_for(character_id, level=level, scene=scene, names=names, places=places),
+    ]
+
+
+async def _committed_memory(
+    conn: AsyncConnection,
+    story_id: str,
+    character_id: str | None,
+    through_position: Position | None,
+    n: int,
+    *,
+    level: perception.Level,
+    scene_loader: SceneLoader | None,
+) -> list[WorkingBeat]:
     if n < 1:
         return []
     if character_id is not None and level != perception.NONE:
@@ -1636,6 +1696,7 @@ __all__ = [
     "Position",
     "SceneLoader",
     "SeedMemory",
+    "StagedWindow",
     "WorkingBeat",
     "WorkingFidelity",
     "after_rewrite",

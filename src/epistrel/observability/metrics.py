@@ -45,7 +45,9 @@ The registry holds:
   turn's commit: the gate reason and the predicate shape (its four enum values joined by
   ``__``, ``core__functional__fluent__affirmed``), whether the model flipped the tentative
   verdict (``true``, ``false``, ``none``), and, for an escalation a proposed tightening would
-  have skipped, whether skipping agreed.
+  have skipped, whether skipping agreed;
+- ``epistrel_multi_turns_total{mode}`` and ``epistrel_director_order_total{outcome}``: #174's
+  sequential turns with several primaries and the director's ordering of them.
 
 Label values are enums, ULIDs, route names, HTTP statuses or sanitised model names (#44's rule),
 never content. prometheus-client's default process, platform and GC collectors are removed.
@@ -139,6 +141,18 @@ ADJUDICATIONS = Counter(
     "decision taken), kept (the default stood: low confidence or a guarded verdict), defaulted "
     "(the budget or the per-turn cap left no call), unavailable (the model failed).",
     ("result",),
+)
+MULTI_TURNS = Counter(
+    "epistrel_multi_turns",
+    "Structured turns that rendered several primaries (#174), by interaction mode.",
+    ("mode",),
+)
+DIRECTOR_ORDER = Counter(
+    "epistrel_director_order",
+    "The director's ordering of a sequential turn's primaries (#174), by outcome: director (its "
+    "order taken, a subset completed in request order) or skipped (request order: the budget, "
+    "the model or an invalid answer).",
+    ("outcome",),
 )
 CHARACTERS_MODELED = Counter(
     "epistrel_characters_modeled",
@@ -432,12 +446,14 @@ __all__ = [
     "CHARACTERS_MODELED",
     "COULD_HAVE_KNOWN",
     "COULD_HAVE_KNOWN_FLAGS",
+    "DIRECTOR_ORDER",
     "GAUGES",
     "HOT_COUNTS_CORRECTED",
     "HOT_SCOPES",
     "HTTP_DURATION",
     "LEDGER",
     "MINIMAL_COMMITS",
+    "MULTI_TURNS",
     "OPERATIONS",
     "PERCEPTION_REPAIRS",
     "PERCEPTION_REPAIR_REASONS",

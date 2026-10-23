@@ -664,10 +664,14 @@ async def testify_committed(
     adjudications: Adjudications | None,
     read_set: StructuredReadSet,
     utterances: Mapping[int, str] | None,
+    stage: Any,
 ) -> Testified | None:
     """Write the turn's testimony in its commit step, after routing (see the module
     docstring); answers ``turn_report.epistemic``'s testimony and exposure parts (``None`` when
-    partitions are off under the configuration now)."""
+    partitions are off under the configuration now). ``stage`` (#174, a sequential turn's
+    ``core.epistemic.stage.TurnStage``): a later primary's testimony from an earlier primary's
+    staged beat cites that beat (``antecedent = staged_beat``, FR-EPI-14 (b)), the stage
+    answering as the oracle."""
     from epistrel.core.profiles.effective import effective_configuration
 
     story_id = str(op.story_id)
@@ -769,6 +773,7 @@ async def testify_committed(
                 outcomes = [t if t is not None else o for t, o in zip(taken, outcomes, strict=True)]
                 if any(t is not None for t in taken):
                     adjudicated += 1
+            staged = stage is not None and stage.is_antecedent_for(witness, heard.beat)
             made = await testimony.commit_testimony(
                 conn,
                 op,
@@ -778,6 +783,7 @@ async def testify_committed(
                 registry=registry,
                 utterance_id=(utterances or {}).get(heard.beat),
                 intent=heard.intent,
+                staged=stage if staged else None,
             )
             # #167: what the witness now thinks the speaker (and whoever it named) believes.
             nested_written += await testimony.nested_committed(

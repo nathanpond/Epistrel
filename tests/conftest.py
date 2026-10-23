@@ -314,6 +314,22 @@ async def testimony_delivered(
         await testimony_support.forget(engine)
 
 
+@pytest.fixture
+async def multi_delivered(
+    monkeypatch: pytest.MonkeyPatch, engine: AsyncEngine
+) -> AsyncIterator[None]:
+    """``multi_character = per_character`` and #162's modules delivered for the test (#174;
+    ``tests.multi_support``), the overrides taken back afterwards as for
+    ``perception_delivered``."""
+    from tests import multi_support
+
+    multi_support.deliver_multi(monkeypatch)
+    try:
+        yield
+    finally:
+        await multi_support.forget(engine)
+
+
 # -- embedding jobs on the shared database (#138) -------------------------------------------------
 
 EMBEDDING_JOB_KINDS = ("embed", "reembed")

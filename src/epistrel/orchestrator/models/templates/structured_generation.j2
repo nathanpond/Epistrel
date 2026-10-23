@@ -7,7 +7,8 @@ age ("You are 34.", #170), then ``## What you believe`` (its own belief state, F
 ``core.epistemic.context``: every knowledge section below comes from its ``CharacterContext``),
 ``## Your private memories`` (its own ``think`` memories, #172),
 the pinned memories (#60's text pins), the rolling summary when the profile keeps one, then ``## Scene`` (the place and
-who is present, #137), ``## What you remember`` (its working memory, FR-MEM-5), ``## Retrieved``
+who is present, #137), ``## What you remember`` (its working memory, FR-MEM-5), ``## Just now``
+(#174: a ``sequential`` turn's earlier primaries' verified beats as it perceived them), ``## Retrieved``
 (#141's assembled context) and ``## Canon`` (the facts retrieval found that it may know), then
 ``## How to change your mind`` (the step contract and the ``think`` cite instruction, when the
 character keeps its own beliefs; #168, ``steps_contract.j2``), the beat contract, the requested length as a target in words (#464) and, on a guardrail
@@ -80,6 +81,13 @@ When {{ character.name }} refuses or changes the subject: {{ character.deflectio
 {% if working_memory %}
 ## What you remember
 {% for beat in working_memory %}
+- {{ beat }}
+{% endfor %}
+
+{% endif %}
+{% if just_now %}
+## Just now
+{% for beat in just_now %}
 - {{ beat }}
 {% endfor %}
 

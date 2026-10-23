@@ -25,7 +25,9 @@ the narrator is skipped (``narrator_skipped``).
 only what no reservation holds, never below the minimum, and only while it could start before
 the deadline (``latency_estimate_s``, ``DEFAULT_LATENCY_ESTIMATE_S``). The degradation on
 exhaustion follows NFR-PERF-7's order: ``skip_polish`` → ``repair_deterministic`` (or
-``safe_fallback``) → ``entailment_safe_disposition`` → ``beat_replaced_safe_fallback`` (a render
+``safe_fallback``) → ``testimony_defaulted`` → ``entailment_safe_disposition`` →
+``primaries_deferred`` (#174: the named primaries the cap could not plan, deferred) →
+``beat_replaced_safe_fallback`` (a render
 whose reserved extraction cannot start before the deadline is replaced by the safe fallback
 before anything it said is detected or committed). ``salience_skipped`` and
 ``narrator_skipped`` are reported beside them. A turn's ``degradation`` lists the ladder's steps
@@ -36,7 +38,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -48,6 +50,7 @@ from epistrel.core.profiles.reservation import Reservation, reservation
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.orchestrator.budget import (
     COMPOSED,
+    DIRECTOR_ORDER,
     ENTAILMENT,
     EXTRACTION,
     FOLLOW_UP,
@@ -67,7 +70,8 @@ from epistrel.orchestrator.policies.output_gate import output_reservation
 from epistrel.orchestrator.policies.store import guard_context
 
 PRIMARIES = 1
-"""Primary renders a structured turn plans in M4 (one character renders)."""
+"""Primary renders a structured turn plans by default (one character renders; #174: a
+``sequential`` turn plans one per named primary)."""
 DEFAULT_LATENCY_ESTIMATE_S = 2.0
 """How long a reserved or optional call is assumed to take: one that could not start before
 ``deadline - this`` is unaffordable (#156's default, per purpose)."""
@@ -79,6 +83,9 @@ ENTAILMENT_SAFE_DISPOSITION = "entailment_safe_disposition"
 BEAT_REPLACED = "beat_replaced_safe_fallback"
 SALIENCE_SKIPPED = "salience_skipped"
 NARRATOR_SKIPPED = "narrator_skipped"
+PRIMARIES_DEFERRED = "primaries_deferred"
+"""NFR-PERF-7 (#174, P-09 M5): the budget could not plan every named primary, so the extra ones
+were deferred (only the first renders); before beat replacement in the ladder."""
 TESTIMONY_DEFAULTED = "testimony_defaulted"
 """NFR-PERF-7 step 3 (#162): a salient witness's testimony adjudication the budget (or the
 per-turn cap) could not fit, decided by the rules' default instead."""
@@ -89,6 +96,7 @@ LADDER = (
     REPAIR_DETERMINISTIC,
     TESTIMONY_DEFAULTED,
     ENTAILMENT_SAFE_DISPOSITION,
+    PRIMARIES_DEFERRED,
     BEAT_REPLACED,
 )
 """NFR-PERF-7's order as M5 has it: what goes first when the budget or the deadline runs
@@ -104,14 +112,19 @@ class TurnPlan:
     beats_planned: int
     reservation: Reservation
     optional: tuple[str, ...]
+    deferred: tuple[str, ...] = ()
+    """#174: the named primaries the budget could not plan (``primaries_deferred``)."""
+    director: bool = False
+    """#174: the director's ordering call is pre-allocated (``sequence_order = director``)."""
 
     @property
     def minimum(self) -> int:
-        """The single-primary minimum: ``1 + B + C + G``."""
+        """The minimum: ``P + B + C + G`` (one primary: ``1 + B + C + G``)."""
         return self.primaries + self.reservation.total
 
     def payload(self) -> dict[str, Any]:
         return {
+            **({"deferred": list(self.deferred)} if self.deferred else {}),
             "primaries": self.primaries,
             "beats_planned": self.beats_planned,
             "reservation": {
@@ -165,24 +178,44 @@ def plan_turn(
     *,
     guardrail_input: int,
     guardrail_output: int,
+    primaries: int = PRIMARIES,
+    director: bool = False,
 ) -> TurnPlan:
-    """The turn's plan under ``effective`` (the configuration captured at its start); the
-    request names no more than one primary in M4 (``resolve_structured_cast``)."""
-    del request  # M4 plans one primary whatever the request names (#150's cast check)
+    """The turn's plan under ``effective`` (the configuration captured at its start):
+    ``primaries`` renders (#174: one per primary of a ``sequential`` turn; the cast check,
+    ``resolve_structured_cast``, decides how many), each with its extraction (B) and its first
+    output check (``guardrail_output`` per render); ``director``: the ordering call is
+    pre-allocated as optional work."""
+    del request
     settings = effective.settings
+    count = max(1, primaries)
+    optional = optional_work(settings)
+    if director and count > 1:
+        optional = tuple(k for k in OPTIONAL_PRIORITY if k in (*optional, DIRECTOR_ORDER))
     return TurnPlan(
-        primaries=PRIMARIES,
+        primaries=count,
         beats_planned=settings.render.max_beats,
         reservation=reservation(
-            settings, guardrail_input=guardrail_input, guardrail_output=guardrail_output
+            settings,
+            guardrail_input=guardrail_input,
+            guardrail_output=guardrail_output * count,
+            renders=count,
         ),
-        optional=optional_work(settings),
+        optional=optional,
+        director=director and count > 1,
     )
 
 
 def default_calls(plan: TurnPlan) -> int:
     """NFR-PERF-6's default cap for the plan: ``4 + 5 per primary + G`` (#69's formula)."""
-    return lite_default_calls(plan.reservation.guardrail)
+    return lite_default_calls(plan.reservation.guardrail, plan.primaries)
+
+
+def held_after_input(plan: TurnPlan | None, budget: TurnBudget) -> int:
+    """What stays held once the input gate has spent its reservation: every planned render and
+    its first output check (one primary: ``1 + G_out``)."""
+    primaries = PRIMARIES if plan is None else plan.primaries
+    return primaries + budget.reserved.get(GUARDRAIL_OUTPUT, 0)
 
 
 def plan_budget(
@@ -242,6 +275,8 @@ def plan_budget(
     budget.reserve(COMPOSED, found.composed)
     if SALIENCE in plan.optional:
         budget.pending[SALIENCE] = plan.primaries
+    if plan.director:
+        budget.pending[DIRECTOR_ORDER] = 1
     return budget
 
 
@@ -256,26 +291,46 @@ async def plan_structured(
     turn_deadline: float,
     started: float,
     override: Any = None,
+    director: bool = False,
 ) -> tuple[TurnPlan, TurnBudget]:
     """The turn's plan and budget: G is one call per model-assisted input policy for the
-    actor's input plus one per model-assisted output policy for the first output checkpoint
-    (#69's count). Raises 422 ``budget_below_safety_minimum`` before any model call."""
+    actor's input plus one per model-assisted output policy for each render's first output
+    checkpoint (#69's count). Raises 422 ``budget_below_safety_minimum`` before any model call.
+    #174 (NFR-PERF-7, P-09 M5): a turn naming several primaries whose cap cannot cover them all
+    plans as many as fit, in order (at least one), and defers the rest (``plan.deferred``)."""
     context = await guard_context(db, story_id)
-    plan = plan_turn(
-        request,
-        configuration,
-        guardrail_input=len(model_assisted(input_policies(context, actor=cast.actor.id))),
-        guardrail_output=output_reservation(context, cast.render_ids),
-    )
-    budget = plan_budget(
-        plan,
-        story_max_calls=story_max_calls,
-        turn_deadline=turn_deadline,
-        override_max_calls=None if override is None else override.max_calls,
-        override_deadline_s=None if override is None else override.deadline_s,
-        started=started,
-    )
-    return plan, budget
+    guardrail_input = len(model_assisted(input_policies(context, actor=cast.actor.id)))
+    guardrail_output = output_reservation(context, cast.render_ids)
+    ids = list(cast.render_ids)
+    count = max(1, len(ids))
+    while True:
+        plan = plan_turn(
+            request,
+            configuration,
+            guardrail_input=guardrail_input,
+            guardrail_output=guardrail_output,
+            primaries=count,
+            director=director,
+        )
+        if count > 1:
+            plan = replace(plan, deferred=tuple(ids[count:]))
+        try:
+            budget = plan_budget(
+                plan,
+                story_max_calls=story_max_calls,
+                turn_deadline=turn_deadline,
+                override_max_calls=None if override is None else override.max_calls,
+                override_deadline_s=None if override is None else override.deadline_s,
+                started=started,
+            )
+        except BudgetBelowSafetyMinimum:
+            if count <= 1:
+                raise
+            count -= 1
+            continue
+        if count < len(ids):
+            plan = replace(plan, deferred=tuple(ids[count:]))
+        return plan, budget
 
 
 def reserve_narrator(budget: TurnBudget, plan: TurnPlan) -> bool:
@@ -313,7 +368,8 @@ RANK = {
     SAFE_FALLBACK: 1,
     TESTIMONY_DEFAULTED: 2,
     ENTAILMENT_SAFE_DISPOSITION: 3,
-    BEAT_REPLACED: 4,
+    PRIMARIES_DEFERRED: 4,
+    BEAT_REPLACED: 5,
 }
 
 
@@ -335,6 +391,7 @@ __all__ = [
     "LADDER",
     "NARRATOR_SKIPPED",
     "PRIMARIES",
+    "PRIMARIES_DEFERRED",
     "REPAIR",
     "REPAIR_DETERMINISTIC",
     "SAFE_FALLBACK",
@@ -345,6 +402,7 @@ __all__ = [
     "adjudicates",
     "budget_report",
     "default_calls",
+    "held_after_input",
     "ladder_rank",
     "ladder_steps",
     "optional_work",

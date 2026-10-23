@@ -3846,6 +3846,23 @@
             "description": "The viewpoint a read or respond falls back to when the request names none and has no\nactor (FR-RESP-12): ``character:<id>``, never ``omniscient`` (#59 resolves it).\nInterpretive: a Lite turn depends on it (#64).",
             "title": "Default Output Viewpoint"
           },
+          "interaction_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "sequential",
+                  "simultaneous"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "How a turn with several primaries renders them (FR-MULTI-5; #174): ``sequential`` (each\nlater primary renders seeing the checked beats of those before it) or ``simultaneous``\n(#175). ``None``: the scenario's setting when genesis kept it inactive (``inactive``,\ncapability ``multi_character``, #122), else ``sequential``. A request overrides it.\nProspective.",
+            "title": "Interaction Mode"
+          },
           "lite_summary_chunk": {
             "anyOf": [
               {
@@ -3868,6 +3885,23 @@
             "minimum": 0,
             "title": "Regenerate Retry Budget",
             "type": "integer"
+          },
+          "sequence_order": {
+            "anyOf": [
+              {
+                "enum": [
+                  "request",
+                  "director"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Who orders a ``sequential`` turn's primaries (FR-MULTI-6; #174): ``request`` (the\nrequest's ``render_character_ids`` order) or ``director`` (one optional narrator call;\nrequest order when it cannot be made). ``None``: ``request``. A request overrides it.\nProspective.",
+            "title": "Sequence Order"
           },
           "turn_concurrency": {
             "default": "reject",
@@ -23223,6 +23257,13 @@
             "title": "Model Calls",
             "type": "array"
           },
+          "order": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Order",
+            "type": "array"
+          },
           "output_viewpoint": {
             "title": "Output Viewpoint",
             "type": "string"
@@ -23814,7 +23855,7 @@
       },
       "RespondRequest": {
         "additionalProperties": false,
-        "description": "``POST /stories/{id}/respond`` and ``Engine.respond``.\n\n- ``actor_character_id``: whose input this is. Any cast member may act, a player's own\n  character or not: who acts is the consumer's call (FR-AUTH-3).\n- ``player_input``: the actor's ``say``/``do``; the turn's first beat. It is only ever the\n  actor's own speech and action: there is no field for another character's words, and a\n  ``say`` that quotes a render character is still the actor speaking (FR-AUTH-3 b).\n- ``render_character_ids``: who answers, voiced in this order in one combined reply\n  (FR-RESP-5, FR-LITE-5). Omitted: every cast member except the actor, or the actor when\n  no one else is in the cast. The actor may be listed. An explicit empty list is refused,\n  and duplicates are dropped.\n- ``output_viewpoint``: ``character:<id>`` or ``omniscient``; default the actor.\n- ``prompt_params``: ``length`` (``short``/``medium``/``long`` or a token cap),\n  ``temperature`` and ``top_p``, for this request only (FR-RESP-3).\n- ``scene_context``: non-authoritative; never stored or placed in a prompt.\n- ``budget``: this turn's ``max_calls``/``deadline_s``, within the story's (#69).",
+        "description": "``POST /stories/{id}/respond`` and ``Engine.respond``.\n\n- ``actor_character_id``: whose input this is. Any cast member may act, a player's own\n  character or not: who acts is the consumer's call (FR-AUTH-3).\n- ``player_input``: the actor's ``say``/``do``; the turn's first beat. It is only ever the\n  actor's own speech and action: there is no field for another character's words, and a\n  ``say`` that quotes a render character is still the actor speaking (FR-AUTH-3 b).\n- ``render_character_ids``: who answers, voiced in this order in one combined reply\n  (FR-RESP-5, FR-LITE-5). Omitted: every cast member except the actor, or the actor when\n  no one else is in the cast. The actor may be listed. An explicit empty list is refused,\n  and duplicates are dropped.\n- ``output_viewpoint``: ``character:<id>`` or ``omniscient``; default the actor.\n- ``prompt_params``: ``length`` (``short``/``medium``/``long`` or a token cap),\n  ``temperature`` and ``top_p``, for this request only (FR-RESP-3).\n- ``scene_context``: non-authoritative; never stored or placed in a prompt.\n- ``budget``: this turn's ``max_calls``/``deadline_s``, within the story's (#69).\n- ``interaction_mode``/``sequence_order``: a structured story with per-character renders\n  (#174): several ``render_character_ids`` render ``sequential``ly, in request order or the\n  director's.",
         "examples": [
           {
             "actor_character_id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3",
@@ -23850,6 +23891,21 @@
                 "type": "null"
               }
             ]
+          },
+          "interaction_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "sequential",
+                  "simultaneous"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interaction Mode"
           },
           "output_viewpoint": {
             "anyOf": [
@@ -23902,6 +23958,21 @@
                 "type": "null"
               }
             ]
+          },
+          "sequence_order": {
+            "anyOf": [
+              {
+                "enum": [
+                  "request",
+                  "director"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence Order"
           }
         },
         "required": [
@@ -24035,6 +24106,13 @@
               "$ref": "#/components/schemas/ModelCall"
             },
             "title": "Model Calls",
+            "type": "array"
+          },
+          "order": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Order",
             "type": "array"
           },
           "output_viewpoint": {
@@ -30705,6 +30783,23 @@
             "description": "The viewpoint a read or respond falls back to when the request names none and has no\nactor (FR-RESP-12): ``character:<id>``, never ``omniscient`` (#59 resolves it).\nInterpretive: a Lite turn depends on it (#64).",
             "title": "Default Output Viewpoint"
           },
+          "interaction_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "sequential",
+                  "simultaneous"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "How a turn with several primaries renders them (FR-MULTI-5; #174): ``sequential`` (each\nlater primary renders seeing the checked beats of those before it) or ``simultaneous``\n(#175). ``None``: the scenario's setting when genesis kept it inactive (``inactive``,\ncapability ``multi_character``, #122), else ``sequential``. A request overrides it.\nProspective.",
+            "title": "Interaction Mode"
+          },
           "lite_summary_chunk": {
             "anyOf": [
               {
@@ -30750,6 +30845,23 @@
             "default": null,
             "description": "How many times a turn whose read set was touched is regenerated before the call fails\nwith ``revision_conflict`` (FR-CONC-4c). Prospective.",
             "title": "Regenerate Retry Budget"
+          },
+          "sequence_order": {
+            "anyOf": [
+              {
+                "enum": [
+                  "request",
+                  "director"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Who orders a ``sequential`` turn's primaries (FR-MULTI-6; #174): ``request`` (the\nrequest's ``render_character_ids`` order) or ``director`` (one optional narrator call;\nrequest order when it cannot be made). ``None``: ``request``. A request overrides it.\nProspective.",
+            "title": "Sequence Order"
           },
           "turn_concurrency": {
             "anyOf": [
@@ -32879,8 +32991,19 @@
         "type": "object"
       },
       "WarningBody": {
-        "description": "Something the turn did that the consumer should know: ``pin_quarantined`` names an\nauthor pin the output gate's convergence rule quarantined (#145).",
+        "description": "Something the turn did that the consumer should know: ``pin_quarantined`` names an\nauthor pin the output gate's convergence rule quarantined (#145); ``primary_not_present`` a\nnamed primary of a sequential turn that is not in the scene (#174).",
         "properties": {
+          "character_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Character Id"
+          },
           "kind": {
             "title": "Kind",
             "type": "string"
@@ -53824,6 +53947,7 @@
                           "generation_settings.temperature",
                           "generation_settings.top_p",
                           "guardrail_retry_budget",
+                          "interaction_mode",
                           "lite_summary_chunk",
                           "lite_summary_max_tokens",
                           "lite_window_messages",
@@ -53907,6 +54031,7 @@
                           "profile_overrides.verification.level",
                           "profile_overrides.verification.safe_disposition",
                           "regenerate_retry_budget",
+                          "sequence_order",
                           "turn_concurrency",
                           "turn_deadline",
                           "turn_queue_max"
@@ -60054,7 +60179,7 @@
         ]
       },
       "patch": {
-        "description": "Change the story's settings with a JSON merge patch (RFC 7396): a key present sets that setting and `null` resets it to its default. A story's settings describe the story: `turn_concurrency` (`reject` | `queue`), `turn_queue_max` (1-50; `null`: the deployment's default, 5), `default_output_viewpoint` (`character:<id>` of the cast, never `omniscient`), `regenerate_retry_budget` (0-10), `lite_summary_chunk` (2-200 rows per summary segment), `audit_retention_days` (1-3650; `null`: the deployment's) and `allow_new_arrivals` (whether a director pass, or a render as scene texture, may introduce new arrivals; default `true`). An unknown key is 422. The engine's dials are the story's engine profile's, overridden per story with `PATCH /stories/{id}/profile-overrides` (FR-PROF-5): a key that moved there (`generation_settings`, `lite_window_messages`, `lite_summary_max_tokens`, `max_model_calls_per_turn`, `turn_deadline`, `guardrail_retry_budget`) is 422 with `details.reason: superseded` and the profile setting that replaced it in `details.replacement`. `policies` (optional) upserts the story's own policies; an item that would relax a policy refuses the whole request with 422 `cannot_relax` before anything is written.\n\nEvery setting but `default_output_viewpoint` and `allow_new_arrivals` is prospective: it applies to requests that arrive after the write, never to a turn already running; those two are interpretive (a turn in flight is checked against them when it commits). A write that changes something moves the story's `config_revision`. The answer carries the budget the story's next turn plans with (`effective_budget`).",
+        "description": "Change the story's settings with a JSON merge patch (RFC 7396): a key present sets that setting and `null` resets it to its default. A story's settings describe the story: `turn_concurrency` (`reject` | `queue`), `turn_queue_max` (1-50; `null`: the deployment's default, 5), `default_output_viewpoint` (`character:<id>` of the cast, never `omniscient`), `regenerate_retry_budget` (0-10), `lite_summary_chunk` (2-200 rows per summary segment), `audit_retention_days` (1-3650; `null`: the deployment's) and `allow_new_arrivals` (whether a director pass, or a render as scene texture, may introduce new arrivals; default `true`), `interaction_mode` (`sequential` | `simultaneous`: how a turn with several primaries renders them; `null`: the scenario's, else `sequential`) and `sequence_order` (`request` | `director`: who orders a sequential turn's primaries; `null`: `request`). An unknown key is 422. The engine's dials are the story's engine profile's, overridden per story with `PATCH /stories/{id}/profile-overrides` (FR-PROF-5): a key that moved there (`generation_settings`, `lite_window_messages`, `lite_summary_max_tokens`, `max_model_calls_per_turn`, `turn_deadline`, `guardrail_retry_budget`) is 422 with `details.reason: superseded` and the profile setting that replaced it in `details.replacement`. `policies` (optional) upserts the story's own policies; an item that would relax a policy refuses the whole request with 422 `cannot_relax` before anything is written.\n\nEvery setting but `default_output_viewpoint` and `allow_new_arrivals` is prospective: it applies to requests that arrive after the write, never to a turn already running; those two are interpretive (a turn in flight is checked against them when it commits). A write that changes something moves the story's `config_revision`. The answer carries the budget the story's next turn plans with (`effective_budget`).",
         "operationId": "update_story_settings",
         "parameters": [
           {

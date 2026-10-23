@@ -37,7 +37,8 @@ rest of the turn (``BeliefSource.stage``, ``replay.stage_path``), so a later ``s
 concluded is ``consistent`` without a licence; the commit (``steps_committed``) writes each
 verified ``observe`` as an ``observation`` transition (citing the observed fact's event, or the
 ``act`` step whose beat introduced it) with an episodic memory, and each verified ``believe`` as
-a #160 transition with ``antecedent = render_step`` (``StepOracle`` answers the verified steps).
+a #160 transition with ``antecedent = render_step`` (``StepOracle`` answers the verified steps,
+and a sequential turn's staged beats through its ``TurnStage``, #174).
 A rejected ``believe``'s proposition, asserted in the beats of the first ``act`` citing it, is a
 hallucination (#151's repair; FR-VERIFY-10), and nothing is written for it. With verification
 off the steps are not verified and nothing is written; with ``character_knowledge = shared``
@@ -265,16 +266,16 @@ async def probe_any(
 class StepOracle:
     """The ``AntecedentOracle`` of one render's verified steps (#160's protocol): a
     ``render_step`` ref of this operation and variant names a verified step; a staged beat is
-    #174's (``None`` here)."""
+    the turn's ``TurnStage``'s (#174, ``stage``; ``None`` without one)."""
 
     operation_id: str
     variant: int
     positions: Mapping[int, Position]
     verified: frozenset[int]
+    stage: transitions.AntecedentOracle | None = None
 
     def staged_beat(self, ref: Mapping[str, Any]) -> transitions.StagedRecord | None:
-        del ref
-        return None
+        return None if self.stage is None else self.stage.staged_beat(ref)
 
     def render_step(self, ref: Mapping[str, Any]) -> transitions.StagedRecord | None:
         if str(ref.get("operation_id")) != self.operation_id:
@@ -313,6 +314,7 @@ async def steps_committed(
     settings: Any,
     registry: Any,
     remember: Callable[[AsyncConnection, Step, Observed, Position], Awaitable[bool]],
+    stage: transitions.AntecedentOracle | None = None,
 ) -> Written:
     """Write the verified steps (see the module docstring) in the turn's commit, inside its
     transition tally. ``beat_owner`` maps a beat of this render to its ``act`` step (an observed
@@ -327,6 +329,7 @@ async def steps_committed(
         variant,
         positions,
         frozenset(i for i, v in verdicts.items() if v.verified),
+        stage,
     )
     for step in steps:
         verdict = verdicts.get(step.index)

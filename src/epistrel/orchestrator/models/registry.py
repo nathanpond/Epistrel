@@ -184,6 +184,15 @@ class AgeClue(InputSchema):
     clue: Annotated[str, C.SCENE] = ""
 
 
+class DirectorCandidate(InputSchema):
+    """A primary the director orders (#174, FR-MULTI-6): its id, its name and its public card
+    (its definition; never a private record)."""
+
+    id: Annotated[str, C.CHARACTER_DEFINITION]
+    name: Annotated[str, C.CHARACTER_DEFINITION]
+    card: Annotated[str, C.CHARACTER_DEFINITION] = Field(default="", max_length=2_000)
+
+
 class ComposeBeat(InputSchema):
     """One verified beat a composition (#152) is given: its position, kind, actor's name
     (empty for narration) and text."""
@@ -247,6 +256,9 @@ class GenerationInputs(InputSchema):
     """A structured render's ``## Scene``: the place and who is present."""
     working_memory: Annotated[list[str], C.WORKING_MEMORY] = Field(default_factory=list)
     """A structured render's ``## What you remember``: the latest beats as perceived."""
+    just_now: Annotated[list[str], C.WORKING_MEMORY] = Field(default_factory=list, max_length=64)
+    """A structured character render's ``## Just now`` (#174): in a ``sequential`` turn, the
+    verified beats the earlier primaries rendered, as the character perceived them."""
     retrieved_memories: Annotated[list[str], C.RETRIEVED_MEMORIES] = Field(default_factory=list)
     """A structured render's ``## Retrieved``: #141's assembled context."""
     canon_facts: Annotated[list[str], C.CANON_FACTS] = Field(default_factory=list)
@@ -254,6 +266,9 @@ class GenerationInputs(InputSchema):
     open_references: Annotated[list[str], C.SCENE] = Field(default_factory=list)
     """A follow-up narrator render (#146's FR-COMMIT-7, #150): the salient references this turn
     left open, which it must settle."""
+    director_candidates: list[DirectorCandidate] = Field(default_factory=list, max_length=6)
+    """The director's ordering call (#174, FR-MULTI-6; ``director_order.j2``): the primaries of a
+    ``sequential`` turn it orders."""
     introductions: list[AgeClue] = Field(default_factory=list)
     """The age repair (#150): each character a render introduced without an age, with the
     render's clue."""
@@ -963,8 +978,9 @@ GENERATION = Purpose(
     description=(
         "Writes the reply of a Lite turn from the story's prompt sections; in a structured "
         "story (#150) the typed beats of one character's or the narrator's render (a "
-        "`response_schema`: constrained decoding or parse-validate-retry), the age repair and "
-        "the composition of the turn's verified beats into its message (#152)."
+        "`response_schema`: constrained decoding or parse-validate-retry), the age repair, "
+        "the composition of the turn's verified beats into its message (#152) and the director's "
+        "ordering of a sequential turn's primaries (#174)."
     ),
     default_model_key=DEFAULT_MODEL_KEY,
     capability_floor=CapabilityFloor(structured_output=StructuredOutput.NONE),
@@ -981,13 +997,15 @@ GENERATION = Purpose(
             "narrator": "narrator_generation.j2",
             "age_repair": "age_repair.j2",
             "composition": "composition.j2",
+            "director_order": "director_order.j2",
         }
     ),
 )
 """``generation``: the Lite reply (``lite_generation.j2``) and, under ``structured`` (#150), the
 character render (``structured_generation.j2``), the narrator render
-(``narrator_generation.j2``), the age repair (``age_repair.j2``) and the composition of the
-turn's verified beats into its message (``composition.j2``, #152). The structured path needs
+(``narrator_generation.j2``), the age repair (``age_repair.j2``), the composition of the
+turn's verified beats into its message (``composition.j2``, #152) and the director's ordering of
+a sequential turn's primaries (``director_order.j2``, #174). The structured path needs
 ``json_schema`` or ``parse_validate_retry`` (its beats are a ``response_schema``)."""
 
 GUARDRAIL_CHECK = Purpose(
@@ -1420,6 +1438,7 @@ __all__ = [
     "ConsolidationStatement",
     "ConstraintKind",
     "ContentCategory",
+    "DirectorCandidate",
     "ElementKind",
     "EmbeddingFloor",
     "EmbeddingInputs",

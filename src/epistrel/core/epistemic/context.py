@@ -25,6 +25,11 @@ takes nothing else, and ``python -m tools.gates check-character-context`` checks
   player's input, the narrator's narration) are routed over the turn's scene the same way
   (``PendingBeat``). It never includes the request's ``scene_context.recent_messages``
   (FR-RESP-4): this function's signature has no way to receive them.
+- **Just now** (#174): in a ``sequential`` turn, the beats the earlier primaries rendered and the
+  engine verified (``TurnState.stage``, ``core.epistemic.stage.TurnStage``), routed the same way
+  (``working_memory(…, stage=)``) and kept apart from the working memory: they count against
+  the prompt cap, not against ``render.working_memory_beats``, and their perceived text joins
+  the retrieval query.
 - **Retrieved context and canon** (#141, #133): retrieval for ``character:<id>``, whose
   viewpoint filter (#159) composes into every arm. The assembler takes only that already
   filtered set (``core.retrieval.filtered.ViewpointFiltered``, U-31). Every ``age`` canon fact
@@ -171,6 +176,9 @@ class CharacterContext:
     speech_acts: tuple[str, ...] = ()
     """"you heard B say …" lines (#167)."""
     working_memory: tuple[str, ...] = ()
+    just_now: tuple[str, ...] = ()
+    """#174: ``## Just now``, this turn's staged beats of earlier primaries as the character
+    perceived them (a ``sequential`` turn; never another character's ``think`` or a ``latent``)."""
     retrieved: tuple[str, ...] = ()
     canon: tuple[str, ...] = ()
     scene: str = ""
@@ -238,6 +246,9 @@ class TurnState:
     lexical: LexicalSearch | None = None
     adjudicate: Adjudicator | None = None
     scene_loader: records.SceneLoader | None = None
+    stage: records.StagedWindow | None = None
+    """#174: the turn's staged beats (``core.epistemic.stage.TurnStage``), read through
+    ``working_memory(…, stage=)`` into ``## Just now``."""
 
 
 # -- rendering -------------------------------------------------------------------------------------
@@ -296,6 +307,7 @@ def compose(
     *,
     working: ViewpointFiltered[WorkingBeat],
     names: Mapping[str, str],
+    just_now: ViewpointFiltered[WorkingBeat] | None = None,
     retrieved: ViewpointFiltered[str] | None = None,
     canon: ViewpointFiltered[str] | None = None,
     beliefs: Sequence[str] = (),
@@ -311,12 +323,15 @@ def compose(
     """The context's sections from already-filtered inputs (see the module docstring). Pure."""
     if working.viewpoint != f"{CHARACTER_VIEWPOINT_PREFIX}{character_id}":
         raise ValueError("a character's working memory is filtered for that character")
+    if just_now is not None and just_now.viewpoint != working.viewpoint:
+        raise ValueError("a character's staged beats are filtered for that character")
     return CharacterContext(
         character_id=character_id,
         beliefs=tuple(beliefs[:BELIEFS_MAX]),
         nested=tuple(nested_lines[:NESTED_MAX]),
         speech_acts=tuple(speech_lines[:NESTED_MAX]),
         working_memory=tuple(memory_line(b, names, character_id) for b in working),
+        just_now=tuple(memory_line(b, names, character_id) for b in (just_now or ())),
         retrieved=tuple(retrieved or ()),
         canon=tuple(canon or ()),
         scene=scene,
@@ -647,11 +662,16 @@ async def build_context(
         settings.render.working_memory_beats,
         level=level,
         scene_loader=state.scene_loader,
+        stage=state.stage,
     )
+    staged = [b for b in window if b.staged]
+    window = [b for b in window if not b.staged]
     window += await _pending(conn, state, character_id, level)
     own = [b.text for b in window if b.character_id == character_id and b.fidelity == "content"]
     joined = " ".join(x for x in (state.say, state.do) if x)
-    query = " ".join([joined, *own[-QUERY_BEATS:]])
+    # #174: what the earlier primaries just did, as perceived, joins the retrieval query.
+    heard = [b.text for b in staged if b.fidelity != "envelope"]
+    query = " ".join([joined, *heard, *own[-QUERY_BEATS:]])
     retrieval = await retrieve(
         conn,
         story_id,
@@ -707,6 +727,7 @@ async def build_context(
         "context_ms": round((time.perf_counter() - started) * 1000, 3),
         "perceived": sum(1 for b in window if b.fidelity != "envelope"),
         "envelope": sum(1 for b in window if b.fidelity == "envelope"),
+        **({"just_now": len(staged)} if staged else {}),
         "dropped": len(retrieval.context.dropped),
         "beliefs": min(len(beliefs), BELIEFS_MAX)
         + min(len(nested_lines), NESTED_MAX)
@@ -716,6 +737,7 @@ async def build_context(
         character_id,
         working=_seal(window, viewpoint),
         names=cast.names,
+        just_now=_seal(staged, viewpoint),
         retrieved=_seal(retrieved, viewpoint),
         canon=_seal(canon, viewpoint),
         beliefs=beliefs,

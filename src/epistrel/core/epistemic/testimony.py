@@ -559,15 +559,26 @@ async def commit_testimony(
     registry: Registry | None = None,
     utterance_id: str | None = None,
     intent: str | None = None,
+    staged: transitions.AntecedentOracle | None = None,
 ) -> list[transitions.TransitionResult]:
     """Write one witness's outcomes of ``speech_act`` in ``op``'s commit transaction (see the
     module docstring); answers the transitions written. ``utterance_id`` and ``intent`` (the
-    say's declared intent, as the witness perceived it) complete the ``said`` rows (#167)."""
+    say's declared intent, as the witness perceived it) complete the ``said`` rows (#167).
+    ``staged`` (#174): the say is an earlier primary's staged beat of this sequential turn, so
+    the first-order transition cites it (``antecedent = staged_beat``) with the stage as its
+    oracle; the speech act still cites the beat's event."""
     from epistrel.core.epistemic import nested
 
     if speech_act.event_id is None:
         raise InvalidRequest("a testimony cites the say beat's event", {"field": "event_id"})
     antecedent = transitions.Antecedent.record("events", speech_act.event_id)
+    first_order = antecedent
+    oracle: dict[str, Any] = {}
+    if staged is not None:
+        first_order = transitions.Antecedent.staged_beat(
+            str(op.operation_id), int(op.turn_variant or 0), speech_act.beat
+        )
+        oracle = {"oracle": staged}
     position = witness_position(op.narrative_turn or 0, op.turn_variant or 0, speech_act.beat)
     written: list[transitions.TransitionResult] = []
     for outcome in outcomes:
@@ -576,10 +587,11 @@ async def commit_testimony(
             continue
         common: dict[str, Any] = {
             "holder": outcome.witness,
-            "antecedent": antecedent,
+            "antecedent": first_order,
             "position": position,
             "settings": settings,
             "registry": registry,
+            **oracle,
         }
         written.append(
             await nested.write_speech_act(

@@ -165,8 +165,10 @@ from epistrel.core.epistemic import modeling as char_modeling
 from epistrel.core.epistemic import observation as _observation  # noqa: F401 - registers the sink
 from epistrel.core.epistemic import perception, replay
 from epistrel.core.epistemic import scene as scene_loader
+from epistrel.core.epistemic import testimony as testimony_rules
 from epistrel.core.epistemic import transitions as belief_transitions
 from epistrel.core.epistemic.context import CharacterContext
+from epistrel.core.epistemic.stage import Acceptance, StagedBeat, TurnStage
 from epistrel.core.erasure.index import index_records
 from epistrel.core.erasure.records import operation_record
 from epistrel.core.errors import InvalidRequest, RevisionConflict, StoryArchived, TimelineChanged
@@ -274,7 +276,6 @@ from epistrel.observability.metrics import (
 from epistrel.orchestrator.budget import (
     EXTRACTION,
     FOLLOW_UP,
-    GUARDRAIL_OUTPUT,
     SALIENCE,
     TurnBudget,
     counted_embedder,
@@ -294,6 +295,8 @@ from epistrel.orchestrator.lite.schemas import (
     RegenerateResult,
     RespondRequest,
     RespondResult,
+    TurnWarning,
+    body_of,
 )
 from epistrel.orchestrator.models.access import ModelAccessLayer
 from epistrel.orchestrator.models.adapter import ModelParams
@@ -318,7 +321,7 @@ from epistrel.orchestrator.policies.output_gate import (
 from epistrel.orchestrator.policies.rebase import output_passes, output_recheck
 from epistrel.orchestrator.policies.store import guard_context
 from epistrel.orchestrator.repair.ladder import Recheck, RepairLadder, RepairResult
-from epistrel.orchestrator.structured import planner
+from epistrel.orchestrator.structured import multi, planner
 from epistrel.orchestrator.structured import prompt as prompts
 from epistrel.orchestrator.structured import steps as render_steps
 from epistrel.orchestrator.structured.eval_hooks import StageClock, eval_hooks
@@ -369,6 +372,8 @@ OPEN_REFERENCE = "open_reference"
 CONTRADICTED_LATENT = "latent_contradicted"
 INTRODUCTION_DENIED = "introduction_denied"
 SAY, DO, LATENT, NARRATION, THINK = "say", "do", "latent", "narration", "think"
+_COMBINED = ProfileSettings()
+"""The schema's defaults (``multi_character = combined``): the cast check without a profile."""
 
 
 def is_structured(configuration: StoryProfile) -> bool:
@@ -379,30 +384,27 @@ def is_structured(configuration: StoryProfile) -> bool:
 # -- the cast -----------------------------------------------------------------------------------
 
 
-def resolve_structured_cast(story: StoryCast, request: RespondRequest) -> ResolvedCast:
-    """The actor and the one character rendered (M4's one primary, #156): the request's, or
-    the first non-player, non-``minor`` character after the actor by ``ordinal`` (#163; else the
-    first non-player one, else the first other one, else the actor). Two or more named are 422
-    ``validation_error``."""
+def resolve_structured_cast(
+    story: StoryCast,
+    request: RespondRequest,
+    settings: ProfileSettings | None = None,
+    story_id: str = "",
+) -> ResolvedCast:
+    """The actor and the characters rendered: the request's (#174: several only under
+    ``per_character`` renders in ``sequential`` mode, ``multi.check``; under ``combined`` two or
+    more named are 422 ``validation_error``, ``one_render_character``), or one, the first
+    non-player, non-``minor`` character after the actor by ``ordinal`` (#163; else the first
+    non-player one, else the first other one, else the actor). ``settings``: the story's
+    effective profile settings (``None``: one primary, as M4)."""
     resolved = resolve_cast(story, request)
     if request.render_character_ids is not None:
-        named = list(dict.fromkeys(request.render_character_ids))
-        if len(named) > 1:
-            raise InvalidRequest(
-                "a structured turn renders one character",
-                {
-                    "field": "body.render_character_ids",
-                    "reason": "one_render_character",
-                    "errors": [
-                        {
-                            "field": "body.render_character_ids",
-                            "message": "a structured turn renders one character",
-                            "type": "value_error",
-                        }
-                    ],
-                },
-            )
+        if settings is None:
+            multi.check(_COMBINED, story_id, story.settings, request, resolved.render)
+        else:
+            multi.check(settings, story_id, story.settings, request, resolved.render)
         return resolved
+    if settings is None or not multi.per_character(settings):
+        multi.refuse_override(story_id, request)
     others = [c for c in story.cast if c.id != resolved.actor.id]
     # #163: a minor (lazily modeled) character is never the default render character.
     chosen = next(
@@ -410,6 +412,13 @@ def resolve_structured_cast(story: StoryCast, request: RespondRequest) -> Resolv
         next((c for c in others if not c.is_player), others[0] if others else resolved.actor),
     )
     return ResolvedCast(actor=resolved.actor, render=(chosen,))
+
+
+def _planned_cast(cast_: ResolvedCast, plan: planner.TurnPlan) -> ResolvedCast:
+    """The cast the plan renders (#174: the primaries the budget deferred left out)."""
+    if len(cast_.render) <= plan.primaries:
+        return cast_
+    return ResolvedCast(actor=cast_.actor, render=cast_.render[: plan.primaries])
 
 
 # -- respond ------------------------------------------------------------------------------------
@@ -430,7 +439,10 @@ async def respond(
     """Play one structured turn; see the module docstring (the prechecks are Lite's)."""
     started = ctx.received_at if ctx.received_at is not None else time.monotonic()
     story = await read_story_cast(db, story_id)
-    resolved_cast = resolve_structured_cast(story, request)
+    concurrency = await turn_gate.read_concurrency(db, story_id)
+    resolved_cast = resolve_structured_cast(
+        story, request, lite._captured(concurrency).settings, story_id
+    )
     if story.status == StoryStatus.ARCHIVED.value:
         raise StoryArchived(
             f"story {story_id} is archived; unarchive it to change it", {"story_id": story_id}
@@ -448,7 +460,7 @@ async def respond(
         await call.claim(
             {
                 "story_id": story_id,
-                "body": request.model_dump(mode="json", exclude={"output_viewpoint"})
+                "body": body_of(request, "output_viewpoint")
                 | {"render_character_ids": resolved_cast.render_ids},
                 "actor_character_id": resolved_cast.actor.id,
                 "viewpoint": try_resolve(resolution),
@@ -456,14 +468,13 @@ async def respond(
             },
             sent={
                 "story_id": story_id,
-                "body": request.model_dump(mode="json"),
+                "body": body_of(request),
                 "viewpoint": ctx.viewpoint,
                 "expected_revision": ctx.expected_revision,
             },
         )
     await check_expected_revision(db, story_id, ctx.expected_revision)
     viewpoint = resolution()
-    concurrency = await turn_gate.read_concurrency(db, story_id)
     plan, budget = await planner.plan_structured(
         db,
         story_id,
@@ -474,7 +485,9 @@ async def respond(
         turn_deadline=concurrency.turn_deadline,
         override=request.budget,
         started=started,
+        director=multi.order_of(story.settings, request) == multi.DIRECTOR,
     )
+    resolved_cast = _planned_cast(resolved_cast, plan)
     timing = lite.TurnTiming(front=started)
     with recording() as calls, lite.reporting_costs(calls, budget), lite._routed(concurrency):
         gating = time.perf_counter()
@@ -485,7 +498,7 @@ async def respond(
             resolved_cast.render_ids,
         )
         timing.policy_check_s += time.perf_counter() - gating
-        budget.release_to(1 + budget.reserved.get(GUARDRAIL_OUTPUT, 0))
+        budget.release_to(planner.held_after_input(plan, budget))
         op = Operation(
             db,
             story_id=story_id,
@@ -499,7 +512,7 @@ async def respond(
             if concurrency.mode == "reject":
                 raise held.busy(story_id)
             queued = {
-                "body": request.model_dump(mode="json"),
+                "body": body_of(request),
                 "turn_budget": {"max_calls": budget.max_calls, "deadline_s": budget.deadline_s},
             }
             return await queue_turn(op.operation_id, queued, viewpoint, concurrency)
@@ -542,7 +555,9 @@ async def run_queued(
 ) -> RespondResult:
     """Play a queued structured turn (#63's drainer took the slot for it); see Lite's."""
     story = await read_story_cast(db, story_id)
-    resolved_cast = resolve_structured_cast(story, request)
+    resolved_cast = resolve_structured_cast(
+        story, request, lite._captured(concurrency).settings, story_id
+    )
     await pause.refuse(db, story_id, story.status)
     viewpoint = ctx.viewpoint
     if viewpoint is None:  # pragma: no cover - always resolved at enqueue
@@ -570,8 +585,10 @@ async def run_queued(
         story_max_calls=planned.get("max_calls", concurrency.max_model_calls_per_turn),
         turn_deadline=planned.get("deadline_s") or concurrency.turn_deadline,
         started=front,
+        director=multi.order_of(story.settings, request) == multi.DIRECTOR,
     )
-    budget.release_to(1 + budget.reserved.get(GUARDRAIL_OUTPUT, 0))
+    resolved_cast = _planned_cast(resolved_cast, plan)
+    budget.release_to(planner.held_after_input(plan, budget))
     with recording() as calls, lite.reporting_costs(calls, budget), lite._routed(concurrency):
         return await play(
             db,
@@ -617,7 +634,10 @@ async def regenerate(
     await pause.refuse(db, story_id, story.status)
     recorded = await read_regenerable(db, story_id, request.turn)
     replay = lite._replayed_request(recorded, request)
-    resolved_cast = resolve_structured_cast(story, replay)
+    concurrency = await turn_gate.read_concurrency(db, story_id)
+    resolved_cast = resolve_structured_cast(
+        story, replay, lite._captured(concurrency).settings, story_id
+    )
     await check_expected_revision(db, story_id, ctx.expected_revision)
     viewpoint = resolve_viewpoint(
         ctx.viewpoint or recorded.viewpoint,
@@ -625,7 +645,6 @@ async def regenerate(
         story_default=story.settings.default_output_viewpoint,
         cast_ids=story.ids,
     )
-    concurrency = await turn_gate.read_concurrency(db, story_id)
     plan, budget = await planner.plan_structured(
         db,
         story_id,
@@ -636,7 +655,9 @@ async def regenerate(
         turn_deadline=concurrency.turn_deadline,
         override=request.budget,
         started=started,
+        director=multi.order_of(story.settings, replay) == multi.DIRECTOR,
     )
+    resolved_cast = _planned_cast(resolved_cast, plan)
     timing = lite.TurnTiming(front=started)
     with recording() as calls, lite.reporting_costs(calls, budget), lite._routed(concurrency):
         gating = time.perf_counter()
@@ -647,7 +668,7 @@ async def regenerate(
             resolved_cast.render_ids,
         )
         timing.policy_check_s += time.perf_counter() - gating
-        budget.release_to(1 + budget.reserved.get(GUARDRAIL_OUTPUT, 0))
+        budget.release_to(planner.held_after_input(plan, budget))
         op = Operation(
             db,
             story_id=story_id,
@@ -717,6 +738,9 @@ class TurnRead:
     flagged: bool = False
     """#165 (FR-COMMIT-11): the previous turn's resolution raised a could-have-known soft flag,
     so this turn's renders (only) carry ``prompts.KNOWLEDGE_STEERING``."""
+    characters: tuple[CastEntry, ...] = ()
+    """#174: every primary in request order (``character`` is the one rendering: the first, or
+    the current one inside a sequential turn's loop)."""
 
 
 async def _deferred(conn: AsyncConnection, story_id: str, turn: int) -> bool:
@@ -876,6 +900,7 @@ async def read_turn(
         location_name=None if scene is None or scene.location is None else str(scene.location.name),
         deferred=lifecycle.commitment_enabled(settings) and await _deferred(conn, story_id, turn),
         flagged=lifecycle.commitment_enabled(settings) and await _flagged(conn, story_id, turn),
+        characters=tuple(current.get(c.id, c) for c in cast_.render),
     )
 
 
@@ -911,6 +936,8 @@ class Rendered:
     context: CharacterContext | None = None
     """The rendering character's context (#170): what its prompt knew, and the exposures it
     needed (resolved in the commit)."""
+    contexts: list[CharacterContext] = field(default_factory=list)
+    """#174: every primary's context, in render order (one, for a single primary)."""
 
 
 def _canon_lines(result: RetrievalResult, own: str | None) -> tuple[list[str], list[str]]:
@@ -1214,6 +1241,17 @@ class StagedSource:
 # -- detection and verification ------------------------------------------------------------------
 
 
+@dataclass(frozen=True, slots=True)
+class StepSet:
+    """One character render's declared steps (#168) and their verdicts: whose, and where its
+    steps sit (the render's first beat). A sequential turn has one per primary (#174)."""
+
+    holder: str
+    steps: list[render_steps.Step]
+    verdicts: dict[int, render_steps.StepVerdict]
+    first_beat: int
+
+
 @dataclass(slots=True)
 class Checked:
     """What detection and verification made of the released renders."""
@@ -1267,6 +1305,10 @@ class Checked:
     """Each step's verdict (#168; empty with verification off)."""
     steps_beat: int = 0
     """The character render's first beat (where its steps sit)."""
+    step_sets: list[StepSet] = field(default_factory=list)
+    """#174: every primary render's steps (the commit writes each for its holder)."""
+    more_verifiers: list[Verifier] = field(default_factory=list)
+    """#174: the later primaries' verifiers (the first is ``verifier``), in render order."""
 
 
 LOCATED_PREDICATES = frozenset({CORE_BY_NAME["located_at"].id, CORE_BY_NAME["present_at"].id})
@@ -1495,9 +1537,15 @@ async def check_turn(
     **kwargs: Any,
 ) -> Checked:
     """``_check_turn`` with the render's beats at their declared steps (#168: ``step_of``) and
-    its verified steps staged for the could-have-known replay (``replay.staged_paths``)."""
+    its verified steps staged for the could-have-known replay (``replay.staged_paths``); #174:
+    the rendering character's acceptances of earlier staged beats (``staged_beliefs``) staged
+    there too."""
     owners = render_steps.beat_steps([b for b in rendered.beats if not b.narrator])
     with beat_steps(str(kwargs["operation_id"]), owners), replay.staged_paths():
+        for accepted in kwargs.get("staged_beliefs", ()):
+            replay.stage_path(
+                accepted.witness, accepted.proposition, accepted.position, f"beat:{accepted.beat}"
+            )
         return await _check_turn(db, models, story_id, read, rendered, **kwargs)
 
 
@@ -1521,10 +1569,16 @@ async def _check_turn(
     answers_from: Sequence[Verifier | None] = (),
     clock: StageClock | None = None,
     introductions: Introductions | None = None,
+    release_extraction: bool = True,
+    settle_salience: bool = True,
+    staged_beliefs: Sequence[Acceptance] = (),
 ) -> Checked:
     """Detect and verify the player's input and every render's beats (see the module
-    docstring). A follow-up render's check (``first_claim``: where its claim ids start) sees
-    the claims the turn's earlier beats staged (``staged_before``) and reads no salience. A
+    docstring). #174: a sequential turn's earlier primaries keep the unspent extraction and
+    salience reservations for the later ones (``release_extraction``, ``settle_salience``), and
+    a later primary's staged acceptances join its belief record set (``staged_beliefs``). A
+    follow-up render's check (``first_claim``: where its claim ids start) sees the claims the
+    turn's earlier beats staged (``staged_before``) and reads no salience. A
     repair's re-check (#151) runs without the model backstop when ``backstop`` is off (layers
     a and b only) and reuses the entailment answers of ``answers_from``, the turn's verifiers.
     ``clock`` (#155) takes the time of its normalize, detection, verify and entailment
@@ -1668,7 +1722,8 @@ async def _check_turn(
             outcomes.append(await detector.render(group, (turn, 0), operation_id=operation_id))
             env = detector.env
     # Every planned render was detected: what B did not spend goes back (#156).
-    budget.release_named(EXTRACTION)
+    if release_extraction:
+        budget.release_named(EXTRACTION)
     mentions: dict[int, tuple[Mention, ...]] = {}
     for outcome in outcomes:
         for detected in outcome.detection.beats:
@@ -1688,6 +1743,15 @@ async def _check_turn(
         staged = StagedSource(verifier.source)
         staged.staged.extend(staged_before)
         verifier.source = staged
+        if verifier.beliefs is not None:
+            # #174: what the character accepted from earlier staged beats (FR-EPI-14 (b)).
+            for accepted in staged_beliefs:
+                verifier.beliefs.stage(
+                    accepted.witness,
+                    accepted.proposition,
+                    accepted.position,
+                    f"beat:{accepted.beat}",
+                )
         by_beat: dict[int | None, list[DetectedClaim]] = {}
         scopes = {b.beat: b for b in rendered.beats}
         for outcome in outcomes:
@@ -1846,7 +1910,8 @@ async def _check_turn(
             ]
             for at, claim_sketch in salience.rules_salient(claims):
                 salient.append((at, claim_sketch, None))
-    budget.settle_optional(SALIENCE)
+    if settle_salience:
+        budget.settle_optional(SALIENCE)
     input_checked = [c for c in checked if c.claim.beat == 1]
     input_mentions = [m.as_payload() for m in mentions.get(1, ())]
     clock.add("detection", time.perf_counter() - detecting)
@@ -1869,6 +1934,9 @@ async def _check_turn(
         steps=steps,
         step_verdicts=step_verdicts,
         steps_beat=rendered.steps_beat,
+        step_sets=[StepSet(read.character.id, steps, step_verdicts, rendered.steps_beat)]
+        if steps
+        else [],
     )
 
 
@@ -2249,6 +2317,7 @@ async def repair_turn(
     render_ids: Sequence[str],
     fallback: FallbackLines,
     narrator_inputs: GenerationInputs,
+    only: frozenset[int] | None = None,
 ) -> Checked:
     """FR-REPAIR-1..4 and FR-VERIFY-12 over the turn's verified beats (#151): every rendered
     beat with a claim that ``needs_repair`` goes to ``orchestrator.repair.ladder``, in beat
@@ -2257,13 +2326,15 @@ async def repair_turn(
     mentions replace the rejected beat's (nothing from a rejected render canonizes); its
     salient spans are not read again. After the follow-up render, before any commit
     transaction; a story whose profile has the repair module off (``repair_on``), or a turn
-    released as the safe fallback, is left as it is."""
+    released as the safe fallback, is left as it is. ``only`` (#174): the beats to look at (a
+    sequential turn's earlier primaries were repaired before the next rendered)."""
     if not repair_on(configuration) or rendered.finish_reason == "fallback":
         return checked
     wanted = [
         (b, found)
         for b in checked.beats
         if b.beat > 1
+        and (only is None or b.beat in only)
         and not (b.kind == SAY and b.intent in UNREPAIRED_INTENTS and not _hallucinated(checked, b))
         and (found := _violations(checked, b))
     ]
@@ -2959,7 +3030,7 @@ def _verify_passes(checked: Checked) -> list[yields.VerifyPass]:
     included) and each repair re-check's."""
     found = [
         yields.VerifyPass(v, yields.RENDER)
-        for v in (checked.verifier, checked.follow_up_verifier)
+        for v in (checked.verifier, *checked.more_verifiers, checked.follow_up_verifier)
         if v is not None
     ]
     found += [
@@ -3140,7 +3211,9 @@ def undetected_beats(checked: Checked) -> list[int]:
     return sorted(b.beat for b in checked.beats if b.beat > 1 and b.beat not in recorded)
 
 
-def _replaced_render(read: TurnRead, fallback: FallbackLines, policies: Sequence[Any]) -> Rendered:
+def _replaced_render(
+    read: TurnRead, fallback: FallbackLines, policies: Sequence[Any], *, start: int = 2
+) -> Rendered:
     """The render(s) a deadline left without their reserved extraction, replaced by one
     ``say`` of the rendering character: the first safe-fallback line the deterministic output
     policies pass (#68's lines; ``think``/``latent`` beats and introductions are dropped)."""
@@ -3150,11 +3223,90 @@ def _replaced_render(read: TurnRead, fallback: FallbackLines, policies: Sequence
         (t for _, t in candidates if not evaluate(t, plain, Target.TEXT_OUTPUT)), candidates[-1][1]
     )
     return Rendered(
-        beats=[TurnBeat(kind="say", beat=2, text=line, character_id=read.character.id)],
+        beats=[TurnBeat(kind="say", beat=start, text=line, character_id=read.character.id)],
         sketches={},
         introductions=[],
         retrievals=[],
         finish_reason="fallback",
+    )
+
+
+# -- a sequential turn's renders (#174) ----------------------------------------------------------
+
+
+def _restaged(before: Sequence[Record], checked: Checked) -> list[Record]:
+    """The same-turn overlay after a primary's own repair: what the earlier primaries staged and
+    this primary's surviving permitted claims (a repaired-away claim never reaches a later
+    render's verification)."""
+    return [
+        *before,
+        *(Record(r.claim, f"staged:{r.claim_id or r.beat}") for r in checked.requests),
+    ]
+
+
+def _merge_checked(into: Checked, extra: Checked) -> Checked:
+    """Lay a later primary's check over the turn's so far (its beats after the earlier ones)."""
+    into.beats += extra.beats
+    into.checked += extra.checked
+    into.outcomes += extra.outcomes
+    into.requests += extra.requests
+    into.latent += extra.latent
+    into.mentions.update(extra.mentions)
+    into.degradation += [d for d in extra.degradation if d not in into.degradation]
+    into.staged = extra.staged
+    into.salient += extra.salient
+    into.salient_characters = list(
+        dict.fromkeys([*into.salient_characters, *extra.salient_characters])
+    )
+    into.repairs += extra.repairs
+    into.rejected_bindings += extra.rejected_bindings
+    into.repair_verifiers += extra.repair_verifiers
+    into.step_sets += extra.step_sets
+    if extra.verifier is not None:
+        into.more_verifiers.append(extra.verifier)
+    into.more_verifiers += extra.more_verifiers
+    return into
+
+
+def _merged_rendered(renders: Sequence[Rendered]) -> Rendered:
+    """A sequential turn's renders as one (the first primary's inputs and steps kept; every
+    primary's context in ``contexts``)."""
+    first = renders[0]
+    return Rendered(
+        beats=[b for r in renders for b in r.beats],
+        sketches={n: v for r in renders for n, v in r.sketches.items()},
+        introductions=[i for r in renders for i in r.introductions],
+        retrievals=[x for r in renders for x in r.retrievals],
+        attempts=sum(r.attempts for r in renders),
+        structure_retries=sum(r.structure_retries for r in renders),
+        age_repairs=sum(r.age_repairs for r in renders),
+        denied_introductions=sum(r.denied_introductions for r in renders),
+        narrator=any(r.narrator for r in renders),
+        model=renders[-1].model or first.model,
+        prompt_hash=renders[-1].prompt_hash or first.prompt_hash,
+        finish_reason="fallback" if all(r.finish_reason == "fallback" for r in renders) else "stop",
+        character_inputs=first.character_inputs,
+        narrator_inputs=first.narrator_inputs,
+        steps=first.steps,
+        steps_beat=first.steps_beat,
+        context=first.context,
+        contexts=[c for r in renders for c in r.contexts],
+    )
+
+
+def _merged_gated(outcomes: Sequence[Gated]) -> Gated:
+    """A sequential turn's output-gate outcomes as one."""
+    used = [o for o in outcomes if o.fallback_used]
+    return replace(
+        outcomes[-1],
+        violations=tuple(v for o in outcomes for v in o.violations),
+        fallback_used=bool(used),
+        fallback_source=used[0].fallback_source if used else None,
+        rejected=tuple(r for o in outcomes for r in o.rejected),
+        attempts=sum(o.attempts for o in outcomes),
+        fallback_cause=next((o.fallback_cause for o in outcomes if o.fallback_cause), None),
+        quarantined=tuple(q for o in outcomes for q in o.quarantined),
+        pins_quarantined=tuple(q for o in outcomes for q in o.pins_quarantined),
     )
 
 
@@ -3199,6 +3351,100 @@ async def play(
     """Whether the narrator renders (#156: its render and extraction reserved), once decided."""
     planned: list[tuple[str, str]] = []
     """The plan's own degradation (``narrator_skipped``, ``beat_replaced_safe_fallback``)."""
+    staging: list[TurnStage] = []
+    """#174: the turn's staged beats (a ``sequential`` turn's earlier primaries)."""
+    multis: list[multi.MultiReport] = []
+    """#174: ``turn_report.multi``."""
+
+    async def stage_render(
+        turn_stage: TurnStage,
+        read_k: TurnRead,
+        checked_k: Checked,
+        later: Sequence[CastEntry],
+    ) -> None:
+        """#174 (FR-MULTI-5,11, FR-EPI-14 (b)): primary ``read_k.character``'s verified and
+        repaired beats join the stage, each with the propositions its claims verified
+        (``supported``, or permitted and canonized at the commit); under per-character
+        partitions, each later primary that perceived a ``say``'s content forms its testimony
+        acceptance now (#162's default over its records), which joins its belief record set
+        for its own render's verification."""
+        canonized = {r.claim_id for r in checked_k.requests if r.claim_id}
+        verified: dict[int, list[Proposition]] = {}
+        for c in checked_k.checked:
+            proposition = c.claim.proposition
+            if proposition is None or c.claim.beat is None or c.claim.beat <= 1:
+                continue
+            if c.verdict == "supported" or (c.claim_id is not None and c.claim_id in canonized):
+                verified.setdefault(c.claim.beat, []).append(proposition)
+        for b in checked_k.beats:
+            if b.beat <= 1:
+                continue
+            turn_stage.stage(
+                StagedBeat(
+                    beat=b.beat,
+                    kind=b.kind,
+                    character_id=b.character_id,
+                    text=b.text,
+                    qualifiers=b.qualifiers,
+                    narrator=b.narrator,
+                    step=b.step,
+                ),
+                verified.get(b.beat, ()),
+            )
+        if not later or not module_on(settings, belief_transitions.PARTITIONS_MODULE):
+            return
+        level = scene_loader.level_of(settings)
+        async with db.connect() as conn:
+            scene = (
+                None
+                if level == perception.NONE
+                else (await scene_loader.load_scene(conn, story_id, read_k.turn))[0]
+            )
+            names, places = await records.places_and_names(conn, story_id)
+            registry = await load_registry(conn, story_id)
+            lookup = KeyedLookup(conn, read_set)
+            for witness in later:
+                heard = {
+                    b.beat
+                    for b in turn_stage.perceived_for(
+                        witness.id, level=level, scene=scene, names=names, places=places
+                    )
+                    if b.fidelity == "content"
+                }
+                for b in checked_k.beats:
+                    props = verified.get(b.beat, [])
+                    if (
+                        b.kind != SAY
+                        or b.character_id in (None, witness.id)
+                        or b.beat not in heard
+                        or not props
+                    ):
+                        continue
+                    speaker = str(b.character_id)
+                    act = testimony_rules.SpeechAct(
+                        speaker=speaker, beat=b.beat, propositions=tuple(props), text=b.text
+                    )
+                    consistency = await testimony_rules.consistency_of(
+                        lookup, story_id, witness.id, props, registry=registry
+                    )
+                    trust = await testimony_rules.trust(conn, story_id, witness.id, speaker)
+                    for outcome in testimony_rules.testimony(
+                        witness.id,
+                        act,
+                        testimony_rules.perceived(b.intent),
+                        consistency=consistency,
+                        trust=trust,
+                    ):
+                        if (
+                            outcome.transition is belief_transitions.Kind.TESTIMONY
+                            and outcome.proposition is not None
+                        ):
+                            turn_stage.accept(
+                                witness.id,
+                                b.beat,
+                                outcome.proposition,
+                                testimony_rules.witness_position(read_k.turn, 0, b.beat),
+                            )
 
     async def begin(conn: AsyncConnection) -> TurnRead:
         clock.reset()
@@ -3255,10 +3501,13 @@ async def play(
             adjudicated[item.id] = await adjudicator(conn, item, outcome)
         return adjudicated[item.id]
 
-    async def context_for(read: TurnRead, narration: Sequence[TurnBeat]) -> CharacterContext:
+    async def context_for(
+        read: TurnRead, narration: Sequence[TurnBeat], staged: TurnStage | None = None
+    ) -> CharacterContext:
         """The rendering character's context (#170's ``build_context``): this turn's input and
         narration routed like history, retrieval under its viewpoint (the turn's read set,
-        embedders counted)."""
+        embedders counted); #174: in a ``sequential`` turn, the earlier primaries' staged beats
+        as it perceived them (``## Just now``)."""
         embeddings = models.embeddings
         pending = [
             *([character_context.PendingBeat("say", read.actor.id, say)] if say else []),
@@ -3283,6 +3532,7 @@ async def play(
             embed_batch=counted_embedder(embeddings.batch_embedder(), budget),
             lexical=lexical,
             adjudicate=adjudicate_needed if planner.adjudicates(settings) else None,
+            stage=staged if staged is not None and staged.beats else None,
         )
         async with db.begin() as conn:
             found = await character_context.build_context(conn, read.character.id, state)
@@ -3303,11 +3553,17 @@ async def play(
         if read.triggers and not narrating[0]:
             planned.append((planner.NARRATOR_SKIPPED, "budget"))
         narrate = narrating[0] and bool(read.triggers)
+        primaries = list(read.characters or (read.character,))
+        output_checks = regeneration_cost(policies) - 1
         if len(rounds) > 1:
             # A rebase re-renders: the renders and their extractions again (#156).
-            renders = 1 + (1 if narrate else 0)
+            renders = len(primaries) + (1 if narrate else 0)
             extractions = renders if plan is not None and plan.reservation.extraction else 0
-            cost = regeneration_cost(policies) + (renders - 1) + extractions
+            cost = (
+                regeneration_cost(policies)
+                + (renders - 1) * (1 + output_checks if len(primaries) > 1 else 1)
+                + extractions
+            )
             if budget.expired() or not budget.can_afford_unreserved(cost):
                 raise RevisionConflict(
                     "the story changed under the turn and its model budget cannot pay to "
@@ -3345,193 +3601,321 @@ async def play(
         # beats the output viewpoint receives.
         max_chars = length_chars(read.resolved.max_tokens)
         hidden = frozenset() if is_omniscient(viewpoint) else PRIVATE_KINDS
-
-        async def produce(constraints: tuple[str, ...], attempt: int) -> Draft:
-            assembling = time.perf_counter()
-            params = render_params(
-                ModelParams(
-                    temperature=raised_temperature(read.resolved.temperature, attempt),
-                    top_p=read.resolved.top_p,
+        narrator_sections = replace(
+            base,
+            scenario_text=read.inputs.scenario_text,
+            director_notes=read.director,
+            working_memory=read.narrator_memory,
+        )
+        # #174 (FR-MULTI-6): the primaries' order, the request's or the director's.
+        ordered = multi.Ordered(tuple(p.id for p in primaries), multi.REQUEST)
+        if len(primaries) > 1 and multi.order_of(story.settings, request) == multi.DIRECTOR:
+            ordered = await multi.director_order(
+                models,
+                primaries,
+                actor=read.actor,
+                say=say,
+                do=do,
+                guidance=read.inputs.guidance,
+                instructions=read.inputs.instructions,
+                scenario_text=read.inputs.scenario_text,
+                director_notes=read.director,
+                scene=read.scene,
+                recent=read.narrator_memory,
+                budget=budget,
+                params=ModelParams(
+                    temperature=read.resolved.temperature, top_p=read.resolved.top_p
                 ),
-                read.resolved.max_tokens,
             )
-            retrievals: list[RetrievalResult] = []
-            renders: list[tuple[RenderedBeats, list[TurnBeat]]] = []
-            beats: list[TurnBeat] = []
-            sketches: dict[int, list[PropositionSketch]] = {}
-            retries = 0
-            narration: list[TurnBeat] = []
-            narrator_inputs: GenerationInputs | None = None
-            next_beat = 2
-            used = 0
-            if narrate:
-                narr_retrieval = await retrieve_for(NARRATOR, OMNISCIENT, joined)
-                retrievals.append(narr_retrieval)
-                retrieved, canon = _canon_lines(narr_retrieval, None)
-                sections = replace(
-                    base,
-                    scenario_text=read.inputs.scenario_text,
-                    director_notes=read.director,
-                    working_memory=read.narrator_memory,
-                    retrieved=tuple(retrieved),
-                    canon=tuple(canon),
-                    constraints=constraints,
+            planned.extend(ordered.degradation)
+        by_id = {p.id: p for p in primaries}
+        order = [by_id[i] for i in ordered.order]
+        turn_stage = TurnStage(op.operation_id, read.turn)
+        staging[:] = [turn_stage]
+        report_multi = multi.MultiReport(
+            mode=multi.mode_of(story.settings, request),
+            order=[p.id for p in order],
+            order_source=ordered.source,
+            deferred=list(plan.deferred) if plan is not None else [],
+        )
+        multis[:] = [report_multi]
+        if report_multi.deferred:
+            planned.append((planner.PRIMARIES_DEFERRED, "budget"))
+        sequential = len(order) > 1
+
+        async def render_primary(
+            k: int, read_k: TurnRead, start: int
+        ) -> tuple[Rendered, Gated, bool]:
+            """Primary ``k``'s render (the narrator's first, when it renders, before the first
+            primary), gated by #68's output check; ``True`` when the deadline replaced it."""
+            first = k == 0
+            fallback_k = lite._fallback_lines(
+                read.inputs, ResolvedCast(actor=read.actor, render=(read_k.character,))
+            )
+
+            async def produce(constraints: tuple[str, ...], attempt: int) -> Draft:
+                assembling = time.perf_counter()
+                params = render_params(
+                    ModelParams(
+                        temperature=raised_temperature(read.resolved.temperature, attempt),
+                        top_p=read.resolved.top_p,
+                    ),
+                    read.resolved.max_tokens,
                 )
+                retrievals: list[RetrievalResult] = []
+                renders: list[tuple[RenderedBeats, list[TurnBeat]]] = []
+                beats: list[TurnBeat] = []
+                sketches: dict[int, list[PropositionSketch]] = {}
+                retries = 0
+                narration: list[TurnBeat] = []
+                narrator_inputs: GenerationInputs | None = None
+                next_beat = start
+                used = 0
+                if narrate and first:
+                    narr_retrieval = await retrieve_for(NARRATOR, OMNISCIENT, joined)
+                    retrievals.append(narr_retrieval)
+                    retrieved, canon = _canon_lines(narr_retrieval, None)
+                    sections = replace(
+                        narrator_sections,
+                        retrieved=tuple(retrieved),
+                        canon=tuple(canon),
+                        constraints=constraints,
+                    )
+                    timing.assemble_s += time.perf_counter() - assembling
+                    narrator_inputs = prompts.narrator_inputs(
+                        sections, read.actor, say=say, do=do, budget=budget_tokens
+                    )
+                    narr, n = await render_beats(
+                        models,
+                        narrator_inputs,
+                        render_schema(
+                            actor_id=None,
+                            player_id=read.player_id,
+                            cast_ids=cast_ids,
+                            max_beats=max_beats,
+                        ),
+                        variant=NARRATOR_VARIANT,
+                        params=params,
+                        budget=budget,
+                    )
+                    retries += n
+                    narr, used, _ = hold_length(narr, max_chars, hidden=hidden)
+                    made, found_sketches = _beats_of(
+                        narr, start=next_beat, actor=None, narrator=True
+                    )
+                    beats += made
+                    sketches.update(found_sketches)
+                    renders.append((narr, made))
+                    narration = [b for b in made if b.kind == NARRATION]
+                    next_beat += len(made)
+                assembling = time.perf_counter()
+                # #170 (NFR-PRIV-4): the character's knowledge sections, built structurally;
+                # #174: a later primary's with the staged beats before it.
+                knowing = await context_for(read_k, narration, None if first else turn_stage)
+                if knowing.retrieval is not None:
+                    retrievals.append(knowing.retrieval)
+                sections = replace(base, constraints=constraints)
                 timing.assemble_s += time.perf_counter() - assembling
-                narrator_inputs = prompts.narrator_inputs(
-                    sections, read.actor, say=say, do=do, budget=budget_tokens
+                inputs: GenerationInputs = prompts.character_inputs(
+                    knowing,
+                    sections,
+                    read_k.character,
+                    read.actor,
+                    say=say,
+                    do=do,
+                    budget=budget_tokens,
                 )
-                narr, n = await render_beats(
+                char_render, n = await render_beats(
                     models,
-                    narrator_inputs,
+                    inputs,
                     render_schema(
-                        actor_id=None,
-                        player_id=read.player_id,
+                        actor_id=read_k.character.id,
+                        player_id=read.player_id if read.player_id != read_k.character.id else None,
                         cast_ids=cast_ids,
                         max_beats=max_beats,
                     ),
-                    variant=NARRATOR_VARIANT,
+                    variant=STRUCTURED,
                     params=params,
                     budget=budget,
                 )
                 retries += n
-                narr, used, _ = hold_length(narr, max_chars, hidden=hidden)
-                made, found_sketches = _beats_of(narr, start=next_beat, actor=None, narrator=True)
+                char_render, _, _ = hold_length(char_render, max_chars, hidden=hidden, used=used)
+                char_start = next_beat
+                made, found_sketches = _beats_of(
+                    char_render, start=next_beat, actor=read_k.character.id, narrator=False
+                )
                 beats += made
                 sketches.update(found_sketches)
-                renders.append((narr, made))
-                narration = [b for b in made if b.kind == NARRATION]
-                next_beat += len(made)
-            assembling = time.perf_counter()
-            # #170 (NFR-PRIV-4): the character's knowledge sections, built structurally.
-            knowing = await context_for(read, narration)
-            if knowing.retrieval is not None:
-                retrievals.append(knowing.retrieval)
-            sections = replace(base, constraints=constraints)
-            timing.assemble_s += time.perf_counter() - assembling
-            inputs: GenerationInputs = prompts.character_inputs(
-                knowing, sections, read.character, read.actor, say=say, do=do, budget=budget_tokens
-            )
-            char_render, n = await render_beats(
-                models,
-                inputs,
-                render_schema(
-                    actor_id=read.character.id,
-                    player_id=read.player_id if read.player_id != read.character.id else None,
-                    cast_ids=cast_ids,
-                    max_beats=max_beats,
-                ),
-                variant=STRUCTURED,
-                params=params,
-                budget=budget,
-            )
-            retries += n
-            char_render, _, _ = hold_length(char_render, max_chars, hidden=hidden, used=used)
-            char_start = next_beat
-            made, found_sketches = _beats_of(
-                char_render, start=next_beat, actor=read.character.id, narrator=False
-            )
-            beats += made
-            sketches.update(found_sketches)
-            renders.append((char_render, made))
-            taken = {name.casefold(): cid for cid, name in read.names.items()}
-            intros, repairs, denied = await _introductions(
-                models, read, renders, taken, base, params=params, budget=budget
-            )
-            _, _, messages = models.prepare("generation", inputs, variant=STRUCTURED)
-            rendered = Rendered(
-                beats=beats,
-                sketches=sketches,
-                introductions=intros,
-                retrievals=retrievals,
-                attempts=attempt + 1,
-                structure_retries=retries,
-                age_repairs=repairs,
-                denied_introductions=denied,
-                narrator=narrate,
-                model=calls.calls[-1].model if calls.calls else None,
-                prompt_hash=prompt_hash(messages),
-                finish_reason="stop",
-                character_inputs=inputs,
-                narrator_inputs=narrator_inputs,
-                steps=list(char_render.steps),
-                steps_beat=char_start,
-                context=knowing,
-            )
-            draft = Draft(
-                text="\n".join(b.text for b in beats),
-                model=rendered.model,
-                prompt_hash=rendered.prompt_hash,
-                finish_reason=rendered.finish_reason,
-            )
-            for retrieval in retrievals:
-                draft = _with_context(draft, retrieval)
-            by_draft[id(draft)] = rendered
-            return draft
+                renders.append((char_render, made))
+                taken = {name.casefold(): cid for cid, name in read.names.items()}
+                intros, repairs, denied = await _introductions(
+                    models, read_k, renders, taken, base, params=params, budget=budget
+                )
+                _, _, messages = models.prepare("generation", inputs, variant=STRUCTURED)
+                rendered = Rendered(
+                    beats=beats,
+                    sketches=sketches,
+                    introductions=intros,
+                    retrievals=retrievals,
+                    attempts=attempt + 1,
+                    structure_retries=retries,
+                    age_repairs=repairs,
+                    denied_introductions=denied,
+                    narrator=narrate and first,
+                    model=calls.calls[-1].model if calls.calls else None,
+                    prompt_hash=prompt_hash(messages),
+                    finish_reason="stop",
+                    character_inputs=inputs,
+                    narrator_inputs=narrator_inputs,
+                    steps=list(char_render.steps),
+                    steps_beat=char_start,
+                    context=knowing,
+                    contexts=[knowing],
+                )
+                draft = Draft(
+                    text="\n".join(b.text for b in beats),
+                    model=rendered.model,
+                    prompt_hash=rendered.prompt_hash,
+                    finish_reason=rendered.finish_reason,
+                )
+                for retrieval in retrievals:
+                    draft = _with_context(draft, retrieval)
+                by_draft[id(draft)] = rendered
+                return draft
 
-        gating = time.perf_counter()
-        outcome = await gate_output(
-            models,
-            context,
-            policies,
-            produce,
-            budget=budget,
-            retry_budget=lite.polish_budget(settings),
-            fallback=lite._fallback_lines(read.inputs, cast_),
-            implicate=Implicator(
-                db,
-                story_id,
-                turn_operation_id=op.operation_id,
-                threshold=threshold_of(settings),
-                policies=policies,
-            ),
-            withheld=partial(refuse_withheld, db),
-        )
-        timing.policy_check_s += time.perf_counter() - gating
-        clock.add("render", time.perf_counter() - gating)
-        gated[:] = [outcome]
-        rendered = by_draft.get(id(outcome.draft))
-        if rendered is None or outcome.fallback_used:
-            # The safe fallback: one say of the rendering character, nothing else.
-            rendered = Rendered(
-                beats=[
-                    TurnBeat(
-                        kind="say", beat=2, text=outcome.draft.text, character_id=read.character.id
-                    )
-                ],
-                sketches={},
-                introductions=[],
-                retrievals=[],
-                finish_reason="fallback",
+            gating = time.perf_counter()
+            outcome = await gate_output(
+                models,
+                context,
+                policies,
+                produce,
+                budget=budget,
+                retry_budget=lite.polish_budget(settings),
+                fallback=fallback_k,
+                implicate=Implicator(
+                    db,
+                    story_id,
+                    turn_operation_id=op.operation_id,
+                    threshold=threshold_of(settings),
+                    policies=policies,
+                ),
+                withheld=partial(refuse_withheld, db),
             )
-        replaced = (
-            plan is not None
-            and plan.reservation.extraction > 0
-            and rendered.finish_reason != "fallback"
-            and not budget.can_start()
-        )
-        if replaced:
-            # NFR-PERF-7 step 7 (#156): the renders' reserved extraction cannot start before
-            # the deadline, so nothing they said is released: the safe fallback replaces them
-            # before detection (its own record is layers a and b).
-            rendered = _replaced_render(read, lite._fallback_lines(read.inputs, cast_), policies)
-            planned.append((planner.BEAT_REPLACED, "deadline"))
+            timing.policy_check_s += time.perf_counter() - gating
+            clock.add("render", time.perf_counter() - gating)
+            rendered = by_draft.get(id(outcome.draft))
+            if rendered is None or outcome.fallback_used:
+                # The safe fallback: one say of the rendering character, nothing else.
+                rendered = Rendered(
+                    beats=[
+                        TurnBeat(
+                            kind="say",
+                            beat=start,
+                            text=outcome.draft.text,
+                            character_id=read_k.character.id,
+                        )
+                    ],
+                    sketches={},
+                    introductions=[],
+                    retrievals=[],
+                    finish_reason="fallback",
+                )
+            replaced = (
+                plan is not None
+                and plan.reservation.extraction > 0
+                and rendered.finish_reason != "fallback"
+                and not budget.can_start()
+            )
+            if replaced:
+                # NFR-PERF-7 step 7 (#156): the renders' reserved extraction cannot start
+                # before the deadline, so nothing they said is released: the safe fallback
+                # replaces them before detection (its own record is layers a and b).
+                rendered = _replaced_render(read_k, fallback_k, policies, start=start)
+                planned.append((planner.BEAT_REPLACED, "deadline"))
+            return rendered, outcome, replaced
+
+        renders_done: list[Rendered] = []
+        outcomes: list[Gated] = []
+        merged: Checked | None = None
+        next_beat = 2
+        read_k = read
+        try:
+            for k, primary in enumerate(order):
+                last = k == len(order) - 1
+                read_k = (
+                    read if primary.id == read.character.id else replace(read, character=primary)
+                )
+                if sequential and read.present and primary.name not in read.present:
+                    # A named primary who is not in the scene renders with nothing perceived.
+                    report_multi.not_present.append(primary.id)
+                turn_stage.open_render(primary.id, next_beat)
+                rendered_k, outcome_k, replaced = await render_primary(k, read_k, next_beat)
+                if not last:
+                    # #174: the output gate released what it held; the later primaries' renders
+                    # and first output checks stay held through this one's optional work.
+                    budget.hold((len(order) - k - 1) * (1 + output_checks))
+                if k == 0:
+                    released[:] = [rendered_k]
+                checked_k = await check_turn(
+                    db,
+                    models,
+                    story_id,
+                    read_k,
+                    rendered_k,
+                    say=say if k == 0 else None,
+                    do=do if k == 0 else None,
+                    operation_id=op.operation_id,
+                    read_set=read_set,
+                    configuration=configuration,
+                    budget=budget,
+                    backstop=not replaced,
+                    clock=clock,
+                    staged_before=() if merged is None else merged.staged,
+                    first_claim=0 if merged is None else len(merged.checked),
+                    introductions=None if merged is None else merged.introductions,
+                    release_extraction=last,
+                    settle_salience=last,
+                    staged_beliefs=turn_stage.accepted(primary.id),
+                )
+                if not last:
+                    # FR-MULTI-11: the beat that fails verification is repaired alone, before
+                    # the next primary renders and sees it.
+                    checked_k = await repair_turn(
+                        db,
+                        models,
+                        story_id,
+                        read_k,
+                        rendered_k,
+                        checked_k,
+                        operation_id=op.operation_id,
+                        read_set=read_set,
+                        configuration=configuration,
+                        budget=budget,
+                        context=context,
+                        render_ids=cast_.render_ids,
+                        fallback=lite._fallback_lines(
+                            read.inputs, ResolvedCast(actor=read.actor, render=(primary,))
+                        ),
+                        narrator_inputs=prompts.narrator_inputs(
+                            narrator_sections, read.actor, say=say, do=do, budget=budget_tokens
+                        ),
+                    )
+                    checked_k.staged = _restaged(() if merged is None else merged.staged, checked_k)
+                    await stage_render(turn_stage, read_k, checked_k, order[k + 1 :])
+                merged = checked_k if merged is None else _merge_checked(merged, checked_k)
+                renders_done.append(rendered_k)
+                outcomes.append(outcome_k)
+                next_beat = max(next_beat, *(b.beat + 1 for b in rendered_k.beats))
+        except BaseException:
+            turn_stage.discard()
+            raise
+        assert merged is not None  # noqa: S101 - every turn renders a primary
+        checked = merged
+        rendered = renders_done[0] if len(renders_done) == 1 else _merged_rendered(renders_done)
+        last_rendered = renders_done[-1]
+        outcome = outcomes[0] if len(outcomes) == 1 else _merged_gated(outcomes)
+        gated[:] = [outcome]
         released[:] = [rendered]
-        checked = await check_turn(
-            db,
-            models,
-            story_id,
-            read,
-            rendered,
-            say=say,
-            do=do,
-            operation_id=op.operation_id,
-            read_set=read_set,
-            configuration=configuration,
-            budget=budget,
-            backstop=not replaced,
-            clock=clock,
-        )
         checked.degradation[:0] = [*planned, *dict.fromkeys(context_degradation)]
         # The composed message's detection call (C): held before any optional work (#152).
         async with db.connect() as conn:
@@ -3547,19 +3931,14 @@ async def play(
             db,
             models,
             story_id,
-            read,
-            rendered,
+            read_k,
+            last_rendered,
             checked,
             operation_id=op.operation_id,
             read_set=read_set,
             configuration=configuration,
             budget=budget,
-            sections=replace(
-                base,
-                scenario_text=read.inputs.scenario_text,
-                director_notes=read.director,
-                working_memory=read.narrator_memory,
-            ),
+            sections=narrator_sections,
             context=context,
             render_ids=cast_.render_ids,
             clock=clock,
@@ -3572,8 +3951,8 @@ async def play(
             db,
             models,
             story_id,
-            read,
-            rendered,
+            read_k,
+            last_rendered,
             checked,
             operation_id=op.operation_id,
             read_set=read_set,
@@ -3581,21 +3960,28 @@ async def play(
             budget=budget,
             context=context,
             render_ids=cast_.render_ids,
-            fallback=lite._fallback_lines(read.inputs, cast_),
+            fallback=lite._fallback_lines(
+                read.inputs, ResolvedCast(actor=read.actor, render=(read_k.character,))
+            ),
             narrator_inputs=prompts.narrator_inputs(
-                replace(
-                    base,
-                    scenario_text=read.inputs.scenario_text,
-                    director_notes=read.director,
-                    working_memory=read.narrator_memory,
-                ),
-                read.actor,
-                say=say,
-                do=do,
-                budget=budget_tokens,
+                narrator_sections, read.actor, say=say, do=do, budget=budget_tokens
+            ),
+            only=None
+            if not sequential
+            else frozenset(
+                {
+                    *(b.beat for b in last_rendered.beats),
+                    *checked.follow_up_beats,
+                }
             ),
         )
         clock.add("repair", time.perf_counter() - repairing)
+        if sequential:
+            report_multi.staged = len(turn_stage.beats)
+            report_multi.accepted = turn_stage.report()["accepted"]
+            report_multi.regenerated_beats = [
+                r.original.beat for r in checked.repairs if r.original.beat > 1
+            ]
         # #163: who the turn models (after verify/repair, before routing), their ages found.
         checked.modeling = await plan_modeling(
             db,
@@ -3724,7 +4110,10 @@ async def play(
             "message_rendered",
             MessageRendered(
                 text=composition.text,
-                render_character_ids=(read.character.id,),
+                # #174: every primary, in the order they rendered (a regenerate replays them).
+                render_character_ids=tuple(multis[0].order)
+                if multis and multis[0].order
+                else (read.character.id,),
                 model=rendered.model,
                 prompt_hash=rendered.prompt_hash,
                 finish_reason=rendered.finish_reason,
@@ -3768,6 +4157,10 @@ async def play(
     ) -> None:
         committing = time.perf_counter()
         ids = await beat_event_ids(conn, op.operation_id)
+        turn_stage = staging[0] if staging and staging[0].beats else None
+        if turn_stage is not None:
+            # #174: the staged beats' antecedent refs name this variant.
+            turn_stage.bind(int(op.turn_variant or 0))
         await write_introductions(conn, op, rendered.introductions, base_revision=op.base_revision)
         registry = await load_registry(conn, story_id)
         # #169: under partitions a hidden latent commits through ``commit_hidden`` (its scope
@@ -3934,19 +4327,24 @@ async def play(
                         for n, (beat, _, _) in enumerate(said)
                         if n < len(utterance_ids)
                     },
+                    stage=turn_stage,
                 )
             used = 0 if told is None else sum(told.exposures["resolutions"].values())
-            needed = () if rendered.context is None else rendered.context.needed
-            if partitioned and needed and exposure_records.lazy_on(settings):
+            contexts = rendered.contexts or ([] if rendered.context is None else [rendered.context])
+            for knowing in contexts:
+                needed = knowing.needed
+                if not (partitioned and needed and exposure_records.lazy_on(settings)):
+                    continue
                 # #170: the exposures the character's context needed (#164's need site), with
-                # the model's adjudications where the turn afforded them.
+                # the model's adjudications where the turn afforded them (#174: each
+                # primary's).
                 needing = exposure_records.Pass(
                     cap=max(0, exposure_records.max_lazy_resolutions(settings) - used)
                 )
                 await exposure_records.resolve_needed(
                     conn,
                     op,
-                    read.character.id,
+                    knowing.character_id,
                     [n.exposure.proposition for n in needed],
                     budget=needing,
                     settings=settings,
@@ -3956,7 +4354,11 @@ async def play(
                     },
                 )
                 used += len(needing.made)
-                context_resolved = needing
+                if context_resolved is None:
+                    context_resolved = needing
+                else:
+                    context_resolved.made += needing.made
+                    context_resolved.capped = context_resolved.capped or needing.capped
             if checked.verifier is not None and checked.verifier.beliefs is not None:
                 # #166: what the first-person claims license: the speaker's exposures on the
                 # claims' keys (the need site), licensed beliefs and the lies' divergences.
@@ -3968,31 +4370,38 @@ async def play(
                     registry=registry,
                     resolutions_left=exposure_records.max_lazy_resolutions(settings) - used,
                 )
-            if (
-                checked.step_verdicts
-                and checked.verifier is not None
-                and checked.verifier.beliefs is not None
-            ):
-                # #168: the render's verified steps: observations (with their memories) and
-                # beliefs citing them (``antecedent = render_step``).
-                stepped = await render_steps.steps_committed(
-                    conn,
-                    op,
-                    holder=read.character.id,
-                    steps=checked.steps,
-                    verdicts=checked.step_verdicts,
-                    first_beat=checked.steps_beat,
-                    beat_owner=owners_of(checked),
-                    settings=settings,
-                    registry=registry,
-                    remember=partial(
-                        _remember_observation,
-                        op=op,
-                        read=read,
+            if checked.verifier is not None and checked.verifier.beliefs is not None:
+                # #168: each render's verified steps: observations (with their memories) and
+                # beliefs citing them (``antecedent = render_step``; #174: a staged beat's
+                # through the turn's stage).
+                for step_set in checked.step_sets:
+                    if not step_set.verdicts:
+                        continue
+                    wrote = await render_steps.steps_committed(
+                        conn,
+                        op,
+                        holder=step_set.holder,
+                        steps=step_set.steps,
+                        verdicts=step_set.verdicts,
+                        first_beat=step_set.first_beat,
+                        beat_owner=owners_of(checked),
                         settings=settings,
                         registry=registry,
-                    ),
-                )
+                        remember=partial(
+                            _remember_observation,
+                            op=op,
+                            holder=step_set.holder,
+                            settings=settings,
+                            registry=registry,
+                        ),
+                        stage=turn_stage,
+                    )
+                    if stepped is None:
+                        stepped = wrote
+                    else:
+                        stepped.transitions += wrote.transitions
+                        stepped.memories += wrote.memories
+                        stepped.refused += wrote.refused
         reveals: list[hidden.Reveal] = []
         if partitioned:
             # #169: a sincere say or a do of a hidden fact by one who knows it widens it to the
@@ -4162,9 +4571,14 @@ async def play(
             "introductions_denied": rendered.denied_introductions,
             "age_repairs": rendered.age_repairs,
             "narrator": rendered.narrator,
-            # #168: the render's declared causal steps.
-            "steps": render_steps.steps_report(len(checked.steps), checked.step_verdicts),
+            # #168: the render's declared causal steps (#174: every primary's).
+            "steps": _steps_report(checked),
         }
+        if multis and multi.per_character(settings):
+            # #174: the sequential turn's mode, order and staging.
+            report["multi"] = multis[0].report()
+            if len(multis[0].order) > 1:
+                multi.count_turn(multis[0].mode)
         composition = composed[0] if composed else None
         message_outcomes = (
             [composition.detection]
@@ -4181,7 +4595,13 @@ async def play(
             if "speech" in report["verify"]:
                 # #166: the lies' divergence records, written in the commit.
                 report["verify"]["divergences_written"] = fixed.get("divergences_written", 0)
-            report["uncertain_claims"] = checked.verifier.uncertain_claims()
+            report["uncertain_claims"] = [
+                *checked.verifier.uncertain_claims(),
+                *(u for v in checked.more_verifiers for u in v.uncertain_claims()),
+            ]
+            if checked.more_verifiers:
+                # #174: each later primary's verification.
+                report["verify_primaries"] = [v.report() for v in checked.more_verifiers]
         if checked.follow_up_verifier is not None:
             report["verify_follow_up"] = checked.follow_up_verifier.report()
         report["commit"] = fixed.get("commit", {})
@@ -4194,6 +4614,10 @@ async def play(
         if rendered.context is not None:
             # #170 (#182's source): what the character's context assembly read.
             report["context"] = dict(rendered.context.report)
+        if len(rendered.contexts) > 1:
+            report["contexts"] = [
+                {"character_id": c.character_id, **dict(c.report)} for c in rendered.contexts
+            ]
         if checked.repairs:
             report["repairs"] = repairs_report(checked)
         report["eval_hooks"] = eval_hooks(
@@ -4260,6 +4684,16 @@ async def play(
         )
         fields["degradation"] = [s.step for s in steps]
         fields["degradation_details"] = steps
+        if multis and len(multis[0].order) > 1:
+            # #174: the primaries in the order they rendered; one not in the scene is named.
+            fields["order"] = list(multis[0].order)
+            fields["warnings"] = [
+                *fields.get("warnings", []),
+                *(
+                    TurnWarning(kind=multi.PRIMARY_NOT_PRESENT, character_id=c)
+                    for c in multis[0].not_present
+                ),
+            ]
         if regenerating is not None:
             return RegenerateResult(**fields, previous_variant=regenerating.variant)
         return RespondResult(**fields)
@@ -4411,6 +4845,20 @@ def _degradation(
     return sorted(steps, key=lambda s: planner.ladder_rank(s.step))
 
 
+def _steps_report(checked: Checked) -> dict[str, Any]:
+    """``turn_report.render.steps``: the render's (#168); a sequential turn's summed over its
+    primaries, each rejection naming its holder (#174)."""
+    if len(checked.step_sets) <= 1:
+        return render_steps.steps_report(len(checked.steps), checked.step_verdicts)
+    found: dict[str, Any] = {"declared": 0, "verified": 0, "rejected": []}
+    for step_set in checked.step_sets:
+        one = render_steps.steps_report(len(step_set.steps), step_set.verdicts)
+        found["declared"] += one["declared"]
+        found["verified"] += one["verified"]
+        found["rejected"] += [{**r, "holder": step_set.holder} for r in one["rejected"]]
+    return found
+
+
 def owners_of(checked: Checked) -> dict[int, int]:
     """Each character beat's owning ``act`` step (#168)."""
     return render_steps.beat_steps([b for b in checked.beats if not b.narrator])
@@ -4423,12 +4871,12 @@ async def _remember_observation(
     position: Any,
     *,
     op: Operation,
-    read: TurnRead,
+    holder: str,
     settings: ProfileSettings,
     registry: Registry,
 ) -> bool:
-    """A verified ``observe`` step's episodic memory (#168): the character's own, at the step's
-    position, sourced from the observed fact's event when there is one."""
+    """A verified ``observe`` step's episodic memory (#168): the character's own (``holder``),
+    at the step's position, sourced from the observed fact's event when there is one."""
     if step.proposition is None:  # pragma: no cover - a verified observe names one
         return False
     stored = await store.write_proposition(
@@ -4437,7 +4885,7 @@ async def _remember_observation(
     found = await records.write_observed(
         conn,
         op,
-        holder=read.character.id,
+        holder=holder,
         proposition_id=stored,
         text=step.text,
         source_event_ids=[seen.event_id] if seen.event_id is not None else [],

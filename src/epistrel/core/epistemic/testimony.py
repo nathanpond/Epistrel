@@ -37,9 +37,18 @@ may replace a salient witness's decision (``apply_adjudication``), never overrid
 
 **Writing** (``commit_testimony``, a commit step of the turn): every witness gets, per
 proposition, a ``said`` belief (``belief_kind = speech_act``: ``believes(H, said(S, X))``, held
-``known``, its transition's ``outcome`` the witness's decision), then the first-order transition
-the decision calls for, if any. Every transition cites the say beat's event as its antecedent and
-sits at the beat's step 1 (the witness rule), so #160's self-attestation guard applies.
+``known``, its transition's ``outcome`` the witness's decision; #167's full shape: the speaker,
+the utterance heard and the perceived intent on the row), then the first-order transition the
+decision calls for, if any. Under ``nested_beliefs`` (#167, ``nested_committed``) the speech act
+also yields the witness's nested belief that the speaker believes what it said, at the
+confidence its perceived intent supports (``nested.INTENT_LEVELS``: sincere ``believed``, a joke
+``suspected``, a detected deception (a deceptive say the witness rejected) none), by an
+``inference`` citing the say; an attribution the say carries ("Bobby thinks it was Marcus",
+"I figured …") yields the witness's nested belief about the attributed holder by ``testimony``
+from the speaker, at the level the witness's trust gives (a self-report also reaches the
+first-order default as a claim of its own). Every transition cites the say beat's event as its
+antecedent and sits at the beat's step 1 (the witness rule), so #160's self-attestation guard
+applies.
 
 Log lines carry identifiers and counts only (invariant 3).
 """
@@ -458,6 +467,80 @@ async def minors(conn: AsyncConnection, story_id: str) -> frozenset[str]:
 # -- writing ---------------------------------------------------------------------------------------
 
 
+def perceived_of(
+    intent: str | None, decision: str | None
+) -> Literal["sincere", "joking", "deceptive"]:
+    """The intent a witness perceived in a say (#167's ``perceived_intent``): a joke as a joke,
+    a deceptive say the witness's knowledge contradicted (it rejected it) as a deception
+    detected, anything else as sincere."""
+    if intent == "joking":
+        return "joking"
+    if intent == "deceptive" and decision == REJECT:
+        return "deceptive"
+    return "sincere"
+
+
+async def nested_committed(
+    conn: AsyncConnection,
+    op: BeliefOperation,
+    speech_act: SpeechAct,
+    outcomes: Sequence[TestimonyOutcome],
+    *,
+    witness: str,
+    intent: str | None,
+    attributions: Sequence[tuple[Proposition, str]] = (),
+    trust_value: float = TRUST_NEUTRAL,
+    settings: Any = None,
+    registry: Registry | None = None,
+) -> int:
+    """#167: the witness's nested beliefs from one perceived say (see the module docstring):
+    that the speaker believes each proposition it asserted (an ``inference`` citing the say, at
+    the perceived intent's level), and, for each ``(proposition, attributed holder)`` it
+    attributed, that the holder believes it (``testimony`` from the speaker, at the trust's
+    level; nothing about the witness itself). Nothing unless the story keeps nested beliefs.
+    Answers the nested beliefs written; a write the antecedent guard refuses is counted and
+    skipped."""
+    from epistrel.core.epistemic import nested
+    from epistrel.core.epistemic.errors import EpistemicError
+
+    if speech_act.event_id is None or not nested.nested_on(settings):
+        return 0
+    antecedent = transitions.Antecedent.record("events", speech_act.event_id)
+    position = witness_position(op.narrative_turn or 0, op.turn_variant or 0, speech_act.beat)
+    planned: list[tuple[Proposition, str, Kind, Level, str | None]] = []
+    for outcome in outcomes:
+        if outcome.proposition is None:
+            continue
+        level = nested.INTENT_LEVELS.get(perceived_of(intent, outcome.decision))
+        if level is not None:
+            planned.append((outcome.proposition, speech_act.speaker, Kind.INFERENCE, level, None))
+    for proposition, holder in attributions:
+        if holder == witness:
+            continue
+        planned.append(
+            (proposition, holder, Kind.TESTIMONY, _by_trust(trust_value), speech_act.speaker)
+        )
+    written = 0
+    for proposition, holder, kind, level, source in planned:
+        try:
+            await nested.write_nested(
+                conn,
+                op,
+                holder=witness,
+                attributed_holder=holder,
+                proposition=proposition,
+                cause=nested.Cause(kind, antecedent, source=source),
+                position=position,
+                confidence=transitions.Confidence(level),
+                settings=settings,
+                registry=registry,
+            )
+            written += 1
+        except EpistemicError, InvalidRequest:
+            transitions.refused()
+    return written
+
+
 def witness_position(turn: int, variant: int, beat: int) -> Position:
     """Where a witness's transitions sit: the say beat's step 1 (#160's witness rule)."""
     return Position(turn, variant, 0, beat, 1)
@@ -471,9 +554,14 @@ async def commit_testimony(
     *,
     settings: Any = None,
     registry: Registry | None = None,
+    utterance_id: str | None = None,
+    intent: str | None = None,
 ) -> list[transitions.TransitionResult]:
     """Write one witness's outcomes of ``speech_act`` in ``op``'s commit transaction (see the
-    module docstring); answers the transitions written."""
+    module docstring); answers the transitions written. ``utterance_id`` and ``intent`` (the
+    say's declared intent, as the witness perceived it) complete the ``said`` rows (#167)."""
+    from epistrel.core.epistemic import nested
+
     if speech_act.event_id is None:
         raise InvalidRequest("a testimony cites the say beat's event", {"field": "event_id"})
     antecedent = transitions.Antecedent.record("events", speech_act.event_id)
@@ -491,16 +579,19 @@ async def commit_testimony(
             "registry": registry,
         }
         written.append(
-            await transitions.transition(
+            await nested.write_speech_act(
                 conn,
                 op,
-                kind=Kind.TESTIMONY,
+                holder=outcome.witness,
+                speaker=speech_act.speaker,
                 proposition=outcome.proposition,
-                confidence=transitions.Confidence(Level.KNOWN),
-                source=speech_act.speaker,
+                antecedent=antecedent,
+                position=position,
                 outcome=outcome.decision,
-                belief_kind=BeliefKind.SPEECH_ACT,
-                **common,
+                utterance_id=utterance_id,
+                perceived_intent=perceived_of(intent, outcome.decision),
+                settings=settings,
+                registry=registry,
             )
         )
         if outcome.transition is None:
@@ -565,8 +656,10 @@ __all__ = [
     "consistency_of",
     "decide",
     "minors",
+    "nested_committed",
     "nudged",
     "perceived",
+    "perceived_of",
     "seed_trust",
     "testimony",
     "touches",

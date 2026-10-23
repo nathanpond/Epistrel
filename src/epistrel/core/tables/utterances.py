@@ -21,6 +21,13 @@ hallucination_repaired`` the verifier's classification of the utterance (its wor
 written at insert (migration 0073); ``NULL`` when the belief dimension did not run (verification
 or partitions off, the player's own ``say``, FR-EPI-12).
 
+``attribution_objective_relation`` ∈ ``true|false|unresolved`` (#167, migration 0074): for an
+utterance that attributes a belief to someone ("Bobby thinks it was Marcus"), whether the
+attributed holder actually believes it, computed by the Engine Core against that holder's
+partition (FR-BELIEF-15): any ``false`` → ``false``, else any ``unresolved`` → ``unresolved``,
+else ``true``; ``NULL`` when the utterance attributes nothing. A label only, written at insert:
+it never enters the speaker's context (``core.epistemic.nested``).
+
 ``event_id`` is the ``beat_say`` (or ``player_input``) event, a soft reference: events are
 never deleted while their story lives. ``proposition_ids`` are the utterance's normalized
 propositions (``propositions``). The derived-record columns of ``core.membership`` make a row
@@ -71,11 +78,16 @@ utterances = Table(
     Column("belief_relation", Text, nullable=False, server_default=text("'unknown'")),
     Column("intent", Text, nullable=False, server_default=text("'unspecified'")),
     Column("classification", Text, nullable=True),
+    Column("attribution_objective_relation", Text, nullable=True),
     Column("created_at", TIMESTAMP(timezone=True), nullable=False, server_default=text("now()")),
     CheckConstraint(_in("objective_relation", OBJECTIVE_RELATIONS), name="objective_relation"),
     CheckConstraint(_in("belief_relation", BELIEF_RELATIONS), name="belief_relation"),
     CheckConstraint(_in("intent", INTENTS), name="intent"),
     CheckConstraint(_in("classification", CLASSIFICATIONS), name="classification"),
+    CheckConstraint(
+        _in("attribution_objective_relation", OBJECTIVE_RELATIONS),
+        name="attribution_objective_relation",
+    ),
     *derived_indexes("utterances"),
 )
 Index("ix_utterances_story_event", utterances.c.story_id, utterances.c.event_id)

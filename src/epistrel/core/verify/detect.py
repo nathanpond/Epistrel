@@ -92,6 +92,7 @@ from epistrel.core.resolution.entities import (
 )
 from epistrel.core.resolution.time import Position, TimeBasis, find_time_expressions, turn_of
 from epistrel.core.resolution.types import Mention, MentionKind, ReasonCode
+from epistrel.core.verify.attribution import ClaimAttribution
 from epistrel.core.verify.introduce import Introductions
 from epistrel.core.verify.normalize import ClaimSketch, Unnormalizable, normalize
 from epistrel.core.verify.protected import ProtectedIndex
@@ -336,6 +337,9 @@ class DeclaredClaim:
     proposition: Proposition | None = None
     unnormalized: Unnormalizable | None = None
     effect: bool = False
+    attribution: ClaimAttribution | None = None
+    """#167: the declared claim reports someone's belief or speech act (not the speaker's own
+    assertion)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -380,6 +384,10 @@ class DetectedClaim:
     confidence: float | None = None
     merged: tuple[Layer, ...] = ()
     """Other layers that found the same claim (cross-layer dedup)."""
+    attribution: ClaimAttribution | None = None
+    """#167: whom the claim attributes its proposition to (declared, or the attribution
+    lexicon's cue before its span): checked against the speaker's nested beliefs, never as the
+    speaker's own assertion."""
 
     @property
     def beat(self) -> int | None:
@@ -1078,6 +1086,7 @@ def _detect_beat(
                 proposition=d.proposition,
                 unnormalized=d.unnormalized if d.proposition is None else None,
                 matched_declared_id=d.id,
+                attribution=d.attribution,
             )
         )
     _verb_hits(work, env.registry, env)

@@ -64,6 +64,15 @@ takes the kind's default (``observation`` and ``author``: known; the rest: belie
   kind, never contradicting or closing a first-order belief and never in ``belief_state``; the
   same claim from the same source changes that row in place. ``core.epistemic.testimony`` gives
   every witness one, whatever it made of the claim.
+- ``belief_kind = nested`` / ``attributed`` (#167, ``core.epistemic.nested``'s writers):
+  ``shape`` carries the nested columns (``partitions.BELIEF_SHAPE_COLUMNS``). An ``attributed``
+  row is the immutable inner content of a nested belief: always a new row, never matched, closed
+  or projected. A ``nested`` row matches and contradicts only the holder's open nested rows with
+  the same attribution (attributed holder and inner chain, ``signature``): the same content is
+  changed in place (strengthened, or set by a revision), a contradicting one closed whole as a
+  first-order prior is. An ``inference`` of either may cite what the holder perceived (an
+  event, an utterance or a staged beat: the overheard speech act, ``NESTED_ANTECEDENTS``), not
+  only a belief of its own.
 - Citing the same antecedent twice for the same belief and kind answers the first transition
   (idempotent).
 
@@ -316,6 +325,15 @@ KIND_ANTECEDENTS: Mapping[Kind, Mapping[AntecedentKind, frozenset[str]]] = {
 }
 """Which antecedents each kind admits (for a ``record``, which tables)."""
 
+NESTED_ANTECEDENTS: Mapping[Kind, Mapping[AntecedentKind, frozenset[str]]] = {
+    Kind.INFERENCE: {
+        _A.RECORD: frozenset({"beliefs", "events", "utterances"}),
+        _A.STAGED_BEAT: frozenset(),
+    },
+}
+"""#167: what a nested or attributed belief's kind admits beyond ``KIND_ANTECEDENTS``: an
+inference about what someone believes may rest on the speech act the holder perceived."""
+
 BACKDATING_KINDS = frozenset({Kind.RESOLUTION, Kind.AUTHOR})
 """The kinds whose ``story_time`` may differ from their position's instant."""
 
@@ -347,8 +365,11 @@ async def _check_antecedent(
     position: Position,
     source: str | None,
     oracle: AntecedentOracle,
+    belief_kind: BeliefKind = BeliefKind.FIRST_ORDER,
 ) -> _Checked:
     allowed = KIND_ANTECEDENTS[kind]
+    if belief_kind in (BeliefKind.NESTED, BeliefKind.ATTRIBUTED) and kind in NESTED_ANTECEDENTS:
+        allowed = NESTED_ANTECEDENTS[kind]
     if antecedent.kind not in allowed:
         raise _invalid("kind_mismatch", antecedent, kind=kind.value)
     ref = antecedent.ref
@@ -367,7 +388,7 @@ async def _check_antecedent(
             raise _invalid("not_the_holders_own", antecedent)
         if table == "utterances" and source is not None and found.speaker_id != source:
             raise _invalid("source_mismatch", antecedent)
-        if kind is Kind.INFERENCE:
+        if kind is Kind.INFERENCE and table == "beliefs":
             premise = await partitions.read_belief(conn, story_id, record_id)
             if premise is None or not _holds(premise, position):
                 raise _invalid("premise_not_held", antecedent)
@@ -738,6 +759,7 @@ async def transition(
     belief_kind: BeliefKind = BeliefKind.FIRST_ORDER,
     frame: Position | None = None,
     resolution: bool = False,
+    shape: Mapping[str, Any] | None = None,
 ) -> TransitionResult:
     """Record one belief transition of ``holder`` in ``op``'s commit transaction (a commit
     step) and apply it to the partition; see the module docstring. ``position`` is the
@@ -748,7 +770,8 @@ async def transition(
     holder's as of that position (beliefs held there and still open now), not now's, so a
     belief written at an exposure position neither matches nor closes a belief held only from a
     later position (the resolver folds those forward itself). ``resolution`` marks the belief
-    written as a lazy resolution (``beliefs.resolution_operation_id`` = ``op``)."""
+    written as a lazy resolution (``beliefs.resolution_operation_id`` = ``op``). ``shape``: a
+    nested, attributed or speech-act row's columns (#167)."""
     tally = _TALLY.get()
     try:
         result = await _transition(
@@ -771,6 +794,7 @@ async def transition(
             belief_kind=BeliefKind(belief_kind),
             frame=frame,
             resolution=resolution,
+            shape=shape,
         )
     except SelfAttestation, AntecedentInvalid, ConfidenceInconsistent:
         BELIEF_TRANSITIONS_REFUSED.inc()
@@ -839,6 +863,7 @@ async def _transition(
     belief_kind: BeliefKind = BeliefKind.FIRST_ORDER,
     frame: Position | None = None,
     resolution: bool = False,
+    shape: Mapping[str, Any] | None = None,
 ) -> TransitionResult:
     story_id = op.story_id
     if story_id is None:
@@ -857,21 +882,39 @@ async def _transition(
             {"field": "story_time", "reason": "backdating"},
         )
     said = belief_kind is BeliefKind.SPEECH_ACT
-    if said and kind is not Kind.TESTIMONY:
+    columns = dict(shape or {})
+    content = belief_kind is BeliefKind.ATTRIBUTED or (
+        said and columns.get("attributed_holder_id") is not None
+    )
+    nested = belief_kind is BeliefKind.NESTED
+    if said and not content and kind is not Kind.TESTIMONY:
         raise InvalidRequest(
             "a speech-act belief is a testimony's: someone said it",
             {"field": "belief_kind", "reason": "not_admitted"},
         )
-    if belief_kind not in (BeliefKind.FIRST_ORDER, BeliefKind.SPEECH_ACT):
+    if said:
+        columns.setdefault("speaker_character_id", source)
+        columns.setdefault("depth", 2)
+        if columns["speaker_character_id"] is None:
+            raise InvalidRequest(
+                "a speech-act belief names who said it", {"field": "source", "reason": "required"}
+            )
+    if (nested or belief_kind is BeliefKind.ATTRIBUTED) and columns.get(
+        "attributed_holder_id"
+    ) is None:
         raise InvalidRequest(
-            "attributed and nested beliefs are #167's",
-            {"field": "belief_kind", "reason": "not_admitted"},
+            "a nested belief names whom it attributes the belief to",
+            {"field": "attributed_holder", "reason": "required"},
+        )
+    if nested and columns.get("inner_belief_id") is None:
+        raise InvalidRequest(
+            "a nested belief names its inner belief", {"field": "inner", "reason": "required"}
         )
     level, scalar = resolve_confidence(kind, confidence)
     if polarity is not None:
         proposition = proposition.model_copy(update={"polarity": Polarity(polarity)})
-    if said:
-        pass  # the speech act itself: what was said, whatever the witness made of it (#162)
+    if said or content or nested:
+        pass  # the speech act or the attribution itself, whatever the witness made of it
     elif outcome == "reject":
         proposition = proposition.negation()
     elif outcome in ("suspend", "speech_act_only"):
@@ -893,27 +936,53 @@ async def _transition(
         position=position,
         source=source,
         oracle=oracle,
+        belief_kind=belief_kind,
     )
     if antecedent.kind is not AntecedentKind.RESOLUTION:
         check_order(antecedent, checked.position, position)
+    named = (
+        holder,
+        source,
+        columns.get("attributed_holder_id"),
+        columns.get("speaker_character_id"),
+    )
     await guard.check_content(
         conn,
         story_id,
-        [guard.Content((), frozenset(c for c in (holder, source) if c is not None))],
+        [guard.Content((), frozenset(str(c) for c in named if c is not None))],
         base_revision=None,
         path=__name__,
     )
     when = story_time if story_time is not None else await _story_time(conn, story_id, position)
 
     key = stored.normalized_key()
-    if said:
+    if content:
+        held = []  # an inner content row is immutable: always its own row (#167)
+    elif said:
         # A speech act never contradicts a belief: the same claim from the same speaker is the
         # same ``said`` row (strengthened in place), any other is a new one (#162).
         held = [
             a.belief
-            for a in await partitions.speech_acts(conn, story_id, holder, speaker=source)
+            for a in await partitions.speech_acts(
+                conn, story_id, holder, speaker=columns["speaker_character_id"]
+            )
             if a.belief.proposition.subject_id == stored.subject_id
             and a.belief.proposition.predicate_id == stored.predicate_id
+        ]
+    elif nested:
+        # #167: only the holder's open nested rows with the same attribution are its prior.
+        wanted = await _signature_of(conn, story_id, columns)
+        held = [
+            n.belief
+            for n in await partitions.nested_of(
+                conn,
+                story_id,
+                holder,
+                attributed_holder=str(columns["attributed_holder_id"]),
+                subjects=[stored.subject_id],
+                predicate=stored.predicate_id,
+            )
+            if signature(n) == wanted
         ]
     elif frame is not None:
         # #164: the holder's partition as of the exposure frame, as far as it is still open.
@@ -945,7 +1014,7 @@ async def _transition(
         ),
         None,
     )
-    if said:
+    if said or content:
         priors: list[Belief] = []
     elif kind is Kind.FORGETTING:
         if existing is None or antecedent.ref.get("id") != existing.id:
@@ -1066,6 +1135,7 @@ async def _transition(
             lineage_id=priors[0].lineage_id if priors else None,
             kind=belief_kind,
             resolution=resolution,
+            shape=columns,
         )
         if priors:
             await _close(conn, priors, at=start, by=belief_id)
@@ -1095,6 +1165,25 @@ async def _transition(
 
 
 _OUTCOMES = frozenset({"accept", "reject", "suspend", "speech_act_only"})
+
+
+Signature = tuple[tuple[str, ...], str | None]
+"""A nested belief's attribution (#167): its attributed holders, outermost first, and the
+speaker of an innermost speech act (``None``: the content is a belief)."""
+
+
+def signature(found: partitions.NestedBelief) -> Signature:
+    return partitions.chain_signature(found.attributed_holder_id, found.chain)
+
+
+async def _signature_of(
+    conn: AsyncConnection, story_id: str, columns: Mapping[str, Any]
+) -> Signature:
+    outer = str(columns["attributed_holder_id"])
+    inner_id = columns.get("inner_belief_id")
+    inner = None if inner_id is None else await partitions.read_belief(conn, story_id, inner_id)
+    chain = () if inner is None else (inner, *await partitions._chain(conn, story_id, inner))
+    return partitions.chain_signature(outer, chain)
 
 
 # -- reads -----------------------------------------------------------------------------------------
@@ -1226,6 +1315,9 @@ async def forget_covered(
                 b.tx_to.is_(None),
                 b.held_to_turn.is_(None),
                 b.state == BeliefHoldState.HELD.value,
+                # #167: a said row and an attributed content row do not decay; a nested belief
+                # decays as a first-order one does.
+                b.kind.in_((BeliefKind.FIRST_ORDER.value, BeliefKind.NESTED.value)),
                 b.source_event_ids.overlap(literal(in_window, type_=ARRAY(ulid_type()))),
             )
             .order_by(b.id)
@@ -1246,6 +1338,13 @@ async def forget_covered(
             antecedent=Antecedent.record("beliefs", belief.id),
             position=position,
             settings=effective,
+            belief_kind=belief.kind,
+            shape=None
+            if belief.kind is not BeliefKind.NESTED
+            else {
+                "attributed_holder_id": belief.attributed_holder_id,
+                "inner_belief_id": belief.inner_belief_id,
+            },
         )
         written += 1
     return written
@@ -1392,6 +1491,7 @@ __all__ = [
     "FLOORS",
     "FORGETTING",
     "KIND_ANTECEDENTS",
+    "NESTED_ANTECEDENTS",
     "Antecedent",
     "AntecedentOracle",
     "Confidence",
@@ -1399,6 +1499,7 @@ __all__ = [
     "HeldState",
     "HistoryEntry",
     "RefusingOracle",
+    "Signature",
     "StagedRecord",
     "Tally",
     "Transition",
@@ -1414,6 +1515,7 @@ __all__ = [
     "refused",
     "resolve_confidence",
     "settle",
+    "signature",
     "tallying",
     "transition",
     "transitions_of",

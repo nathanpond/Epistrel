@@ -309,6 +309,9 @@ class VerifyResult:
     speech: SpeechAct | None = None
     """#166: a first-person ``say`` claim's belief dimension and classification (``None``: not
     a character's say, or partitions off)."""
+    attribution: AttributionCheck | None = None
+    """#167: the claim attributes its proposition to someone ("Bobby thinks …"): its belief
+    relation over the speaker's nested beliefs and its objective relation (a label only)."""
 
     @property
     def reason(self) -> VerdictReason | None:
@@ -346,6 +349,8 @@ class VerifyResult:
     def canonizes(self) -> bool:
         """Whether a permitted novel claim may canonize: never a lie, a joke or a
         hallucination (#166)."""
+        if self.attribution is not None:
+            return False  # #167: an attribution asserts someone's belief, never canon
         return self.speech is None or self.speech.decision.classification in (
             speech_acts.SINCERE,
             speech_acts.SINCERE_ERROR,
@@ -358,7 +363,7 @@ class VerifyResult:
         (unless surfaced), and never a sincere error, a lie or a joke."""
         if self.hallucinated:
             return not self.surfaced
-        if self.stands:
+        if self.stands or self.attribution is not None:
             return False
         return (
             self.kind is VerdictKind.CONTRADICTED
@@ -409,6 +414,7 @@ class VerifyResult:
         } | (
             ({"cause": RESOLUTION_CONFLICT} if self.resolution_conflict else {})
             | ({"speech": self.speech.payload()} if self.speech is not None else {})
+            | ({"attribution": self.attribution.payload()} if self.attribution is not None else {})
         )
 
 
@@ -721,6 +727,32 @@ class Licence:
 
 
 @dataclass(frozen=True, slots=True)
+class AttributionCheck:
+    """An attribution claim's dimensions (#167; ``core.epistemic.nested``): whom it attributes
+    the proposition to and how (``mode``, ``factive``), the speaker's nested beliefs it was
+    checked over (``belief_ids``; ``None``: not checked, the ``nested_beliefs`` module being
+    off) and the **objective relation**, whether the attributed holder actually believes it
+    (computed by the Engine Core for the utterance label and the divergence records only; never
+    a context input)."""
+
+    attributed_holder: str | None
+    mode: str = "believes"
+    factive: bool = False
+    belief_ids: tuple[str, ...] | None = None
+    objective: str | None = None
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "attributed_holder": self.attributed_holder,
+            "mode": self.mode,
+            "factive": self.factive,
+            "checked": self.belief_ids is not None,
+            "belief_ids": list(self.belief_ids or ()),
+            "objective_relation": self.objective,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class SpeechAct:
     """One first-person claim's speech-act dimensions (#166): the speaker, the claim's position,
     the declared intent, the belief verdict, the classification (``decision``), the contrary
@@ -738,6 +770,9 @@ class SpeechAct:
     known: tuple[str, ...] = ()
     """The canon propositions the speaker holds of itself that the claim contradicts (its true
     age, FR-CAT-12), when no belief row does: a lie may deviate from them."""
+    inferred: bool = False
+    """#167: the intent was inferred ``deceptive``: the contrary belief is one the speaker keeps
+    ``secret`` (its author act's ``disclosure``)."""
 
     @property
     def classification(self) -> str:
@@ -760,6 +795,7 @@ class SpeechAct:
             "declared_intent": self.declared,
             "intent": self.decision.intent,
             "intent_corrected": self.decision.intent_corrected,
+            "intent_inferred": self.inferred,
             "classification": self.decision.classification,
             "contrary_belief_ids": list(self.contrary),
             "contrary_known": list(self.known),
@@ -882,6 +918,111 @@ class BeliefSource:
             ),
         )
         return tuple(b.id for b in ranked)
+
+    async def secret(self, belief_ids: Sequence[str]) -> bool:
+        """Whether one of ``belief_ids`` is a belief its holder keeps ``secret``: its author act
+        (the ``belief_authored`` event or a seed its ``author`` transition cites) declared
+        ``disclosure = secret`` (FR-SCN-8; #167's deceptive inference)."""
+        from sqlalchemy import and_
+
+        from epistrel.core.tables import events
+        from epistrel.core.tables.beliefs import belief_transitions
+
+        if not belief_ids:
+            return False
+        t = belief_transitions.c
+        e = events.c
+        found = await self.conn.scalar(
+            select(t.id)
+            .select_from(
+                belief_transitions.join(
+                    events,
+                    and_(e.story_id == t.story_id, e.id == t.antecedent_ref["id"].astext),
+                )
+            )
+            .where(
+                t.story_id == self.story_id,
+                t.belief_id.in_(list(belief_ids)),
+                t.kind == "author",
+                t.antecedent_ref["table"].astext == "events",
+                e.payload["disclosure"].astext == "secret",
+            )
+            .limit(1)
+        )
+        return found is not None
+
+    async def attribution(
+        self,
+        claim: Proposition,
+        believer: str,
+        found: Any,
+        at: NarrativePosition,
+    ) -> tuple[VerdictKind, tuple[str, ...], tuple[str, ...]]:
+        """An attribution claim's belief verdict for its speaker (#167): over the speaker's own
+        nested (or ``said``) rows attributed to the holder, or, for a self-report ("I figured
+        …"), the speaker's own beliefs; with the rows it rests on and the contrary ones."""
+        from epistrel.core.epistemic import nested
+
+        if found.holder_id == believer and found.mode == "believes":
+            verdict = await self.check(claim, believer, at)
+            if verdict is None:
+                return VerdictKind.NOVEL, (), ()
+            cited = tuple(e.belief_id for e in verdict.evidence if e.belief_id is not None)
+            contrary = cited if verdict.kind is VerdictKind.CONTRADICTED else ()
+            return verdict.kind, cited, contrary
+        relation = await nested.attribution_belief_relation(
+            self.conn,
+            self.story_id,
+            believer,
+            str(found.holder_id),
+            claim,
+            at,
+            mode=found.mode,
+            registry=await self.registry(),
+        )
+        return relation.verdict, relation.belief_ids, relation.contrary
+
+    async def attributed_licence(
+        self, claim: Proposition, believer: str, found: Any, at: NarrativePosition
+    ) -> Licence | None:
+        """An attribution's licensing path (#165's replay over nested propositions,
+        ``nested.could_have_attributed``): a nested belief the speaker held, or a speech act it
+        perceived the holder sincerely make. Nothing new is written: the path is the record."""
+        from epistrel.core.epistemic import nested, replay
+
+        if found.holder_id is None or found.mode != "believes":
+            return None
+        if found.holder_id == believer:
+            return await self.licence(claim, believer, at)
+        answer = await nested.could_have_attributed(
+            self.conn,
+            self.story_id,
+            believer,
+            str(found.holder_id),
+            claim,
+            at,
+            registry=await self.registry(),
+        )
+        if isinstance(answer, replay.Known):
+            return Licence("attributed", ref_id=answer.path.ref_id)
+        return None
+
+    async def objective(self, claim: Proposition, found: Any, at: NarrativePosition) -> str | None:
+        """The attribution's objective relation (#167): whether the attributed holder actually
+        believes (or said) it, a label computed by the Engine Core (``None``: no holder)."""
+        from epistrel.core.epistemic import nested
+
+        if found.holder_id is None:
+            return None
+        return await nested.attribution_objective_relation(
+            self.conn,
+            self.story_id,
+            str(found.holder_id),
+            claim,
+            at,
+            mode=found.mode,
+            registry=await self.registry(),
+        )
 
     async def licence(
         self,
@@ -1327,8 +1468,14 @@ class Verifier:
         open_ = result.kind not in (VerdictKind.SUPPORTED, VerdictKind.CONTRADICTED)
         if open_ and relation != "consistent" and declared != speech_acts.JOKING:
             hidden = await beliefs.hidden(claim, believer, at)
+        # #167: contradicting a belief the speaker keeps secret is a deception, whatever the
+        # render declared (FR-SCN-8's disclosure; a joke stays a joke).
+        intent_in = declared
+        inferred = False
+        if contrary and declared in ("sincere", "unspecified") and await beliefs.secret(contrary):
+            intent_in, inferred = speech_acts.DECEPTIVE, True
         inputs = speech_acts.Inputs(
-            intent=declared,
+            intent=intent_in,
             canon=result.kind,
             belief=found.kind,
             contrary=bool(contrary or known),
@@ -1339,7 +1486,7 @@ class Verifier:
             licence = await beliefs.licence(claim, believer, at, cites)
         decision = speech_acts.classify(inputs, licensed=licence is not None)
         speech = SpeechAct(
-            believer, at, declared, found, decision, contrary, hidden, licence, known
+            believer, at, declared, found, decision, contrary, hidden, licence, known, inferred
         )
         found_result = dataclasses.replace(result, speech=speech)
         if (
@@ -1354,6 +1501,99 @@ class Verifier:
             )
         log.debug("verify: speech act %s (belief %s)", decision.classification, found.kind.value)
         return found_result
+
+    # -- attributions (#167) ---------------------------------------------------------------
+
+    async def verify_attribution(
+        self,
+        claim: Proposition,
+        found: Any,
+        position: tuple[int, int] | None,
+        *,
+        believer: str | None,
+        ref: ClaimRef | None = None,
+        intent: str | None = None,
+    ) -> VerifyResult | None:
+        """An attribution claim ("Bobby thinks it was Marcus"; ``found``: its
+        ``ClaimAttribution``): never checked against canon as the speaker's assertion (its
+        verdict stays ``novel`` and it never canonizes). Under per-character partitions, its
+        objective relation is labelled; under ``nested_beliefs`` the speaker's (``believer``)
+        belief relation is computed over its own nested beliefs only and the claim classified
+        (``core.verify.speech_acts``: no legitimate basis → a hallucination, repaired). With the
+        module off the claim is exempt from the hallucination rule (``unknown``, sincere).
+        ``None`` when verification is off."""
+        from epistrel.core.epistemic import nested
+
+        if not self.config.on:
+            return None
+        where = ref or ClaimRef()
+        holder = Holder.belief(believer) if believer is not None else CANON
+        base = Verdict(VerdictKind.NOVEL, holder=holder, position=position)
+        result = VerifyResult(claim, base, VerdictKind.NOVEL)
+        beliefs = self.beliefs
+        at = None if beliefs is None else beliefs.position(position)
+        if beliefs is None or at is None:
+            check_ = AttributionCheck(found.holder_id, found.mode, found.factive)
+            result = dataclasses.replace(result, attribution=check_)
+            self.results.append((where, result))
+            return result
+        objective = await beliefs.objective(claim, found, at)
+        on = nested.nested_on(beliefs.settings)
+        if believer is None:
+            check_ = AttributionCheck(found.holder_id, found.mode, found.factive, None, objective)
+            result = dataclasses.replace(result, attribution=check_)
+            self.results.append((where, result))
+            return result
+        declared = intent or "unspecified"
+        kind: VerdictKind = VerdictKind.NOVEL
+        cited: tuple[str, ...] = ()
+        contrary: tuple[str, ...] = ()
+        if on and found.holder_id is not None:
+            kind, cited, contrary = await beliefs.attribution(claim, believer, found, at)
+        check_ = AttributionCheck(
+            found.holder_id,
+            found.mode,
+            found.factive,
+            cited if on and found.holder_id is not None else None,
+            objective,
+        )
+        settles = {"true": VerdictKind.SUPPORTED, "false": VerdictKind.CONTRADICTED}
+        inputs = speech_acts.Inputs(
+            intent=declared,
+            canon=VerdictKind.NOVEL,
+            belief=kind,
+            contrary=bool(contrary),
+            # What the attributed holder actually holds is beyond the speaker's view.
+            hidden=settles.get(objective or "") if on else None,
+        )
+        licence = None
+        if on and speech_acts.needs_licence(inputs):
+            licence = await beliefs.attributed_licence(claim, believer, found, at)
+        decision = speech_acts.classify(inputs, licensed=licence is not None)
+        if decision.classification == speech_acts.SINCERE_ERROR:
+            # The attribution's truth is a label, never its classification (FR-BELIEF-15).
+            decision = dataclasses.replace(decision, classification=speech_acts.SINCERE)
+        decision = dataclasses.replace(decision, write=None)
+        speech = SpeechAct(
+            believer,
+            at,
+            declared,
+            Verdict(kind, holder=holder, position=position),
+            decision,
+            contrary,
+            None,
+            licence,
+        )
+        result = dataclasses.replace(result, speech=speech, attribution=check_)
+        if decision.hallucinated and self.config.safe_disposition == "surface":
+            result = dataclasses.replace(
+                result,
+                disposition="surface",
+                degradation=(*result.degradation, UNCERTAIN_SURFACED),
+            )
+        self.results.append((where, result))
+        log.debug("verify: attribution %s", decision.classification)
+        return result
 
     # -- novelty and permission (#144) ----------------------------------------------------
 

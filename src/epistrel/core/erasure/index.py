@@ -829,6 +829,8 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "rebuilt stage (#137)",
     "belief_state": "a projection of beliefs, which are erased: ids, levels and positions, "
     "refolded by erasure's rebuilt stage (#159)",
+    "nested_belief_state": "a projection of nested beliefs, which are erased: ids, levels and "
+    "positions, refolded by erasure's rebuilt stage (#167)",
     # Deployment tables (#334: the coverage test enumerates every table with text or JSON).
     "alembic_version": "the schema migration's revision id",
     "schema_meta": "schema bookkeeping keys and values",

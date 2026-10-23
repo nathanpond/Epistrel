@@ -561,6 +561,9 @@ async def resolve_exposure(
                 **common,
             )
             written.append(said)
+            # #167: the same exposure yields the witness's nested belief that the source
+            # believes what it said (a joke: suspected; a detected deception: none).
+            await _nested(conn, op, exposure, outcome.decision, frame, settings, found)
         belief: Belief | None = None
         if outcome.transition is not None and outcome.confidence is not None:
             confidence = transitions.Confidence(outcome.confidence)
@@ -634,6 +637,53 @@ async def resolve_exposure(
         DEFAULTED,
         tuple(reads.query_keys),
     )
+
+
+async def _nested(
+    conn: AsyncConnection,
+    op: BeliefOperation,
+    exposure: Exposure,
+    decision: str,
+    frame: Position,
+    settings: Any,
+    registry: Registry,
+) -> None:
+    from epistrel.core.epistemic import nested
+    from epistrel.core.epistemic.errors import EpistemicError
+    from epistrel.core.profiles.effective import effective_configuration
+
+    if exposure.source is None or exposure.source == exposure.witness:
+        return
+    current = settings
+    if current is None:
+        current = (await effective_configuration(conn, exposure.story_id, validate=False)).settings
+    if not nested.nested_on(current):
+        return
+    intent = await _intent(conn, exposure.source_event_id)
+    level = nested.INTENT_LEVELS.get(testimony.perceived_of(intent, decision))
+    if level is None:
+        return
+    try:
+        await nested.write_nested(
+            conn,
+            op,
+            holder=exposure.witness,
+            attributed_holder=exposure.source,
+            proposition=exposure.proposition,
+            cause=nested.Cause(
+                transitions.Kind.INFERENCE,
+                transitions.Antecedent.record("events", exposure.source_event_id),
+            ),
+            position=frame,
+            confidence=transitions.Confidence(level),
+            times=nested.Times(held_from=frame),
+            settings=current,
+            registry=registry,
+            frame=frame,
+            resolution=True,
+        )
+    except EpistemicError, InvalidRequest:
+        transitions.refused()
 
 
 async def _fold_forward(

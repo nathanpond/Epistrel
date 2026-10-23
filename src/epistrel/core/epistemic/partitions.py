@@ -3,7 +3,7 @@ FR-STORE-3; docs/02 §4.4; #159).
 
 **What a partition is.** Each modeled character owns the ``beliefs`` rows whose
 ``holder_character_id`` is its id: what it holds true about the world (self-world) and about
-other people (social-world; nested beliefs are #167's), each wrapping one viewpoint-free
+other people (social-world), each wrapping one viewpoint-free
 proposition (FR-PROP-2). A false belief is stored exactly like a true one: it is the holder's
 truth (FR-EPI-3), and its provenance says how it was acquired (#160). Objective canon is another
 table (``facts``), another holder, another writer: canon never reads a belief and a partition
@@ -39,6 +39,14 @@ commit.
 - ``believers_of(story_id, proposition_id)``: who holds it now, from ``belief_state``.
 - ``belief_states``: a page of the projection, with each row's current belief, for
   ``GET /stories/{id}/inspect/beliefs``.
+
+**Nested beliefs and speech acts** (#167; ``core.epistemic.nested`` writes them through #160's
+``transition()``): ``nested_of`` reads a holder's open ``nested`` rows (what it thinks others
+believe), each with its inner chain; ``speech_acts`` its own ``said`` rows (the speaker from the
+row's ``speaker_character_id``). Neither is ever a first-order read: ``partition`` and every
+``check(holder = belief(H))`` record set see ``first_order`` rows only. ``nested_belief_state``
+projects the open nested rows as ``belief_state`` projects the first-order ones (``derive_nested``,
+the same hook, follower and fold).
 
 **The projection** (``belief_state``, FR-EPI-6, FR-STORE-3). ``derive`` is a pure function of a
 set of belief rows: one state row per active, open, first-order belief held at ``suspected`` or
@@ -107,7 +115,12 @@ from epistrel.core.propositions.codec import proposition_from_row
 from epistrel.core.propositions.model import Instant, Interval, Proposition
 from epistrel.core.propositions.registry import Registry, canonical, load
 from epistrel.core.tables import characters, entities, events, propositions
-from epistrel.core.tables.beliefs import belief_state, belief_transitions, beliefs
+from epistrel.core.tables.beliefs import (
+    belief_state,
+    belief_transitions,
+    beliefs,
+    nested_belief_state,
+)
 from epistrel.core.visibility import Visibility, private_to
 
 BELIEF_COMMITTED = "belief_committed"
@@ -174,6 +187,17 @@ class Belief(BaseModel):
     corrected_by: str | None = None
     lineage_id: str = ""
     resolution_operation_id: str | None = None
+    attributed_holder_id: str | None = None
+    inner_belief_id: str | None = None
+    depth: int = 1
+    attributed_confidence_level: BeliefConfidenceLevel | None = None
+    attributed_confidence_scalar: float | None = None
+    attributed_held_from: int | None = None
+    attributed_held_to: int | None = None
+    speaker_character_id: str | None = None
+    utterance_id: str | None = None
+    staged_ref: dict[str, Any] | None = None
+    perceived_intent: str | None = None
     closed_id: str | None = None
 
     def held_at(self, position: Position) -> bool:
@@ -285,7 +309,26 @@ def _belief_of(row: Any) -> Belief:
         resolution_operation_id=(
             None if m.get("resolution_operation_id") is None else str(m["resolution_operation_id"])
         ),
+        attributed_holder_id=_id(m.get("attributed_holder_id")),
+        inner_belief_id=_id(m.get("inner_belief_id")),
+        depth=int(m.get("depth") or 1),
+        attributed_confidence_level=(
+            None
+            if m.get("attributed_confidence_level") is None
+            else BeliefConfidenceLevel(m["attributed_confidence_level"])
+        ),
+        attributed_confidence_scalar=_scalar(m.get("attributed_confidence_scalar")),
+        attributed_held_from=m.get("attributed_held_from"),
+        attributed_held_to=m.get("attributed_held_to"),
+        speaker_character_id=_id(m.get("speaker_character_id")),
+        utterance_id=_id(m.get("utterance_id")),
+        staged_ref=m.get("staged_ref"),
+        perceived_intent=m.get("perceived_intent"),
     )
+
+
+def _id(value: Any) -> str | None:
+    return None if value is None else str(value)
 
 
 def _open() -> list[ColumnElement[bool]]:
@@ -385,9 +428,10 @@ async def read_belief(conn: AsyncConnection, story_id: str, belief_id: str) -> B
 
 @dataclass(frozen=True, slots=True)
 class SpeechActBelief:
-    """A holder's belief about a speech act (#162's minimal ``kind = speech_act`` row; #167 adds
-    the full shape): that ``speaker`` said the proposition (``believes(H, said(S, X))``), with
-    the testimony outcome its producing transition recorded."""
+    """A holder's belief about a speech act (``kind = speech_act``; #162, #167's full shape):
+    that ``speaker`` said the proposition (``believes(H, said(S, X))``), with the testimony
+    outcome its producing transition recorded; the utterance heard, the staged beat and the
+    perceived intent are on the row (``belief``)."""
 
     belief: Belief
     speaker_id: str | None
@@ -402,9 +446,10 @@ async def speech_acts(
     speaker: str | None = None,
     held: bool = True,
 ) -> list[SpeechActBelief]:
-    """``holder``'s speech-act beliefs (``said`` rows), each with its speaker (the producing
-    transition's source) and outcome; only ``speaker``'s when given; ``held``: the active, open
-    rows only. By id."""
+    """``holder``'s own speech-act beliefs (``said`` rows: not the inner content of a nested
+    belief), each with its speaker (the row's ``speaker_character_id``) and its producing
+    transition's outcome; only ``speaker``'s when given; ``held``: the active, open rows only. By
+    id."""
     b = beliefs.c
     t = belief_transitions.c
     query = (
@@ -415,24 +460,122 @@ async def speech_acts(
             b.story_id == story_id,
             b.holder_character_id == holder,
             b.kind == BeliefKind.SPEECH_ACT.value,
+            b.attributed_holder_id.is_(None),
         )
         .order_by(b.id)
     )
     if held:
         query = query.where(active_only(beliefs), b.tx_to.is_(None), b.held_to_turn.is_(None))
     if speaker is not None:
-        query = query.where(t.source_character_id == speaker)
+        query = query.where(b.speaker_character_id == speaker)
     found = []
     for row in await conn.execute(query):
         m = row._mapping
         found.append(
             SpeechActBelief(
                 _belief_of(row),
-                None if m["said_by"] is None else str(m["said_by"]),
+                _id(m["speaker_character_id"]) or _id(m["said_by"]),
                 m["said_outcome"],
             )
         )
     return found
+
+
+@dataclass(frozen=True, slots=True)
+class NestedBelief:
+    """One open nested belief of a holder (#167): the outer ``nested`` row and its inner chain,
+    outermost first (``attributed`` rows, ending in a ``speech_act`` row when the content is a
+    said). ``holders`` are the attributed holders, outermost first: ``(B,)`` for
+    ``believes(H, believes(B, P))``."""
+
+    belief: Belief
+    chain: tuple[Belief, ...]
+
+    @property
+    def attributed_holder_id(self) -> str:
+        return str(self.belief.attributed_holder_id)
+
+    @property
+    def holders(self) -> tuple[str, ...]:
+        return chain_signature(self.attributed_holder_id, self.chain)[0]
+
+    @property
+    def said_by(self) -> str | None:
+        """The speaker when the innermost content is a speech act (``believes(B, said(S, P))``)."""
+        return chain_signature(self.attributed_holder_id, self.chain)[1]
+
+
+def chain_signature(
+    attributed_holder: str, chain: Sequence[Belief]
+) -> tuple[tuple[str, ...], str | None]:
+    """A nested belief's attribution: its attributed holders, outermost first, and the speaker
+    of an innermost speech act (``None``: the content is a belief)."""
+    holders = [attributed_holder]
+    for inner in chain[1:]:
+        if inner.kind is BeliefKind.ATTRIBUTED and inner.attributed_holder_id is not None:
+            holders.append(inner.attributed_holder_id)
+    last = chain[-1] if chain else None
+    said = None
+    if last is not None and last.kind is BeliefKind.SPEECH_ACT:
+        said = last.speaker_character_id
+    return tuple(holders), said
+
+
+async def _chain(conn: AsyncConnection, story_id: str, outer: Belief) -> tuple[Belief, ...]:
+    found: list[Belief] = []
+    current = outer.inner_belief_id
+    seen: set[str] = set()
+    while current is not None and current not in seen and len(found) < 8:
+        seen.add(current)
+        inner = await read_belief(conn, story_id, current)
+        if inner is None:
+            break
+        found.append(inner)
+        current = inner.inner_belief_id
+    return tuple(found)
+
+
+async def nested_of(
+    conn: AsyncConnection,
+    story_id: str,
+    holder: str,
+    *,
+    attributed_holder: str | None = None,
+    through: Position | None = None,
+    subjects: Sequence[str] | None = None,
+    predicate: str | None = None,
+    held: bool = True,
+) -> list[NestedBelief]:
+    """``holder``'s nested beliefs (the outer ``nested`` rows, each with its inner chain): held at
+    ``through`` (``None``: now; a past read sees a corrected row over its span, as
+    ``partition``'s does), only those attributed to ``attributed_holder``, about ``subjects`` or
+    of ``predicate`` when given; ``held`` false: every active row, closed ones included. By
+    id."""
+    b = beliefs.c
+    p = propositions.c
+    where: list[ColumnElement[bool]] = [
+        b.story_id == story_id,
+        b.holder_character_id == holder,
+        b.kind == BeliefKind.NESTED.value,
+        active_only(beliefs),
+    ]
+    if held:
+        if through is None:
+            where += [b.tx_to.is_(None), *held_at_clause(None)]
+        else:
+            where += [
+                or_(b.tx_to.is_(None), b.state == BeliefHoldState.CORRECTED.value),
+                *held_at_clause(through),
+                included_through(beliefs, through.turn),
+            ]
+    if attributed_holder is not None:
+        where.append(b.attributed_holder_id == attributed_holder)
+    if subjects is not None:
+        where.append(p.subject_id.in_(list(subjects)))
+    if predicate is not None:
+        where.append(p.predicate_id == predicate)
+    rows = [_belief_of(r) for r in await conn.execute(_select().where(*where).order_by(b.id))]
+    return [NestedBelief(r, await _chain(conn, story_id, r)) for r in rows]
 
 
 def _state_of(row: Any) -> BeliefState:
@@ -654,6 +797,105 @@ async def refresh(conn: AsyncConnection, story_id: str, keys: Iterable[Key]) -> 
         if new is not None and old is None:
             await conn.execute(insert(belief_state).values(**new))
             changed += 1
+    # #167: the same keys' nested beliefs (their innermost proposition), kept alongside.
+    return changed + await refresh_nested(conn, story_id, chosen)
+
+
+def derive_nested(rows: Iterable[Belief]) -> dict[str, dict[str, Any]]:
+    """The ``nested_belief_state`` rows of ``rows`` (pure, order-free): one per active, open
+    ``nested`` belief held at ``suspected`` or above, keyed by its belief id (#167)."""
+    found: dict[str, dict[str, Any]] = {}
+    for b in sorted(rows, key=lambda r: r.id):
+        if (
+            b.membership is not Membership.ACTIVE
+            or b.tx_to is not None
+            or b.held_to is not None
+            or b.kind is not BeliefKind.NESTED
+            or b.attributed_holder_id is None
+            or b.confidence_level not in HELD_LEVELS
+        ):
+            continue
+        found[b.id] = {
+            "story_id": b.story_id,
+            "belief_id": b.id,
+            "holder_character_id": b.holder_character_id,
+            "attributed_holder_id": b.attributed_holder_id,
+            "proposition_id": b.proposition_id,
+            "polarity": b.polarity,
+            "depth": b.depth,
+            "current_level": b.confidence_level.value,
+            "current_scalar": b.confidence_scalar,
+            "attributed_level": (
+                None
+                if b.attributed_confidence_level is None
+                else b.attributed_confidence_level.value
+            ),
+            "attributed_scalar": b.attributed_confidence_scalar,
+            **b.held_from.columns("since"),
+        }
+    return found
+
+
+async def _open_nested(
+    conn: AsyncConnection, story_id: str, keys: Sequence[Key] | None
+) -> list[Belief]:
+    b = beliefs.c
+    where: list[ColumnElement[bool]] = [
+        b.story_id == story_id,
+        active_only(beliefs),
+        b.tx_to.is_(None),
+        b.held_to_turn.is_(None),
+        b.kind == BeliefKind.NESTED.value,
+    ]
+    if keys is not None:
+        if not keys:
+            return []
+        where.append(tuple_(b.holder_character_id, b.proposition_id).in_(list(keys)))
+    return [_belief_of(r) for r in await conn.execute(_select().where(*where))]
+
+
+async def fold_nested_state(conn: AsyncConnection, story_id: str) -> list[dict[str, Any]]:
+    """Every ``nested_belief_state`` row of the story, derived from its beliefs (the rebuild)."""
+    return list(derive_nested(await _open_nested(conn, story_id, None)).values())
+
+
+def _nested_comparable(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        k: (None if v is None else float(v)) if k in ("current_scalar", "attributed_scalar") else v
+        for k, v in row.items()
+        if k in nested_belief_state.c
+    }
+
+
+async def refresh_nested(conn: AsyncConnection, story_id: str, keys: Iterable[Key]) -> int:
+    """Re-derive the ``nested_belief_state`` rows of the ``(holder, proposition)`` keys and write
+    the difference; answers the rows changed."""
+    chosen = sorted(set(keys))
+    if not chosen:
+        return 0
+    wanted = derive_nested(await _open_nested(conn, story_id, chosen))
+    n = nested_belief_state.c
+    stored = {
+        str(r.belief_id): _nested_comparable(dict(r._mapping))
+        for r in await conn.execute(
+            select(nested_belief_state).where(
+                n.story_id == story_id,
+                tuple_(n.holder_character_id, n.proposition_id).in_(chosen),
+            )
+        )
+    }
+    changed = 0
+    for belief_id in sorted(set(stored) | set(wanted)):
+        old, new = stored.get(belief_id), wanted.get(belief_id)
+        if old is not None and (new is None or _nested_comparable(new) != old):
+            await conn.execute(
+                delete(nested_belief_state).where(n.story_id == story_id, n.belief_id == belief_id)
+            )
+            changed += 1
+            old = None
+        if new is not None and old is None:
+            await conn.execute(insert(nested_belief_state).values(**new))
+            changed += 1
     return changed
 
 
@@ -719,6 +961,24 @@ register_follower(follow_operations)
 
 
 # -- writing ----------------------------------------------------------------------------------
+
+BELIEF_SHAPE_COLUMNS: frozenset[str] = frozenset(
+    {
+        "attributed_holder_id",
+        "inner_belief_id",
+        "depth",
+        "attributed_confidence_level",
+        "attributed_confidence_scalar",
+        "attributed_held_from",
+        "attributed_held_to",
+        "speaker_character_id",
+        "utterance_id",
+        "staged_ref",
+        "perceived_intent",
+    }
+)
+"""The nested and speech-act columns a write may set (#167, ``_insert_belief``'s ``shape``; a
+``proposition_id`` there reuses the stored proposition: a nested belief's rows share one)."""
 
 
 async def _holder_ok(conn: AsyncConnection, story_id: str, holder: str) -> None:
@@ -840,10 +1100,12 @@ async def _insert_belief(
     lineage_id: str | None = None,
     kind: BeliefKind = BeliefKind.FIRST_ORDER,
     resolution: bool = False,
+    shape: Mapping[str, Any] | None = None,
 ) -> Belief:
     """Write ``proposition`` as a belief of ``holder`` (first-order unless ``kind`` says
-    otherwise: #162's ``speech_act`` row holds that someone said it, never reusing or closing a
-    first-order belief) in ``operation``'s commit
+    otherwise: a ``speech_act`` row holds that someone said it, a ``nested``/``attributed`` row
+    what the holder thinks someone believes, never reusing or closing a first-order belief; their
+    columns are ``shape``'s, ``BELIEF_SHAPE_COLUMNS``) in ``operation``'s commit
     transaction (see the module docstring); answers the belief, with the open belief it closed
     in ``closed_id``. 422 ``holder_has_no_partition`` for the player's character; 422
     ``unknown_predicate``; 409 ``erased_subject_referenced`` for an erased subject."""
@@ -860,8 +1122,13 @@ async def _insert_belief(
         )
     stored = canonical(proposition, found)
     subject_character, object_character = await _subject_characters(conn, story_id, stored)
+    extra = {k: v for k, v in (shape or {}).items() if k in BELIEF_SHAPE_COLUMNS}
+    attributed = extra.get("attributed_holder_id")
+    speaker = extra.get("speaker_character_id")
     references = frozenset(
-        c for c in (holder, subject_character, object_character) if c is not None
+        c
+        for c in (holder, subject_character, object_character, attributed, speaker)
+        if c is not None
     )
     await guard.check_content(
         conn, story_id, [guard.Content((), references)], base_revision=None, path=__name__
@@ -904,9 +1171,12 @@ async def _insert_belief(
     prior = next(
         (x for x in candidates if x.proposition.normalized_key() == stored.normalized_key()), None
     )
+    reused = (shape or {}).get("proposition_id")
     proposition_id = (
         prior.proposition_id
         if prior is not None
+        else str(reused)
+        if reused is not None
         else await store.write_proposition(conn, story_id, proposition, found)
     )
     closed = prior
@@ -958,6 +1228,7 @@ async def _insert_belief(
         "lineage_id": lineage_id or belief_id,
         # #164: a lazy resolution's inclusion operation is the needing turn that wrote it.
         "resolution_operation_id": operation.operation_id if resolution else None,
+        **extra,
     }
     await insert_derived(conn, beliefs, [row])
     await index_records(
@@ -970,6 +1241,8 @@ async def _insert_belief(
                     holder_character_id=holder,
                     subject_character_id=subject_character,
                     object_character_id=object_character,
+                    attributed_holder_id=attributed,
+                    speaker_character_id=speaker,
                 )
             )
         ],
@@ -988,6 +1261,7 @@ async def _insert_belief(
 __all__ = [
     "BELIEF_COMMITTED",
     "BELIEF_HOOKS",
+    "BELIEF_SHAPE_COLUMNS",
     "HELD_LEVELS",
     "INSPECT_LIMIT_DEFAULT",
     "INSPECT_LIMIT_MAX",
@@ -999,20 +1273,26 @@ __all__ = [
     "BeliefOperation",
     "BeliefState",
     "Key",
+    "NestedBelief",
     "SpeechActBelief",
     "StatePage",
     "at_least",
     "belief_states",
     "believers_of",
+    "chain_signature",
     "derive",
+    "derive_nested",
+    "fold_nested_state",
     "fold_state",
     "follow_operations",
     "held_at_clause",
     "inspect",
     "is_player",
+    "nested_of",
     "partition",
     "read_belief",
     "refresh",
+    "refresh_nested",
     "register_belief_hook",
     "remove_belief_hook",
     "speech_acts",

@@ -43,12 +43,16 @@ class PositionBody(BaseModel):
 
 
 class AuthoredBeliefBody(BaseModel):
-    """The belief after the call: its proposition, dual confidence, accessibility and hold
-    state, the transition that produced it (``provenance``), the positions between which the
-    holder holds it, valid-time (story-minutes) and its lineage."""
+    """The belief after the call: its kind (``first_order``, or ``nested`` with its attributed
+    holder and depth, #167), proposition, dual confidence, accessibility and hold state, the
+    transition that produced it (``provenance``), the positions between which the holder holds
+    it, valid-time (story-minutes) and its lineage."""
 
     id: str
     holder_character_id: str
+    kind: str
+    attributed_holder_id: str | None
+    depth: int
     proposition_id: str
     proposition: Proposition
     polarity: str
@@ -68,6 +72,9 @@ class AuthoredBeliefBody(BaseModel):
         return cls(
             id=belief.id,
             holder_character_id=belief.holder_character_id,
+            kind=belief.kind.value,
+            attributed_holder_id=belief.attributed_holder_id,
+            depth=belief.depth,
             proposition_id=belief.proposition_id,
             proposition=belief.proposition,
             polarity=belief.polarity,
@@ -146,7 +153,12 @@ class BeliefWritten(MutationResponse):
         "(FR-EPI-7); a belief the holder already holds changes in place, and a held belief it "
         "contradicts is closed (`closed`, kept in its history). 409 `module_off` unless the "
         "story keeps partitions; 422 `holder_has_no_partition` for the player's character or "
-        "a non-character.\n\nA position-less `control` operation that bumps the story's "
+        "a non-character.\n\n`attributed_to` (character ids, outermost first) makes it a "
+        "nested belief: the holder thinks `attributed_to[0]` believes the proposition (through "
+        "any further holders), with an optional `attributed_confidence_level`; 409 `module_off` "
+        "unless the story keeps nested beliefs, 422 `nesting_too_deep` past its configured "
+        "depth (`character_knowledge.nested_beliefs.depth`, a first-order belief counting 1).\n\n"
+        "A position-less `control` operation that bumps the story's "
         "timeline revision, so a turn generating meanwhile revalidates before it commits. Any "
         "principal may call it. `Idempotency-Key` and `X-Epistrel-Expected-Revision` are "
         "optional."

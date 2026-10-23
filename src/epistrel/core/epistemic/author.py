@@ -12,6 +12,11 @@ agree: 422 ``confidence_inconsistent``) or neither (``known``, an author's defau
 409 ``module_off`` when the story's configuration keeps no partitions; 422
 ``holder_has_no_partition`` for the player's character or a non-character. ``Idempotency-Key``
 and ``X-Epistrel-Expected-Revision`` are honoured by the Engine method.
+
+``attributed_to`` (#167) makes it a nested belief (``core.epistemic.nested``): the holder thinks
+``attributed_to[0]`` believes the proposition (through the further holders, outermost first),
+optionally with ``attributed_confidence_level``. 409 ``module_off`` unless the story keeps
+nested beliefs; 422 ``nesting_too_deep`` past ``character_knowledge.nested_beliefs.depth``.
 """
 
 from __future__ import annotations
@@ -26,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.enums import BeliefConfidenceLevel, OperationKind, Provenance
-from epistrel.core.epistemic import transitions
+from epistrel.core.epistemic import nested, transitions
 from epistrel.core.epistemic.partitions import Belief
 from epistrel.core.epistemic.transitions import Antecedent, Confidence, Transition
 from epistrel.core.errors import ModuleOff
@@ -84,6 +89,13 @@ class BeliefRequest(BaseModel):
     confidence_level: BeliefConfidenceLevel | None = None
     confidence_scalar: StrictFloat | None = Field(default=None, ge=0, le=1)
     disclosure: Literal["open", "guarded", "secret"] | None = None
+    attributed_to: list[Annotated[str, Field(pattern=ULID_PATTERN)]] = Field(
+        default_factory=list, max_length=6
+    )
+    """#167: a nested belief: the holder thinks ``attributed_to[0]`` believes (that
+    ``attributed_to[1]`` believes, …) the proposition. Empty: a first-order belief."""
+    attributed_confidence_level: BeliefConfidenceLevel | None = None
+    """#167: how sure the holder thinks the attributed holder is (optional)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +178,28 @@ async def write_belief(
                     events.c.type == BELIEF_AUTHORED,
                 )
             )
+            if request.attributed_to:
+                # #167: a nested belief, depth-checked (422 nesting_too_deep past the dial).
+                found["result"] = (
+                    await nested.write_nested(
+                        conn,
+                        op,
+                        holder=request.holder,
+                        attributed_holder=request.attributed_to[0],
+                        deeper=request.attributed_to[1:],
+                        proposition=request.proposition,
+                        polarity=request.polarity,
+                        cause=nested.Cause(
+                            transitions.Kind.AUTHOR, Antecedent.record("events", str(act))
+                        ),
+                        position=await _position(conn, story_id),
+                        confidence=Confidence(request.confidence_level, request.confidence_scalar),
+                        attributed_confidence=Confidence(request.attributed_confidence_level),
+                        api=True,
+                        settings=settings,
+                    )
+                ).result
+                return
             found["result"] = await transitions.transition(
                 conn,
                 op,

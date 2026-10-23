@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
 from epistrel.core.enums import OperationKind
+from epistrel.core.epistemic import author
 from epistrel.core.propositions.model import (
     Interval,
     LiteralKind,
@@ -282,3 +283,66 @@ async def test_u_05__m5(
                     if "speech" in v
                 ]
                 assert verdict["intent_corrected"] is True
+
+
+@pytest.mark.part("M5", "FR-TURN-6,7")
+async def test_u_05__secret(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+    testimony_delivered: None,
+) -> None:
+    """#167: a sincere say that contradicts a belief its speaker keeps ``secret`` (its author
+    act's ``disclosure``) is inferred ``deceptive``: a lie, with its divergence, the stored intent
+    as declared and the inference reported (``intent_inferred``). The complement: the same
+    belief held ``open`` leaves the claim sincere and baseless, a hallucination, repaired."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        for disclosure, expected in (
+            ("secret", ("deceptive", "lie", True)),
+            ("open", ("sincere", "hallucination_repaired", False)),
+        ):
+            story, ids = await structured_story(client, "Wren", "Ada")
+            await ts.enable_testimony(engine, story, "defaulted", level="co_location")
+            ada = ids["Ada"]
+            await age_fact(engine, story, ada, 64)
+            written = await author.write_belief(
+                engine,
+                story,
+                author.BeliefRequest(holder=ada, proposition=_age(ada, 64), disclosure=disclosure),
+                principal="p-author",
+            )
+            stub.reset()
+            stub.script(
+                "generation",
+                [
+                    render(
+                        beat(
+                            "say",
+                            "I am 30.",
+                            intent="sincere",
+                            propositions=[claim("I", "age", "30")],
+                        )
+                    )
+                ],
+            )
+            response = await respond(client, story, body(ids["Wren"], "How old are you?"))
+            assert response.status_code == 200, response.text
+            (verdict,) = [
+                v["speech"]
+                for v in (await turn_report(engine, story))["verify"]["verdicts"]
+                if "speech" in v
+            ]
+            intent, classification, inferred = expected
+            assert (verdict["intent"], verdict["classification"], verdict["intent_inferred"]) == (
+                intent,
+                classification,
+                inferred,
+            ), disclosure
+            assert verdict["declared_intent"] == "sincere"
+            found = await rows(engine, "SELECT * FROM divergences WHERE story_id = :s", s=story)
+            if inferred:
+                (divergence,) = found
+                assert divergence.believed_belief_id == written.belief.id
+            else:
+                assert found == [], disclosure

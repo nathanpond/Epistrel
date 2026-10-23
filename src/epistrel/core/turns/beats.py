@@ -93,6 +93,7 @@ from epistrel.core.resolution.time import story_time_at
 from epistrel.core.tables import characters, events
 from epistrel.core.tables.characters import TRUE_AGE_MAX, TRUE_AGE_MIN
 from epistrel.core.tables.utterances import utterances
+from epistrel.core.verify.attribution import ClaimAttribution
 
 log = logging.getLogger(__name__)
 
@@ -142,6 +143,17 @@ class AssertedClaim:
     """The claim's speech-act classification (#166, ``core.verify.speech_acts``)."""
     intent_corrected: bool = False
     """A declared lie the speaker's beliefs support, relabelled sincere (#166)."""
+    attribution: ClaimAttribution | None = None
+    """#167: the claim attributes its proposition to someone ("Bobby thinks …"): not the
+    speaker's own assertion of it."""
+    attribution_objective: str | None = None
+    """#167: whether the attributed holder actually believes it (``true``/``false``/
+    ``unresolved``): the utterance's label, never a context input."""
+
+    @property
+    def attributed(self) -> bool:
+        """An attribution claim (#167): it reports a belief, it asserts nothing of its own."""
+        return self.attribution is not None
 
     def payload(self) -> BeatProposition:
         assert self.proposition is not None  # noqa: S101 - only normalized claims are listed
@@ -245,7 +257,8 @@ def objective_relation_of(claims: Iterable[AssertedClaim]) -> ObjectiveRelation:
     """An utterance's objective relation (FR-TURN-6): over its claims' verdicts, any
     ``contradicted`` → ``false``; all ``supported`` (at least one) → ``true``; otherwise →
     ``unresolved`` (undecided, novel, denied, none at all, or verification off)."""
-    verdicts = [c.verdict for c in claims]
+    # #167: an attribution claim asserts someone's belief, not its proposition.
+    verdicts = [c.verdict for c in claims if not c.attributed]
     if CONTRADICTED in verdicts:
         return "false"
     if verdicts and all(v == SUPPORTED for v in verdicts):
@@ -345,22 +358,44 @@ class Utterance:
     intent: Intent = UNSPECIFIED
     belief_relation: str = UNKNOWN_BELIEF
     classification: str | None = None
+    attribution_objective_relation: str | None = None
+
+
+def attribution_objective_of(claims: Iterable[AssertedClaim]) -> str | None:
+    """An utterance's attribution objective relation (#167): over its attribution claims'
+    objective relations, any ``false`` → ``false``, else any ``unresolved`` → ``unresolved``, else
+    ``true``; ``None`` when it attributes nothing (or none was labelled)."""
+    found = [c.attribution_objective for c in claims if c.attributed]
+    labelled = [f for f in found if f is not None]
+    if not labelled:
+        return None
+    if "false" in labelled:
+        return "false"
+    if "unresolved" in labelled:
+        return "unresolved"
+    return "true"
 
 
 def utterance_of(beat: TurnBeat, proposition_ids: Sequence[str]) -> Utterance:
     """The utterance a ``say`` beat stores: its labels (#166: the speech-act labels of its
-    classified claims)."""
+    classified claims). ``proposition_ids`` are its claims' stored propositions, in claim
+    order; an attribution claim's (#167) is not one the speaker asserted, and is left out."""
     if beat.kind != "say" or beat.character_id is None:
         raise InvalidRequest("only a character's say is an utterance", {"field": "beat"})
     speech = speech_labels(beat.claims, beat.intent)
+    normalized = [c for c in beat.claims if c.proposition is not None]
+    ids = list(proposition_ids)
+    if len(normalized) == len(ids):
+        ids = [i for c, i in zip(normalized, ids, strict=True) if not c.attributed]
     return Utterance(
         beat=beat.beat,
         speaker_character_id=beat.character_id,
-        proposition_ids=tuple(proposition_ids),
+        proposition_ids=tuple(ids),
         objective_relation=objective_relation_of(beat.claims),
         intent=speech.intent,
         belief_relation=speech.belief_relation,
         classification=speech.classification,
+        attribution_objective_relation=attribution_objective_of(beat.claims),
     )
 
 
@@ -400,6 +435,7 @@ async def write_utterances(
                 "belief_relation": row.belief_relation,
                 "intent": row.intent,
                 "classification": row.classification,
+                "attribution_objective_relation": row.attribution_objective_relation,
             }
         )
     await insert_derived(conn, utterances, values)

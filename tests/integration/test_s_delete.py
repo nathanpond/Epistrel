@@ -15,7 +15,7 @@ from epistrel.core.commit import lifecycle
 from epistrel.core.commit.sketch import ThunkSketch
 from epistrel.core.context import RequestContext
 from epistrel.core.enums import OpenSlot, OperationKind, Provenance
-from epistrel.core.epistemic import divergences
+from epistrel.core.epistemic import divergences, nested, transitions
 from epistrel.core.errors import GuardrailViolation
 from epistrel.core.events import Operation
 from epistrel.core.feedback import FeedbackRequest
@@ -39,6 +39,7 @@ from tests import (
     escalation_support,
     exposure_support,
     memory_support,
+    nested_support,
     partition_support,
 )
 from tests import erasure_support as erasure
@@ -259,6 +260,26 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
 
         op.add_commit_step(lie)
         await op.commit()
+    # Nested beliefs (#167): what the other character thinks the player believes, and its
+    # projection row.
+    with nested_support.delivered():
+        nested_on = await nested_support.nested_settings(engine, story_id)
+
+        async def attribute(conn: AsyncConnection, op: Operation, event_id: str) -> object:
+            return await nested.write_nested(
+                conn,
+                op,
+                holder=character_id,
+                attributed_holder=str(player),
+                proposition=held.proposition,
+                cause=nested.Cause(
+                    transitions.Kind.AUTHOR, transitions.Antecedent.record("events", event_id)
+                ),
+                position=Position(op.narrative_turn or 0, op.turn_variant or 0, 0, 3, 0),
+                settings=nested_on,
+            )
+
+        await nested_support.in_operation(engine, story_id, attribute, kind=OperationKind.CONTROL)
     # Memory records (#135): a memory of the story, written by its own operation.
     await memory_support.derived_memory(engine, story_id, "Ann sails at dawn.", [])
     # The hot set (#147): an overflow episode of the story's vectors, planted (one needs a
@@ -564,6 +585,9 @@ async def test_story_isolation_schema(engine: AsyncEngine) -> None:
             # #166: a divergence names the contrary belief its lie deviates from (a deferred
             # key); both are the speaker's, in one story.
             ("believed_belief_id", "beliefs", "id"),
+            # #167: a nested belief names its inner belief (a deferred key); both are the
+            # holder's, in one story.
+            ("inner_belief_id", "beliefs", "id"),
         }
         found = {
             (column, target, target_column) for _, column, target, target_column in foreign_keys

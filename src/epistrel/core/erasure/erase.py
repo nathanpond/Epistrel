@@ -1500,6 +1500,23 @@ async def _erase_beliefs(
             *about,
         }
     )
+    # #167: a nested belief goes with its inner rows (an erased attributed holder or speaker
+    # deeper in its chain), outermost last.
+    frontier = list(held)
+    while frontier:
+        outer = sorted(
+            {
+                str(i)
+                for i in await conn.scalars(
+                    select(beliefs.c.id).where(
+                        beliefs.c.story_id == story_id, beliefs.c.inner_belief_id.in_(frontier)
+                    )
+                )
+            }
+            - set(held)
+        )
+        held += outer
+        frontier = outer
     for belief_id in held:
         await _delete(
             conn,

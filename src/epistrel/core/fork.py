@@ -157,7 +157,7 @@ the copied turns, ``lite_summary_segments`` (#72) by folding the copied events, 
 segment's ``superseded`` state is the fork's own (a merged parent past the fork point is not
 copied, and its children are active in the fork), the structured projections
 (``relationships``, ``placement``, ``scene_state``; #137) by folding the copied canon, and
-``belief_state`` (#159) by folding the copied beliefs."""
+``belief_state`` (#159) and ``nested_belief_state`` (#167) by folding the copied beliefs."""
 
 FORK_SUFFIX = " (fork)"
 

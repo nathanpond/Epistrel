@@ -150,7 +150,12 @@ from epistrel.core.tables import (
     turn_queue,
     worker_heartbeats,
 )
-from epistrel.core.tables.beliefs import belief_state, belief_transitions, beliefs
+from epistrel.core.tables.beliefs import (
+    belief_state,
+    belief_transitions,
+    beliefs,
+    nested_belief_state,
+)
 from epistrel.core.tables.characters import DEFLECTION_STYLE_MAX, TRUE_AGE_MAX, TRUE_AGE_MIN
 from epistrel.core.tables.commitments import promissory_ledger, thunks
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
@@ -223,6 +228,7 @@ STORY_TABLES: tuple[Table, ...] = (
     beliefs,
     belief_transitions,
     belief_state,
+    nested_belief_state,
     # Exposures (#164): a derived table, before the operations it references.
     exposures,
     # Memory records (#135): a derived table, before the operations it references.

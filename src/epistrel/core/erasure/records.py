@@ -347,11 +347,17 @@ def fact_record(row: Any) -> Record:
 def belief_record(row: Any) -> Record:
     """A belief (#159): no text of its own (its proposition is indexed); its holder and the
     characters its proposition's subject and object are (``subject_character_id``,
-    ``object_character_id``, read through ``entities``) are declared subjects."""
+    ``object_character_id``, read through ``entities``) are declared subjects, and so are a nested
+    belief's attributed holder and a speech act's speaker (#167)."""
     declared: list[Declared] = [
         (SubjectKind.CHARACTER, str(row.holder_character_id), "holder_character_id")
     ]
-    for field in ("subject_character_id", "object_character_id"):
+    for field in (
+        "subject_character_id",
+        "object_character_id",
+        "attributed_holder_id",
+        "speaker_character_id",
+    ):
         found = getattr(row, field, None)
         if found is not None:
             declared.append((SubjectKind.CHARACTER, str(found), field))
@@ -742,6 +748,8 @@ async def read_beliefs(conn: AsyncConnection, story_id: str | None) -> list[Reco
             b.holder_character_id,
             subject.c.character_id.label("subject_character_id"),
             obj.c.character_id.label("object_character_id"),
+            b.attributed_holder_id,
+            b.speaker_character_id,
         )
         .select_from(
             beliefs.join(propositions, propositions.c.id == b.proposition_id)

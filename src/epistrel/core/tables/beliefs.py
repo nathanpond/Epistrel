@@ -23,6 +23,20 @@ proposition (``propositions``, #131: viewpoint-free, FR-PROP-2) wrapped with
 - **who may read it**: ``visibility``, always ``{"scope": "characters", "characters":
   [holder]}`` (CHECK ``holder_only``): a belief is private by construction.
 
+**Nested beliefs and speech acts** (#167, migration 0074; ``core.epistemic.nested``): a
+``nested`` row is the holder's belief that ``attributed_holder_id`` believes something: its
+``inner_belief_id`` is an immutable ``attributed`` row of the same holder (the content
+``believes(B, P)``: excluded from every first-order read), itself pointing further in for a deeper
+nesting, or at a ``speech_act`` row. Both carry the innermost proposition ``P`` in
+``proposition_id``. ``depth`` counts the levels (first-order 1, ``believes(H, believes(B, P))``
+2; a ``said`` wrapper counts). The outer row carries how sure the holder thinks ``B`` is
+(``attributed_confidence_level``/``_scalar``) and when the holder thinks ``B`` holds it
+(``attributed_held_from``/``_to``, story-minutes) beside its own ``held_from``/``held_to`` and
+``P``'s ``valid_from``/``valid_to``. A ``speech_act`` row (``believes(H, said(S, X))``) names its
+``speaker_character_id``, the ``utterance_id`` heard (``NULL`` for one learned by testimony), a
+``staged_ref`` (a staged beat's, #174) and the ``perceived_intent``. CHECK ``kind_shape`` keeps
+each kind's columns.
+
 **How it is held now** (#160): ``accessibility`` (``1.0``; forgetting lowers it), ``state``
 (``held``, ``decayed``, ``corrected``), ``corrected_by`` (the belief that corrected it) and
 ``lineage_id`` (the first belief of its correction chain).
@@ -49,8 +63,13 @@ proposition the holder currently holds at ``suspected`` or above (``unknown`` an
 have none), with the current level and scalar, the polarity, the belief row it rests on and the
 position since which it holds (``since_*``, the belief's ``held_from``). A rebuildable cache
 (``core.projections.beliefs``): re-derived per write in the write's transaction, after every
-membership flip, and folded by a rebuild, an erasure and a fork. First-order beliefs only (#167
-adds ``nested_belief_state``).
+membership flip, and folded by a rebuild, an erasure and a fork. First-order beliefs only.
+
+**``nested_belief_state``** (#167) — the open nested beliefs held at ``suspected`` or above, one
+row per outer ``nested`` row (``belief_id``), with its holder, attributed holder, innermost
+proposition, polarity, depth, the holder's level and scalar, the attributed level and scalar and
+the position since which it holds: a rebuildable cache (``core.projections.beliefs``), kept like
+``belief_state``.
 """
 
 from __future__ import annotations
@@ -91,6 +110,19 @@ from epistrel.core.tables.base import metadata, pg_enum, ulid_type
 from epistrel.core.visibility import VISIBILITY_CHARACTERS_CHECK, VISIBILITY_SCOPE_CHECK
 
 POLARITIES: tuple[str, ...] = ("affirmed", "negated")
+
+PERCEIVED_INTENTS: tuple[str, ...] = ("sincere", "joking", "deceptive")
+"""A speech-act row's ``perceived_intent`` (#167)."""
+
+KIND_SHAPE_CHECK = (
+    "(kind = 'first_order' AND attributed_holder_id IS NULL AND inner_belief_id IS NULL "
+    "AND speaker_character_id IS NULL AND depth = 1) "
+    "OR (kind = 'attributed' AND attributed_holder_id IS NOT NULL AND depth >= 2) "
+    "OR (kind = 'nested' AND attributed_holder_id IS NOT NULL AND inner_belief_id IS NOT NULL "
+    "AND attributed_holder_id <> holder_character_id AND depth >= 2) "
+    "OR (kind = 'speech_act' AND speaker_character_id IS NOT NULL AND depth >= 2)"
+)
+"""Each kind's shape (#167): see the module docstring."""
 
 MUTABLE_BELIEF_COLUMNS: tuple[str, ...] = (
     "tx_to",
@@ -169,6 +201,26 @@ beliefs = Table(
     Column("corrected_by", ulid_type(), nullable=True),
     Column("lineage_id", ulid_type(), nullable=False),
     Column("resolution_operation_id", ulid_type(), nullable=True),
+    Column("attributed_holder_id", ulid_type(), nullable=True),
+    Column(
+        "inner_belief_id",
+        ulid_type(),
+        ForeignKey("beliefs.id", deferrable=True, initially="DEFERRED"),
+        nullable=True,
+    ),
+    Column("depth", SmallInteger, nullable=False, server_default=text("1")),
+    Column(
+        "attributed_confidence_level",
+        pg_enum(BeliefConfidenceLevel, "belief_confidence_level"),
+        nullable=True,
+    ),
+    Column("attributed_confidence_scalar", NUMERIC(4, 3), nullable=True),
+    Column("attributed_held_from", BigInteger, nullable=True),
+    Column("attributed_held_to", BigInteger, nullable=True),
+    Column("speaker_character_id", ulid_type(), nullable=True),
+    Column("utterance_id", ulid_type(), nullable=True),
+    Column("staged_ref", JSONB(none_as_null=True), nullable=True),
+    Column("perceived_intent", Text, nullable=True),
     CheckConstraint(
         "polarity IN (" + ", ".join(f"'{p}'" for p in POLARITIES) + ")", name="polarity"
     ),
@@ -192,6 +244,24 @@ beliefs = Table(
     CheckConstraint(HOLDER_ONLY_CHECK, name="holder_only"),
     CheckConstraint("accessibility >= 0 AND accessibility <= 1", name="accessibility"),
     CheckConstraint("(state = 'corrected') = (corrected_by IS NOT NULL)", name="corrected_pair"),
+    CheckConstraint(KIND_SHAPE_CHECK, name="kind_shape"),
+    CheckConstraint("depth >= 1 AND depth <= 6", name="depth"),
+    CheckConstraint(
+        "attributed_confidence_scalar IS NULL OR "
+        "(attributed_confidence_scalar >= 0 AND attributed_confidence_scalar <= 1)",
+        name="attributed_confidence_scalar",
+    ),
+    CheckConstraint(
+        "attributed_held_from IS NULL OR attributed_held_to IS NULL "
+        "OR attributed_held_from < attributed_held_to",
+        name="attributed_held_order",
+    ),
+    CheckConstraint(
+        "perceived_intent IS NULL OR perceived_intent IN ("
+        + ", ".join(f"'{i}'" for i in PERCEIVED_INTENTS)
+        + ")",
+        name="perceived_intent",
+    ),
     *derived_indexes("beliefs"),
 )
 Index(
@@ -205,6 +275,13 @@ Index("ix_beliefs_valid_span", beliefs.c.valid_span, postgresql_using="gist")
 Index("ix_beliefs_visibility", beliefs.c.visibility, postgresql_using="gin")
 Index("ux_beliefs_provenance", beliefs.c.provenance, unique=True)
 Index("ix_beliefs_story_lineage", beliefs.c.story_id, beliefs.c.lineage_id)
+Index(
+    "ix_beliefs_story_holder_attributed",
+    beliefs.c.story_id,
+    beliefs.c.holder_character_id,
+    beliefs.c.attributed_holder_id,
+)
+Index("ix_beliefs_inner", beliefs.c.inner_belief_id)
 Index(
     "ux_beliefs_open",
     beliefs.c.story_id,
@@ -337,17 +414,54 @@ belief_state = Table(
 )
 Index("ix_belief_state_story_proposition", belief_state.c.story_id, belief_state.c.proposition_id)
 
+nested_belief_state = Table(
+    "nested_belief_state",
+    metadata,
+    Column("story_id", ulid_type(), nullable=False),
+    Column("belief_id", ulid_type(), nullable=False),
+    Column("holder_character_id", ulid_type(), nullable=False),
+    Column("attributed_holder_id", ulid_type(), nullable=False),
+    Column("proposition_id", ulid_type(), nullable=False),
+    Column("polarity", Text, nullable=False),
+    Column("depth", SmallInteger, nullable=False),
+    Column(
+        "current_level",
+        pg_enum(BeliefConfidenceLevel, "belief_confidence_level"),
+        nullable=False,
+    ),
+    Column("current_scalar", NUMERIC(4, 3), nullable=True),
+    Column(
+        "attributed_level",
+        pg_enum(BeliefConfidenceLevel, "belief_confidence_level"),
+        nullable=True,
+    ),
+    Column("attributed_scalar", NUMERIC(4, 3), nullable=True),
+    *position_group("since", nullable=False),
+    PrimaryKeyConstraint("story_id", "belief_id"),
+    CheckConstraint("current_level <> 'unknown'", name="held_level"),
+)
+Index(
+    "ix_nested_belief_state_story_holder_attributed",
+    nested_belief_state.c.story_id,
+    nested_belief_state.c.holder_character_id,
+    nested_belief_state.c.attributed_holder_id,
+    nested_belief_state.c.proposition_id,
+)
+
 __all__ = [
     "BELIEFS",
     "BELIEF_TRANSITIONS",
     "HOLDER_ONLY_CHECK",
+    "KIND_SHAPE_CHECK",
     "MUTABLE_BELIEF_COLUMNS",
     "MUTABLE_TRANSITION_COLUMNS",
     "OPEN_WHERE",
     "OUTCOMES",
+    "PERCEIVED_INTENTS",
     "POLARITIES",
     "TRANSITION_SOURCE_KINDS",
     "belief_state",
     "belief_transitions",
     "beliefs",
+    "nested_belief_state",
 ]

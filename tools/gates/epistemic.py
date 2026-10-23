@@ -26,6 +26,13 @@ Two more rules hold the epistemic model's writes (#160):
   ``supersede`` (canon's writers; reading canon through ``canon()`` elsewhere is not a write),
   so no false belief can silently become canon (FR-EPI-3, X-02).
 
+And one read rule (#167, FR-BELIEF-15, NFR-PRIV-1):
+
+- **the objective relation is a label**: ``nested.attribution_objective_relation`` (whether an
+  attributed holder actually believes what a speaker attributed to it) is imported or called
+  only by ``core/epistemic/nested.py`` (its definition) and the verifier that labels utterances
+  (``orchestrator/verify/verifier.py``), so it can never reach a speaker's context.
+
 Run: ``python -m tools.gates check-epistemic-separation`` (exit 0 clean, 1 findings); enforced
 in CI by ``tests/gates/test_epistemic_separation.py``.
 """
@@ -116,6 +123,26 @@ WRITER_MODULES = frozenset(
     {"src/epistrel/core/epistemic/partitions.py", "src/epistrel/core/epistemic/transitions.py"}
 )
 CANON_WRITERS = frozenset({"commit_fact", "supersede"})
+OBJECTIVE_READER = "attribution_objective_relation"
+OBJECTIVE_MODULES = frozenset(
+    {"src/epistrel/core/epistemic/nested.py", "src/epistrel/orchestrator/verify/verifier.py"}
+)
+
+
+def _objective_reads(tree: ast.AST) -> Iterator[tuple[int, str]]:
+    """Imports of ``attribution_objective_relation`` and calls through ``nested.``."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name == OBJECTIVE_READER:
+                    yield node.lineno, alias.name
+        elif (
+            isinstance(node, ast.Attribute)
+            and node.attr == OBJECTIVE_READER
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "nested"
+        ):
+            yield node.lineno, f"nested.{node.attr}"
 
 
 def _names(tree: ast.AST, wanted: frozenset[str]) -> Iterator[tuple[int, str]]:
@@ -131,7 +158,8 @@ def _names(tree: ast.AST, wanted: frozenset[str]) -> Iterator[tuple[int, str]]:
 
 
 def writes(root: Path = REPO_ROOT) -> list[str]:
-    """The findings of the two write rules (see the module docstring)."""
+    """The findings of the two write rules and the objective-relation rule (see the module
+    docstring)."""
     findings: list[str] = []
     for path in sorted((root / SOURCE_ROOT).rglob("*.py")):
         rel = path.relative_to(root).as_posix()
@@ -140,6 +168,12 @@ def writes(root: Path = REPO_ROOT) -> list[str]:
             findings.extend(
                 f"{rel}:{line}: names {name}; transition() is the only writer of beliefs (#160)"
                 for line, name in sorted(set(_names(tree, frozenset({BELIEF_WRITER}))))
+            )
+        if rel not in OBJECTIVE_MODULES:
+            findings.extend(
+                f"{rel}:{line}: reads {name}; an attribution's objective relation is a label "
+                "for the verifier only (FR-BELIEF-15, #167)"
+                for line, name in sorted(set(_objective_reads(tree)))
             )
         if rel.startswith(EPISTEMIC_SIDE.package + "/"):
             findings.extend(

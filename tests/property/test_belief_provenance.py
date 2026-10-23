@@ -316,10 +316,11 @@ async def _steal(engine: AsyncEngine, provenance: str, src: str) -> None:
 _COPY_BELIEF = (
     "INSERT INTO beliefs (id, story_id, holder_character_id, proposition_id, polarity, "
     "confidence_level, valid_span, valid_from, held_from_turn, tx_from, visibility, "
-    "operation_id, membership_tx, provenance, lineage_id, kind) SELECT :id, story_id, "
-    "holder_character_id, proposition_id, polarity, confidence_level, valid_span, valid_from, "
-    "held_from_turn + 1, tx_from, visibility, operation_id, membership_tx, :provenance, :id, "
-    "'speech_act' FROM beliefs WHERE id = :src"
+    "operation_id, membership_tx, provenance, lineage_id, kind, speaker_character_id, depth) "
+    "SELECT :id, story_id, holder_character_id, proposition_id, polarity, confidence_level, "
+    "valid_span, valid_from, held_from_turn + 1, tx_from, visibility, operation_id, "
+    "membership_tx, :provenance, :id, 'speech_act', holder_character_id, 2 "
+    "FROM beliefs WHERE id = :src"
 )
 _COPY_TRANSITION = (
     "INSERT INTO belief_transitions (id, story_id, holder_character_id, belief_id, kind, "

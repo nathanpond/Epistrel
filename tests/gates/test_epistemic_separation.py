@@ -116,3 +116,32 @@ def test_only_transition_writes_beliefs_and_no_belief_writes_canon(tmp_path: Pat
     assert rogue == [3, 7]
     assert leak == [2, 6, 7]
     assert not [f for f in found if "transitions.py" in f]
+
+
+OBJECTIVE_LEAK = '''"""A context builder that asks what Bobby really believes."""
+from epistrel.core.epistemic import nested
+from epistrel.core.epistemic.nested import attribution_objective_relation
+
+
+async def context(conn, row):
+    found = await nested.attribution_objective_relation(conn, "s", "b", None, None)
+    return found, attribution_objective_relation, row.attribution_objective_relation
+'''
+
+
+def test_only_the_verifier_reads_an_attributions_objective_relation(tmp_path: Path) -> None:
+    """#167 (FR-BELIEF-15, NFR-PRIV-1): naming ``nested.attribution_objective_relation`` (a
+    ``from`` clause or a call) outside ``core/epistemic/nested.py`` and the verifier is a
+    finding; a row's stored label of the same name is not; the verifier itself is clean."""
+    root = _tree(
+        tmp_path,
+        {
+            "src/epistrel/orchestrator/context/leak.py": OBJECTIVE_LEAK,
+            "src/epistrel/orchestrator/verify/verifier.py": OBJECTIVE_LEAK,
+        },
+    )
+    found = writes(root)
+    leak = sorted(int(f.split(":")[1]) for f in found if "leak.py" in f)
+    assert leak == [3, 7]
+    assert all("FR-BELIEF-15" in f for f in found if "leak.py" in f)
+    assert not [f for f in found if "verifier.py" in f]

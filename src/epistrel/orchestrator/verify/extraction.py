@@ -781,8 +781,35 @@ async def verify_detected(
             if claim.channel == SAY_CHANNEL and claim.speaker not in (PLAYER, NARRATOR)
             else None
         )
+        proposition = claim.proposition
+        if claim.attribution is not None:
+            # #167: "Bobby thinks …" asserts Bobby's belief, not the proposition: checked
+            # against the speaker's nested beliefs (a say), never against canon as asserted.
+            if claim.channel != SAY_CHANNEL:
+                checked.append(CheckedClaim(claim, None, claim_id))
+                continue
+            checked.append(
+                CheckedClaim(
+                    claim,
+                    await verifier.verify_attribution(
+                        proposition,
+                        claim.attribution,
+                        position,
+                        believer=believer,
+                        ref=ref,
+                        intent=None if intent_of is None or believer is None else intent_of(claim),
+                    ),
+                    claim_id,
+                )
+            )
+            if not claim.attribution.factive:
+                continue
+            # A factive attribution ("Jenni knows it was George") also asserts the proposition.
+            claim = replace(claim, attribution=None)
+            claim_id = None if claim_id is None else f"{claim_id}f"
+            ref = replace(ref, claim_id=claim_id)
         result = await verifier.verify(
-            claim.proposition,
+            proposition,
             viewpoint,
             position,
             ref=ref,

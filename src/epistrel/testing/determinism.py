@@ -203,6 +203,10 @@ ORDER: dict[str, str] = {
         f"{_STORY_RANK}, {_HOLDER_RANK}, t.since_turn, t.since_slot_k, t.since_beat, "
         "t.since_step, t.current_level, t.polarity"
     ),
+    "nested_belief_state": (
+        f"{_STORY_RANK}, {_HOLDER_RANK}, t.since_turn, t.since_slot_k, t.since_beat, "
+        "t.since_step, t.depth, t.current_level, t.polarity"
+    ),
     # Memory records (#135): by narrative position, beat and kind, then by text.
     "memories": (
         f"{_STORY_RANK}, t.narrative_turn NULLS FIRST, t.turn_variant NULLS FIRST, "

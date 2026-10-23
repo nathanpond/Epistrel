@@ -241,6 +241,7 @@ from epistrel.core.turns.beats import (
     write_introductions,
     write_utterances,
 )
+from epistrel.core.verify import attribution
 from epistrel.core.verify.detect import DeclaredClaim, DetectBeat, DetectedClaim
 from epistrel.core.verify.introduce import Introductions
 from epistrel.core.verify.normalize import ClaimSketch, Unnormalizable, normalize_declared
@@ -1242,7 +1243,37 @@ def _asserted(c: CheckedClaim) -> AssertedClaim:
         belief_relation=None if speech is None else speech.decision.belief_relation,
         classification=None if speech is None else speech.classification,
         intent_corrected=speech is not None and speech.decision.intent_corrected,
+        attribution=claim.attribution,
+        attribution_objective=(
+            None
+            if c.result is None or c.result.attribution is None
+            else c.result.attribution.objective
+        ),
     )
+
+
+async def _cued(
+    conn: AsyncConnection,
+    story_id: str,
+    claim: DetectedClaim,
+    beats: Mapping[int, TurnBeat],
+    env: Any,
+) -> DetectedClaim:
+    """#167: a detected (not declared) claim of a character's ``say`` under an attribution cue
+    of the attribution lexicon ("Bobby thinks …") is an attribution claim, its holder resolved
+    in the speaker's view."""
+    if claim.layer == "declared" or claim.attribution is not None or claim.channel != SAY:
+        return claim
+    beat = beats.get(claim.beat or -1)
+    if beat is None or beat.character_id is None:
+        return claim
+    found = attribution.cue(beat.text, claim.span[1])
+    if found is None:
+        return claim
+    resolved = await attribution.resolve_holder(
+        conn, story_id, found, claim.speaker, env.context_for(claim.speaker)
+    )
+    return replace(claim, attribution=resolved)
 
 
 def _sketch(sketch: PropositionSketch) -> ClaimSketch:
@@ -1331,10 +1362,30 @@ async def check_turn(
                 )
                 env = replace(env, registry=registry)
                 claim_id = f"d{beat.beat}.{n}"
+                attributed = None
+                if sketch.attribution is not None:
+                    # #167: a claim about someone's belief; its holder named in the speaker's view.
+                    attributed = await attribution.resolve_holder(
+                        conn,
+                        story_id,
+                        attribution.ClaimAttribution(
+                            sketch.attribution.holder.strip()
+                            if sketch.attribution.holder.strip().casefold() != "i"
+                            else attribution.SELF,
+                            sketch.attribution.mode,
+                            sketch.attribution.factive,
+                        ),
+                        speaker,
+                        env.context_for(speaker),
+                    )
                 if isinstance(normalized, Unnormalizable):
-                    found.append(DeclaredClaim(claim_id, unnormalized=normalized))
+                    found.append(
+                        DeclaredClaim(claim_id, unnormalized=normalized, attribution=attributed)
+                    )
                 else:
-                    found.append(DeclaredClaim(claim_id, proposition=normalized))
+                    found.append(
+                        DeclaredClaim(claim_id, proposition=normalized, attribution=attributed)
+                    )
             declared[beat.beat] = tuple(found)
     clock.add("normalize", time.perf_counter() - normalizing)
     detecting = time.perf_counter()
@@ -1399,10 +1450,11 @@ async def check_turn(
         staged.staged.extend(staged_before)
         verifier.source = staged
         by_beat: dict[int | None, list[DetectedClaim]] = {}
+        scopes = {b.beat: b for b in rendered.beats}
         for outcome in outcomes:
             for claim in outcome.claims:
+                claim = await _cued(conn, story_id, claim, scopes, env)
                 by_beat.setdefault(claim.beat, []).append(claim)
-        scopes = {b.beat: b for b in rendered.beats}
 
         def scope_of(claim: DetectedClaim) -> tuple[str, ...] | None:
             beat = scopes.get(claim.beat or -1)
@@ -3276,6 +3328,11 @@ async def play(
                     ids=ids,
                     adjudications=checked.adjudications,
                     read_set=read_set,
+                    utterances={
+                        beat: utterance_ids[n]
+                        for n, (beat, _, _) in enumerate(said)
+                        if n < len(utterance_ids)
+                    },
                 )
             if checked.verifier is not None and checked.verifier.beliefs is not None:
                 # #166: what the first-person claims license: the speaker's exposures on the

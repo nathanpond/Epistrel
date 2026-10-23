@@ -109,6 +109,18 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+class AttributionDecl(_Strict):
+    """Whom a declared claim attributes its proposition to (#167): "Bobby thinks it was Marcus"
+    declares ``knocker = Marcus`` with ``{holder: "Bobby"}``; ``mode = said`` for what someone
+    said ("Bobby *said* it was Marcus"); ``factive`` when the speaker also asserts it ("Jenni
+    knows it was George"). ``holder`` is a name or id, or ``I`` for the speaker's own belief
+    ("I figured it was the delivery guy")."""
+
+    holder: str = Field(min_length=1, max_length=SKETCH_TEXT_MAX)
+    mode: Literal["believes", "said"] = "believes"
+    factive: bool = False
+
+
 class PropositionSketch(_Strict):
     """A claim a beat declares (#140's text sketch): normalized by the pipeline."""
 
@@ -120,6 +132,8 @@ class PropositionSketch(_Strict):
     qualifiers: dict[str, str] = Field(default_factory=dict, max_length=MAX_QUALIFIERS)
     """The predicate's qualifiers the claim names (a degree's ``degree_id``, a membership's
     ``role``; #151): normalization keeps only the declared ones."""
+    attribution: AttributionDecl | None = None
+    """#167: the claim reports someone's belief (or speech act) rather than asserting it."""
 
 
 def _per_scope(schema: dict[str, Any]) -> None:
@@ -729,6 +743,7 @@ __all__ = [
     "STRUCTURED",
     "AgeMatch",
     "AgeRepair",
+    "AttributionDecl",
     "BeatDecl",
     "IntroductionDecl",
     "PropositionSketch",

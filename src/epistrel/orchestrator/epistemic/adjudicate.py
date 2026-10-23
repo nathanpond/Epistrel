@@ -96,10 +96,21 @@ def max_adjudications(settings: ProfileSettings) -> int:
 
 @dataclass(frozen=True, slots=True)
 class Claim:
-    """One proposition a say carries, with the words that say it (``None``: not located)."""
+    """One proposition a say carries, with the words that say it (``None``: not located) and,
+    for an attribution (#167), the character it is attributed to (``attributed_to``) and its
+    mode."""
 
     proposition: Proposition
     words: str | None = None
+    attributed_to: str | None = None
+    mode: str = "believes"
+    factive: bool = False
+
+    @property
+    def asserted(self) -> bool:
+        """Whether the speaker asserts the proposition itself: a plain claim, a factive
+        attribution, or a self-report of belief ("I figured …": trust-gated, #167)."""
+        return self.attributed_to is None or self.factive
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +130,22 @@ class Heard:
         q = self.qualifiers
         return frozenset({*q.whisper_to, *((q.addressee,) if q.addressee else ())})
 
+    def heard_claims(self, partial: str | None) -> tuple[Claim, ...]:
+        """The claims a witness caught (``partial``: only those whose words fall in it)."""
+        if partial is None:
+            return self.claims
+        caught = partial.casefold()
+        return tuple(c for c in self.claims if c.words and c.words.casefold() in caught)
+
+    def attributions(self, partial: str | None) -> list[tuple[Proposition, str]]:
+        """The belief attributions a witness caught (#167): ``(proposition, attributed holder)``
+        for each ``believes`` attribution claim with a resolved holder."""
+        return [
+            (c.proposition, c.attributed_to)
+            for c in self.heard_claims(partial)
+            if c.attributed_to is not None and c.mode == "believes"
+        ]
+
     def route_beat(self) -> perception.RouteBeat:
         return perception.RouteBeat(
             kind="say", beat=self.beat, actor=self.speaker, qualifiers=self.qualifiers
@@ -127,10 +154,12 @@ class Heard:
     def speech_act(self, event_id: str | None, partial: str | None) -> testimony.SpeechAct:
         """The speech act a witness perceived (``partial``: only the claims whose words fall in
         what it caught)."""
-        claims = self.claims
-        if partial is not None:
-            caught = partial.casefold()
-            claims = tuple(c for c in claims if c.words and c.words.casefold() in caught)
+        claims = self.heard_claims(partial)
+        claims = tuple(
+            c
+            for c in claims
+            if c.asserted or (c.attributed_to == self.speaker and c.mode == "believes")
+        )
         return testimony.SpeechAct(
             speaker=self.speaker,
             beat=self.beat,
@@ -176,9 +205,16 @@ def heard_of(checked: Any, actor: str, say: str | None) -> list[Heard]:
                 text=beat.text,
                 intent=beat.intent,
                 claims=tuple(
-                    Claim(c.proposition, _words(beat.text, c.span))
+                    Claim(
+                        c.proposition,
+                        _words(beat.text, c.span),
+                        None if c.attribution is None else c.attribution.holder_id,
+                        "believes" if c.attribution is None else c.attribution.mode,
+                        c.attribution is not None and c.attribution.factive,
+                    )
                     for c in beat.claims
                     if c.proposition is not None
+                    and (c.attribution is None or c.attribution.holder_id is not None)
                 ),
                 qualifiers=beat.qualifiers,
             )
@@ -502,6 +538,7 @@ async def testify_committed(
     ids: Mapping[int, str],
     adjudications: Adjudications | None,
     read_set: StructuredReadSet,
+    utterances: Mapping[int, str] | None,
 ) -> Testified | None:
     """Write the turn's testimony in its commit step, after routing (see the module
     docstring); answers ``turn_report.epistemic``'s testimony and exposure parts (``None`` when
@@ -524,7 +561,7 @@ async def testify_committed(
     exposed = 0
     now: list[str] = []
     by_kind: dict[str, int] = {}
-    witnesses = adjudicated = defaulted = deferred = 0
+    witnesses = adjudicated = defaulted = deferred = nested_written = 0
 
     async def stored_id(beat: int, proposition: Proposition) -> str:
         key = (beat, proposition.normalized_key())
@@ -608,7 +645,27 @@ async def testify_committed(
                 if any(t is not None for t in taken):
                     adjudicated += 1
             made = await testimony.commit_testimony(
-                conn, op, act, outcomes, settings=current, registry=registry
+                conn,
+                op,
+                act,
+                outcomes,
+                settings=current,
+                registry=registry,
+                utterance_id=(utterances or {}).get(heard.beat),
+                intent=heard.intent,
+            )
+            # #167: what the witness now thinks the speaker (and whoever it named) believes.
+            nested_written += await testimony.nested_committed(
+                conn,
+                op,
+                act,
+                [o for o in outcomes if o.proposition is not None and _plain(heard, o)],
+                witness=witness,
+                intent=heard.intent,
+                attributions=heard.attributions(partial),
+                trust_value=trust,
+                settings=current,
+                registry=registry,
             )
             for outcome in outcomes:
                 by_kind[outcome.decision] = by_kind.get(outcome.decision, 0) + 1
@@ -644,9 +701,22 @@ async def testify_committed(
             "defaulted": defaulted,
             "deferred": deferred,
             "outcomes_by_kind": dict(sorted(by_kind.items())),
+            "nested_written": nested_written,
         },
         exposures=exposure.report(exposed, budget),
         capped=budget.capped,
+    )
+
+
+def _plain(heard: Heard, outcome: testimony.TestimonyOutcome) -> bool:
+    """Whether ``outcome`` is about a proposition the speaker asserted outright (not a
+    self-report of belief, whose nested belief its attribution writes, #167)."""
+    if outcome.proposition is None:
+        return False
+    key = outcome.proposition.normalized_key()
+    return not any(
+        c.attributed_to is not None and not c.factive and c.proposition.normalized_key() == key
+        for c in heard.claims
     )
 
 

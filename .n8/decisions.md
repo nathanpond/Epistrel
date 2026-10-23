@@ -8777,3 +8777,10 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   - **M6:** #22, #185–#187, #189, #191–#193, #195, #196, #199–#204, #207, #212, #214, #423 edited (20); AC changed on #22 (epic: NFR-QUAL-9 may move to M9 by ADR-164's route), #186, #191, #193, #195, #199, #201, #203, #214, #423; edges added #193 ← #438, #460; #195 ← #460; #191 ← #441; #201 ← #157; milestone description (remainder, DoD, outcome 10).
   - **M7:** #25 (epic AC: certification records what passed, M9 misses filed to M9), #220, #221, #224, #226–#236, #243, #247, #249, #250 edited (19); AC changed on #25, #227, #229, #233, #235, #250; milestone description (remainder, DoD floor-miss rule).
 - **Left for later:** #502 (P-10 1M/5M, probably M9) and ~8 other unmilestoned `needs-triage` issues are untriaged. M8 builds on M5–M7, so a `/n8-replan M8` before `/n8-exec M8` is advised.
+
+## /n8-exec M5 — 2026-10-23
+
+- **Decision (method):** M5 runs as M4 did. Each item gets one implementation subagent in the main checkout, one at a time, because the dependency graph is close to a chain. The order is #159 → #160 → … → #177 → #484 → #178 → … → #182, which is topological. #484 follows #177 because both change `orchestrator/compose`. Each story SHA gets the full CI-equivalent suite in a detached worktree (`-m "not live_model and (not chaos or chaos_quick) and (not perf_long or perf_quick)" --cov=epistrel.core --cov-fail-under=90`), with at most 2 running at once. A story's AC are ticked and its completion comment posted only after that suite is green. This is the per-story gate the owner kept for M4.
+  **Why:** the owner kept the per-story gate after M3 (memory m3-batched-test-gate). The replan of 2026-10-23 brought the plans up to date, so no inline drift is expected beyond renames.
+- **Decision (merge-gate prep):** #179 adds new eval sets, and each set's `PROVENANCE.md` needs the owner's `approved by owner YYYY-MM-DD` line before M5 can merge (`EPISTREL_REQUIRE_APPROVED_SETS=1` on `main`). The approval request goes to the owner as soon as #179's sets exist, not at the merge.
+  **Issue:** #179

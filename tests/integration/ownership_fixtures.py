@@ -491,6 +491,17 @@ async def _profiled(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> di
     return {"entity_id": str(found)}
 
 
+async def _unmodeled(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """A ``person`` entity of the story that no character is yet (#163's modeling directive),
+    created as #139's resolver would, on the app's own database."""
+    from epistrel.core.propositions import store
+
+    db = client._transport.app.state.epistrel.db  # type: ignore[attr-defined]
+    async with db.begin() as conn:
+        found = await store.add_entity(conn, entity.id, "person", "The neighbor")
+    return {"entity_id": str(found)}
+
+
 async def _a_memory(entity: Entity, client: httpx.AsyncClient, *, pinned: bool) -> str:
     """A fresh memory of the story (#147's pin calls), written straight into ``memories`` on the
     app's own database against the story's first operation."""
@@ -606,6 +617,11 @@ CALLS: dict[tuple[str, str], Call] = {
         201, {"name": "Dale", "definition": "A delivery driver in a hurry.", "true_age": 52}
     ),
     ("POST", f"{S}/characters/{{character_id}}/promote"): Call(201, {}, prepare=_story_character),
+    # -- stories: a character's narrative weight, and an entity modeled as a minor (#163)
+    ("POST", f"{S}/characters/{{character_id}}/weight"): Call(
+        200, {"weight": "minor"}, prepare=_story_character
+    ),
+    ("POST", f"{S}/entities/{{entity_id}}/model"): Call(201, {"true_age": 40}, prepare=_unmodeled),
     # -- stories: the configuration preview (#109), which writes nothing, and the story's
     # profile and overrides (#113): the story's own profile again (a no-op), and an override no
     # capability hangs on (applied at once)

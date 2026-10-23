@@ -145,6 +145,21 @@ class Surface:
                     # An omniscient read also names the catalog entries promoted from the
                     # character (#114).
                     | ({} if c.promoted_to is None else {"promoted_to": list(c.promoted_to)})
+                    # and its narrative weight and the position it was modeled at (#163)
+                    | ({} if c.weight is None else {"weight": c.weight})
+                    | (
+                        {}
+                        if c.modeled_at is None
+                        else {
+                            "modeled_at": {
+                                "turn": c.modeled_at.turn,
+                                "variant": c.modeled_at.variant,
+                                "slot_k": c.modeled_at.slot_k,
+                                "beat": c.modeled_at.beat,
+                                "step": c.modeled_at.step,
+                            }
+                        }
+                    )
                     for c in story.characters
                 ]
             }

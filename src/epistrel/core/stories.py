@@ -987,7 +987,7 @@ class ModelEntityRequest(BaseModel):
         },
     )
 
-    true_age: Annotated[int, Field(ge=TRUE_AGE_MIN, le=TRUE_AGE_MAX)]
+    true_age: Annotated[StrictInt, Field(ge=TRUE_AGE_MIN, le=TRUE_AGE_MAX)]
     definition: Annotated[str, Field(min_length=1, max_length=4_000)] | None = None
 
 

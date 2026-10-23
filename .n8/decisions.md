@@ -7599,7 +7599,7 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision (orchestrator):** #442 needs no spike. The cause is `core/resolution/context.load_context`'s per-person `lookup.profile()` loop, which uses only the relationships. The fix is one keyed read of the relationships projection rows as of the position, with the registry loaded once, plus a cost test over a 5-person vs a 200-person cast (the complement #141's cost test lacked).
   **Issue:** #442
 
-## Ad-hoc — 2026-10-18
+## Ad-hoc — 2026-10-18 — reconciled by /n8-replan 2026-10-23
 
 - **Change:** M4's scope grows by 18 issues (#427–#444), including #441's rules extension. FR-PROP-10 (docs/03) is to be amended with an ADR, and #131's closed-set model gains key-set closed sets (a schema change).
   **Why:** Owner decisions above (#151 option (a); "Triage — add all to M4").
@@ -8025,7 +8025,7 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision (orchestrator):** #454 takes option (a). The model matrix's structured driver measures under a recorded per-story deadline override. Whether the 45 s `Structured (M4)` default fits local tiers is a model-speed question for M9.
   **Issue:** #454
 
-## Ad-hoc — 2026-10-20
+## Ad-hoc — 2026-10-20 — reconciled by /n8-replan 2026-10-23
 
 - **Change:** a new milestone, **M9: Performance tuning** (GitHub #12), sits between M8 and Bug fixes & testing, which is renumbered to M10 (Audit is now M11). It receives the NFR-QUAL floors and model-bound performance targets that still miss on the reference model after M4's engine fixes.
   **Why:** the owner's instruction after the first live exit report (2026-10-20): engine problems are fixed in M4, and model problems are deferred.
@@ -8758,3 +8758,22 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Rejected:** making X-03 accept 503. That hides the engine-side cause the owner asked M4 to fix (2026-10-20 direction).
   **Caveat:** #510 was never reproduced on an idle host, so this is a mitigation, not a proven fix. The retry test asserts the pauses `[1, 2]` and none after the last attempt. A unit test checks the doubling and the jitter bounds.
   **Issue:** #510
+
+## /n8-replan M5,M6,M7 — 2026-10-23
+
+- **Cause:** the unreconciled Ad-hoc entries of 2026-10-18 (ADR-160: forward implication, `closed_sets.key_set`, rule-free presence conflict → `uncertain`) and 2026-10-20 (M9: Performance tuning; ADR-164/166 move NFR-QUAL-2,3,4,7,14 to M9; Bug fixes & testing → M10, Audit → M11), plus M4 as built (`c8b347c..bf0db30`: migrations 0045–0067, ADRs 157–166, `seed_memories`/`seed_memory_invalid`, 423 `story_busy`, `module_off` = 409, the `evals/sets/<set>/` + `PROVENANCE.md` layout, the `evals` CI job, the fork snapshot backoff).
+- **Method:** one read-only analysis subagent per milestone checked every open issue and milestone description against the ledger, the git history and the code at `bf0db30`. The owner approved the combined change set ("approve all", 2026-10-23). One apply subagent per milestone edited bodies via `--body-file`, commented "Replanned 2026-10-23" on every modified issue, and re-fetched to verify.
+- **Owner decisions (2026-10-23):**
+  1. NFR-QUAL-1 (zero leak) may **not** take ADR-164's route to M9: a live leak is `sev:high` and blocks M5. NFR-QUAL-9 **may** take it (pre-approved). M7 certification takes option (a): misses are recorded and filed, and misses of M9-assigned floors go to M9 without holding M7 open.
+  2. #181 renames the seeded `Structured (M4)` profile to `Structured` v2. Eval pins follow the current version, and the committed M4/M9 reports stay labelled v1. M6's #203 updates `Structured` in place to its next version.
+  3. #193: M4's story-time stand-in stays as the clock-off fallback behind one `world_clock.story_time_at` entry point. This reverses the AC's "symbol no longer exists".
+  4. #182 ← #153 edge removed. #153 stays open only for AC1's fixture build time (#490, M10).
+  5. Closed sets stay objective canon, with no per-character closed sets for now.
+  6. #484 moves to M5 (epic #21, `bug` `sev:low` `area:core`), resolved by option (a): exclude the turn's render characters from the narrator's "other character".
+  7. M7: the presets are certified as shipped, with the 45 s deadline vs the measured 114–126 s p50 flagged in the report (speed is M9's). Author directives and rewrites may change `author_locked` facts, and the lock is kept and listed. An import reaches `ready` without vectors (lexical retrieval until embedded). An unusable seed at upgrade materialization is reported, never raised. Max's "stricter checks" is Claude's Discretion.
+  8. #199's no-estimate fallback is NFR-PERF-7 (5)'s deterministic span removal.
+- **Issues touched:**
+  - **M5:** #159–#162, #165–#167, #169–#177, #179–#182 edited (20); AC changed on #159, #179, #181; #484 moved in; edge #182 ← #153 removed; milestone description (remainder + M9, DoD note on E-01/NFR-QUAL-1).
+  - **M6:** #22, #185–#187, #189, #191–#193, #195, #196, #199–#204, #207, #212, #214, #423 edited (20); AC changed on #22 (epic: NFR-QUAL-9 may move to M9 by ADR-164's route), #186, #191, #193, #195, #199, #201, #203, #214, #423; edges added #193 ← #438, #460; #195 ← #460; #191 ← #441; #201 ← #157; milestone description (remainder, DoD, outcome 10).
+  - **M7:** #25 (epic AC: certification records what passed, M9 misses filed to M9), #220, #221, #224, #226–#236 (except #237+), #243, #247, #249, #250 edited (19); AC changed on #25, #227, #229, #233, #235, #250; milestone description (remainder, DoD floor-miss rule).
+- **Left for later:** #502 (P-10 1M/5M, probably M9) and ~8 other unmilestoned `needs-triage` issues are untriaged. M8 builds on M5–M7, so a `/n8-replan M8` before `/n8-exec M8` is advised.

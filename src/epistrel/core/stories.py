@@ -155,6 +155,7 @@ from epistrel.core.tables.characters import DEFLECTION_STYLE_MAX, TRUE_AGE_MAX, 
 from epistrel.core.tables.commitments import promissory_ledger, thunks
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 from epistrel.core.tables.detection import extraction_shadow
+from epistrel.core.tables.divergences import divergences
 from epistrel.core.tables.escalations import escalations
 from epistrel.core.tables.exposures import exposures
 from epistrel.core.tables.facts import facts
@@ -214,6 +215,9 @@ STORY_TABLES: tuple[Table, ...] = (
     thunks,
     # Bitemporal canon (#133): a derived table, before the operations it references.
     facts,
+    # Divergences (#166): a derived table, before the beliefs it names (a deferred foreign key)
+    # and the operations it references.
+    divergences,
     # Belief partitions (#159): a derived table, before the operations it references, and its
     # projection (rebuilt by a fork).
     beliefs,

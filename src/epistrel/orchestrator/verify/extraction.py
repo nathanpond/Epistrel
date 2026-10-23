@@ -692,6 +692,7 @@ class CheckedClaim:
 
 
 SURFACE: SafeDisposition = "surface"
+SAY_CHANNEL = "say"
 SURFACED_LAYERS: frozenset[str] = frozenset({"declared", "extraction"})
 """The layers whose untracked weak-relation claims are surfaced; a detector's risk claims
 (possession, transfer, quantity, time, protected content) always keep the safe disposition."""
@@ -737,9 +738,13 @@ async def verify_detected(
     asserter_of: Callable[[DetectedClaim], Asserter] | None = None,
     scope_of: Callable[[DetectedClaim], tuple[str, ...] | None] | None = None,
     start: int = 0,
+    intent_of: Callable[[DetectedClaim], str | None] | None = None,
+    cites_of: Callable[[DetectedClaim], Sequence[str]] | None = None,
 ) -> list[CheckedClaim]:
     """Verify every detected claim of ``outcome`` (see the module docstring); claim ids are
-    ``<operation>:<n>`` from ``start``."""
+    ``<operation>:<n>`` from ``start``. A character's ``say`` claim (never the player's own,
+    FR-EPI-12) is first-person: it names its speaker as the believer (#166), with its beat's
+    declared intent (``intent_of``) and its render's ``think`` citations (``cites_of``)."""
     checked: list[CheckedClaim] = []
     on = verifier is not None and verifier.config.on
     for n, claim in enumerate(outcome.claims, start):
@@ -771,6 +776,11 @@ async def verify_detected(
         viewpoint = (
             OMNISCIENT if claim.speaker == NARRATOR else viewpoint_of(claim.speaker, player_id)
         )
+        believer = (
+            claim.speaker
+            if claim.channel == SAY_CHANNEL and claim.speaker not in (PLAYER, NARRATOR)
+            else None
+        )
         result = await verifier.verify(
             claim.proposition,
             viewpoint,
@@ -778,6 +788,9 @@ async def verify_detected(
             ref=ref,
             asserter=asserter,
             protected=claim.protected,
+            believer=believer,
+            intent=None if intent_of is None or believer is None else intent_of(claim),
+            cites=() if cites_of is None or believer is None else tuple(cites_of(claim)),
             # #146's resolution exemption: a claim filling an open thunk resolves it, so
             # binding the thunk to a modeled character is reconciliation's to judge (#154,
             # #165), not a permission denial.

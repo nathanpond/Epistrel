@@ -31799,7 +31799,7 @@
         "type": "string"
       },
       "UtteranceLabelsModel": {
-        "description": "An utterance's three independent labels (FR-TURN-6; #150).",
+        "description": "An utterance's three independent labels (FR-TURN-6; #150) and, once the verifier\nclassified it under per-character partitions (#166), its classification.",
         "properties": {
           "belief_relation": {
             "enum": [
@@ -31810,6 +31810,25 @@
             "title": "Belief Relation",
             "type": "string"
           },
+          "classification": {
+            "anyOf": [
+              {
+                "enum": [
+                  "sincere",
+                  "sincere_error",
+                  "lie",
+                  "joke",
+                  "hallucination_repaired"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#166: the verifier's classification of the utterance (FR-VERIFY-5), its worst claim's. A classified utterance's labels are returned on `omniscient` reads only: its belief relation is the speaker's private state.",
+            "title": "Classification"
+          },
           "intent": {
             "enum": [
               "sincere",
@@ -31819,6 +31838,12 @@
             ],
             "title": "Intent",
             "type": "string"
+          },
+          "intent_corrected": {
+            "default": false,
+            "description": "#166: a declared `deceptive` the speaker's beliefs support, relabelled `sincere` (`intent` is then `sincere`).",
+            "title": "Intent Corrected",
+            "type": "boolean"
           },
           "objective_relation": {
             "enum": [

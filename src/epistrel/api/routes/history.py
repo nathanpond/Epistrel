@@ -46,11 +46,27 @@ class BeatPropositionModel(BaseModel):
 
 
 class UtteranceLabelsModel(BaseModel):
-    """An utterance's three independent labels (FR-TURN-6; #150)."""
+    """An utterance's three independent labels (FR-TURN-6; #150) and, once the verifier
+    classified it under per-character partitions (#166), its classification."""
 
     objective_relation: Literal["true", "false", "unresolved"]
     belief_relation: Literal["consistent", "inconsistent", "unknown"]
     intent: Literal["sincere", "deceptive", "joking", "unspecified"]
+    classification: (
+        Literal["sincere", "sincere_error", "lie", "joke", "hallucination_repaired"] | None
+    ) = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="#166: the verifier's classification of the utterance (FR-VERIFY-5), its "
+        "worst claim's. A classified utterance's labels are returned on `omniscient` reads "
+        "only: its belief relation is the speaker's private state.",
+    )
+    intent_corrected: bool = Field(
+        default=False,
+        exclude_if=lambda v: not v,
+        description="#166: a declared `deceptive` the speaker's beliefs support, relabelled "
+        "`sincere` (`intent` is then `sincere`).",
+    )
 
 
 class BeatVisibilityModel(BaseModel):

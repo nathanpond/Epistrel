@@ -66,13 +66,14 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.enums import BeliefConfidenceLevel, ExposureState
 from epistrel.core.epistemic import exposure as exposures
 from epistrel.core.epistemic import partitions, testimony, transitions
 from epistrel.core.membership import Position
+from epistrel.core.propositions.codec import proposition_from_row
 from epistrel.core.propositions.model import Instant, Polarity, Proposition
 from epistrel.core.propositions.registry import Registry, canonical, imply, load
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
@@ -486,6 +487,116 @@ async def could_have_known(
     return _answered(memo_key, answer)
 
 
+async def _stated(
+    conn: AsyncConnection,
+    story_id: str,
+    character_id: str,
+    target: Proposition,
+    at: Position,
+    registry: Registry,
+    *,
+    own: bool,
+) -> bool:
+    """Whether a proposition with ``target``'s key and polarity is held (another character's
+    belief, ``own`` false) or was said (an utterance: by another speaker, or by
+    ``character_id`` itself when ``own``) by ``at``, on the active timeline."""
+    from sqlalchemy import and_, or_
+
+    from epistrel.core.membership import active_only, position_key, position_literal
+    from epistrel.core.tables import beliefs, propositions, utterances
+
+    key = _key(target)
+    p = propositions.c
+    found: list[Any] = []
+    if not own:
+        b = beliefs.c
+        found += list(
+            await conn.execute(
+                select(propositions)
+                .select_from(beliefs.join(propositions, p.id == b.proposition_id))
+                .where(
+                    b.story_id == story_id,
+                    b.holder_character_id != character_id,
+                    active_only(beliefs),
+                    b.tx_to.is_(None),
+                    p.subject_id == target.subject_id,
+                    p.predicate_id == target.predicate_id,
+                    position_key(beliefs, "held_from") <= position_literal(at),
+                    or_(
+                        b.held_to_turn.is_(None),
+                        position_key(beliefs, "held_to") > position_literal(at),
+                    ),
+                )
+            )
+        )
+    u = utterances.c
+    speaker = (
+        u.speaker_character_id == character_id if own else u.speaker_character_id != character_id
+    )
+    found += list(
+        await conn.execute(
+            select(propositions)
+            .select_from(utterances.join(propositions, p.id == func.any(u.proposition_ids)))
+            .where(
+                u.story_id == story_id,
+                speaker,
+                active_only(utterances),
+                and_(u.narrative_turn.is_not(None), u.narrative_turn <= at.turn),
+                p.subject_id == target.subject_id,
+                p.predicate_id == target.predicate_id,
+                *(
+                    [
+                        u.intent.in_(("sincere", "unspecified")),
+                        u.classification.is_distinct_from("hallucination_repaired"),
+                    ]
+                    if own
+                    else []
+                ),
+            )
+        )
+    )
+    for row in found:
+        stored = canonical(proposition_from_row(row), registry)
+        if _key(stored) == key and stored.polarity is target.polarity:
+            return True
+    return False
+
+
+async def held_elsewhere(
+    conn: AsyncConnection,
+    story_id: str,
+    character_id: str,
+    proposition: Proposition,
+    at: Position,
+    *,
+    registry: Registry | None = None,
+) -> bool:
+    """Whether the record holds ``proposition`` beyond ``character_id``'s own knowledge at
+    ``at`` (#166): another character's belief (first-order or ``said``) held by then, or another
+    speaker's utterance of it by then's turn, on the active timeline. A first-person claim of
+    such withheld content needs a path of the speaker's own (FR-BELIEF-11: a whisper's words
+    overheard only as an envelope); content no one holds is new, and is not asked about."""
+    found = registry or await load(conn, story_id)
+    target = canonical(proposition, found)
+    return await _stated(conn, story_id, character_id, target, at, found, own=False)
+
+
+async def said_before(
+    conn: AsyncConnection,
+    story_id: str,
+    character_id: str,
+    proposition: Proposition,
+    at: Position,
+    *,
+    registry: Registry | None = None,
+) -> bool:
+    """Whether ``character_id`` itself sincerely said ``proposition`` by ``at``'s turn (an
+    utterance not repaired away): repeating one's own earlier word is no new claim (#166)."""
+    found = registry or await load(conn, story_id)
+    target = canonical(proposition, found)
+    return await _stated(conn, story_id, character_id, target, at, found, own=True)
+
+
 def acquisitions_of(beliefs_: Sequence[partitions.Belief]) -> list[Acquisition]:
     """The beliefs as single-record lineages at their ``held_from`` (a convenience for callers
     holding rows already, such as a context assembly)."""
@@ -518,6 +629,8 @@ __all__ = [
     "acquisitions_of",
     "checking",
     "could_have_known",
+    "held_elsewhere",
     "outcome_of",
     "replay",
+    "said_before",
 ]

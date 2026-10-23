@@ -269,7 +269,7 @@ from epistrel.orchestrator.budget import (
 from epistrel.orchestrator.commit import resolution, salience
 from epistrel.orchestrator.commit.salience import SALIENCE_SKIPPED
 from epistrel.orchestrator.compose import compose as composing
-from epistrel.orchestrator.epistemic import adjudicate
+from epistrel.orchestrator.epistemic import adjudicate, speech
 from epistrel.orchestrator.lite import pipeline as lite
 from epistrel.orchestrator.lite.cast import ResolvedCast, resolve_cast
 from epistrel.orchestrator.lite.prompt import prompt_hash
@@ -353,7 +353,7 @@ UNADDRESSED = "unaddressed"
 OPEN_REFERENCE = "open_reference"
 CONTRADICTED_LATENT = "latent_contradicted"
 INTRODUCTION_DENIED = "introduction_denied"
-SAY, DO, LATENT, NARRATION = "say", "do", "latent", "narration"
+SAY, DO, LATENT, NARRATION, THINK = "say", "do", "latent", "narration", "think"
 
 
 def is_structured(configuration: StoryProfile) -> bool:
@@ -937,6 +937,7 @@ def _beats_of(
                 visibility_declared=scope,
                 narrator=narrator,
                 qualifiers=_qualifiers_of(decl),
+                cites=tuple(decl.cites) if decl.kind == THINK else (),
             )
         )
         sketches[number] = list(decl.propositions)
@@ -1230,6 +1231,7 @@ def _verdict_of(result: CheckedClaim) -> str | None:
 
 def _asserted(c: CheckedClaim) -> AssertedClaim:
     claim = c.claim
+    speech = None if c.result is None else c.result.speech
     return AssertedClaim(
         proposition=claim.proposition,
         verdict=_verdict_of(c),
@@ -1237,6 +1239,9 @@ def _asserted(c: CheckedClaim) -> AssertedClaim:
         declared=claim.layer == "declared",
         span=(claim.span[1], claim.span[2]),
         category=claim.category,
+        belief_relation=None if speech is None else speech.decision.belief_relation,
+        classification=None if speech is None else speech.classification,
+        intent_corrected=speech is not None and speech.decision.intent_corrected,
     )
 
 
@@ -1405,6 +1410,19 @@ async def check_turn(
                 return None
             return tuple(beat.visibility.characters or ())
 
+        def intent_of(claim: DetectedClaim) -> str | None:
+            beat = scopes.get(claim.beat or -1)
+            return None if beat is None or beat.kind != SAY else beat.intent
+
+        def cites_of(claim: DetectedClaim) -> tuple[str, ...]:
+            # #166: the citations of the speaker's think beats in the render (FR-TURN-8).
+            return tuple(
+                c
+                for b in rendered.beats
+                if b.kind == THINK and b.character_id == claim.speaker
+                for c in b.cites
+            )
+
         for number in sorted(k for k in by_beat if k is not None):
             outcome = DetectionOutcome(
                 outcomes[0].detection.with_claims(by_beat[number]), speakers={}
@@ -1418,6 +1436,8 @@ async def check_turn(
                 player_id=read.player_id,
                 scope_of=scope_of,
                 start=first_claim + len(checked),
+                intent_of=intent_of,
+                cites_of=cites_of,
             )
             # The same-turn overlay: what this beat may establish, later beats see.
             for request in verifier.canon_requests()[before:]:
@@ -1882,6 +1902,15 @@ def repair_on(configuration: StoryProfile) -> bool:
     return module_on(configuration.settings, REPAIR_MODULE)
 
 
+def _hallucinated(checked: Checked, beat: TurnBeat) -> bool:
+    """#166: a claim of ``beat`` has no legitimate basis, whatever the beat declared (a
+    declared lie with no underlying belief is repaired, FR-VERIFY-10)."""
+    return any(
+        c.claim.beat == beat.beat and c.result is not None and c.result.hallucinated
+        for c in checked.checked
+    )
+
+
 def _violations(checked: Checked, beat: TurnBeat) -> list[CheckedClaim]:
     return [
         c
@@ -1921,7 +1950,7 @@ async def repair_turn(
         (b, found)
         for b in checked.beats
         if b.beat > 1
-        and not (b.kind == SAY and b.intent in UNREPAIRED_INTENTS)
+        and not (b.kind == SAY and b.intent in UNREPAIRED_INTENTS and not _hallucinated(checked, b))
         and (found := _violations(checked, b))
     ]
     if not wanted:
@@ -3152,23 +3181,34 @@ async def play(
             registry=registry,
         )
         utterance_rows = []
+        # #166: each say's stored proposition per claim id (a lie's divergence names it).
+        said: list[tuple[int, str, dict[str, str]]] = []
         for beat in checked.beats:
             if beat.kind != SAY or beat.character_id is None:
                 continue
+            asserted = [c for c in beat.claims if c.proposition is not None]
             props = [
                 await store.write_proposition(
                     conn, story_id, c.proposition, registry, base_revision=op.base_revision
                 )
-                for c in beat.claims
+                for c in asserted
                 if c.proposition is not None
             ]
             utterance_rows.append(utterance_of(beat, props))
+            said.append(
+                (
+                    beat.beat,
+                    beat.character_id,
+                    {c.claim_id: p for c, p in zip(asserted, props, strict=True) if c.claim_id},
+                )
+            )
         if say:
+            asserted = [c for c in checked.input_claims if c.proposition is not None]
             props = [
                 await store.write_proposition(
                     conn, story_id, c.proposition, registry, base_revision=op.base_revision
                 )
-                for c in checked.input_claims
+                for c in asserted
                 if c.proposition is not None
             ]
             utterance_rows.append(
@@ -3183,7 +3223,14 @@ async def play(
                     props,
                 )
             )
-        await write_utterances(conn, op, utterance_rows, event_ids=ids)
+            said.append(
+                (
+                    1,
+                    read.actor.id,
+                    {c.claim_id: p for c, p in zip(asserted, props, strict=True) if c.claim_id},
+                )
+            )
+        utterance_ids = await write_utterances(conn, op, utterance_rows, event_ids=ids)
         # #161: under per-character partitions, routing writes one memory per perceiver (the
         # level read now, under the story lock: a mid-turn change routes under the new one).
         level = await scene_loader.current_level(conn, story_id)
@@ -3192,13 +3239,15 @@ async def play(
         joined, participants = await model_committed(
             conn, op, read, rendered, checked, level=level, settings=settings, fixed=fixed
         )
-        if level == perception.NONE:
-            await records.write_episodic(
-                conn, op, _episodic(checked, read, say=say, do=do, ids=ids), settings=settings
-            )
-        else:
-            results: list[perception.PerceptionResult] = []
-            with belief_transitions.tallying() as tally:
+        told: adjudicate.Testified | None = None
+        spoken: speech.Spoken | None = None
+        with belief_transitions.tallying() as tally:
+            if level == perception.NONE:
+                await records.write_episodic(
+                    conn, op, _episodic(checked, read, say=say, do=do, ids=ids), settings=settings
+                )
+            else:
+                results: list[perception.PerceptionResult] = []
                 # #164: the observation sink writes each perceiver's observations here.
                 fixed["perception"] = await route_committed(
                     conn,
@@ -3228,16 +3277,30 @@ async def play(
                     adjudications=checked.adjudications,
                     read_set=read_set,
                 )
-            if told is not None:
-                fixed["epistemic"] = {
-                    "testimony": told.testimony,
-                    **told.exposures,
-                    "transitions": tally.report(),
-                }
-                if told.capped:
-                    checked.degradation.append(
-                        (exposure_records.LAZY_RESOLUTION_CAPPED, "lazy_resolution")
-                    )
+            if checked.verifier is not None and checked.verifier.beliefs is not None:
+                # #166: what the first-person claims license: the speaker's exposures on the
+                # claims' keys (the need site), licensed beliefs and the lies' divergences.
+                used = 0 if told is None else sum(told.exposures["resolutions"].values())
+                spoken = await speech.speech_committed(
+                    conn,
+                    op,
+                    _spoken(checked, said, utterance_ids, ids),
+                    settings=settings,
+                    registry=registry,
+                    resolutions_left=exposure_records.max_lazy_resolutions(settings) - used,
+                )
+        if told is not None or spoken is not None:
+            fixed["epistemic"] = {
+                **({} if told is None else {"testimony": told.testimony, **told.exposures}),
+                "transitions": tally.report(),
+                **({} if spoken is None else {"speech": spoken.report()}),
+            }
+            if (told is not None and told.capped) or (spoken is not None and spoken.capped):
+                checked.degradation.append(
+                    (exposure_records.LAZY_RESOLUTION_CAPPED, "lazy_resolution")
+                )
+        if spoken is not None:
+            fixed["divergences_written"] = len(spoken.divergence_ids)
         commit_report: dict[str, Any] = {}
         if lifecycle.commitment_enabled(settings):
             with replay.checking() as replayed:
@@ -3358,6 +3421,9 @@ async def play(
             report["composition"] = composition.report()
         if checked.verifier is not None:
             report["verify"] = checked.verifier.report()
+            if "speech" in report["verify"]:
+                # #166: the lies' divergence records, written in the commit.
+                report["verify"]["divergences_written"] = fixed.get("divergences_written", 0)
             report["uncertain_claims"] = checked.verifier.uncertain_claims()
         if checked.follow_up_verifier is not None:
             report["verify_follow_up"] = checked.follow_up_verifier.report()
@@ -3527,6 +3593,31 @@ def _with_context(draft: Draft, retrieval: RetrievalResult) -> Draft:
         context=tuple(dict.fromkeys((*draft.context, *found.context))),
         pins=tuple(dict.fromkeys((*draft.pins, *found.pins))),
     )
+
+
+def _spoken(
+    checked: Checked,
+    said: Sequence[tuple[int, str, Mapping[str, str]]],
+    utterance_ids: Sequence[str],
+    ids: Mapping[int, str],
+) -> list[speech.SpokenBeat]:
+    """The turn's says as #166's commit step reads them: each beat's speaker, utterance id
+    (``write_utterances`` answers them in row order), classified claims and stored propositions."""
+    by_beat: dict[int, list[CheckedClaim]] = {}
+    for c in checked.checked:
+        if c.claim.beat is not None and c.claim.channel == SAY:
+            by_beat.setdefault(c.claim.beat, []).append(c)
+    return [
+        speech.SpokenBeat(
+            beat=beat,
+            speaker=speaker,
+            utterance_id=utterance_ids[n] if n < len(utterance_ids) else None,
+            claims=tuple(by_beat.get(beat, ())),
+            proposition_ids=props,
+            event_id=ids.get(beat),
+        )
+        for n, (beat, speaker, props) in enumerate(said)
+    ]
 
 
 def _relation(claims: Sequence[AssertedClaim], kind: str) -> str:

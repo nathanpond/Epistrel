@@ -12,7 +12,14 @@ true (FR-TURN-5): the row records what the speaker asserted and three **independ
 - ``belief_relation`` ∈ ``consistent|inconsistent|unknown``: ``unknown`` in M4 (there are no
   belief partitions before M5, which may update it);
 - ``intent`` ∈ ``sincere|deceptive|joking|unspecified``: as the render declared it on the
-  ``say`` beat (``unspecified`` when nothing was declared, as for the player's input).
+  ``say`` beat (``unspecified`` when nothing was declared, as for the player's input), checked
+  under M5's partitions (a declared lie the speaker's beliefs support is ``sincere``, #166).
+
+``belief_relation`` is the speaker's belief relation once M5's partitions run (#166:
+``core.verify.speech_acts``), and ``classification`` ∈ ``sincere|sincere_error|lie|joke|
+hallucination_repaired`` the verifier's classification of the utterance (its worst claim's),
+written at insert (migration 0073); ``NULL`` when the belief dimension did not run (verification
+or partitions off, the player's own ``say``, FR-EPI-12).
 
 ``event_id`` is the ``beat_say`` (or ``player_input``) event, a soft reference: events are
 never deleted while their story lives. ``proposition_ids`` are the utterance's normalized
@@ -38,6 +45,13 @@ from epistrel.core.tables.base import metadata, ulid_type
 OBJECTIVE_RELATIONS: tuple[str, ...] = ("true", "false", "unresolved")
 BELIEF_RELATIONS: tuple[str, ...] = ("consistent", "inconsistent", "unknown")
 INTENTS: tuple[str, ...] = ("sincere", "deceptive", "joking", "unspecified")
+CLASSIFICATIONS: tuple[str, ...] = (
+    "sincere",
+    "sincere_error",
+    "lie",
+    "joke",
+    "hallucination_repaired",
+)
 
 
 def _in(column: str, values: tuple[str, ...]) -> str:
@@ -56,10 +70,12 @@ utterances = Table(
     Column("objective_relation", Text, nullable=False),
     Column("belief_relation", Text, nullable=False, server_default=text("'unknown'")),
     Column("intent", Text, nullable=False, server_default=text("'unspecified'")),
+    Column("classification", Text, nullable=True),
     Column("created_at", TIMESTAMP(timezone=True), nullable=False, server_default=text("now()")),
     CheckConstraint(_in("objective_relation", OBJECTIVE_RELATIONS), name="objective_relation"),
     CheckConstraint(_in("belief_relation", BELIEF_RELATIONS), name="belief_relation"),
     CheckConstraint(_in("intent", INTENTS), name="intent"),
+    CheckConstraint(_in("classification", CLASSIFICATIONS), name="classification"),
     *derived_indexes("utterances"),
 )
 Index("ix_utterances_story_event", utterances.c.story_id, utterances.c.event_id)
@@ -68,4 +84,11 @@ Index("ix_utterances_story_speaker", utterances.c.story_id, utterances.c.speaker
 UTTERANCES = register_derived(DerivedTable(utterances))
 """``utterances`` in ``core.membership.DERIVED_TABLES``: an utterance follows its turn."""
 
-__all__ = ["BELIEF_RELATIONS", "INTENTS", "OBJECTIVE_RELATIONS", "UTTERANCES", "utterances"]
+__all__ = [
+    "BELIEF_RELATIONS",
+    "CLASSIFICATIONS",
+    "INTENTS",
+    "OBJECTIVE_RELATIONS",
+    "UTTERANCES",
+    "utterances",
+]

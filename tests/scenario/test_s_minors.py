@@ -59,8 +59,8 @@ from tests.structured_turn_support import (
     ages,
     beat,
     claim,
-    labels_of,
     render,
+    utterances,
 )
 
 pytestmark = pytest.mark.integration
@@ -268,8 +268,14 @@ async def test_s_minors__m5(
             body(ids[ADULT_NAME], "How old are you?", render_character_ids=[ids[MINOR_NAME]]),
         )
         assert claimed.status_code == 200, claimed.text
+        # #166: a classified utterance's labels are omniscient reads' only (the speaker's
+        # beliefs are private); the stored row is labelled: a lie about her own true age.
         (said,) = [b for b in claimed.json()["beats"] if b["kind"] == "beat_say"]
-        assert labels_of(said)[0] == "false"
+        assert "labels" not in said
+        (lied,) = [
+            u for u in await utterances(engine, story) if u.speaker_character_id == ids[MINOR_NAME]
+        ]
+        assert (lied.objective_relation, lied.classification) == ("false", "lie")
         assert subject_checks(stub)
         assert all("age 16" in c and "age 18" not in c for c in subject_checks(stub))
 

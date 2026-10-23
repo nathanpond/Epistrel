@@ -15,11 +15,13 @@ from epistrel.core.commit import lifecycle
 from epistrel.core.commit.sketch import ThunkSketch
 from epistrel.core.context import RequestContext
 from epistrel.core.enums import OpenSlot, OperationKind, Provenance
+from epistrel.core.epistemic import divergences
 from epistrel.core.errors import GuardrailViolation
 from epistrel.core.events import Operation
 from epistrel.core.feedback import FeedbackRequest
 from epistrel.core.ids import new_ulid
 from epistrel.core.ingest import IngestRequest
+from epistrel.core.membership import Position
 from epistrel.core.propositions import registry as predicate_registry
 from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Interval, Proposition
@@ -208,7 +210,7 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
     )
     # Belief partitions (#159): the other character's belief about the player, and its
     # projection row.
-    await partition_support.believe(
+    held = await partition_support.believe(
         engine,
         story_id,
         character_id,
@@ -232,6 +234,31 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
         ),
         source=str(player),
     )
+    # Divergences (#166): a lie of the other character's against its belief.
+    async with Operation(
+        engine, story_id=story_id, kind=OperationKind.TURN, principal=canon_support.PRINCIPAL
+    ) as op:
+        op.append("player_input", {"text": "lie"}, provenance=Provenance.PLAYER)
+        op.append("message_rendered", {"text": "A lie."})
+
+        async def lie(conn: AsyncConnection) -> None:
+            await divergences.record_divergences(
+                conn,
+                op,
+                [
+                    divergences.Divergence(
+                        utterance_id=new_ulid(),
+                        speaker=character_id,
+                        asserted_proposition_id=held.proposition_id,
+                        position=Position(op.narrative_turn or 0, op.turn_variant or 0, 0, 2, 0),
+                        believed_belief_id=held.id,
+                        believed_proposition_id=held.proposition_id,
+                    )
+                ],
+            )
+
+        op.add_commit_step(lie)
+        await op.commit()
     # Memory records (#135): a memory of the story, written by its own operation.
     await memory_support.derived_memory(engine, story_id, "Ann sails at dawn.", [])
     # The hot set (#147): an overflow episode of the story's vectors, planted (one needs a
@@ -534,6 +561,9 @@ async def test_story_isolation_schema(engine: AsyncEngine) -> None:
             # other (deferred keys); the provenance trigger holds both to one story and holder.
             ("provenance", "belief_transitions", "id"),
             ("belief_id", "beliefs", "id"),
+            # #166: a divergence names the contrary belief its lie deviates from (a deferred
+            # key); both are the speaker's, in one story.
+            ("believed_belief_id", "beliefs", "id"),
         }
         found = {
             (column, target, target_column) for _, column, target, target_column in foreign_keys

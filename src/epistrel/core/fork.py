@@ -701,6 +701,12 @@ OVERRIDES: dict[str, dict[str, str]] = {
             "ELSE t.state END"
         ),
     },
+    # Divergences (#166): the contrary belief is the fork's copy (held before the lie, so
+    # copied with it); a reveal after N is not copied, so the divergence is open there.
+    "divergences": {
+        "believed_belief_id": _mapped_or_null("believed_belief_id"),
+        "revealed_by_event_id": _mapped_or_null("revealed_by_event_id"),
+    },
     "belief_transitions": {
         "prior_belief_ids": (
             f"CAST(ARRAY(SELECT {_ID}(s.id::text) FROM unnest(t.prior_belief_ids) "  # noqa: S608

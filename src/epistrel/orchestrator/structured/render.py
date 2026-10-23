@@ -173,11 +173,12 @@ _SAY_ONLY: dict[str, frozenset[str]] = {
     "language": _SPEECH,
     "partial_text": _ACTS,
     "location": frozenset({"narration"}),
+    "cites": frozenset({"think"}),
 }
 """The beat fields only some kinds declare (``RenderedBeats._structure``): ``intent`` a
-``say``'s, ``visibility`` a ``latent``'s, and the perception qualifiers (#161) the kinds they
+``say``'s, ``visibility`` a ``latent``'s, the perception qualifiers (#161) the kinds they
 apply to: narrowing a ``say``'s, widening a ``say``'s or a ``do``'s, ``location`` a
-narration's."""
+narration's; and ``cites`` a ``think``'s (#166: the cause a new belief rests on)."""
 _KIND_GROUPS = (("say",), ("latent",), ("do",), ("think",), ("narration",))
 
 
@@ -212,6 +213,8 @@ QUALIFIER_TEXT_MAX = 200
 LANGUAGE_MAX = 32
 CHANNEL_ID_MAX = 64
 MAX_NAMED = 10
+MAX_CITES = 10
+CITE_MAX = 64
 
 
 class RemoteChannelDecl(_Strict):
@@ -249,6 +252,12 @@ class BeatDecl(_Strict):
     language: str | None = Field(default=None, min_length=1, max_length=LANGUAGE_MAX)
     partial_text: str | None = Field(default=None, max_length=BEAT_TEXT_MAX)
     location: str | None = Field(default=None, max_length=NAME_MAX)
+    cites: list[Annotated[str, Field(min_length=1, max_length=CITE_MAX)]] = Field(
+        default_factory=list, max_length=MAX_CITES
+    )
+    """A ``think``'s citations (#166, FR-TURN-8): the ids of the records (an event, a fact) a
+    new belief it reasons from rests on. Checked, never trusted: a citation is confirmed only
+    when it names the antecedent the engine's own search finds."""
 
     def qualifiers_declared(self) -> list[str]:
         """The perception qualifiers this beat declares (#161)."""
@@ -331,6 +340,8 @@ class RenderedBeats(_Strict):
                 raise ValueError(f"{where}.actor_character_id: not the rendering character")
             if beat.intent is not None and beat.kind != "say":
                 raise ValueError(f"{where}.intent: only a say declares an intent")
+            if beat.cites and beat.kind != "think":
+                raise ValueError(f"{where}.cites: only a think cites a cause")
             if beat.visibility is not None:
                 if beat.kind != "latent":
                     raise ValueError(f"{where}.visibility: only a latent declares a scope")

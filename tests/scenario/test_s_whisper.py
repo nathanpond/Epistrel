@@ -26,8 +26,10 @@ partitions with testimony at ``defaulted``: Bobby's envelope is an observation t
 Marcus and no path to the words (``core.epistemic.replay.could_have_known`` finds ``NoPath``),
 while Marcus, addressed, believes them by testimony (``Known``). The envelope observation is a
 valid antecedent for Bobby's low-confidence inference that they are hiding something (written
-through #160), which still licenses nothing about the words. Complement: once Marcus tells Bobby
-the words, the same claim has a path (the exposure, dry-run; then the testimony it resolves to).
+through #160), which still licenses nothing about the words: when Bobby then claims the words,
+the claim is caught as a hallucination and repaired (#166). Complement: once Marcus tells Bobby
+the words, the same claim has a path (the exposure, dry-run; then the testimony it resolves
+to).
 """
 
 from __future__ import annotations
@@ -333,6 +335,28 @@ async def test_s_whisper__inference(
         later = Position.end_of(inferred.belief.held_from.turn)
         assert isinstance(await _knows(engine, story, ids["Bobby"], hiding, later), replay.Known)
         assert await _knows(engine, story, ids["Bobby"], words, later) == replay.NoPath()
+
+        # Bobby claims to know the words: no path, so the claim is a hallucination, repaired
+        # (#166's rule), and he still holds nothing about them.
+        blurt = render(
+            beat(
+                "say",
+                ts.CLAIM_LINE,
+                intent="sincere",
+                propositions=[claim("Olivia", "sent", "the text")],
+            )
+        )
+        await _play(client, epistrel, story, ids, blurt, render_character_ids=[ids["Bobby"]])
+        report = await turn_report(engine, story)
+        caught = [v["speech"] for v in report["verify"]["verdicts"] if "speech" in v]
+        assert caught  # the declared claim, and the detector's reading of "sent"
+        for found in caught:
+            assert (found["classification"], found["licence"]) == ("hallucination_repaired", None)
+            assert found["hidden"] == "supported"  # Marcus holds the words: withheld content
+        assert {r["tag"] for r in report["repairs"]} == {"hallucination"}
+        assert await _knows(engine, story, ids["Bobby"], words, Position.end_of(3)) == (
+            replay.NoPath()
+        )
 
         # Complement: Marcus tells Bobby the words. The hearing is a path, and so is the
         # testimony it resolves to.

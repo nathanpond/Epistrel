@@ -1,6 +1,8 @@
 """U-05: speech-act handling (docs/04 §3). The M4 parts (FR-TURN-5,6; #150) and the M5 parts
-(FR-TURN-6,7: #162's hearer clause, ``test_u_05__hearer_intent``; the divergence record is a later
-M5 story's) live in this file (traceability counts a test ID per milestone in one file).
+(FR-TURN-6,7: #162's hearer clause, ``test_u_05__hearer_intent``; #166's speaker clause,
+``test_u_05__m5``: the speaker's belief relation derived independently of both, and the
+divergence a lie records) live in this file (traceability counts a test ID per milestone in one
+file).
 
 A structured story's ``say`` beats are stored as utterances, never promoted to canon by being
 said, with labels derived independently: the objective relation from the claim's verdict
@@ -14,8 +16,16 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
-from epistrel.core.propositions.model import Interval, Polarity, Proposition
+from epistrel.core.enums import OperationKind
+from epistrel.core.propositions.model import (
+    Interval,
+    LiteralKind,
+    Polarity,
+    Proposition,
+    TypedLiteral,
+)
 from epistrel.core.propositions.vocabulary import FRIEND_OF
+from tests import partition_support as parts
 from tests import perception_support as ps
 from tests import testimony_support as ts
 from tests.auth_support import auth_settings
@@ -32,6 +42,7 @@ from tests.structured_turn_support import (
     render,
     row_labels,
     structured_story,
+    turn_report,
     utterances,
 )
 
@@ -170,3 +181,104 @@ async def test_u_05__hearer_intent(
                 assert [(b.polarity, b.cause, b.confidence_level) for b in held] == [
                     ("affirmed", "testimony", level)
                 ], intent
+
+
+def _age(character_id: str, years: int) -> Proposition:
+    return Proposition(
+        subject_id=character_id,
+        predicate_id=AGE,
+        literal=TypedLiteral(kind=LiteralKind.INT, value=years),
+        valid_time=Interval.of(None, None),
+    )
+
+
+@pytest.mark.part("M5", "FR-TURN-6,7")
+async def test_u_05__m5(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+    testimony_delivered: None,
+) -> None:
+    """The speaker's belief relation, derived independently of the objective relation and the
+    intent (#166): canon says Ada is 64, and Ada's partition holds what she believes of her age
+    (an author seed). Each case is ``(believed, said, intent) → (objective, belief, intent,
+    classification, divergence)``:
+
+    - believes 30, says 30 sincerely: false / consistent / sincere, a ``sincere_error``, no
+      divergence (the complement);
+    - believes 64, says 30 to deceive: false / inconsistent / deceptive, a ``lie``, a divergence
+      against her 64 belief;
+    - believes 30, says 64 to deceive: true / inconsistent / deceptive, a lie that happens to be
+      true, a divergence against her 30 belief;
+    - believes 64, says 64 "to deceive": consistent, so no lie: the intent is checked and
+      relabelled ``sincere`` (``intent_corrected``), no divergence.
+    """
+    cases = (
+        (30, "30", "sincere", ("false", "consistent", "sincere", "sincere_error", False)),
+        (64, "30", "deceptive", ("false", "inconsistent", "deceptive", "lie", True)),
+        (30, "64", "deceptive", ("true", "inconsistent", "deceptive", "lie", True)),
+        (64, "64", "deceptive", ("true", "consistent", "sincere", "sincere", False)),
+    )
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        for believed, said, intent, expected in cases:
+            story, ids = await structured_story(client, "Wren", "Ada")
+            await ts.enable_testimony(engine, story, "defaulted", level="co_location")
+            ada = ids["Ada"]
+            await age_fact(engine, story, ada, 64)
+            held = await parts.believe(
+                engine, story, ada, _age(ada, believed), kind=OperationKind.CONTROL
+            )
+            stub.reset()
+            stub.script(
+                "generation",
+                [
+                    render(
+                        beat(
+                            "say",
+                            f"I am {said}.",
+                            intent=intent,
+                            propositions=[claim("I", "age", said)],
+                        )
+                    )
+                ],
+            )
+            response = await respond(client, story, body(ids["Wren"], "How old are you?"))
+            assert response.status_code == 200, response.text
+            (stored,) = [
+                u for u in await utterances(engine, story) if u.speaker_character_id == ada
+            ]
+            objective, relation, label, classification, diverges = expected
+            case = (believed, said, intent)
+            assert (
+                stored.objective_relation,
+                stored.belief_relation,
+                stored.intent,
+                stored.classification,
+            ) == (objective, relation, label, classification), case
+            found = await rows(
+                engine,
+                "SELECT * FROM divergences WHERE story_id = :s ORDER BY id",
+                s=story,
+            )
+            if diverges:
+                (divergence,) = found
+                assert (
+                    divergence.utterance_id,
+                    divergence.speaker_character_id,
+                    divergence.believed_belief_id,
+                    divergence.believed_proposition_id,
+                ) == (stored.id, ada, held.id, held.proposition_id), case
+                assert divergence.asserted_proposition_id in stored.proposition_ids, case
+                assert divergence.revealed_by_event_id is None
+                report = await turn_report(engine, story)
+                assert report["verify"]["divergences_written"] == 1, case
+            else:
+                assert found == [], case
+            if classification == "sincere" and intent == "deceptive":
+                (verdict,) = [
+                    v["speech"]
+                    for v in (await turn_report(engine, story))["verify"]["verdicts"]
+                    if "speech" in v
+                ]
+                assert verdict["intent_corrected"] is True

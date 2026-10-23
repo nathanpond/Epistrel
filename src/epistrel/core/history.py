@@ -450,7 +450,24 @@ def _named_ages(
 STRUCTURED_PREFIX = "beat_"
 
 
-def _structured(row: Any, channel: str) -> dict[str, Any]:
+def _labels(labels: Mapping[str, Any], omniscient: bool) -> dict[str, Any] | None:
+    """A ``say``'s labels as a read returns them (FR-TURN-6): M4's three; under partitions
+    (#166) a classified utterance's labels, ``classification`` and ``intent_corrected``
+    included, on omniscient reads only (its belief relation is the speaker's private state)."""
+    found = dict(labels)
+    classification = found.pop("classification", None)
+    corrected = bool(found.pop("intent_corrected", False))
+    if classification is None:
+        return found
+    if not omniscient:
+        return None
+    found["classification"] = classification
+    if corrected:
+        found["intent_corrected"] = True
+    return found
+
+
+def _structured(row: Any, channel: str, omniscient: bool = True) -> dict[str, Any]:
     """A structured turn's fields of one item (#150): a ``beat_*`` event's propositions,
     effects, labels, visibility and detected claims; a structured player input's (one that
     carries labels) for its ``say`` and ``do`` parts. Empty for every Lite item."""
@@ -467,7 +484,9 @@ def _structured(row: Any, channel: str) -> dict[str, Any]:
     }
     labels = payload.get("labels")
     if labels is not None and channel == "say":
-        found["labels"] = dict(labels)
+        shown = _labels(labels, omniscient)
+        if shown is not None:
+            found["labels"] = shown
     if row.kind == "beat_latent":
         found["visibility"] = dict(payload.get("visibility") or {"scope": "objective"})
     if payload.get("detected"):
@@ -574,7 +593,7 @@ def _items(
                     ),
                     redacted=bool(row.redacted),
                     quarantined=omniscient and row.message_id in quarantined,
-                    **_structured(row, channel),
+                    **_structured(row, channel, omniscient),
                 )
             )
     return items

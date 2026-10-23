@@ -679,6 +679,7 @@ _COMMITMENTS = "epistrel.core.commit.lifecycle"
 _PARTITIONS = "epistrel.core.epistemic.partitions"
 _TRANSITIONS = "epistrel.core.epistemic.transitions"
 _EXPOSURES = "epistrel.core.epistemic.exposure"
+_DIVERGENCES = "epistrel.core.epistemic.divergences"
 
 SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
     SubjectWriter(
@@ -787,6 +788,9 @@ SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
     # Exposures (#164): the witness, the source and the proposition's subject and object
     # characters are declared subjects.
     SubjectWriter("exposures", (_EXPOSURES,), f"{_RECORDS}:read_exposures"),
+    # Divergences (#166): the speaker and the asserted and believed propositions' subject and
+    # object characters are declared subjects.
+    SubjectWriter("divergences", (_DIVERGENCES,), f"{_RECORDS}:read_divergences"),
 )
 """Every indexed table (see the module docstring); the coverage test's source of truth."""
 

@@ -150,12 +150,16 @@ class BeatVisibility(EventPayload):
 
 class BeatLabels(EventPayload):
     """An utterance's three independent labels (FR-TURN-6): the objective relation of what it
-    asserts (#142's verdicts), the speaker's belief relation (``unknown`` until M5) and its
-    communicative intent as declared."""
+    asserts (#142's verdicts), the speaker's belief relation (``unknown`` until M5's partitions)
+    and its communicative intent as declared and checked; under partitions (#166) also the
+    verifier's ``classification`` and whether a declared lie was relabelled sincere
+    (``intent_corrected``). Omniscient reads only, once classified."""
 
     objective_relation: str
     belief_relation: str = "unknown"
     intent: str = "unspecified"
+    classification: str | None = None
+    intent_corrected: bool = False
 
 
 class DetectedRef(EventPayload):

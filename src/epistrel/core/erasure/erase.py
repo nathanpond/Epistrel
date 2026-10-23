@@ -197,6 +197,7 @@ from epistrel.core.tables.beliefs import belief_transitions, beliefs
 from epistrel.core.tables.catalog import CATALOG_SCHEMA, ERASURE_GUC
 from epistrel.core.tables.commitments import thunks
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
+from epistrel.core.tables.divergences import divergences
 from epistrel.core.tables.exposures import exposures
 from epistrel.core.tables.facts import facts
 from epistrel.core.tables.media import (
@@ -1275,10 +1276,12 @@ async def _redact_structured(
     """The structured stores (#131): an erased character's entity loses its aliases (deleted,
     each with a marker); every other record naming the subject is redacted in place. A story
     predicate's name keeps its id as a suffix when redacted, so names stay unique per story.
-    Facts (#133), beliefs (#159), memories (#135) and thunks (#146) go first: see
-    ``_erase_facts``, ``_erase_beliefs``, ``_erase_memories`` and ``_erase_thunks``."""
+    Facts (#133), exposures (#164), divergences (#166), beliefs (#159), memories (#135) and
+    thunks (#146) go first: see ``_erase_facts``, ``_erase_exposures``, ``_erase_divergences``,
+    ``_erase_beliefs``, ``_erase_memories`` and ``_erase_thunks``."""
     await _erase_facts(conn, story_id, refs, removed, tally, run)
     await _erase_exposures(conn, story_id, refs, removed, tally, run)
+    await _erase_divergences(conn, story_id, refs, removed, tally, run)
     await _erase_beliefs(conn, story_id, removed, tally, run, refs=refs)
     await _erase_memories(conn, story_id, refs, removed, redactor, tally, run)
     await _erase_thunks(conn, story_id, refs, removed, redactor, tally, run)
@@ -1431,6 +1434,39 @@ async def _erase_exposures(
             exposures.name,
             exposure_id,
             delete(exposures).where(x.id == exposure_id),
+        )
+
+
+async def _erase_divergences(
+    conn: AsyncConnection,
+    story_id: str,
+    refs: Mapping[str, set[str]],
+    removed: set[str],
+    tally: _Tally,
+    run: _StoryRun,
+) -> None:
+    """Divergences (#166): every divergence of or about the subject (its speaker is an erased
+    character, or one of its propositions is about one: the index's declared rows) is deleted,
+    each with a marker, before the beliefs it names."""
+    d = divergences.c
+    found = set(refs.get(divergences.name, ()))
+    if removed:
+        found |= {
+            str(i)
+            for i in await conn.scalars(
+                select(d.id).where(
+                    d.story_id == story_id, d.speaker_character_id.in_(sorted(removed))
+                )
+            )
+        }
+    for divergence_id in sorted(found):
+        await _delete(
+            conn,
+            run,
+            tally,
+            divergences.name,
+            divergence_id,
+            delete(divergences).where(d.id == divergence_id),
         )
 
 

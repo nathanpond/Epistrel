@@ -21,6 +21,7 @@ from epistrel.core.tables.client_events import client_events
 from epistrel.core.tables.commitments import promissory_ledger, thunks
 from epistrel.core.tables.deployment import config_changes, deployment_state
 from epistrel.core.tables.detection import extraction_shadow
+from epistrel.core.tables.divergences import divergences
 from epistrel.core.tables.erasure import erasure_ledger
 from epistrel.core.tables.escalations import (
     escalations,
@@ -88,6 +89,7 @@ __all__ = [
     "content_rating_versions",
     "content_ratings",
     "deployment_state",
+    "divergences",
     "engine_profile_versions",
     "engine_profiles",
     "entities",

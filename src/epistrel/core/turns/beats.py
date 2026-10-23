@@ -24,7 +24,9 @@ is the verifier's decision, not the utterance's. Its three labels are independen
 contradicted → ``false``, otherwise → ``unresolved``: undecided, novel, none at all or
 verification off), ``belief_relation`` (``unknown`` until M5's partitions) and ``intent`` as the
 render declared it on the ``say`` (``unspecified`` when nothing was declared; the player's input
-is always ``unspecified``).
+is always ``unspecified``). Under per-character partitions (#166) the verifier classifies each
+claim (``core.verify.speech_acts``); ``speech_labels`` aggregates them into the utterance's
+belief relation, checked intent and ``classification``.
 
 **Latent routing** (FR-TURN-4). A ``latent`` beat's propositions go to canon with its declared
 visibility (``visibility_of``: ``objective`` by default, ``public``, or ``characters`` naming
@@ -55,7 +57,7 @@ import logging
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from sqlalchemy import func, insert, select
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -133,6 +135,13 @@ class AssertedClaim:
     span: tuple[int, int] | None = None
     category: str = "declared"
     proposition_id: str | None = None
+    belief_relation: str | None = None
+    """The claim's belief relation under per-character partitions (#166; ``None``: the belief
+    dimension did not run)."""
+    classification: str | None = None
+    """The claim's speech-act classification (#166, ``core.verify.speech_acts``)."""
+    intent_corrected: bool = False
+    """A declared lie the speaker's beliefs support, relabelled sincere (#166)."""
 
     def payload(self) -> BeatProposition:
         assert self.proposition is not None  # noqa: S101 - only normalized claims are listed
@@ -166,6 +175,8 @@ class TurnBeat:
     """``(rung, class)`` when the repair ladder corrected the beat (#151)."""
     qualifiers: Qualifiers = field(default_factory=Qualifiers)
     """The beat's explicit perception qualifiers (#161; persisted on its event)."""
+    cites: tuple[str, ...] = ()
+    """A ``think``'s citations (#166): the records a new belief it reasons from rests on."""
 
     @property
     def declared(self) -> tuple[AssertedClaim, ...]:
@@ -178,11 +189,56 @@ class TurnBeat:
     def labels(self) -> BeatLabels | None:
         if self.kind != "say":
             return None
+        speech = speech_labels(self.claims, self.intent)
         return BeatLabels(
             objective_relation=objective_relation_of(self.claims),
-            belief_relation=UNKNOWN_BELIEF,
-            intent=self.intent,
+            belief_relation=speech.belief_relation,
+            intent=speech.intent,
+            classification=speech.classification,
+            intent_corrected=speech.intent_corrected,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class SpeechLabels:
+    """An utterance's belief relation, checked intent and classification over its claims
+    (#166; ``core.verify.speech_acts``): ``unknown``, the declared intent and ``None`` when the
+    belief dimension did not run."""
+
+    belief_relation: str = UNKNOWN_BELIEF
+    intent: Intent = UNSPECIFIED
+    classification: str | None = None
+    intent_corrected: bool = False
+
+
+def speech_labels(claims: Iterable[AssertedClaim], intent: Intent) -> SpeechLabels:
+    """The utterance's speech-act labels (see ``SpeechLabels``): the relation aggregated over
+    its classified claims, the worst classification, and the intent relabelled ``sincere`` when
+    a declared lie was corrected and no claim of it stands as a lie."""
+    from epistrel.core.verify import speech_acts
+
+    classified = [c for c in claims if c.classification is not None]
+    if not classified:
+        return SpeechLabels(intent=intent)
+    worst = speech_acts.worst(
+        cast(speech_acts.Classification, c.classification) for c in classified
+    )
+    relation = speech_acts.aggregate_relation(
+        cast(speech_acts.BeliefRelation, c.belief_relation)
+        for c in classified
+        if c.belief_relation is not None
+    )
+    corrected = (
+        intent == "deceptive"
+        and any(c.intent_corrected for c in classified)
+        and worst not in (speech_acts.LIE, speech_acts.HALLUCINATION)
+    )
+    return SpeechLabels(
+        belief_relation=relation,
+        intent="sincere" if corrected else intent,
+        classification=worst,
+        intent_corrected=corrected,
+    )
 
 
 def objective_relation_of(claims: Iterable[AssertedClaim]) -> ObjectiveRelation:
@@ -288,18 +344,23 @@ class Utterance:
     objective_relation: ObjectiveRelation
     intent: Intent = UNSPECIFIED
     belief_relation: str = UNKNOWN_BELIEF
+    classification: str | None = None
 
 
 def utterance_of(beat: TurnBeat, proposition_ids: Sequence[str]) -> Utterance:
-    """The utterance a ``say`` beat stores."""
+    """The utterance a ``say`` beat stores: its labels (#166: the speech-act labels of its
+    classified claims)."""
     if beat.kind != "say" or beat.character_id is None:
         raise InvalidRequest("only a character's say is an utterance", {"field": "beat"})
+    speech = speech_labels(beat.claims, beat.intent)
     return Utterance(
         beat=beat.beat,
         speaker_character_id=beat.character_id,
         proposition_ids=tuple(proposition_ids),
         objective_relation=objective_relation_of(beat.claims),
-        intent=beat.intent,
+        intent=speech.intent,
+        belief_relation=speech.belief_relation,
+        classification=speech.classification,
     )
 
 
@@ -338,6 +399,7 @@ async def write_utterances(
                 "objective_relation": row.objective_relation,
                 "belief_relation": row.belief_relation,
                 "intent": row.intent,
+                "classification": row.classification,
             }
         )
     await insert_derived(conn, utterances, values)
@@ -537,12 +599,14 @@ __all__ = [
     "Intent",
     "Introduction",
     "ObjectiveRelation",
+    "SpeechLabels",
     "TurnBeat",
     "Utterance",
     "beat_event_ids",
     "beat_payload",
     "event_type_of",
     "objective_relation_of",
+    "speech_labels",
     "stage_beats",
     "stage_introductions",
     "taken_names",

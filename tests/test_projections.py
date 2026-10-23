@@ -64,6 +64,8 @@ def test_m2_projections_are_registered_once() -> None:
         "relationships",
         "placement",
         "scene_state",
+        # The belief projection over the partitions (#159).
+        "belief_state",
     ]
     with pytest.raises(ValueError, match="already registered"):
         register_projection(HeadsProjection())

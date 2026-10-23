@@ -88,6 +88,8 @@ from epistrel.core.stories import (
     CharacterWeightRequest,
     CreatedStory,
     ModelEntityRequest,
+    ParticipationSet,
+    ParticipationSpec,
     RatingRef,
     StatusChange,
     StoryCharacterAdded,
@@ -149,14 +151,24 @@ class ScenarioOriginBody(BaseModel):
     version: int
 
 
+class ParticipationBody(BaseModel):
+    """A character's participation role (FR-MULTI-7; #176): ``primary``, ``reactive`` or
+    ``silent``, and whether it is ``fixed`` (a bound the engine never crosses on its own)."""
+
+    role: Literal["primary", "reactive", "silent"]
+    fixed: bool
+
+
 class CharacterBody(CharacterRefBody):
     """A character as a read returns it; ``is_player`` marks a player character. A story created
     from a scenario (#119) names each character's ``role_id`` and, for a catalog character, its
-    ``source``; a blank story's characters carry neither."""
+    ``source``; a blank story's characters carry neither. ``participation`` (#176) is every
+    non-player character's role; the player's character has none."""
 
     is_player: bool
     role_id: str | None = Field(default=None, exclude_if=lambda v: v is None)
     source: CatalogSourceBody | None = Field(default=None, exclude_if=lambda v: v is None)
+    participation: ParticipationBody | None = Field(default=None, exclude_if=lambda v: v is None)
 
 
 class ModeledAtBody(BaseModel):
@@ -194,6 +206,23 @@ class CharacterWeightedBody(MutationResponse):
         body = _character(done.character)
         assert isinstance(body, OmniscientCharacterBody)  # noqa: S101 - an omniscient item
         return cls(character=body, timeline_revision=done.timeline_revision)
+
+
+class ParticipationSetBody(MutationResponse):
+    """A character after a participation change (#176): the character as a read lists it, with
+    the story's ``config_revision`` (moved by a change) and its unchanged
+    ``timeline_revision``."""
+
+    character: CharacterBody
+    config_revision: int
+
+    @classmethod
+    def of(cls, done: ParticipationSet) -> ParticipationSetBody:
+        return cls(
+            character=_character(done.character),
+            config_revision=done.config_revision,
+            timeline_revision=done.timeline_revision,
+        )
 
 
 class StoryCharacterBody(MutationResponse):
@@ -597,7 +626,9 @@ SETTINGS_PATCH_DESCRIPTION = (
     "`sequence_order` (`request` | `director`: who orders a sequential turn's primaries; "
     "`null`: `request`) and `simultaneous_tie_break` (`request_order` | `director` | "
     "`state:<name>`: how a simultaneous turn settles conflicting actions; `null`: "
-    "`request_order`; `state:<name>` is 422 `not_yet` until M6). An "
+    "`request_order`; `state:<name>` is 422 `not_yet` until M6) and `reactive_interjections` "
+    "(whether reactive narration may give a reactive character a brief interjection; default "
+    "`false`). An "
     "unknown key is 422. The engine's dials are the story's engine profile's, overridden per "
     "story with `PATCH /stories/{id}/profile-overrides` (FR-PROF-5): a key that moved there "
     "(`generation_settings`, `lite_window_messages`, `lite_summary_max_tokens`, "
@@ -689,6 +720,7 @@ def _character(character: CharacterView) -> OmniscientCharacterBody | CharacterB
             true_age=character.true_age,
             promoted_to=list(character.promoted_to or ()),
             weight="minor" if character.weight == "minor" else "major",
+            participation=_participation(character),
             modeled_at=None
             if character.modeled_at is None
             else ModeledAtBody(
@@ -705,7 +737,15 @@ def _character(character: CharacterView) -> OmniscientCharacterBody | CharacterB
         is_player=character.is_player,
         role_id=character.role_id,
         source=source,
+        participation=_participation(character),
     )
+
+
+def _participation(character: CharacterView) -> ParticipationBody | None:
+    found = character.participation
+    if found is None:
+        return None
+    return ParticipationBody(role=found["role"], fixed=bool(found["fixed"]))
 
 
 def _create_body_model(document: Any) -> type[BaseModel]:
@@ -1068,6 +1108,39 @@ async def set_character_weight(
 ) -> CharacterWeightedBody:
     done = await engine.set_character_weight(ctx, story_id, character_id, body)
     return answered(CharacterWeightedBody.of(done), ctx, response, replayed=done.replayed)
+
+
+@router.patch(
+    "/{story_id}/characters/{character_id}/participation",
+    response_model=ParticipationSetBody,
+    operation_id="set_participation",
+    summary="Set a story character's participation role",
+    description=(
+        "Set a character's participation role (FR-MULTI-7): `role` is `primary` (it renders "
+        "when a turn names it), `reactive` (another render may narrate its brief observable "
+        "reaction, FR-MULTI-9; the default) or `silent` (nothing is narrated for it), and "
+        "`fixed` makes the role a bound the engine never crosses on its own: escalation never "
+        "raises a fixed `reactive` or `silent` character to a primary render (FR-MULTI-10), and "
+        "budget planning never lowers a fixed `primary` one to reactive narration (it defers "
+        "it instead). Only a request changes a fixed role, for that request, by naming the "
+        "character or overriding its role (`roles`). A cast lead may be set `primary`. A "
+        "prospective story configuration write: it moves the story's `config_revision` and "
+        "records a `config_changes` row (`participation:<character id>`); a turn already "
+        "running keeps its roles. The player's character has no role (422 `is_player`); 404 "
+        "for a character the story does not have; 409 `story_archived`. Setting the role it has "
+        "changes nothing. Answers the character as a read lists it."
+    ),
+)
+async def set_participation(
+    story_id: StoryId,
+    character_id: StoryCharacterId,
+    body: ParticipationSpec,
+    response: Response,
+    ctx: ContextDep,
+    engine: EngineDep,
+) -> ParticipationSetBody:
+    done = await engine.set_participation(ctx, story_id, character_id, body)
+    return answered(ParticipationSetBody.of(done), ctx, response, replayed=done.replayed)
 
 
 @router.post(

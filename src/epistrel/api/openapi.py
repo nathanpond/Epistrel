@@ -455,6 +455,8 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "promote_character": ("rating_retired", "seed_memory_invalid", "erased_subject_referenced"),
     # #163: an author's weight change and modeling directive (control operations).
     "set_character_weight": ("story_archived", "story_paused", "story_busy"),
+    # #176: a character's participation role (a story configuration write).
+    "set_participation": ("story_archived",),
     "model_entity": (
         "story_archived",
         "story_paused",

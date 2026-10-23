@@ -1213,6 +1213,11 @@
       "requirement": "FR-EPI-9"
     },
     {
+      "method": "PATCH",
+      "path": "/stories/{story_id}/characters/{character_id}/participation",
+      "requirement": "FR-MULTI-7"
+    },
+    {
       "method": "GET",
       "path": "/admin/evals/extraction-shadow",
       "requirement": "FR-OBS-4"

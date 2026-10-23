@@ -48,6 +48,17 @@
             "title": "Name",
             "type": "string"
           },
+          "participation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ParticipationSpec"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Its participation role (FR-MULTI-7; #176): default `reactive`, not fixed."
+          },
           "safe_fallback_text": {
             "anyOf": [
               {
@@ -1408,7 +1419,7 @@
         "type": "object"
       },
       "CharacterBody": {
-        "description": "A character as a read returns it; ``is_player`` marks a player character. A story created\nfrom a scenario (#119) names each character's ``role_id`` and, for a catalog character, its\n``source``; a blank story's characters carry neither.",
+        "description": "A character as a read returns it; ``is_player`` marks a player character. A story created\nfrom a scenario (#119) names each character's ``role_id`` and, for a catalog character, its\n``source``; a blank story's characters carry neither. ``participation`` (#176) is every\nnon-player character's role; the player's character has none.",
         "properties": {
           "id": {
             "title": "Id",
@@ -1421,6 +1432,16 @@
           "name": {
             "title": "Name",
             "type": "string"
+          },
+          "participation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ParticipationBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "role_id": {
             "anyOf": [
@@ -2914,6 +2935,18 @@
             "title": "Name",
             "type": "string"
           },
+          "participation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ParticipationSpec"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Its participation role (FR-MULTI-7; #176): default `reactive`, not fixed. The player's character has none (422)."
+          },
           "safe_fallback_text": {
             "anyOf": [
               {
@@ -3912,6 +3945,12 @@
             "description": "The story's override of the transcript rows per level-0 summary segment (#72).",
             "title": "Lite Summary Chunk"
           },
+          "reactive_interjections": {
+            "default": false,
+            "description": "Whether reactive narration may give a reactive character a brief interjection\n(FR-MULTI-9; #176): at most ``multi_character.interjection_max_words`` words (6), checked\nagainst the reactor's viewpoint like any ``say``. Off by default (the owner's decision): a\nreactive character's narrated speech escalates it to a primary render instead (FR-MULTI-10).\nA request overrides it. Prospective.",
+            "title": "Reactive Interjections",
+            "type": "boolean"
+          },
           "regenerate_retry_budget": {
             "default": 2,
             "description": "How many times a turn whose read set was touched is regenerated before the call fails\nwith ``revision_conflict`` (FR-CONC-4c). Prospective.",
@@ -4093,6 +4132,31 @@
           "elapsed_ms"
         ],
         "title": "CustomInstructionsWritten",
+        "type": "object"
+      },
+      "DeferredCharacterBody": {
+        "description": "A named primary budget planning deferred to a later turn (#176, NFR-PERF-7 (6)): a\n``fixed`` primary is deferred rather than narrated reactively.",
+        "properties": {
+          "character_id": {
+            "title": "Character Id",
+            "type": "string"
+          },
+          "fixed": {
+            "title": "Fixed",
+            "type": "boolean"
+          },
+          "reason": {
+            "const": "budget",
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "character_id",
+          "reason",
+          "fixed"
+        ],
+        "title": "DeferredCharacterBody",
         "type": "object"
       },
       "DeferredItem": {
@@ -7229,6 +7293,40 @@
         "title": "ErrorBody",
         "type": "object"
       },
+      "EscalationDeferredBody": {
+        "description": "A reactive character whose reaction needed a primary render it could not get this turn\n(#176, FR-MULTI-10): ``fixed_role`` (its role is fixed) or ``budget``; ``needed``: what the\nreaction needed (``speech``, ``decision`` or ``effect``). Not an error: bring the character\nin on a later turn.",
+        "properties": {
+          "character_id": {
+            "title": "Character Id",
+            "type": "string"
+          },
+          "needed": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Needed"
+          },
+          "reason": {
+            "enum": [
+              "fixed_role",
+              "budget"
+            ],
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "character_id",
+          "reason"
+        ],
+        "title": "EscalationDeferredBody",
+        "type": "object"
+      },
       "EscalationYieldBody": {
         "additionalProperties": false,
         "description": "Escalation yield over the window (see the module docstring).",
@@ -9912,6 +10010,18 @@
           "message_id": {
             "title": "Message Id",
             "type": "string"
+          },
+          "narrated_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A reactive character's reaction (#176, FR-MULTI-9): the id of the character whose render narrated it (the item's actor is the reactor).",
+            "title": "Narrated By"
           },
           "operation_id": {
             "title": "Operation Id",
@@ -14475,6 +14585,16 @@
             "title": "Name",
             "type": "string"
           },
+          "participation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ParticipationBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "promoted_to": {
             "items": {
               "type": "string"
@@ -14614,6 +14734,18 @@
           "message_id": {
             "title": "Message Id",
             "type": "string"
+          },
+          "narrated_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A reactive character's reaction (#176, FR-MULTI-9): the id of the character whose render narrated it (the item's actor is the reactor).",
+            "title": "Narrated By"
           },
           "operation_id": {
             "title": "Operation Id",
@@ -15858,6 +15990,95 @@
           "received_parts"
         ],
         "title": "PartStoredBody",
+        "type": "object"
+      },
+      "ParticipationBody": {
+        "description": "A character's participation role (FR-MULTI-7; #176): ``primary``, ``reactive`` or\n``silent``, and whether it is ``fixed`` (a bound the engine never crosses on its own).",
+        "properties": {
+          "fixed": {
+            "title": "Fixed",
+            "type": "boolean"
+          },
+          "role": {
+            "enum": [
+              "primary",
+              "reactive",
+              "silent"
+            ],
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "fixed"
+        ],
+        "title": "ParticipationBody",
+        "type": "object"
+      },
+      "ParticipationSetBody": {
+        "description": "A character after a participation change (#176): the character as a read lists it, with\nthe story's ``config_revision`` (moved by a change) and its unchanged\n``timeline_revision``.",
+        "properties": {
+          "character": {
+            "$ref": "#/components/schemas/CharacterBody"
+          },
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "character",
+          "config_revision"
+        ],
+        "title": "ParticipationSetBody",
+        "type": "object"
+      },
+      "ParticipationSpec": {
+        "additionalProperties": false,
+        "description": "A story character's participation role (FR-MULTI-7; #176): ``primary``, ``reactive`` or\n``silent``, and whether it is ``fixed`` (a bound the engine never crosses on its own:\nescalation never raises a fixed ``reactive`` or ``silent`` character, budget planning never\nlowers a fixed ``primary`` one to reactive narration). ``PATCH\n/stories/{id}/characters/{cid}/participation``'s body, and a cast member's ``participation``\nat creation. Default: ``reactive``, not fixed.",
+        "examples": [
+          {
+            "fixed": true,
+            "role": "primary"
+          }
+        ],
+        "properties": {
+          "fixed": {
+            "default": false,
+            "title": "Fixed",
+            "type": "boolean"
+          },
+          "role": {
+            "enum": [
+              "primary",
+              "reactive",
+              "silent"
+            ],
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role"
+        ],
+        "title": "ParticipationSpec",
         "type": "object"
       },
       "PendingErasureBody": {
@@ -23247,6 +23468,13 @@
             ],
             "title": "Config Revision"
           },
+          "deferred_characters": {
+            "items": {
+              "$ref": "#/components/schemas/DeferredCharacterBody"
+            },
+            "title": "Deferred Characters",
+            "type": "array"
+          },
           "degradation": {
             "items": {
               "type": "string"
@@ -23265,6 +23493,13 @@
             "minimum": 0.0,
             "title": "Elapsed Ms",
             "type": "integer"
+          },
+          "escalation_deferred": {
+            "items": {
+              "$ref": "#/components/schemas/EscalationDeferredBody"
+            },
+            "title": "Escalation Deferred",
+            "type": "array"
           },
           "fingerprint": {
             "anyOf": [
@@ -23372,6 +23607,20 @@
               }
             ],
             "title": "Queued Ms"
+          },
+          "reduced_characters": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reduced Characters",
+            "type": "array"
+          },
+          "roles": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/RoleBody"
+            },
+            "title": "Roles",
+            "type": "object"
           },
           "timeline_revision": {
             "title": "Timeline Revision",
@@ -23925,7 +24174,7 @@
       },
       "RespondRequest": {
         "additionalProperties": false,
-        "description": "``POST /stories/{id}/respond`` and ``Engine.respond``.\n\n- ``actor_character_id``: whose input this is. Any cast member may act, a player's own\n  character or not: who acts is the consumer's call (FR-AUTH-3).\n- ``player_input``: the actor's ``say``/``do``; the turn's first beat. It is only ever the\n  actor's own speech and action: there is no field for another character's words, and a\n  ``say`` that quotes a render character is still the actor speaking (FR-AUTH-3 b).\n- ``render_character_ids``: who answers, voiced in this order in one combined reply\n  (FR-RESP-5, FR-LITE-5). Omitted: every cast member except the actor, or the actor when\n  no one else is in the cast. The actor may be listed. An explicit empty list is refused,\n  and duplicates are dropped.\n- ``output_viewpoint``: ``character:<id>`` or ``omniscient``; default the actor.\n- ``prompt_params``: ``length`` (``short``/``medium``/``long`` or a token cap),\n  ``temperature`` and ``top_p``, for this request only (FR-RESP-3).\n- ``scene_context``: non-authoritative; never stored or placed in a prompt.\n- ``budget``: this turn's ``max_calls``/``deadline_s``, within the story's (#69).\n- ``interaction_mode``/``sequence_order``: a structured story with per-character renders\n  (#174): several ``render_character_ids`` render ``sequential``ly, in request order or the\n  director's, or ``simultaneous``ly (#175), their conflicts settled by\n  ``simultaneous_tie_break``.",
+        "description": "``POST /stories/{id}/respond`` and ``Engine.respond``.\n\n- ``actor_character_id``: whose input this is. Any cast member may act, a player's own\n  character or not: who acts is the consumer's call (FR-AUTH-3).\n- ``player_input``: the actor's ``say``/``do``; the turn's first beat. It is only ever the\n  actor's own speech and action: there is no field for another character's words, and a\n  ``say`` that quotes a render character is still the actor speaking (FR-AUTH-3 b).\n- ``render_character_ids``: who answers, voiced in this order in one combined reply\n  (FR-RESP-5, FR-LITE-5). Omitted: every cast member except the actor, or the actor when\n  no one else is in the cast. The actor may be listed. An explicit empty list is refused,\n  and duplicates are dropped.\n- ``output_viewpoint``: ``character:<id>`` or ``omniscient``; default the actor.\n- ``prompt_params``: ``length`` (``short``/``medium``/``long`` or a token cap),\n  ``temperature`` and ``top_p``, for this request only (FR-RESP-3).\n- ``scene_context``: non-authoritative; never stored or placed in a prompt.\n- ``budget``: this turn's ``max_calls``/``deadline_s``, within the story's (#69).\n- ``interaction_mode``/``sequence_order``: a structured story with per-character renders\n  (#174): several ``render_character_ids`` render ``sequential``ly, in request order or the\n  director's, or ``simultaneous``ly (#175), their conflicts settled by\n  ``simultaneous_tie_break``.\n- ``roles``/``reactive_interjections``: a structured story with per-character renders\n  (#176): this turn's participation roles of present characters over their stored ones,\n  and whether reactive narration may give a reactive character a brief interjection.",
         "examples": [
           {
             "actor_character_id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3",
@@ -24002,6 +24251,17 @@
               }
             ]
           },
+          "reactive_interjections": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reactive Interjections"
+          },
           "render_character_ids": {
             "anyOf": [
               {
@@ -24018,6 +24278,28 @@
               }
             ],
             "title": "Render Character Ids"
+          },
+          "roles": {
+            "anyOf": [
+              {
+                "maxProperties": 64,
+                "patternProperties": {
+                  "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$": {
+                    "enum": [
+                      "primary",
+                      "reactive",
+                      "silent"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roles"
           },
           "scene_context": {
             "anyOf": [
@@ -24132,6 +24414,13 @@
             ],
             "title": "Config Revision"
           },
+          "deferred_characters": {
+            "items": {
+              "$ref": "#/components/schemas/DeferredCharacterBody"
+            },
+            "title": "Deferred Characters",
+            "type": "array"
+          },
           "degradation": {
             "items": {
               "type": "string"
@@ -24150,6 +24439,13 @@
             "minimum": 0.0,
             "title": "Elapsed Ms",
             "type": "integer"
+          },
+          "escalation_deferred": {
+            "items": {
+              "$ref": "#/components/schemas/EscalationDeferredBody"
+            },
+            "title": "Escalation Deferred",
+            "type": "array"
           },
           "fingerprint": {
             "anyOf": [
@@ -24253,6 +24549,20 @@
               }
             ],
             "title": "Queued Ms"
+          },
+          "reduced_characters": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reduced Characters",
+            "type": "array"
+          },
+          "roles": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/RoleBody"
+            },
+            "title": "Roles",
+            "type": "object"
           },
           "timeline_revision": {
             "title": "Timeline Revision",
@@ -24681,6 +24991,37 @@
           "do"
         ],
         "title": "ReviewedPlayerInput",
+        "type": "object"
+      },
+      "RoleBody": {
+        "description": "A present character's participation role for the turn (#176, FR-MULTI-7) and where it\ncame from: its stored ``default`` or ``fixed`` role, the ``request``, an ``escalated``\nreaction, or a ``reduced`` primary (budget planning).",
+        "properties": {
+          "role": {
+            "enum": [
+              "primary",
+              "reactive",
+              "silent"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "default",
+              "fixed",
+              "request",
+              "escalated",
+              "reduced"
+            ],
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "source"
+        ],
+        "title": "RoleBody",
         "type": "object"
       },
       "RoleCharacter": {
@@ -30934,6 +31275,19 @@
             "default": null,
             "description": "Upserts the story's own policies (never relaxing).",
             "title": "Policies"
+          },
+          "reactive_interjections": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Whether reactive narration may give a reactive character a brief interjection\n(FR-MULTI-9; #176): at most ``multi_character.interjection_max_words`` words (6), checked\nagainst the reactor's viewpoint like any ``say``. Off by default (the owner's decision): a\nreactive character's narrated speech escalates it to a primary render instead (FR-MULTI-10).\nA request overrides it. Prospective.",
+            "title": "Reactive Interjections"
           },
           "regenerate_retry_budget": {
             "anyOf": [
@@ -53593,6 +53947,215 @@
         ]
       }
     },
+    "/stories/{story_id}/characters/{character_id}/participation": {
+      "patch": {
+        "description": "Set a character's participation role (FR-MULTI-7): `role` is `primary` (it renders when a turn names it), `reactive` (another render may narrate its brief observable reaction, FR-MULTI-9; the default) or `silent` (nothing is narrated for it), and `fixed` makes the role a bound the engine never crosses on its own: escalation never raises a fixed `reactive` or `silent` character to a primary render (FR-MULTI-10), and budget planning never lowers a fixed `primary` one to reactive narration (it defers it instead). Only a request changes a fixed role, for that request, by naming the character or overriding its role (`roles`). A cast lead may be set `primary`. A prospective story configuration write: it moves the story's `config_revision` and records a `config_changes` row (`participation:<character id>`); a turn already running keeps its roles. The player's character has no role (422 `is_player`); 404 for a character the story does not have; 409 `story_archived`. Setting the role it has changes nothing. Answers the character as a read lists it.",
+        "operationId": "set_participation",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The id of one of the story's characters (a ULID), as `GET /stories/{id}` lists them.",
+            "in": "path",
+            "name": "character_id",
+            "required": true,
+            "schema": {
+              "description": "The id of one of the story's characters (a ULID), as `GET /stories/{id}` lists them.",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2CA"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Character Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ParticipationSpec"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParticipationSetBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Set a story character's participation role",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
     "/stories/{story_id}/characters/{character_id}/promote": {
       "post": {
         "description": "Make a new **draft** catalog character from one of the story's characters (FR-CAT-8), owned by `owner` (default: the requesting principal) and rated `content_rating_id` (default: the story's rating). Only definition fields are copied: the name (or the request's), the true age as of the story's time, the free-text definition (as `definition.background_flavor`, cut at 4,000 characters with the warning `definition_truncated`), the safe fallback line, and the images by reference (the first as the primary image, the rest as the gallery; one no longer live is left out with the warning `media_retired`). No story event, pinned memory, summary or fact is copied into the character. `seed_memories` names memories of the story to seed into the new character's companion scenario draft instead (`starting_state.seeded_memories`, held by the `npc` role, audience `self`, disclosure `open`), each an active, unquarantined memory the character holds or can know; any other is 422 `seed_memory_invalid` (`details.reason`: `not_in_story`, `inactive`, `quarantined` or `not_known`) and nothing is written. The story character keeps a link to the entry (`promoted_to`, in an omniscient `GET /stories/{id}`) and nothing else of the story changes; its revision does not move, so a promotion is allowed on an archived story and while a turn is in flight. Promoting again makes another draft. A player character plays a persona and is 422 (`reason: player_character`). Answers 201 with `Location: /catalog/characters/{id}`.",
@@ -54148,6 +54711,7 @@
                           "profile_overrides.verification.implication_max_depth",
                           "profile_overrides.verification.level",
                           "profile_overrides.verification.safe_disposition",
+                          "reactive_interjections",
                           "regenerate_retry_budget",
                           "sequence_order",
                           "simultaneous_tie_break",
@@ -54158,7 +54722,7 @@
                         "type": "string"
                       },
                       {
-                        "pattern": "^(policy):\\S*$",
+                        "pattern": "^(policy|participation):\\S*$",
                         "type": "string"
                       }
                     ]
@@ -60298,7 +60862,7 @@
         ]
       },
       "patch": {
-        "description": "Change the story's settings with a JSON merge patch (RFC 7396): a key present sets that setting and `null` resets it to its default. A story's settings describe the story: `turn_concurrency` (`reject` | `queue`), `turn_queue_max` (1-50; `null`: the deployment's default, 5), `default_output_viewpoint` (`character:<id>` of the cast, never `omniscient`), `regenerate_retry_budget` (0-10), `lite_summary_chunk` (2-200 rows per summary segment), `audit_retention_days` (1-3650; `null`: the deployment's) and `allow_new_arrivals` (whether a director pass, or a render as scene texture, may introduce new arrivals; default `true`), `interaction_mode` (`sequential` | `simultaneous`: how a turn with several primaries renders them; `null`: the scenario's, else `sequential`), `sequence_order` (`request` | `director`: who orders a sequential turn's primaries; `null`: `request`) and `simultaneous_tie_break` (`request_order` | `director` | `state:<name>`: how a simultaneous turn settles conflicting actions; `null`: `request_order`; `state:<name>` is 422 `not_yet` until M6). An unknown key is 422. The engine's dials are the story's engine profile's, overridden per story with `PATCH /stories/{id}/profile-overrides` (FR-PROF-5): a key that moved there (`generation_settings`, `lite_window_messages`, `lite_summary_max_tokens`, `max_model_calls_per_turn`, `turn_deadline`, `guardrail_retry_budget`) is 422 with `details.reason: superseded` and the profile setting that replaced it in `details.replacement`. `policies` (optional) upserts the story's own policies; an item that would relax a policy refuses the whole request with 422 `cannot_relax` before anything is written.\n\nEvery setting but `default_output_viewpoint` and `allow_new_arrivals` is prospective: it applies to requests that arrive after the write, never to a turn already running; those two are interpretive (a turn in flight is checked against them when it commits). A write that changes something moves the story's `config_revision`. The answer carries the budget the story's next turn plans with (`effective_budget`).",
+        "description": "Change the story's settings with a JSON merge patch (RFC 7396): a key present sets that setting and `null` resets it to its default. A story's settings describe the story: `turn_concurrency` (`reject` | `queue`), `turn_queue_max` (1-50; `null`: the deployment's default, 5), `default_output_viewpoint` (`character:<id>` of the cast, never `omniscient`), `regenerate_retry_budget` (0-10), `lite_summary_chunk` (2-200 rows per summary segment), `audit_retention_days` (1-3650; `null`: the deployment's) and `allow_new_arrivals` (whether a director pass, or a render as scene texture, may introduce new arrivals; default `true`), `interaction_mode` (`sequential` | `simultaneous`: how a turn with several primaries renders them; `null`: the scenario's, else `sequential`), `sequence_order` (`request` | `director`: who orders a sequential turn's primaries; `null`: `request`) and `simultaneous_tie_break` (`request_order` | `director` | `state:<name>`: how a simultaneous turn settles conflicting actions; `null`: `request_order`; `state:<name>` is 422 `not_yet` until M6) and `reactive_interjections` (whether reactive narration may give a reactive character a brief interjection; default `false`). An unknown key is 422. The engine's dials are the story's engine profile's, overridden per story with `PATCH /stories/{id}/profile-overrides` (FR-PROF-5): a key that moved there (`generation_settings`, `lite_window_messages`, `lite_summary_max_tokens`, `max_model_calls_per_turn`, `turn_deadline`, `guardrail_retry_budget`) is 422 with `details.reason: superseded` and the profile setting that replaced it in `details.replacement`. `policies` (optional) upserts the story's own policies; an item that would relax a policy refuses the whole request with 422 `cannot_relax` before anything is written.\n\nEvery setting but `default_output_viewpoint` and `allow_new_arrivals` is prospective: it applies to requests that arrive after the write, never to a turn already running; those two are interpretive (a turn in flight is checked against them when it commits). A write that changes something moves the story's `config_revision`. The answer carries the budget the story's next turn plans with (`effective_budget`).",
         "operationId": "update_story_settings",
         "parameters": [
           {

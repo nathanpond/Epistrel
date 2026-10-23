@@ -137,9 +137,12 @@ def character_inputs(
     say: str | None,
     do: str | None,
     budget: int,
+    others_present: Sequence[str] = (),
+    interjections: bool = False,
 ) -> GenerationInputs:
     """The ``generation`` inputs of ``character``'s render (``structured_generation.j2``): the
-    shared ``sections`` and ``context``'s knowledge sections (see the module docstring)."""
+    shared ``sections`` and ``context``'s knowledge sections (see the module docstring);
+    #176: ``others_present``, the reactive characters it may narrate reactions for."""
     if context.character_id != character.id:
         raise ValueError("a character's render takes that character's own context")
     s = capped(
@@ -178,6 +181,8 @@ def character_inputs(
         scene=s.scene,
         working_memory=list(s.working_memory),
         just_now=list(s.just_now),
+        others_present=list(others_present),
+        interjections=interjections,
         retrieved_memories=list(s.retrieved),
         canon_facts=list(s.canon),
     )

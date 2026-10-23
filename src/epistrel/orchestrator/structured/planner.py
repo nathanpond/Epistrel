@@ -26,7 +26,9 @@ only what no reservation holds, never below the minimum, and only while it could
 the deadline (``latency_estimate_s``, ``DEFAULT_LATENCY_ESTIMATE_S``). The degradation on
 exhaustion follows NFR-PERF-7's order: ``skip_polish`` → ``repair_deterministic`` (or
 ``safe_fallback``) → ``testimony_defaulted`` → ``entailment_safe_disposition`` →
-``primaries_deferred`` (#174: the named primaries the cap could not plan, deferred) →
+``primaries_reduced`` / ``primaries_deferred`` (#174, #176: the named primaries the cap could
+not plan render as reactive narration, or, a fixed ``primary``, are deferred with
+``primary_deferred``) →
 ``beat_replaced_safe_fallback`` (a render
 whose reserved extraction cannot start before the deadline is replaced by the safe fallback
 before anything it said is detected or committed). ``salience_skipped`` and
@@ -37,12 +39,14 @@ first, in that order (``ladder_rank``), then every other step in the order it wa
 from __future__ import annotations
 
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.core.epistemic import roles
+from epistrel.core.epistemic.roles import Participation
 from epistrel.core.errors import BudgetBelowSafetyMinimum, InvalidRequest
 from epistrel.core.profiles.capabilities import module_on
 from epistrel.core.profiles.effective import StoryProfile
@@ -86,6 +90,12 @@ NARRATOR_SKIPPED = "narrator_skipped"
 PRIMARIES_DEFERRED = "primaries_deferred"
 """NFR-PERF-7 (#174, P-09 M5): the budget could not plan every named primary, so the extra ones
 were deferred (only the first renders); before beat replacement in the ladder."""
+PRIMARIES_REDUCED = "primaries_reduced"
+"""NFR-PERF-7 step 6 (#176): the budget could not plan every named primary, so the extra ones
+(not fixed ``primary``) render as reactive narration instead; before beat replacement."""
+PRIMARY_DEFERRED = "primary_deferred"
+"""NFR-PERF-7 step 6 (#176): a fixed ``primary`` the budget could not plan was deferred to a
+later turn (never narrated reactively): the notice beside ``primaries_deferred``."""
 TESTIMONY_DEFAULTED = "testimony_defaulted"
 """NFR-PERF-7 step 3 (#162): a salient witness's testimony adjudication the budget (or the
 per-turn cap) could not fit, decided by the rules' default instead."""
@@ -96,7 +106,9 @@ LADDER = (
     REPAIR_DETERMINISTIC,
     TESTIMONY_DEFAULTED,
     ENTAILMENT_SAFE_DISPOSITION,
+    PRIMARIES_REDUCED,
     PRIMARIES_DEFERRED,
+    PRIMARY_DEFERRED,
     BEAT_REPLACED,
 )
 """NFR-PERF-7's order as M5 has it: what goes first when the budget or the deadline runs
@@ -113,7 +125,13 @@ class TurnPlan:
     reservation: Reservation
     optional: tuple[str, ...]
     deferred: tuple[str, ...] = ()
-    """#174: the named primaries the budget could not plan (``primaries_deferred``)."""
+    """#174: the named primaries the budget could not plan (``primaries_deferred``); #176: only
+    those that may not render as reactive narration (a fixed ``primary``)."""
+    reduced: tuple[str, ...] = ()
+    """#176 (NFR-PERF-7 (6)): the named primaries the budget could not plan that render as
+    reactive narration instead (``primaries_reduced``)."""
+    deferred_fixed: tuple[str, ...] = ()
+    """#176: the deferred primaries whose ``primary`` role is fixed (``primary_deferred``)."""
     director: bool = False
     """#174: the director's ordering call is pre-allocated (``sequence_order = director``)."""
 
@@ -125,6 +143,7 @@ class TurnPlan:
     def payload(self) -> dict[str, Any]:
         return {
             **({"deferred": list(self.deferred)} if self.deferred else {}),
+            **({"reduced": list(self.reduced)} if self.reduced else {}),
             "primaries": self.primaries,
             "beats_planned": self.beats_planned,
             "reservation": {
@@ -292,12 +311,16 @@ async def plan_structured(
     started: float,
     override: Any = None,
     director: bool = False,
+    stored: Mapping[str, Participation] | None = None,
 ) -> tuple[TurnPlan, TurnBudget]:
     """The turn's plan and budget: G is one call per model-assisted input policy for the
     actor's input plus one per model-assisted output policy for each render's first output
     checkpoint (#69's count). Raises 422 ``budget_below_safety_minimum`` before any model call.
     #174 (NFR-PERF-7, P-09 M5): a turn naming several primaries whose cap cannot cover them all
-    plans as many as fit, in order (at least one), and defers the rest (``plan.deferred``)."""
+    plans as many as fit, in order (at least one), and defers the rest (``plan.deferred``).
+    #176 (NFR-PERF-7 (6)): of the rest, those whose stored role (``stored``) is not a fixed
+    ``primary`` render as reactive narration instead (``plan.reduced``), and a fixed one is
+    deferred with a notice (``plan.deferred_fixed``)."""
     context = await guard_context(db, story_id)
     guardrail_input = len(model_assisted(input_policies(context, actor=cast.actor.id)))
     guardrail_output = output_reservation(context, cast.render_ids)
@@ -312,8 +335,6 @@ async def plan_structured(
             primaries=count,
             director=director,
         )
-        if count > 1:
-            plan = replace(plan, deferred=tuple(ids[count:]))
         try:
             budget = plan_budget(
                 plan,
@@ -329,7 +350,13 @@ async def plan_structured(
             count -= 1
             continue
         if count < len(ids):
-            plan = replace(plan, deferred=tuple(ids[count:]))
+            cut = roles.reduce(ids, count, stored or {})
+            plan = replace(
+                plan,
+                deferred=tuple(c for c, _ in cut.deferred),
+                reduced=cut.reduced,
+                deferred_fixed=tuple(c for c, fixed in cut.deferred if fixed),
+            )
         return plan, budget
 
 
@@ -368,7 +395,9 @@ RANK = {
     SAFE_FALLBACK: 1,
     TESTIMONY_DEFAULTED: 2,
     ENTAILMENT_SAFE_DISPOSITION: 3,
+    PRIMARIES_REDUCED: 4,
     PRIMARIES_DEFERRED: 4,
+    PRIMARY_DEFERRED: 4,
     BEAT_REPLACED: 5,
 }
 
@@ -392,6 +421,8 @@ __all__ = [
     "NARRATOR_SKIPPED",
     "PRIMARIES",
     "PRIMARIES_DEFERRED",
+    "PRIMARIES_REDUCED",
+    "PRIMARY_DEFERRED",
     "REPAIR",
     "REPAIR_DETERMINISTIC",
     "SAFE_FALLBACK",

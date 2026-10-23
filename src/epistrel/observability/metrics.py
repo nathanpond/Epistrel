@@ -147,6 +147,16 @@ MULTI_TURNS = Counter(
     "Structured turns that rendered several primaries (#174), by interaction mode.",
     ("mode",),
 )
+ESCALATIONS = Counter(
+    "epistrel_escalations",
+    "Reactive characters whose narrated reaction needed a primary render (#176, FR-MULTI-10), "
+    "by outcome: escalated (rendered as a primary) or deferred_fixed_role / deferred_budget.",
+    ("outcome",),
+)
+PRIMARIES_REDUCED = Counter(
+    "epistrel_primaries_reduced",
+    "Named primaries budget planning turned into reactive narration (#176, NFR-PERF-7 (6)).",
+)
 DIRECTOR_ORDER = Counter(
     "epistrel_director_order",
     "The director's ordering of a sequential turn's primaries (#174), by outcome: director (its "
@@ -447,6 +457,7 @@ __all__ = [
     "COULD_HAVE_KNOWN",
     "COULD_HAVE_KNOWN_FLAGS",
     "DIRECTOR_ORDER",
+    "ESCALATIONS",
     "GAUGES",
     "HOT_COUNTS_CORRECTED",
     "HOT_SCOPES",
@@ -457,6 +468,7 @@ __all__ = [
     "OPERATIONS",
     "PERCEPTION_REPAIRS",
     "PERCEPTION_REPAIR_REASONS",
+    "PRIMARIES_REDUCED",
     "QUARANTINES",
     "REPAIRS",
     "REPAIR_CLASSES",

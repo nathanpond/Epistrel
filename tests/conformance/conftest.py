@@ -147,6 +147,8 @@ class Surface:
                     | ({} if c.promoted_to is None else {"promoted_to": list(c.promoted_to)})
                     # and its narrative weight and the position it was modeled at (#163)
                     | ({} if c.weight is None else {"weight": c.weight})
+                    # and every non-player character's participation role (#176)
+                    | ({} if c.participation is None else {"participation": c.participation})
                     | (
                         {}
                         if c.modeled_at is None

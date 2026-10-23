@@ -142,6 +142,12 @@ class HistoryItemModel(BaseModel):
         description="A structured turn's beat (#150): claims detection found in it that it "
         "did not declare, as spans, categories and verdicts.",
     )
+    narrated_by: str | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="A reactive character's reaction (#176, FR-MULTI-9): the id of the "
+        "character whose render narrated it (the item's actor is the reactor).",
+    )
 
 
 class OmniscientHistoryItemModel(HistoryItemModel):

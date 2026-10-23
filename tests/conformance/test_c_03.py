@@ -101,6 +101,7 @@ from epistrel.api.routes.scene import EntityProfileBody, SceneBody
 from epistrel.api.routes.stories import (
     CharacterWeightedBody,
     IngestResponse,
+    ParticipationSetBody,
     PromotionBody,
     StatusBody,
     StoryBody,
@@ -178,6 +179,7 @@ from epistrel.core.stories import (
     AdHocCharacter,
     CharacterWeightRequest,
     ModelEntityRequest,
+    ParticipationSpec,
     StorySpec,
 )
 from epistrel.core.story_texts import CustomInstructionsRequest, PinnedMemoriesRequest
@@ -1289,6 +1291,20 @@ def _steps() -> list[Step]:
             lambda e, ids: _weighted(
                 e.set_character_weight(
                     CTX, ids["story"], ids["dale"], CharacterWeightRequest(weight="minor")
+                )
+            ),
+        ),
+        # #176: the author sets the added character's participation role.
+        Step(
+            "set_participation",
+            lambda ids: Rest(
+                "PATCH",
+                f"{s}/characters/{{dale}}/participation",
+                {"role": "primary", "fixed": True},
+            ),
+            lambda e, ids: _participation(
+                e.set_participation(
+                    CTX, ids["story"], ids["dale"], ParticipationSpec(role="primary", fixed=True)
                 )
             ),
         ),
@@ -2572,6 +2588,10 @@ async def _added(call: Awaitable[Any]) -> dict[str, Any]:
 
 async def _promoted(call: Awaitable[Any]) -> dict[str, Any]:
     return dump(PromotionBody.of(await call))
+
+
+async def _participation(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ParticipationSetBody.of(await call))
 
 
 async def _weighted(call: Awaitable[Any]) -> dict[str, Any]:

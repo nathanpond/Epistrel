@@ -244,6 +244,9 @@ class Beat:
     """The entities the beat involves beyond its actor (its resolved mentions). #150 passes
     both; ``core.retrieval.pipeline.beat_occasion`` derives them from a beat's text and its
     resolved mentions."""
+    narrated: bool = False
+    """#176 (FR-MULTI-9): a reactive character's reaction another render narrated: its actor
+    remembers it, but forms no belief from it (``core.epistemic.observation``)."""
 
 
 class Memory(BaseModel):

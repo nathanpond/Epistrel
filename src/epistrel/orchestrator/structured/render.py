@@ -404,6 +404,24 @@ def _steps_structure(steps: Sequence[StepDecl], beats: Sequence[BeatDecl]) -> No
             raise ValueError(f"beats.{n}.cites: disagrees with the steps' citations")
 
 
+REACTION_TEXT_MAX = 300
+MAX_REACTIONS = 6
+
+
+class ReactionDecl(_Strict):
+    """A reaction a character's render narrates for another present character (#176,
+    FR-MULTI-9): the reactor's id, the reaction's text (observable only: a glance, a flinch),
+    its kind (``nonverbal``; ``interjection`` for a brief remark, when the story allows it) and
+    the beat it reacts to (``reacts_to``: the render's 0-based beat index; omitted: the beat just
+    before). Checked against the reactor's viewpoint, never trusted (``orchestrator.structured.
+    roles``)."""
+
+    character_id: str = Field(min_length=1, max_length=NAME_MAX)
+    text: str = Field(min_length=1, max_length=REACTION_TEXT_MAX)
+    kind: Literal["nonverbal", "interjection"] = "nonverbal"
+    reacts_to: int | None = Field(default=None, ge=0, le=MAX_STEP_INDEX)
+
+
 class IntroductionDecl(_Strict):
     """A new character a render introduces: its name (or the descriptive phrase for an unnamed
     figure), its age when the render gave one, the range its clue implies and the clue."""
@@ -440,6 +458,9 @@ class RenderedBeats(_Strict):
     steps: list[StepDecl] = Field(default_factory=list)
     """The render's declared causal steps (#168, FR-TURN-12; none when its beliefs do not change
     within it): a character's render only."""
+    reactions: list[ReactionDecl] = Field(default_factory=list, max_length=MAX_REACTIONS)
+    """#176 (FR-MULTI-9): the reactions this render narrates for other present characters (a
+    character's render only)."""
 
     actor_id: ClassVar[str | None] = None
     """The rendering character (``None``: the narrator's render)."""
@@ -509,6 +530,11 @@ class RenderedBeats(_Strict):
             raise ValueError("introduces: each new character once, by name")
         if narrator and self.steps:
             raise ValueError("steps: only a character's render declares steps")
+        if narrator and self.reactions:
+            raise ValueError("reactions: only a character's render narrates reactions")
+        for n, reaction in enumerate(self.reactions):
+            if not reaction.text.strip():
+                raise ValueError(f"reactions.{n}.text: empty")
         if len(self.steps) > cls.limit:
             raise ValueError(f"steps: at most {cls.limit} steps")
         _steps_structure(self.steps, self.beats)

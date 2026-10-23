@@ -14,6 +14,9 @@ per-character partitions only:
   beat's story-time. A heard ``say``'s content is testimony (#162) or an exposure (#164), never an
   observation.
 
+A reactive character's narrated reaction (#176) is observed by everyone who perceives it but
+its reactor: reactive narration never writes the reactor's beliefs (FR-MULTI-9).
+
 A ``minor``-weight perceiver observes like any other (FR-EPI-10's sparsity filters only its
 memory rows, docs/02 §4.4: exposures and observation transitions are unfiltered). The player's
 character has no partition and observes nothing. A transition the guards refuse (a
@@ -109,8 +112,12 @@ async def observe(
             op.narrative_turn or 0, op.turn_variant or 0, result.beat.beat
         )
         antecedent = transitions.Antecedent.record("events", event_id)
+        narrated = bool(getattr(result.beat.source, "narrated", False))
         for seen in result.perceived:
             if not await holds(seen.character_id):
+                continue
+            if narrated and seen.character_id == result.beat.actor:
+                # #176 (FR-MULTI-9): a narrated reaction never writes its reactor's beliefs.
                 continue
             observed: list[Proposition] = []
             source = result.beat.actor

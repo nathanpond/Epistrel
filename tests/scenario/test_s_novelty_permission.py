@@ -26,9 +26,12 @@ Bobby's render introduces new material in a structured story (the Bobby/Jenni fi
   precedence order are unit-tested in ``tests/test_permission.py``).
 - ``test_s_novelty_permission__model_free``: the complement: ``core/verify/permission.py``
   calls no model purpose and depends on nothing in the Orchestrator.
+- ``test_s_novelty_permission__reactive`` (M5, #176): the reactive-narration exception.
 - ``test_s_novelty_permission__b`` (M5, #172): (b) a secret about Jenni held only in her
   partition, introduced by Bobby, is matched by the protected-content index and repaired, never
   canonized; spoken by Jenni herself, it is permitted.
+- ``test_s_novelty_permission__reactive`` (M5, #176): the reactive-narration exception: Jenni's
+  render narrating Bobby's flinch is accepted, his thought or decision repaired.
 """
 
 from __future__ import annotations
@@ -36,6 +39,7 @@ from __future__ import annotations
 import ast
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -56,7 +60,9 @@ from epistrel.core.verify.permission import (
 from epistrel.core.verify.rules import VerdictKind
 from epistrel.orchestrator.models.registry import DELIVERED, PORTS, RESERVED
 from epistrel.orchestrator.verify.verifier import UNPERMITTED, ClaimRef
+from tests import multi_support as ms
 from tests import novelty_support as ns
+from tests import reactive_support as rs
 from tests import structured_turn_support as st
 from tests import verify_support as vs
 from tests.auth_support import auth_settings
@@ -453,3 +459,66 @@ async def test_s_novelty_permission__b(
         assert not jenni.denied
         assert not jenni.tags
         assert "Vince" in jenni.message
+
+
+# -- the M5 part (#176): the reactive-narration exception ------------------------------------------
+
+FLINCH = "Bobby flinches at the noise."
+
+
+@pytest.mark.integration
+@pytest.mark.part("M5", "FR-MULTI-9; FR-VERIFY-11,12")
+async def test_s_novelty_permission__reactive(
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None, multi_delivered: None
+) -> None:
+    """The exception (FR-MULTI-9): Jenni's primary render narrates Bobby (reactive) flinching
+    at a noise he perceived ("Jenni drops a pan. Bobby flinches at the noise."): accepted as
+    reactive narration (Bobby's ``beat_do``, ``narrated_by`` Jenni), not repaired as an action
+    by another character. The same render narrating Bobby's ``think`` ("Bobby thinks Jenni is
+    lying.") or a decision of his ("Bobby decides to leave.", Bobby's role fixed ``reactive``,
+    so it cannot escalate) is repaired: the thought dropped, the decision limited to a
+    non-verbal reaction. The matrix: a reactive asserter may establish that its reactor spoke,
+    never a placement change or backstory of his (``tests/test_permission.py``)."""
+    async with respond_client(auth_settings(pg_url, model_adapter="stub"), engine) as (
+        client,
+        epistrel,
+    ):
+        stub = epistrel.models.stub
+        b = await rs.bar(client, engine, names=("Cal", "Jenni", "Bobby"))
+
+        async def jenni(text: str) -> dict[str, Any]:
+            stub.reset()
+            ms.renders_for(stub, "Jenni", rs.render(st.beat("do", text)))
+            answer = await respond(
+                client, b.story_id, body(b["Cal"], "Hm?", render_character_ids=[b["Jenni"]])
+            )
+            assert answer.status_code == 200, answer.text
+            found: dict[str, Any] = answer.json()
+            return found
+
+        turn = await jenni(f"Jenni drops a pan. {FLINCH}")
+        (flinch,) = await rs.narrated(engine, b.story_id)
+        assert (flinch.character_id, flinch.narrated_by, flinch.text) == (
+            b["Bobby"],
+            b["Jenni"],
+            FLINCH,
+        )
+        assert FLINCH in turn["message"]["text"]
+        report = await st.turn_report(engine, b.story_id)
+        assert "repairs" not in report
+        assert report["roles"]["reactions"][0]["character_id"] == b["Bobby"]
+
+        await rs.set_role(client, b.story_id, b["Bobby"], "reactive", fixed=True)
+        turn = await jenni(
+            "Jenni drops a pan. Bobby thinks Jenni is lying. Bobby decides to leave."
+        )
+        assert "thinks Jenni" not in turn["message"]["text"]
+        assert "decides" not in turn["message"]["text"]
+        latest = (await rs.narrated(engine, b.story_id))[-1]
+        assert latest.text == "Bobby looks up but says nothing."
+        assert turn["escalation_deferred"] == [
+            {"character_id": b["Bobby"], "reason": "fixed_role", "needed": "decision"}
+        ]
+        roles = (await st.turn_report(engine, b.story_id))["roles"]
+        assert roles["dropped"] == {"inner_state": 1}
+        assert roles["limited"] == 1

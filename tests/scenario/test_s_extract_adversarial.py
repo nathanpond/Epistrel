@@ -29,6 +29,8 @@ from epistrel.core.verify import shadow
 from epistrel.core.verify.detect import DetectBeat
 from epistrel.core.verify.rules import VerdictKind
 from tests import detection_support as ds
+from tests import multi_support as ms
+from tests import reactive_support as rs
 from tests import verify_support as vs
 from tests.auth_support import auth_settings
 from tests.event_support import rows
@@ -246,3 +248,69 @@ async def test_s_extract_adversarial__m5(
         assert belief not in own.protected_refs()
         assert not own.denied
         assert "Dana" in own.message
+
+
+# -- the M5 part's (f) (#176): a reactive narration implying a secret --------------------------
+
+FLINCHES_AT_DANA = "Dale flinches at the mention of Dana."
+FLINCHES = "Dale flinches."
+
+
+@pytest.mark.part("M5", "FR-VERIFY-14")
+async def test_s_extract_adversarial__f(
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None, multi_delivered: None
+) -> None:
+    """(f) Bobby's render is structurally complete and narrates Dale's reaction (#176's
+    ``reactions`` channel): "Dale flinches at the mention of Dana." Nobody mentioned Dana: the
+    affair exists only in Marcus's private partition, so the reaction implies Dale already knew
+    it. The same claim detection runs on the narration (FR-VERIFY-14), attributed to Dale (the
+    reactor, not the narrator, is the viewpoint checked): the protected-content index protects
+    "Dana" from Dale, the reaction is dropped (``render_rejected``), never committed as Dale's
+    ``do`` and never in the message, and nothing about Dana is canonized. Complement: Dale's
+    plain flinch is accepted as his narrated ``do``."""
+    settings = auth_settings(pg_url, model_adapter="stub")
+    async with respond_client(settings, engine) as (client, epistrel):
+        story, ids = await secret_story(client, engine, "Jenni", "Bobby", "Marcus", "Dale")
+        await ms.per_character(engine, story)
+        dana, _ = await secret(engine, story, ids["Marcus"], ids["Marcus"], "married_to", "Dana")
+        stub = epistrel.models.stub
+        for text, kept in ((FLINCHES_AT_DANA, False), (FLINCHES, True)):
+            stub.reset()
+            ms.renders_for(
+                stub,
+                "Bobby",
+                rs.render(
+                    beat("say", "Evening, everyone.", intent="sincere"),
+                    reactions=[rs.reaction(ids["Dale"], text)],
+                ),
+            )
+            answer = await client.post(
+                f"/stories/{story}/respond",
+                json={
+                    "actor_character_id": ids["Jenni"],
+                    "player_input": {"say": "Hello."},
+                    "render_character_ids": [ids["Bobby"]],
+                },
+                headers=rs.WRITE,
+            )
+            assert answer.status_code == 200, answer.text
+            message = answer.json()["message"]["text"]
+            narrated = [n.text for n in await rs.narrated(engine, story)]
+            if kept:
+                assert narrated[-1] == FLINCHES
+                assert FLINCHES in message
+            else:
+                assert narrated == []
+                assert "Dana" not in message
+                (dropped,) = await rs.rejected(engine, story)
+                assert dropped.payload["text"] == FLINCHES_AT_DANA
+                assert (
+                    await rows(
+                        engine,
+                        "SELECT f.id FROM facts f JOIN propositions p ON p.id = f.proposition_id "
+                        "WHERE f.story_id = :s AND (p.object_id = :d OR p.subject_id = :d)",
+                        s=story,
+                        d=dana,
+                    )
+                    == []
+                )

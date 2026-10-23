@@ -314,6 +314,24 @@ CharacterName = Annotated[
 ]
 
 
+class ParticipationSpec(BaseModel):
+    """A story character's participation role (FR-MULTI-7; #176): ``primary``, ``reactive`` or
+    ``silent``, and whether it is ``fixed`` (a bound the engine never crosses on its own:
+    escalation never raises a fixed ``reactive`` or ``silent`` character, budget planning never
+    lowers a fixed ``primary`` one to reactive narration). ``PATCH
+    /stories/{id}/characters/{cid}/participation``'s body, and a cast member's ``participation``
+    at creation. Default: ``reactive``, not fixed."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        json_schema_extra={"examples": [{"role": "primary", "fixed": True}]},
+    )
+
+    role: Literal["primary", "reactive", "silent"]
+    fixed: StrictBool = False
+
+
 class CharacterSpec(BaseModel):
     """One character of a new story's cast. ``true_age`` is required (FR-CAT-12)."""
 
@@ -334,6 +352,17 @@ class CharacterSpec(BaseModel):
         "(FR-GUARD-7): rendered with its author notes, so a reply regenerated after a "
         "guardrail violation stays in character. Checked by the input gate.",
     )
+    participation: ParticipationSpec | None = Field(
+        default=None,
+        description="Its participation role (FR-MULTI-7; #176): default `reactive`, not fixed. "
+        "The player's character has none (422).",
+    )
+
+    @model_validator(mode="after")
+    def _player_has_no_role(self) -> CharacterSpec:
+        if self.is_player and self.participation is not None:
+            raise ValueError("the player's character has no participation role")
+        return self
 
 
 IMAGES_MAX = 20
@@ -378,6 +407,11 @@ class AdHocCharacter(BaseModel):
         default_factory=list,
         max_length=IMAGES_MAX,
         description="Media asset ids the character shows (images, each live), in order.",
+    )
+
+    participation: ParticipationSpec | None = Field(
+        default=None,
+        description="Its participation role (FR-MULTI-7; #176): default `reactive`, not fixed.",
     )
 
     @field_validator("images")
@@ -515,6 +549,8 @@ class CharacterView:
     modeled_at: Position | None = None
     """The position the character was modeled at (0 for the genesis cast; #163); ``None``
     unless the read is omniscient."""
+    participation: dict[str, Any] | None = None
+    """``{role, fixed}`` (FR-MULTI-7; #176); ``None`` for the player's character."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -648,6 +684,7 @@ async def create_story_from(
                         "is_player": character.is_player,
                         "safe_fallback_text": character.safe_fallback_text,
                         "deflection_style": character.deflection_style,
+                        **_participation_values(character.participation, default=True),
                     }
                     for ordinal, (character_id, character) in enumerate(cast)
                 ]
@@ -942,6 +979,7 @@ async def add_story_character(
                 safe_fallback_text=request.safe_fallback_text,
                 deflection_style=request.deflection_style,
                 images=list(request.images),
+                **_participation_values(request.participation),
             )
         )
         # The character's entity (FR-PROP-6; #139), then the new name may already be in the
@@ -1039,6 +1077,7 @@ async def _character_view(conn: AsyncConnection, story_id: str, character_id: st
         ),
         weight=str(row.weight),
         modeled_at=_modeled_at(row),
+        participation=_participation_of(row),
     )
 
 
@@ -1212,6 +1251,94 @@ async def model_entity(
     async with db.connect() as conn:
         after = await _character_view(conn, story_id, made[0].character_id)
     return CharacterWeighted(character=after, timeline_revision=op.timeline_revision)
+
+
+# -- participation (#176) -------------------------------------------------------------------
+
+PARTICIPATION_SETTING = "participation"
+"""A participation change's ``config_changes`` setting: ``participation:<character id>``."""
+
+
+@dataclass(frozen=True, slots=True)
+class ParticipationSet:
+    """A character as a participation change left it, the story's configuration revision after
+    it, and whether anything changed."""
+
+    character: CharacterView
+    config_revision: int
+    timeline_revision: int
+    changed: bool
+    replayed: bool = False
+    """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
+
+
+async def set_participation(
+    db: AsyncEngine,
+    story_id: str,
+    character_id: str,
+    request: ParticipationSpec,
+    *,
+    principal: str,
+) -> ParticipationSet:
+    """Set a story character's participation role (FR-MULTI-7; #176): a story configuration
+    write, prospective (a turn already running keeps the roles it resolved). Under the story
+    row lock: 404 for an unknown story or character; 422 ``is_player`` for the player's
+    character (it has no role); 409 ``story_archived``. A change moves the story's
+    ``config_revision`` by one and records one ``config_changes`` row (setting
+    ``participation:<character id>``, class ``prospective``, ``{role, fixed}`` before and after)
+    with its ``config_changed`` event; setting the role it has writes nothing."""
+    from epistrel.core.config_changes import ConfigScope, record_config_change
+    from epistrel.core.settings_schema import ConfigClass
+
+    async with db.begin() as conn:
+        row = (
+            await conn.execute(
+                select(stories.c.config_revision, stories.c.timeline_revision, stories.c.status)
+                .where(stories.c.id == story_id)
+                .with_for_update()
+            )
+        ).one_or_none()
+        if row is None:
+            raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
+        view = await _character_view(conn, story_id, character_id)
+        if view.is_player:
+            raise InvalidRequest(
+                "the player's character has no participation role (FR-MULTI-7)",
+                {"field": "character_id", "reason": "is_player"},
+            )
+        before = dict(view.participation or {"role": "reactive", "fixed": False})
+        wanted = request.model_dump(mode="json")
+        config_revision = int(row.config_revision)
+        if before == wanted:
+            return ParticipationSet(
+                view, config_revision, int(row.timeline_revision), changed=False
+            )
+        if row.status == StoryStatus.ARCHIVED.value:
+            raise StoryArchived(
+                f"story {story_id} is archived; unarchive it to change it", {"story_id": story_id}
+            )
+        config_revision += 1
+        await conn.execute(
+            update(stories).where(stories.c.id == story_id).values(config_revision=config_revision)
+        )
+        await conn.execute(
+            update(characters)
+            .where(characters.c.story_id == story_id, characters.c.id == character_id)
+            .values(**_participation_values(request))
+        )
+        await record_config_change(
+            conn,
+            config_revision=config_revision,
+            setting=f"{PARTICIPATION_SETTING}:{character_id}",
+            old=before,
+            new=wanted,
+            actor=principal,
+            change_class=ConfigClass.prospective,
+            scope=ConfigScope.STORY,
+            scope_id=story_id,
+        )
+        after = await _character_view(conn, story_id, character_id)
+    return ParticipationSet(after, config_revision, int(row.timeline_revision), changed=True)
 
 
 # -- archive --------------------------------------------------------------------------------
@@ -1459,6 +1586,26 @@ def _view(row: Any, cast: tuple[CharacterView, ...] = ()) -> StoryView:
     )
 
 
+def _participation_values(
+    spec: ParticipationSpec | None, *, default: bool = False
+) -> dict[str, Any]:
+    """The ``characters`` columns of ``spec`` (#176); ``default``: the defaults when ``None`` (a
+    multi-row insert names every column in every row)."""
+    if spec is None:
+        return {"participation_role": "reactive", "participation_fixed": False} if default else {}
+    return {"participation_role": spec.role, "participation_fixed": spec.fixed}
+
+
+def _participation_of(row: Any) -> dict[str, Any] | None:
+    """A character's ``{role, fixed}`` as a read lists it (#176); ``None`` for the player's."""
+    if bool(row.is_player):
+        return None
+    return {
+        "role": str(getattr(row, "participation_role", None) or "reactive"),
+        "fixed": bool(getattr(row, "participation_fixed", False)),
+    }
+
+
 def _modeled_at(row: Any) -> Position:
     return Position(
         int(row.modeled_turn),
@@ -1513,6 +1660,8 @@ async def get_story(db: AsyncEngine, story_id: str, *, omniscient: bool = False)
                     characters.c.modeled_slot_k,
                     characters.c.modeled_beat,
                     characters.c.modeled_step,
+                    characters.c.participation_role,
+                    characters.c.participation_fixed,
                 )
                 .where(characters.c.story_id == story_id)
                 .order_by(characters.c.ordinal)
@@ -1535,6 +1684,7 @@ async def get_story(db: AsyncEngine, story_id: str, *, omniscient: bool = False)
                 ),
                 weight=str(c.weight) if omniscient else None,
                 modeled_at=_modeled_at(c) if omniscient else None,
+                participation=_participation_of(c),
             )
             for c in cast
         ),

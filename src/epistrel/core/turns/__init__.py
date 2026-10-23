@@ -87,6 +87,11 @@ class CastEntry:
     author notes, so a reply regenerated after a guardrail violation stays in character."""
     minor: bool = False
     """``weight = minor`` (#163): a lazily modeled character, never rendered by default."""
+    participation_role: str = "reactive"
+    """#176 (FR-MULTI-7): the character's participation role, ``primary``, ``reactive`` or
+    ``silent`` (ignored for the player's character)."""
+    participation_fixed: bool = False
+    """#176: whether the role is a bound the engine never crosses on its own."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,6 +162,8 @@ def _cast_query(story_id: str) -> Any:
             characters.c.safe_fallback_text,
             characters.c.deflection_style,
             characters.c.weight,
+            characters.c.participation_role,
+            characters.c.participation_fixed,
         )
         .where(characters.c.story_id == story_id)
         .order_by(characters.c.ordinal)
@@ -173,6 +180,8 @@ def _cast(rows: Any) -> tuple[CastEntry, ...]:
             safe_fallback_text=r.safe_fallback_text,
             deflection_style=r.deflection_style,
             minor=getattr(r, "weight", None) == "minor",
+            participation_role=str(getattr(r, "participation_role", None) or "reactive"),
+            participation_fixed=bool(getattr(r, "participation_fixed", False)),
         )
         for r in rows
     )

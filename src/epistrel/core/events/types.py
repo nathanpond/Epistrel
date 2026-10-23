@@ -768,6 +768,10 @@ class StructuredBeat(EventPayload):
     ``core.epistemic.perception.Qualifiers.payload``): ``addressee``, ``manner``, ``whisper_to``,
     ``aside``, ``eavesdrop_by``, ``remote_channel``, ``language``, ``partial_text``,
     ``location``; absent when none was declared. A history read re-routes the beat from them."""
+    narrated_by: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    """#176 (FR-MULTI-9): a reactive character's reaction another render narrated (a
+    ``beat_do``, or a brief interjection's ``beat_say``): the narrating render's character id;
+    absent for a beat the character's own render gave."""
 
 
 @register("beat_say", category=EventCategory.NARRATIVE_STATE)

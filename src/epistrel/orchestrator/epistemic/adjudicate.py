@@ -10,10 +10,10 @@ fall inside its ``partial_text``.
 
 **Salience** (FR-BELIEF-9: belief formation proportionate to salience). A witness is salient
 when the say's beat carries a salient span (#146's salience step) and the witness is a primary
-or reactive character (never silent, never a minor), or when a claim's subject touches the
-witness's partition (it already holds something about it). Salient and addressed witnesses
-(the say's ``addressee`` or ``whisper_to``) are resolved now, by the default or, when
-adjudicated, by the model; every other witness is left to #164's exposure record and lazy
+or reactive character (never silent, #176's turn roles; never a minor), or when a claim's
+subject touches the witness's partition (it already holds something about it). Salient and
+addressed witnesses (the say's ``addressee`` or ``whisper_to``) are resolved now, by the default
+or, when adjudicated, by the model; every other witness is left to #164's exposure record and lazy
 resolver (``deferred`` in the report).
 
 **Adjudication** (``adjudicate_turn``, before composition). Only under ``planner.adjudicates``
@@ -250,6 +250,12 @@ def salient_beats(checked: Any) -> frozenset[int]:
     return frozenset(int(s[0].index) for s in getattr(checked, "salient", ()))
 
 
+def silent_of(checked: Any) -> frozenset[str]:
+    """#176 (carried from #162): the turn's ``silent`` characters, never salient witnesses (the
+    turn's resolved roles, ``Checked.silent``)."""
+    return frozenset(getattr(checked, "silent", ()) or ())
+
+
 async def is_salient(
     conn: AsyncConnection,
     story_id: str,
@@ -414,7 +420,7 @@ async def adjudicate_turn(
     async with db.connect() as conn:
         state = await scene_loader.load_scene_state(conn, story_id, turn)
         holders = await _holders(conn, story_id, cast)
-        minors = await testimony.minors(conn, story_id)
+        minors = await testimony.minors(conn, story_id) | silent_of(checked)
         # #163: a ``minor``-weight (lazily modeled) witness never takes the model adjudication;
         # it gets the default at commit.
         lazy = await modeling.minor_ids(conn, story_id)
@@ -680,7 +686,7 @@ async def testify_committed(
         return None
     says = {h.beat: h for h in heard_of(checked, actor, say)}
     holders = await _holders(conn, story_id, cast)
-    minors = await testimony.minors(conn, story_id)
+    minors = await testimony.minors(conn, story_id) | silent_of(checked)
     marked = salient_beats(checked)
     registry = await load(conn, story_id)
     lookup = KeyedLookup(conn, read_set)

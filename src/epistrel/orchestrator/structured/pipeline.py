@@ -323,6 +323,7 @@ from epistrel.orchestrator.policies.store import guard_context
 from epistrel.orchestrator.repair.ladder import Recheck, RepairLadder, RepairResult
 from epistrel.orchestrator.structured import multi, planner
 from epistrel.orchestrator.structured import prompt as prompts
+from epistrel.orchestrator.structured import roles as roles_rt
 from epistrel.orchestrator.structured import simultaneous as simultaneous_rules
 from epistrel.orchestrator.structured import steps as render_steps
 from epistrel.orchestrator.structured.eval_hooks import StageClock, eval_hooks
@@ -398,6 +399,21 @@ def resolve_structured_cast(
     non-player one, else the first other one, else the actor). ``settings``: the story's
     effective profile settings (``None``: one primary, as M4)."""
     resolved = resolve_cast(story, request)
+    if settings is None or not multi.per_character(settings):
+        # #176: a stored role is inert here; a request's role override is refused.
+        lite.refuse_role_overrides(request)
+        promoted: tuple[str, ...] = ()
+    else:
+        named = [c.id for c in resolved.render] if request.render_character_ids else []
+        promoted = roles_rt.promoted(story.cast, request, named, resolved.actor.id)
+    if promoted:
+        # #176: a ``primary`` override names the character, after the named ones.
+        by_id = story.by_id()
+        extra = tuple(by_id[c] for c in promoted if c in by_id)
+        render = (*resolved.render, *extra) if request.render_character_ids else extra
+        resolved = ResolvedCast(actor=resolved.actor, render=render)
+        multi.check(settings or _COMBINED, story_id, story.settings, request, resolved.render)
+        return resolved
     if request.render_character_ids is not None:
         if settings is None:
             multi.check(_COMBINED, story_id, story.settings, request, resolved.render)
@@ -487,6 +503,7 @@ async def respond(
         override=request.budget,
         started=started,
         director=multi.order_of(story.settings, request) == multi.DIRECTOR,
+        stored=roles_rt.stored_of(story.cast),
     )
     resolved_cast = _planned_cast(resolved_cast, plan)
     timing = lite.TurnTiming(front=started)
@@ -587,6 +604,7 @@ async def run_queued(
         turn_deadline=planned.get("deadline_s") or concurrency.turn_deadline,
         started=front,
         director=multi.order_of(story.settings, request) == multi.DIRECTOR,
+        stored=roles_rt.stored_of(story.cast),
     )
     resolved_cast = _planned_cast(resolved_cast, plan)
     budget.release_to(planner.held_after_input(plan, budget))
@@ -657,6 +675,7 @@ async def regenerate(
         override=request.budget,
         started=started,
         director=multi.order_of(story.settings, replay) == multi.DIRECTOR,
+        stored=roles_rt.stored_of(story.cast),
     )
     resolved_cast = _planned_cast(resolved_cast, plan)
     timing = lite.TurnTiming(front=started)
@@ -939,6 +958,8 @@ class Rendered:
     needed (resolved in the commit)."""
     contexts: list[CharacterContext] = field(default_factory=list)
     """#174: every primary's context, in render order (one, for a single primary)."""
+    reactions: list[Any] = field(default_factory=list)
+    """#176: the reactions the character render declared (``render.ReactionDecl``)."""
 
 
 def _canon_lines(result: RetrievalResult, own: str | None) -> tuple[list[str], list[str]]:
@@ -1310,6 +1331,8 @@ class Checked:
     """#174: every primary render's steps (the commit writes each for its holder)."""
     more_verifiers: list[Verifier] = field(default_factory=list)
     """#174: the later primaries' verifiers (the first is ``verifier``), in render order."""
+    silent: frozenset[str] = frozenset()
+    """#176: the turn's ``silent`` characters (never salient testimony witnesses)."""
 
 
 LOCATED_PREDICATES = frozenset({CORE_BY_NAME["located_at"].id, CORE_BY_NAME["present_at"].id})
@@ -1595,7 +1618,13 @@ async def _check_turn(
         config = DetectionConfig.of(settings, await read_section(conn, VerifySettings))
         if not backstop:
             config = replace(config, level=DECLARED_LEVEL)
-        speakers = [input_speaker, read.character.id]
+        # #176: a narrated reaction's reactor speaks in its own view.
+        reactors = [
+            str(b.character_id)
+            for b in rendered.beats
+            if b.narrated_by is not None and b.character_id is not None
+        ]
+        speakers = list(dict.fromkeys([input_speaker, read.character.id, *reactors]))
         env = await extraction.load_env(
             conn, story_id, read_set, position=(turn, 0), speakers=speakers, config=config
         )
@@ -1779,6 +1808,13 @@ async def _check_turn(
                 for c in b.cites
             )
 
+        reactive_asserter = roles_rt.asserter_of(scopes)
+
+        def asserter_of(claim: DetectedClaim) -> Any:
+            # #176 (FR-MULTI-9): a narrated reaction's claims are the reactive exception's.
+            found = reactive_asserter(claim)
+            return found or extraction.asserter_for(claim, read.player_id)
+
         stepper = _stepper(
             conn,
             story_id,
@@ -1808,6 +1844,7 @@ async def _check_turn(
                 start=first_claim + len(checked),
                 intent_of=intent_of,
                 cites_of=cites_of,
+                asserter_of=asserter_of,
             )
             # The same-turn overlay: what this beat may establish, later beats see.
             for request in verifier.canon_requests()[before:]:
@@ -2664,6 +2701,7 @@ def _routed_beats(
                     else RecordProvenance.RENDER,
                     event_type=event_type,
                     participants=_participants(found_parts, beat.character_id),
+                    narrated=beat.narrated_by is not None,
                 ),
             )
         )
@@ -3387,6 +3425,8 @@ async def play(
     """#174: the turn's staged beats (a ``sequential`` turn's earlier primaries)."""
     multis: list[multi.MultiReport] = []
     """#174: ``turn_report.multi``."""
+    roles_state: list[roles_rt.TurnRoles] = []
+    """#176: the turn's participation roles and reactive narration (per-character renders)."""
 
     async def stage_render(
         turn_stage: TurnStage,
@@ -3756,9 +3796,41 @@ async def play(
             deferred=list(plan.deferred) if plan is not None else [],
         )
         multis[:] = [report_multi]
+        if plan is not None and plan.reduced:
+            planned.append((planner.PRIMARIES_REDUCED, "budget"))
         if report_multi.deferred:
             planned.append((planner.PRIMARIES_DEFERRED, "budget"))
+        if plan is not None and plan.deferred_fixed:
+            planned.append((planner.PRIMARY_DEFERRED, "budget"))
         sequential = len(order) > 1
+        # #176 (FR-MULTI-7): every present character's role for the turn.
+        turn_roles: roles_rt.TurnRoles | None = None
+        if multi.per_character(settings):
+            turn_roles = roles_rt.resolve(
+                story.cast,
+                present_names=read.present,
+                rendering=[p.id for p in order],
+                actor_id=read.actor.id,
+                request=request,
+                story=story.settings,
+                settings=settings,
+                reduced=() if plan is None else plan.reduced,
+                deferred=() if plan is None else plan.deferred,
+                deferred_fixed=() if plan is None else plan.deferred_fixed,
+            )
+        roles_state[:] = [] if turn_roles is None else [turn_roles]
+        cast_by_id = {c.id: c for c in story.cast}
+        extraction_each = 1 if plan is not None and plan.reservation.extraction else 0
+
+        def afford_escalation() -> bool:
+            """#176 (FR-MULTI-10): one more primary render, its first output check and its
+            extraction, from what no reservation holds (held now when they fit)."""
+            cost = 1 + output_checks + extraction_each
+            if budget.expired() or not budget.can_afford_unreserved(cost):
+                return False
+            budget.hold(1 + output_checks)
+            budget.reserve(EXTRACTION, extraction_each)
+            return True
 
         async def render_primary(
             k: int, read_k: TurnRead, start: int
@@ -3848,6 +3920,8 @@ async def play(
                     say=say,
                     do=do,
                     budget=budget_tokens,
+                    others_present=() if turn_roles is None else turn_roles.others_present(),
+                    interjections=turn_roles is not None and turn_roles.interjections,
                 )
                 char_render, n = await render_beats(
                     models,
@@ -3895,6 +3969,7 @@ async def play(
                     steps_beat=char_start,
                     context=knowing,
                     contexts=[knowing],
+                    reactions=list(char_render.reactions),
                 )
                 draft = Draft(
                     text="\n".join(b.text for b in beats),
@@ -3977,10 +4052,37 @@ async def play(
                     report_multi.not_present.append(primary.id)
                 turn_stage.open_render(primary.id, next_beat)
                 rendered_k, outcome_k, replaced = await render_primary(k, read_k, next_beat)
+                fresh = 0
+                if turn_roles is not None and rendered_k.finish_reason != "fallback":
+                    # #176 (FR-MULTI-9,10): the reactions it narrates, judged; a reaction that
+                    # needs a render of its own escalates its reactor (appended to the order).
+                    reactions = roles_rt.collect(
+                        rendered_k.beats,
+                        rendered_k.reactions,
+                        primary=primary.id,
+                        start=next_beat,
+                        roles=turn_roles,
+                    )
+                    if reactions:
+                        rendered_k.beats, escalate = roles_rt.apply(
+                            rendered_k.beats,
+                            rendered_k.sketches,
+                            reactions,
+                            turn_roles,
+                            afford=afford_escalation,
+                            escalating=primary.id not in turn_roles.escalated,
+                        )
+                        for cid in escalate:
+                            turn_roles.escalate(cid)
+                            order.append(cast_by_id[cid])
+                            report_multi.order.append(cid)
+                            fresh += 1
+                last = k == len(order) - 1
                 if not last:
                     # #174: the output gate released what it held; the later primaries' renders
-                    # and first output checks stay held through this one's optional work.
-                    budget.hold((len(order) - k - 1) * (1 + output_checks))
+                    # and first output checks stay held through this one's optional work (#176:
+                    # an escalation's own were held when it was afforded).
+                    budget.hold((len(order) - k - 1 - fresh) * (1 + output_checks))
                 if k == 0:
                     released[:] = [rendered_k]
                 checked_k = await check_turn(
@@ -4006,6 +4108,20 @@ async def play(
                     settle_salience=last,
                     staged_beliefs=turn_stage.accepted(primary.id),
                 )
+                if turn_roles is not None:
+                    # #176: each reaction checked against its reactor's viewpoint.
+                    await roles_rt.verify(
+                        db,
+                        story_id,
+                        turn=read.turn,
+                        checked=checked_k,
+                        roles=turn_roles,
+                        settings=settings,
+                        actor_id=read.actor.id,
+                        say=say,
+                        do=do,
+                        read_set=read_set,
+                    )
                 if not last:
                     # FR-MULTI-11: the beat that fails verification is repaired alone, before
                     # the next primary renders and sees it.
@@ -4046,6 +4162,9 @@ async def play(
             raise
         assert merged is not None  # noqa: S101 - every turn renders a primary
         checked = merged
+        sequential = len(order) > 1  # #176: an escalation renders another primary
+        if turn_roles is not None:
+            checked.silent = turn_roles.silent()
         rendered = renders_done[0] if len(renders_done) == 1 else _merged_rendered(renders_done)
         last_rendered = renders_done[-1]
         outcome = outcomes[0] if len(outcomes) == 1 else _merged_gated(outcomes)
@@ -4218,7 +4337,11 @@ async def play(
             )
         # The repair ladder's audit records (#151), the repaired perception qualifiers' (#161)
         # included: never read by a story view.
-        for event_type, payload in [*_repair_events(checked), *_qualifier_events(checked)]:
+        for event_type, payload in [
+            *_repair_events(checked),
+            *_qualifier_events(checked),
+            *roles_rt.rejected_events(roles_state[0] if roles_state else None),
+        ]:
             op.append(
                 event_type, payload, provenance=Provenance.ENGINE, character_id=None, beat=last + 1
             )
@@ -4715,6 +4838,9 @@ async def play(
             # #168: the render's declared causal steps (#174: every primary's).
             "steps": _steps_report(checked),
         }
+        if roles_state:
+            # #176: the turn's roles and what reactive narration made of them.
+            report["roles"] = roles_state[0].report()
         if multis and multi.per_character(settings):
             # #174: the sequential turn's mode, order and staging.
             report["multi"] = multis[0].report()
@@ -4828,6 +4954,13 @@ async def play(
         if multis and multi.per_character(settings):
             # #175: the mode the turn ran in, as requested (one primary included).
             fields["interaction_mode"] = multis[0].mode
+        if roles_state:
+            # #176 (FR-MULTI-7,10, NFR-PERF-7 (6)).
+            found_roles = roles_state[0]
+            fields["roles"] = {c: r.payload() for c, r in found_roles.roles.items()}
+            fields["escalation_deferred"] = list(found_roles.escalation_deferred)
+            fields["deferred_characters"] = list(found_roles.deferred)
+            fields["reduced_characters"] = list(found_roles.reduced)
         if multis and len(multis[0].order) > 1:
             # #174: the primaries in the order they rendered; one not in the scene is named.
             fields["order"] = list(multis[0].order)

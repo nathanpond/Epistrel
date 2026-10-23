@@ -143,6 +143,35 @@ class AdjudicationBody(BaseModel):
     rule: Literal["request_order", "director", "state"]
 
 
+class RoleBody(BaseModel):
+    """A present character's participation role for the turn (#176, FR-MULTI-7) and where it
+    came from: its stored ``default`` or ``fixed`` role, the ``request``, an ``escalated``
+    reaction, or a ``reduced`` primary (budget planning)."""
+
+    role: Literal["primary", "reactive", "silent"]
+    source: Literal["default", "fixed", "request", "escalated", "reduced"]
+
+
+class EscalationDeferredBody(BaseModel):
+    """A reactive character whose reaction needed a primary render it could not get this turn
+    (#176, FR-MULTI-10): ``fixed_role`` (its role is fixed) or ``budget``; ``needed``: what the
+    reaction needed (``speech``, ``decision`` or ``effect``). Not an error: bring the character
+    in on a later turn."""
+
+    character_id: str
+    reason: Literal["fixed_role", "budget"]
+    needed: str | None = Field(default=None, exclude_if=lambda v: v is None)
+
+
+class DeferredCharacterBody(BaseModel):
+    """A named primary budget planning deferred to a later turn (#176, NFR-PERF-7 (6)): a
+    ``fixed`` primary is deferred rather than narrated reactively."""
+
+    character_id: str
+    reason: Literal["budget"]
+    fixed: bool
+
+
 class RespondResponse(MutationResponse):
     """One finished turn: the reply, the turn's beats for the resolved viewpoint, its position,
     the story's new revision, the model calls it made, where its time went, and the
@@ -184,6 +213,21 @@ class RespondResponse(MutationResponse):
     adjudications: list[AdjudicationBody] = Field(default_factory=list, exclude_if=lambda a: not a)
     """A ``simultaneous`` turn's settled conflicts (#175, FR-MULTI-8): who acted on which
     object, whose action stood and by which rule; absent when nothing conflicted."""
+    roles: dict[str, RoleBody] = Field(default_factory=dict, exclude_if=lambda r: not r)
+    """A structured turn under per-character renders (#176, FR-MULTI-7): every present
+    character's role for the turn and its source; absent otherwise."""
+    escalation_deferred: list[EscalationDeferredBody] = Field(
+        default_factory=list, exclude_if=lambda e: not e
+    )
+    """The reactive characters whose reaction needed a primary render they could not get this
+    turn (#176, FR-MULTI-10), with the reason; absent when none."""
+    deferred_characters: list[DeferredCharacterBody] = Field(
+        default_factory=list, exclude_if=lambda d: not d
+    )
+    """The named primaries budget planning deferred to a later turn (#176); absent when none."""
+    reduced_characters: list[str] = Field(default_factory=list, exclude_if=lambda r: not r)
+    """The named primaries budget planning turned into reactive narration (#176); absent when
+    none."""
 
     @classmethod
     def of(cls, result: RespondResult) -> RespondResponse:
@@ -220,6 +264,10 @@ class RespondResponse(MutationResponse):
             order=list(result.order),
             interaction_mode=cast(Any, result.interaction_mode),
             adjudications=[AdjudicationBody(**a) for a in result.adjudications],
+            roles={k: RoleBody(**cast(Any, v)) for k, v in result.roles.items()},
+            escalation_deferred=[EscalationDeferredBody(**e) for e in result.escalation_deferred],
+            deferred_characters=[DeferredCharacterBody(**d) for d in result.deferred_characters],
+            reduced_characters=list(result.reduced_characters),
             budget=(
                 None
                 if result.budget is None

@@ -72,6 +72,8 @@ Writes the reply of a Lite turn from the story's prompt sections; in a structure
 | `scene` | `scene` |
 | `working_memory` | `working_memory` |
 | `just_now` | `working_memory` |
+| `others_present` | `scene` |
+| `interjections` | `constraint` |
 | `retrieved_memories` | `retrieved_memories` |
 | `canon_facts` | `canon_facts` |
 | `open_references` | `scene` |
@@ -384,6 +386,8 @@ Rewrites one beat of a structured render that contradicted canon or asserted wha
 | `scene` | `scene` |
 | `working_memory` | `working_memory` |
 | `just_now` | `working_memory` |
+| `others_present` | `scene` |
+| `interjections` | `constraint` |
 | `retrieved_memories` | `retrieved_memories` |
 | `canon_facts` | `canon_facts` |
 | `open_references` | `scene` |

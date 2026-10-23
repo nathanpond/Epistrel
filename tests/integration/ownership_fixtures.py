@@ -622,6 +622,10 @@ CALLS: dict[tuple[str, str], Call] = {
         200, {"weight": "minor"}, prepare=_story_character
     ),
     ("POST", f"{S}/entities/{{entity_id}}/model"): Call(201, {"true_age": 40}, prepare=_unmodeled),
+    # -- stories: a character's participation role (#176)
+    ("PATCH", f"{S}/characters/{{character_id}}/participation"): Call(
+        200, {"role": "primary", "fixed": True}, prepare=_story_character
+    ),
     # -- stories: the configuration preview (#109), which writes nothing, and the story's
     # profile and overrides (#113): the story's own profile again (a no-op), and an override no
     # capability hangs on (applied at once)

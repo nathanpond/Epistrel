@@ -11,9 +11,10 @@ listed.
 The three-primary clause (#174, ``test_p_09__three_primaries``): a ``sequential`` turn plans one
 render, one extraction and one first output check per primary (B = 3), so its minimum is
 ``3 + B + C + G``. A three-primary request whose budget is exactly the single-primary minimum
-plans one primary (the first named), defers the other two, and reports it: ``primaries_deferred``
-in the degradation (cause ``budget``), ``turn_report.multi.deferred`` naming them and the plan's
-``deferred``; the step sits in NFR-PERF-7's order after the skipped polish and before beat
+plans one primary (the first named) and (#176) turns the other two into reactive narration, and
+reports it: ``primaries_reduced`` in the degradation (cause ``budget``), the response's
+``reduced_characters`` and their ``roles`` (``reactive``, source ``reduced``), and the plan's
+``reduced``; the step sits in NFR-PERF-7's order after the skipped polish and before beat
 replacement. With the default budget (``4 + 5 per primary + G``) all three render; one below the
 single-primary minimum is still refused before any model call."""
 
@@ -30,6 +31,7 @@ from epistrel.core.propositions.vocabulary import FRIEND_OF
 from epistrel.orchestrator.structured import planner
 from tests import multi_support as ms
 from tests import perception_support as ps
+from tests import reactive_support as rs
 from tests import testimony_support as ts
 from tests.auth_support import auth_settings
 from tests.respond_support import body, respond, respond_client
@@ -160,23 +162,30 @@ async def test_p_09__three_primaries(
         assert answer.status_code == 200, answer.text
         turn = answer.json()
         _accounted(turn)
-        assert planner.PRIMARIES_DEFERRED in turn["degradation"]
+        # #176 (NFR-PERF-7 (6)): the extra primaries (default roles) render as reactive
+        # narration instead of being deferred.
+        assert planner.PRIMARIES_REDUCED in turn["degradation"]
+        assert planner.PRIMARIES_DEFERRED not in turn["degradation"]
         details = {d["step"]: d["cause"] for d in turn["degradation_details"]}
-        assert details[planner.PRIMARIES_DEFERRED] == "budget"
+        assert details[planner.PRIMARIES_REDUCED] == "budget"
         ladder = _ladder(turn)
         assert ladder == sorted(ladder, key=planner.ladder_rank)
-        assert planner.ladder_rank(planner.PRIMARIES_DEFERRED) < planner.ladder_rank(
+        assert planner.ladder_rank(planner.PRIMARIES_REDUCED) < planner.ladder_rank(
             planner.BEAT_REPLACED
         )
         assert planner.ladder_rank(planner.SKIP_POLISH) < planner.ladder_rank(
-            planner.PRIMARIES_DEFERRED
+            planner.PRIMARIES_REDUCED
         )
         assert len(ms.render_prompts(stub, "Bobby")) == 1
         assert ms.render_prompts(stub, "Jenni") == ms.render_prompts(stub, "Ada") == []
+        assert turn["reduced_characters"] == three[1:]
+        assert {c: turn["roles"][c] for c in three[1:]} == {
+            c: {"role": "reactive", "source": "reduced"} for c in three[1:]
+        }
         report = await turn_report(engine, story)
-        assert report["multi"]["deferred"] == three[1:]
+        assert report["multi"]["deferred"] == []
         assert report["budget"]["plan"]["primaries"] == 1
-        assert report["budget"]["plan"]["deferred"] == three[1:]
+        assert report["budget"]["plan"]["reduced"] == three[1:]
         assert "order" not in turn  # one primary rendered
 
         # The default budget plans all three: B is one extraction per render.
@@ -211,3 +220,82 @@ async def test_p_09__three_primaries(
         assert refused.status_code == 422, refused.text
         assert refused.json()["error"]["code"] == "budget_below_safety_minimum"
         assert stub.calls == []
+
+
+@pytest.mark.part("M5", "NFR-PERF-7")
+async def test_p_09__m5(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+    multi_delivered: None,
+) -> None:
+    """NFR-PERF-7 step 6 (#176): a request naming Bobby, Ada (her role fixed ``primary``) and
+    Dale (a default role) with the single-primary minimum as its budget plans Bobby alone; Dale
+    renders as reactive narration (``primaries_reduced``, ``reduced_characters``, his role
+    ``reactive`` from ``reduced``, and Bobby's render may narrate his reaction), and Ada, whose
+    fixed ``primary`` the engine never lowers, is deferred with a notice (``primaries_deferred``
+    and ``primary_deferred``, ``deferred_characters`` with ``fixed``) and never narrated
+    reactively (Bobby's narration of her is dropped). The steps sit in NFR-PERF-7's order:
+    after the defaulted testimony (#162's step 3) and entailment's safe disposition, before beat
+    replacement."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        b = await rs.bar(client, engine)
+        await rs.set_role(client, b.story_id, b["Ada"], "primary", fixed=True)
+        named = [b["Bobby"], b["Ada"], b["Dale"]]
+        refused = await respond(
+            client,
+            b.story_id,
+            body(b["Cal"], "Well?", render_character_ids=named[:1], budget={"max_calls": 1}),
+        )
+        minimum = refused.json()["error"]["details"]["minimum_required"]
+        stub.reset()
+        ms.renders_for(
+            stub,
+            "Bobby",
+            rs.render(
+                beat("say", "Evening.", intent="sincere"),
+                reactions=[
+                    rs.reaction(b["Dale"], "Dale nods."),
+                    rs.reaction(b["Ada"], "Ada smiles."),
+                ],
+            ),
+        )
+        answer = await respond(
+            client,
+            b.story_id,
+            body(b["Cal"], "Well?", render_character_ids=named, budget={"max_calls": minimum}),
+        )
+        assert answer.status_code == 200, answer.text
+        turn = answer.json()
+        _accounted(turn)
+        assert rs.character_renders(stub) == ["Bobby"]
+        assert turn["reduced_characters"] == [b["Dale"]]
+        assert turn["deferred_characters"] == [
+            {"character_id": b["Ada"], "reason": "budget", "fixed": True}
+        ]
+        assert turn["roles"][b["Dale"]] == {"role": "reactive", "source": "reduced"}
+        assert turn["roles"][b["Ada"]] == {"role": "primary", "source": "fixed"}
+        assert [n.character_id for n in await rs.narrated(engine, b.story_id)] == [b["Dale"]]
+        steps = _ladder(turn)
+        for step in (
+            planner.PRIMARIES_REDUCED,
+            planner.PRIMARIES_DEFERRED,
+            planner.PRIMARY_DEFERRED,
+        ):
+            assert step in steps
+        assert steps == sorted(steps, key=planner.ladder_rank)
+        report = await turn_report(engine, b.story_id)
+        assert report["budget"]["plan"]["reduced"] == [b["Dale"]]
+        assert report["budget"]["plan"]["deferred"] == [b["Ada"]]
+    rank = planner.ladder_rank
+    assert (
+        rank(planner.SKIP_POLISH)
+        < rank(planner.REPAIR_DETERMINISTIC)
+        < rank(planner.TESTIMONY_DEFAULTED)
+        < rank(planner.ENTAILMENT_SAFE_DISPOSITION)
+        < rank(planner.PRIMARIES_REDUCED)
+        == rank(planner.PRIMARIES_DEFERRED)
+        == rank(planner.PRIMARY_DEFERRED)
+        < rank(planner.BEAT_REPLACED)
+    )

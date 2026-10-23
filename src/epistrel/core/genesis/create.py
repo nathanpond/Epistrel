@@ -193,7 +193,7 @@ from epistrel.core.genesis.models import (
     player_role_entries,
     resolve_personas,
 )
-from epistrel.core.genesis.settings_map import genesis_capabilities
+from epistrel.core.genesis.settings_map import MULTI_CHARACTER, genesis_capabilities, is_used
 from epistrel.core.ids import new_ulid
 from epistrel.core.policies.model import Target
 from epistrel.core.ports import Ports
@@ -1563,6 +1563,15 @@ async def insert_cast(
         if member.persona is not None:
             row.update(catalog_personas.player_character(member.persona))
             row["name"] = member.name
+        participation = getattr(member.role, "participation", None)
+        # #176 (FR-SCN-3, FR-MULTI-7): the role's default participation, never fixed; until
+        # ``multi_character`` is delivered it stays inactive (``participation.<role id>``).
+        row["participation_role"] = (
+            str(participation)
+            if participation is not None and not member.is_player and is_used(MULTI_CHARACTER)
+            else "reactive"
+        )
+        row["participation_fixed"] = False
         rows.append(row)
     await conn.execute(insert(characters).values(rows))
     snapshots = [

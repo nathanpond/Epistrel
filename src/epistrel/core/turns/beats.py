@@ -204,6 +204,9 @@ class TurnBeat:
     attempt: bool = False
     """#175: a ``simultaneous`` turn's losing action, rewritten as an attempt that failed (rung
     2): its effect dropped, and the detectors never read it again."""
+    narrated_by: str | None = None
+    """#176 (FR-MULTI-9): a reactive character's reaction, narrated by this character's render
+    (``character_id`` is the reactor's)."""
 
     @property
     def declared(self) -> tuple[AssertedClaim, ...]:
@@ -326,6 +329,8 @@ def beat_payload(beat: TurnBeat) -> dict[str, Any]:
         payload["repaired_from"] = {"rung": rung, "class": repair_class}
     if not beat.qualifiers.empty:
         payload["perception"] = beat.qualifiers.payload()
+    if beat.narrated_by is not None:
+        payload["narrated_by"] = beat.narrated_by
     if beat.kind == "say":
         payload["intent"] = beat.intent
         payload["labels"] = beat.labels()

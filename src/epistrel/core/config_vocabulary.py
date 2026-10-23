@@ -93,7 +93,7 @@ row family, or a shape's live gate threshold (#155: ``verify_gate_threshold:<sha
 
 StorySettingFilter = _setting_filter(
     StorySettings,
-    ("policy",),
+    ("policy", "participation"),
     (
         ASSIGNMENT_SETTING,
         RATING_SETTING,
@@ -103,7 +103,8 @@ StorySettingFilter = _setting_filter(
 )
 """A story-scope ``setting`` filter: a story setting, its engine profile's assignment
 (``engine_profile_id``) or one of its overrides (``profile_overrides.<path>``; #113), its
-rating (``content_rating_id``; #118), or the story's policy rows. M2's names of the dials
+rating (``content_rating_id``; #118), the story's policy rows, or a character's participation
+role (#176: ``participation:<character id>``). M2's names of the dials
 #113 moved stay filterable: rows written before the move keep them."""
 
 

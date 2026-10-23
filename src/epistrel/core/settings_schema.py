@@ -384,6 +384,13 @@ class StorySettings(BaseModel):
     ``None``: ``request_order``. The loser's action is repaired in character as an attempt. A
     request overrides it. Prospective."""
 
+    reactive_interjections: Annotated[StrictBool, PROSPECTIVE] = False
+    """Whether reactive narration may give a reactive character a brief interjection
+    (FR-MULTI-9; #176): at most ``multi_character.interjection_max_words`` words (6), checked
+    against the reactor's viewpoint like any ``say``. Off by default (the owner's decision): a
+    reactive character's narrated speech escalates it to a primary render instead (FR-MULTI-10).
+    A request overrides it. Prospective."""
+
     @field_validator("default_output_viewpoint")
     @classmethod
     def _never_omniscient(cls, value: str | None) -> str | None:

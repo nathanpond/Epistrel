@@ -15,7 +15,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+    model_validator,
+)
 
 from epistrel.core.history import HistoryItem
 from epistrel.core.ids import Ulid
@@ -38,6 +46,9 @@ MAX_RECENT_MESSAGES = 20
 MAX_RECENT_MESSAGE_CHARS = 2_000
 MAX_ID_CHARS = 64
 MAX_RENDER_CHARACTERS = 64
+MAX_ROLES = 64
+"""The most characters one request's ``roles`` names (#176)."""
+ParticipationRole = Literal["primary", "reactive", "silent"]
 
 
 class PlayerInputBody(BaseModel):
@@ -118,6 +129,9 @@ class RespondRequest(BaseModel):
       (#174): several ``render_character_ids`` render ``sequential``ly, in request order or the
       director's, or ``simultaneous``ly (#175), their conflicts settled by
       ``simultaneous_tie_break``.
+    - ``roles``/``reactive_interjections``: a structured story with per-character renders
+      (#176): this turn's participation roles of present characters over their stored ones,
+      and whether reactive narration may give a reactive character a brief interjection.
     """
 
     model_config = ConfigDict(
@@ -156,16 +170,29 @@ class RespondRequest(BaseModel):
     """#175: how this ``simultaneous`` turn settles conflicting actions, over the story's
     setting (``request_order``, ``director``; ``state:<name>`` is 422 ``not_yet`` until M6);
     needs per-character renders (409 ``module_off`` otherwise)."""
+    roles: dict[Ulid, ParticipationRole] | None = Field(default=None, max_length=MAX_ROLES)
+    """#176 (FR-MULTI-7): this turn's participation role per present character, over its stored
+    one (a ``fixed`` role included): ``primary`` names the character to render (after
+    ``render_character_ids``), ``reactive`` or ``silent`` sets how others may narrate it. A
+    character the story does not have, the player's or the actor's, or a named character
+    overridden down is 422; ``fixed`` is not settable per request. Needs per-character renders
+    (422 otherwise)."""
+    reactive_interjections: StrictBool | None = None
+    """#176 (FR-MULTI-9): whether reactive narration may give a reactive character a brief
+    interjection this turn, over the story's setting. Needs per-character renders (422
+    otherwise)."""
 
 
 TURN_OVERRIDES = ("interaction_mode", "sequence_order", "simultaneous_tie_break")
 """#174's per-request overrides of a story's multi-character settings."""
+ROLE_OVERRIDES = ("roles", "reactive_interjections")
+"""#176's per-request overrides of the turn's participation roles."""
 
 
 def body_of(request: RespondRequest, *exclude: str) -> dict[str, Any]:
-    """``request`` as JSON, #174's overrides left out when unset (a turn that names none hashes,
-    and is stored, as it did before them)."""
-    unset = {k for k in TURN_OVERRIDES if getattr(request, k) is None}
+    """``request`` as JSON, #174's and #176's overrides left out when unset (a turn that names
+    none hashes, and is stored, as it did before them)."""
+    unset = {k for k in (*TURN_OVERRIDES, *ROLE_OVERRIDES) if getattr(request, k) is None}
     return request.model_dump(mode="json", exclude={*exclude, *unset})
 
 
@@ -331,6 +358,18 @@ class RespondResult:
     or ``simultaneous``, as requested); ``None`` otherwise."""
     adjudications: list[dict[str, Any]] = field(default_factory=list)
     """#175: a simultaneous turn's settled conflicts, ``{object, winner, loser, rule}``."""
+    roles: dict[str, dict[str, str]] = field(default_factory=dict)
+    """#176: a structured turn under per-character renders, every present character's role for
+    the turn, ``{cid: {role, source}}``; empty otherwise."""
+    escalation_deferred: list[dict[str, Any]] = field(default_factory=list)
+    """#176 (FR-MULTI-10): the reactive characters whose escalation was unavailable,
+    ``{character_id, reason: fixed_role|budget, needed}``."""
+    deferred_characters: list[dict[str, Any]] = field(default_factory=list)
+    """#176 (NFR-PERF-7 (6)): the named primaries budget planning deferred to a later turn,
+    ``{character_id, reason, fixed}``."""
+    reduced_characters: list[str] = field(default_factory=list)
+    """#176 (NFR-PERF-7 (6)): the named primaries budget planning turned into reactive
+    narration."""
 
 
 @dataclass(frozen=True, slots=True)

@@ -277,6 +277,8 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "promote_character": ResultCodec.of(catalog_promote.Promotion, status=201),
     # #163: an author's weight change and modeling directive (story-scoped control operations).
     "set_character_weight": ResultCodec.of(stories.CharacterWeighted),
+    # #176: a character's participation role (a story configuration write).
+    "set_participation": ResultCodec.of(stories.ParticipationSet, revision_field=_CONFIG),
     "model_entity": ResultCodec.of(stories.CharacterWeighted, status=201),
     "create_content_rating": ResultCodec.of(
         ratings.RatingWrite, status=201, revision_field=_CONFIG
@@ -2602,6 +2604,33 @@ class Engine:
             run,
             story_id=story_id,
             material={"story_id": story_id, "body": _body(request)},
+        )
+
+    async def set_participation(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        character_id: str,
+        request: stories.ParticipationSpec,
+    ) -> stories.ParticipationSet:
+        """Set a story character's participation role, ``{role, fixed}`` (FR-MULTI-7; #176): a
+        prospective story configuration write that moves the story's ``config_revision`` and
+        records a ``config_changes`` row. 404 for an unknown story or a character not in it;
+        422 ``is_player`` for the player's character; 409 ``story_archived``. Answers the
+        character as a read lists it."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> stories.ParticipationSet:
+            return await stories.set_participation(
+                self.db, story_id, character_id, request, principal=principal
+            )
+
+        return await self._keyed(
+            ctx,
+            "set_participation",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "character_id": character_id, "body": _body(request)},
         )
 
     async def set_character_weight(

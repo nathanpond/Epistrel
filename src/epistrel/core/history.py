@@ -115,6 +115,8 @@ class HistoryItem:
     """A ``latent`` beat (#150, omniscient reads only): its declared scope (FR-TURN-4)."""
     detected: list[dict[str, Any]] | None = None
     """A structured turn's beat (#150): the claims detection found that it did not declare."""
+    narrated_by: str | None = None
+    """A reactive character's reaction (#176): the character whose render narrated it."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -491,6 +493,8 @@ def _structured(row: Any, channel: str, omniscient: bool = True) -> dict[str, An
         found["visibility"] = dict(payload.get("visibility") or {"scope": "objective"})
     if payload.get("detected"):
         found["detected"] = [dict(d) for d in payload["detected"]]
+    if payload.get("narrated_by"):
+        found["narrated_by"] = str(payload["narrated_by"])
     return found
 
 

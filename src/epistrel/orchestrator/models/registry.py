@@ -278,6 +278,12 @@ class GenerationInputs(InputSchema):
     just_now: Annotated[list[str], C.WORKING_MEMORY] = Field(default_factory=list, max_length=64)
     """A structured character render's ``## Just now`` (#174): in a ``sequential`` turn, the
     verified beats the earlier primaries rendered, as the character perceived them."""
+    others_present: Annotated[list[str], C.SCENE] = Field(default_factory=list, max_length=64)
+    """A structured character render's ``## Others present`` (#176, FR-MULTI-9): the reactive
+    characters present, ``<name> (id <id>)``, whose brief visible reactions the render may
+    narrate in ``reactions``."""
+    interjections: Annotated[bool, C.CONSTRAINT] = False
+    """#176: whether the ``## Others present`` rule allows a brief interjection."""
     retrieved_memories: Annotated[list[str], C.RETRIEVED_MEMORIES] = Field(default_factory=list)
     """A structured render's ``## Retrieved``: #141's assembled context."""
     canon_facts: Annotated[list[str], C.CANON_FACTS] = Field(default_factory=list)

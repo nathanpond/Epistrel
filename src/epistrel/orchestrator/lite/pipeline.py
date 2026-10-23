@@ -96,7 +96,13 @@ from epistrel.core.context import RequestContext
 from epistrel.core.enums import OperationKind, StoryStatus
 from epistrel.core.erasure.index import index_records
 from epistrel.core.erasure.records import operation_record
-from epistrel.core.errors import ModuleOff, RevisionConflict, StoryArchived, TimelineChanged
+from epistrel.core.errors import (
+    InvalidRequest,
+    ModuleOff,
+    RevisionConflict,
+    StoryArchived,
+    TimelineChanged,
+)
 from epistrel.core.events import Operation
 from epistrel.core.history import turn_beats
 from epistrel.core.profiles.effective import ProfileVersionRef, StoryProfile
@@ -129,6 +135,7 @@ from epistrel.orchestrator.lite.prompt import assemble, model_params, prompt_has
 from epistrel.orchestrator.lite.schemas import (
     PIN_QUARANTINED,
     QUARANTINED_CONTEXT,
+    ROLE_OVERRIDES,
     SAFE_FALLBACK,
     TURN_OVERRIDES,
     BudgetOverride,
@@ -213,6 +220,24 @@ class TurnTiming:
         stages.observe("policy_check", self.policy_check_s)
 
 
+def refuse_role_overrides(request: Any) -> None:
+    """422 ``validation_error`` (``reason: per_character_only``): a request overriding the
+    turn's participation roles or interjections (#176) of a story that renders one combined
+    reply (a stored role is accepted and inert there)."""
+    for name in ROLE_OVERRIDES:
+        if getattr(request, name, None) is not None:
+            field = f"body.{name}"
+            message = f"{name} needs per-character renders (multi_character = per_character)"
+            raise InvalidRequest(
+                message,
+                {
+                    "field": field,
+                    "reason": "per_character_only",
+                    "errors": [{"field": field, "message": message, "type": "value_error"}],
+                },
+            )
+
+
 async def respond(
     db: AsyncEngine,
     models: ModelAccessLayer,
@@ -236,6 +261,7 @@ async def respond(
             "(multi_character = per_character)",
             {"story_id": story_id, "module": "multi_character"},
         )
+    refuse_role_overrides(request)
     if story.status == StoryStatus.ARCHIVED.value:
         raise StoryArchived(
             f"story {story_id} is archived; unarchive it to change it", {"story_id": story_id}

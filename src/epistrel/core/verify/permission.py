@@ -10,9 +10,20 @@ model or imports the Orchestrator.
 **Asserters** (``Asserter``): a character's render (``character``), a director/world pass
 (``director``), player input (``player``, whose actor is the player's own character; input for
 a character the platform plays is that character's render, FR-AUTH-3) and the author
-(``author``). M5's exceptions are not delivered: attributed reactive narration (``reactive``,
-FR-MULTI-9) is judged as its character's render and ``co_author`` player input (FR-RESP-11) as
-plain player input, so a claim either exception would admit is ``Denied``.
+(``author``). Attributed reactive narration (``reactive``, FR-MULTI-9; #176) names the narrating
+render's character and the ``reactor`` it narrates: see "The reactive exception" below.
+``co_author`` player input (FR-RESP-11) is not delivered yet and is judged as plain player input,
+so a claim that exception would admit is ``Denied``.
+
+**The reactive exception** (FR-MULTI-9, FR-VERIFY-11; #176). A claim of a reaction another render
+narrated (``Asserter("reactive", narrator, reactor=…)``) is the reactor's observable reaction:
+about the reactor (and anyone else only as its addressee, the narrator or the world), with a
+predicate of ``REACTIVE_PREDICATES`` (that the reactor spoke, or spoke to someone) or a presence
+the scene already holds (``present_at`` on a placed reactor) it is permitted with basis
+``reactive``; anything else about the reactor (its backstory, a placement change, a possession, a
+decision) is ``other_character_secret``, as it would be for the narrator's own render, and the
+player's character stays ``player_character``. The reactor's thoughts never reach this rule: a
+narrated thought is dropped before verification (``core.epistemic.roles``).
 
 **Ownership.** ``owner_of`` derives the subject's owner from ``entities.character_id`` and
 ``characters.is_player``: ``player_character``, ``modeled_character`` (an entity with a
@@ -138,6 +149,12 @@ class Basis(StrEnum):
     AUTHOR = "author"
     RESOLUTION = "resolution"
     IDENTITY = "identity"
+    REACTIVE = "reactive"
+    """#176 (FR-MULTI-9): a reactor's observable reaction another render narrated."""
+
+
+REACTIVE_PREDICATES: frozenset[str] = frozenset({"spoke", "spoke_to"})
+"""What reactive narration may establish about its reactor (#176): that it spoke (to someone)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,10 +164,14 @@ class Asserter:
 
     kind: AsserterKind
     character_id: str | None = None
+    reactor: str | None = None
+    """#176: the character a ``reactive`` asserter narrates (FR-MULTI-9)."""
 
     def __post_init__(self) -> None:
         if self.kind in ("character", "reactive", "player", "co_author") and not self.character_id:
             raise ValueError(f"a {self.kind} asserter names its character")
+        if self.kind == "reactive" and not self.reactor:
+            raise ValueError("a reactive asserter names the reactor it narrates")
 
     @property
     def provenance(self) -> RecordProvenance:
@@ -298,6 +319,8 @@ def permission(
         if modeled:
             return Denied(Reason.OTHER_CHARACTER_SECRET)
         return _texture(facts, Basis.WORLD)
+    if asserter.kind == "reactive" and asserter.reactor is not None:
+        return _reactive(claim, asserter, subject_owner, facts, modeled, name)
     own = asserter.character_id
     others = [e for e in modeled if e.character_id != own]
     mine = next((e for e in facts.entities.values() if e.character_id == own), None)
@@ -313,6 +336,30 @@ def permission(
     if arrival and subject_owner.character_id != own and not facts.allow_new_arrivals:
         return Denied(Reason.POLICY)
     return _texture(facts, Basis.OWN if subject_owner.character_id == own else Basis.TEXTURE)
+
+
+def _reactive(
+    claim: Proposition,
+    asserter: Asserter,
+    subject_owner: SubjectOwner,
+    facts: PermissionFacts,
+    modeled: Sequence[EntityInfo],
+    name: str | None,
+) -> Permission:
+    """The reactive exception (see the module docstring)."""
+    reactor = asserter.reactor
+    if any(e.is_player and e.character_id != reactor for e in modeled):
+        return Denied(Reason.PLAYER_CHARACTER)
+    if subject_owner.character_id != reactor:
+        # Not about the reactor: the narrator's own render's rules.
+        return permission(claim, Asserter("character", asserter.character_id), subject_owner, facts)
+    presence = name == "present_at" and facts.placed
+    if name not in REACTIVE_PREDICATES and not presence:
+        return Denied(Reason.OTHER_CHARACTER_SECRET)
+    others = [e for e in modeled if e.character_id not in (reactor, asserter.character_id)]
+    if others and name != "spoke_to":
+        return Denied(Reason.OTHER_CHARACTER_SECRET)
+    return _texture(facts, Basis.REACTIVE)
 
 
 def _texture(facts: PermissionFacts, basis: Basis) -> Permission:
@@ -394,11 +441,18 @@ async def facts_for(
     conn = lookup.conn
     predicate = registry.get(claim.predicate_id)
     ids = _argument_ids(claim)
-    if asserter is not None and asserter.character_id is not None:
-        ids.append(asserter.character_id)
+    own = [
+        c
+        for c in (
+            None if asserter is None else asserter.character_id,
+            None if asserter is None else asserter.reactor,
+        )
+        if c is not None
+    ]
+    ids += own
     known = await entity_infos(conn, story_id, ids)
-    if asserter is not None and asserter.character_id is not None:
-        known.update(await character_infos(conn, story_id, [asserter.character_id], known))
+    if own:
+        known.update(await character_infos(conn, story_id, own, known))
     locks = await lookup.canon_at(
         story_id,
         predicate=claim.predicate_id,

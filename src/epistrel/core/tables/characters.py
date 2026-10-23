@@ -42,6 +42,10 @@ character; FR-EPI-10) and the position it was modeled at (``modeled_turn`` … `
 ``core.membership.Position``'s columns; 0 for the genesis cast). The player is always ``major``
 (``ck_characters_player_major``).
 
+#176 adds ``participation_role`` (``primary``, ``reactive`` or ``silent``; default ``reactive``,
+FR-MULTI-7) and ``participation_fixed`` (a bound the engine never crosses on its own); the
+player's character has no role (ignored for it).
+
 #119 adds ``role_id`` (the scenario role a character of a story created from a scenario fills;
 ``NULL`` otherwise) and ``character_snapshots``: one row per catalog character a story was
 created with (FR-SCN-9, FR-CAT-3,9), keyed ``(story_id, character_id)``, holding the catalog id
@@ -123,6 +127,9 @@ characters = Table(
     Column("modeled_slot_k", SmallInteger, nullable=False, server_default=text("0")),
     Column("modeled_beat", SmallInteger, nullable=False, server_default=text("0")),
     Column("modeled_step", SmallInteger, nullable=False, server_default=text("0")),
+    # #176 (FR-MULTI-7): the character's participation role, a default or a fixed bound.
+    Column("participation_role", Text, nullable=False, server_default=text("'reactive'")),
+    Column("participation_fixed", Boolean, nullable=False, server_default=text("false")),
     CheckConstraint(f"true_age BETWEEN {TRUE_AGE_MIN} AND {TRUE_AGE_MAX}", name="true_age"),
     CheckConstraint(
         "true_age_source IN ('catalog', 'genesis', 'declared', 'repaired')",
@@ -132,6 +139,9 @@ characters = Table(
         "(persona_id IS NULL AND persona_snapshot IS NULL) OR is_player", name="persona_player"
     ),
     CheckConstraint("NOT is_player OR weight = 'major'", name="player_major"),
+    CheckConstraint(
+        "participation_role IN ('primary', 'reactive', 'silent')", name="participation_role"
+    ),
 )
 
 Index("uq_characters_story_name", characters.c.story_id, func.lower(characters.c.name), unique=True)

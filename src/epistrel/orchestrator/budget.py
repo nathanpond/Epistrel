@@ -77,13 +77,25 @@ COMPOSED = "composed"
 SALIENCE = "salience"
 DIRECTOR_ORDER = "director_order"
 """#174: the director's ordering of a sequential turn's primaries (one ``generation`` call)."""
+DIRECTOR_TIEBREAK = "director_tiebreak"
+"""#175: the director's judgment of a simultaneous turn's conflicting actions (one
+``generation`` call)."""
 ENTAILMENT = "entailment"
 FOLLOW_UP = "follow_up"
 TESTIMONY = "testimony"
 """#162: a salient witness's ``belief_adjudication`` call."""
 REPAIR = "repair"
 POLISH = "polish"
-OPTIONAL_PRIORITY = (SALIENCE, DIRECTOR_ORDER, ENTAILMENT, FOLLOW_UP, TESTIMONY, REPAIR, POLISH)
+OPTIONAL_PRIORITY = (
+    SALIENCE,
+    DIRECTOR_ORDER,
+    DIRECTOR_TIEBREAK,
+    ENTAILMENT,
+    FOLLOW_UP,
+    TESTIMONY,
+    REPAIR,
+    POLISH,
+)
 """Optional work, most important first: the pool is spent in this order (NFR-PERF-7 gives
 polish up first, then repairs, then testimony adjudication, then entailment)."""
 PURPOSE_KINDS = {
@@ -419,6 +431,7 @@ __all__ = [
     "COMPOSED",
     "DEFAULT_TURN_DEADLINE_S",
     "DIRECTOR_ORDER",
+    "DIRECTOR_TIEBREAK",
     "ENTAILMENT",
     "EXTRACTION",
     "FOLLOW_UP",

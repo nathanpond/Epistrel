@@ -32,11 +32,11 @@ per model tier are in [model-matrix.md](model-matrix.md).
 
 ### `generation`
 
-Writes the reply of a Lite turn from the story's prompt sections; in a structured story (#150) the typed beats of one character's or the narrator's render (a `response_schema`: constrained decoding or parse-validate-retry), the age repair, the composition of the turn's verified beats into its message (#152) and the director's ordering of a sequential turn's primaries (#174).
+Writes the reply of a Lite turn from the story's prompt sections; in a structured story (#150) the typed beats of one character's or the narrator's render (a `response_schema`: constrained decoding or parse-validate-retry), the age repair, the composition of the turn's verified beats into its message (#152), the director's ordering of a sequential turn's primaries (#174) and its judgment of a simultaneous turn's conflicting actions (#175).
 
 - **Hot path:** yes
 - **Default model:** the `default` row of `model_config`, unless the purpose has its own
-- **Template:** `lite_generation.j2`; variants: structured `structured_generation.j2`, narrator `narrator_generation.j2`, age_repair `age_repair.j2`, composition `composition.j2`, director_order `director_order.j2`
+- **Template:** `lite_generation.j2`; variants: structured `structured_generation.j2`, narrator `narrator_generation.j2`, age_repair `age_repair.j2`, composition `composition.j2`, director_order `director_order.j2`, director_tiebreak `director_tiebreak.j2`
 - **Capability floor:** structured output: not required; minimum context 8,192 tokens
 - **Returns:** free text
 
@@ -78,6 +78,12 @@ Writes the reply of a Lite turn from the story's prompt sections; in a structure
 | `director_candidates.id` | `character_definition` |
 | `director_candidates.name` | `character_definition` |
 | `director_candidates.card` | `character_definition` |
+| `tiebreak_conflicts.object` | `verified_beat` |
+| `tiebreak_conflicts.name` | `verified_beat` |
+| `tiebreak_conflicts.actions.character_id` | `verified_beat` |
+| `tiebreak_conflicts.actions.name` | `verified_beat` |
+| `tiebreak_conflicts.actions.kind` | `verified_beat` |
+| `tiebreak_conflicts.actions.text` | `verified_beat` |
 | `introductions.name` | `scene` |
 | `introductions.clue` | `scene` |
 | `composition_beats.index` | `verified_beat` |
@@ -384,6 +390,12 @@ Rewrites one beat of a structured render that contradicted canon or asserted wha
 | `director_candidates.id` | `character_definition` |
 | `director_candidates.name` | `character_definition` |
 | `director_candidates.card` | `character_definition` |
+| `tiebreak_conflicts.object` | `verified_beat` |
+| `tiebreak_conflicts.name` | `verified_beat` |
+| `tiebreak_conflicts.actions.character_id` | `verified_beat` |
+| `tiebreak_conflicts.actions.name` | `verified_beat` |
+| `tiebreak_conflicts.actions.kind` | `verified_beat` |
+| `tiebreak_conflicts.actions.text` | `verified_beat` |
 | `introductions.name` | `scene` |
 | `introductions.clue` | `scene` |
 | `composition_beats.index` | `verified_beat` |

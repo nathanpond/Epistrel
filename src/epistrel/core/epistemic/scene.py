@@ -6,7 +6,9 @@ beats committed, by beat), from authoritative state only, never from a consumer'
 
 - **placements**: #137's ``placement`` projection, the latest current row of each character's
   entity at a location written before the turn (``through`` the turn's start; valid at its
-  story-time, ``story_time_at``); a row the turn itself wrote is a move at its ``since_beat``;
+  story-time, ``story_time_at``); a row the turn itself wrote is a move at its ``since_beat``,
+  and a row the turn's own negated ``located_at`` closed with no new placement is an exit with no
+  destination (unplaced, ``None``) at the negation's beat (#175, carried from #161);
 - **the topology**: canon's current ``located_in`` (containment) and ``adjacent_to`` (adjacency,
   with its ``barrier`` qualifier, ``door_open`` when none is declared; the latest declaration of a
   pair is its barrier) facts, and **the channels**: current ``on_channel`` facts, each a
@@ -42,6 +44,7 @@ from epistrel.core.propositions.vocabulary import (
     ADJACENT_TO,
     BARRIERS,
     DEFAULT_BARRIER,
+    LOCATED_AT,
     LOCATED_IN,
     ON_CHANNEL,
 )
@@ -150,6 +153,29 @@ async def load_scene(
             )
     lookup = KeyedLookup(conn, read_set if read_set is not None else StructuredReadSet())
     position = (turn, 0)
+    # #175 (from #161): a character the turn's own negated ``located_at`` closed with no new
+    # placement left mid-turn with no destination: unplaced from the closing beat's next beat.
+    moved_to = {str(r["source_fact_id"]) for r in rows if r["since_turn"] == turn}
+    exits = {
+        str(r["closed_by_fact_id"]): by_entity[str(r["entity_id"])]
+        for r in rows
+        if r["closed_turn"] == turn
+        and not r["closed_slot"]
+        and r["closed_by_fact_id"] is not None
+        and str(r["closed_by_fact_id"]) not in moved_to
+    }
+    if exits:
+        entity_of = {c: e for e, c in by_entity.items()}
+        closers = await lookup.canon_at(
+            story_id,
+            predicate=LOCATED_AT,
+            subjects=sorted({entity_of[c] for c in exits.values() if c in entity_of}),
+            through_position=position,
+        )
+        for fact in sorted(closers, key=lambda f: (f.beat or 0, str(f.id))):
+            who = exits.get(str(fact.id))
+            if who is not None and fact.narrative_turn == turn:
+                moves[int(fact.beat or 0)].append((who, None))
 
     async def current_facts(predicate: str) -> list[Any]:
         found = await lookup.canon_at(

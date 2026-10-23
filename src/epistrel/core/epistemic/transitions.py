@@ -21,7 +21,9 @@ before anything is written:
   position 0, an author act) precedes everything;
 - ``staged_beat`` / ``render_step``: a verified staged beat earlier in the same turn (#174) or a
   verified earlier step of the same render (#168), reached through an ``AntecedentOracle``
-  (the default refuses both: nothing is verified outside a turn's staging);
+  (the default refuses both: nothing is verified outside a turn's staging); an oracle with a
+  ``refusal(ref)`` may refuse a staged beat outright with its reason (#175: a ``simultaneous``
+  turn's stage answers ``antecedent_unavailable_in_mode``, FR-MULTI-11);
 - ``resolution``: a thunk this operation resolved (``thunks.state = resolved`` and
   ``resolution_operation_id`` the writing operation), exempt from the order rule (FR-EPI-14 (d)).
 
@@ -400,6 +402,12 @@ async def _check_antecedent(
     if antecedent.kind in (AntecedentKind.STAGED_BEAT, AntecedentKind.RENDER_STEP):
         if str(ref.get("operation_id")) != op.operation_id:
             raise _invalid("other_operation", antecedent)
+        if antecedent.kind is AntecedentKind.STAGED_BEAT:
+            # #175: an oracle may refuse a staged beat outright (a simultaneous turn's stage).
+            refusal = getattr(oracle, "refusal", None)
+            reason = None if refusal is None else refusal(ref)
+            if reason is not None:
+                raise _invalid(str(reason), antecedent)
         staged = (
             oracle.staged_beat(ref)
             if antecedent.kind is AntecedentKind.STAGED_BEAT

@@ -210,10 +210,35 @@ class IdempotencySettings(BaseModel):
 TurnConcurrency = Literal["reject", "queue"]
 InteractionMode = Literal["sequential", "simultaneous"]
 """FR-MULTI-5 (#174): how a turn's primaries render, one after another seeing what the earlier
-ones did (``sequential``), or each against the turn's starting state (``simultaneous``, #175)."""
+ones did (``sequential``), or each against the turn's starting state (``simultaneous``, #175: its
+conflicting actions settled by the story's tie-break, FR-MULTI-8)."""
 SequenceOrder = Literal["request", "director"]
 """FR-MULTI-6 (#174): who orders a ``sequential`` turn's primaries."""
 DEFAULT_INTERACTION_MODE: InteractionMode = "sequential"
+TIE_BREAK_PATTERN = r"^(request_order|director|state:[a-z][a-z0-9_]{0,63})$"
+"""FR-MULTI-8 (#175): a ``simultaneous`` turn's tie-break, ``request_order`` (the earlier-named
+primary's action stands), ``director`` (one narrator call chooses) or ``state:<name>`` (a
+designated State such as initiative: M6's, accepted by the schema and refused 422 ``not_yet``
+until then, ``refuse_state_tie_break``)."""
+REQUEST_ORDER_TIE_BREAK = "request_order"
+STATE_TIE_BREAK_PREFIX = "state:"
+
+
+def refuse_state_tie_break(value: str | None, field: str) -> None:
+    """422 ``validation_error`` (``reason: not_yet``) for a ``state:<name>`` tie-break: the
+    designated-State tie-break is M6's (#175; FR-MULTI-8)."""
+    if value is not None and value.startswith(STATE_TIE_BREAK_PREFIX):
+        message = "a designated-State tie-break (state:<name>) is not delivered yet"
+        raise InvalidRequest(
+            message,
+            {
+                "field": field,
+                "reason": "not_yet",
+                "errors": [{"field": field, "message": message, "type": "value_error"}],
+            },
+        )
+
+
 TURN_QUEUE_MAX_MIN = 1
 TURN_QUEUE_MAX_LIMIT = 50
 DEFAULT_TURN_QUEUE_MAX = 5
@@ -338,15 +363,26 @@ class StorySettings(BaseModel):
     interaction_mode: Annotated[InteractionMode | None, PROSPECTIVE] = None
     """How a turn with several primaries renders them (FR-MULTI-5; #174): ``sequential`` (each
     later primary renders seeing the checked beats of those before it) or ``simultaneous``
-    (#175). ``None``: the scenario's setting when genesis kept it inactive (``inactive``,
-    capability ``multi_character``, #122), else ``sequential``. A request overrides it.
-    Prospective."""
+    (#175: every primary renders against the turn's starting state, seeing none of the others'
+    reactions, and conflicting actions are settled by ``simultaneous_tie_break``). ``None``:
+    the scenario's setting when genesis kept it inactive (``inactive``, capability
+    ``multi_character``, #122), else ``sequential``. A request overrides it. Prospective."""
 
     sequence_order: Annotated[SequenceOrder | None, PROSPECTIVE] = None
     """Who orders a ``sequential`` turn's primaries (FR-MULTI-6; #174): ``request`` (the
     request's ``render_character_ids`` order) or ``director`` (one optional narrator call;
     request order when it cannot be made). ``None``: ``request``. A request overrides it.
     Prospective."""
+
+    simultaneous_tie_break: Annotated[str | None, PROSPECTIVE] = Field(
+        default=None, pattern=TIE_BREAK_PATTERN
+    )
+    """How a ``simultaneous`` turn settles two primaries' conflicting actions on one object
+    (FR-MULTI-8; #175): ``request_order`` (the earlier-named primary's action stands),
+    ``director`` (one optional narrator call chooses the winner; request order when it cannot
+    be made) or ``state:<name>`` (a designated State; M6, refused 422 ``not_yet`` until then).
+    ``None``: ``request_order``. The loser's action is repaired in character as an attempt. A
+    request overrides it. Prospective."""
 
     @field_validator("default_output_viewpoint")
     @classmethod

@@ -49,7 +49,10 @@ the repairs to #151's rung 1).
 
 **A turn** (``route_turn``) routes its beats in order; a move a beat stages (its committed
 placement change, #137's ``placement.since_beat``) takes effect from the next beat, so "Bobby
-leaves" in beat 2 removes him from beat 3 while he still perceives beat 2 at the origin.
+leaves" in beat 2 removes him from beat 3 while he still perceives beat 2 at the origin; a move
+with no destination (a negated ``located_at``, "Bobby leaves") unplaces him (#175). A
+``simultaneous`` turn (``mode``, #175) is one moment: every beat routes against the starting
+placements, and its moves apply after the turn.
 
 **Envelopes** (``envelope_text``) are rendered deterministically per qualifier, never by a
 model: "<Speaker> whispers something to <Target>", "<Speaker> says something to <Target> in a
@@ -598,11 +601,15 @@ def _sound(
             )
 
 
+SEQUENTIAL, SIMULTANEOUS = "sequential", "simultaneous"
+
+
 def route_turn(
-    beats: Sequence[RouteBeat], scene: SceneState, level: Level
+    beats: Sequence[RouteBeat], scene: SceneState, level: Level, *, mode: str = SEQUENTIAL
 ) -> list[PerceptionResult]:
-    """Every beat of a turn routed in beat order, each beat's staged moves applied after it
-    (see the module docstring)."""
+    """Every beat of a turn routed in beat order, each beat's staged moves applied after it;
+    in a ``simultaneous`` turn every beat against the starting placements (see the module
+    docstring)."""
     results: list[PerceptionResult] = []
     current = scene
     for beat in sorted(beats, key=lambda b: b.beat):
@@ -612,7 +619,7 @@ def route_turn(
         results.append(
             PerceptionResult(beat, qualifiers, level, location, tuple(perceived), repairs)
         )
-        if beat.moves:
+        if beat.moves and mode != SIMULTANEOUS:
             current = current.moved(beat.moves)
     return results
 

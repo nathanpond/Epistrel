@@ -18,6 +18,8 @@ roster says, an independent statement of FR-TURN-2,9,13 holds:
 
 On Postgres: a ``respond`` whose ``scene_context.characters_present`` names an absent
 character and omits a present one writes the absent one nothing and the present one the beat.
+``__exit`` (#175): a character the turn unplaces mid-turn with no destination perceives nothing
+after his exit in a sequential turn, and everything in a simultaneous one (one moment).
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ from hypothesis import strategies as st
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core.epistemic import scene as scene_loader
 from epistrel.core.epistemic.perception import (
     CO_LOCATION,
     CONTENT,
@@ -41,9 +44,12 @@ from epistrel.core.epistemic.perception import (
     SceneState,
     pair,
     route_perception,
+    route_turn,
     validate_qualifiers,
 )
-from epistrel.core.propositions.vocabulary import BARRIERS
+from epistrel.core.propositions.model import Interval, Polarity, Proposition
+from epistrel.core.propositions.vocabulary import BARRIERS, LOCATED_AT
+from tests import canon_support
 from tests import perception_support as ps
 from tests.auth_support import auth_settings
 from tests.respond_support import body, respond, respond_client
@@ -210,3 +216,55 @@ async def test_perception_authority__roster(
         bobby = [m.text for m in await ps.memories_of(engine, story, ids["Bobby"])]
         assert "Ada says: The soup is ready." in bobby
         assert await ps.memories_of(engine, story, ids["Clara"]) == []
+
+
+@pytest.mark.integration
+@pytest.mark.part("M5", "FR-TURN-9,10; NFR-PRIV-3")
+async def test_perception_authority__exit(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    perception_delivered: None,
+) -> None:
+    """A mid-turn exit with no destination (#175, carried from #161): the turn's own negated
+    ``located_at`` closing Bobby's placement at beat 2 is a move to nowhere at beat 2
+    (``scene.load_scene``), so in a sequential turn routing unplaces him from beat 3 (he still
+    perceives his own exit) and he never hears what Cal says after he left; in a
+    ``simultaneous`` turn every beat routes against the starting placements, so he does.
+    Complement: a turn that closes nothing moves no one."""
+    async with respond_client(stub_settings, engine) as (client, _):
+        story, ids = await structured_story(client, "Cal", "Bobby")
+        study = await ps.place_entity(engine, story, "study")
+        await ps.put(engine, story, ids["Cal"], study)
+        placed = await ps.put(engine, story, ids["Bobby"], study)
+        async with engine.connect() as conn:
+            before, none = await scene_loader.load_scene(conn, story, 1)
+        assert none == {}
+        assert before.at(ids["Bobby"]) == study
+        left = await canon_support.supersede(
+            engine,
+            story,
+            placed.id,
+            Proposition(
+                subject_id=ids["Bobby"],
+                predicate_id=LOCATED_AT,
+                object_id=study,
+                valid_time=Interval.of(None, None),
+                polarity=Polarity.NEGATED,
+            ),
+            provenance="render",
+            beat=2,
+        )
+        turn = int(left.narrative_turn or 0)
+        async with engine.connect() as conn:
+            scene, moves = await scene_loader.load_scene(conn, story, turn)
+        assert scene.at(ids["Bobby"]) == study  # placed at the turn's start
+        assert moves == {2: ((ids["Bobby"], None),)}
+        beats = [
+            RouteBeat(kind="do", beat=2, actor=ids["Bobby"], moves=moves[2]),
+            RouteBeat(kind="say", beat=3, actor=ids["Cal"]),
+        ]
+        exit_, after = route_turn(beats, scene, CO_LOCATION)
+        assert exit_.of(ids["Bobby"]) is not None
+        assert after.of(ids["Bobby"]) is None
+        _, together = route_turn(beats, scene, CO_LOCATION, mode="simultaneous")
+        assert together.of(ids["Bobby"]) is not None

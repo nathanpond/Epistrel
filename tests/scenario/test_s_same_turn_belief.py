@@ -35,6 +35,10 @@ turn. Variant: in a world where the bridge is author-locked ``intact``, Bobby's 
 (``locked_canon``) and his beat is regenerated without it before Jenni renders: her prompt never
 holds the rejected version and she forms no belief from it (no antecedent). Variant: a turn
 abandoned because Jenni's render fails leaves no belief, no transition and no beat of it.
+
+``__simultaneous`` (#175; FR-EPI-14, FR-MULTI-11): the same exchange in ``simultaneous`` mode.
+Jenni cannot cite Bobby's same-turn beat: it is not in her context, no acceptance forms at
+staging, and a ``staged_beat`` antecedent is refused (``antecedent_unavailable_in_mode``).
 """
 
 from __future__ import annotations
@@ -48,9 +52,14 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
 from epistrel.core.enums import OperationKind
+from epistrel.core.epistemic.errors import AntecedentInvalid
+from epistrel.core.epistemic.stage import StagedBeat, TurnStage
+from epistrel.core.epistemic.transitions import Antecedent, Kind
+from epistrel.core.membership import Position
 from epistrel.core.propositions import registry, store
 from epistrel.core.propositions.model import Interval, Proposition
 from tests import multi_support as ms
+from tests import partition_support as ps_partitions
 from tests import perception_support as ps
 from tests import testimony_support as ts
 from tests.auth_support import auth_settings
@@ -581,3 +590,76 @@ async def test_s_same_turn_belief__beats(
             "SELECT id FROM events WHERE story_id = :s AND type LIKE 'beat_%'",
             s=world.story_id,
         )
+
+
+@pytest.mark.part("M5", "FR-EPI-14; FR-MULTI-11")
+async def test_s_same_turn_belief__simultaneous(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+    multi_delivered: None,
+) -> None:
+    """The same exchange in ``simultaneous`` mode (#175): Jenni renders against the turn's
+    starting state, so Bobby's same-turn beat is not in her prompt and she forms no acceptance
+    from it at staging; whatever she comes to believe from it at the commit cites the beat's
+    event (``record``), never ``staged_beat``. A ``staged_beat`` antecedent under a simultaneous
+    stage is refused with ``antecedent_unavailable_in_mode`` and nothing is written."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        world = await _riverbank(client, engine)
+        stub.reset()
+        ms.renders_for(
+            stub, "Bobby", ms.render(beat("say", COLLAPSED, intent="sincere", propositions=[SEEN]))
+        )
+        ms.renders_for(
+            stub, "Jenni", ms.render(beat("say", GONE, intent="sincere", propositions=[SEEN]))
+        )
+        stub.script("salience_detection", [_salient(2)])
+        response = await respond(
+            client, world.story_id, {**_sequential(world), "interaction_mode": "simultaneous"}
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["interaction_mode"] == "simultaneous"
+        (prompt,) = ms.render_prompts(stub, "Jenni")
+        assert "## Just now" not in prompt
+        assert COLLAPSED not in prompt
+        report = await turn_report(engine, world.story_id)
+        assert report["multi"]["accepted"] == 0
+        cited = await _jenni_on_bridge(engine, world)
+        assert all(t.antecedent_kind != "staged_beat" for t in cited)
+
+        # The guard itself: a simultaneous stage refuses every staged beat.
+        stage = TurnStage("op", 1, 0, mode="simultaneous")
+        stage.open_render(world.bobby, 2)
+        stage.stage(StagedBeat(beat=2, kind="say", character_id=world.bobby, text=COLLAPSED))
+        assert stage.refusal({"beat": 2}) == "antecedent_unavailable_in_mode"
+        assert stage.antecedents_for(world.jenni) == []
+        async with engine.connect() as conn:
+            condition = (await registry.load(conn, world.story_id)).named("condition")
+        assert condition is not None
+        before = await scalar(
+            engine, "SELECT count(*) FROM belief_transitions WHERE story_id = :s", s=world.story_id
+        )
+        with pytest.raises(AntecedentInvalid, match="antecedent_unavailable_in_mode"):
+            await ps_partitions.transit(
+                engine,
+                world.story_id,
+                world.jenni,
+                Proposition(
+                    subject_id=world.bridge,
+                    predicate_id=condition.id,
+                    object_id=world.collapsed,
+                    valid_time=ALWAYS,
+                ),
+                cause=Kind.TESTIMONY,
+                antecedent=lambda op: Antecedent.staged_beat(
+                    op.operation_id, op.turn_variant or 0, 2
+                ),
+                position=lambda op: Position(op.narrative_turn or 0, op.turn_variant or 0, 0, 3, 1),
+                source=world.bobby,
+                oracle=stage,
+            )
+        after = await scalar(
+            engine, "SELECT count(*) FROM belief_transitions WHERE story_id = :s", s=world.story_id
+        )
+        assert after == before

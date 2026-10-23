@@ -231,7 +231,8 @@ async def respond(
     if any(getattr(request, k) is not None for k in TURN_OVERRIDES):
         # #174: a Lite story renders one combined reply; there is no mode or order to override.
         raise ModuleOff(
-            "interaction_mode and sequence_order need per-character renders "
+            "interaction_mode, sequence_order and simultaneous_tie_break need per-character "
+            "renders "
             "(multi_character = per_character)",
             {"story_id": story_id, "module": "multi_character"},
         )

@@ -1,0 +1,57 @@
+{#- The director's tie-break over a simultaneous turn's conflicting actions (FR-MULTI-8; #175).
+
+Under ``simultaneous_tie_break = director`` a turn whose primaries acted on one object at once asks
+the narrator once who got there first. The ``system`` block holds the rating guidance (always
+first, FR-RATE-4), the custom instructions, the scenario text, the director's notes (the
+narrator's context alone, FR-SCN-11), the scene, the last beats as the narrator perceives them
+(``think`` excluded), each contested object with the conflicting ``say``/``do`` actions only, and
+the tie-break contract. The ``user`` block is the player input. The answer is the call's
+``response_schema`` (``{adjudications: [{object, winner}]}``): one winner per object, among the
+characters who acted on it. -#}
+{% macro line(entry) -%}
+{% if entry.text %}{{ entry.text }}{% else %}{{ entry.name }}:{% if entry.say %} "{{ entry.say }}"{% endif %}{% if entry.do %} *{{ entry.do }}*{% endif %}{% endif %}
+{%- endmacro %}
+{% block system %}
+{% if rating_guidance %}
+## Content rating guidance
+{{ rating_guidance }}
+
+{% endif %}
+{% if custom_instructions %}
+## Custom instructions
+{{ custom_instructions }}
+
+{% endif %}
+{% if scenario_text %}
+{{ scenario_text }}
+
+{% endif %}
+{% if director_notes %}
+{{ director_notes }}
+
+{% endif %}
+{% if scene %}
+## Scene
+{{ scene }}
+
+{% endif %}
+{% if working_memory %}
+## What has happened
+{% for beat in working_memory %}
+- {{ beat }}
+{% endfor %}
+
+{% endif %}
+## Who got there first
+You are the narrator. In this moment several characters acted at once on the same thing, and only one of them can succeed. For each object, decide whose action succeeds; the others' become attempts that fail.
+{% for conflict in tiebreak_conflicts %}
+- {{ conflict.name or conflict.object }} (object {{ conflict.object }}):
+{% for action in conflict.actions %}
+  - {{ action.name }} (id {{ action.character_id }}) {{ action.kind }}: {{ action.text }}
+{% endfor %}
+{% endfor %}
+Answer with `adjudications`: for each object, `{object, winner}`, the winner being the id of one of the characters who acted on it.
+{% endblock %}
+{% block user %}
+{{ player_input.name }}:{% if player_input.say %} "{{ player_input.say }}"{% endif %}{% if player_input.do %} *{{ player_input.do }}*{% endif %}
+{% endblock %}

@@ -1289,6 +1289,8 @@ def perceived_window(
     level: perception.Level,
     names: Mapping[str, str],
     places: Mapping[str, str],
+    *,
+    mode: str = perception.SEQUENTIAL,
 ) -> list[WorkingBeat]:
     """What ``character_id`` perceived of each turn's beats (``turns``: each turn's scene at its
     start and its beats in order), oldest first: every beat re-routed at ``level`` by
@@ -1312,6 +1314,7 @@ def perceived_window(
             ],
             scene,
             level,
+            mode=mode,
         )
         for result in routed:
             source = result.beat.source
@@ -1331,6 +1334,26 @@ def perceived_window(
             else:
                 found.append(source)
     return found
+
+
+async def _turn_mode(conn: AsyncConnection, story_id: str, turn: int) -> str:
+    """The interaction mode turn ``turn``'s active message recorded (#175; ``sequential`` when
+    it names none)."""
+    e, o = events, operations
+    found = await conn.scalar(
+        select(e.c.payload["interaction_mode"].astext)
+        .select_from(e.join(o, o.c.operation_id == e.c.operation_id))
+        .where(
+            e.c.story_id == story_id,
+            e.c.narrative_turn == turn,
+            e.c.slot_k.is_(None),
+            e.c.type == "message_rendered",
+            o.c.status == OperationStatus.COMMITTED.value,
+            active_operation(o),
+        )
+        .limit(1)
+    )
+    return str(found) if found else perception.SEQUENTIAL
 
 
 async def _routed_memory(
@@ -1390,8 +1413,12 @@ async def _routed_memory(
             committed = moves.get(int(item.beat.beat or 0))
             if last and committed:
                 beats[index] = replace(item, moves=tuple(committed))
+        mode = perception.SEQUENTIAL
+        if any(h.moves for h in beats):
+            # #175: a simultaneous turn's moves apply after it (its message names the mode).
+            mode = await _turn_mode(conn, story_id, turn)
         window = [
-            *perceived_window([(scene, beats)], character_id, level, names, places),
+            *perceived_window([(scene, beats)], character_id, level, names, places, mode=mode),
             *window,
         ]
         if len(window) >= n:

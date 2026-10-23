@@ -274,6 +274,12 @@ class StepOracle:
     verified: frozenset[int]
     stage: transitions.AntecedentOracle | None = None
 
+    def refusal(self, ref: Mapping[str, Any]) -> str | None:
+        """The stage's refusal of a staged beat (#175: ``simultaneous``), if any."""
+        found = getattr(self.stage, "refusal", None)
+        reason = None if found is None else found(ref)
+        return None if reason is None else str(reason)
+
     def staged_beat(self, ref: Mapping[str, Any]) -> transitions.StagedRecord | None:
         return None if self.stage is None else self.stage.staged_beat(ref)
 

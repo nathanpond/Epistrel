@@ -201,6 +201,9 @@ class TurnBeat:
     character); ``None`` when it declared none."""
     observed: str = "fact"
     """#169: what a hidden ``latent``'s noticers perceived: ``fact`` or ``signal``."""
+    attempt: bool = False
+    """#175: a ``simultaneous`` turn's losing action, rewritten as an attempt that failed (rung
+    2): its effect dropped, and the detectors never read it again."""
 
     @property
     def declared(self) -> tuple[AssertedClaim, ...]:

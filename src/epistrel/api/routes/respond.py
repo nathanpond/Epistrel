@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal, cast
 
 from fastapi import APIRouter, Response
 from pydantic import BaseModel, Field
@@ -132,6 +132,17 @@ class WarningBody(BaseModel):
     character_id: str | None = Field(default=None, exclude_if=lambda v: v is None)
 
 
+class AdjudicationBody(BaseModel):
+    """One settled conflict of a ``simultaneous`` turn (#175, FR-MULTI-8): the contested
+    object's entity id, the character whose action stood, the one whose action became an
+    attempt, and the rule: ``request_order`` or ``director``."""
+
+    object: str
+    winner: str
+    loser: str
+    rule: Literal["request_order", "director", "state"]
+
+
 class RespondResponse(MutationResponse):
     """One finished turn: the reply, the turn's beats for the resolved viewpoint, its position,
     the story's new revision, the model calls it made, where its time went, and the
@@ -165,6 +176,14 @@ class RespondResponse(MutationResponse):
     order: list[str] = Field(default_factory=list, exclude_if=lambda o: not o)
     """A structured turn with several primaries (#174): their ids in the order they rendered
     (the request's, or the director's under ``sequence_order = director``); absent otherwise."""
+    interaction_mode: Literal["sequential", "simultaneous"] | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
+    """A structured turn under per-character renders (#175): the interaction mode it ran in,
+    as requested; absent otherwise."""
+    adjudications: list[AdjudicationBody] = Field(default_factory=list, exclude_if=lambda a: not a)
+    """A ``simultaneous`` turn's settled conflicts (#175, FR-MULTI-8): who acted on which
+    object, whose action stood and by which rule; absent when nothing conflicted."""
 
     @classmethod
     def of(cls, result: RespondResult) -> RespondResponse:
@@ -199,6 +218,8 @@ class RespondResponse(MutationResponse):
                 for w in result.warnings
             ],
             order=list(result.order),
+            interaction_mode=cast(Any, result.interaction_mode),
+            adjudications=[AdjudicationBody(**a) for a in result.adjudications],
             budget=(
                 None
                 if result.budget is None

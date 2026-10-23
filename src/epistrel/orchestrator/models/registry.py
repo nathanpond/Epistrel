@@ -193,6 +193,25 @@ class DirectorCandidate(InputSchema):
     card: Annotated[str, C.CHARACTER_DEFINITION] = Field(default="", max_length=2_000)
 
 
+class TiebreakBeat(InputSchema):
+    """One conflicting action the director judges (#175, FR-MULTI-8): the acting primary's id
+    and name, and its checked ``say``/``do`` text (never a ``think`` or ``latent``'s)."""
+
+    character_id: Annotated[str, C.VERIFIED_BEAT]
+    name: Annotated[str, C.VERIFIED_BEAT]
+    kind: Annotated[Literal["say", "do"], C.VERIFIED_BEAT] = "do"
+    text: Annotated[str, C.VERIFIED_BEAT] = Field(default="", max_length=2_000)
+
+
+class TiebreakConflict(InputSchema):
+    """One object two or more primaries of a simultaneous turn acted on (#175): its id, its
+    name and the conflicting actions, in request order."""
+
+    object: Annotated[str, C.VERIFIED_BEAT]
+    name: Annotated[str, C.VERIFIED_BEAT] = ""
+    actions: list[TiebreakBeat] = Field(default_factory=list, max_length=6)
+
+
 class ComposeBeat(InputSchema):
     """One verified beat a composition (#152) is given: its position, kind, actor's name
     (empty for narration) and text."""
@@ -269,6 +288,9 @@ class GenerationInputs(InputSchema):
     director_candidates: list[DirectorCandidate] = Field(default_factory=list, max_length=6)
     """The director's ordering call (#174, FR-MULTI-6; ``director_order.j2``): the primaries of a
     ``sequential`` turn it orders."""
+    tiebreak_conflicts: list[TiebreakConflict] = Field(default_factory=list, max_length=12)
+    """The director's tie-break (#175, FR-MULTI-8; ``director_tiebreak.j2``): the objects a
+    ``simultaneous`` turn's primaries acted on at once, each with the conflicting actions."""
     introductions: list[AgeClue] = Field(default_factory=list)
     """The age repair (#150): each character a render introduced without an age, with the
     render's clue."""
@@ -979,8 +1001,9 @@ GENERATION = Purpose(
         "Writes the reply of a Lite turn from the story's prompt sections; in a structured "
         "story (#150) the typed beats of one character's or the narrator's render (a "
         "`response_schema`: constrained decoding or parse-validate-retry), the age repair, "
-        "the composition of the turn's verified beats into its message (#152) and the director's "
-        "ordering of a sequential turn's primaries (#174)."
+        "the composition of the turn's verified beats into its message (#152), the director's "
+        "ordering of a sequential turn's primaries (#174) and its judgment of a simultaneous "
+        "turn's conflicting actions (#175)."
     ),
     default_model_key=DEFAULT_MODEL_KEY,
     capability_floor=CapabilityFloor(structured_output=StructuredOutput.NONE),
@@ -998,14 +1021,17 @@ GENERATION = Purpose(
             "age_repair": "age_repair.j2",
             "composition": "composition.j2",
             "director_order": "director_order.j2",
+            "director_tiebreak": "director_tiebreak.j2",
         }
     ),
 )
 """``generation``: the Lite reply (``lite_generation.j2``) and, under ``structured`` (#150), the
 character render (``structured_generation.j2``), the narrator render
 (``narrator_generation.j2``), the age repair (``age_repair.j2``), the composition of the
-turn's verified beats into its message (``composition.j2``, #152) and the director's ordering of
-a sequential turn's primaries (``director_order.j2``, #174). The structured path needs
+turn's verified beats into its message (``composition.j2``, #152), the director's ordering of
+a sequential turn's primaries (``director_order.j2``, #174) and its tie-break over a
+simultaneous turn's conflicting actions (``director_tiebreak.j2``, #175). The structured path
+needs
 ``json_schema`` or ``parse_validate_retry`` (its beats are a ``response_schema``)."""
 
 GUARDRAIL_CHECK = Purpose(
@@ -1490,6 +1516,8 @@ __all__ = [
     "SuggestedLocation",
     "SuggestionElement",
     "SuggestionPolicy",
+    "TiebreakBeat",
+    "TiebreakConflict",
     "TranscriptLine",
     "declared_paths",
     "field_categories",

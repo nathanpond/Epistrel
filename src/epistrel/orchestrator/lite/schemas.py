@@ -26,6 +26,7 @@ from epistrel.core.settings_schema import (
     MAX_TURN_DEADLINE_S,
     MIN_CALLS_PER_TURN,
     MIN_DEADLINE_S,
+    TIE_BREAK_PATTERN,
     GenerationSettings,
     InteractionMode,
     SequenceOrder,
@@ -115,7 +116,8 @@ class RespondRequest(BaseModel):
     - ``budget``: this turn's ``max_calls``/``deadline_s``, within the story's (#69).
     - ``interaction_mode``/``sequence_order``: a structured story with per-character renders
       (#174): several ``render_character_ids`` render ``sequential``ly, in request order or the
-      director's.
+      director's, or ``simultaneous``ly (#175), their conflicts settled by
+      ``simultaneous_tie_break``.
     """
 
     model_config = ConfigDict(
@@ -150,9 +152,13 @@ class RespondRequest(BaseModel):
     sequence_order: SequenceOrder | None = None
     """#174: who orders this turn's primaries over the story's setting (``request`` or
     ``director``); needs per-character renders (409 ``module_off`` otherwise)."""
+    simultaneous_tie_break: str | None = Field(default=None, pattern=TIE_BREAK_PATTERN)
+    """#175: how this ``simultaneous`` turn settles conflicting actions, over the story's
+    setting (``request_order``, ``director``; ``state:<name>`` is 422 ``not_yet`` until M6);
+    needs per-character renders (409 ``module_off`` otherwise)."""
 
 
-TURN_OVERRIDES = ("interaction_mode", "sequence_order")
+TURN_OVERRIDES = ("interaction_mode", "sequence_order", "simultaneous_tie_break")
 """#174's per-request overrides of a story's multi-character settings."""
 
 
@@ -320,6 +326,11 @@ class RespondResult:
     order: list[str] = field(default_factory=list)
     """#174: a structured turn with several primaries, their ids in the order they rendered
     (the request's, or the director's); empty otherwise."""
+    interaction_mode: str | None = None
+    """#175: a structured turn under per-character renders, the mode it ran in (``sequential``
+    or ``simultaneous``, as requested); ``None`` otherwise."""
+    adjudications: list[dict[str, Any]] = field(default_factory=list)
+    """#175: a simultaneous turn's settled conflicts, ``{object, winner, loser, rule}``."""
 
 
 @dataclass(frozen=True, slots=True)

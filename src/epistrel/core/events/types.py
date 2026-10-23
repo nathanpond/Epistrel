@@ -217,6 +217,10 @@ class MessageRendered(EventPayload):
     """A scenario's opening narration (turn 1 of a story created from a scenario, #119): the
     characters of the roles present when the story opens (stored; the Lite pipeline does not
     use it)."""
+    interaction_mode: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    """#175: ``simultaneous`` for a structured turn whose primaries rendered against one
+    starting state (a history read routes its beats against the starting placements); absent
+    otherwise."""
 
 
 @register("think", category=EventCategory.NARRATIVE_STATE)

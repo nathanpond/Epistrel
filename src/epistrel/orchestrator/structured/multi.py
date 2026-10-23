@@ -8,10 +8,13 @@ setting genesis kept inactive (``stories.settings.inactive``, capability ``multi
 #122), else ``sequential`` (``mode_of``). Omitted, the turn keeps #150's single first-by-ordinal
 primary (the roster never widens a default). Under ``combined`` (every M4 profile) two or more
 named are still 422 ``validation_error`` (``one_render_character``), and a request that
-overrides ``interaction_mode`` or ``sequence_order`` is 409 ``module_off``. The player's own
-character is never a primary of a multi-primary turn (422 ``player_cannot_render``);
-``simultaneous`` with several primaries is #175's (422 ``simultaneous_not_delivered`` until
-then).
+overrides ``interaction_mode``, ``sequence_order`` or ``simultaneous_tie_break`` is 409
+``module_off``. The player's own character is never a primary of a multi-primary turn (422
+``player_cannot_render``). ``simultaneous`` (#175) renders every primary against the turn's
+starting state (``orchestrator.structured.simultaneous``); its tie-break (``tie_break_of``) is the
+request's ``simultaneous_tie_break``, else the story's, else ``request_order``; a request naming
+``state:<name>`` is 422 ``not_yet`` (M6), and a stored one falls back to request order with
+``tie_break_state_not_yet``.
 
 **Order** (FR-MULTI-6, ``order_of``): request order, or under ``sequence_order = director`` the
 narrator's one ordering call (``director_order``: ``generation`` with ``director_order.j2``, its
@@ -30,8 +33,9 @@ only staged beats, never a rejected or regenerated-away version, and never anoth
 primary in order); a later render that fails fails the whole turn with nothing recorded.
 
 ``turn_report.multi`` = ``{mode, order, order_source, staged, accepted, regenerated_beats,
-deferred, not_present}``; ``epistrel_multi_turns_total{mode}`` and
-``epistrel_director_order_total{outcome}`` count them. Log lines carry ids and counts only
+deferred, not_present}`` (#175: a simultaneous turn adds ``tie_break`` and ``adjudications``);
+``epistrel_multi_turns_total{mode}`` and ``epistrel_director_order_total{outcome}`` count
+them. Log lines carry ids and counts only
 (invariant 3).
 """
 
@@ -47,7 +51,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from epistrel.core.errors import InvalidRequest, ModuleOff
 from epistrel.core.profiles.capabilities import module_on
 from epistrel.core.profiles.schema import ProfileSettings
-from epistrel.core.settings_schema import DEFAULT_INTERACTION_MODE, StorySettings
+from epistrel.core.settings_schema import (
+    DEFAULT_INTERACTION_MODE,
+    REQUEST_ORDER_TIE_BREAK,
+    STATE_TIE_BREAK_PREFIX,
+    StorySettings,
+    refuse_state_tie_break,
+)
 from epistrel.core.turns import CastEntry
 from epistrel.observability.metrics import DIRECTOR_ORDER as DIRECTOR_ORDER_METRIC
 from epistrel.observability.metrics import MULTI_TURNS
@@ -75,6 +85,10 @@ DIRECTOR_RECENT_BEATS = 5
 """How many of the latest beats the director sees."""
 DIRECTOR_VARIANT = "director_order"
 INACTIVE = "inactive"
+OVERRIDES = ("interaction_mode", "sequence_order", "simultaneous_tie_break")
+"""The request fields that override a story's multi-character settings."""
+TIE_BREAK_STATE_NOT_YET = "tie_break_state_not_yet"
+"""Warning: the story's stored ``state:<name>`` tie-break is M6's, so request order stood."""
 
 DIRECTOR_ORDER_SKIPPED = "director_order_skipped"
 """Degradation: the director's ordering call could not be made or answered nothing usable, so
@@ -121,6 +135,17 @@ def order_of(story: StorySettings, request: Any = None) -> str:
     return str(story.sequence_order or REQUEST)
 
 
+def tie_break_of(story: StorySettings, request: Any = None) -> tuple[str, str | None]:
+    """A ``simultaneous`` turn's tie-break (FR-MULTI-8): ``request_order`` or ``director``, and
+    the warning when a stored ``state:<name>`` (M6) fell back to request order."""
+    found = getattr(request, "simultaneous_tie_break", None) or story.simultaneous_tie_break
+    if found is None:
+        return REQUEST_ORDER_TIE_BREAK, None
+    if str(found).startswith(STATE_TIE_BREAK_PREFIX):
+        return REQUEST_ORDER_TIE_BREAK, TIE_BREAK_STATE_NOT_YET
+    return str(found), None
+
+
 def _invalid(message: str, reason: str) -> InvalidRequest:
     return InvalidRequest(
         message,
@@ -137,12 +162,10 @@ def _invalid(message: str, reason: str) -> InvalidRequest:
 def refuse_override(story_id: str, request: Any) -> None:
     """409 ``module_off``: a request overriding the interaction mode or the order of a story
     whose profile renders one combined reply."""
-    if (
-        getattr(request, "interaction_mode", None) is not None
-        or getattr(request, "sequence_order", None) is not None
-    ):
+    if any(getattr(request, k, None) is not None for k in OVERRIDES):
         raise ModuleOff(
-            "interaction_mode and sequence_order need per-character renders "
+            "interaction_mode, sequence_order and simultaneous_tie_break need per-character "
+            "renders "
             "(multi_character = per_character)",
             {"story_id": story_id, "module": MODULE},
         )
@@ -161,16 +184,14 @@ def check(
         if len(named) > 1:
             raise _invalid("a structured turn renders one character", "one_render_character")
         return
+    refuse_state_tie_break(
+        getattr(request, "simultaneous_tie_break", None), "body.simultaneous_tie_break"
+    )
     if len(named) <= 1:
         return
     if len(named) > MAX_PRIMARIES:
         raise _invalid(
             f"a structured turn renders at most {MAX_PRIMARIES} characters", "too_many_primaries"
-        )
-    if mode_of(story, request) != SEQUENTIAL:
-        raise _invalid(
-            "simultaneous turns with several primaries are not delivered yet",
-            "simultaneous_not_delivered",
         )
     if any(c.is_player for c in named):
         raise _invalid("the player's character is never rendered", "player_cannot_render")
@@ -297,8 +318,23 @@ class MultiReport:
     regenerated_beats: list[int] = field(default_factory=list)
     deferred: list[str] = field(default_factory=list)
     not_present: list[str] = field(default_factory=list)
+    tie_break: str | None = None
+    """#175: the tie-break a simultaneous turn settled its conflicts by."""
+    tie_break_warning: str | None = None
+    """#175: ``tie_break_state_not_yet`` when a stored ``state:<name>`` fell back."""
+    adjudications: list[dict[str, Any]] = field(default_factory=list)
+    """#175: ``{object, winner, loser, rule}`` per settled conflict."""
 
     def report(self) -> dict[str, Any]:
+        if self.mode == SIMULTANEOUS:
+            return {
+                **self._report(),
+                "tie_break": self.tie_break or REQUEST_ORDER_TIE_BREAK,
+                "adjudications": list(self.adjudications),
+            }
+        return self._report()
+
+    def _report(self) -> dict[str, Any]:
         return {
             "mode": self.mode,
             "order": list(self.order),
@@ -326,6 +362,7 @@ __all__ = [
     "REQUEST",
     "SEQUENTIAL",
     "SIMULTANEOUS",
+    "TIE_BREAK_STATE_NOT_YET",
     "DirectorOrder",
     "MultiReport",
     "Ordered",
@@ -336,5 +373,6 @@ __all__ = [
     "order_of",
     "per_character",
     "refuse_override",
+    "tie_break_of",
     "validated_order",
 ]

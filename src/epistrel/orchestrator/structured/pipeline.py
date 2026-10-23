@@ -323,6 +323,7 @@ from epistrel.orchestrator.policies.store import guard_context
 from epistrel.orchestrator.repair.ladder import Recheck, RepairLadder, RepairResult
 from epistrel.orchestrator.structured import multi, planner
 from epistrel.orchestrator.structured import prompt as prompts
+from epistrel.orchestrator.structured import simultaneous as simultaneous_rules
 from epistrel.orchestrator.structured import steps as render_steps
 from epistrel.orchestrator.structured.eval_hooks import StageClock, eval_hooks
 from epistrel.orchestrator.structured.render import (
@@ -2742,6 +2743,7 @@ async def route_committed(
     routed: list[perception.PerceptionResult] | None = None,
     joined: Sequence[tuple[str, str]] = (),
     participants: Mapping[int, tuple[str, ...]] | None = None,
+    mode: str = perception.SEQUENTIAL,
 ) -> dict[str, Any]:
     """Route the committed turn (#161), in its commit step after canon (so the moves the turn
     committed are in #137's placement projection): every beat through
@@ -2750,7 +2752,8 @@ async def route_committed(
     per perceiver). A ``latent`` that declared nothing normalizable keeps its shared
     ``objective`` memory. Answers ``turn_report.perception``: the level, the beats routed and
     every qualifier repaired (before staging, and any the commit-time scene no longer
-    supports), each counted in ``epistrel_perception_repairs_total``."""
+    supports), each counted in ``epistrel_perception_repairs_total``. ``mode`` (#175): a
+    ``simultaneous`` turn's beats all route against the starting placements."""
     story_id = op.story_id
     assert story_id is not None  # noqa: S101 - a turn belongs to a story
     state, moves = await scene_loader.load_scene(conn, story_id, read.turn)
@@ -2763,6 +2766,7 @@ async def route_committed(
         ),
         state,
         level,
+        mode=mode,
     )
     await perception.deliver(conn, op, results)
     if routed is not None:
@@ -3244,6 +3248,34 @@ def _restaged(before: Sequence[Record], checked: Checked) -> list[Record]:
     ]
 
 
+def _simultaneous_of(multis: Sequence[multi.MultiReport]) -> str | None:
+    """``simultaneous`` for a turn whose several primaries rendered simultaneously (#175)."""
+    if multis and multis[0].mode == multi.SIMULTANEOUS and len(multis[0].order) > 1:
+        return multi.SIMULTANEOUS
+    return None
+
+
+def _starting_overlay(rendered: Rendered, checked: Checked) -> list[Record]:
+    """#175: the same-turn overlay of a ``simultaneous`` turn's starting state, from its first
+    primary's check: the player's input's and the narration's permitted claims, never the
+    primary's own (a later primary is verified alone)."""
+    own = {b.beat for b in rendered.beats if not b.narrator}
+    mine = {f"staged:{r.claim_id or r.beat}" for r in checked.requests if r.beat in own}
+    return [r for r in checked.staged if r.proposition_id not in mine]
+
+
+async def _entity_names(conn: AsyncConnection, story_id: str, ids: Sequence[str]) -> dict[str, str]:
+    """The canonical names of the entities ``ids``."""
+    if not ids:
+        return {}
+    found = await conn.execute(
+        select(entities.c.id, entities.c.canonical_name).where(
+            entities.c.story_id == story_id, entities.c.id.in_(list(ids))
+        )
+    )
+    return {str(r.id): str(r.canonical_name) for r in found}
+
+
 def _merge_checked(into: Checked, extra: Checked) -> Checked:
     """Lay a later primary's check over the turn's so far (its beats after the earlier ones)."""
     into.beats += extra.beats
@@ -3446,6 +3478,81 @@ async def play(
                                 testimony_rules.witness_position(read_k.turn, 0, b.beat),
                             )
 
+    async def adjudicate_conflicts(
+        read: TurnRead,
+        checked: Checked,
+        order: Sequence[CastEntry],
+        report_multi: multi.MultiReport,
+        turn_stage: TurnStage,
+    ) -> None:
+        """#175 (FR-MULTI-8; ``orchestrator.structured.simultaneous``): the simultaneous turn's
+        conflicts, detected over its verified effects, settled by the story's tie-break; each
+        losing beat repaired in character as an attempt (its effect dropped) and restaged."""
+        rule, warning = multi.tie_break_of(story.settings, request)
+        report_multi.tie_break = rule
+        report_multi.tie_break_warning = warning
+        async with db.connect() as conn:
+            registry = await load_registry(conn, story_id)
+            conflicts = simultaneous_rules.conflicts_of(
+                checked.checked,
+                checked.beats,
+                [p.id for p in order],
+                actor_id=read.actor.id,
+                registry=registry,
+            )
+            object_names = await _entity_names(conn, story_id, [c.object_id for c in conflicts])
+        if not conflicts:
+            return
+        winners: dict[str, str] | None = None
+        if rule == simultaneous_rules.DIRECTOR:
+            judged = [c for c in conflicts if not any(e.player for e in c.effects)]
+            if judged:
+                winners, cause = await simultaneous_rules.director_winners(
+                    models,
+                    judged,
+                    {b.beat: b for b in checked.beats},
+                    names=read.names,
+                    object_names=object_names,
+                    actor=read.actor,
+                    say=say,
+                    do=do,
+                    guidance=read.inputs.guidance,
+                    instructions=read.inputs.instructions,
+                    scenario_text=read.inputs.scenario_text,
+                    director_notes=read.director,
+                    scene=read.scene,
+                    recent=read.narrator_memory,
+                    budget=budget,
+                    params=ModelParams(
+                        temperature=read.resolved.temperature, top_p=read.resolved.top_p
+                    ),
+                )
+                if cause is not None:
+                    checked.degradation.append(
+                        (simultaneous_rules.DIRECTOR_TIEBREAK_SKIPPED, cause)
+                    )
+        settled = simultaneous_rules.settle(conflicts, winners)
+        report_multi.adjudications = [a.report() for a in settled]
+        losing = simultaneous_rules.losing_claims(checked.checked, settled)
+        by_beat = {b.beat: b for b in checked.beats}
+        for adjudication in sorted(
+            {a.loser_beat: a for a in settled}.values(), key=lambda a: a.loser_beat
+        ):
+            beat = by_beat.get(adjudication.loser_beat)
+            if beat is None:
+                continue
+            result = simultaneous_rules.attempt_repair(
+                beat,
+                losing.get(beat.beat, []),
+                actor=read.names.get(adjudication.loser, "Someone"),
+                obj=object_names.get(adjudication.object_id, "it"),
+            )
+            _merge_repair(checked, result)
+            staged = turn_stage.get(beat.beat)
+            if staged is not None and result.beat is not None:
+                turn_stage.replace(beat.beat, replace(staged, text=result.beat.text, verified=()))
+        log.debug("simultaneous turn: %d conflicts, %d adjudicated", len(conflicts), len(settled))
+
     async def begin(conn: AsyncConnection) -> TurnRead:
         clock.reset()
         reading = time.perf_counter()
@@ -3630,10 +3737,20 @@ async def play(
             planned.extend(ordered.degradation)
         by_id = {p.id: p for p in primaries}
         order = [by_id[i] for i in ordered.order]
-        turn_stage = TurnStage(op.operation_id, read.turn)
+        mode = multi.mode_of(story.settings, request)
+        # #175 (FR-MULTI-5,8): several primaries in ``simultaneous`` mode render against the
+        # turn's starting state, verified alone, then adjudicated.
+        simultaneous = len(order) > 1 and mode == multi.SIMULTANEOUS
+        turn_stage = TurnStage(
+            op.operation_id,
+            read.turn,
+            mode=multi.SIMULTANEOUS if simultaneous else multi.SEQUENTIAL,
+        )
         staging[:] = [turn_stage]
+        turn_narration: list[TurnBeat] = []
+        """#175: the narrator's narration, part of the starting state every primary sees."""
         report_multi = multi.MultiReport(
-            mode=multi.mode_of(story.settings, request),
+            mode=mode,
             order=[p.id for p in order],
             order_source=ordered.source,
             deferred=list(plan.deferred) if plan is not None else [],
@@ -3707,11 +3824,18 @@ async def play(
                     sketches.update(found_sketches)
                     renders.append((narr, made))
                     narration = [b for b in made if b.kind == NARRATION]
+                    turn_narration[:] = narration
                     next_beat += len(made)
                 assembling = time.perf_counter()
                 # #170 (NFR-PRIV-4): the character's knowledge sections, built structurally;
-                # #174: a later primary's with the staged beats before it.
-                knowing = await context_for(read_k, narration, None if first else turn_stage)
+                # #174: a later primary's with the staged beats before it; #175: in a
+                # simultaneous turn every primary's from the starting state (the input and the
+                # narration), with no staged beat of this turn.
+                knowing = await context_for(
+                    read_k,
+                    turn_narration if simultaneous and not first else narration,
+                    None if first or simultaneous else turn_stage,
+                )
                 if knowing.retrieval is not None:
                     retrievals.append(knowing.retrieval)
                 sections = replace(base, constraints=constraints)
@@ -3837,6 +3961,9 @@ async def play(
         renders_done: list[Rendered] = []
         outcomes: list[Gated] = []
         merged: Checked | None = None
+        starting: list[Record] = []
+        """#175: the same-turn overlay a simultaneous primary is verified against: the input's
+        and the narration's claims only, never another primary's."""
         next_beat = 2
         read_k = read
         try:
@@ -3870,7 +3997,9 @@ async def play(
                     budget=budget,
                     backstop=not replaced,
                     clock=clock,
-                    staged_before=() if merged is None else merged.staged,
+                    staged_before=()
+                    if merged is None
+                    else (starting if simultaneous else merged.staged),
                     first_claim=0 if merged is None else len(merged.checked),
                     introductions=None if merged is None else merged.introductions,
                     release_extraction=last,
@@ -3901,7 +4030,13 @@ async def play(
                         ),
                     )
                     checked_k.staged = _restaged(() if merged is None else merged.staged, checked_k)
-                    await stage_render(turn_stage, read_k, checked_k, order[k + 1 :])
+                    if simultaneous and k == 0:
+                        starting[:] = _starting_overlay(rendered_k, checked_k)
+                    # #175: a simultaneous primary's beats are staged for adjudication only; no
+                    # later primary perceives them or forms a belief from them.
+                    await stage_render(
+                        turn_stage, read_k, checked_k, () if simultaneous else order[k + 1 :]
+                    )
                 merged = checked_k if merged is None else _merge_checked(merged, checked_k)
                 renders_done.append(rendered_k)
                 outcomes.append(outcome_k)
@@ -3976,6 +4111,9 @@ async def play(
             ),
         )
         clock.add("repair", time.perf_counter() - repairing)
+        if simultaneous:
+            # #175 (FR-MULTI-8): detect → tie-break → repair the losers as attempts.
+            await adjudicate_conflicts(read, checked, order, report_multi, turn_stage)
         if sequential:
             report_multi.staged = len(turn_stage.beats)
             report_multi.accepted = turn_stage.report()["accepted"]
@@ -4119,6 +4257,8 @@ async def play(
                 finish_reason=rendered.finish_reason,
                 fallback_used=outcome.fallback_used,
                 composed=True,
+                # #175: a simultaneous turn's beats route against the starting placements.
+                interaction_mode=_simultaneous_of(multis),
             ),
             provenance=Provenance.ENGINE,
             character_id=None,
@@ -4308,6 +4448,7 @@ async def play(
                     routed=results,
                     joined=joined,
                     participants=participants,
+                    mode=_simultaneous_of(multis) or perception.SEQUENTIAL,
                 )
                 # #162: every witness's speech act, and the testimony its salience calls for;
                 # #164: the other witnesses' exposures, and the lazy resolutions it needs.
@@ -4684,6 +4825,9 @@ async def play(
         )
         fields["degradation"] = [s.step for s in steps]
         fields["degradation_details"] = steps
+        if multis and multi.per_character(settings):
+            # #175: the mode the turn ran in, as requested (one primary included).
+            fields["interaction_mode"] = multis[0].mode
         if multis and len(multis[0].order) > 1:
             # #174: the primaries in the order they rendered; one not in the scene is named.
             fields["order"] = list(multis[0].order)
@@ -4693,7 +4837,14 @@ async def play(
                     TurnWarning(kind=multi.PRIMARY_NOT_PRESENT, character_id=c)
                     for c in multis[0].not_present
                 ),
+                *(
+                    [TurnWarning(kind=multis[0].tie_break_warning)]
+                    if multis[0].tie_break_warning
+                    else []
+                ),
             ]
+            # #175: a simultaneous turn's settled conflicts.
+            fields["adjudications"] = list(multis[0].adjudications)
         if regenerating is not None:
             return RegenerateResult(**fields, previous_variant=regenerating.variant)
         return RespondResult(**fields)

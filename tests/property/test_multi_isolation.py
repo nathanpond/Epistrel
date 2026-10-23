@@ -20,6 +20,10 @@ staged. For every primary A, against every other primary B:
 
 Complement: the narrator's omniscient context (everything observable, nothing private) does
 contain every primary's public beats, and still none of their thoughts. 300 examples in CI.
+
+``__simultaneous`` (#175) runs the property in ``simultaneous`` mode: each primary's context is
+the turn's starting state (no ``## Just now``), so it holds none of another primary's beats at
+all, and no staged beat is an antecedent (the stage refuses every ``staged_beat``).
 """
 
 from __future__ import annotations
@@ -34,7 +38,7 @@ from hypothesis import strategies as st
 
 from epistrel.core.epistemic import perception
 from epistrel.core.epistemic.context import CharacterContext, compose
-from epistrel.core.epistemic.stage import StagedBeat, TurnStage
+from epistrel.core.epistemic.stage import SEQUENTIAL, SIMULTANEOUS, StagedBeat, TurnStage
 from epistrel.core.propositions.model import Interval, Proposition
 from epistrel.core.retrieval.filtered import _seal
 
@@ -107,7 +111,7 @@ def _claim(n: int) -> Proposition:
     )
 
 
-def _play(turn: Turn) -> None:
+def _play(turn: Turn, mode: str = SEQUENTIAL) -> None:
     scene = perception.SceneState(
         location=turn.placements[turn.cast[0]],
         placements=turn.placements,
@@ -115,7 +119,7 @@ def _play(turn: Turn) -> None:
         places=frozenset(PLACES),
     )
     names = {c: c for c in turn.cast}
-    stage = TurnStage("op", 1, 0)
+    stage = TurnStage("op", 1, 0, mode=mode)
     owner_of: dict[int, str] = {}
     private_tokens: dict[str, set[str]] = {c: set() for c in turn.cast}
     public_tokens: dict[str, set[str]] = {c: set() for c in turn.cast}
@@ -125,8 +129,13 @@ def _play(turn: Turn) -> None:
     for index, character in enumerate(turn.cast):
         stage.open_render(character, number)
         viewpoint = f"character:{character}"
-        window = stage.perceived_for(
-            character, level=turn.level, scene=scene, names=names, places=PLACE_NAMES
+        # #175: a simultaneous primary's context is the starting state (no staged beat).
+        window = (
+            []
+            if mode == SIMULTANEOUS
+            else stage.perceived_for(
+                character, level=turn.level, scene=scene, names=names, places=PLACE_NAMES
+            )
         )
         context = compose(
             character,
@@ -149,6 +158,16 @@ def _play(turn: Turn) -> None:
             # By text: none of the other's secrets.
             leaked = sorted(t for t in private_tokens[other] if t in text)
             assert not leaked, (character, other, leaked)
+        if mode == SIMULTANEOUS:
+            # Nothing of this turn is anyone's antecedent (FR-MULTI-11).
+            assert stage.antecedents_for(character) == []
+            assert all(
+                stage.staged_beat({"operation_id": "op", "variant": 0, "beat": n}) is None
+                for n in owner_of
+            )
+            assert not {
+                t for o in turn.cast if o != character for t in public_tokens[o] if t in text
+            }
         for beat in stage.antecedents_for(character):
             assert owner_of[beat.beat] != character
             assert turn.cast.index(owner_of[beat.beat]) < index
@@ -184,6 +203,20 @@ def _play(turn: Turn) -> None:
 def test_multi_isolation(turn: Turn) -> None:
     """See the module docstring."""
     _play(turn)
+
+
+@pytest.mark.part("M5", "FR-MULTI-1")
+@settings(
+    max_examples=EXAMPLES,
+    deadline=None,
+    suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large],
+)
+@given(turn=turns())
+def test_multi_isolation__simultaneous(turn: Turn) -> None:
+    """The same property in ``simultaneous`` mode (#175): every primary's context is the
+    turn's starting state, so it holds none of another primary's beats, private or public, and
+    no staged beat is an antecedent."""
+    _play(turn, SIMULTANEOUS)
 
 
 @pytest.mark.part("M5", "FR-MULTI-1")

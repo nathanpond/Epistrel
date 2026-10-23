@@ -21,8 +21,8 @@ render scripted by its name in the prompt (``tests.multi_support.renders_for``):
   (``director_order``) and its order is used; an answer naming someone else falls back to the
   request's order with ``director_order_skipped``;
 - a story whose scenario's ``interaction_mode`` genesis kept inactive (a pre-M5 story) reads it
-  from ``stories.settings.inactive``: ``simultaneous`` there refuses several primaries (#175's
-  mode) until a request overrides it to ``sequential``;
+  from ``stories.settings.inactive``: ``simultaneous`` there renders the primaries against one
+  starting state (#175's mode) until a request overrides it to ``sequential``;
 - with partitions off (shared knowledge) the turn still renders both, and Jenni's context holds
   Bobby's ``say`` but not his ``think`` or ``latent``;
 - under ``combined`` renders two named primaries are 422 and an override is 409 ``module_off``.
@@ -271,14 +271,20 @@ async def test_s_sequential__modes(
                 ),
                 {"s": room.story_id},
             )
-        refused = await respond(client, room.story_id, _ask(room))
-        assert refused.status_code == 422, refused.text
-        assert refused.json()["error"]["details"]["reason"] == "simultaneous_not_delivered"
+        # #175: the inactive simultaneous mode is read and the turn runs in it.
+        stub.reset()
+        ms.renders_for(stub, "Bobby", ms.render(beat("say", QUESTION, intent="sincere")))
+        ms.renders_for(stub, "Jenni", ms.render(beat("say", ANSWER, intent="sincere")))
+        played = await _play(client, room)
+        assert played["interaction_mode"] == "simultaneous"
+        (jenni_prompt,) = ms.render_prompts(stub, "Jenni")
+        assert QUESTION not in jenni_prompt
         stub.reset()
         ms.renders_for(stub, "Bobby", ms.render(beat("say", QUESTION, intent="sincere")))
         ms.renders_for(stub, "Jenni", ms.render(beat("say", ANSWER, intent="sincere")))
         played = await _play(client, room, interaction_mode="sequential")
         assert played["order"] == [room.bobby, room.jenni]
+        assert played["interaction_mode"] == "sequential"
 
         # Shared knowledge (partitions off): multi-render still works; the later primary's
         # context is not viewpoint-filtered beyond the other's think and latent.

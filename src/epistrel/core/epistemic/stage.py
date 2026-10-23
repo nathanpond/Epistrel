@@ -27,6 +27,12 @@ What the stage answers:
   testimony default, formed once at staging), which joins that primary's belief record set for
   its own render's verification (``BeliefSource.stage``, ``replay.stage_path``).
 
+**Simultaneous** (#175, ``mode``): every primary renders against the turn's starting state, so a
+``simultaneous`` stage holds the verified beats for adjudication and the commit only:
+``antecedents_for`` answers nothing, and a ``staged_beat`` antecedent is refused with
+``antecedent_unavailable_in_mode`` (``refusal``; FR-MULTI-11: no cross-character same-turn
+antecedents exist).
+
 ``replace(index, beat)`` swaps a staged beat for its regenerated version: the acceptances formed
 from the old one go, so a later render never rests on the rejected version. Pure; no I/O.
 """
@@ -46,6 +52,9 @@ from epistrel.core.propositions.model import Proposition
 
 OBSERVABLE = frozenset({"say", "do", "narration"})
 """The kinds a later render may perceive (and rest a belief on)."""
+SEQUENTIAL, SIMULTANEOUS = "sequential", "simultaneous"
+UNAVAILABLE_IN_MODE = "antecedent_unavailable_in_mode"
+"""#175: a ``staged_beat`` antecedent in a ``simultaneous`` turn (FR-MULTI-11)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,10 +99,14 @@ class TurnStage:
     """The turn's staged beats and the acceptances formed from them (see the module docstring).
     Mutable until the commit."""
 
-    def __init__(self, operation_id: str, turn: int, variant: int | None = None) -> None:
+    def __init__(
+        self, operation_id: str, turn: int, variant: int | None = None, mode: str = SEQUENTIAL
+    ) -> None:
         self.operation_id = operation_id
         self.turn = turn
         self.variant = variant
+        self.mode = mode
+        """``sequential`` or ``simultaneous`` (#175: no staged beat is anyone's antecedent)."""
         self._beats: dict[int, StagedBeat] = {}
         self._renders: dict[str, int] = {}
         """Each primary's first beat (its render's place in the order)."""
@@ -170,7 +183,10 @@ class TurnStage:
         return self._renders.get(character_id)
 
     def antecedents_for(self, character_id: str) -> list[StagedBeat]:
-        """The staged beats ``character_id``'s render may rest a belief on (FR-EPI-14 (b))."""
+        """The staged beats ``character_id``'s render may rest a belief on (FR-EPI-14 (b)); none
+        in a ``simultaneous`` turn (FR-MULTI-11)."""
+        if self.mode == SIMULTANEOUS:
+            return []
         first = self._renders.get(character_id)
         return [
             b
@@ -197,7 +213,16 @@ class TurnStage:
     def position_of(self, beat: StagedBeat) -> Position:
         return Position(self.turn, int(self.variant or 0), 0, beat.beat, beat.step)
 
+    def refusal(self, ref: Mapping[str, Any]) -> str | None:
+        """Why a ``staged_beat`` antecedent is refused before the oracle is asked: in a
+        ``simultaneous`` turn no character's same-turn output is available to another
+        (FR-MULTI-11), ``antecedent_unavailable_in_mode``."""
+        del ref
+        return UNAVAILABLE_IN_MODE if self.mode == SIMULTANEOUS else None
+
     def staged_beat(self, ref: Mapping[str, Any]) -> StagedRecord | None:
+        if self.mode == SIMULTANEOUS:
+            return None
         if self.discarded or str(ref.get("operation_id")) != self.operation_id:
             return None
         if self.variant is not None and int(ref.get("variant", -1)) != self.variant:
@@ -225,6 +250,14 @@ class Oracles:
 
     found: tuple[Any, ...]
 
+    def refusal(self, ref: Mapping[str, Any]) -> str | None:
+        for oracle in self.found:
+            found = getattr(oracle, "refusal", None)
+            reason = None if found is None else found(ref)
+            if reason is not None:
+                return str(reason)
+        return None
+
     def staged_beat(self, ref: Mapping[str, Any]) -> StagedRecord | None:
         for oracle in self.found:
             answer = oracle.staged_beat(ref)
@@ -240,4 +273,13 @@ class Oracles:
         return None
 
 
-__all__ = ["OBSERVABLE", "Acceptance", "Oracles", "StagedBeat", "TurnStage"]
+__all__ = [
+    "OBSERVABLE",
+    "SEQUENTIAL",
+    "SIMULTANEOUS",
+    "UNAVAILABLE_IN_MODE",
+    "Acceptance",
+    "Oracles",
+    "StagedBeat",
+    "TurnStage",
+]

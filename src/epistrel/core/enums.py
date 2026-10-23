@@ -342,6 +342,9 @@ PG_ENUM_TYPES: dict[str, type[StrEnum]] = {
     "antecedent_kind": AntecedentKind,
     "belief_hold_state": BeliefHoldState,
     "character_weight": CharacterWeight,
+    "exposure_kind": ExposureKind,
+    "exposure_fidelity": ExposureFidelity,
+    "exposure_state": ExposureState,
 }
 """Postgres enum type name (``<schema>.<name>`` outside ``public``) → the Python enum whose
 values it holds (creation order)."""

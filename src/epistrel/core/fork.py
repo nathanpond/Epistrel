@@ -62,7 +62,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 from sqlalchemy import (
     Column,
     Table,
@@ -233,6 +233,15 @@ class ForkRequest(BaseModel):
     at_turn: StrictInt | None = Field(
         default=None, ge=0, description="The last turn to copy (0: only the story's setup)."
     )
+    slot: StrictInt | None = Field(
+        default=None,
+        ge=0,
+        description="The boundary `N⁺k`: copy `at_turn`'s inter-turn slots 1..k too (default: "
+        "none, the boundary `N`). A beat or a step is never a boundary (422 "
+        "`turn_boundary_required`).",
+    )
+
+    _boundary = model_validator(mode="before")(timeline.turn_boundary)
     variant_chain: ChainSelector | None = Field(
         default=None,
         description='The chain to copy, `{turn, variant}` or `"turn:variant"` (default the '
@@ -379,7 +388,7 @@ async def _copy(
         await conn.exec_driver_sql(statement)
     await _map(conn, [(source, fork_id)], "story")
 
-    copied = await _select_operations(conn, source, selection, through)
+    copied = await _select_operations(conn, source, selection, through, request.slot)
     for operation_id, membership in copied:
         moved.setdefault(membership, []).append(operation_id)
     await _map(conn, _remapped([op for op, _ in copied]), "operation")
@@ -501,13 +510,21 @@ async def _map(conn: AsyncConnection, pairs: Sequence[tuple[str, str]], kind: st
         )
 
 
-def _through(turn: Any, slot: Any, through: int) -> Any:
-    """Positioned at or before ``through``, without its inter-turn slots (#65's view)."""
-    return or_(turn < through, and_(turn == through, slot.is_(None)))
+def _through(turn: Any, slot: Any, through: int, at_slot: int | None = None) -> Any:
+    """Positioned at or before the boundary ``through`` (``N``: without its inter-turn slots,
+    #65's view) or ``through⁺at_slot`` (its slots 1..k too; #168)."""
+    kept = slot.is_(None)
+    if at_slot:
+        kept = or_(kept, slot <= at_slot)
+    return or_(turn < through, and_(turn == through, kept))
 
 
 async def _select_operations(
-    conn: AsyncConnection, source: str, selection: ChainSelection | None, through: int
+    conn: AsyncConnection,
+    source: str,
+    selection: ChainSelection | None,
+    through: int,
+    slot: int | None = None,
 ) -> list[tuple[str, Membership]]:
     """The operations the fork copies, with their membership in the source."""
     o = operations.alias("o")
@@ -534,7 +551,7 @@ async def _select_operations(
                     o.c.narrative_turn.is_(None),
                     o.c.membership == Membership.ACTIVE.value,
                 ),
-                and_(_through(o.c.narrative_turn, o.c.slot_k, through), visible),
+                and_(_through(o.c.narrative_turn, o.c.slot_k, through, slot), visible),
             ),
             copyable,
             not_(skipped),

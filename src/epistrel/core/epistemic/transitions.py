@@ -307,7 +307,7 @@ KIND_ANTECEDENTS: Mapping[Kind, Mapping[AntecedentKind, frozenset[str]]] = {
         _A.STAGED_BEAT: frozenset(),
         _A.RENDER_STEP: frozenset(),
     },
-    Kind.INFERENCE: {_A.RECORD: frozenset({"beliefs"})},
+    Kind.INFERENCE: {_A.RECORD: frozenset({"beliefs"}), _A.RENDER_STEP: frozenset()},
     Kind.DISCOVERY: {_A.RECORD: frozenset({"facts", "events"}), _A.STAGED_BEAT: frozenset()},
     Kind.CORRECTION: {
         _A.RECORD: _ALL_RECORDS,
@@ -323,7 +323,8 @@ KIND_ANTECEDENTS: Mapping[Kind, Mapping[AntecedentKind, frozenset[str]]] = {
     Kind.AUTHOR: {_A.RECORD: frozenset({"events"})},
     Kind.RESOLUTION: {_A.RESOLUTION: frozenset()},
 }
-"""Which antecedents each kind admits (for a ``record``, which tables)."""
+"""Which antecedents each kind admits (for a ``record``, which tables). #168: an ``inference``
+may rest on a verified earlier ``believe`` step of the same render (a chain of reasoning)."""
 
 NESTED_ANTECEDENTS: Mapping[Kind, Mapping[AntecedentKind, frozenset[str]]] = {
     Kind.INFERENCE: {

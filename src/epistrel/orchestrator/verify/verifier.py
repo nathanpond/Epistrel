@@ -120,6 +120,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from epistrel.core.canon.canonize import CanonRequest, anchor_for, visibility_of
 from epistrel.core.config_changes import read_section
 from epistrel.core.membership import Position as NarrativePosition
+from epistrel.core.membership import step_of
 from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.propositions.model import (
@@ -312,6 +313,9 @@ class VerifyResult:
     attribution: AttributionCheck | None = None
     """#167: the claim attributes its proposition to someone ("Bobby thinks …"): its belief
     relation over the speaker's nested beliefs and its objective relation (a label only)."""
+    self_attested: bool = False
+    """#168: the claim asserts what a rejected ``believe`` step of the render concluded, in the
+    beats of the first ``act`` citing it (FR-TURN-12): self-attestation, a hallucination."""
 
     @property
     def reason(self) -> VerdictReason | None:
@@ -337,8 +341,9 @@ class VerifyResult:
 
     @property
     def hallucinated(self) -> bool:
-        """#166: the claim has no legitimate basis (``hallucination_repaired``)."""
-        return self.speech is not None and self.speech.decision.hallucinated
+        """#166: the claim has no legitimate basis (``hallucination_repaired``); #168: or it
+        asserts a self-attested belief."""
+        return self.self_attested or (self.speech is not None and self.speech.decision.hallucinated)
 
     @property
     def stands(self) -> bool:
@@ -831,6 +836,9 @@ class BeliefSource:
         self.variant = variant
         self.remember = remember
         self._registry: Registry | None = None
+        self.staged: dict[str, list[tuple[Record, NarrativePosition]]] = {}
+        """#168: each speaker's verified ``believe`` steps of the turn (not yet committed), at
+        their step positions: the belief record set a later beat is checked against."""
 
     async def registry(self) -> Registry:
         if self._registry is None:
@@ -841,12 +849,16 @@ class BeliefSource:
         if position is None:
             return None
         turn, beat = position
-        return NarrativePosition(turn, self.variant, 0, beat, 0)
+        return NarrativePosition(turn, self.variant, 0, beat, step_of(beat))
+
+    def stage(self, believer: str, claim: Proposition, at: NarrativePosition, ref: str) -> None:
+        """#168: ``believer`` holds ``claim`` from ``at`` (a verified render step, ``ref``)."""
+        self.staged.setdefault(believer, []).append((Record(claim, f"step:{ref}"), at))
 
     async def check(
         self, claim: Proposition, believer: str, at: NarrativePosition
     ) -> Verdict | None:
-        return await rules.verify(
+        found = await rules.verify(
             self.conn,
             self.read_set,
             self.story_id,
@@ -857,6 +869,21 @@ class BeliefSource:
             viewpoint=f"{CHARACTER_VIEWPOINT_PREFIX}{believer}",
             remember=self.remember,
         )
+        staged = [r for r, held in self.staged.get(believer, ()) if held.before(at)]
+        if found is None or not staged:
+            return found
+        if found.kind not in (VerdictKind.NOVEL, VerdictKind.UNCERTAIN):
+            return found
+        verdict = rules.check(
+            claim,
+            staged,
+            registry=await self.registry(),
+            holder=Holder.belief(believer),
+            position=at,
+        )
+        if verdict.kind in (VerdictKind.SUPPORTED, VerdictKind.CONTRADICTED):
+            return verdict
+        return found
 
     async def hidden(
         self, claim: Proposition, believer: str, at: NarrativePosition
@@ -1063,7 +1090,8 @@ class BeliefSource:
     async def _of_path(self, path: Any, believer: str) -> Licence | None:
         from epistrel.core.epistemic import exposure
 
-        if path.kind in ("player", "transition"):
+        if path.kind in ("player", "transition", "staged"):
+            # #168: a verified render step of this turn is written by the step itself.
             return Licence(path.kind, ref_id=path.ref_id)
         if path.kind == "canon":
             return Licence("canon", "discovery", "facts", path.ref_id, ref_id=path.ref_id)

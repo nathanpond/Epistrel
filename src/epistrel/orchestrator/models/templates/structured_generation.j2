@@ -6,7 +6,8 @@ character's definition (never its true age), its deflection style, the pinned me
 text pins), the rolling summary when the profile keeps one, then ``## Scene`` (the place and
 who is present, #137), ``## What you remember`` (its working memory, FR-MEM-5), ``## Retrieved``
 (#141's assembled context) and ``## Canon`` (the facts retrieval found that it may know), then
-the beat contract, the requested length as a target in words (#464) and, on a guardrail
+``## How to change your mind`` (the step contract and the ``think`` cite instruction, when the
+character keeps its own beliefs; #168, ``steps_contract.j2``), the beat contract, the requested length as a target in words (#464) and, on a guardrail
 regeneration, one constraint line per violated output
 policy (#68). The director's notes never appear here (FR-SCN-11: the narrator's alone). The
 ``user`` block is the player input, the final ``user`` message. The beats come back as the
@@ -77,6 +78,7 @@ When {{ character.name }} refuses or changes the subject: {{ character.deflectio
 {% endfor %}
 
 {% endif %}
+{% include "steps_contract.j2" %}
 ## Your part
 You render {{ voiced_characters | join(", ") }} only; never speak, think or act for {{ player_input.name }}.
 Answer with typed beats in order: `say` (speech, with its intent: sincere, deceptive, joking or unspecified), `think` (a private thought), `do` (an observable action) and `latent` (a fact of the world that is true but not shown, with who may know it).

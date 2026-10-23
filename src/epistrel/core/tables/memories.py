@@ -9,7 +9,8 @@ One row is one memory record:
 - **where it came from**: ``provenance`` (#133's ``record_provenance``), ``trust_tier``
   (``memory_trust_tier``, derived mechanically from the provenance), the derived-record
   columns of ``core.membership`` (the producing operation, ``source_event_ids``, the narrative
-  position ``narrative_turn``/``turn_variant`` plus ``beat``, and the timeline membership with
+  position ``narrative_turn``/``turn_variant`` plus ``beat`` and ``step`` (#168, migration
+  0075: the beat's declared causal step, FR-STORE-31), and the timeline membership with
   ``membership_tx``), ``proposition_ids`` (the propositions a memory wraps: a beat's), and
   ``character_id`` (the beat's actor, ``NULL`` for narration).
 - **who may know it**: ``holder_character_id`` (whose memory it is; ``NULL``: shared, as every
@@ -221,6 +222,7 @@ memories = Table(
     Column("importance_at", Integer, nullable=True),
     *derived_columns(),
     Column("beat", SmallInteger, nullable=True),
+    Column("step", SmallInteger, nullable=False, server_default=text("0")),
     Column("proposition_ids", ARRAY(ulid_type()), nullable=False, server_default=text("'{}'")),
     Column("event_type", Text, nullable=True),
     Column("participants", ARRAY(ulid_type()), nullable=False, server_default=text("'{}'")),

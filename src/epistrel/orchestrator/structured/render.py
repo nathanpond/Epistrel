@@ -25,7 +25,15 @@ wrong and is retried within the deployment's ``structured_retry_budget``:
 - ``propositions`` are #140's text sketches (subject, relation, object, time, negated, and the
   predicate's qualifiers it names, #151);
 - ``introduces`` names each new character a beat introduces (``{name, age?, age_range?,
-  clue?}``): an age is 0 to 150, inside the range when one is given.
+  clue?}``): an age is 0 to 150, inside the range when one is given;
+- ``steps`` (#168, FR-TURN-12; a character's render only, at most ``render.max_beats``) declares
+  the render's causal order when its beliefs change within it: ``{index, kind: observe |
+  believe | act, cites, proposition?, confidence?}``, indices ``1..n`` in order; an ``observe``
+  and a ``believe`` name a proposition, an ``observe`` cites nothing, a step cites only existing
+  steps other than itself (a ``believe`` never an ``act``) and records (ids), without cycles; a
+  ``say`` or ``do`` names the ``act`` step that owns it (``step``); a ``think``'s record
+  citations are some step's. Order (a later cite) is verified, not structural
+  (``orchestrator.structured.steps``).
 
 The stub answers a render schema with one ``think``, one ``say`` (intent ``sincere``) and one
 ``do`` for the rendering character (one ``narration`` for the narrator), their texts from the
@@ -188,11 +196,13 @@ _SAY_ONLY: dict[str, frozenset[str]] = {
     "partial_text": _ACTS,
     "location": frozenset({"narration"}),
     "cites": frozenset({"think"}),
+    "step": _ACTS,
 }
 """The beat fields only some kinds declare (``RenderedBeats._structure``): ``intent`` a
 ``say``'s, ``visibility`` a ``latent``'s, the perception qualifiers (#161) the kinds they
 apply to: narrowing a ``say``'s, widening a ``say``'s or a ``do``'s, ``location`` a
-narration's; and ``cites`` a ``think``'s (#166: the cause a new belief rests on)."""
+narration's; ``cites`` a ``think``'s (#166: the cause a new belief rests on); and ``step`` a
+``say``'s or a ``do``'s (#168: the ``act`` step that owns it)."""
 _KIND_GROUPS = (("say",), ("latent",), ("do",), ("think",), ("narration",))
 
 
@@ -229,6 +239,7 @@ CHANNEL_ID_MAX = 64
 MAX_NAMED = 10
 MAX_CITES = 10
 CITE_MAX = 64
+MAX_STEP_INDEX = 64
 
 
 class RemoteChannelDecl(_Strict):
@@ -272,6 +283,8 @@ class BeatDecl(_Strict):
     """A ``think``'s citations (#166, FR-TURN-8): the ids of the records (an event, a fact) a
     new belief it reasons from rests on. Checked, never trusted: a citation is confirmed only
     when it names the antecedent the engine's own search finds."""
+    step: int | None = Field(default=None, ge=1, le=MAX_STEP_INDEX)
+    """The ``act`` step that owns this ``say`` or ``do`` (#168, FR-TURN-12; ``None``: none)."""
 
     def qualifiers_declared(self) -> list[str]:
         """The perception qualifiers this beat declares (#161)."""
@@ -289,6 +302,87 @@ _QUALIFIER_FIELDS = (
     "partial_text",
     "location",
 )
+
+
+StepKind = Literal["observe", "believe", "act"]
+ConfidenceName = Literal["unknown", "suspected", "believed", "known"]
+
+
+class StepDecl(_Strict):
+    """One declared causal step of a character's render (#168, FR-TURN-12): ``observe`` (what
+    the character perceives: a ``proposition``), ``believe`` (what it concludes: a
+    ``proposition`` and ``cites``, the earlier steps (indices) or records (ids) it rests on) or
+    ``act`` (what it does: the ``say``/``do`` beats naming its index). ``confidence`` is a
+    ``believe``'s (``believed`` when left out)."""
+
+    index: int = Field(ge=1, le=MAX_STEP_INDEX)
+    kind: StepKind
+    cites: list[int | Annotated[str, Field(min_length=1, max_length=CITE_MAX)]] = Field(
+        default_factory=list, max_length=MAX_CITES
+    )
+    proposition: PropositionSketch | None = None
+    confidence: ConfidenceName | None = None
+
+    def step_cites(self) -> list[int]:
+        """The earlier steps this step cites (indices)."""
+        return [c for c in self.cites if isinstance(c, int)]
+
+    def record_cites(self) -> list[str]:
+        """The records this step cites (ids)."""
+        return [c for c in self.cites if isinstance(c, str)]
+
+
+def _steps_structure(steps: Sequence[StepDecl], beats: Sequence[BeatDecl]) -> None:
+    """The declared steps' structural rules (#168; see the module docstring): indices ``1..n``
+    in order, a ``believe`` and an ``observe`` name a proposition, a step cites existing steps
+    other than itself and never an ``act``, the step citations are acyclic, every beat's
+    ``step`` names an ``act`` step, and a ``think``'s record citations are some step's."""
+    if not steps:
+        for n, beat in enumerate(beats):
+            if beat.step is not None:
+                raise ValueError(f"beats.{n}.step: the render declares no steps")
+        return
+    indices = [s.index for s in steps]
+    if indices != list(range(1, len(steps) + 1)):
+        raise ValueError("steps: indices run 1..n in order, each once")
+    kinds = {s.index: s.kind for s in steps}
+    for n, step in enumerate(steps):
+        where = f"steps.{n}"
+        if step.kind in ("observe", "believe") and step.proposition is None:
+            raise ValueError(f"{where}.proposition: an {step.kind} step names its proposition")
+        if step.kind != "believe" and step.confidence is not None:
+            raise ValueError(f"{where}.confidence: only a believe step declares a confidence")
+        if step.kind == "observe" and step.cites:
+            raise ValueError(f"{where}.cites: an observe step cites nothing")
+        for cited in step.step_cites():
+            if cited == step.index:
+                raise ValueError(f"{where}.cites: a step cannot cite itself")
+            if cited not in kinds:
+                raise ValueError(f"{where}.cites: no step {cited}")
+            if step.kind == "believe" and kinds[cited] == "act":
+                raise ValueError(f"{where}.cites: a believe step never cites an act")
+    graph = {s.index: s.step_cites() for s in steps}
+    state: dict[int, int] = {}
+
+    def visit(node: int) -> None:
+        state[node] = 1
+        for nxt in graph.get(node, []):
+            if state.get(nxt) == 1:
+                raise ValueError("steps.cites: the step citations form a cycle")
+            if state.get(nxt) is None:
+                visit(nxt)
+        state[node] = 2
+
+    for node in graph:
+        if state.get(node) is None:
+            visit(node)
+    for n, beat in enumerate(beats):
+        if beat.step is not None and kinds.get(beat.step) != "act":
+            raise ValueError(f"beats.{n}.step: names no act step")
+    records = {c for s in steps for c in s.record_cites()}
+    for n, beat in enumerate(beats):
+        if beat.kind == "think" and beat.cites and not set(beat.cites) <= records:
+            raise ValueError(f"beats.{n}.cites: disagrees with the steps' citations")
 
 
 class IntroductionDecl(_Strict):
@@ -324,6 +418,9 @@ class RenderedBeats(_Strict):
 
     beats: list[BeatDecl]
     introduces: list[IntroductionDecl] = Field(default_factory=list, max_length=MAX_INTRODUCTIONS)
+    steps: list[StepDecl] = Field(default_factory=list)
+    """The render's declared causal steps (#168, FR-TURN-12; none when its beliefs do not change
+    within it): a character's render only."""
 
     actor_id: ClassVar[str | None] = None
     """The rendering character (``None``: the narrator's render)."""
@@ -356,6 +453,8 @@ class RenderedBeats(_Strict):
                 raise ValueError(f"{where}.intent: only a say declares an intent")
             if beat.cites and beat.kind != "think":
                 raise ValueError(f"{where}.cites: only a think cites a cause")
+            if beat.step is not None and beat.kind not in _ACTS:
+                raise ValueError(f"{where}.step: only a say or a do belongs to an act step")
             if beat.visibility is not None:
                 if beat.kind != "latent":
                     raise ValueError(f"{where}.visibility: only a latent declares a scope")
@@ -380,6 +479,11 @@ class RenderedBeats(_Strict):
         names = [i.name.strip().casefold() for i in self.introduces]
         if len(names) != len(set(names)) or not all(names):
             raise ValueError("introduces: each new character once, by name")
+        if narrator and self.steps:
+            raise ValueError("steps: only a character's render declares steps")
+        if len(self.steps) > cls.limit:
+            raise ValueError(f"steps: at most {cls.limit} steps")
+        _steps_structure(self.steps, self.beats)
         return self
 
     @classmethod
@@ -412,6 +516,7 @@ def render_schema(
         name,
         __base__=RenderedBeats,
         beats=(Annotated[list[BeatDecl], Field(min_length=1, max_length=max_beats)], ...),
+        steps=(Annotated[list[StepDecl], Field(max_length=max_beats)], Field(default_factory=list)),
     )
     model.actor_id = actor_id
     model.player_id = player_id
@@ -748,6 +853,7 @@ __all__ = [
     "IntroductionDecl",
     "PropositionSketch",
     "RenderedBeats",
+    "StepDecl",
     "VisibilityDecl",
     "age_schema",
     "hold_length",

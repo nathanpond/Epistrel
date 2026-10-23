@@ -79,7 +79,7 @@ from epistrel.core.events.types import (
     DetectedRef,
 )
 from epistrel.core.ids import new_ulid
-from epistrel.core.membership import Position, insert_derived
+from epistrel.core.membership import Position, insert_derived, step_of
 from epistrel.core.propositions.model import (
     Interval,
     LiteralKind,
@@ -189,6 +189,8 @@ class TurnBeat:
     """The beat's explicit perception qualifiers (#161; persisted on its event)."""
     cites: tuple[str, ...] = ()
     """A ``think``'s citations (#166): the records a new belief it reasons from rests on."""
+    step: int = 0
+    """The ``act`` step that owns the beat (#168, FR-TURN-12; 0: outside declared steps)."""
 
     @property
     def declared(self) -> tuple[AssertedClaim, ...]:
@@ -328,6 +330,7 @@ def stage_beats(op: Operation, beats: Sequence[TurnBeat]) -> None:
             authority=Authority.AUTHORITATIVE,
             character_id=None if beat.kind == "narration" else beat.character_id,
             beat=beat.beat,
+            step=beat.step,
         )
 
 
@@ -436,6 +439,8 @@ async def write_utterances(
                 "intent": row.intent,
                 "classification": row.classification,
                 "attribution_objective_relation": row.attribution_objective_relation,
+                # #168: the say's declared causal step (FR-STORE-31).
+                "step": step_of(row.beat, operation.operation_id),
             }
         )
     await insert_derived(conn, utterances, values)

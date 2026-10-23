@@ -315,6 +315,8 @@ class StagedEvent:
     authority: Authority
     character_id: str | None
     beat: int | None = None
+    step: int | None = None
+    """The beat's declared causal step (#168, FR-STORE-31; ``None``: outside declared steps)."""
 
 
 class Operation:
@@ -694,10 +696,13 @@ class Operation:
         authority: Authority | None = None,
         character_id: str | None = None,
         beat: int | None = None,
+        step: int | None = None,
     ) -> EventPayload:
         """Validate and stage one event; nothing is written until ``commit()``.
 
-        ``beat`` is the event's beat within its turn (FR-RESP-9: the player input is beat 1).
+        ``beat`` is the event's beat within its turn (FR-RESP-9: the player input is beat 1);
+        ``step`` its declared causal step within the render (#168, FR-STORE-31; 0 or ``None``:
+        outside declared steps, stored ``NULL``).
         Raises ``UnregisteredEventType`` or ``InvalidEventPayload`` before anything is staged.
         The category comes from the registry, never from the caller.
         """
@@ -712,6 +717,7 @@ class Operation:
                 authority=authority or self.authority,
                 character_id=character_id,
                 beat=beat,
+                step=step or None,
             )
         )
         return model
@@ -903,6 +909,7 @@ class Operation:
                         "narrative_turn": self.narrative_turn,
                         "turn_variant": self.turn_variant,
                         "beat": staged.beat,
+                        "step": staged.step,
                         "character_id": staged.character_id,
                         "principal": self.principal,
                         "type": staged.type,

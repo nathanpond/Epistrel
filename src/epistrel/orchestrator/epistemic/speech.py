@@ -15,7 +15,8 @@ transition tally), what those classifications license:
   read, ``inference`` from a held premise, ``testimony`` from the speaker who misinformed it
   (``source``, ``outcome = accept``, at ``believed``: the assertion evidences acceptance), each
   citing the antecedent record; a claim that corrects a contrary belief by a non-testimony
-  path is a ``correction``. The dependent step is the say beat ``(turn, variant, 0, beat, 0)``;
+  path is a ``correction``. The dependent step is the say beat ``(turn, variant, 0, beat, step)``
+  (its declared ``act`` step, #168; 0 outside declared steps);
   a belief licensed by an earlier hearing holds from it (``held_from``), decided in that frame
   and included from this turn on (``resolution``: FR-BELIEF-12's anchors, as #164's lazy
   resolutions are). A refusal by the antecedent guard is counted, never raised: the claim was
@@ -50,7 +51,7 @@ from epistrel.core.epistemic.errors import (
     SelfAttestation,
 )
 from epistrel.core.errors import InvalidRequest
-from epistrel.core.membership import Position
+from epistrel.core.membership import Position, step_of
 from epistrel.core.propositions.registry import Registry
 from epistrel.core.verify import speech_acts
 from epistrel.orchestrator.verify.extraction import CheckedClaim
@@ -119,7 +120,7 @@ async def speech_committed(
         ]
         if not classified:
             continue
-        position = Position(turn, variant, 0, say.beat, 0)
+        position = Position(turn, variant, 0, say.beat, step_of(say.beat, str(op.operation_id)))
         if lazy:
             made = await exposure.resolve_needed(
                 conn,
@@ -136,7 +137,8 @@ async def speech_committed(
             proposition = c.claim.proposition
             if speech is None or proposition is None:  # pragma: no cover - classified above
                 continue
-            if speech.writes:
+            if speech.writes and not (c.result is not None and c.result.self_attested):
+                # #168: a self-attested belief (a rejected render step's) is never written.
                 if await _write(
                     conn, op, say.speaker, proposition, speech, position, settings, registry
                 ):

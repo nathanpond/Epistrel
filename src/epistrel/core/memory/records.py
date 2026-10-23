@@ -688,6 +688,65 @@ async def write_perceived(
     return await memories_by_id(conn, story_id, ids)
 
 
+async def write_observed(
+    conn: AsyncConnection,
+    operation: MemoryOperation,
+    *,
+    holder: str,
+    proposition_id: str,
+    text: str,
+    source_event_ids: Sequence[str],
+    beat: int,
+    step: int,
+    settings: ProfileSettings | None = None,
+) -> Memory | None:
+    """A verified ``observe`` step's episodic memory (#168, FR-TURN-12): ``holder``'s own (its
+    visibility is ``holder`` alone), "<name> noticed: <text>", wrapping the observed
+    proposition, at the step's beat and ``step``, sourced from the observed fact's event when
+    there is one. Inert (``None``) unless the story keeps episodic memory or ``text`` is
+    empty. Runs the resurrection guard, the erasure index and the hooks like every writer."""
+    story_id = operation.story_id
+    if story_id is None:
+        raise InvalidRequest("a memory belongs to a story", {"field": "operation"})
+    if not text.strip() or not await episodic_on(conn, story_id, settings):
+        return None
+    cast = await _names(conn, story_id)
+    line = f"{cast.get(holder, '')} noticed: {text.strip()}".strip()[:TEXT_MAX]
+    provenance = RecordProvenance.RENDER
+    row: dict[str, Any] = {
+        "id": new_ulid(),
+        "story_id": story_id,
+        "kind": MemoryKind.EPISODIC.value,
+        "text": line,
+        "holder_character_id": holder,
+        "character_id": holder,
+        "visibility": Visibility(scope="characters", characters=(holder,)).document(),
+        "provenance": provenance.value,
+        "trust_tier": trust_tier_of(provenance).value,
+        "operation_id": operation.operation_id,
+        "source_event_ids": list(source_event_ids),
+        "narrative_turn": operation.narrative_turn,
+        "turn_variant": operation.turn_variant,
+        "beat": beat,
+        "step": step,
+        "proposition_ids": [proposition_id],
+        "participants": [],
+    }
+    await guard.check_content(
+        conn,
+        story_id,
+        [guard.Content((line,), frozenset({holder}))],
+        base_revision=operation.base_revision,
+        path=__name__,
+    )
+    await insert_derived(conn, memories, [row])
+    await index_records(conn, [memory_record(SimpleNamespace(**row))])
+    ids = (str(row["id"]),)
+    for hook in [*MEMORY_HOOKS, *EPISODIC_HOOKS]:
+        await hook(conn, story_id, ids)
+    return (await memories_by_id(conn, story_id, ids))[0]
+
+
 async def memory_sink(
     conn: AsyncConnection,
     operation: perception.SinkOperation,
@@ -1414,6 +1473,7 @@ __all__ = [
     "working_memory",
     "write_author",
     "write_consolidated",
+    "write_observed",
     "write_perceived",
     "write_resolution",
     "write_seed",

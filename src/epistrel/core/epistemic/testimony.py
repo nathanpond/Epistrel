@@ -77,6 +77,7 @@ from epistrel.core.membership import (
     position_key,
     position_literal,
     recorded_through,
+    step_of,
 )
 from epistrel.core.propositions.model import Proposition
 from epistrel.core.propositions.registry import Registry
@@ -542,8 +543,10 @@ async def nested_committed(
 
 
 def witness_position(turn: int, variant: int, beat: int) -> Position:
-    """Where a witness's transitions sit: the say beat's step 1 (#160's witness rule)."""
-    return Position(turn, variant, 0, beat, 1)
+    """Where a witness's transitions sit: the step after the beat's own (#160's witness rule:
+    step 1 of a beat outside declared steps; #168: ``k + 1`` for a beat its render's ``act``
+    step ``k`` owns, FR-STORE-31)."""
+    return Position(turn, variant, 0, beat, step_of(beat) + 1)
 
 
 async def commit_testimony(

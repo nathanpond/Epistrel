@@ -219,6 +219,10 @@ class GenerationInputs(InputSchema):
     length_target: Annotated[str, C.CONSTRAINT] = Field(default="", max_length=300)
     """A structured character render's length target (FR-RESP-3; #464): one fixed line naming
     the requested response length in words; empty in every other prompt."""
+    belief_steps: Annotated[bool, C.CONSTRAINT] = False
+    """A structured character render's step contract (FR-TURN-12, FR-TURN-8; #168,
+    ``steps_contract.j2``): the fixed ``## How to change your mind`` section, present when the
+    rendering character keeps its own beliefs (per-character partitions)."""
     player_input: PlayerInput
     # -- the structured pipeline's sections (#150; empty, and so absent, in a Lite prompt) ------
     scene: Annotated[str, C.SCENE] = ""

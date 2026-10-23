@@ -12,7 +12,8 @@ because the world has none yet (FR-COMMIT-6,10). One row:
   thunk has no ``subject_id``, CHECK). ``valid_time`` is the story-minute the reference is
   about (the position's, unless the sketch said when): a resolution's fact starts there.
 - **where it came from**: the derived-record columns of ``core.membership`` (the introducing
-  operation, ``source_event_ids``, ``narrative_turn``/``turn_variant``) plus ``beat``, and
+  operation, ``source_event_ids``, ``narrative_turn``/``turn_variant``) plus ``beat`` and
+  ``step`` (#168, migration 0075: the introducing beat's declared causal step), and
   ``introduced_event_id`` (its ``thunk_introduced`` event; ``NULL`` for a genesis seed).
 - **what became of it**: ``state`` (``open``, ``resolved`` or ``expired``), ``resolved_fact_id``
   and ``resolution_operation_id`` (the fact a dependence committed and the operation that
@@ -28,8 +29,8 @@ row on the resolution's operation, would drop the earlier turn's thunk with it).
 **A ledger entry** is one salient reference awaiting commitment, per proposition (FR-COMMIT-7,
 13): ``thunk_id`` (a salient open thunk: the only kind that blocks a turn's close) or
 ``proposition_id`` (the existence of a hidden fact named without its value), exactly one
-(CHECK); ``kind`` (``salient_reference``); its position (the derived columns plus ``beat``);
-``discharged_by_operation`` and ``discharged_mode`` (``dependence``, ``render`` or
+(CHECK); ``kind`` (``salient_reference``); its position (the derived columns plus ``beat``
+and ``step``); ``discharged_by_operation`` and ``discharged_mode`` (``dependence``, ``render`` or
 ``minimal``), set together (CHECK). An entry counts as discharged only while that operation is
 active, so reverting the discharging turn reopens the obligation.
 
@@ -75,6 +76,7 @@ thunks = Table(
     Column("introduced_event_id", ulid_type(), nullable=True),
     *derived_columns(),
     Column("beat", SmallInteger, nullable=True),
+    Column("step", SmallInteger, nullable=False, server_default=text("0")),
     Column(
         "state",
         pg_enum(ThunkState, "thunk_state"),
@@ -108,6 +110,7 @@ promissory_ledger = Table(
     ),
     *derived_columns(),
     Column("beat", SmallInteger, nullable=True),
+    Column("step", SmallInteger, nullable=False, server_default=text("0")),
     Column("discharged_by_operation", ulid_type(), nullable=True),
     Column("discharged_mode", pg_enum(DischargeMode, "ledger_discharge_mode"), nullable=True),
     CheckConstraint("num_nonnulls(thunk_id, proposition_id) = 1", name="one_target"),

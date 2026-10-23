@@ -362,8 +362,52 @@ async def insert_derived(
     statement = insert(entry.table).values(
         membership=Membership.ACTIVE.value, membership_tx=func.transaction_timestamp()
     )
-    await conn.execute(statement, [dict(row) for row in rows])
+    stepped = "step" in entry.table.c and "beat" in entry.table.c
+    await conn.execute(statement, [_with_step(dict(row)) if stepped else dict(row) for row in rows])
     return len(rows)
+
+
+# -- the step index (FR-STORE-31, #168) -------------------------------------------------------
+
+_BEAT_STEPS: ContextVar[Mapping[str, Mapping[int, int]] | None] = ContextVar(
+    "epistrel_beat_steps", default=None
+)
+
+
+@contextmanager
+def beat_steps(operation_id: str, steps: Mapping[int, int]) -> Iterator[None]:
+    """Within the block, ``step_of`` answers each beat of ``operation_id`` its declared step
+    (#168: the ``act`` step owning the beat; FR-TURN-12): the structured turn's check and commit
+    run inside it, so every record a beat derives takes the beat's step, and ``insert_derived``
+    fills ``step`` on a row of a table with ``beat`` and ``step`` columns that names neither."""
+    current = dict(_BEAT_STEPS.get() or {})
+    current[operation_id] = dict(steps)
+    token = _BEAT_STEPS.set(current)
+    try:
+        yield
+    finally:
+        _BEAT_STEPS.reset(token)
+
+
+def step_of(beat: int | None, operation_id: str | None = None) -> int:
+    """The step of ``beat`` (0: outside declared steps, or no turn's steps in scope): of
+    ``operation_id``'s turn, or of the one turn in scope when it is ``None``."""
+    found = _BEAT_STEPS.get()
+    if not found or beat is None:
+        return 0
+    if operation_id is None:
+        if len(found) != 1:
+            return 0
+        (steps,) = found.values()
+    else:
+        steps = found.get(operation_id, {})
+    return int(steps.get(int(beat), 0))
+
+
+def _with_step(row: dict[str, Any]) -> dict[str, Any]:
+    if "step" not in row:
+        row["step"] = step_of(row.get("beat"), str(row.get("operation_id") or "")) or 0
+    return row
 
 
 def _ids(values: Iterable[str]) -> list[str]:
@@ -695,6 +739,7 @@ __all__ = [
     "active_only_predicate",
     "active_only_sql",
     "active_operation",
+    "beat_steps",
     "bound_of",
     "derived_columns",
     "derived_entry",
@@ -718,6 +763,7 @@ __all__ = [
     "recorded_through",
     "register_derived",
     "register_follower",
+    "step_of",
     "supersede",
     "tx_time_of",
     "valid_time_of",

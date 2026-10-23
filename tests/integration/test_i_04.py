@@ -438,8 +438,10 @@ async def test_i_04__timeline_moved(engine: AsyncEngine, monkeypatch: pytest.Mon
     original = timeline._plan_truncate
     interleaved: list[str] = []
 
-    async def plan_then_play(conn: AsyncConnection, story_id: str, to_turn: int) -> Any:
-        planned = await original(conn, story_id, to_turn)
+    async def plan_then_play(
+        conn: AsyncConnection, story_id: str, to_turn: int, slot: int | None = None
+    ) -> Any:
+        planned = await original(conn, story_id, to_turn, slot)
         if not interleaved:
             interleaved.append((await play_turn(engine, story, "turn 4")).operation_id)
         return planned

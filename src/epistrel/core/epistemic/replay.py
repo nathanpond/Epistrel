@@ -51,8 +51,11 @@ exposures on the functional key before T (#164's cap bounds how many there can b
 read joins the caller's read set. Within a ``checking()`` block (a turn's), answers are memoized
 per (holder, proposition, T, level), and ``turn_report.epistemic.could_have_known`` counts the
 checks and the ``no_path`` answers. ``epistrel_could_have_known_checks_total{outcome}`` counts
-every answer. Same-turn staged beats and render steps (#174, #168) license only once those
-stories' oracles exist; nested propositions (#167) replay against nested rows then.
+every answer. Same-turn antecedents verified but not yet committed license through
+``staged_paths()`` (#168: a render's verified ``believe`` steps, ``stage_path``; #174's staged
+beats may stage theirs): a staged acquisition of the key and polarity strictly before T is
+``Known(path = staged)``, with nothing to write. Nested propositions replay against #167's
+nested rows.
 
 Log lines carry identifiers and counts only (invariant 3).
 """
@@ -84,7 +87,7 @@ from epistrel.observability.metrics import COULD_HAVE_KNOWN
 log = logging.getLogger(__name__)
 
 Level = BeliefConfidenceLevel
-PathKind = Literal["transition", "canon", "implied", "exposure", "player"]
+PathKind = Literal["transition", "canon", "implied", "exposure", "player", "staged"]
 DEFAULT_MIN_LEVEL = Level.SUSPECTED
 """The weakest level that licenses a reference (#176 passes ``believed``)."""
 
@@ -243,6 +246,41 @@ class Checks:
 
 
 _CHECKS: ContextVar[Checks | None] = ContextVar("epistrel_could_have_known", default=None)
+
+_STAGED: ContextVar[list[tuple[str, Proposition, Position, str]] | None] = ContextVar(
+    "epistrel_staged_paths", default=None
+)
+
+
+@contextmanager
+def staged_paths() -> Iterator[None]:
+    """Within the block, ``stage_path`` adds the turn's verified, uncommitted acquisitions
+    (#168's render steps) to what ``could_have_known`` replays."""
+    token = _STAGED.set([])
+    try:
+        yield
+    finally:
+        _STAGED.reset(token)
+
+
+def stage_path(holder: str, proposition: Proposition, at: Position, ref: str) -> None:
+    """``holder`` acquired ``proposition`` at ``at`` (a verified render step ``ref``); a no-op
+    outside ``staged_paths()``."""
+    found = _STAGED.get()
+    if found is not None:
+        found.append((holder, proposition, at, ref))
+
+
+def _staged(
+    character_id: str, target: Proposition, at: Position, registry: Registry
+) -> Known | None:
+    for holder, proposition, held, ref in _STAGED.get() or ():
+        if holder != character_id or not held.before(at):
+            continue
+        stored = canonical(proposition, registry)
+        if _key(stored) == _key(target) and stored.polarity is target.polarity:
+            return Known(PathRef("staged", ref, held))
+    return None
 
 
 @contextmanager
@@ -457,7 +495,16 @@ async def could_have_known(
         return _answered(None, NotApplicable("partitions_off"))
     found = registry or await load(conn, story_id)
     target = canonical(proposition, found)
-    memo_key = (story_id, character_id, _key(target), target.polarity, at.key(), min_level)
+    staged = len(_STAGED.get() or ())
+    memo_key = (
+        story_id,
+        character_id,
+        _key(target),
+        target.polarity,
+        at.key(),
+        min_level,
+        staged,
+    )
     checks = _CHECKS.get()
     if checks is not None and memo_key in checks.memo:
         return checks.memo[memo_key]
@@ -470,6 +517,8 @@ async def could_have_known(
     lookup = KeyedLookup(conn, reads)
     records = await _belief_records(conn, lookup, story_id, character_id, target, at)
     answer: Known | NoPath = replay(records, _key(target), target.polarity, at, min_level=min_level)
+    if isinstance(answer, NoPath):
+        answer = _staged(character_id, target, at, found) or answer
     if isinstance(answer, NoPath):
         answer = (await _canon(lookup, story_id, character_id, target, at)) or answer
     if isinstance(answer, NoPath):
@@ -633,4 +682,6 @@ __all__ = [
     "outcome_of",
     "replay",
     "said_before",
+    "stage_path",
+    "staged_paths",
 ]

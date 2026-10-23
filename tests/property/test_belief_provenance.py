@@ -54,7 +54,8 @@ PERMITTED = {
         AntecedentKind.STAGED_BEAT,
         AntecedentKind.RENDER_STEP,
     },
-    Kind.INFERENCE: {AntecedentKind.RECORD},
+    # #168: a chain of reasoning: a believe step citing an earlier verified believe step.
+    Kind.INFERENCE: {AntecedentKind.RECORD, AntecedentKind.RENDER_STEP},
     Kind.DISCOVERY: {AntecedentKind.RECORD, AntecedentKind.STAGED_BEAT},
     Kind.CORRECTION: {
         AntecedentKind.RECORD,

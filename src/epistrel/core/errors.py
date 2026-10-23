@@ -380,6 +380,16 @@ class NothingToUndo(EpistrelError):
     http_status = 409
 
 
+class TurnBoundaryRequired(InvalidRequest):
+    """A truncation or fork named a position inside a turn (a beat or a step): checkpoints,
+    truncation and fork operate at turn boundaries only, ``N`` or an inter-turn slot boundary
+    ``N⁺k`` (FR-STORE-31; #168). Nothing is written. ``details``: ``field`` (the offending
+    field) and ``boundary`` (``to_turn``/``at_turn`` and ``slot``, the accepted shape)."""
+
+    code = "turn_boundary_required"
+    http_status = 422
+
+
 class UnknownChain(EpistrelError):
     """A ``{turn, variant}`` chain selector names no variant of the story, or names a chain
     that continues in more than one way (#66). Nothing is written. ``details``:

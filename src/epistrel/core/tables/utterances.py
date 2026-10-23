@@ -28,6 +28,10 @@ partition (FR-BELIEF-15): any ``false`` â†’ ``false``, else any ``unresolved`` â
 else ``true``; ``NULL`` when the utterance attributes nothing. A label only, written at insert:
 it never enters the speaker's context (``core.epistemic.nested``).
 
+``step`` (#168, migration 0075) is the say beat's declared causal step (FR-STORE-31: the
+``act`` step that owns it, 0 outside declared steps), so an utterance sits at ``(turn, beat,
+step)`` like the records beside it.
+
 ``event_id`` is the ``beat_say`` (or ``player_input``) event, a soft reference: events are
 never deleted while their story lives. ``proposition_ids`` are the utterance's normalized
 propositions (``propositions``). The derived-record columns of ``core.membership`` make a row
@@ -38,7 +42,7 @@ erased. Append-only by trigger (``belief_relation`` and the membership columns m
 
 from __future__ import annotations
 
-from sqlalchemy import TIMESTAMP, CheckConstraint, Column, Index, Table, Text, text
+from sqlalchemy import TIMESTAMP, CheckConstraint, Column, Index, SmallInteger, Table, Text, text
 from sqlalchemy.dialects.postgresql import ARRAY
 
 from epistrel.core.membership import (
@@ -72,6 +76,7 @@ utterances = Table(
     Column("story_id", ulid_type(), nullable=False),
     *derived_columns(),
     Column("event_id", ulid_type(), nullable=False),
+    Column("step", SmallInteger, nullable=False, server_default=text("0")),
     Column("speaker_character_id", ulid_type(), nullable=False),
     Column("proposition_ids", ARRAY(ulid_type()), nullable=False, server_default=text("'{}'")),
     Column("objective_relation", Text, nullable=False),

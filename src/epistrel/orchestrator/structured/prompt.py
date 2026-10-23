@@ -59,6 +59,9 @@ class RenderSections:
     length_target: str = ""
     """#464 (FR-RESP-3): the requested response length as a target in words
     (``render.length_line``); the pipeline also holds the render to it."""
+    belief_steps: bool = False
+    """#168 (FR-TURN-12): the rendering character keeps its own beliefs, so its prompt carries
+    ``## How to change your mind`` (the step contract and the ``think`` cite instruction)."""
 
 
 RESOLUTION_STEERING = (
@@ -139,6 +142,7 @@ def character_inputs(
         policy_constraints=list(s.constraints),
         resolution_steering=s.resolution_steering,
         length_target=s.length_target,
+        belief_steps=s.belief_steps,
         player_input=_player(actor, say, do),
         scene=s.scene,
         working_memory=list(s.working_memory),

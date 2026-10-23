@@ -178,7 +178,7 @@ from epistrel.core.events.types import (
 )
 from epistrel.core.genesis.structured import deferred_items
 from epistrel.core.history import turn_beats
-from epistrel.core.membership import active_operation, excluding
+from epistrel.core.membership import active_operation, beat_steps, excluding
 from epistrel.core.memory import records
 from epistrel.core.policies.evaluate import evaluate
 from epistrel.core.policies.model import ModelAssistedRule, Target
@@ -189,8 +189,9 @@ from epistrel.core.profiles.reservation import extraction_on
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Polarity, Proposition
-from epistrel.core.propositions.registry import Registry, consider_proposals
+from epistrel.core.propositions.registry import Registry, canonical, consider_proposals
 from epistrel.core.propositions.registry import load as load_registry
+from epistrel.core.propositions.vocabulary import CORE_BY_NAME
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.resolution.context import load_context
 from epistrel.core.resolution.entities import NARRATOR, PLAYER
@@ -203,12 +204,13 @@ from epistrel.core.retrieval.pipeline import (
     retrieve,
 )
 from epistrel.core.settings_schema import (
+    CHARACTER_VIEWPOINT_PREFIX,
     OMNISCIENT,
     ResolvedGeneration,
     VerifySettings,
     resolve_generation,
 )
-from epistrel.core.tables import entity_aliases, events, operations, stories
+from epistrel.core.tables import entity_aliases, events, facts, operations, stories
 from epistrel.core.tables.characters import TRUE_AGE_MAX, TRUE_AGE_MIN
 from epistrel.core.tables.commitments import thunks
 from epistrel.core.tables.operations import REGENERATED_VARIANT
@@ -245,7 +247,7 @@ from epistrel.core.verify import attribution
 from epistrel.core.verify.detect import DeclaredClaim, DetectBeat, DetectedClaim
 from epistrel.core.verify.introduce import Introductions
 from epistrel.core.verify.normalize import ClaimSketch, Unnormalizable, normalize_declared
-from epistrel.core.verify.rules import Record, VerdictKind, check
+from epistrel.core.verify.rules import CANON, Record, VerdictKind, check
 from epistrel.core.viewpoint import (
     character_viewpoint,
     is_omniscient,
@@ -308,6 +310,7 @@ from epistrel.orchestrator.policies.store import guard_context
 from epistrel.orchestrator.repair.ladder import Recheck, RepairLadder, RepairResult
 from epistrel.orchestrator.structured import planner
 from epistrel.orchestrator.structured import prompt as prompts
+from epistrel.orchestrator.structured import steps as render_steps
 from epistrel.orchestrator.structured.eval_hooks import StageClock, eval_hooks
 from epistrel.orchestrator.structured.render import (
     AGE_UNREPAIRED,
@@ -316,6 +319,7 @@ from epistrel.orchestrator.structured.render import (
     IntroductionDecl,
     PropositionSketch,
     RenderedBeats,
+    StepDecl,
     hold_length,
     length_chars,
     length_line,
@@ -891,6 +895,10 @@ class Rendered:
     from them, #151)."""
     narrator_inputs: GenerationInputs | None = None
     """The narrator render's ``generation`` inputs, when the narrator rendered."""
+    steps: list[StepDecl] = field(default_factory=list)
+    """The rendering character's declared causal steps (#168, FR-TURN-12)."""
+    steps_beat: int = 0
+    """The character render's first beat: where its steps sit (``steps.position_of``)."""
 
 
 def _canon_lines(result: RetrievalResult, own: str | None) -> tuple[list[str], list[str]]:
@@ -939,6 +947,7 @@ def _beats_of(
                 narrator=narrator,
                 qualifiers=_qualifiers_of(decl),
                 cites=tuple(decl.cites) if decl.kind == THINK else (),
+                step=decl.step or 0,
             )
         )
         sketches[number] = list(decl.propositions)
@@ -1224,6 +1233,140 @@ class Checked:
     applies them to the default it recomputes."""
     modeling: char_modeling.ModelingPlan | None = None
     """The entities the turn models (#163, ``plan_modeling``): their ages found, or deferred."""
+    steps: list[render_steps.Step] = field(default_factory=list)
+    """The rendering character's declared steps, normalized (#168)."""
+    step_verdicts: dict[int, render_steps.StepVerdict] = field(default_factory=dict)
+    """Each step's verdict (#168; empty with verification off)."""
+    steps_beat: int = 0
+    """The character render's first beat (where its steps sit)."""
+
+
+LOCATED_PREDICATES = frozenset({CORE_BY_NAME["located_at"].id, CORE_BY_NAME["present_at"].id})
+"""A located fact (#168): observing it needs a perception path to its place (#161)."""
+
+
+def _stepper(
+    conn: AsyncConnection,
+    story_id: str,
+    read: TurnRead,
+    verifier: Verifier,
+    steps: Sequence[render_steps.Step],
+    *,
+    first_beat: int,
+    operation_id: str,
+    read_set: StructuredReadSet,
+) -> render_steps.StepVerifier | None:
+    """The render's step verifier (#168; ``None``: no steps, or verification off): an
+    ``observe`` is checked deterministically against the character's canon view through the
+    turn's overlay, at the render's first beat, with a perception path for a located fact; a
+    verified step joins the speaker's belief record set and the replay's staged paths."""
+    if not steps or not verifier.config.on:
+        return None
+    character = read.character.id
+    viewpoint = f"{CHARACTER_VIEWPOINT_PREFIX}{character}"
+    scenes: list[perception.SceneState] = []
+
+    async def located(claim: Proposition) -> bool:
+        if claim.predicate_id not in LOCATED_PREDICATES or claim.object_id is None:
+            return True
+        if not scenes:
+            scenes.append(
+                await scene_loader.load_scene_state(conn, story_id, read.turn, read_set=read_set)
+            )
+        scene = scenes[0]
+        here = scene.at(character)
+        if here is None:
+            return False
+        return claim.object_id in scene.ancestry(here) or here in scene.ancestry(claim.object_id)
+
+    async def observe(step: render_steps.Step) -> render_steps.Observed:
+        claim = step.proposition
+        if claim is None:  # pragma: no cover - checked by the verifier
+            return render_steps.Observed(False, render_steps.UNNORMALIZABLE)
+        found = await verifier.source.deterministic(
+            claim, holder=CANON, viewpoint=viewpoint, position=(read.turn, first_beat)
+        )
+        if found is None or found[0].kind is not VerdictKind.SUPPORTED:
+            return render_steps.Observed(False, render_steps.UNVERIFIED_OBJECT)
+        if not await located(claim):
+            return render_steps.Observed(False, render_steps.NO_PERCEPTION_PATH)
+        verdict, _ = found
+        beats_of = {f"staged:{r.claim_id}": r.beat for r in verifier.canon_requests() if r.claim_id}
+        for evidence in verdict.evidence:
+            if evidence.fact_id is not None:
+                event = await conn.scalar(
+                    select(facts.c.source_event_ids[1]).where(
+                        facts.c.story_id == story_id, facts.c.id == evidence.fact_id
+                    )
+                )
+                return render_steps.Observed(
+                    True,
+                    event_id=None if event is None else str(event),
+                    fact_id=evidence.fact_id,
+                )
+            if evidence.proposition_id in beats_of:
+                return render_steps.Observed(True, beat=beats_of[evidence.proposition_id])
+        return render_steps.Observed(True)
+
+    async def probe(record_id: str) -> Any:
+        found = await render_steps.probe_any(conn, story_id, record_id, operation_id=operation_id)
+        if found is not None and found.table == "beliefs" and found.holder_id != character:
+            return None  # a belief antecedent is the holder's own
+        return found
+
+    beliefs = verifier.beliefs
+    variant = 0 if beliefs is None else beliefs.variant
+
+    def verified(step: render_steps.Step, verdict: render_steps.StepVerdict) -> None:
+        del verdict
+        if step.proposition is None or step.kind == render_steps.ACT:
+            return
+        at = render_steps.position_of(read.turn, variant, first_beat, step.index)
+        if beliefs is not None:
+            beliefs.stage(character, step.proposition, at, str(step.index))
+        replay.stage_path(character, step.proposition, at, f"step:{step.index}")
+
+    return render_steps.StepVerifier(steps, observe, probe, on_verified=verified)
+
+
+def _self_attested(
+    checked: Sequence[CheckedClaim],
+    steps: Sequence[render_steps.Step],
+    verdicts: Mapping[int, render_steps.StepVerdict],
+    beats: Sequence[TurnBeat],
+    registry: Registry,
+) -> list[CheckedClaim]:
+    """#168 (FR-TURN-12, FR-VERIFY-10): a rejected ``believe`` step's proposition, asserted in
+    the beats of the first ``act`` step citing it, is self-attested: a hallucination #151
+    repairs, never written."""
+    marked: list[tuple[set[int], Proposition]] = []
+    for step in steps:
+        verdict = verdicts.get(step.index)
+        if step.kind != render_steps.BELIEVE or verdict is None or verdict.verified:
+            continue
+        if step.proposition is None:
+            continue
+        act = render_steps.first_citing_act(steps, step.index)
+        if act is None:
+            continue
+        numbers = {b.beat for b in beats if not b.narrator and b.step == act}
+        marked.append((numbers, canonical(step.proposition, registry)))
+    if not marked:
+        return list(checked)
+    found: list[CheckedClaim] = []
+    for c in checked:
+        claim = c.claim.proposition
+        if c.result is not None and claim is not None:
+            stored = canonical(claim, registry)
+            if any(
+                c.claim.beat in numbers
+                and stored.normalized_key() == rejected.normalized_key()
+                and stored.polarity is rejected.polarity
+                for numbers, rejected in marked
+            ):
+                c = replace(c, result=replace(c.result, self_attested=True))
+        found.append(c)
+    return found
 
 
 def _verdict_of(result: CheckedClaim) -> str | None:
@@ -1276,6 +1419,14 @@ async def _cued(
     return replace(claim, attribution=resolved)
 
 
+def _sketch_text(sketch: PropositionSketch | None) -> str:
+    """A step's proposition as words (its observation memory's line, #168)."""
+    if sketch is None:
+        return ""
+    words = [sketch.subject, *(["not"] if sketch.negated else []), sketch.relation]
+    return " ".join([*words, *([sketch.object] if sketch.object else [])])
+
+
 def _sketch(sketch: PropositionSketch) -> ClaimSketch:
     return ClaimSketch(
         subject_text=sketch.subject,
@@ -1295,6 +1446,21 @@ def _speaker(beat: TurnBeat) -> str:
 
 
 async def check_turn(
+    db: AsyncEngine,
+    models: ModelAccessLayer,
+    story_id: str,
+    read: TurnRead,
+    rendered: Rendered,
+    **kwargs: Any,
+) -> Checked:
+    """``_check_turn`` with the render's beats at their declared steps (#168: ``step_of``) and
+    its verified steps staged for the could-have-known replay (``replay.staged_paths``)."""
+    owners = render_steps.beat_steps([b for b in rendered.beats if not b.narrator])
+    with beat_steps(str(kwargs["operation_id"]), owners), replay.staged_paths():
+        return await _check_turn(db, models, story_id, read, rendered, **kwargs)
+
+
+async def _check_turn(
     db: AsyncEngine,
     models: ModelAccessLayer,
     story_id: str,
@@ -1387,6 +1553,38 @@ async def check_turn(
                         DeclaredClaim(claim_id, proposition=normalized, attribution=attributed)
                     )
             declared[beat.beat] = tuple(found)
+        # #168: the character render's declared steps, normalized in the speaker's view at the
+        # render's first beat.
+        steps: list[render_steps.Step] = []
+        for decl in rendered.steps:
+            proposition: Proposition | None = None
+            if decl.proposition is not None:
+                normalized, registry = await normalize_declared(
+                    conn,
+                    story_id,
+                    _sketch(decl.proposition),
+                    read.character.id,
+                    (turn, rendered.steps_beat),
+                    registry=env.registry,
+                    context=env.context_for(read.character.id),
+                    basis=env.basis,
+                    introduce=introductions,
+                )
+                env = replace(env, registry=registry)
+                if not isinstance(normalized, Unnormalizable):
+                    proposition = normalized
+            steps.append(
+                render_steps.Step(
+                    index=decl.index,
+                    kind=decl.kind,
+                    step_cites=tuple(decl.step_cites()),
+                    record_cites=tuple(decl.record_cites()),
+                    proposition=proposition,
+                    confidence=decl.confidence,
+                    unnormalizable=decl.proposition is not None and proposition is None,
+                    text=_sketch_text(decl.proposition),
+                )
+            )
     clock.add("normalize", time.perf_counter() - normalizing)
     detecting = time.perf_counter()
     scene_context = SceneContext(
@@ -1475,7 +1673,21 @@ async def check_turn(
                 for c in b.cites
             )
 
+        stepper = _stepper(
+            conn,
+            story_id,
+            read,
+            verifier,
+            steps,
+            first_beat=rendered.steps_beat,
+            operation_id=operation_id,
+            read_set=read_set,
+        )
+        owners = {b.beat: b.step for b in rendered.beats if not b.narrator and b.step}
         for number in sorted(k for k in by_beat if k is not None):
+            if stepper is not None and owners.get(number):
+                # #168: the steps before this beat's act step, verified before it.
+                await stepper.run_before(owners[number])
             outcome = DetectionOutcome(
                 outcomes[0].detection.with_claims(by_beat[number]), speakers={}
             )
@@ -1494,6 +1706,10 @@ async def check_turn(
             # The same-turn overlay: what this beat may establish, later beats see.
             for request in verifier.canon_requests()[before:]:
                 staged.stage(request.claim, request.claim_id or f"{number}")
+        step_verdicts: dict[int, render_steps.StepVerdict] = {}
+        if stepper is not None:
+            step_verdicts = await stepper.run_all()
+            checked = _self_attested(checked, steps, step_verdicts, rendered.beats, env.registry)
         requests = verifier.canon_requests()
         rejected_bindings: list[resolution.RejectedBinding] = []
         if lifecycle.commitment_enabled(settings):
@@ -1607,6 +1823,9 @@ async def check_turn(
         staged=list(staged.staged),
         rejected_bindings=rejected_bindings,
         introductions=introductions,
+        steps=steps,
+        step_verdicts=step_verdicts,
+        steps_beat=rendered.steps_beat,
     )
 
 
@@ -2781,6 +3000,8 @@ async def play(
             scene=read.scene,
             resolution_steering=_steering(read),
             length_target=length_line(read.resolved.max_tokens),
+            # #168: the step contract, for a character that keeps its own beliefs.
+            belief_steps=module_on(settings, belief_transitions.PARTITIONS_MODULE),
         )
         budget_tokens = settings.render.prompt_token_budget
         max_beats = settings.render.max_beats
@@ -2882,6 +3103,7 @@ async def play(
             )
             retries += n
             char_render, _, _ = hold_length(char_render, max_chars, hidden=hidden, used=used)
+            char_start = next_beat
             made, found_sketches = _beats_of(
                 char_render, start=next_beat, actor=read.character.id, narrator=False
             )
@@ -2908,6 +3130,8 @@ async def play(
                 finish_reason="stop",
                 character_inputs=inputs,
                 narrator_inputs=narrator_inputs,
+                steps=list(char_render.steps),
+                steps_beat=char_start,
             )
             draft = Draft(
                 text="\n".join(b.text for b in beats),
@@ -3201,6 +3425,14 @@ async def play(
     async def write_turn(
         conn: AsyncConnection, *, read: TurnRead, rendered: Rendered, checked: Checked
     ) -> None:
+        # #168 (FR-STORE-31): every record a beat derives takes the beat's declared step.
+        owners = render_steps.beat_steps([b for b in checked.beats if not b.narrator])
+        with beat_steps(op.operation_id, owners):
+            await write_turn_body(conn, read=read, rendered=rendered, checked=checked)
+
+    async def write_turn_body(
+        conn: AsyncConnection, *, read: TurnRead, rendered: Rendered, checked: Checked
+    ) -> None:
         committing = time.perf_counter()
         ids = await beat_event_ids(conn, op.operation_id)
         await write_introductions(conn, op, rendered.introductions, base_revision=op.base_revision)
@@ -3293,6 +3525,7 @@ async def play(
         )
         told: adjudicate.Testified | None = None
         spoken: speech.Spoken | None = None
+        stepped: render_steps.Written | None = None
         with belief_transitions.tallying() as tally:
             if level == perception.NONE:
                 await records.write_episodic(
@@ -3346,11 +3579,47 @@ async def play(
                     registry=registry,
                     resolutions_left=exposure_records.max_lazy_resolutions(settings) - used,
                 )
-        if told is not None or spoken is not None:
+            if (
+                checked.step_verdicts
+                and checked.verifier is not None
+                and checked.verifier.beliefs is not None
+            ):
+                # #168: the render's verified steps: observations (with their memories) and
+                # beliefs citing them (``antecedent = render_step``).
+                stepped = await render_steps.steps_committed(
+                    conn,
+                    op,
+                    holder=read.character.id,
+                    steps=checked.steps,
+                    verdicts=checked.step_verdicts,
+                    first_beat=checked.steps_beat,
+                    beat_owner=owners_of(checked),
+                    settings=settings,
+                    registry=registry,
+                    remember=partial(
+                        _remember_observation,
+                        op=op,
+                        read=read,
+                        settings=settings,
+                        registry=registry,
+                    ),
+                )
+        if told is not None or spoken is not None or stepped is not None:
             fixed["epistemic"] = {
                 **({} if told is None else {"testimony": told.testimony, **told.exposures}),
                 "transitions": tally.report(),
                 **({} if spoken is None else {"speech": spoken.report()}),
+                **(
+                    {}
+                    if stepped is None
+                    else {
+                        "steps": {
+                            "transitions": stepped.transitions,
+                            "memories": stepped.memories,
+                            "refused": stepped.refused,
+                        }
+                    }
+                ),
             }
             if (told is not None and told.capped) or (spoken is not None and spoken.capped):
                 checked.degradation.append(
@@ -3464,6 +3733,8 @@ async def play(
             "introductions_denied": rendered.denied_introductions,
             "age_repairs": rendered.age_repairs,
             "narrator": rendered.narrator,
+            # #168: the render's declared causal steps.
+            "steps": render_steps.steps_report(len(checked.steps), checked.step_verdicts),
         }
         composition = composed[0] if composed else None
         message_outcomes = (
@@ -3706,6 +3977,43 @@ def _degradation(
             steps.append(DegradationStep(step=step, cause=cause))
     # NFR-PERF-7's steps first, in its order; the rest as taken (#156).
     return sorted(steps, key=lambda s: planner.ladder_rank(s.step))
+
+
+def owners_of(checked: Checked) -> dict[int, int]:
+    """Each character beat's owning ``act`` step (#168)."""
+    return render_steps.beat_steps([b for b in checked.beats if not b.narrator])
+
+
+async def _remember_observation(
+    conn: AsyncConnection,
+    step: render_steps.Step,
+    seen: render_steps.Observed,
+    position: Any,
+    *,
+    op: Operation,
+    read: TurnRead,
+    settings: ProfileSettings,
+    registry: Registry,
+) -> bool:
+    """A verified ``observe`` step's episodic memory (#168): the character's own, at the step's
+    position, sourced from the observed fact's event when there is one."""
+    if step.proposition is None:  # pragma: no cover - a verified observe names one
+        return False
+    stored = await store.write_proposition(
+        conn, str(op.story_id), step.proposition, registry, base_revision=op.base_revision
+    )
+    found = await records.write_observed(
+        conn,
+        op,
+        holder=read.character.id,
+        proposition_id=stored,
+        text=step.text,
+        source_event_ids=[seen.event_id] if seen.event_id is not None else [],
+        beat=position.beat,
+        step=position.step,
+        settings=settings,
+    )
+    return found is not None
 
 
 def _episodic(

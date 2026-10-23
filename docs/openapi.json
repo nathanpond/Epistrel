@@ -8898,6 +8898,19 @@
             "description": "The fork's owner principal (default: the requesting principal, not the source's owner; never `system`). Recorded, never interpreted.",
             "title": "Owner"
           },
+          "slot": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The boundary `N⁺k`: copy `at_turn`'s inter-turn slots 1..k too (default: none, the boundary `N`). A beat or a step is never a boundary (422 `turn_boundary_required`).",
+            "title": "Slot"
+          },
           "variant_chain": {
             "anyOf": [
               {
@@ -31245,13 +31258,26 @@
       },
       "TruncateRequest": {
         "additionalProperties": false,
-        "description": "``POST /stories/{id}/truncate``: keep turns 1..``to_turn``; ``0`` keeps only genesis.",
+        "description": "``POST /stories/{id}/truncate``: keep turns 1..``to_turn`` (and, with ``slot`` k, turn\n``to_turn``'s inter-turn slots 1..k, the boundary ``N⁺k``); ``0`` keeps only genesis. A beat\nor a step is never a boundary (422 ``turn_boundary_required``, FR-STORE-31; #168).",
         "examples": [
           {
             "to_turn": 2
           }
         ],
         "properties": {
+          "slot": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The boundary `N⁺k`: keep `to_turn`'s inter-turn slots 1..k (default: none, the boundary `N`).",
+            "title": "Slot"
+          },
           "to_turn": {
             "description": "The last turn to keep (0 to the head - 1).",
             "title": "To Turn",
@@ -55164,7 +55190,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `validation_error`."
+            "description": "Invalid request; nothing was written: `turn_boundary_required`, `validation_error`."
           },
           "423": {
             "content": {
@@ -60246,7 +60272,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `validation_error`."
+            "description": "Invalid request; nothing was written: `turn_boundary_required`, `validation_error`."
           },
           "423": {
             "content": {

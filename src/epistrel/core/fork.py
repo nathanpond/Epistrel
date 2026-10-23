@@ -31,7 +31,8 @@ independent copy under new ids, isolated from the source from the moment it exis
 - **One snapshot.** The copy runs on one connection whose transaction is ``REPEATABLE READ``
   from its first statement, so every read sees the source at one ``timeline_revision`` and a
   turn committing meanwhile is wholly in or wholly out (FR-CONC-10). A serialization failure is
-  retried (``SNAPSHOT_ATTEMPTS``), then 503 ``database_unavailable``.
+  retried (``SNAPSHOT_ATTEMPTS``) after a jittered, doubling pause (``snapshot_backoff_s``), so
+  the retries leave the contention that failed them (#510); then 503 ``database_unavailable``.
 - **The new story.** Status ``active`` (an archived source can be forked), its settings,
   rating, engine profile and ``config_revision`` copied (a retired rating or a deleted profile
   too: a fork continues its story, so it is not a new assignment; #106), owned by the requester
@@ -54,7 +55,9 @@ source's, checked inside the snapshot.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import random
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -129,6 +132,10 @@ CRASH_KIND = "fork"
 """What the fork's crash points (#75) count its hits as."""
 SNAPSHOT_ATTEMPTS = 3
 """How many times the snapshot copy is tried before 503 ``database_unavailable``."""
+SNAPSHOT_BACKOFF_S = 0.1
+"""The pause before the second snapshot attempt; it doubles for each attempt after."""
+SNAPSHOT_BACKOFF_JITTER = 0.5
+"""The pause's jitter, a fraction of it either way."""
 
 SERIALIZATION_FAILURE = "40001"
 
@@ -314,6 +321,8 @@ async def fork(
             if getattr(exc.orig, "sqlstate", None) != SERIALIZATION_FAILURE:
                 raise
             logger.warning("fork of %s: serialization failure (attempt %d)", story_id, attempt)
+        if attempt < SNAPSHOT_ATTEMPTS:
+            await asyncio.sleep(snapshot_backoff_s(attempt))
     if forked is None:
         raise DatabaseUnavailable(
             "the fork's snapshot could not be read consistently; retry",
@@ -419,6 +428,14 @@ async def _copy(
         characters=cast,
         counts=counts,
     )
+
+
+def snapshot_backoff_s(failures: int, rng: random.Random | None = None) -> float:
+    """Seconds to pause after ``failures`` (1-based) failed snapshot attempts:
+    ``SNAPSHOT_BACKOFF_S·2^(failures-1)`` ± ``SNAPSHOT_BACKOFF_JITTER``."""
+    base: float = SNAPSHOT_BACKOFF_S * 2 ** (failures - 1)
+    jitter: float = (rng or random).uniform(-SNAPSHOT_BACKOFF_JITTER, SNAPSHOT_BACKOFF_JITTER)
+    return base * (1 + jitter)
 
 
 class ErasedMeanwhile(Exception):
@@ -963,10 +980,13 @@ __all__ = [
     "OVERRIDES",
     "SKIPPED_EVENT_TYPES",
     "SNAPSHOT_ATTEMPTS",
+    "SNAPSHOT_BACKOFF_JITTER",
+    "SNAPSHOT_BACKOFF_S",
     "STORY_TABLES_REBUILT",
     "ForkCharacter",
     "ForkOrigin",
     "ForkRequest",
     "Forked",
     "fork",
+    "snapshot_backoff_s",
 ]

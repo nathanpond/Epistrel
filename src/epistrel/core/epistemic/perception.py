@@ -617,6 +617,21 @@ def route_turn(
     return results
 
 
+def noticers(
+    beat: RouteBeat, scene: SceneState, candidates: Iterable[str], level: Level = FULL
+) -> tuple[str, ...]:
+    """Who of ``candidates`` notices a hidden ``latent`` (#169, FR-COMMIT-4): the rendering
+    character always; otherwise a candidate present where it happens (the renderer's location,
+    a narrator's latent the scene's, or its declared ``location``), and at ``none`` every
+    candidate in the scene. A candidate elsewhere notices nothing."""
+    wanted = sorted(set(candidates))
+    if level == NONE:
+        present = scene.characters
+    else:
+        present = scene.co_located(_location_of(beat, scene, beat.qualifiers))
+    return tuple(c for c in wanted if c == beat.actor or c in present)
+
+
 def co_located_set(scene: SceneState, character_id: str | None = None) -> frozenset[str]:
     """The characters authoritatively co-located with ``character_id`` (with the scene's
     location when ``None``), the character included: #55's ``present`` set (FR-GUARD-11)."""
@@ -752,6 +767,7 @@ __all__ = [
     "deliver",
     "eavesdrop_path",
     "envelope_text",
+    "noticers",
     "pair",
     "register_perception_sink",
     "remove_perception_sink",

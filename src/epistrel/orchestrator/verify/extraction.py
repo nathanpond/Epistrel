@@ -128,6 +128,7 @@ from epistrel.core.verify.protected import (
     viewpoint_of,
 )
 from epistrel.core.verify.rules import VerdictReason
+from epistrel.core.visibility import OBJECTIVE, Visibility
 from epistrel.observability.metrics import CLAIMS_CHECKED, CLAIMS_DETECTED
 from epistrel.orchestrator.budget import COMPOSED, TurnBudget
 from epistrel.orchestrator.jobs.types import JobContext, JobHandler, JobOutput
@@ -852,9 +853,11 @@ async def apply_dependences(
     *,
     read_set: StructuredReadSet,
     registry: Registry | None = None,
+    visibility_of: Callable[[CheckedClaim], Visibility | None] | None = None,
 ) -> list[lifecycle.Dependence]:
     """Hand each dependence (``dependences``) to ``core.commit.lifecycle.depend`` in the turn's
-    commit step, after re-finding its thunk through the keyed lookup (#146's read-set key)."""
+    commit step, after re-finding its thunk through the keyed lookup (#146's read-set key).
+    ``visibility_of`` scopes a claim's resolution (#169; ``None``: ``objective``)."""
     found: list[lifecycle.Dependence] = []
     story_id = str(operation.story_id)
     lookup = KeyedLookup(conn, read_set)
@@ -865,6 +868,7 @@ async def apply_dependences(
         target = await matching.dependence_target(lookup, story_id, proposition)
         if target is None:
             continue
+        scope = None if visibility_of is None else visibility_of(c)
         found.append(
             await lifecycle.depend(
                 conn,
@@ -874,6 +878,7 @@ async def apply_dependences(
                 beat=c.claim.beat,
                 channel=cast(lifecycle.Channel, c.claim.channel),
                 registry=registry,
+                visibility=OBJECTIVE if scope is None else scope,
             )
         )
     return found

@@ -128,6 +128,7 @@ from epistrel.core.tables import deployment_state, entities, events, operations,
 from epistrel.core.tables.commitments import promissory_ledger, thunks
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 from epistrel.core.tables.facts import facts
+from epistrel.core.visibility import OBJECTIVE, Visibility
 from epistrel.observability.metrics import LEDGER, MINIMAL_COMMITS, THUNKS
 
 log = logging.getLogger(__name__)
@@ -841,12 +842,15 @@ async def depend(
     registry: Registry | None = None,
     on: bool | None = None,
     resolution_level: str = "consequential",
+    visibility: Visibility = OBJECTIVE,
 ) -> Dependence:
     """Beat ``beat`` (of ``channel``) depends on thunk ``thunk_id`` with ``claim`` (#148's
     detected claim, after the beat survived verification): see the module docstring. No
     resolution commits without #154's reconciliation (``core.commit.reconcile``): a conflict is
     ``rejected``; otherwise the resolution's fact (``provenance = resolution`` by default, at
-    ``resolution_level``) and its novel obligations commit together, anchored to the thunk."""
+    ``resolution_level``) and its novel obligations commit together, anchored to the thunk,
+    with ``visibility`` (#169: a modeled character's ``do`` about itself is scoped to it and its
+    content perceivers under partitions; ``objective`` otherwise)."""
     story_id = _story_of(operation)
     if not await resolve_on(conn, story_id, on):
         return Dependence("inert", thunk_id)
@@ -898,6 +902,7 @@ async def depend(
         registry=registry,
         thunk_id=thunk.id,
         resolution_level=resolution_level,
+        visibility=visibility,
     )
     obligations: list[str] = []
     for implied in reconciled.to_commit:
@@ -907,6 +912,7 @@ async def depend(
             implied,
             provenance=RecordProvenance.RESOLUTION,
             operation=operation,
+            visibility=visibility,
             source_event_ids=source_event_ids,
             beat=beat,
             commit_state=FactCommitState.COMMITTED,
@@ -1331,6 +1337,9 @@ class LedgerPage:
     """#165: the could-have-known soft flags each thunk's resolution raised in the timeline's
     turns (``turn_report.commit.could_have_known_flags``: ids, severity and gap), by thunk
     id."""
+    hidden: tuple[canon.Fact, ...] = ()
+    """#169: the story's current hidden canon (``core.commit.hidden.hidden_facts``; the first
+    page only)."""
 
 
 async def inspect_ledger(
@@ -1370,7 +1379,10 @@ async def inspect_ledger(
         names.update(await predicate_names(conn, [t.sketch.predicate_id for t in found.thunks]))
         levels, rejected = await _resolutions(conn, story_id, found.thunks)
         flags = await _reported(conn, story_id, found.thunks, "could_have_known_flags")
-    return LedgerPage(found, revision, names, levels, rejected, flags)
+        from epistrel.core.commit import hidden as hiding
+
+        secret = tuple(await hiding.hidden_facts(conn, story_id)) if after_id is None else ()
+    return LedgerPage(found, revision, names, levels, rejected, flags, secret)
 
 
 async def _reported(

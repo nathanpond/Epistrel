@@ -7610,7 +7610,7 @@
       },
       "FactRequest": {
         "additionalProperties": false,
-        "description": "An author fact: #131's normalized proposition (JSON only, never prose), who may read it\n(``visibility``, default ``objective``), optional valid-time bounds replacing the\nproposition's (``valid_from``/``valid_to``, story-minutes, exact), a related fact\n(``anchored_to``) and ``locked`` (``author_locked``: no render may change it, FR-VERIFY-11).",
+        "description": "An author fact: #131's normalized proposition (JSON only, never prose), who may read it\n(``visibility``, default ``objective``), optional valid-time bounds replacing the\nproposition's (``valid_from``/``valid_to``, story-minutes, exact), a related fact\n(``anchored_to``) and ``locked`` (``author_locked``: no render may change it, FR-VERIFY-11).\n``holder`` is always ``canon``: a character holder is 422 ``viewpoint_cannot_assign_truth``\n(FR-EPI-8, #169; a character's view is a belief, ``POST …/beliefs``).",
         "examples": [
           {
             "locked": true,
@@ -7639,6 +7639,13 @@
               }
             ],
             "title": "Anchored To"
+          },
+          "holder": {
+            "default": "canon",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Holder",
+            "type": "string"
           },
           "locked": {
             "default": false,
@@ -9659,6 +9666,73 @@
           "checks"
         ],
         "title": "HealthResponse",
+        "type": "object"
+      },
+      "HiddenFactBody": {
+        "description": "A hidden fact (#169, FR-COMMIT-4): a current canon version scoped away from the shared\nview (``characters``: the ones who know it; ``engine``: nobody does), its proposition, its\nvalid-time (story-minutes) and the turn that committed it.",
+        "properties": {
+          "characters": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Characters",
+            "type": "array"
+          },
+          "fact_id": {
+            "title": "Fact Id",
+            "type": "string"
+          },
+          "narrative_turn": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narrative Turn"
+          },
+          "proposition": {
+            "$ref": "#/components/schemas/Proposition"
+          },
+          "scope": {
+            "title": "Scope",
+            "type": "string"
+          },
+          "valid_from": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid From"
+          },
+          "valid_to": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid To"
+          }
+        },
+        "required": [
+          "fact_id",
+          "proposition",
+          "scope",
+          "characters",
+          "valid_from",
+          "valid_to",
+          "narrative_turn"
+        ],
+        "title": "HiddenFactBody",
         "type": "object"
       },
       "HistoryItemModel": {
@@ -11820,8 +11894,16 @@
         "type": "string"
       },
       "LedgerBody": {
-        "description": "A page of the story's thunks and their ledger entries, the story's revision, and\n``next_after_id`` (``null`` on the last page).",
+        "description": "A page of the story's thunks and their ledger entries, the hidden facts (the first page\nonly, #169), the story's revision, and ``next_after_id`` (``null`` on the last page).",
         "properties": {
+          "hidden_facts": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/HiddenFactBody"
+            },
+            "title": "Hidden Facts",
+            "type": "array"
+          },
           "ledger": {
             "items": {
               "$ref": "#/components/schemas/LedgerItemBody"
@@ -30853,7 +30935,7 @@
       },
       "SupersedeRequest": {
         "additionalProperties": false,
-        "description": "The successor of a current fact version: its proposition (same subject, predicate and\nkey qualifiers, else 422 ``key_mismatch``); visibility, valid-time and the lock carry over\nunless given.",
+        "description": "The successor of a current fact version: its proposition (same subject, predicate and\nkey qualifiers, else 422 ``key_mismatch``); visibility, valid-time and the lock carry over\nunless given. ``holder``: as ``FactRequest``'s (#169).",
         "examples": [
           {
             "proposition": {
@@ -30872,6 +30954,13 @@
           }
         ],
         "properties": {
+          "holder": {
+            "default": "canon",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Holder",
+            "type": "string"
+          },
           "locked": {
             "anyOf": [
               {
@@ -38180,7 +38269,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `unknown_predicate`, `validation_error`."
+            "description": "Invalid request; nothing was written: `unknown_predicate`, `validation_error`, `viewpoint_cannot_assign_truth`."
           },
           "423": {
             "content": {
@@ -38785,7 +38874,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `key_mismatch`, `unknown_predicate`, `validation_error`."
+            "description": "Invalid request; nothing was written: `key_mismatch`, `unknown_predicate`, `validation_error`, `viewpoint_cannot_assign_truth`."
           },
           "423": {
             "content": {
@@ -56119,7 +56208,7 @@
     },
     "/stories/{story_id}/inspect/ledger": {
       "get": {
-        "description": "The introduced-but-undetermined references (thunks) and the salient references awaiting commitment (FR-COMMIT-7,13), `omniscient` only (403 `omniscient_required`). A page of thunks by id (`limit`, at most 500; `after_id` continues), optionally only those `open`, `resolved` or `expired`, with the ledger entries on them (`discharged` keeps the discharged or the undischarged ones); the first page also lists the entries on hidden facts' propositions. 409 `module_off` for a story that does not run commitment.",
+        "description": "The introduced-but-undetermined references (thunks) and the salient references awaiting commitment (FR-COMMIT-7,13), `omniscient` only (403 `omniscient_required`). A page of thunks by id (`limit`, at most 500; `after_id` continues), optionally only those `open`, `resolved` or `expired`, with the ledger entries on them (`discharged` keeps the discharged or the undischarged ones); the first page also lists the entries on hidden facts' propositions and the hidden facts themselves (`hidden_facts`: current canon scoped to characters or to the engine, #169). 409 `module_off` for a story that does not run commitment.",
         "operationId": "inspect_ledger",
         "parameters": [
           {

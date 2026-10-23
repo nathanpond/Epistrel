@@ -16,14 +16,14 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.canon import facts as canon
 from epistrel.core.canon.facts import Visibility
-from epistrel.core.commit import lifecycle
+from epistrel.core.commit import hidden, lifecycle
 from epistrel.core.enums import (
     DischargeMode,
     FactCommitState,
     OpenSlot,
     RecordProvenance,
 )
-from epistrel.core.errors import InvalidRequest
+from epistrel.core.errors import InvalidRequest, ViewpointCannotAssignTruth
 from epistrel.core.events import Operation
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.verify.normalize import ClaimSketch
@@ -40,6 +40,7 @@ from epistrel.orchestrator.models.registry import (
 )
 from tests import commit_support as c
 from tests import structured_turn_support as structured
+from tests import testimony_support as ts
 from tests.auth_support import auth_settings
 from tests.canon_support import commit
 from tests.respond_support import body, respond, respond_client
@@ -480,3 +481,165 @@ async def test_u_01__follow_up(
         assert (commit_report["follow_up"]["settled"], commit_report["follow_up"]["open"]) == (1, 1)
         assert commit_report["minimal_commits"] == 1
         assert k.mailman in await knockers(k)
+
+
+# -- M5: determined-but-unknown (FR-COMMIT-4,5; #169) ---------------------------------------------
+
+
+async def _input_event(conn: AsyncConnection, op: Operation) -> tuple[str, int]:
+    """The turn's ``player_input`` event and its beat: the beat a hidden commit cites."""
+    row = (
+        await conn.execute(
+            text("SELECT id, beat FROM events WHERE operation_id = :o AND type = 'player_input'"),
+            {"o": op.operation_id},
+        )
+    ).one()
+    return str(row.id), int(row.beat or 1)
+
+
+async def _held(engine: AsyncEngine, story_id: str, holder: str) -> list[Any]:
+    async with engine.connect() as conn:
+        found = await conn.execute(
+            text(
+                "SELECT b.id, b.confidence_level, p.subject_id, p.object_id, t.kind, "
+                "t.antecedent_ref FROM beliefs b JOIN propositions p ON p.id = b.proposition_id "
+                "JOIN belief_transitions t ON t.id = b.provenance WHERE b.story_id = :s "
+                "AND b.holder_character_id = :h AND b.membership = 'active' AND b.tx_to IS NULL "
+                "ORDER BY b.id"
+            ),
+            {"s": story_id, "h": holder},
+        )
+        return list(found)
+
+
+@pytest.mark.part("M5", "FR-COMMIT-4,5")
+async def test_u_01__m5(engine: AsyncEngine, testimony_delivered: None) -> None:
+    """Under per-character partitions, committing a salient-but-hidden fact (Jenni alone saw who
+    left the parcel: the mailman) records both the truth in canon, scoped away (``characters:
+    [Jenni]``), and her observation of it in her partition (``known``, citing the committing
+    beat's event). It is determined but unknown to Bobby and Cal: decided once and for everyone
+    (the omniscient read holds it; no thunk, no ledger entry), absent from their reads and their
+    partitions, which is not a global thunk's state: the knock's knocker, a thunk, has no value
+    for anyone. A signal-only noticing (``observed = signal``) scopes the truth to the engine,
+    away from the noticer too, with no observation. A sincere reveal by Jenni to Bobby widens the
+    fact (one current version, the same value, ``characters: [Bobby, Jenni]``); a deceptive one,
+    or one by a character who does not know it, widens nothing. Complement: naming a character
+    as the fact's holder is 422 ``viewpoint_cannot_assign_truth``, and with ``partitions`` off
+    the hidden commit is #146's plain commit with its recorded scope and no observation."""
+    k = await c.knock_story(engine)
+    await ts.enable_testimony(engine, k.story_id, "defaulted")
+    left = c.knocker(k, k.mailman, 0).model_copy(update={"object_id": k.parcel})
+    why = c.knocker(k, k.mailman, 0).model_copy(
+        update={"predicate_id": k.knocked_for, "subject_id": k.door, "object_id": k.parcel}
+    )
+
+    async def noticed(conn: AsyncConnection, op: Operation) -> tuple[Any, Any, Any]:
+        event, beat = await _input_event(conn, op)
+        seen = await hidden.commit_hidden(
+            conn, op, left, noticers=[k.jenni], event_id=event, beat=beat
+        )
+        signal = await hidden.commit_hidden(
+            conn, op, why, noticers=[k.jenni], observed="signal", event_id=event, beat=beat
+        )
+        knock = await lifecycle.introduce(conn, op, c.knock_sketch(k), valid_time=0, beat=beat)
+        return seen, signal, knock
+
+    seen, signal, knock = await c.in_turn(engine, k.story_id, noticed)
+    assert seen.visibility == Visibility(scope="characters", characters=(k.jenni,))
+    assert len(seen.observation_transition_ids) == 1
+    assert signal.visibility == Visibility(scope="engine")
+    assert signal.observation_transition_ids == ()
+    # Her observation, in her partition only.
+    (observed,) = await _held(engine, k.story_id, k.jenni)
+    assert (observed.subject_id, observed.object_id, observed.kind, observed.confidence_level) == (
+        k.mailman,
+        k.parcel,
+        "observation",
+        "known",
+    )
+    assert observed.antecedent_ref["table"] == "events"
+    assert await _held(engine, k.story_id, k.bobby) == []
+    async with engine.connect() as conn:
+        everyone = await canon.canon(conn, k.story_id, predicate=k.knocked_at)
+        hers = await canon.canon(conn, k.story_id, viewpoint=f"character:{k.jenni}")
+        his = await canon.canon(conn, k.story_id, viewpoint=f"character:{k.bobby}")
+        narrated = await canon.canon(conn, k.story_id, viewpoint="narrator")
+        secret = await hidden.hidden_facts(conn, k.story_id)
+    # Determined: one value, decided for everyone; unknown to Bobby and the narrator.
+    assert [f.id for f in everyone] == [seen.fact_id]
+    assert seen.fact_id in {f.id for f in hers}
+    assert not {seen.fact_id, signal.fact_id} & {f.id for f in [*his, *narrated]}
+    assert signal.fact_id not in {f.id for f in hers}  # the signal's truth: the engine's only
+    assert {f.id for f in secret} == {seen.fact_id, signal.fact_id}
+    # Not a thunk: the only thunk is the knock's knocker, with no world value for anyone.
+    thunks = await c.rows(engine, "thunks", k.story_id)
+    assert [t.id for t in thunks] == [knock.id]
+    assert str(thunks[0].state) == "open"
+    assert await c.rows(engine, "promissory_ledger", k.story_id) == []  # nothing owed
+    async with engine.connect() as conn:
+        assert await canon.canon(conn, k.story_id, predicate=k.knocked_at, object=k.door) == []
+
+    # A deceptive say and an unknowing speaker reveal nothing; Jenni's sincere say does.
+    async def reveals(conn: AsyncConnection, op: Operation) -> list[list[Any]]:
+        event, beat = await _input_event(conn, op)
+        found = []
+        for speaker, intent in ((k.jenni, "deceptive"), (k.bobby, "sincere"), (k.jenni, "sincere")):
+            found.append(
+                await hidden.reveal(
+                    conn,
+                    op,
+                    [left],
+                    speaker=speaker,
+                    perceivers=[k.bobby, k.jenni],
+                    beat=beat,
+                    event_id=event,
+                    intent=intent,
+                )
+            )
+        return found
+
+    lied, unknowing, told = await c.in_turn(engine, k.story_id, reveals)
+    assert (lied, unknowing) == ([], [])
+    (widened,) = told
+    assert widened.superseded_id == seen.fact_id
+    assert widened.visibility == Visibility(scope="characters", characters=(k.bobby, k.jenni))
+    async with engine.connect() as conn:
+        current = await canon.canon(conn, k.story_id, predicate=k.knocked_at)
+    assert [(f.id, f.proposition.subject_id) for f in current] == [(widened.fact_id, k.mailman)]
+
+    # Complement: a character cannot hold a canon fact's truth.
+    async def assign(conn: AsyncConnection, op: Operation) -> None:
+        await canon.commit_fact(
+            conn,
+            k.story_id,
+            left,
+            provenance=RecordProvenance.RENDER,
+            operation=op,
+            holder=k.bobby,
+        )
+
+    with pytest.raises(ViewpointCannotAssignTruth) as refused:
+        await c.in_turn(engine, k.story_id, assign)
+    assert refused.value.code == "viewpoint_cannot_assign_truth"
+    with pytest.raises(ViewpointCannotAssignTruth):
+        hidden.refuse_holder(f"character:{k.jenni}")
+
+    # Complement: with partitions off, the plain commit, its recorded scope, no observation.
+    off = await c.knock_story(engine)
+    scoped = Visibility(scope="characters", characters=(off.jenni,))
+
+    async def plain(conn: AsyncConnection, op: Operation) -> Any:
+        event, beat = await _input_event(conn, op)
+        return await hidden.commit_hidden(
+            conn,
+            op,
+            c.knocker(off, off.mailman, 0).model_copy(update={"object_id": off.parcel}),
+            noticers=[off.jenni],
+            event_id=event,
+            beat=beat,
+            recorded=scoped,
+        )
+
+    inert = await c.in_turn(engine, off.story_id, plain)
+    assert (inert.visibility, inert.observation_transition_ids) == (scoped, ())
+    assert await c.rows(engine, "belief_transitions", off.story_id) == []

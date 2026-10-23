@@ -134,7 +134,7 @@ Logs carry ids and counts only (invariant 3).
 from __future__ import annotations
 
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import partial
 from types import SimpleNamespace
@@ -145,7 +145,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import idempotency, pause, turn_gate
 from epistrel.core.canon.canonize import CanonRequest, canonize_all
-from epistrel.core.commit import boundary, lifecycle, matching
+from epistrel.core.commit import boundary, hidden, lifecycle, matching
 from epistrel.core.commit import epistemic as knowledge_flags
 from epistrel.core.commit.sketch import ThunkSketch, fills, open_sketch
 from epistrel.core.concurrency import check_expected_revision, run_with_revalidation
@@ -254,6 +254,7 @@ from epistrel.core.viewpoint import (
     resolve_viewpoint,
     try_resolve,
 )
+from epistrel.core.visibility import Visibility
 from epistrel.observability import stages
 from epistrel.observability.logging import get_logger
 from epistrel.observability.metrics import (
@@ -948,6 +949,12 @@ def _beats_of(
                 qualifiers=_qualifiers_of(decl),
                 cites=tuple(decl.cites) if decl.kind == THINK else (),
                 step=decl.step or 0,
+                hidden=None
+                if decl.kind != LATENT or decl.hidden is None
+                else tuple(decl.hidden.noticers),
+                observed="fact"
+                if decl.kind != LATENT or decl.hidden is None
+                else decl.hidden.observed,
             )
         )
         sketches[number] = list(decl.propositions)
@@ -1718,6 +1725,8 @@ async def _check_turn(
             checked, rejected_bindings = await resolution.screen(
                 conn, story_id, checked, read_set=read_set, registry=env.registry
             )
+            # #169: a different value for a reference the world already fixed is contradicted.
+            checked = await resolution.determined(conn, story_id, checked)
             # A claim that resolves an open thunk commits through its dependence (#146's
             # ``depend``, reconciled), never as a second, unreconciled canon write; a rejected
             # binding commits nowhere.
@@ -2670,6 +2679,146 @@ async def route_committed(
     }
 
 
+def _hidden_latent(beat: TurnBeat) -> bool:
+    """#169: a ``latent`` that commits a hidden fact: one declaring ``hidden``, or scoped to
+    characters."""
+    return beat.kind == LATENT and (
+        beat.hidden is not None or beat.visibility.scope == "characters"
+    )
+
+
+async def hidden_committed(
+    conn: AsyncConnection,
+    op: Operation,
+    checked: Checked,
+    read: TurnRead,
+    *,
+    ids: Mapping[int, str],
+    level: perception.Level,
+    settings: ProfileSettings,
+    registry: Any,
+) -> list[hidden.HiddenCommit]:
+    """The turn's hidden latents (#169, FR-COMMIT-4), in its commit under partitions: each
+    normalized, uncontradicted proposition through ``core.commit.hidden.commit_hidden``, its
+    noticers the declared ones (the scope's characters, else the rendering character) that
+    perceive the beat (``perception.noticers`` over the scene at the turn's start)."""
+    beats = {b.beat: b for b in checked.beats if _hidden_latent(b)}
+    wanted = [(beats[b.beat], c) for b, c in checked.latent if b.beat in beats]
+    if not wanted:
+        return []
+    story_id = str(op.story_id)
+    state, _ = await scene_loader.load_scene(conn, story_id, read.turn)
+    found: list[hidden.HiddenCommit] = []
+    for beat, claim in wanted:
+        if claim.proposition is None:  # pragma: no cover - checked.latent keeps normalized ones
+            continue
+        actor = None if beat.narrator else beat.character_id
+        scoped = beat.visibility.characters or () if beat.visibility.scope == "characters" else ()
+        candidates = tuple(beat.hidden or ()) or tuple(scoped) or ((actor,) if actor else ())
+        routed = perception.RouteBeat(kind="latent", beat=beat.beat, actor=actor)
+        found.append(
+            await hidden.commit_hidden(
+                conn,
+                op,
+                claim.proposition,
+                noticers=perception.noticers(routed, state, candidates, level),
+                observed="signal" if beat.observed == "signal" else "fact",
+                event_id=ids.get(beat.beat),
+                beat=beat.beat,
+                provenance=RecordProvenance.DIRECTOR if beat.narrator else RecordProvenance.RENDER,
+                recorded=beat.visibility,
+                settings=settings,
+                registry=registry,
+            )
+        )
+    return found
+
+
+def _content_perceivers(results: Sequence[perception.PerceptionResult]) -> dict[int, set[str]]:
+    """Each routed beat's content-fidelity perceivers (a partial eavesdrop is not content)."""
+    found: dict[int, set[str]] = {}
+    for result in results:
+        found.setdefault(result.beat.beat, set()).update(
+            p.character_id
+            for p in result.perceived
+            if p.fidelity == perception.CONTENT and p.partial_text is None
+        )
+    return found
+
+
+async def reveals_committed(
+    conn: AsyncConnection,
+    op: Operation,
+    checked: Checked,
+    read: TurnRead,
+    results: Sequence[perception.PerceptionResult],
+    *,
+    ids: Mapping[int, str],
+    level: perception.Level,
+    registry: Any,
+) -> list[hidden.Reveal]:
+    """The turn's reveals (#169): every rendered ``say`` (never a deceptive one) or ``do`` whose
+    supported claims assert a hidden fact its actor reads, widened to the beat's content
+    perceivers (``core.commit.hidden.reveal``; at perception ``none`` everyone in the scene)."""
+    content = _content_perceivers(results)
+    everyone: frozenset[str] | None = None
+    found: list[hidden.Reveal] = []
+    for beat in checked.beats:
+        if beat.kind not in (SAY, DO) or beat.character_id is None or beat.narrator:
+            continue
+        claims = [
+            c.proposition
+            for c in beat.claims
+            if c.proposition is not None and c.verdict == "supported" and not c.attributed
+        ]
+        if not claims:
+            continue
+        perceivers: Sequence[str] | frozenset[str]
+        if level == perception.NONE:
+            if everyone is None:
+                state, _ = await scene_loader.load_scene(conn, str(op.story_id), read.turn)
+                everyone = state.characters
+            perceivers = everyone
+        else:
+            perceivers = sorted(content.get(beat.beat, ()))
+        found += await hidden.reveal(
+            conn,
+            op,
+            claims,
+            speaker=beat.character_id,
+            perceivers=perceivers,
+            beat=beat.beat,
+            event_id=ids.get(beat.beat),
+            intent=beat.intent if beat.kind == SAY else "unspecified",
+            registry=registry,
+        )
+    return found
+
+
+def agent_scope(
+    results: Sequence[perception.PerceptionResult],
+) -> Callable[[CheckedClaim], Visibility | None]:
+    """#169 (FR-COMMIT-6,13): under partitions, a modeled character's ``do`` resolving a thunk
+    about itself ("I knock") commits on its side: scoped to it and the beat's content
+    perceivers (``None``: any other dependence, which stays ``objective``)."""
+    content = _content_perceivers(results)
+
+    def of(c: CheckedClaim) -> Visibility | None:
+        claim = c.claim
+        speaker = claim.speaker
+        if claim.channel != DO or claim.beat is None or claim.beat not in content:
+            return None
+        if speaker in (None, PLAYER, NARRATOR) or claim.proposition is None:
+            return None
+        if claim.proposition.subject_id != speaker:
+            return None
+        return Visibility(
+            scope="characters", characters=tuple({str(speaker), *content[claim.beat]})
+        )
+
+    return of
+
+
 def _is_latent(checked: Checked, number: int | None) -> bool:
     return any(b.beat == number and b.kind == LATENT for b in checked.beats)
 
@@ -3437,6 +3586,9 @@ async def play(
         ids = await beat_event_ids(conn, op.operation_id)
         await write_introductions(conn, op, rendered.introductions, base_revision=op.base_revision)
         registry = await load_registry(conn, story_id)
+        # #169: under partitions a hidden latent commits through ``commit_hidden`` (its scope
+        # and its noticers' observations), after routing; every other latent canonizes here.
+        partitioned = module_on(settings, belief_transitions.PARTITIONS_MODULE)
         latent_requests = [
             CanonRequest(
                 claim=claim.proposition,
@@ -3446,7 +3598,7 @@ async def play(
                 claim_id=claim.claim_id,
             )
             for beat, claim in checked.latent
-            if claim.proposition is not None
+            if claim.proposition is not None and not (partitioned and _hidden_latent(beat))
         ]
         # FR-COMMIT-9: a claim about a consequential fact's open detail resolves it through
         # its dependence (reconciled, ``incidental``), never as a plain canon write.
@@ -3526,13 +3678,26 @@ async def play(
         told: adjudicate.Testified | None = None
         spoken: speech.Spoken | None = None
         stepped: render_steps.Written | None = None
+        results: list[perception.PerceptionResult] = []
+        hidden_commits: list[hidden.HiddenCommit] = []
         with belief_transitions.tallying() as tally:
+            if partitioned:
+                # #169 (FR-COMMIT-4): the hidden latents, with their noticers' observations.
+                hidden_commits = await hidden_committed(
+                    conn,
+                    op,
+                    checked,
+                    read,
+                    ids=ids,
+                    level=level,
+                    settings=settings,
+                    registry=registry,
+                )
             if level == perception.NONE:
                 await records.write_episodic(
                     conn, op, _episodic(checked, read, say=say, do=do, ids=ids), settings=settings
                 )
             else:
-                results: list[perception.PerceptionResult] = []
                 # #164: the observation sink writes each perceiver's observations here.
                 fixed["perception"] = await route_committed(
                     conn,
@@ -3604,6 +3769,13 @@ async def play(
                         registry=registry,
                     ),
                 )
+        reveals: list[hidden.Reveal] = []
+        if partitioned:
+            # #169: a sincere say or a do of a hidden fact by one who knows it widens it to the
+            # beat's content perceivers (their transitions are routing's and testimony's).
+            reveals = await reveals_committed(
+                conn, op, checked, read, results, ids=ids, level=level, registry=registry
+            )
         if told is not None or spoken is not None or stepped is not None:
             fixed["epistemic"] = {
                 **({} if told is None else {"testimony": told.testimony, **told.exposures}),
@@ -3641,7 +3813,12 @@ async def play(
                     on=True,
                 )
                 depended = await extraction.apply_dependences(
-                    conn, op, checked.checked, read_set=read_set, registry=registry
+                    conn,
+                    op,
+                    checked.checked,
+                    read_set=read_set,
+                    registry=registry,
+                    visibility_of=agent_scope(results) if partitioned else None,
                 )
                 depended += await resolve_details(conn, op, details, registry=registry)
                 await settle_follow_up(conn, op, checked, read_set=read_set, registry=registry)
@@ -3658,6 +3835,8 @@ async def play(
                         "degradation": list(sal.degradation),
                     },
                     "canonized": len(canonized),
+                    "hidden_commits": [h.report() for h in hidden_commits],
+                    "reveals": [r.report() for r in reveals],
                     "follow_up": {
                         **checked.follow_up,
                         "path": _close_path(checked.follow_up, closed.minimal_commits),
@@ -3672,7 +3851,17 @@ async def play(
             if commit_report["could_have_known_flags"]:
                 checked.degradation.append((knowledge_flags.FLAG_DEGRADATION, "commitment"))
         else:
-            commit_report = {"canonized": len(canonized)}
+            commit_report = {
+                "canonized": len(canonized),
+                **(
+                    {
+                        "hidden_commits": [h.report() for h in hidden_commits],
+                        "reveals": [r.report() for r in reveals],
+                    }
+                    if partitioned
+                    else {}
+                ),
+            }
         fixed["commit"] = commit_report
         # FR-PROP-4: the auto predicates this turn's propositions used may now earn a
         # strengthening proposal (inert until the author approves it; #131, #491).

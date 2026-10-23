@@ -191,6 +191,11 @@ class TurnBeat:
     """A ``think``'s citations (#166): the records a new belief it reasons from rests on."""
     step: int = 0
     """The ``act`` step that owns the beat (#168, FR-TURN-12; 0: outside declared steps)."""
+    hidden: tuple[str, ...] | None = None
+    """#169: a ``latent``'s declared hidden commitment: its noticers (empty: the rendering
+    character); ``None`` when it declared none."""
+    observed: str = "fact"
+    """#169: what a hidden ``latent``'s noticers perceived: ``fact`` or ``signal``."""
 
     @property
     def declared(self) -> tuple[AssertedClaim, ...]:

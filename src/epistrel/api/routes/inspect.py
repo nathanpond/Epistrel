@@ -3,7 +3,8 @@
 - ``GET /stories/{id}/inspect/ledger?viewpoint=omniscient`` → the story's thunks (introduced,
   undetermined references) and its promissory ledger (FR-COMMIT-13): a page of thunks by id
   (``limit``, ``after_id``; ``state`` keeps the ``open``, ``resolved`` or ``expired`` ones) with
-  the ledger entries on them (``discharged`` keeps the discharged or the open ones).
+  the ledger entries on them (``discharged`` keeps the discharged or the open ones), and the
+  story's hidden facts (``hidden_facts``, #169).
 
 - ``GET /stories/{id}/inspect/beliefs?character=…&viewpoint=omniscient`` → one character's belief
   projection (FR-EPI-6, FR-ADMIN-5; #159): a page of its ``belief_state`` rows by proposition id
@@ -26,6 +27,7 @@ from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
 from epistrel.api.deps import ContextDep, EngineDep, StoryId
+from epistrel.core.canon.facts import Fact
 from epistrel.core.commit.lifecycle import (
     INSPECT_LIMIT_DEFAULT,
     INSPECT_LIMIT_MAX,
@@ -161,12 +163,39 @@ class LedgerItemBody(BaseModel):
         )
 
 
+class HiddenFactBody(BaseModel):
+    """A hidden fact (#169, FR-COMMIT-4): a current canon version scoped away from the shared
+    view (``characters``: the ones who know it; ``engine``: nobody does), its proposition, its
+    valid-time (story-minutes) and the turn that committed it."""
+
+    fact_id: str
+    proposition: Proposition
+    scope: str
+    characters: list[str]
+    valid_from: int | None
+    valid_to: int | None
+    narrative_turn: int | None
+
+    @classmethod
+    def of(cls, fact: Fact) -> HiddenFactBody:
+        return cls(
+            fact_id=fact.id,
+            proposition=fact.proposition,
+            scope=fact.visibility.scope,
+            characters=list(fact.visibility.characters or ()),
+            valid_from=fact.valid_from,
+            valid_to=fact.valid_to,
+            narrative_turn=fact.narrative_turn,
+        )
+
+
 class LedgerBody(BaseModel):
-    """A page of the story's thunks and their ledger entries, the story's revision, and
-    ``next_after_id`` (``null`` on the last page)."""
+    """A page of the story's thunks and their ledger entries, the hidden facts (the first page
+    only, #169), the story's revision, and ``next_after_id`` (``null`` on the last page)."""
 
     thunks: list[ThunkBody]
     ledger: list[LedgerItemBody]
+    hidden_facts: list[HiddenFactBody] = []
     revision: int
     next_after_id: str | None
 
@@ -176,6 +205,7 @@ class LedgerBody(BaseModel):
         return cls(
             thunks=[ThunkBody.of(t, names, page) for t in page.inspection.thunks],
             ledger=[LedgerItemBody.of(e) for e in page.inspection.ledger],
+            hidden_facts=[HiddenFactBody.of(f) for f in page.hidden],
             revision=page.revision,
             next_after_id=page.inspection.next_after_id,
         )
@@ -192,8 +222,9 @@ class LedgerBody(BaseModel):
         "A page of thunks by id (`limit`, at most 500; `after_id` continues), optionally only "
         "those `open`, `resolved` or `expired`, with the ledger entries on them (`discharged` "
         "keeps the discharged or the undischarged ones); the first page also lists the entries "
-        "on hidden facts' propositions. 409 `module_off` for a story that does not run "
-        "commitment."
+        "on hidden facts' propositions and the hidden facts themselves (`hidden_facts`: current "
+        "canon scoped to characters or to the engine, #169). 409 `module_off` for a story that "
+        "does not run commitment."
     ),
 )
 async def inspect_ledger(

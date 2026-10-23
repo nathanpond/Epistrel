@@ -101,7 +101,7 @@ from epistrel.core.enums import (
 from epistrel.core.erasure import guard
 from epistrel.core.erasure.index import index_records
 from epistrel.core.erasure.records import event_record, fact_record
-from epistrel.core.errors import InvalidRequest, ViewpointUnresolved
+from epistrel.core.errors import InvalidRequest, ViewpointCannotAssignTruth, ViewpointUnresolved
 from epistrel.core.events.registry import validate
 from epistrel.core.events.types import FactCommitted
 from epistrel.core.events.types import FactSuperseded as FactSupersededEvent
@@ -859,6 +859,18 @@ async def _written(conn: AsyncConnection, story_id: str, ids: Iterable[str]) -> 
     return {str(r.id): _fact_of(r) for r in found}
 
 
+def refuse_holder(holder: str | None, field_name: str = "holder") -> None:
+    """FR-EPI-8 (#169): canon has one holder. A write naming any other (a character's id, a
+    viewpoint) is 422 ``viewpoint_cannot_assign_truth``: a character's divergent view is an owned
+    belief, never a per-character value of the fact."""
+    if holder is None or holder == HolderKind.CANON.value:
+        return
+    raise ViewpointCannotAssignTruth(
+        "a viewpoint cannot assign a canon fact's truth: a character's view is a belief (FR-EPI-8)",
+        {"field": field_name, "holder": holder},
+    )
+
+
 async def commit_fact(
     conn: AsyncConnection,
     story_id: str,
@@ -878,6 +890,7 @@ async def commit_fact(
     registry: Registry | None = None,
     thunk_id: str | None = None,
     resolution_level: str | None = None,
+    holder: str = HolderKind.CANON.value,
 ) -> Fact:
     """Write ``proposition`` as a new fact version in ``operation``'s commit transaction (see
     the module docstring); answers the version, with the versions it closed in
@@ -888,7 +901,9 @@ async def commit_fact(
     caused the fact (its own ``fact_committed`` event when none); ``beat`` and ``slot_k``
     refine its narrative position, which is the operation's; ``thunk_id`` names the thunk a
     dependence resolved with it (#146's ``core.commit.lifecycle.depend``); ``resolution_level`` is
-    FR-COMMIT-9's level (#154; ``None`` reads as ``consequential``)."""
+    FR-COMMIT-9's level (#154; ``None`` reads as ``consequential``). ``holder`` is always
+    ``canon``: any other is 422 ``viewpoint_cannot_assign_truth`` (``refuse_holder``, #169)."""
+    refuse_holder(holder)
     return await _write(
         conn,
         _Write(
@@ -930,6 +945,7 @@ async def supersede(
     slot_k: int | None = None,
     registry: Registry | None = None,
     author_locked: bool | None = None,
+    holder: str = HolderKind.CANON.value,
 ) -> Fact:
     """Close version ``fact_id`` in transaction-time and write ``new_proposition`` as its
     successor in the same lineage (never a delete, FR-BITEMP-2). Provenance, visibility,
@@ -937,7 +953,9 @@ async def supersede(
     unless given; ``authority`` defaults to the given provenance's, else the old version's.
     404 ``fact_not_found``; 409 ``fact_inactive`` for a discarded or dormant version; 409
     ``fact_superseded`` for a closed one (supersede the lineage's current version); 422
-    ``key_mismatch`` when the uniqueness key changes."""
+    ``key_mismatch`` when the uniqueness key changes; 422 ``viewpoint_cannot_assign_truth`` for
+    a ``holder`` other than ``canon`` (#169)."""
+    refuse_holder(holder)
     old, current = await _load(conn, story_id, fact_id)
     if old.membership is not Membership.ACTIVE:
         raise FactInactive(
@@ -1348,6 +1366,7 @@ __all__ = [
     "hidden_from",
     "locked_keys",
     "read_version",
+    "refuse_holder",
     "register_fact_hook",
     "remove_fact_hook",
     "supersede",

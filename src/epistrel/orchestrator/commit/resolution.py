@@ -35,7 +35,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from epistrel.core.commit import lifecycle
+from epistrel.core.commit import hidden, lifecycle
 from epistrel.core.commit.reconcile import Conflict, reconcile
 from epistrel.core.commit.sketch import fills
 from epistrel.core.propositions.registry import Registry
@@ -161,10 +161,46 @@ async def screen(
     return out, rejected
 
 
+async def determined(
+    conn: AsyncConnection, story_id: str, checked: Sequence[CheckedClaim]
+) -> list[CheckedClaim]:
+    """#169 (FR-COMMIT-6, FR-EPI-8): a novel claim that would canonize (not a ``say``, never a
+    ``think``) and fills a resolved thunk with another value than the one the world fixed is a
+    second value: ``contradicted``, citing nothing (``VerifyResult.hidden_conflict``: the value
+    may be hidden from the speaker), so #151's ladder repairs it under a generic constraint and
+    canon keeps one value."""
+    out: list[CheckedClaim] = []
+    for c in checked:
+        proposition = c.claim.proposition
+        if (
+            proposition is None
+            or c.result is None
+            or c.result.kind is not VerdictKind.NOVEL
+            or c.claim.channel in ("say", "think")
+            or await hidden.determined_otherwise(conn, story_id, proposition) is None
+        ):
+            out.append(c)
+            continue
+        out.append(
+            replace(
+                c,
+                result=replace(
+                    c.result,
+                    verdict=Verdict(VerdictKind.CONTRADICTED),
+                    kind=VerdictKind.CONTRADICTED,
+                    disposition=None,
+                    hidden_conflict=True,
+                ),
+            )
+        )
+    return out
+
+
 __all__ = [
     "BINDING_REJECTED",
     "RejectedBinding",
     "candidates",
+    "determined",
     "rejected_result",
     "screen",
 ]

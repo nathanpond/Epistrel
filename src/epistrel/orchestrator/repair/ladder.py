@@ -515,6 +515,14 @@ class RepairLadder:
                 "open.",
                 cites,
             )
+        if v.result is not None and v.result.hidden_conflict:
+            # #169: hidden canon settles it; the constraint names nothing of the hidden value.
+            rendered = render_proposition(claim, registry, names)
+            return Constraint(
+                "do_not_assert",
+                f"Do not settle that {rendered}: this speaker does not know it; leave it open.",
+                cites,
+            )
         if v.result is not None and v.result.repair_tag == UNPERMITTED:
             denied = v.result.denied
             reason = "" if denied is None else f" ({denied.reason.value.replace('_', ' ')})"

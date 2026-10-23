@@ -1,13 +1,15 @@
-"""S-PHONE: eager commitment, a lie and its reveal (docs/04 §7; FR-TURN-4,5,6,7, FR-COMMIT-2;
-#166's verification half; #169 owns FR-COMMIT-4's hidden half).
+"""S-PHONE: eager commitment, a lie and its reveal (docs/04 §7; FR-TURN-4,5,6,7, FR-COMMIT-2,4;
+#166's verification half, #169's hidden half).
 
 Wren (the player), Jenni (the rendered character) and Bobby share the parlor, with per-character
 partitions and testimony ``defaulted``. The story registers ``message_content`` (functional: a
 message has one content). Played end to end through ``respond`` with the stub adapter.
 
-1. Jenni's phone buzzes. The render's ``latent`` beat commits what the message says as canon
-   scoped to Jenni (``characters: [Jenni]``, #133's scoped commit: #169 replaces this with
-   ``commit_hidden``), so the truth is fixed at turn 1; Jenni reads it (her observation).
+1. Jenni's phone buzzes. The render's ``latent`` beat commits what the message says as a
+   hidden fact (#169's ``commit_hidden``): canon scoped to Jenni (``characters: [Jenni]``), so
+   the truth is fixed at turn 1, and her observation of it in her partition (``known``, citing
+   the latent beat). ``/inspect/ledger`` lists it under ``hidden_facts`` for ``omniscient``
+   only.
 2. Bobby asks who it was. Jenni says "Oh, just a meme." to him, declared ``deceptive``: the claim
    is objectively false and contradicts what she believes, so it is a lie. It is stored as a
    speech act (an utterance: false / inconsistent / deceptive, ``lie``), never canon, and not
@@ -15,7 +17,9 @@ message has one content). Played end to end through ``respond`` with the stub ad
    who trusts her and knows nothing to contradict it, believes it (FR-TURN-7: a deception the
    hearer does not detect is accepted on his normal trust rules).
 3. The reveal: Jenni sincerely says what the message was. It matches the turn-1 truth, which no
-   turn changed.
+   turn changed: the fact is widened (superseded with the same value, scoped to Jenni and the
+   say's content perceivers, Bobby and Wren), and the lie's divergence is marked revealed by the
+   reveal's beat (``revealed_by_event_id``).
 """
 
 from __future__ import annotations
@@ -34,6 +38,7 @@ from tests import testimony_support as ts
 from tests.auth_support import auth_settings
 from tests.event_support import rows
 from tests.respond_support import body, respond, respond_client
+from tests.story_support import READ
 from tests.structured_turn_support import beat, claim, render, turn_report, utterances
 
 pytestmark = pytest.mark.integration
@@ -106,7 +111,7 @@ async def _contents(engine: AsyncEngine, story: str, predicate: str) -> list[Any
     )
 
 
-@pytest.mark.part("M5", "FR-TURN-4,5,6,7; FR-COMMIT-2")
+@pytest.mark.part("M5", "FR-TURN-4,5,6,7; FR-COMMIT-2,4")
 async def test_s_phone(
     stub_settings: Settings,
     engine: AsyncEngine,
@@ -144,14 +149,38 @@ async def test_s_phone(
         (truth,) = await _contents(engine, story, content)
         assert (truth.narrative_turn, truth.object_id) == (1, entity[TRUTH])
         assert truth.visibility == {"scope": "characters", "characters": [jenni]}
-        # She read it: her own observation of what it says.
-        read = Proposition(
-            subject_id=entity[PHONE],
-            predicate_id=content,
-            object_id=entity[TRUTH],
-            valid_time=Interval.of(None, None),
+        # She read it: her own observation of what it says, made by the hidden commit.
+        (hidden,) = (await turn_report(engine, story))["commit"]["hidden_commits"]
+        assert (hidden["fact_id"], hidden["characters"]) == (truth.id, [jenni])
+        assert len(hidden["observation_transition_ids"]) == 1
+        (observed,) = [
+            b
+            for b in ts.first_order(await ts.beliefs_of(engine, story, jenni))
+            if b.predicate_id == content
+        ]
+        assert (observed.object_id, observed.cause, observed.confidence_level) == (
+            entity[TRUTH],
+            "observation",
+            "known",
         )
-        observed = await ts.observed(engine, story, jenni, read)
+        assert observed.antecedent_ref["table"] == "events"
+        # Nobody else knows: Bobby holds nothing about it; the ledger shows it to omniscient.
+        assert not [
+            b for b in await ts.beliefs_of(engine, story, bobby) if b.predicate_id == content
+        ]
+        ledger = await client.get(
+            f"/stories/{story}/inspect/ledger", params={"viewpoint": "omniscient"}, headers=READ
+        )
+        assert ledger.status_code == 200, ledger.text
+        assert [(f["fact_id"], f["characters"]) for f in ledger.json()["hidden_facts"]] == [
+            (truth.id, [jenni])
+        ]
+        refused = await client.get(
+            f"/stories/{story}/inspect/ledger",
+            params={"viewpoint": f"character:{bobby}"},
+            headers=READ,
+        )
+        assert refused.status_code == 403
 
         # -- turn 2: the lie
         stub.reset()
@@ -186,7 +215,7 @@ async def test_s_phone(
             divergence.speaker_character_id,
             divergence.believed_belief_id,
             divergence.position_turn,
-        ) == (lie.id, jenni, observed.belief.id, 2)
+        ) == (lie.id, jenni, observed.id, 2)
         assert divergence.asserted_proposition_id in lie.proposition_ids
         assert report["verify"]["divergences_written"] == 1
         # Being said made nothing true: canon still holds the turn-1 content only.
@@ -226,9 +255,31 @@ async def test_s_phone(
             "consistent",
             "sincere",
         )
-        assert [(f.id, f.object_id, f.tx_to) for f in await _contents(engine, story, content)] == [
-            (truth.id, entity[TRUTH], None)
-        ]
-        # The divergence persists, queryable.
-        kept = await rows(engine, "SELECT id FROM divergences WHERE story_id = :s", s=story)
-        assert [d.id for d in kept] == [divergence.id]
+        # The reveal widened the turn-1 truth (same value, one current version).
+        (closed, widened) = await _contents(engine, story, content)
+        assert (closed.id, closed.object_id, closed.superseded_by) == (
+            truth.id,
+            entity[TRUTH],
+            widened.id,
+        )
+        assert closed.tx_to is not None
+        assert (widened.object_id, widened.tx_to) == (entity[TRUTH], None)
+        assert widened.visibility == {
+            "scope": "characters",
+            "characters": sorted([jenni, bobby, ids["Wren"]]),
+        }
+        (revealed,) = (await turn_report(engine, story))["commit"]["reveals"]
+        assert (revealed["fact_id"], revealed["superseded_id"]) == (widened.id, truth.id)
+        assert revealed["divergence_ids"] == [divergence.id]
+        # The divergence persists, queryable, settled by the reveal's beat.
+        (reveal_event,) = await rows(
+            engine,
+            "SELECT id FROM events WHERE story_id = :s AND type = 'beat_say' "
+            "AND narrative_turn = 3 AND character_id = :c",
+            s=story,
+            c=jenni,
+        )
+        kept = await rows(
+            engine, "SELECT id, revealed_by_event_id FROM divergences WHERE story_id = :s", s=story
+        )
+        assert [(d.id, d.revealed_by_event_id) for d in kept] == [(divergence.id, reveal_event.id)]

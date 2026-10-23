@@ -197,6 +197,10 @@ UNPERMITTED = "unpermitted"
 HALLUCINATION = "hallucination"
 """#166: the repair tag of a first-person claim with no legitimate basis (FR-VERIFY-10)."""
 RESOLUTION_CONFLICT = "resolution_conflict"
+HIDDEN_CONFLICT = "hidden_conflict"
+"""#169 (FR-EPI-8): a character's claim the character's view leaves open but hidden canon
+contradicts (a different value for a determined fact): ``contradicted``, citing nothing, so no
+repair reads or substitutes the hidden value."""
 """#154: a dependence's binding of an open thunk that conflicts with recorded history
 (``core.commit.reconcile``): ``contradicted``, repaired with an ``avoid_binding`` constraint."""
 """The repair tag of a novel claim its asserter may not introduce (#151's ladder)."""
@@ -316,6 +320,8 @@ class VerifyResult:
     self_attested: bool = False
     """#168: the claim asserts what a rejected ``believe`` step of the render concluded, in the
     beats of the first ``act`` citing it (FR-TURN-12): self-attestation, a hallucination."""
+    hidden_conflict: bool = False
+    """#169: ``contradicted`` by canon hidden from the claim's viewpoint (``HIDDEN_CONFLICT``)."""
 
     @property
     def reason(self) -> VerdictReason | None:
@@ -418,6 +424,7 @@ class VerifyResult:
             "permission": None if self.permission is None else self.permission.code(),
         } | (
             ({"cause": RESOLUTION_CONFLICT} if self.resolution_conflict else {})
+            | ({"cause": HIDDEN_CONFLICT} if self.hidden_conflict else {})
             | ({"speech": self.speech.payload()} if self.speech is not None else {})
             | ({"attribution": self.attribution.payload()} if self.attribution is not None else {})
         )
@@ -1409,6 +1416,13 @@ class Verifier:
         where = ref or ClaimRef()
         at = _At(viewpoint, position, holder)
         result = await self._settle(claim, verdict, fetched, at, where, top=True)
+        if (
+            result.kind is VerdictKind.NOVEL
+            and viewpoint != OMNISCIENT
+            and believer is None
+            and where.channel not in (SAY, *NEVER_CANONIZES)
+        ):
+            result = await self._hidden(result, claim, holder, position)
         if asserter is not None and result.kind is VerdictKind.NOVEL:
             result = await self._permit(
                 result, claim, asserter, at, protected=protected, resolves=resolves
@@ -1426,6 +1440,24 @@ class Verifier:
             result.disposition,
         )
         return result
+
+    async def _hidden(
+        self,
+        result: VerifyResult,
+        claim: Proposition,
+        holder: Holder,
+        position: tuple[int, int] | None,
+    ) -> VerifyResult:
+        """#169 (FR-EPI-8): a novel claim that canon hidden from its viewpoint contradicts (the
+        engine's check, not the character's) would give a determined fact a second value: it
+        is ``contradicted``, citing nothing (``HIDDEN_CONFLICT``)."""
+        found = await self.source.deterministic(
+            claim, holder=holder, viewpoint=OMNISCIENT, position=position
+        )
+        if found is None or found[0].kind is not VerdictKind.CONTRADICTED:
+            return result
+        verdict = Verdict(VerdictKind.CONTRADICTED, holder=holder, position=found[0].position)
+        return VerifyResult(claim, verdict, VerdictKind.CONTRADICTED, hidden_conflict=True)
 
     def adopt_answers(self, other: Verifier) -> None:
         """Reuse ``other``'s validated entailment answers (the same turn's): a repair's

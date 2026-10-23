@@ -16,7 +16,9 @@ wrong and is retried within the deployment's ``structured_retry_budget``:
   rendering character (never the player, never another character; the narrator names none);
 - ``intent`` is a ``say``'s alone (``sincere``, ``deceptive``, ``joking``, ``unspecified``;
   ``unspecified`` when it is left out), ``visibility`` a ``latent``'s alone (``objective`` when
-  left out; ``characters`` names cast members only), ``effects`` is empty in M4;
+  left out; ``characters`` names cast members only), ``effects`` is empty in M4; ``hidden``
+  (``{noticers, observed: fact | signal}``, cast members only) and ``holder`` (``canon`` only:
+  any other is ``viewpoint_cannot_assign_truth``, FR-EPI-8) a ``latent``'s alone (#169);
 - the perception qualifiers (#161) are optional and kind-bound: ``whisper_to``, ``aside`` and
   ``language`` a ``say``'s, ``addressee``, ``manner``, ``eavesdrop_by``, ``remote_channel`` and
   ``partial_text`` a ``say``'s or a ``do``'s, ``location`` a narration's; what they name is
@@ -181,11 +183,23 @@ class VisibilityDecl(_Strict):
     characters: list[str] = Field(default_factory=list)
 
 
+class HiddenDecl(_Strict):
+    """A ``latent`` beat's hidden commitment (#169, FR-COMMIT-4): who noticed it (``noticers``,
+    character ids; the rendering character when left out) and what they perceived: the hidden
+    truth itself (``fact``) or only a signal of it (``signal``: the truth is scoped away from
+    everyone, the noticer included; the signal is a ``characters`` latent of its own)."""
+
+    noticers: list[str] = Field(default_factory=list, max_length=10)
+    observed: Literal["fact", "signal"] = "fact"
+
+
 _SPEECH = frozenset({"say"})
 _ACTS = frozenset({"say", "do"})
 _SAY_ONLY: dict[str, frozenset[str]] = {
     "intent": _SPEECH,
     "visibility": frozenset({"latent"}),
+    "hidden": frozenset({"latent"}),
+    "holder": frozenset({"latent"}),
     "addressee": _ACTS,
     "manner": _ACTS,
     "whisper_to": _SPEECH,
@@ -268,6 +282,11 @@ class BeatDecl(_Strict):
     propositions: list[PropositionSketch] = Field(default_factory=list, max_length=MAX_PROPOSITIONS)
     effects: list[dict[str, Any]] = Field(default_factory=list)
     visibility: VisibilityDecl | None = None
+    hidden: HiddenDecl | None = None
+    """#169: a ``latent``'s hidden commitment (``HiddenDecl``)."""
+    holder: str | None = Field(default=None, max_length=NAME_MAX)
+    """#169: a ``latent``'s canon is ``canon``'s; any other holder is refused (FR-EPI-8:
+    ``viewpoint_cannot_assign_truth``)."""
     addressee: str | None = Field(default=None, max_length=NAME_MAX)
     manner: str | None = Field(default=None, max_length=QUALIFIER_TEXT_MAX)
     whisper_to: list[str] = Field(default_factory=list, max_length=MAX_NAMED)
@@ -466,6 +485,15 @@ class RenderedBeats(_Strict):
                         raise ValueError(f"{where}.visibility: an unknown character")
                 elif scope.characters:
                     raise ValueError(f"{where}.visibility: only a characters scope names some")
+            if (beat.hidden is not None or beat.holder is not None) and beat.kind != "latent":
+                raise ValueError(f"{where}.hidden: only a latent commits a hidden fact")
+            if beat.hidden is not None and not set(beat.hidden.noticers) <= cls.cast_ids:
+                raise ValueError(f"{where}.hidden.noticers: an unknown character")
+            if beat.holder is not None and beat.holder != "canon":
+                raise ValueError(
+                    f"{where}.holder: viewpoint_cannot_assign_truth: a latent's truth is canon's "
+                    "(a character's view is a belief)"
+                )
             if beat.effects:
                 raise ValueError(f"{where}.effects: state effects are not delivered yet")
             for name in beat.qualifiers_declared():

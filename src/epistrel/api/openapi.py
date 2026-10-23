@@ -257,6 +257,7 @@ ERROR_STATUS: dict[str, int] = {
     "holder_has_no_partition": 422,
     "self_attestation": 422,
     "turn_boundary_required": 422,
+    "viewpoint_cannot_assign_truth": 422,
     "antecedent_invalid": 422,
     "confidence_inconsistent": 422,
     "nesting_too_deep": 422,
@@ -477,8 +478,13 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "pin_memory": (*_MUTATION, "pin_limit_exceeded"),
     "unpin_memory": _MUTATION,
     "sanitize_memory": (*_MUTATION, "module_off", "span_not_found", "guardrail_violation"),
-    "commit_fact": (*_MUTATION, "module_off", "unknown_predicate"),
-    "supersede_fact": (*_FACT_VERSION, "unknown_predicate", "key_mismatch"),
+    "commit_fact": (*_MUTATION, "module_off", "unknown_predicate", "viewpoint_cannot_assign_truth"),
+    "supersede_fact": (
+        *_FACT_VERSION,
+        "unknown_predicate",
+        "key_mismatch",
+        "viewpoint_cannot_assign_truth",
+    ),
     "lock_fact": _FACT_VERSION,
     "unlock_fact": _FACT_VERSION,
     # Author beliefs (#160).

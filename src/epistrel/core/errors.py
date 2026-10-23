@@ -390,6 +390,16 @@ class TurnBoundaryRequired(InvalidRequest):
     http_status = 422
 
 
+class ViewpointCannotAssignTruth(EpistrelError):
+    """A write named a character (or any holder but ``canon``) as the holder of a canon fact:
+    a determined proposition has one truth value for everyone, and a character's divergent
+    view is an owned belief, never a per-character value (FR-EPI-8; #169). Nothing is written.
+    ``details``: ``field`` and ``holder``."""
+
+    code = "viewpoint_cannot_assign_truth"
+    http_status = 422
+
+
 class UnknownChain(EpistrelError):
     """A ``{turn, variant}`` chain selector names no variant of the story, or names a chain
     that continues in more than one way (#66). Nothing is written. ``details``:

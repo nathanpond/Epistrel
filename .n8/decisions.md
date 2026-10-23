@@ -8724,3 +8724,13 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision (filed, out of scope):** #504 (needs-triage). No erasure reaches a story-only character named in text that a promotion copied into the catalog. The gap existed for the M3 definition copy, and #498 widens it.
   **Why:** Closing it changes the erasure boundary (FR-ADMIN-2, FR-STORE-14), which is a Rule 4 design question.
   **Issue:** #498
+
+- **Decision (Rule 1, test harness):** The #472 lock-timeout tests' holder now keeps the story row until the hooked commit's own transaction has ended (its pid and transaction start are recorded in the hook and checked in `pg_stat_activity`). Before, it let go when the first statement it blocked stopped waiting.
+  **Why:** Root cause of #505, reproduced by injection. Another session that waited on the held row first and gave up first (100 ms `lock_timeout`) ended the hold early. The commit under test then got the row: `DID NOT RAISE StoryBusy` at line 204. Waiting for the commit's transaction to end is immune to other waiters and to the poll interval, and it cannot deadlock: that transaction ends only after its lock wait does. The holder is also now awaited when the block exits with an error. Before, a StoryBusy exit leaked it.
+  **Issue:** #505
+- **Decision (Rule 1, test harness):** `_hook` is armed per call through a `ContextVar`. Only the arming task and the tasks it starts can take it. The fix also applies to `test_lost_connection_is_still_database_unavailable`.
+  **Why:** With `asyncio_default_test_loop_scope = "session"`, any leftover commit from another task (any story) could take the module-wide hook. In the lost-connection test that kills the foreign backend, and the respond under test answers 200 (reproduced by injection).
+  **Issue:** #505
+- **Decision (Rule 1, test strength):** The library test also asserts that the `OperationalError` cause carries SQLSTATE 55P03 (`LOCK_NOT_AVAILABLE`). This replaces the old holder's implicit "the commit was seen waiting" evidence.
+  **Why:** It keeps the proof that the refusal came from a lock wait, without the old polling dependency.
+  **Issue:** #505

@@ -33,7 +33,9 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.api.routes.admin import ADMIN_PREFIX
 from epistrel.config import Settings
+from epistrel.core import membership
 from epistrel.core.catalog.report import Outcome, ValidationReport
 from epistrel.core.context import RequestContext
 from epistrel.core.errors import InvalidRequest
@@ -45,6 +47,7 @@ from epistrel.core.genesis.models import (
     resolve_personas,
 )
 from epistrel.core.ids import new_ulid
+from epistrel.core.tables.memories import memories
 from tests import genesis_support as g
 from tests import memory_support as memory
 from tests import scenario_support as scenarios
@@ -467,6 +470,10 @@ async def test_s_promote(stub_settings: Settings, engine: AsyncEngine) -> None:
 
 HELD = "Dale remembers that the ferryman still owes him for the March crossing"
 """A memory Dale holds (S-PROMOTE M4): one of the two seeded."""
+STALE = "Dale remembers the ferry leaving at six"
+"""A memory Dale held until a newer derivation superseded it: ``inactive``."""
+PLANTED = "Dale remembers the harbourmaster asking him to keep the vault code"
+"""A memory Dale holds that the author quarantined: ``quarantined``."""
 FORGED = "Ada remembers forging the harbourmaster's signature"
 """A memory Ada holds: Dale can neither hold nor know it."""
 
@@ -507,9 +514,11 @@ async def test_s_promote__seeded_memories(
     the seeds and finds their attributes declared, and a retry under the same key
     replays the promotion without seeding again.
 
-    Complements asserted: a memory of another story (``not_in_story``) and a memory Ada holds
-    (``not_known``, named after one Dale may seed) are each 422 ``seed_memory_invalid`` at
-    their index, with no catalog character, scenario or link written; an empty
+    Complements asserted: a memory of another story (``not_in_story``), a memory Ada holds
+    (``not_known``, named after one Dale may seed), a memory Dale held until it was superseded
+    (``inactive``) and one he holds that is quarantined (``quarantined``, the poisoning defence:
+    #145) are each 422 ``seed_memory_invalid`` at their index, with no catalog character,
+    scenario or link written (#507); an empty
     ``seed_memories`` promotes as M3 does, with an unseeded companion."""
     async with respond_client(stub_settings, engine) as (client, _):
         story = await create(client, story_body("Wren", "Ada"))
@@ -518,7 +527,9 @@ async def test_s_promote__seeded_memories(
         await memory.use_structured(engine, story_id)
         added = await client.post(
             f"/stories/{story_id}/characters",
-            json={"name": "Dale Pruitt", "definition": DRIVER, "true_age": 52},
+            # Not test_s_promote's "Dale Pruitt": its no-listing-shows-him check reads the shared
+            # catalog, which this test's promotions write to (#508).
+            json={"name": "Dale Mercer", "definition": DRIVER, "true_age": 52},
             headers=as_(AUTHOR),
         )
         assert added.status_code == 201, added.text
@@ -535,6 +546,17 @@ async def test_s_promote__seeded_memories(
         sources = list((await memory.event_ids(engine, op.operation_id)).values())
         held = await memory.derived_memory(engine, story_id, HELD, sources, holder=dale)
         forged = await memory.derived_memory(engine, story_id, FORGED, sources, holder=ada)
+        stale = await memory.derived_memory(engine, story_id, STALE, sources, holder=dale)
+        async with engine.begin() as conn:  # a newer derivation replaced it (#143's rerun)
+            assert await membership.supersede(conn, memories, [stale], story_id=story_id) == 1
+        planted = await memory.derived_memory(engine, story_id, PLANTED, sources, holder=dale)
+        quarantined = await client.post(
+            f"{ADMIN_PREFIX}/stories/{story_id}/memories/{planted}/quarantine",
+            json={"reason": "A planted line."},
+            headers=as_(AUTHOR),
+        )
+        assert quarantined.status_code == 200, quarantined.text
+        assert quarantined.json()["memory"]["quarantined"] is True
         other = await create(client, story_body("Kit", "Lee"))
         await memory.use_structured(engine, other["story_id"])
         _, (elsewhere, *_) = await memory.turn(engine, other["story_id"])
@@ -544,6 +566,8 @@ async def test_s_promote__seeded_memories(
         for seeds, index, reason in (
             ([elsewhere.id], 0, "not_in_story"),
             ([held, forged], 1, "not_known"),
+            ([held, stale], 1, "inactive"),
+            ([planted, held], 0, "quarantined"),
         ):
             refused = await client.post(
                 f"/stories/{story_id}/characters/{dale}/promote",
@@ -597,7 +621,7 @@ async def test_s_promote__seeded_memories(
         (npc,) = [r for r in companion["cast"]["roles"] if r["id"] == "npc"]
         assert (npc["fill"], npc["character"]["catalog_id"]) == ("locked", catalog_id)
         stored = json.dumps(companion)
-        for left_out in (asked.text, FORGED, elsewhere.text):
+        for left_out in (asked.text, FORGED, elsewhere.text, STALE, PLANTED):
             assert left_out not in stored
         character = await client.get(
             f"/catalog/characters/{catalog_id}",

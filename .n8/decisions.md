@@ -8694,3 +8694,5 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 
 - **Owner decision (2026-10-22):** S-PROMOTE's M4 part takes option 1: add `seed_memories` to `PromoteRequest` now (an API-contract change the owner approved), seeding the selected memories into the companion scenario's draft, never into the character. This resolves the 2026-10-22 blocker above.
   **Issue:** #498, #114
+- **Decision (Rule 3, core):** the full suite at `c39ea8e` failed once: C-01's schemathesis run found that `GET /admin/evals/escalation-yield?to=0001-01-01T00:00Z` answers 500 (`OverflowError` in `to - 30 days`). That code is unchanged since `ab13059`, and the bug blocks the gate. Filed as #503, fixed in this pass: `clock.window_start` clamps the default window start at `datetime.min`, in both reports that default this way (escalation yield and extraction shadow). Regression tests are in `test_escalations.py` (both routes answer 200, empty) and `test_idempotency.py` (the helper). The integration test failed on the unfixed code.
+  **Issue:** #503

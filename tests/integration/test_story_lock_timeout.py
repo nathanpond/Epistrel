@@ -6,9 +6,13 @@ nothing written, on REST and through the library. The database answered, so it i
 A connection that is really lost mid-commit still answers 503 ``database_unavailable``.
 
 The lock is taken by another transaction exactly when the commit is about to lock the story
-(``set_lock_timeout`` is wrapped), after the turn gate, so only the commit waits. The lock
-timeout is made small (``LOCK_TIMEOUT``); the holder lets go once the commit's wait has ended,
-seen from ``pg_stat_activity``, so nothing depends on wall-clock timing beyond that setting.
+(``set_lock_timeout`` is wrapped), after the turn gate, so only the commit waits. The wrap is
+armed for one call (``_ARMED``, a context variable): only the call under test and the tasks it
+starts can take it, never another commit in the session's event loop (#505). The lock timeout
+is made small (``LOCK_TIMEOUT``); the holder lets go once the hooked commit's transaction has
+ended, seen from ``pg_stat_activity``. That transaction ends only after its wait for the lock,
+so no other session waiting on the row, and no polling interval, can end the hold early
+(#505), and nothing depends on wall-clock timing beyond that setting.
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from typing import Any
 
 import httpx2 as httpx
@@ -49,13 +54,16 @@ pytestmark = pytest.mark.integration
 LOCK_TIMEOUT = "100ms"
 """The lock timeout under test: small, so the refusal comes quickly."""
 
-BLOCKED_BY = (
-    "SELECT pid, query_start FROM pg_stat_activity WHERE :holder = ANY(pg_blocking_pids(pid))"
-)
+TRANSACTION = "SELECT xact_start FROM pg_stat_activity WHERE pid = :pid"
 
 NARRATION = {"client_event_id": "lt", "kind": "narration", "text": "Rain."}
 
 Hook = Callable[[AsyncConnection], Awaitable[None]]
+
+_ARMED: ContextVar[object | None] = ContextVar("lock_timeout_hook_armed", default=None)
+"""The current ``_hook``'s arming. Only the task that armed it, and the tasks that task
+starts, see it, so a commit of any other task (e.g. background work left in the session's
+event loop) never takes the hook (#505)."""
 
 
 @pytest.fixture
@@ -65,12 +73,14 @@ def stub_settings(pg_url: str) -> Settings:
 
 def _hook(monkeypatch: pytest.MonkeyPatch, before: Hook) -> None:
     """Run ``before(conn)`` once, ahead of the next commit's lock (an operation's or a
-    batch's), with the lock timeout made small."""
+    batch's) made by the calling task or a task it starts, with the lock timeout made small."""
     real = operation.set_lock_timeout
+    arming = object()
     armed = [True]
+    _ARMED.set(arming)
 
     async def hooked(conn: AsyncConnection) -> None:
-        if armed[0]:
+        if armed[0] and _ARMED.get() is arming:
             armed[0] = False
             await before(conn)
         await real(conn)
@@ -80,48 +90,51 @@ def _hook(monkeypatch: pytest.MonkeyPatch, before: Hook) -> None:
     monkeypatch.setattr(batch, "set_lock_timeout", hooked)
 
 
-async def _blocked(engine: AsyncEngine, holder: int) -> set[tuple[int, Any]]:
+async def _transaction(engine: AsyncEngine, pid: int) -> Any:
+    """When ``pid``'s open transaction started (``None`` when it has none)."""
     async with engine.connect() as probe:
-        found = await probe.execute(text(BLOCKED_BY), {"holder": holder})
-        return {(r.pid, r.query_start) for r in found}
+        return await probe.scalar(text(TRANSACTION), {"pid": pid})
 
 
-async def _hold(engine: AsyncEngine, story: str, locked: asyncio.Event) -> None:
-    """Hold the story row ``FOR UPDATE`` until the first statement it blocks stops waiting."""
+async def _hold(
+    engine: AsyncEngine, story: str, commit: tuple[int, Any], locked: asyncio.Event
+) -> None:
+    """Hold the story row ``FOR UPDATE`` until the commit's transaction (``commit``: its
+    server pid and transaction start) has ended. It ends only after its own wait for the row
+    has, whatever else waits on the row meanwhile (#505)."""
+    pid, started = commit
     async with engine.connect() as conn, conn.begin():
-        holder = int(await conn.scalar(text("SELECT pg_backend_pid()")) or 0)
         await conn.execute(text("SELECT id FROM stories WHERE id = :s FOR UPDATE"), {"s": story})
         locked.set()
-        first: list[tuple[int, Any]] = []
 
-        async def waiting() -> bool:
-            first.extend(sorted(await _blocked(engine, holder), key=str)[:1])
-            return bool(first)
+        async def ended() -> bool:
+            return bool(await _transaction(engine, pid) != started)
 
-        await until(waiting, "the commit waits for the story lock")
-
-        async def gave_up() -> bool:
-            return first[0] not in await _blocked(engine, holder)
-
-        await until(gave_up, "the commit stops waiting for the story lock")
+        await until(ended, "the commit under test ends its transaction")
 
 
 @asynccontextmanager
 async def lock_held_at_commit(
     monkeypatch: pytest.MonkeyPatch, engine: AsyncEngine, story: str
 ) -> AsyncIterator[None]:
-    """Inside the block, the next commit finds the story row held by another transaction."""
+    """Inside the block, the block's next commit finds the story row held by another
+    transaction. Leaving it (also by an error), the holder has let go; leaving it normally,
+    the hook has fired."""
     holding: list[asyncio.Future[None]] = []
 
     async def before(conn: AsyncConnection) -> None:
+        pid, started = (await conn.execute(text("SELECT pg_backend_pid(), now()"))).one()
         locked = asyncio.Event()
-        holding.append(asyncio.ensure_future(_hold(engine, story, locked)))
+        holding.append(asyncio.ensure_future(_hold(engine, story, (pid, started), locked)))
         await asyncio.wait_for(locked.wait(), WITHIN_S)
 
     _hook(monkeypatch, before)
-    yield
-    assert holding, "no commit took the story lock"
-    await asyncio.wait_for(holding[0], WITHIN_S)
+    try:
+        yield
+    finally:
+        if holding:
+            await asyncio.wait_for(holding[0], WITHIN_S)
+    assert holding, "no commit of the call under test took the story lock"
 
 
 async def _footprint(engine: AsyncEngine, story: str) -> tuple[int, int]:
@@ -207,6 +220,8 @@ async def test_library_lock_timeout_is_story_busy(
             assert raised.value.details == {"story_id": story, "reason": "lock_timeout"}
             assert raised.value.retry_after == operation.LOCK_RETRY_AFTER_S
             assert isinstance(raised.value.__cause__, OperationalError)
+            sqlstate = getattr(raised.value.__cause__.orig, "sqlstate", None)
+            assert sqlstate == operation.LOCK_NOT_AVAILABLE  # the lock wait timed out
             assert await _footprint(engine, story) == before
             monkeypatch.undo()
             await call()

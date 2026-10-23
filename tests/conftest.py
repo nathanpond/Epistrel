@@ -281,6 +281,23 @@ async def engine(settings: Settings) -> AsyncIterator[AsyncEngine]:
         await engine.dispose()
 
 
+@pytest.fixture
+async def perception_delivered(
+    monkeypatch: pytest.MonkeyPatch, engine: AsyncEngine
+) -> AsyncIterator[None]:
+    """``partitions`` and perception ``co_location``/``full`` delivered for the test (#161;
+    ``tests.perception_support``). The overrides the test switched them on with are taken back
+    afterwards: the tests share one database, and a later test that validates every story's
+    overrides (a deployment-defaults write) would find them undelivered."""
+    from tests import perception_support
+
+    perception_support.deliver_perception(monkeypatch)
+    try:
+        yield
+    finally:
+        await perception_support.forget_perception(engine)
+
+
 # -- embedding jobs on the shared database (#138) -------------------------------------------------
 
 EMBEDDING_JOB_KINDS = ("embed", "reembed")

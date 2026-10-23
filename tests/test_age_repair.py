@@ -193,14 +193,21 @@ def test_the_render_schema_offers_intent_on_a_say_alone() -> None:
     """E-07's other failures (``beats.N.intent: only a say declares an intent``): the schema the
     render is sent (its ``response_format``) let any beat carry an intent, so constrained
     decoding could not stop one on a ``do``. Each kind group is now its own alternative; the
-    validator still refuses an intent off a ``say``."""
+    validator still refuses an intent off a ``say``. #161's perception qualifiers split the
+    other kinds too: each is offered only on the kinds it applies to (narrowing on a ``say``,
+    widening on a ``say`` or a ``do``, ``location`` on a narration)."""
     schema = render_schema(actor_id="a" * 26, player_id="p" * 26, cast_ids=[], max_beats=6)
     beat = schema.model_json_schema()["$defs"]["BeatDecl"]
     variants = {tuple(v["properties"]["kind"]["enum"]): v for v in beat["anyOf"]}
-    assert set(variants) == {("say",), ("latent",), ("think", "do", "narration")}
+    assert set(variants) == {("say",), ("latent",), ("do",), ("think",), ("narration",)}
     assert "intent" in variants[("say",)]["properties"]
-    assert "intent" not in variants[("think", "do", "narration")]["properties"]
-    assert "intent" not in variants[("latent",)]["properties"]
+    for other in (("think",), ("do",), ("narration",), ("latent",)):
+        assert "intent" not in variants[other]["properties"]
+    assert {"whisper_to", "aside", "language"} <= set(variants[("say",)]["properties"])
+    assert "eavesdrop_by" in variants[("do",)]["properties"]
+    assert "whisper_to" not in variants[("do",)]["properties"]
+    assert "location" in variants[("narration",)]["properties"]
+    assert not {"whisper_to", "eavesdrop_by", "location"} & set(variants[("think",)]["properties"])
     assert "visibility" in variants[("latent",)]["properties"]
     assert "visibility" not in variants[("say",)]["properties"]
     assert all(v["additionalProperties"] is False for v in variants.values())

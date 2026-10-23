@@ -61,7 +61,10 @@ characters and their canon ``age`` facts; the permitted canon
 names, ``canon_requests``: only a canonized claim creates one) and every ``latent`` beat's
 propositions with its declared visibility (FR-TURN-4); the utterances; the episodic
 memories of the observable beats (``write_episodic``, with each beat's occasion from
-``beat_occasion``); the salient references (``record_salience``), the dependences
+``beat_occasion``; under per-character partitions with perception on, #161's routing instead:
+``route_committed`` routes every beat at the level current at commit and the memory sink writes
+one memory per perceiver, the qualifiers having been validated before staging,
+``validate_perception``); the salient references (``record_salience``), the dependences
 (``apply_dependences`` → ``lifecycle.depend``), the incidental details (FR-COMMIT-9:
 ``detail_claims`` → ``boundary.depend_on_detail``, a novel ``think``/``do`` claim about an
 attribute a ``consequential`` fact leaves open, never canonized itself) and the turn's close
@@ -154,6 +157,8 @@ from epistrel.core.enums import (
     RecordProvenance,
     StoryStatus,
 )
+from epistrel.core.epistemic import perception
+from epistrel.core.epistemic import scene as scene_loader
 from epistrel.core.erasure.index import index_records
 from epistrel.core.erasure.records import operation_record
 from epistrel.core.errors import InvalidRequest, RevisionConflict, StoryArchived, TimelineChanged
@@ -163,6 +168,7 @@ from epistrel.core.events.types import (
     CompositionRejected,
     MessageRendered,
     PlayerInput,
+    RenderRejected,
     VerifyVerdict,
 )
 from epistrel.core.genesis.structured import deferred_items
@@ -175,6 +181,7 @@ from epistrel.core.profiles.capabilities import level_at_least, module_on
 from epistrel.core.profiles.effective import ProfileVersionRef, StoryProfile
 from epistrel.core.profiles.fingerprint import Stamp
 from epistrel.core.profiles.reservation import extraction_on
+from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Polarity, Proposition
 from epistrel.core.propositions.registry import Registry, consider_proposals
@@ -239,7 +246,7 @@ from epistrel.core.viewpoint import (
 )
 from epistrel.observability import stages
 from epistrel.observability.logging import get_logger
-from epistrel.observability.metrics import count_repair
+from epistrel.observability.metrics import count_perception_repair, count_repair
 from epistrel.orchestrator.budget import (
     EXTRACTION,
     FOLLOW_UP,
@@ -881,10 +888,29 @@ def _beats_of(
                 else visibility_of(""),
                 visibility_declared=scope,
                 narrator=narrator,
+                qualifiers=_qualifiers_of(decl),
             )
         )
         sketches[number] = list(decl.propositions)
     return beats, sketches
+
+
+def _qualifiers_of(decl: BeatDecl) -> perception.Qualifiers:
+    """A rendered beat's perception qualifiers (#161), as declared (validated at routing)."""
+    channel = decl.remote_channel
+    return perception.Qualifiers(
+        addressee=decl.addressee,
+        manner=(decl.manner or "").strip() or None,
+        whisper_to=tuple(decl.whisper_to),
+        aside=decl.aside,
+        eavesdrop_by=tuple(decl.eavesdrop_by),
+        remote_channel=None
+        if channel is None
+        else perception.RemoteChannel(channel.channel_id, tuple(channel.participants)),
+        language=decl.language,
+        partial_text=(decl.partial_text or "").strip() or None,
+        location=decl.location,
+    )
 
 
 def _clue(decl: IntroductionDecl, beats: Sequence[BeatDecl]) -> str:
@@ -1040,6 +1066,13 @@ class Checked:
     introductions: Introductions = field(default_factory=Introductions)
     """The turn's minted places and objects (#479): the commit creates those a canonized claim
     names (``canon_requests``)."""
+    perception_repairs: list[perception.Repair] = field(default_factory=list)
+    """The perception qualifiers dropped before staging (#161; FR-TURN-13), in beat order."""
+    qualifier_rejected: list[tuple[TurnBeat, tuple[perception.Repair, ...]]] = field(
+        default_factory=list
+    )
+    """Each beat as rendered whose qualifiers were repaired, with its repairs (#161): staged as
+    ``render_rejected`` (rung 1)."""
 
 
 def _verdict_of(result: CheckedClaim) -> str | None:
@@ -1887,6 +1920,232 @@ def repairs_report(checked: Checked) -> list[dict[str, Any]]:
     return [entry for result in checked.repairs for entry in result.report()]
 
 
+# -- perception routing (#161) ------------------------------------------------------------------
+
+QUALIFIER_REPAIR = "perception_qualifier"
+"""The ``render_rejected`` constraint kind of a dropped perception qualifier (#161)."""
+
+
+async def _place_ids(conn: AsyncConnection, story_id: str) -> dict[str, str]:
+    """The story's places by case-folded name (a narration's ``location`` may name one)."""
+    found = await conn.execute(
+        select(entities.c.id, entities.c.canonical_name).where(
+            entities.c.story_id == story_id, entities.c.kind == "place"
+        )
+    )
+    return {str(r.canonical_name).casefold(): str(r.id) for r in found}
+
+
+def _route_beat(
+    beat: TurnBeat, qualifiers: perception.Qualifiers | None = None
+) -> perception.RouteBeat:
+    return perception.RouteBeat(
+        kind=beat.kind,
+        beat=beat.beat,
+        actor=None if beat.kind == NARRATION else beat.character_id,
+        qualifiers=beat.qualifiers if qualifiers is None else qualifiers,
+    )
+
+
+async def validate_perception(
+    db: AsyncEngine,
+    story_id: str,
+    read: TurnRead,
+    checked: Checked,
+    settings: ProfileSettings,
+) -> Checked:
+    """The rendered beats' perception qualifiers validated before staging (FR-TURN-13; #161):
+    at perception ``full``, each beat's qualifiers against the scene at the turn's start
+    (``core.epistemic.perception.validate_qualifiers``; a narration's ``location`` named by a
+    place's name is resolved to its id). A qualifier that cannot be honored is dropped (#151's
+    rung 1: the beat stands with ``repaired_from`` ``(1, cosmetic)``, its text unchanged, and
+    the beat as rendered is staged as ``render_rejected``); below ``full`` the qualifiers are
+    ignored and kept as declared."""
+    if scene_loader.level_of(settings) != perception.FULL:
+        return checked
+    if all(b.qualifiers.empty for b in checked.beats):
+        return checked
+    async with db.connect() as conn:
+        state = await scene_loader.load_scene_state(conn, story_id, read.turn)
+        places = await _place_ids(conn, story_id)
+    beats: list[TurnBeat] = []
+    for beat in sorted(checked.beats, key=lambda b: b.beat):
+        q = beat.qualifiers
+        if q.empty:
+            beats.append(beat)
+        else:
+            if q.location is not None and q.location not in state.places:
+                q = replace(q, location=places.get(q.location.casefold(), q.location))
+            valid, repairs = perception.validate_qualifiers(_route_beat(beat, q), state)
+            if repairs:
+                checked.qualifier_rejected.append((beat, repairs))
+                checked.perception_repairs.extend(repairs)
+                beats.append(
+                    replace(
+                        beat, qualifiers=valid, repaired_from=beat.repaired_from or (1, "cosmetic")
+                    )
+                )
+            else:
+                beats.append(replace(beat, qualifiers=q))
+        state = _declared_topology(state, beat)
+    order = {b.beat: n for n, b in enumerate(checked.beats)}
+    checked.beats = sorted(beats, key=lambda b: order[b.beat])
+    return checked
+
+
+def _declared_topology(state: perception.SceneState, beat: TurnBeat) -> perception.SceneState:
+    """``state`` with the channels and barriers ``beat`` declares, its uncontradicted claims
+    only (``core.epistemic.perception.with_declared``; #161)."""
+    return perception.with_declared(
+        state, [c.proposition for c in beat.declared if c.verdict != "contradicted"]
+    )
+
+
+def _qualifier_events(checked: Checked) -> list[tuple[str, Any]]:
+    """The ``render_rejected`` audit record of each beat whose qualifiers were repaired (#161):
+    the beat as rendered (attempt 0, rung 1), with one constraint per dropped qualifier."""
+    return [
+        (
+            "render_rejected",
+            RenderRejected(
+                beat=beat.beat,
+                attempt=0,
+                rung=1,
+                text=beat.text,
+                constraints=tuple(
+                    {
+                        **{k: v for k, v in repair.report().items() if k != "kind"},
+                        "kind": QUALIFIER_REPAIR,
+                        "qualifier": repair.kind,
+                    }
+                    for repair in repairs
+                ),
+            ),
+        )
+        for beat, repairs in checked.qualifier_rejected
+    ]
+
+
+def _routed_beats(
+    checked: Checked,
+    read: TurnRead,
+    *,
+    say: str | None,
+    do: str | None,
+    ids: Mapping[int, str],
+    moves: scene_loader.Moves,
+) -> list[perception.RouteBeat]:
+    """The turn's beats as routing takes them (#161): the player's ``say`` and ``do`` (beat 1)
+    and every rendered beat, each with the episodic writer's beat as its ``source`` (a ``latent``
+    has none: it goes to canon) and its sound (an audible ``do``); each beat number's committed
+    moves ride on its last beat."""
+    found: list[perception.RouteBeat] = []
+    input_id = ids.get(1)
+    mentions = checked.mentions.get(1, ())
+    for kind, text in ((SAY, say), (DO, do)):
+        if text and input_id is not None:
+            event_type, participants = beat_occasion(text, mentions)
+            found.append(
+                perception.RouteBeat(
+                    kind=cast(perception.RouteKind, kind),
+                    beat=1,
+                    actor=read.actor.id,
+                    sound=perception.sound_of(text) if kind == DO else None,
+                    source=records.Beat(
+                        cast(records.BeatKind, kind),
+                        text,
+                        input_id,
+                        beat=1,
+                        character_id=read.actor.id,
+                        provenance=RecordProvenance.PLAYER,
+                        event_type=event_type,
+                        participants=_participants(participants, read.actor.id),
+                    ),
+                )
+            )
+    for beat in checked.beats:
+        event_id = ids.get(beat.beat)
+        if event_id is None:
+            continue
+        routed = _route_beat(beat)
+        if beat.kind == LATENT:
+            found.append(replace(routed, actor=None if beat.narrator else beat.character_id))
+            continue
+        event_type, participants = beat_occasion(beat.text, checked.mentions.get(beat.beat, ()))
+        actor = routed.actor
+        found.append(
+            replace(
+                routed,
+                sound=perception.sound_of(beat.text) if beat.kind == DO else None,
+                source=records.Beat(
+                    beat.kind,
+                    beat.text,
+                    event_id,
+                    beat=beat.beat,
+                    character_id=actor,
+                    provenance=RecordProvenance.DIRECTOR
+                    if beat.kind == NARRATION
+                    else RecordProvenance.RENDER,
+                    event_type=event_type,
+                    participants=_participants(participants, beat.character_id),
+                ),
+            )
+        )
+    for index, routed in enumerate(found):
+        last = index == len(found) - 1 or found[index + 1].beat != routed.beat
+        if last and moves.get(routed.beat):
+            found[index] = replace(routed, moves=moves[routed.beat])
+    return found
+
+
+async def route_committed(
+    conn: AsyncConnection,
+    op: Operation,
+    checked: Checked,
+    read: TurnRead,
+    *,
+    say: str | None,
+    do: str | None,
+    ids: Mapping[int, str],
+    level: perception.Level,
+    settings: ProfileSettings,
+) -> dict[str, Any]:
+    """Route the committed turn (#161), in its commit step after canon (so the moves the turn
+    committed are in #137's placement projection): every beat through
+    ``core.epistemic.perception.route_turn`` against the scene at the turn's start under
+    ``level``, the results handed to ``PERCEPTION_SINKS`` (the memory sink writes one memory
+    per perceiver). A ``latent`` that declared nothing normalizable keeps its shared
+    ``objective`` memory. Answers ``turn_report.perception``: the level, the beats routed and
+    every qualifier repaired (before staging, and any the commit-time scene no longer
+    supports), each counted in ``epistrel_perception_repairs_total``."""
+    story_id = op.story_id
+    assert story_id is not None  # noqa: S101 - a turn belongs to a story
+    state, moves = await scene_loader.load_scene(conn, story_id, read.turn)
+    results = perception.route_turn(
+        _routed_beats(checked, read, say=say, do=do, ids=ids, moves=moves), state, level
+    )
+    await perception.deliver(conn, op, results)
+    leftovers = [
+        b
+        for b in _episodic(checked, read, say=None, do=None, ids=ids)
+        if b.kind == NARRATION and b.character_id is None and _is_latent(checked, b.beat)
+    ]
+    if leftovers:
+        await records.write_episodic(conn, op, leftovers, settings=settings)
+    repairs = [*checked.perception_repairs, *(r for res in results for r in res.repairs)]
+    for repair in repairs:
+        count_perception_repair(repair.reason)
+    return {
+        "level": level,
+        "routed": len(results),
+        "qualifiers_repaired": [r.report() for r in repairs],
+    }
+
+
+def _is_latent(checked: Checked, number: int | None) -> bool:
+    return any(b.beat == number and b.kind == LATENT for b in checked.beats)
+
+
 def _verify_passes(checked: Checked) -> list[yields.VerifyPass]:
     """The turn's verifiers as #155's verification passes: the renders' (the follow-up's
     included) and each repair re-check's."""
@@ -2471,6 +2730,8 @@ async def play(
             ),
         )
         clock.add("repair", time.perf_counter() - repairing)
+        scene_loader.remember_level(read_set, scene_loader.level_of(settings))
+        checked = await validate_perception(db, story_id, read, checked, settings)
         found[:] = [checked]
         composing_at = time.perf_counter()
         composition = await compose_turn(
@@ -2535,8 +2796,9 @@ async def play(
                 character_id=None,
                 beat=last + 1,
             )
-        # The repair ladder's audit records (#151): never read by a story view.
-        for event_type, payload in _repair_events(checked):
+        # The repair ladder's audit records (#151), the repaired perception qualifiers' (#161)
+        # included: never read by a story view.
+        for event_type, payload in [*_repair_events(checked), *_qualifier_events(checked)]:
             op.append(
                 event_type, payload, provenance=Provenance.ENGINE, character_id=None, beat=last + 1
             )
@@ -2664,9 +2926,17 @@ async def play(
                 )
             )
         await write_utterances(conn, op, utterance_rows, event_ids=ids)
-        await records.write_episodic(
-            conn, op, _episodic(checked, read, say=say, do=do, ids=ids), settings=settings
-        )
+        # #161: under per-character partitions, routing writes one memory per perceiver (the
+        # level read now, under the story lock: a mid-turn change routes under the new one).
+        level = await scene_loader.current_level(conn, story_id)
+        if level == perception.NONE:
+            await records.write_episodic(
+                conn, op, _episodic(checked, read, say=say, do=do, ids=ids), settings=settings
+            )
+        else:
+            fixed["perception"] = await route_committed(
+                conn, op, checked, read, say=say, do=do, ids=ids, level=level, settings=settings
+            )
         commit_report: dict[str, Any] = {}
         if lifecycle.commitment_enabled(settings):
             position = (read.turn, 0)
@@ -2785,6 +3055,8 @@ async def play(
         if checked.follow_up_verifier is not None:
             report["verify_follow_up"] = checked.follow_up_verifier.report()
         report["commit"] = fixed.get("commit", {})
+        if "perception" in fixed:
+            report["perception"] = fixed["perception"]
         if checked.repairs:
             report["repairs"] = repairs_report(checked)
         report["eval_hooks"] = eval_hooks(

@@ -26,6 +26,8 @@ The registry holds:
   ``epistrel_minimal_commits_total``: #146's commitment lifecycle (``core.commit.lifecycle``);
 - ``epistrel_belief_transitions_total{kind}`` and ``epistrel_belief_transitions_refused_total``:
   #160's belief transitions (``core.epistemic.transitions``);
+- ``epistrel_perception_repairs_total{reason}``: #161's perception qualifiers repaired at routing
+  (``core.epistemic.perception``; the structured pipeline counts them);
 - #147's hot set (FR-MEM-8): the scrape-time gauges ``epistrel_hot_overflow{scope}`` (the
   summed excess of the open overflow episodes, ``character`` or ``story``; 0 when none is open)
   and ``epistrel_hot_overflow_episodes_open{scope}``, and the counters
@@ -130,6 +132,12 @@ BELIEF_TRANSITIONS_REFUSED = Counter(
     "Belief transitions refused (self-attestation, an invalid antecedent, inconsistent "
     "confidence).",
 )
+PERCEPTION_REPAIRS = Counter(
+    "epistrel_perception_repairs",
+    "Perception qualifiers dropped because they could not be honored, by reason (no_path, "
+    "sealed_barrier, no_channel, unknown_character, target_absent, unknown_location).",
+    ("reason",),
+)
 RETIREMENTS = Counter(
     "epistrel_hot_retirements",
     "Memories retired from the hot set, by reason (covered, floor, uncovered).",
@@ -204,6 +212,23 @@ def count_escalation(gate_reason: str, shape: str, flipped: bool | None) -> None
 def count_shadow(shape: str, agreed: bool) -> None:
     """Count one would-have-skipped escalation (``epistrel_verify_shadow_total``; #155)."""
     VERIFY_SHADOW.labels(shape=shape_label(shape), agreed="true" if agreed else "false").inc()
+
+
+PERCEPTION_REPAIR_REASONS = (
+    "no_path",
+    "sealed_barrier",
+    "no_channel",
+    "unknown_character",
+    "target_absent",
+    "unknown_location",
+)
+
+
+def count_perception_repair(reason: str) -> None:
+    """Count one dropped perception qualifier (``epistrel_perception_repairs_total{reason}``)."""
+    if reason not in PERCEPTION_REPAIR_REASONS:
+        raise ValueError(f"unknown perception repair reason {reason}")
+    PERCEPTION_REPAIRS.labels(reason=reason).inc()
 
 
 def count_repair(rung: int, repair_class: str) -> None:
@@ -378,6 +403,8 @@ __all__ = [
     "LEDGER",
     "MINIMAL_COMMITS",
     "OPERATIONS",
+    "PERCEPTION_REPAIRS",
+    "PERCEPTION_REPAIR_REASONS",
     "QUARANTINES",
     "REPAIRS",
     "REPAIR_CLASSES",
@@ -387,6 +414,7 @@ __all__ = [
     "SANITIZES",
     "THUNKS",
     "SchedulerGauges",
+    "count_perception_repair",
     "count_repair",
     "render_metrics",
     "router",

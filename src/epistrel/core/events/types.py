@@ -695,6 +695,11 @@ class StructuredBeat(EventPayload):
     detected: tuple[DetectedRef, ...] = Field(default=(), exclude_if=lambda v: not v)
     mentions: tuple[dict[str, JsonValue], ...] = Field(default=(), exclude_if=lambda v: not v)
     repaired_from: RepairedFrom | None = Field(default=None, exclude_if=lambda v: v is None)
+    perception: dict[str, JsonValue] | None = Field(default=None, exclude_if=lambda v: not v)
+    """The beat's explicit perception qualifiers as validated before staging (#161;
+    ``core.epistemic.perception.Qualifiers.payload``): ``addressee``, ``manner``, ``whisper_to``,
+    ``aside``, ``eavesdrop_by``, ``remote_channel``, ``language``, ``partial_text``,
+    ``location``; absent when none was declared. A history read re-routes the beat from them."""
 
 
 @register("beat_say", category=EventCategory.NARRATIVE_STATE)

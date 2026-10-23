@@ -133,6 +133,8 @@ class FactVersion:
     slot: int | None
     visibility: Mapping[str, Any]
     supersedes: tuple[str, ...] = ()
+    beat: int | None = None
+    """The beat of its turn the version was committed at (``placement.since_beat``, #161)."""
 
 
 def _position_key(turn: int | None, slot: int | None) -> tuple[int, int, int]:
@@ -190,6 +192,7 @@ def derive(story_id: str, versions: Iterable[FactVersion], known: frozenset[str]
                 "entity_id": target if version.container else version.subject_id,
                 "location_id": None if version.container else target,
                 "container_id": version.subject_id if version.container else None,
+                "since_beat": None if version.turn is None else version.beat,
             }
             out.placement[(story_id, version.id)] = row
             continue
@@ -314,6 +317,7 @@ async def _versions(
             f.c.valid_to,
             f.c.narrative_turn,
             f.c.slot_k,
+            f.c.beat,
             f.c.visibility,
             f.c.supersedes,
             propositions.c.object_id,
@@ -364,6 +368,7 @@ async def _versions(
                 slot=r.slot_k,
                 visibility=dict(r.visibility),
                 supersedes=tuple(str(s) for s in r.supersedes or ()),
+                beat=r.beat,
             )
         )
     return found

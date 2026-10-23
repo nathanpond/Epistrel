@@ -63,7 +63,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 
 from epistrel.core.tables.base import metadata, ulid_type
 
@@ -102,6 +102,8 @@ characters = Table(
     Column("deflection_style", Text, nullable=True),
     Column("role_id", Text, nullable=True),
     Column("true_age_source", Text, nullable=False, server_default=text("'declared'")),
+    # The language codes the character understands (#161); ``NULL``: every language.
+    Column("languages", ARRAY(Text), nullable=True),
     CheckConstraint(f"true_age BETWEEN {TRUE_AGE_MIN} AND {TRUE_AGE_MAX}", name="true_age"),
     CheckConstraint(
         "true_age_source IN ('catalog', 'genesis', 'declared', 'repaired')",

@@ -12,8 +12,9 @@ erasure and runs the resurrection guard (#127): a character's beat with ``proven
 and ``authority = authoritative``, a narrator's with ``provenance = system``; the event's
 ``character_id`` is the actor (``None`` for narration) and its ``beat`` the beat's position.
 Its payload carries the text, the propositions it asserts with their verdicts, the claims
-detection found beyond them and its resolved mentions (#139, #148), and, for a beat the repair
-ladder corrected, ``repaired_from {rung, class}`` (#151).
+detection found beyond them and its resolved mentions (#139, #148), for a beat the repair
+ladder corrected, ``repaired_from {rung, class}`` (#151), and the beat's perception qualifiers
+(``perception``, #161), so a history read re-routes it as it was routed.
 
 **Speech acts** (FR-TURN-5,6). Every ``say`` (and the player's own ``say``) is stored as an
 utterance (``write_utterances``, the ``utterances`` table) and is **never** canon by being said:
@@ -58,6 +59,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.canon.facts import OBJECTIVE, Fact, FactOperation, Visibility, commit_fact
 from epistrel.core.enums import Authority, Provenance, RecordProvenance
+from epistrel.core.epistemic.perception import Qualifiers
 from epistrel.core.erasure import guard
 from epistrel.core.erasure.index import index_records, reindex_story
 from epistrel.core.erasure.records import character_record
@@ -159,6 +161,8 @@ class TurnBeat:
     narrator: bool = False
     repaired_from: tuple[int, str] | None = None
     """``(rung, class)`` when the repair ladder corrected the beat (#151)."""
+    qualifiers: Qualifiers = field(default_factory=Qualifiers)
+    """The beat's explicit perception qualifiers (#161; persisted on its event)."""
 
     @property
     def declared(self) -> tuple[AssertedClaim, ...]:
@@ -225,6 +229,8 @@ def beat_payload(beat: TurnBeat) -> dict[str, Any]:
     if beat.repaired_from is not None:
         rung, repair_class = beat.repaired_from
         payload["repaired_from"] = {"rung": rung, "class": repair_class}
+    if not beat.qualifiers.empty:
+        payload["perception"] = beat.qualifiers.payload()
     if beat.kind == "say":
         payload["intent"] = beat.intent
         payload["labels"] = beat.labels()

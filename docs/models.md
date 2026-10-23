@@ -98,6 +98,7 @@ Checks one text against one model-assisted policy (FR-GUARD-9).
 | `policy_prompt` | `policy_text` |
 | `subjects.label` | `policy_text` |
 | `subjects.age` | `subject_true_age` |
+| `subjects.present` | `subject_true_age` |
 
 **Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`
 
@@ -181,6 +182,7 @@ Reviews one catalog entry against one rating's content policy: its description, 
 | `deterministic_hits.location` | `catalog_text` |
 | `subjects.label` | `policy_text` |
 | `subjects.age` | `subject_true_age` |
+| `subjects.present` | `subject_true_age` |
 | `elements.kind` | `catalog_text` |
 | `elements.location` | `catalog_text` |
 | `elements.text` | `catalog_text` |

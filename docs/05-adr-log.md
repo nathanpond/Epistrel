@@ -18,16 +18,16 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 |---|---|---|
 | FR-RESP | §1 | 047, 071, 078, 087, 091, 144, 145 |
 | FR-STORE | §2 | 045, 072, 075, 076, 079, 080, 122, 128, 129, 132, 138, 143, 144, 167 |
-| FR-CONC | §2.3 | 045, 052, 057, 062, 072, 144 |
-| FR-MEM | §4 | 070, 071, 072, 075 |
+| FR-CONC | §2.3 | 045, 052, 057, 062, 072, 144, 169 |
+| FR-MEM | §4 | 070, 071, 072, 075, 169 |
 | FR-EPI | §5 | 024, 167, 168 |
 | FR-BELIEF | §5.1 | 026, 069, 075, 168 |
-| FR-TURN | §6 | 043 |
+| FR-TURN | §6 | 043, 169 |
 | FR-COMMIT | §7 | 018, 022, 043, 053, 129 |
 | FR-RET | §8 | 129, 167 |
 | FR-PROP | §8.1 | 160, 162, 163, 165, 167 |
 | FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162, 163, 165 |
-| FR-GUARD | §11 | 087, 095, 096, 114, 161 |
+| FR-GUARD | §11 | 087, 095, 096, 114, 161, 169 |
 | FR-REWRITE | §12.1 | 144 |
 | FR-MODEL | §13 | 129, 136, 144, 150 |
 | FR-EXT | §15 | 051, 054, 056, 061, 066, 072, 074, 092, 133, 140, 144 |
@@ -52,7 +52,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 112, 114, 115, 158, 164, 166 |
 | NFR-REL | §20 | 045, 127 |
 | NFR-SEC | §20 | 138, 149, 152 |
-| NFR-PRIV | §20 | 077, 101, 154, 157, 159, 161 |
+| NFR-PRIV | §20 | 077, 101, 154, 157, 159, 161, 169 |
 | NFR-PORT | §20 | 150 |
 | NFR-OPS | §20 | 127, 148, 151 |
 | NFR-MAINT | §20 | 148 |
@@ -231,6 +231,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 166 | NFR-QUAL-7 (generation conformance) also moves to M9 | Current | — |
 | 167 | Visibility is decided by scope alone, and beliefs are a derived table with a rebuildable projection | Current | — |
 | 168 | A belief and its producing transition name each other, and one function writes every belief | Current | — |
+| 169 | Perception routing is one pure function over authoritative state, and it writes one memory per perceiver | Current | — |
 
 ---
 
@@ -1726,6 +1727,22 @@ Everything else keeps the safe disposition: detector findings, the excluded reso
 - Story deletion, erasure and fork handle the pair inside one transaction; the fork maps both ids and settles the copied beliefs on the copied transitions.
 - `belief_state` stays a rebuildable projection: an in-place change and a closure refresh it in the writing transaction, and the fold derives the same rows.
 - Tests: `tests/property/test_belief_provenance.py` (BELIEF-PROVENANCE), `tests/property/test_confidence_projection.py` (CONFIDENCE-PROJECTION), `tests/integration/test_u_12.py` (U-12 M5), `tests/soak/test_x_02.py` (X-02 M5).
+
+---
+
+### ADR-169 — Perception routing is one pure function over authoritative state, and it writes one memory per perceiver
+**Status:** Accepted.
+**Context:** M5's perception routing (#161; FR-TURN-2,9,10,13, NFR-PRIV-3) decides, per beat, who perceives its content, who only its envelope, and who nothing. M4's episodic writer (#135) stores one shared memory per observable beat with no holder, which cannot say that Bobby heard only that Jenni whispered. Three consumers need the same answer: memory writes, the audience filter (#177) and working memory (#170). The consumer also sends a scene roster (FR-RESP-4), which is tempting to read and must not grant perception.
+**Decision:**
+- `core.epistemic.perception.route_perception(beat, scene_state, qualifiers, level)` is pure. Its inputs are #137's placements, canon's `located_in`/`adjacent_to` topology and its barriers, `on_channel` facts, the characters' languages and the beat's explicit qualifiers. The roster is never an input. Widening qualifiers are validated against that state (FR-TURN-13), and one that cannot be honored is dropped, never honored. `check-perception-authority` (an AST gate) keeps the placement and scene tables and the topology predicates out of every other module, so #55's `present` set comes from the exported helpers.
+- Under per-character partitions with perception at `co_location` or `full`, routing replaces #135's shared writer for a structured turn: the memory sink writes one `memories` row per perceiver, with the perceiver as holder, `characters: [perceiver]` visibility (ADR-167), and new `fidelity` (`content`/`envelope`) and `channel` columns. An envelope's text is rendered deterministically per qualifier. With perception `none` the shared writer stays.
+- The turn routes at its commit, under the story lock, at the level the effective configuration has then (FR-CONC-16). `perception_level` is a configuration dependency. A turn begun under partitions whose story has none at commit regenerates.
+- Routing results are never stored. The beat's validated qualifiers are persisted on its event, so a later read re-routes it.
+**Consequences:**
+- A whisper writes the envelope to the room and the words to the target only, and a manipulated roster changes nothing, by construction (PERCEPTION-AUTHORITY).
+- Memory rows grow with the room: a beat perceived by four characters writes four rows. Identical texts are embedded separately until #138's job shares embeddings by content hash.
+- Belief acquisitions attach to the same results through `PERCEPTION_SINKS` (#160, #162, #164), so they cannot disagree with the memories.
+- Tests: `tests/property/test_perception_authority.py` (PERCEPTION-AUTHORITY), `tests/test_u_17.py` (U-17), `tests/scenario/test_s_whisper.py` (S-WHISPER M5), `tests/integration/test_perception_revalidation.py` (CONFIG-REVALIDATION M5), `tests/scenario/test_s_minors.py` (S-MINORS M5), `tests/redteam/test_r_07.py` (R-07 M5).
 
 ---
 

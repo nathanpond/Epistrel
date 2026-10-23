@@ -36,6 +36,19 @@ orchestrator. ``beats_of_operation`` reads an operation's beats from its M2/M3 b
 (``player_input``, ``message_rendered``, ``think``, ``latent``) for callers that have no typed
 beats of their own.
 
+**Per-perceiver memories** (#161; FR-TURN-2,10, NFR-PRIV-3). Under per-character partitions with
+perception at ``co_location`` or ``full``, routing replaces the shared-holder writer above for a
+structured turn's beats: ``write_perceived(conn, operation, results)`` (the memory sink of
+``core.epistemic.perception.PERCEPTION_SINKS``) writes **one row per perceiver** of each routed
+``say``, ``do``, ``narration`` and ``think`` (a ``think`` reaches its thinker only):
+``holder_character_id`` the perceiver, ``visibility`` ``characters: [perceiver]``, ``fidelity``
+(``content``: the attributed line, or an eavesdropper's ``partial_text``; ``envelope``: the
+deterministic envelope, ``Jenni whispers something to Marcus``, with no propositions) and
+``channel`` (``self``, ``room``, ``eavesdrop``, ``remote``, ``adjacent`` or ``think``). A
+non-perceiver gets nothing. The rest is the episodic writer's: the guard, the erasure index and
+the hooks, inert unless ``episodic`` is on. The player's character gets its memories too (it
+holds no beliefs, FR-EPI-12).
+
 **Semantic memories and reflections** (FR-MEM-2,3; #143). ``write_consolidated(conn,
 operation, rows, covered)`` is the writer the consolidation job calls in its positioned
 operation's commit (``core.memory.consolidation`` builds the rows): ``semantic`` and
@@ -120,6 +133,7 @@ from epistrel.core.enums import (
     RecordProvenance,
     RetrievalTier,
 )
+from epistrel.core.epistemic import perception
 from epistrel.core.erasure import guard
 from epistrel.core.erasure.index import index_records
 from epistrel.core.erasure.records import memory_record
@@ -269,6 +283,8 @@ class Memory(BaseModel):
     retired_reason: str | None = None
     retired_at: datetime | None = None
     retired_turn: int | None = None
+    fidelity: str | None = None
+    channel: str | None = None
 
 
 def _memory(row: Any) -> Memory:
@@ -317,6 +333,8 @@ def _memory(row: Any) -> Memory:
         retired_reason=row.retired_reason,
         retired_at=row.retired_at,
         retired_turn=row.retired_turn,
+        fidelity=row.fidelity,
+        channel=row.channel,
     )
 
 
@@ -516,6 +534,133 @@ async def write_episodic(
     for hook in [*MEMORY_HOOKS, *EPISODIC_HOOKS]:
         await hook(conn, story_id, ids)
     return await memories_by_id(conn, story_id, ids)
+
+
+ROUTED: frozenset[str] = frozenset({"say", "do", "narration", "think"})
+"""The beats routing writes a memory for (a ``latent`` goes to canon, FR-TURN-4)."""
+
+
+def perceived_line(
+    beat: Beat,
+    seen: perception.Perceived,
+    names: Mapping[str, str],
+    places: Mapping[str, str],
+) -> str:
+    """What ``seen``'s holder remembers of ``beat``: the attributed line at ``content`` (a
+    ``think`` as ``<name> thinks: …``; an eavesdropper limited to part of the words as that
+    part), the envelope at ``envelope``; cut to ``TEXT_MAX`` characters."""
+    name = names.get(beat.character_id or "")
+    if seen.fidelity == perception.ENVELOPE and seen.envelope is not None:
+        return perception.envelope_text(seen.envelope, names, places)[:TEXT_MAX]
+    if seen.partial_text and name:
+        return f"{name} says (you catch only part of it): {seen.partial_text.strip()}"[:TEXT_MAX]
+    if beat.kind == "think" and name:
+        return f"{name} thinks: {beat.text.strip()}"[:TEXT_MAX]
+    return render_line(beat.kind, name, beat.text)
+
+
+async def _place_names(conn: AsyncConnection, story_id: str) -> dict[str, str]:
+    found = await conn.execute(
+        select(entities.c.id, entities.c.canonical_name).where(
+            entities.c.story_id == story_id, entities.c.kind == "place"
+        )
+    )
+    return {str(r.id): f"the {r.canonical_name}" for r in found}
+
+
+async def write_perceived(
+    conn: AsyncConnection,
+    operation: MemoryOperation,
+    results: Sequence[perception.PerceptionResult],
+    *,
+    settings: ProfileSettings | None = None,
+) -> list[Memory]:
+    """One episodic memory per perceiver of each routed beat of ``results`` whose ``source``
+    is a ``Beat`` (see the module docstring), inside ``operation``'s commit transaction;
+    answers the memories written (none when the ``episodic`` module is off)."""
+    story_id = operation.story_id
+    if story_id is None:
+        raise InvalidRequest("a memory belongs to a story", {"field": "operation"})
+    routed = [
+        (r.beat.source, seen)
+        for r in results
+        if isinstance(r.beat.source, Beat)
+        and r.beat.source.kind in ROUTED
+        and r.beat.source.text.strip()
+        for seen in r.perceived
+    ]
+    if not routed or not await episodic_on(conn, story_id, settings):
+        return []
+    beats = list({id(b): b for b, _ in routed}.values())
+    cast = await _names(conn, story_id)
+    await _check_beats(conn, story_id, operation.operation_id, beats, cast)
+    unknown = sorted({seen.character_id for _, seen in routed} - cast.keys())
+    if unknown:
+        raise InvalidRequest(
+            "a perceiver is one of the story's characters",
+            {"field": "results.perceived", "reason": "unknown_character"},
+        )
+    places = await _place_names(conn, story_id)
+    rows: list[dict[str, Any]] = []
+    contents: list[guard.Content] = []
+    for beat, seen in routed:
+        assert isinstance(beat, Beat)  # noqa: S101 - filtered above
+        line = perceived_line(beat, seen, cast, places)
+        provenance = RecordProvenance(beat.provenance)
+        content = seen.fidelity == perception.CONTENT
+        contents.append(
+            guard.Content(
+                (line,),
+                frozenset({beat.character_id}) if beat.character_id else frozenset(),
+                consumer=provenance is RecordProvenance.PLAYER,
+            )
+        )
+        rows.append(
+            {
+                "id": new_ulid(),
+                "story_id": story_id,
+                "kind": MemoryKind.EPISODIC.value,
+                "text": line,
+                "holder_character_id": seen.character_id,
+                "character_id": beat.character_id,
+                "visibility": Visibility(
+                    scope="characters", characters=(seen.character_id,)
+                ).document(),
+                "provenance": provenance.value,
+                "trust_tier": trust_tier_of(provenance).value,
+                "operation_id": operation.operation_id,
+                "source_event_ids": [beat.event_id],
+                "narrative_turn": operation.narrative_turn,
+                "turn_variant": operation.turn_variant,
+                "beat": beat.beat,
+                "proposition_ids": list(beat.proposition_ids) if content else [],
+                "event_type": beat.event_type,
+                "participants": participants_of(beat),
+                "fidelity": seen.fidelity,
+                "channel": seen.channel,
+            }
+        )
+    await guard.check_content(
+        conn, story_id, contents, base_revision=operation.base_revision, path=__name__
+    )
+    await insert_derived(conn, memories, rows)
+    await index_records(conn, [memory_record(SimpleNamespace(**r)) for r in rows])
+    ids = tuple(str(r["id"]) for r in rows)
+    for hook in [*MEMORY_HOOKS, *EPISODIC_HOOKS]:
+        await hook(conn, story_id, ids)
+    return await memories_by_id(conn, story_id, ids)
+
+
+async def memory_sink(
+    conn: AsyncConnection,
+    operation: perception.SinkOperation,
+    results: Sequence[perception.PerceptionResult],
+) -> None:
+    """The memory sink of ``core.epistemic.perception.PERCEPTION_SINKS`` (``write_perceived``)."""
+    await write_perceived(conn, operation, results)
+
+
+perception.register_perception_sink(memory_sink)
 
 
 CONSOLIDATED_KINDS: frozenset[MemoryKind] = frozenset({MemoryKind.SEMANTIC, MemoryKind.REFLECTION})
@@ -1129,6 +1274,7 @@ __all__ = [
     "EPISODIC_MODULE",
     "MEMORY_HOOKS",
     "OBSERVABLE",
+    "ROUTED",
     "SEED_IMPORTANCE",
     "Beat",
     "BeatKind",
@@ -1147,7 +1293,9 @@ __all__ = [
     "memories_by_id",
     "memories_linked",
     "memories_through",
+    "memory_sink",
     "participants_of",
+    "perceived_line",
     "register_episodic_hook",
     "register_memory_hook",
     "remove_memory_hook",
@@ -1159,6 +1307,7 @@ __all__ = [
     "working_memory",
     "write_author",
     "write_consolidated",
+    "write_perceived",
     "write_seed",
 ]
 

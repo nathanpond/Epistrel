@@ -289,6 +289,9 @@ class Subject(InputSchema):
         C.POLICY_TEXT,
     ]
     age: Annotated[int, Field(ge=0, le=150), C.SUBJECT_TRUE_AGE]
+    present: Annotated[bool, C.SUBJECT_TRUE_AGE] = True
+    """Authoritatively co-located with the content (#161); ``False`` only under perception
+    routing, for a character placed elsewhere."""
 
 
 class GuardrailCheckInputs(InputSchema):

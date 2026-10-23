@@ -15,6 +15,10 @@ One row is one memory record:
 - **who may know it**: ``holder_character_id`` (whose memory it is; ``NULL``: shared, as every
   render-derived memory is in M4) and ``visibility`` (#133's shape:
   ``{"scope": objective|public|engine|characters, "characters": [...]}``).
+- **how it was perceived** (#161, migration 0070; FR-TURN-2,10): a memory perception routing
+  wrote has the perceiver as ``holder_character_id``, ``fidelity`` (``content``: the words or
+  the action; ``envelope``: only that it happened, ``Jenni whispers something to Marcus``) and
+  ``channel`` (``CHANNELS``); both are ``NULL`` on every other memory.
 - **how important it is now**: ``importance`` (0..1, ``NULL`` until scored; ranking and
   retirement read ``NULL`` as ``DEFAULT_IMPORTANCE``) and ``importance_at`` (the committed turn
   the importance was assigned at; ``core.memory.records.decayed_importance`` decays from it).
@@ -126,6 +130,12 @@ HOT_VECTORS_WHERE = f"{HOT_UNPINNED_WHERE} AND embedding IS NOT NULL"
 
 MODALITIES: tuple[str, ...] = ("objective", "attributed_claim", "observation")
 """The epistemic types a consolidation output carries (``modality``, CHECK; FR-MEM-9)."""
+
+FIDELITIES: tuple[str, ...] = ("content", "envelope")
+"""How much of its beat a routed memory's holder perceived (``fidelity``, CHECK; #161)."""
+CHANNELS: tuple[str, ...] = ("self", "room", "eavesdrop", "remote", "adjacent", "think")
+"""How a routed memory reached its holder (``channel``, CHECK; #161): its own beat, the room it
+is in, an eavesdrop, a remote channel, a sound through a barrier, or its own thought."""
 
 VISIBILITY_SCOPES: tuple[str, ...] = ("objective", "public", "engine", "characters")
 """The visibility scopes a memory may carry (#133's, ``visibility->>'scope'``, CHECK)."""
@@ -246,6 +256,8 @@ memories = Table(
     Column("retired_reason", Text, nullable=True),
     Column("retired_at", TIMESTAMP(timezone=True), nullable=True),
     Column("retired_turn", Integer, nullable=True),
+    Column("fidelity", Text, nullable=True),
+    Column("channel", Text, nullable=True),
     CheckConstraint(f"char_length(text) <= {TEXT_MAX}", name="text_length"),
     CheckConstraint("NOT pinned OR retrieval_tier = 'hot'", name="pinned_hot"),
     CheckConstraint(
@@ -275,6 +287,14 @@ memories = Table(
         name="modality",
     ),
     CheckConstraint("level IS NULL OR level IN (1, 2)", name="level"),
+    CheckConstraint(
+        "fidelity IS NULL OR fidelity IN (" + ", ".join(f"'{f}'" for f in FIDELITIES) + ")",
+        name="fidelity",
+    ),
+    CheckConstraint(
+        "channel IS NULL OR channel IN (" + ", ".join(f"'{c}'" for c in CHANNELS) + ")",
+        name="channel",
+    ),
     CheckConstraint(
         "(visibility->>'scope' = 'characters') = "
         "(jsonb_typeof(visibility->'characters') = 'array' "

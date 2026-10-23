@@ -62,6 +62,16 @@ SCHEDULED = "01JPRED0000000000000000026"
 CONSUMED = "01JPRED0000000000000000027"
 INJURED = "01JPRED0000000000000000028"
 TIME_IS = "01JPRED0000000000000000029"
+ADJACENT_TO = "01JPRED0000000000000000030"
+ON_CHANNEL = "01JPRED0000000000000000031"
+SPOKE_TO = "01JPRED0000000000000000032"
+SPOKE = "01JPRED0000000000000000033"
+
+BARRIERS: tuple[str, ...] = ("none", "door_open", "door_closed", "window", "thin_wall", "wall")
+"""The values of ``adjacent_to``'s ``barrier`` qualifier (#161): what stands between two
+adjoining places. ``door_open`` when none is declared; only ``wall`` and ``door_closed`` block
+sound, and an eavesdrop is plausible through anything but a ``wall``."""
+DEFAULT_BARRIER = "door_open"
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +94,7 @@ EMPLOYMENT = Family("employment", "Employment")
 ATTRIBUTES = Family("attributes", "Basic attributes")
 SCHEDULES = Family("schedules", "Schedules")
 SCENE_TIME = Family("scene_time", "Scene time")
+COMMUNICATION = Family("communication", "Perception and communication")
 
 FAMILIES: tuple[Family, ...] = (
     IDENTITY,
@@ -98,6 +109,7 @@ FAMILIES: tuple[Family, ...] = (
     ATTRIBUTES,
     SCHEDULES,
     SCENE_TIME,
+    COMMUNICATION,
 )
 
 _FAMILY_OF: dict[str, Family] = {}
@@ -154,6 +166,22 @@ CORE_PREDICATES: tuple[Predicate, ...] = (
         temporal_kind=_PERM,
         docs="Containment of places and organizations (Columbus `located_in` Ohio): the "
         "hierarchy `located_at` and the contradiction rules read.",
+    ),
+    _core(
+        LOCATION,
+        id=ADJACENT_TO,
+        name="adjacent_to",
+        subject_type="place",
+        object_type="place",
+        cardinality=_M,
+        temporal_kind=_FLUENT,
+        symmetric=True,
+        qualifiers={"barrier": _STR},
+        docs="The two places adjoin (symmetric), with what stands between them as the optional "
+        "`barrier`: `none`, `door_open` (the default), `door_closed`, `window`, `thin_wall` or "
+        "`wall`. Perception routing (#161) reads it: an eavesdrop is plausible through anything "
+        "but a `wall`, and a sound crosses anything but a `wall`. A later declaration of the "
+        'pair ("she closes the door") is the barrier from then on.',
     ),
     _core(
         POSSESSION,
@@ -439,6 +467,40 @@ CORE_PREDICATES: tuple[Predicate, ...] = (
         "about the scene's place: one value at a time, so a later time supersedes it. Claim "
         "detection (#148) writes it for a time expression no other claim takes.",
     ),
+    _core(
+        COMMUNICATION,
+        id=ON_CHANNEL,
+        name="on_channel",
+        subject_type="person",
+        object_type="str",
+        cardinality=_M,
+        temporal_kind=_FLUENT,
+        docs="The subject is on a remote channel (a call in progress, a radio link), named by a "
+        "free-text token (a `str` literal, no entity). Perception routing (#161) lets a "
+        "`remote_channel` qualifier reach exactly the channel's participants, wherever they are.",
+    ),
+    _core(
+        COMMUNICATION,
+        id=SPOKE_TO,
+        name="spoke_to",
+        subject_type="person",
+        object_type="person",
+        cardinality=_M,
+        temporal_kind=_EVENT,
+        docs="The subject said something to the object at the instant: the observable envelope "
+        "of an utterance (FR-TURN-2), which a character perceives without its words.",
+    ),
+    _core(
+        COMMUNICATION,
+        id=SPOKE,
+        name="spoke",
+        subject_type="person",
+        object_type=NONE,
+        cardinality=_M,
+        temporal_kind=_EVENT,
+        docs="The subject said something (no object, no addressee) at the instant: the envelope "
+        "of an utterance addressed to no one in particular.",
+    ),
 )
 """Every core predicate, in documentation order."""
 
@@ -455,12 +517,18 @@ def family_of(predicate_id: str) -> Family:
 
 
 __all__ = [
+    "ADJACENT_TO",
+    "BARRIERS",
     "CORE_BY_ID",
     "CORE_BY_NAME",
     "CORE_NAMES",
     "CORE_PREDICATES",
+    "DEFAULT_BARRIER",
     "EDUCATION_PREDICATES",
     "FAMILIES",
+    "ON_CHANNEL",
+    "SPOKE",
+    "SPOKE_TO",
     "Family",
     "family_of",
 ]

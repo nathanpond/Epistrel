@@ -17,6 +17,11 @@ wrong and is retried within the deployment's ``structured_retry_budget``:
 - ``intent`` is a ``say``'s alone (``sincere``, ``deceptive``, ``joking``, ``unspecified``;
   ``unspecified`` when it is left out), ``visibility`` a ``latent``'s alone (``objective`` when
   left out; ``characters`` names cast members only), ``effects`` is empty in M4;
+- the perception qualifiers (#161) are optional and kind-bound: ``whisper_to``, ``aside`` and
+  ``language`` a ``say``'s, ``addressee``, ``manner``, ``eavesdrop_by``, ``remote_channel`` and
+  ``partial_text`` a ``say``'s or a ``do``'s, ``location`` a narration's; what they name is
+  validated at routing (``core.epistemic.perception``), where one that cannot be honored is
+  repaired, not refused;
 - ``propositions`` are #140's text sketches (subject, relation, object, time, negated, and the
   predicate's qualifiers it names, #151);
 - ``introduces`` names each new character a beat introduces (``{name, age?, age_range?,
@@ -154,9 +159,26 @@ class VisibilityDecl(_Strict):
     characters: list[str] = Field(default_factory=list)
 
 
-_SAY_ONLY = {"intent": frozenset({"say"}), "visibility": frozenset({"latent"})}
-"""The beat fields one kind alone declares (``RenderedBeats._structure``)."""
-_KIND_GROUPS = (("say",), ("latent",), ("think", "do", "narration"))
+_SPEECH = frozenset({"say"})
+_ACTS = frozenset({"say", "do"})
+_SAY_ONLY: dict[str, frozenset[str]] = {
+    "intent": _SPEECH,
+    "visibility": frozenset({"latent"}),
+    "addressee": _ACTS,
+    "manner": _ACTS,
+    "whisper_to": _SPEECH,
+    "aside": _SPEECH,
+    "eavesdrop_by": _ACTS,
+    "remote_channel": _ACTS,
+    "language": _SPEECH,
+    "partial_text": _ACTS,
+    "location": frozenset({"narration"}),
+}
+"""The beat fields only some kinds declare (``RenderedBeats._structure``): ``intent`` a
+``say``'s, ``visibility`` a ``latent``'s, and the perception qualifiers (#161) the kinds they
+apply to: narrowing a ``say``'s, widening a ``say``'s or a ``do``'s, ``location`` a
+narration's."""
+_KIND_GROUPS = (("say",), ("latent",), ("do",), ("think",), ("narration",))
 
 
 def _per_kind(schema: dict[str, Any]) -> None:
@@ -186,8 +208,28 @@ def _per_kind(schema: dict[str, Any]) -> None:
     schema["anyOf"] = variants
 
 
+QUALIFIER_TEXT_MAX = 200
+LANGUAGE_MAX = 32
+CHANNEL_ID_MAX = 64
+MAX_NAMED = 10
+
+
+class RemoteChannelDecl(_Strict):
+    """A ``remote_channel`` qualifier (#161): the channel's token and, optionally, the
+    participants the render names on it (character ids)."""
+
+    channel_id: str = Field(min_length=1, max_length=CHANNEL_ID_MAX)
+    participants: list[str] = Field(default_factory=list, max_length=MAX_NAMED)
+
+
 class BeatDecl(_Strict):
-    """One beat as a render returns it."""
+    """One beat as a render returns it. The perception qualifiers (#161) are optional and
+    explicit: ``addressee`` and ``manner`` (who it is visibly addressed to, how),
+    ``whisper_to``/``aside`` (narrowing a ``say``), ``eavesdrop_by``/``remote_channel``
+    (widening a ``say`` or a ``do``; ``partial_text`` the words an eavesdropper caught when
+    the render limits them), ``language`` (a ``say``'s language code) and ``location`` (where
+    a narration happens: a place's id or name). Character ids name the story's cast; one that
+    does not, or a widening with no plausible path, is repaired at routing, not refused here."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, json_schema_extra=_per_kind)
 
@@ -198,6 +240,32 @@ class BeatDecl(_Strict):
     propositions: list[PropositionSketch] = Field(default_factory=list, max_length=MAX_PROPOSITIONS)
     effects: list[dict[str, Any]] = Field(default_factory=list)
     visibility: VisibilityDecl | None = None
+    addressee: str | None = Field(default=None, max_length=NAME_MAX)
+    manner: str | None = Field(default=None, max_length=QUALIFIER_TEXT_MAX)
+    whisper_to: list[str] = Field(default_factory=list, max_length=MAX_NAMED)
+    aside: bool = False
+    eavesdrop_by: list[str] = Field(default_factory=list, max_length=MAX_NAMED)
+    remote_channel: RemoteChannelDecl | None = None
+    language: str | None = Field(default=None, min_length=1, max_length=LANGUAGE_MAX)
+    partial_text: str | None = Field(default=None, max_length=BEAT_TEXT_MAX)
+    location: str | None = Field(default=None, max_length=NAME_MAX)
+
+    def qualifiers_declared(self) -> list[str]:
+        """The perception qualifiers this beat declares (#161)."""
+        return [name for name in _QUALIFIER_FIELDS if getattr(self, name) not in (None, [], False)]
+
+
+_QUALIFIER_FIELDS = (
+    "addressee",
+    "manner",
+    "whisper_to",
+    "aside",
+    "eavesdrop_by",
+    "remote_channel",
+    "language",
+    "partial_text",
+    "location",
+)
 
 
 class IntroductionDecl(_Strict):
@@ -276,6 +344,9 @@ class RenderedBeats(_Strict):
                     raise ValueError(f"{where}.visibility: only a characters scope names some")
             if beat.effects:
                 raise ValueError(f"{where}.effects: state effects are not delivered yet")
+            for name in beat.qualifiers_declared():
+                if beat.kind not in _SAY_ONLY[name]:
+                    raise ValueError(f"{where}.{name}: not a qualifier a {beat.kind} declares")
         kinds = {b.kind for b in self.beats}
         if narrator and "narration" not in kinds:
             raise ValueError("beats: the narrator's render has a narration beat")

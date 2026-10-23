@@ -20,6 +20,7 @@ from tools.gates.lexicon import check as check_lexicon
 from tools.gates.licenses import LicensesError
 from tools.gates.licenses import run as run_licenses
 from tools.gates.parts import PartsError, check_parts, collect_parts, write_json
+from tools.gates.perception import main as check_perception_authority
 from tools.gates.spec import SpecError, load_spec
 from tools.gates.traceability import PlanError, code_parts
 from tools.gates.traceability import run as run_traceability
@@ -75,6 +76,10 @@ def build_parser() -> argparse.ArgumentParser:
         "check-epistemic-separation",
         help="canon never reads beliefs and partitions never read facts (FR-EPI-1; #159)",
     )
+    sub.add_parser(
+        "check-perception-authority",
+        help="only core.epistemic.perception decides who perceives a beat (FR-TURN-10; #161)",
+    )
     lic = sub.add_parser("check-licenses", help="runtime dependency licenses are allowlisted")
     lic.add_argument("--lock", type=Path, default=DEFAULT_LOCK, help="uv.lock path")
     lic.add_argument("--runtime-env", type=Path, default=DEFAULT_RUNTIME_ENV, help="runtime venv")
@@ -90,6 +95,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return check_keyed_readers([])
     if args.check == "check-epistemic-separation":
         return check_epistemic_separation([])
+    if args.check == "check-perception-authority":
+        return check_perception_authority([])
     if args.check == "check-licenses":
         try:
             lic_report = run_licenses(

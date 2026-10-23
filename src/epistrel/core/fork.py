@@ -149,14 +149,15 @@ STORY_TABLES_REBUILT: frozenset[str] = frozenset(
     {
         story_heads.name,
         lite_summary_segments.name,
-        *(p.name for p in projections.STRUCTURED),
+        *(p.name for p in projections.STORED_STATE),
     }
 )
 """Story tables the fork rebuilds from the copied rows instead of copying: ``story_heads`` from
 the copied turns, ``lite_summary_segments`` (#72) by folding the copied events, so a copied
 segment's ``superseded`` state is the fork's own (a merged parent past the fork point is not
-copied, and its children are active in the fork), and the structured projections
-(``relationships``, ``placement``, ``scene_state``; #137) by folding the copied canon."""
+copied, and its children are active in the fork), the structured projections
+(``relationships``, ``placement``, ``scene_state``; #137) by folding the copied canon, and
+``belief_state`` (#159) by folding the copied beliefs."""
 
 FORK_SUFFIX = " (fork)"
 
@@ -825,10 +826,11 @@ async def _rebuild_segments(conn: AsyncConnection, fork_id: str) -> int:
 
 
 async def _rebuild_structured(conn: AsyncConnection, fork_id: str) -> dict[str, int]:
-    """The fork's structured projection rows, folded from its copied canon (#137)."""
-    folded = await projections.fold(conn, fork_id, only=projections.STRUCTURED)
+    """The fork's structured projection rows, folded from its copied canon (#137) and its
+    copied beliefs (#159)."""
+    folded = await projections.fold(conn, fork_id, only=projections.STORED_STATE)
     counts: dict[str, int] = {}
-    for projection in projections.STRUCTURED:
+    for projection in projections.STORED_STATE:
         rows = folded[projection.name]
         if len(rows):
             await conn.execute(insert(projection.table), list(rows))

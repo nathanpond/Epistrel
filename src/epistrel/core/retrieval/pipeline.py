@@ -55,6 +55,20 @@ re-embedded in one batched call (counted in ``model_calls``), the vector used fo
 only and never stored, unless the story's ``memory.hot_set.retain_retired_vectors`` is on
 (#147): then a touching retrieval stores it on the retired row, which stays retired.
 
+**The viewpoint** (FR-RET-1, FR-EPI-5,12; #159). With the story's ``partitions`` module on,
+every arm above composes one viewpoint filter (``core.retrieval.viewpoint``): the occasion and
+assessment reads, the vector arm (in the HNSW query), the lexical arm over both tiers (so a
+retired row is filtered before it is rehydrated or re-embedded), the alias arm and the reads by
+id return only memories whose visibility admits the viewpoint, and canon and the profiles are
+read as the viewpoint may read them. The ``beliefs`` stage then returns the viewpoint
+character's own beliefs (its partition, never another's) about the resolved and located
+entities, held at ``suspected`` or above at the query's position, strongest first, at most
+``BELIEFS_MAX``; each is a retrieved row (``beliefs``, its ``tx_from``). ``omniscient`` reads
+everything and no beliefs; the player's character (``characters.is_player``) has no partition
+and reads ``objective`` and ``public`` records only (FR-EPI-12). With ``partitions`` off (every
+Lite story, M4's structured profile) memories are not filtered and canon keeps its own
+visibility filter, as in M4.
+
 **Quarantine** (#145, FR-GUARD-4,5): a quarantined memory is no candidate of any stage (the
 occasion and assessment reads, the vector, lexical and alias arms, rehydration), so it is in no
 context; ``include_quarantined`` (the omniscient debugging read's flag) lets it back in, marked
@@ -96,8 +110,10 @@ from epistrel.core import clock, embeddings
 from epistrel.core.config_changes import section
 from epistrel.core.enums import MemoryKind, RetrievalTier
 from epistrel.core.errors import InvalidRequest
-from epistrel.core.membership import active_only, active_only_sql
+from epistrel.core.membership import POSITION_MAX, active_only, active_only_sql
+from epistrel.core.membership import Position as NarrativePosition
 from epistrel.core.memory.records import EPISODIC_MODULE, episodic_on
+from epistrel.core.profiles.capabilities import module_on
 from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.propositions.model import Polarity
@@ -142,6 +158,13 @@ from epistrel.core.retrieval.search import (
     Embedder,
     vector_search,
 )
+from epistrel.core.retrieval.viewpoint import (
+    SHARED_READER,
+    Viewpoint,
+    scope_for,
+    scope_params,
+    scope_sql,
+)
 from epistrel.core.settings_schema import (
     OMNISCIENT,
     EmbeddingSettings,
@@ -151,9 +174,11 @@ from epistrel.core.settings_schema import (
 from epistrel.core.tables import deployment_state, stories
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 from epistrel.core.tables.memories import SEARCH_CONFIGURATION, Vector, memories
+from epistrel.core.visibility import visible_clause
 
 if TYPE_CHECKING:
     from epistrel.core.canon.facts import Fact
+    from epistrel.core.epistemic.partitions import Belief
     from epistrel.core.projections.structured import ProfileView
 
 log = logging.getLogger(__name__)
@@ -167,12 +192,16 @@ MAX_ALIASES = 32
 """The most alias phrases the alias arm matches in one query."""
 CANON_PER_ENTITY = 20
 """The most canon facts read about one resolved entity."""
+BELIEFS_MAX = 20
+"""The most beliefs the ``beliefs`` arm returns (#159)."""
+PARTITIONS_MODULE = "partitions"
 
 ARM_VECTOR = "vector"
 ARM_LEXICAL = "lexical"
 ARM_ALIAS = "alias"
 ARM_OCCASION = "occasion"
 ARM_ASSESSMENT = "assessment"
+ARM_BELIEFS = "beliefs"
 
 STAGES: tuple[str, ...] = (
     "resolve",
@@ -181,6 +210,7 @@ STAGES: tuple[str, ...] = (
     "lexical",
     "fuse",
     "profiles",
+    "beliefs",
     "assemble",
 )
 """The stages ``timings`` reports (and ``total``)."""
@@ -339,6 +369,9 @@ class RetrievalResult:
     participants: tuple[str, ...] = ()
     profiles: tuple[ProfileView, ...] = ()
     canon: tuple[Fact, ...] = ()
+    beliefs: tuple[Belief, ...] = ()
+    """The viewpoint character's own beliefs about what the query names (#159's ``beliefs``
+    arm; empty for ``omniscient``, a reader, the player, and with ``partitions`` off)."""
     context: Context = field(default_factory=Context)
     resolution: QueryResolution = field(default_factory=QueryResolution)
     turn_window: tuple[int | None, int | None] | None = None
@@ -491,6 +524,13 @@ def _not_quarantined(include: bool) -> list[Any]:
     return [] if include else [memories.c.quarantined_at.is_(None)]
 
 
+def _scoped(scope: str | None) -> list[Any]:
+    """The viewpoint filter (#159, ``core.retrieval.viewpoint``): none when ``scope`` is
+    ``None``."""
+    found = None if scope is None else visible_clause(memories, scope)
+    return [] if found is None else [found]
+
+
 def _row(r: Any, arms: tuple[str, ...] = ()) -> RetrievedMemory:
     return RetrievedMemory(
         id=str(r.id),
@@ -519,6 +559,7 @@ async def _episodes(
     entities: Sequence[str],
     include_quarantined: bool = False,
     text_query: str | None = None,
+    scope: str | None = None,
 ) -> list[Any]:
     m = memories.c
     where = [
@@ -527,6 +568,7 @@ async def _episodes(
         m.kind == MemoryKind.EPISODIC.value,
         _through(through),
         *_not_quarantined(include_quarantined),
+        *_scoped(scope),
     ]
     if turns is not None:
         first, last = turns
@@ -565,6 +607,7 @@ async def _assessments(
     participants: Sequence[str],
     k: int,
     include_quarantined: bool = False,
+    scope: str | None = None,
 ) -> list[Any]:
     m = memories.c
     where = [
@@ -574,6 +617,7 @@ async def _assessments(
         m.participants.overlap(list(participants)),
         _through(through),
         *_not_quarantined(include_quarantined),
+        *_scoped(scope),
     ]
     if since_turn is not None:
         where.append(or_(m.narrative_turn.is_(None), m.narrative_turn >= since_turn))
@@ -587,7 +631,11 @@ async def _assessments(
 
 
 async def _by_id(
-    conn: AsyncConnection, story_id: str, ids: Sequence[str], include_quarantined: bool = False
+    conn: AsyncConnection,
+    story_id: str,
+    ids: Sequence[str],
+    include_quarantined: bool = False,
+    scope: str | None = None,
 ) -> dict[str, Any]:
     if not ids:
         return {}
@@ -597,6 +645,7 @@ async def _by_id(
             active_only(memories),
             memories.c.id.in_(list(ids)),
             *_not_quarantined(include_quarantined),
+            *_scoped(scope),
         )
     )
     return {str(r.id): r for r in found}
@@ -610,9 +659,11 @@ async def _alias_arm(
     through: tuple[int, int],
     k: int,
     include_quarantined: bool = False,
+    scope: str | None = None,
 ) -> list[str]:
     """The hot active memories whose text holds one of ``aliases`` as a phrase (any casing),
-    latest first (none quarantined unless ``include_quarantined``)."""
+    latest first (none quarantined unless ``include_quarantined``; only those ``scope``
+    admits)."""
     if not aliases or k < 1:
         return []
     phrases = " || ".join(
@@ -625,6 +676,7 @@ async def _alias_arm(
             f"AND m.retrieval_tier = '{RetrievalTier.HOT.value}' "
             f"AND {position_clause('m')} "
             f"AND {quarantine_clause('m')} "
+            f"AND {scope_sql('m')} "
             f"AND m.search @@ ({phrases}) "
             "ORDER BY m.narrative_turn DESC NULLS LAST, m.beat DESC NULLS LAST, m.text, m.id "
             "LIMIT :k"
@@ -634,6 +686,7 @@ async def _alias_arm(
             "k": k,
             "include_quarantined": include_quarantined,
             **position_params(through),
+            **scope_params(scope),
             **{f"a{i}": a for i, a in enumerate(aliases)},
         },
     )
@@ -698,6 +751,12 @@ def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
     na = math.sqrt(sum(x * x for x in a))
     nb = math.sqrt(sum(y * y for y in b))
     return 0.0 if na == 0 or nb == 0 else dot / (na * nb)
+
+
+async def _is_player(conn: AsyncConnection, story_id: str, character_id: str) -> bool:
+    from epistrel.core.epistemic.partitions import is_player
+
+    return await is_player(conn, story_id, character_id)
 
 
 async def _head(conn: AsyncConnection, story_id: str) -> int:
@@ -802,6 +861,19 @@ async def retrieve(
     position = query.position or (head + 1, 0)
     through = position
     now_turn = position[0]
+    # #159: the viewpoint filter every arm composes (``core.retrieval.viewpoint``).
+    seen_as = Viewpoint.parse(viewpoint)
+    partitioned = module_on(settings, PARTITIONS_MODULE)
+    player = (
+        partitioned
+        and seen_as.kind == "character"
+        and seen_as.character_id is not None
+        and await _is_player(conn, story_id, seen_as.character_id)
+    )
+    scope = scope_for(seen_as, partitions=partitioned, player=player)
+    # The player's character has no partition and no private records (FR-EPI-12): it reads
+    # canon as a reader does (its standing profiles stay the character's view).
+    canon_viewpoint = SHARED_READER if player else viewpoint
 
     # 1. resolve
     index = await resolution.load_index(conn, story_id)
@@ -826,7 +898,11 @@ async def retrieve(
     )
     if resolved.anchor is not None:
         timeline = await resolution.subject_timeline(
-            lookup, story_id, resolved.anchor, viewpoint=viewpoint, through_position=(now_turn, 0)
+            lookup,
+            story_id,
+            resolved.anchor,
+            viewpoint=canon_viewpoint,
+            through_position=(now_turn, 0),
         )
         if resolved.expression is not None:
             resolved = replace(
@@ -854,6 +930,7 @@ async def retrieve(
             entities=resolved.entities,
             include_quarantined=iq,
             text_query=query.text,
+            scope=scope,
         )
         participants = tuple(
             dict.fromkeys(
@@ -874,6 +951,7 @@ async def retrieve(
                 participants=participants,
                 k=params.k,
                 include_quarantined=iq,
+                scope=scope,
             )
     if wanted is not None:
         episode_rows = [r for r in episode_rows if MemoryKind(r.kind) in wanted]
@@ -913,6 +991,7 @@ async def retrieve(
                     k=params.vector_k,
                     through=through,
                     include_quarantined=iq,
+                    scope=scope,
                 )
                 vector_hits = [(h.memory_id, h.score) for h in hits]
     else:
@@ -940,7 +1019,7 @@ async def retrieve(
             story_id,
             query.text,
             params.lexical_k,
-            LexicalFilters(through=through, include_quarantined=iq),
+            LexicalFilters(through=through, include_quarantined=iq, scope=scope),
         )
         if rehydrate_left:
             found_retired = await lexical.search(
@@ -949,7 +1028,10 @@ async def retrieve(
                 query.text,
                 rehydrate_left + len(taken),
                 LexicalFilters(
-                    through=through, tiers=(RetrievalTier.RETIRED,), include_quarantined=iq
+                    through=through,
+                    tiers=(RetrievalTier.RETIRED,),
+                    include_quarantined=iq,
+                    scope=scope,
                 ),
             )
             retired_hits = [h for h in found_retired if h[0] not in taken][:rehydrate_left]
@@ -971,7 +1053,13 @@ async def retrieve(
             aliases.extend([entry.canonical_name, *(a for a, _ in entry.aliases)])
         aliases = list(dict.fromkeys(a for a in aliases if a.strip()))[:MAX_ALIASES]
         alias_ids = await _alias_arm(
-            conn, story_id, aliases, through=through, k=params.lexical_k, include_quarantined=iq
+            conn,
+            story_id,
+            aliases,
+            through=through,
+            k=params.lexical_k,
+            include_quarantined=iq,
+            scope=scope,
         )
     else:
         skipped.append(ARM_ALIAS)
@@ -983,7 +1071,7 @@ async def retrieve(
         similar = await _stored_similarity(conn, story_id, retired_ids, query_vector, version)
         missing = [i for i in retired_ids if i not in similar]
         if missing and embed_batch is not None:
-            rows = await _by_id(conn, story_id, missing, iq)
+            rows = await _by_id(conn, story_id, missing, iq, scope)
             texts = [rows[i].text for i in missing if i in rows]
             started = time.perf_counter()
             try:
@@ -1022,7 +1110,7 @@ async def retrieve(
             arms_of.setdefault(memory_id, []).append(arm)
     fused = ranking.fuse(rankings, params.rrf_k)
     candidates = [i for i in fused if i not in taken]
-    details = await _by_id(conn, story_id, candidates, iq)
+    details = await _by_id(conn, story_id, candidates, iq, scope)
     if wanted is not None:
         details = {i: r for i, r in details.items() if MemoryKind(r.kind) in wanted}
     ranked = ranking.rank(
@@ -1063,11 +1151,32 @@ async def retrieve(
             story_id,
             subjects=subjects,
             story_time=story_time_at(position, basis),
-            viewpoint=viewpoint,
+            viewpoint=canon_viewpoint,
             through_position=(now_turn, 0),
             limit=CANON_PER_ENTITY,
         )
     clk.lap("profiles")
+
+    # 5b. the viewpoint character's own beliefs (#159): its partition, never another's.
+    held: list[Belief] = []
+    believer = seen_as.character_id if scope is not None and seen_as.kind == "character" else None
+    about = list(dict.fromkeys((*resolved.entities, *participants)))
+    if believer is not None and not player and about:
+        from epistrel.core.epistemic import partitions as partition_store
+
+        held = await partition_store.partition(
+            conn,
+            story_id,
+            believer,
+            through=NarrativePosition(now_turn, 0, 0, position[1], POSITION_MAX),
+            entities_=about,
+            levels=partition_store.HELD_LEVELS,
+            limit=BELIEFS_MAX,
+            order="confidence",
+        )
+        for belief in held:
+            read_set.record_retrieved(ARM_BELIEFS, belief.id, belief.tx_from)
+    clk.lap("beliefs")
 
     # 6. assemble
     episodes = tuple(_row(r, (ARM_OCCASION,)) for r in episode_rows)
@@ -1130,6 +1239,7 @@ async def retrieve(
         participants=participants,
         profiles=tuple(profiles),
         canon=tuple(canon),
+        beliefs=tuple(held),
         context=assembled,
         resolution=resolved,
         turn_window=turns,
@@ -1224,9 +1334,11 @@ async def read_retrieve(
 __all__ = [
     "ARM_ALIAS",
     "ARM_ASSESSMENT",
+    "ARM_BELIEFS",
     "ARM_LEXICAL",
     "ARM_OCCASION",
     "ARM_VECTOR",
+    "BELIEFS_MAX",
     "CONTEXT_SOURCES",
     "MAX_EPISODES",
     "QUERY_TEXT_MAX",

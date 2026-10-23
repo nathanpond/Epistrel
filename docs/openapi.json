@@ -404,6 +404,155 @@
         "title": "BeatVisibilityModel",
         "type": "object"
       },
+      "BeliefItemBody": {
+        "description": "One belief the character holds now: the ``belief_state`` row (``current_level``,\n``current_scalar``, ``polarity``, ``since``) joined with its belief record (``kind``,\n``confidence_scalar``, ``provenance``: #160's acquisition, ``held_from``/``held_to``,\n``valid_from``/``valid_to`` in story-minutes) and the proposition it holds.",
+        "properties": {
+          "belief_id": {
+            "title": "Belief Id",
+            "type": "string"
+          },
+          "current_level": {
+            "title": "Current Level",
+            "type": "string"
+          },
+          "current_scalar": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Scalar"
+          },
+          "held_from": {
+            "$ref": "#/components/schemas/NarrativePositionBody"
+          },
+          "held_to": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NarrativePositionBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "polarity": {
+            "title": "Polarity",
+            "type": "string"
+          },
+          "proposition": {
+            "$ref": "#/components/schemas/Proposition"
+          },
+          "proposition_id": {
+            "title": "Proposition Id",
+            "type": "string"
+          },
+          "provenance": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provenance"
+          },
+          "since": {
+            "$ref": "#/components/schemas/NarrativePositionBody"
+          },
+          "tx_from": {
+            "title": "Tx From",
+            "type": "string"
+          },
+          "valid_from": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid From"
+          },
+          "valid_to": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid To"
+          }
+        },
+        "required": [
+          "belief_id",
+          "proposition_id",
+          "proposition",
+          "kind",
+          "polarity",
+          "current_level",
+          "current_scalar",
+          "since",
+          "provenance",
+          "held_from",
+          "held_to",
+          "valid_from",
+          "valid_to",
+          "tx_from"
+        ],
+        "title": "BeliefItemBody",
+        "type": "object"
+      },
+      "BeliefsBody": {
+        "description": "A page of one character's belief projection, the story's revision, and ``next_after``\n(the proposition id to continue after; ``null`` on the last page).",
+        "properties": {
+          "beliefs": {
+            "items": {
+              "$ref": "#/components/schemas/BeliefItemBody"
+            },
+            "title": "Beliefs",
+            "type": "array"
+          },
+          "character": {
+            "title": "Character",
+            "type": "string"
+          },
+          "next_after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next After"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "character",
+          "beliefs",
+          "revision",
+          "next_after"
+        ],
+        "title": "BeliefsBody",
+        "type": "object"
+      },
       "Bound": {
         "additionalProperties": false,
         "description": "One end of an interval: exact (``inner == outer``) or approximate (see the module\ndocstring for which side is outer).",
@@ -13087,6 +13236,40 @@
           }
         },
         "title": "NameOverrides",
+        "type": "object"
+      },
+      "NarrativePositionBody": {
+        "description": "A narrative position in its five parts (#159): the turn, its variant, the inter-turn\nslot (0: the turn itself), the beat (0: the player input) and the step.",
+        "properties": {
+          "beat": {
+            "title": "Beat",
+            "type": "integer"
+          },
+          "slot_k": {
+            "title": "Slot K",
+            "type": "integer"
+          },
+          "step": {
+            "title": "Step",
+            "type": "integer"
+          },
+          "turn": {
+            "title": "Turn",
+            "type": "integer"
+          },
+          "variant": {
+            "title": "Variant",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "turn",
+          "variant",
+          "slot_k",
+          "beat",
+          "step"
+        ],
+        "title": "NarrativePositionBody",
         "type": "object"
       },
       "OffboardingActions": {
@@ -31396,7 +31579,7 @@
       },
       "Visibility": {
         "additionalProperties": false,
-        "description": "Who may read a fact: ``objective`` (canon narration), ``public`` (publicly known),\n``engine`` (engine-only, e.g. true ages: ``omniscient`` alone) or ``characters`` (only the\ncharacters listed, e.g. a ``latent`` beat's scope, and ``omniscient``).",
+        "description": "Who may read a record: ``objective`` (canon narration), ``public`` (publicly known),\n``engine`` (engine-only, e.g. true ages: ``omniscient`` alone) or ``characters`` (only the\ncharacters listed, e.g. a ``latent`` beat's scope or a belief's holder, and ``omniscient``).",
         "properties": {
           "characters": {
             "anyOf": [
@@ -54496,6 +54679,188 @@
           }
         ],
         "summary": "Record consumer events without generating",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
+    "/stories/{story_id}/inspect/beliefs": {
+      "get": {
+        "description": "What `character` believes now (FR-EPI-6): its `belief_state` rows, each joined with the belief record it rests on and the proposition held, `omniscient` only (403 `omniscient_required`). A page by proposition id (`limit`, at most 500; `after` continues); `proposition_id` keeps one. A belief is its holder's truth, whether or not canon agrees (FR-EPI-3). 422 for a character outside the story's cast.",
+        "operationId": "inspect_beliefs",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "character",
+            "required": true,
+            "schema": {
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Character",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "viewpoint",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Viewpoint"
+            }
+          },
+          {
+            "in": "query",
+            "name": "proposition_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Proposition Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BeliefsBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden: `omniscient_required`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`, `viewpoint_unresolved`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Inspect a character's belief projection",
         "tags": [
           "stories"
         ]

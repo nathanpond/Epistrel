@@ -5,10 +5,17 @@
   (``limit``, ``after_id``; ``state`` keeps the ``open``, ``resolved`` or ``expired`` ones) with
   the ledger entries on them (``discharged`` keeps the discharged or the open ones).
 
-An omniscient read only (403 ``omniscient_required`` for any other viewpoint): it shows what no
-character's partition holds. 409 ``module_off`` for a story that does not run commitment (a
-Lite story). FR-ADMIN-5's other inspection reads (beliefs, divergences, external facts) are
-M5's and later. A thin handler over ``Engine.inspect_ledger``.
+- ``GET /stories/{id}/inspect/beliefs?character=…&viewpoint=omniscient`` → one character's belief
+  projection (FR-EPI-6, FR-ADMIN-5; #159): a page of its ``belief_state`` rows by proposition id
+  (``limit``, ``after``; ``proposition_id`` keeps one), each joined with its current belief
+  (kind, confidence, provenance, held and valid times) and the proposition it holds.
+
+Both are omniscient reads only (403 ``omniscient_required`` for any other viewpoint): the ledger
+shows what no character's partition holds, a partition what no other character may read. 409
+``module_off`` for a ledger read of a story that does not run commitment (a Lite story).
+FR-ADMIN-5's other inspection reads (divergences, external facts) are later; #178 adds the
+inspection reads' own authorization rules. Thin handlers over ``Engine.inspect_ledger`` and
+``Engine.inspect_beliefs``.
 """
 
 from __future__ import annotations
@@ -27,7 +34,16 @@ from epistrel.core.commit.lifecycle import (
     Thunk,
 )
 from epistrel.core.enums import ThunkState
+from epistrel.core.epistemic.partitions import (
+    INSPECT_LIMIT_DEFAULT as BELIEFS_LIMIT_DEFAULT,
+)
+from epistrel.core.epistemic.partitions import (
+    INSPECT_LIMIT_MAX as BELIEFS_LIMIT_MAX,
+)
+from epistrel.core.epistemic.partitions import Belief, BeliefInspection, BeliefState
 from epistrel.core.ids import ULID_PATTERN
+from epistrel.core.membership import Position
+from epistrel.core.propositions.model import Proposition
 
 router = APIRouter(prefix="/stories", tags=["stories"])
 
@@ -178,5 +194,119 @@ async def inspect_ledger(
             discharged=discharged,
             limit=limit,
             after_id=after_id,
+        )
+    )
+
+
+# -- beliefs (#159) ------------------------------------------------------------------------------
+
+
+class NarrativePositionBody(BaseModel):
+    """A narrative position in its five parts (#159): the turn, its variant, the inter-turn
+    slot (0: the turn itself), the beat (0: the player input) and the step."""
+
+    turn: int
+    variant: int
+    slot_k: int
+    beat: int
+    step: int
+
+    @classmethod
+    def of(cls, position: Position) -> NarrativePositionBody:
+        return cls(**position.document())
+
+
+class BeliefItemBody(BaseModel):
+    """One belief the character holds now: the ``belief_state`` row (``current_level``,
+    ``current_scalar``, ``polarity``, ``since``) joined with its belief record (``kind``,
+    ``confidence_scalar``, ``provenance``: #160's acquisition, ``held_from``/``held_to``,
+    ``valid_from``/``valid_to`` in story-minutes) and the proposition it holds."""
+
+    belief_id: str
+    proposition_id: str
+    proposition: Proposition
+    kind: str
+    polarity: str
+    current_level: str
+    current_scalar: float | None
+    since: NarrativePositionBody
+    provenance: str | None
+    held_from: NarrativePositionBody
+    held_to: NarrativePositionBody | None
+    valid_from: int | None
+    valid_to: int | None
+    tx_from: str
+
+    @classmethod
+    def of(cls, state: BeliefState, belief: Belief) -> BeliefItemBody:
+        return cls(
+            belief_id=belief.id,
+            proposition_id=state.proposition_id,
+            proposition=belief.proposition,
+            kind=belief.kind.value,
+            polarity=state.polarity,
+            current_level=state.current_level.value,
+            current_scalar=state.current_scalar,
+            since=NarrativePositionBody.of(state.since),
+            provenance=belief.provenance,
+            held_from=NarrativePositionBody.of(belief.held_from),
+            held_to=None if belief.held_to is None else NarrativePositionBody.of(belief.held_to),
+            valid_from=belief.valid_from,
+            valid_to=belief.valid_to,
+            tx_from=belief.tx_from.isoformat(),
+        )
+
+
+class BeliefsBody(BaseModel):
+    """A page of one character's belief projection, the story's revision, and ``next_after``
+    (the proposition id to continue after; ``null`` on the last page)."""
+
+    character: str
+    beliefs: list[BeliefItemBody]
+    revision: int
+    next_after: str | None
+
+    @classmethod
+    def of(cls, page: BeliefInspection) -> BeliefsBody:
+        return cls(
+            character=page.holder_character_id,
+            beliefs=[BeliefItemBody.of(state, belief) for state, belief in page.items],
+            revision=page.revision,
+            next_after=page.next_after,
+        )
+
+
+@router.get(
+    "/{story_id}/inspect/beliefs",
+    response_model=BeliefsBody,
+    operation_id="inspect_beliefs",
+    summary="Inspect a character's belief projection",
+    description=(
+        "What `character` believes now (FR-EPI-6): its `belief_state` rows, each joined with "
+        "the belief record it rests on and the proposition held, `omniscient` only (403 "
+        "`omniscient_required`). A page by proposition id (`limit`, at most 500; `after` "
+        "continues); `proposition_id` keeps one. A belief is its holder's truth, whether or "
+        "not canon agrees (FR-EPI-3). 422 for a character outside the story's cast."
+    ),
+)
+async def inspect_beliefs(
+    story_id: StoryId,
+    ctx: ContextDep,
+    engine: EngineDep,
+    character: Annotated[str, Query(pattern=ULID_PATTERN)],
+    viewpoint: str | None = None,
+    proposition_id: Annotated[str | None, Query(pattern=ULID_PATTERN)] = None,
+    limit: Annotated[int, Query(ge=1, le=BELIEFS_LIMIT_MAX)] = BELIEFS_LIMIT_DEFAULT,
+    after: Annotated[str | None, Query(pattern=ULID_PATTERN)] = None,
+) -> BeliefsBody:
+    return BeliefsBody.of(
+        await engine.inspect_beliefs(
+            ctx,
+            story_id,
+            character=character,
+            viewpoint=viewpoint,
+            proposition_id=proposition_id,
+            limit=limit,
+            after=after,
         )
     )

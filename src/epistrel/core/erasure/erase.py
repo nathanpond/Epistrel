@@ -193,6 +193,7 @@ from epistrel.core.tables import (
     turn_queue,
 )
 from epistrel.core.tables.audit_log import AuditKind
+from epistrel.core.tables.beliefs import beliefs
 from epistrel.core.tables.catalog import CATALOG_SCHEMA, ERASURE_GUC
 from epistrel.core.tables.commitments import thunks
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
@@ -1273,9 +1274,10 @@ async def _redact_structured(
     """The structured stores (#131): an erased character's entity loses its aliases (deleted,
     each with a marker); every other record naming the subject is redacted in place. A story
     predicate's name keeps its id as a suffix when redacted, so names stay unique per story.
-    Facts (#133), memories (#135) and thunks (#146) go first: see ``_erase_facts``,
-    ``_erase_memories`` and ``_erase_thunks``."""
+    Facts (#133), beliefs (#159), memories (#135) and thunks (#146) go first: see
+    ``_erase_facts``, ``_erase_beliefs``, ``_erase_memories`` and ``_erase_thunks``."""
     await _erase_facts(conn, story_id, refs, removed, tally, run)
+    await _erase_beliefs(conn, story_id, removed, tally, run)
     await _erase_memories(conn, story_id, refs, removed, redactor, tally, run)
     await _erase_thunks(conn, story_id, refs, removed, redactor, tally, run)
     owned = list(
@@ -1391,6 +1393,35 @@ async def _erase_facts(
                 .where(facts.c.id == row.id)
                 .values(visibility={**row.visibility, "characters": named})
             )
+
+
+async def _erase_beliefs(
+    conn: AsyncConnection, story_id: str, removed: set[str], tally: _Tally, run: _StoryRun
+) -> None:
+    """Beliefs (#159): every belief an erased character holds (its partition) is deleted, each
+    with a marker. Beliefs other characters hold about the subject stay until #178 widens this
+    to the subject rule; ``belief_state`` is refolded by the ``rebuilt`` stage."""
+    if not removed:
+        return
+    held = list(
+        await conn.scalars(
+            select(beliefs.c.id)
+            .where(
+                beliefs.c.story_id == story_id,
+                beliefs.c.holder_character_id.in_(sorted(removed)),
+            )
+            .order_by(beliefs.c.id)
+        )
+    )
+    for belief_id in held:
+        await _delete(
+            conn,
+            run,
+            tally,
+            beliefs.name,
+            str(belief_id),
+            delete(beliefs).where(beliefs.c.id == belief_id),
+        )
 
 
 async def _erase_thunks(

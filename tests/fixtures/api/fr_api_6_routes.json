@@ -1194,6 +1194,11 @@
     },
     {
       "method": "GET",
+      "path": "/stories/{story_id}/inspect/beliefs",
+      "requirement": "FR-ADMIN-5"
+    },
+    {
+      "method": "GET",
       "path": "/admin/evals/extraction-shadow",
       "requirement": "FR-OBS-4"
     }

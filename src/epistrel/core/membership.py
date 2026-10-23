@@ -418,6 +418,123 @@ async def follow_membership_change(conn: AsyncConnection, change: MembershipChan
     await follow(conn, change.operation_ids, change.new, story_id=change.story_id)
 
 
+# -- narrative position ---------------------------------------------------------------------
+
+
+POSITION_MAX = 32_767
+"""The largest ``beat``/``step``/``slot_k`` a position holds (``smallint``): "the end of" a turn
+or a slot is ``(turn, slot_k, POSITION_MAX, POSITION_MAX)``."""
+
+
+@dataclass(frozen=True, slots=True, order=False)
+class Position:
+    """A narrative position in its five-column form (#159; #160 completes the comparator and
+    retypes the M4 aliases to it): ``turn`` and ``variant`` (the turn's operation), ``slot_k``
+    (0: the turn itself, ``k``: the k-th inter-turn slot after it), ``beat`` (0: the player
+    input) and ``step`` (0: outside declared steps).
+
+    The order is ``key()``: ``turn``, then ``slot_k``, then ``beat``, then ``step``. ``variant``
+    takes no part in it: positions are compared within one timeline, where a turn has one
+    active variant (the provisional comparator; #160 owns the full rules)."""
+
+    turn: int
+    variant: int = 0
+    slot_k: int = 0
+    beat: int = 0
+    step: int = 0
+
+    def key(self) -> tuple[int, int, int, int]:
+        return (self.turn, self.slot_k, self.beat, self.step)
+
+    def at_or_before(self, other: Position) -> bool:
+        return self.key() <= other.key()
+
+    def before(self, other: Position) -> bool:
+        return self.key() < other.key()
+
+    @classmethod
+    def end_of(cls, turn: int, slot_k: int = 0) -> Position:
+        """The last position of ``turn`` (or of its slot ``slot_k``): everything written in it
+        is at or before this."""
+        return cls(turn, 0, slot_k, POSITION_MAX, POSITION_MAX)
+
+    def columns(self, prefix: str) -> dict[str, int]:
+        """The five columns of a position group (``<prefix>_turn`` … ``<prefix>_step``)."""
+        return {
+            f"{prefix}_turn": self.turn,
+            f"{prefix}_variant": self.variant,
+            f"{prefix}_slot_k": self.slot_k,
+            f"{prefix}_beat": self.beat,
+            f"{prefix}_step": self.step,
+        }
+
+    @classmethod
+    def of_columns(cls, row: Mapping[str, Any], prefix: str) -> Position | None:
+        """The position group ``prefix`` of ``row`` (``None`` when its turn is ``NULL``)."""
+        turn = row.get(f"{prefix}_turn")
+        if turn is None:
+            return None
+        return cls(
+            int(turn),
+            int(row.get(f"{prefix}_variant") or 0),
+            int(row.get(f"{prefix}_slot_k") or 0),
+            int(row.get(f"{prefix}_beat") or 0),
+            int(row.get(f"{prefix}_step") or 0),
+        )
+
+    def document(self) -> dict[str, int]:
+        return {
+            "turn": self.turn,
+            "variant": self.variant,
+            "slot_k": self.slot_k,
+            "beat": self.beat,
+            "step": self.step,
+        }
+
+
+POSITION_FIELDS: tuple[str, ...] = ("turn", "variant", "slot_k", "beat", "step")
+"""The columns of a position group, in order (``<prefix>_<field>``)."""
+
+
+def position_group(prefix: str, *, nullable: bool) -> list[Column[Any]]:
+    """The five columns of position group ``prefix`` (#159's ``held_from``/``held_to``): the
+    turn, then ``variant``, ``slot_k``, ``beat`` and ``step``; a nullable group is all ``NULL``
+    or a whole position (its table's CHECK, ``position_group_check``)."""
+    return [
+        Column(f"{prefix}_turn", Integer, nullable=nullable),
+        *(
+            Column(
+                f"{prefix}_{name}",
+                SmallInteger,
+                nullable=nullable,
+                server_default=None if nullable else text("0"),
+            )
+            for name in POSITION_FIELDS[1:]
+        ),
+    ]
+
+
+def position_group_check(prefix: str) -> str:
+    """A nullable position group is all ``NULL`` or none of it is."""
+    columns = [f"{prefix}_{name}" for name in POSITION_FIELDS]
+    return f"num_nulls({', '.join(columns)}) IN (0, {len(columns)})"
+
+
+def position_key(table: FromClause, prefix: str) -> Any:
+    """The order key of position group ``prefix`` of ``table`` as a SQL row value
+    ``(turn, slot_k, beat, step)``, to compare with ``position_literal``."""
+    from sqlalchemy import tuple_
+
+    return tuple_(*(table.c[f"{prefix}_{n}"] for n in ("turn", "slot_k", "beat", "step")))
+
+
+def position_literal(position: Position) -> Any:
+    """``position``'s order key as a SQL row value."""
+    from sqlalchemy import tuple_
+
+    return tuple_(*(literal(v) for v in position.key()))
+
+
 # -- reads ------------------------------------------------------------------------------------
 
 
@@ -494,8 +611,11 @@ __all__ = [
     "DERIVED_TABLES",
     "FLIP_TARGETS",
     "FOLLOWERS",
+    "POSITION_FIELDS",
+    "POSITION_MAX",
     "DerivedTable",
     "Follower",
+    "Position",
     "active_as_of",
     "active_only",
     "active_only_predicate",
@@ -512,6 +632,10 @@ __all__ = [
     "follow",
     "follow_membership_change",
     "insert_derived",
+    "position_group",
+    "position_group_check",
+    "position_key",
+    "position_literal",
     "position_of",
     "register_derived",
     "register_follower",

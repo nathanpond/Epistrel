@@ -76,7 +76,7 @@ from epistrel.api.routes.engine_profiles import (
     ProfileVersionsBody,
 )
 from epistrel.api.routes.history import HistoryResponse
-from epistrel.api.routes.inspect import LedgerBody
+from epistrel.api.routes.inspect import BeliefsBody, LedgerBody
 from epistrel.api.routes.media import (
     MediaListBody,
     MediaUploadedBody,
@@ -406,6 +406,14 @@ async def _fact_list(engine: Engine, story_id: str) -> dict[str, Any]:
 
 async def _ledger(engine: Engine, story_id: str) -> dict[str, Any]:
     return dump(LedgerBody.of(await engine.inspect_ledger(CTX, story_id, viewpoint="omniscient")))
+
+
+async def _beliefs(engine: Engine, story_id: str, character: str) -> dict[str, Any]:
+    return dump(
+        BeliefsBody.of(
+            await engine.inspect_beliefs(CTX, story_id, character=character, viewpoint="omniscient")
+        )
+    )
 
 
 def _keep(name: str, *path: str | int) -> Callable[[dict[str, Any], Ids], None]:
@@ -1224,6 +1232,16 @@ def _steps() -> list[Step]:
                 e.add_story_character(CTX, ids["story"], AdHocCharacter(**DRIVER))
             ),
             _keep("dale", "id"),
+        ),
+        # The added character's belief projection (#159): omniscient, empty (no belief yet).
+        Step(
+            "inspect_beliefs",
+            lambda ids: Rest(
+                "GET",
+                f"{s}/inspect/beliefs",
+                params={"character": ids["dale"], "viewpoint": "omniscient"},
+            ),
+            lambda e, ids: _beliefs(e, ids["story"], ids["dale"]),
         ),
         Step(
             "promote_character",

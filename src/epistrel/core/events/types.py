@@ -454,6 +454,20 @@ class FactSuperseded(EventPayload):
     remainders: tuple[str, ...] = ()
 
 
+@register("belief_committed", category=EventCategory.DERIVED)
+class BeliefCommitted(EventPayload):
+    """A belief record written to a holder's partition (FR-EPI-1,3,6; #159): the new row
+    (``belief_id``) and its proposition, and the open belief of the same holder and proposition it
+    closed (``closes``, at the new row's ``held_from``). Identifiers only, and no character's (the
+    row names its holder); the
+    belief follows its operation's membership, so this event does too. #160's
+    ``belief_transition`` event joins it with the acquisition's cause."""
+
+    belief_id: str
+    proposition_id: str
+    closes: str | None = None
+
+
 # -- commitments (FR-COMMIT-1..3,5..7,10,13; #146) ---------------------------------------------
 
 

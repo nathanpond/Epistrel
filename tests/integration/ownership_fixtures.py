@@ -343,6 +343,12 @@ async def _story_character(client: httpx.AsyncClient, kind: Kind, entity: Entity
     return {"character_id": entity.ids["ada"]}
 
 
+async def _believing(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """The query naming the story's non-player character, Ada, whose belief projection the
+    read answers (#159): a ``query.``-prefixed value is a query parameter, not a path value."""
+    return {"query.character": entity.ids["ada"]}
+
+
 async def _edited_persona(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
     await _send(client, kind, entity, "PATCH", "", {"age": 24, "gender": None}, 200)
     return {}
@@ -629,6 +635,8 @@ CALLS: dict[tuple[str, str], Call] = {
     ),
     # Commitments (#146): the thunks and the promissory ledger, omniscient.
     ("GET", f"{S}/inspect/ledger"): Call(200, queries=(OMNISCIENT,), prepare=_committing),
+    # Belief partitions (#159): a character's belief projection, omniscient.
+    ("GET", f"{S}/inspect/beliefs"): Call(200, queries=(OMNISCIENT,), prepare=_believing),
     # Author pins (#147): a fresh memory pinned, a fresh pinned memory unpinned.
     ("POST", f"{S}/memories/{{memory_id}}/pin"): Call(200, prepare=_memory),
     ("DELETE", f"{S}/memories/{{memory_id}}/pin"): Call(200, prepare=_pinned_memory),
@@ -733,6 +741,19 @@ def served_entity_routes(app: FastAPI, kind: Kind) -> set[tuple[str, str]]:
     return found
 
 
+QUERY_PREFIX = "query."
+"""A ``prepare`` value under this prefix is a query parameter of the request (``request_query``),
+not a path value."""
+
+
+def request_query(query: dict[str, str], extra: dict[str, Any]) -> dict[str, Any]:
+    """``query`` with ``extra``'s ``query.``-prefixed values added."""
+    return {
+        **query,
+        **{k.removeprefix(QUERY_PREFIX): v for k, v in extra.items() if k.startswith(QUERY_PREFIX)},
+    }
+
+
 def request_path(kind: Kind, route: str, entity: Entity, extra: dict[str, Any]) -> str:
     """``route`` (as served) for ``entity``, with ``extra`` path values."""
     path = route.replace(kind.item, kind.path(entity.id), 1).replace(
@@ -764,6 +785,7 @@ __all__ = [
     "owner_of",
     "persona_body",
     "request_path",
+    "request_query",
     "respond_body",
     "served_entity_routes",
 ]

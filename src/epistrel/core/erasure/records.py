@@ -43,6 +43,7 @@ from epistrel.core.tables import (
     scenario_versions,
     stories,
 )
+from epistrel.core.tables.beliefs import beliefs
 from epistrel.core.tables.commitments import thunks
 from epistrel.core.tables.facts import facts
 from epistrel.core.tables.media import SubjectKind, media_upload_sessions
@@ -339,6 +340,20 @@ def fact_record(row: Any) -> Record:
             if isinstance(c, str)
         ),
     )
+
+
+def belief_record(row: Any) -> Record:
+    """A belief (#159): no text of its own (its proposition is indexed); its holder and the
+    characters its proposition's subject and object are (``subject_character_id``,
+    ``object_character_id``, read through ``entities``) are declared subjects."""
+    declared: list[Declared] = [
+        (SubjectKind.CHARACTER, str(row.holder_character_id), "holder_character_id")
+    ]
+    for field in ("subject_character_id", "object_character_id"):
+        found = getattr(row, field, None)
+        if found is not None:
+            declared.append((SubjectKind.CHARACTER, str(found), field))
+    return Record(beliefs.name, str(row.id), _str(row.story_id), {}, tuple(declared))
 
 
 def thunk_record(row: Any) -> Record:
@@ -661,6 +676,32 @@ async def read_facts(conn: AsyncConnection, story_id: str | None) -> list[Record
     return await _story_rows(conn, facts, story_id, fact_record)
 
 
+async def read_beliefs(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    """A story's beliefs, as ``belief_record`` indexes them (each with the characters its
+    proposition's subject and object are)."""
+    if story_id is None:
+        return []
+    subject = entities.alias("subject_entity")
+    obj = entities.alias("object_entity")
+    b = beliefs.c
+    found = await conn.execute(
+        select(
+            b.id,
+            b.story_id,
+            b.holder_character_id,
+            subject.c.character_id.label("subject_character_id"),
+            obj.c.character_id.label("object_character_id"),
+        )
+        .select_from(
+            beliefs.join(propositions, propositions.c.id == b.proposition_id)
+            .outerjoin(subject, subject.c.id == propositions.c.subject_id)
+            .outerjoin(obj, obj.c.id == propositions.c.object_id)
+        )
+        .where(b.story_id == story_id)
+    )
+    return [belief_record(r) for r in found]
+
+
 async def read_thunks(conn: AsyncConnection, story_id: str | None) -> list[Record]:
     """A story's thunks, as ``thunk_record`` indexes them."""
     return await _story_rows(conn, thunks, story_id, thunk_record)
@@ -694,6 +735,7 @@ async def index_rows(conn: AsyncConnection, table: Any, where: Any, build: Any) 
 
 __all__ = [
     "alias_record",
+    "belief_record",
     "character_draft_record",
     "character_ids",
     "character_record",
@@ -717,6 +759,7 @@ __all__ = [
     "proposal_record",
     "proposition_record",
     "rating_record_id",
+    "read_beliefs",
     "read_thunks",
     "snapshot_record",
     "story_record",

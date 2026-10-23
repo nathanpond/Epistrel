@@ -215,6 +215,30 @@ class RetrievalTier(StrEnum):
     RETIRED = "retired"
 
 
+class BeliefConfidenceLevel(StrEnum):
+    """A belief's categorical confidence (FR-BELIEF-4's dual confidence; #159 creates it, #160
+    projects the scalar onto it): ``unknown`` (suspended: the holder neither holds nor denies
+    it), ``suspected``, ``believed`` or ``known``, weakest first. Postgres enum
+    ``belief_confidence_level``."""
+
+    UNKNOWN = "unknown"
+    SUSPECTED = "suspected"
+    BELIEVED = "believed"
+    KNOWN = "known"
+
+
+class BeliefKind(StrEnum):
+    """What a belief record holds (#159 pre-declares every kind; #167 writes the last three):
+    a ``first_order`` belief about the world, an ``attributed`` belief about what another
+    character believes, a belief about a ``speech_act`` (that someone said something), or a
+    ``nested`` belief deeper than one level. Postgres enum ``belief_kind``."""
+
+    FIRST_ORDER = "first_order"
+    ATTRIBUTED = "attributed"
+    SPEECH_ACT = "speech_act"
+    NESTED = "nested"
+
+
 PG_ENUM_TYPES: dict[str, type[StrEnum]] = {
     "event_category": EventCategory,
     "operation_kind": OperationKind,
@@ -234,6 +258,8 @@ PG_ENUM_TYPES: dict[str, type[StrEnum]] = {
     "memory_kind": MemoryKind,
     "memory_trust_tier": MemoryTrustTier,
     "retrieval_tier": RetrievalTier,
+    "belief_confidence_level": BeliefConfidenceLevel,
+    "belief_kind": BeliefKind,
 }
 """Postgres enum type name (``<schema>.<name>`` outside ``public``) → the Python enum whose
 values it holds (creation order)."""

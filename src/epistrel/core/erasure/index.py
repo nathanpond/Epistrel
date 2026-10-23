@@ -676,6 +676,7 @@ _FACTS = "epistrel.core.canon.facts"
 _MEMORIES = "epistrel.core.memory.records"
 _MUTATION = "epistrel.core.mutation"
 _COMMITMENTS = "epistrel.core.commit.lifecycle"
+_PARTITIONS = "epistrel.core.epistemic.partitions"
 
 SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
     SubjectWriter(
@@ -770,6 +771,9 @@ SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
     SubjectWriter("memories", (_MEMORIES, _MUTATION), f"{_RECORDS}:read_memories"),
     # Commitments (#146): a thunk's proposition sketch, walked whole (positional mentions).
     SubjectWriter("thunks", (_COMMITMENTS,), f"{_RECORDS}:read_thunks"),
+    # Belief partitions (#159): a belief's holder and its proposition's subject and object
+    # characters are declared subjects.
+    SubjectWriter("beliefs", (_PARTITIONS,), f"{_RECORDS}:read_beliefs"),
 )
 """Every indexed table (see the module docstring); the coverage test's source of truth."""
 
@@ -806,6 +810,8 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "(#137)",
     "scene_state": "a projection of facts and turns: entity ids only, refolded by erasure's "
     "rebuilt stage (#137)",
+    "belief_state": "a projection of beliefs, which are erased: ids, levels and positions, "
+    "refolded by erasure's rebuilt stage (#159)",
     # Deployment tables (#334: the coverage test enumerates every table with text or JSON).
     "alembic_version": "the schema migration's revision id",
     "schema_meta": "schema bookkeeping keys and values",

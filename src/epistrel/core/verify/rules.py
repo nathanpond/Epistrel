@@ -94,9 +94,17 @@ record is ``novel``, because the world is open (FR-PROP-8).
 ``approximate_bounds`` and ``world_knowledge``; 0.0 for ``weak_semantics``, ``argument_type``
 and the ``unresolved_*`` reasons.
 
-**Holders.** ``check`` works the same for canon and utterance records (one proposition shape,
-FR-PROP-2). Belief holders arrive in M5, so a claim checked against one is
-``uncertain(unresolved_predicate)``.
+**Holders.** ``check`` works the same for canon, utterance and belief records (one proposition
+shape, FR-PROP-2): every rule above yields the same verdict over a character's partition as over
+canon (#159). ``check_with`` fetches a ``belief(A)`` holder's record set as A's partition (its
+first-order beliefs held at ``suspected`` or above at the claim's position, through
+``KeyedLookup.beliefs``, holder ``belief:<A>``) plus the canon A may read (``character:A``: a
+public fact is known to A). Closed sets have no visibility, so they enter as objective canon.
+The belief wins: the verdict over the partition (with the closed sets) stands unless it is
+``novel``, and only then is the claim decided over the partition and A's canon together (known
+or novel to A; FR-EPI-3: a false belief A holds is A's truth, and canon decides only the
+objective relation, which a canon holder's check answers). This is the only place the rules
+learn about partitions.
 
 **The fetch.** ``check_with`` makes every read that a verdict rests on through
 ``KeyedLookup.canon_at``, so each is a query key of the turn's read set (#136):
@@ -135,7 +143,7 @@ import itertools
 import logging
 import math
 import weakref
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Literal
@@ -144,6 +152,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.enums import FactCommitState
+from epistrel.core.membership import Position as NarrativePosition
 from epistrel.core.profiles.capabilities import level_at_least, module_on
 from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.propositions.model import (
@@ -177,11 +186,12 @@ from epistrel.core.readset import (
     holder_of,
     register_rebase_check,
 )
-from epistrel.core.settings_schema import OMNISCIENT
+from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX, OMNISCIENT
 from epistrel.core.tables import closed_sets as closed_sets_table
 
 if TYPE_CHECKING:
     from epistrel.core.canon.facts import Fact
+    from epistrel.core.epistemic.partitions import Belief
     from epistrel.core.events.operation import Operation
 
 log = logging.getLogger(__name__)
@@ -286,11 +296,13 @@ CANON = Holder()
 
 @dataclass(frozen=True, slots=True)
 class Record:
-    """A holder record ``check`` reads: a proposition, its id and, for canon, its fact."""
+    """A holder record ``check`` reads: a proposition, its id and, for canon, its fact (for a
+    belief holder, its belief, #159)."""
 
     proposition: Proposition
     proposition_id: str
     fact_id: str | None = None
+    belief_id: str | None = None
 
     @classmethod
     def of_fact(cls, fact: Fact) -> Record:
@@ -305,6 +317,20 @@ class Record:
             own = stated
         return cls(
             fact.proposition.model_copy(update={"valid_time": own}), fact.proposition_id, fact.id
+        )
+
+    @classmethod
+    def of_belief(cls, belief: Belief) -> Record:
+        """A belief as a record, with the valid-time the belief carries: the proposition's own
+        (its inner bounds and granularity) when the belief spans exactly it."""
+        stated = belief.proposition.valid_time
+        own: Interval | Instant = stated
+        if stated.possible() != (belief.valid_from, belief.valid_to):
+            own = Interval.of(belief.valid_from, belief.valid_to)
+        return cls(
+            belief.proposition.model_copy(update={"valid_time": own}),
+            belief.proposition_id,
+            belief_id=belief.id,
         )
 
 
@@ -343,10 +369,27 @@ class Evidence:
     fact_id: str | None = None
     closed_set_id: str | None = None
     depth_capped: bool = False
+    belief_id: str | None = None
+
+    @property
+    def table(self) -> str | None:
+        """The table of the record cited: ``facts``, ``beliefs`` or ``closed_sets``."""
+        if self.fact_id is not None:
+            return "facts"
+        if self.belief_id is not None:
+            return "beliefs"
+        if self.closed_set_id is not None:
+            return "closed_sets"
+        return None
+
+    @property
+    def record_id(self) -> str | None:
+        """The id of the record cited, in ``table``."""
+        return self.fact_id or self.belief_id or self.closed_set_id
 
     def as_payload(self) -> dict[str, Any]:
         found: dict[str, Any] = {"rule": self.rule.value}
-        for name in ("proposition_id", "fact_id", "closed_set_id"):
+        for name in ("proposition_id", "fact_id", "belief_id", "closed_set_id"):
             value = getattr(self, name)
             if value is not None:
                 found[name] = value
@@ -676,7 +719,7 @@ class _Outcome:
 
 
 def _ev(rule: Rule, record: Record) -> Evidence:
-    return Evidence(rule, record.proposition_id, record.fact_id)
+    return Evidence(rule, record.proposition_id, record.fact_id, belief_id=record.belief_id)
 
 
 def _overlap(
@@ -1380,8 +1423,6 @@ def check(
 ) -> Verdict:
     """The verdict on ``claim`` over the holder's ``records`` and ``closed_sets`` (see the
     module docstring). Pure: no I/O."""
-    if holder.kind == "belief":
-        return uncertain(VerdictReason.UNRESOLVED_PREDICATE, holder=holder, position=position)
     predicate = registry.get(claim.predicate_id)
     if predicate is None:
         return uncertain(VerdictReason.UNRESOLVED_PREDICATE, holder=holder, position=position)
@@ -1462,6 +1503,19 @@ async def closed_sets_for(
     return found
 
 
+def belief_through(
+    position: Any, through_position: tuple[int, int] | None
+) -> NarrativePosition | None:
+    """The narrative position a belief holder's partition is read at: the claim's ``position``
+    when it is one (#159's ``core.membership.Position``), else the end of ``through_position``
+    (``(turn, slot)``), else now (``None``)."""
+    if isinstance(position, NarrativePosition):
+        return position
+    if through_position is not None:
+        return NarrativePosition.end_of(*through_position)
+    return None
+
+
 async def check_with(
     lookup: KeyedLookup,
     story_id: str,
@@ -1477,18 +1531,20 @@ async def check_with(
 ) -> Verdict:
     """Fetch what ``claim`` needs through ``lookup`` (each read a query key of the turn's read
     set) and ``check`` it. ``viewpoint`` filters canon (a character's claim is checked only
-    against what that character may read). Canon holders only: an utterance holder's records
-    are #150's to fetch and pass to ``check``. ``fetched``, when given, receives the records
-    the verdict was decided over (#142's entailment call is shown exactly those)."""
+    against what that character may read). Canon and belief holders: an utterance holder's
+    records are #150's to fetch and pass to ``check``. A ``belief(A)`` holder's records are A's
+    partition at the claim's position (``belief_through``) and the canon A may read, the belief
+    winning (see the module docstring). ``fetched``, when given, receives the records the
+    verdict was decided over (#142's entailment call is shown exactly those)."""
     if holder.kind == "utterance":
         raise ValueError("check_with reads canon; pass an utterance holder's records to check()")
     registry = registry or await load(lookup.conn, story_id)
     predicate = registry.get(claim.predicate_id)
-    if holder.kind == "belief" or predicate is None:
+    if predicate is None:
         return check(claim, registry=registry, holder=holder, position=position, options=options)
     c = canonical(claim, registry)
 
-    async def read(
+    async def read_canon(
         predicate_id: str,
         subjects: str | Sequence[str] | None,
         window: tuple[int | None, int | None] | None,
@@ -1500,17 +1556,112 @@ async def check_with(
             subjects=subjects,
             object=object_id,
             window=window,
-            viewpoint=viewpoint,
+            viewpoint=canon_viewpoint,
             through_position=through_position,
         )
         # #146: an introduced or pending fact is not settled, so it is no evidence yet.
         return [Record.of_fact(f) for f in facts if f.commit_state in EVIDENCE_STATES]
 
+    async def read_beliefs(
+        predicate_id: str,
+        subjects: str | Sequence[str] | None,
+        window: tuple[int | None, int | None] | None,
+        object_id: str | None = None,
+    ) -> list[Record]:
+        from epistrel.core.epistemic.partitions import HELD_LEVELS
+
+        assert holder.holder_id is not None  # noqa: S101 - a belief holder names its holder
+        found = await lookup.beliefs(
+            story_id,
+            holder=holder.holder_id,
+            predicate=predicate_id,
+            subjects=subjects,
+            object=object_id,
+            window=window,
+            through=belief_through(position, through_position),
+            levels=sorted(HELD_LEVELS),
+            viewpoint=canon_viewpoint,
+        )
+        return [Record.of_belief(b) for b in found]
+
+    canon_viewpoint = viewpoint
+    if holder.kind == "belief":
+        # The canon a belief holder may read: what its character sees (FR-RET-1).
+        canon_viewpoint = f"{CHARACTER_VIEWPOINT_PREFIX}{holder.holder_id}"
+        held, closed = await _gather(
+            lookup, story_id, c, predicate, registry, options, read_beliefs
+        )
+        verdict = check(
+            claim,
+            held,
+            registry=registry,
+            closed_sets=closed,
+            holder=holder,
+            position=position,
+            options=options,
+        )
+        if verdict.kind is not VerdictKind.NOVEL:
+            if fetched is not None:
+                fetched.extend(held)
+            log.debug("verify fetched %d belief records, %d closed sets", len(held), len(closed))
+            return verdict
+        known, _ = await _gather(lookup, story_id, c, predicate, registry, options, read_canon)
+        unique = _unique([*held, *known])
+        if fetched is not None:
+            fetched.extend(unique)
+        log.debug("verify fetched %d records, %d closed sets", len(unique), len(closed))
+        return check(
+            claim,
+            unique,
+            registry=registry,
+            closed_sets=closed,
+            holder=holder,
+            position=position,
+            options=options,
+        )
+    records, closed = await _gather(lookup, story_id, c, predicate, registry, options, read_canon)
+    unique = _unique(records)
+    if fetched is not None:
+        fetched.extend(unique)
+    log.debug("verify fetched %d records, %d closed sets", len(unique), len(closed))
+    return check(
+        claim,
+        unique,
+        registry=registry,
+        closed_sets=closed,
+        holder=holder,
+        position=position,
+        options=options,
+    )
+
+
+def _unique(records: Iterable[Record]) -> list[Record]:
+    return list({(r.fact_id, r.belief_id, r.proposition_id): r for r in records}.values())
+
+
+Reader = Callable[
+    [str, "str | Sequence[str] | None", "tuple[int | None, int | None] | None", "str | None"],
+    Awaitable[list[Record]],
+]
+"""One holder read of ``check_with``: ``(predicate, subjects, window, object)``."""
+
+
+async def _gather(
+    lookup: KeyedLookup,
+    story_id: str,
+    c: Proposition,
+    predicate: Predicate,
+    registry: Registry,
+    options: Options,
+    read: Reader,
+) -> tuple[list[Record], list[ClosedSetRecord]]:
+    """Every read the verdict on ``c`` rests on, through ``read`` (see the module docstring's
+    fetch), and the closed sets it needs."""
     records: list[Record] = []
     subjects = {c.subject_id}
     objects = set() if c.object_id is None else {c.object_id}
     for entity in dict.fromkeys(x for x in (c.subject_id, c.object_id) if x is not None):
-        same = await read(SAME_AS, entity, None)
+        same = await read(SAME_AS, entity, None, None)
         records += same
         for r in same:
             p = r.proposition
@@ -1522,7 +1673,7 @@ async def check_with(
     timeless = predicate.temporal_kind in (TemporalKind.EVENT, TemporalKind.PERMANENT)
     window = None if timeless else _window(c.valid_time)
     subject_set = sorted(subjects)
-    records += await read(c.predicate_id, subject_set, window)
+    records += await read(c.predicate_id, subject_set, window, None)
     if (
         options.contradictions
         and c.polarity is Polarity.AFFIRMED
@@ -1541,25 +1692,25 @@ async def check_with(
             q.id for q in registry.predicates.values() if predicate.id in q.exclusions
         }
         for x in sorted(excluded):
-            records += await read(x, subject_set, _window(c.valid_time))
+            records += await read(x, subject_set, _window(c.valid_time), None)
         if c.polarity is Polarity.NEGATED and registry.rules():
             starts, vias = _antecedents(registry, c.predicate_id, options.implication_max_depth)
             for x in sorted(starts - {c.predicate_id}):
-                records += await read(x, subject_set, _window(c.valid_time))
+                records += await read(x, subject_set, _window(c.valid_time), None)
             for x in sorted(vias):
-                records += await read(x, None, _window(c.valid_time))
+                records += await read(x, None, _window(c.valid_time), None)
         if c.polarity is Polarity.AFFIRMED and registry.rules():
             # #441: the claim's own consequences, checked as the claim is: each consequent's
             # records for the subject, its closed sets, containment and exclusions, and the
             # joins that map the objects.
             ends, vias = _consequents(registry, c.predicate_id, options.implication_max_depth)
             for x in sorted(vias):
-                records += await read(x, None, _window(c.valid_time))
+                records += await read(x, None, _window(c.valid_time), None)
             for x in sorted(ends - {c.predicate_id}):
                 then = registry.get(x)
                 if then is None:
                     continue
-                records += await read(x, subject_set, _window(c.valid_time))
+                records += await read(x, subject_set, _window(c.valid_time), None)
                 closed += await closed_sets_for(lookup.conn, story_id, x)
                 if then.containment_of is not None:
                     containment.add(then.containment_of)
@@ -1567,32 +1718,20 @@ async def check_with(
                     q.id for q in registry.predicates.values() if x in q.exclusions
                 }
                 for y in sorted(barred - excluded):
-                    records += await read(y, subject_set, _window(c.valid_time))
+                    records += await read(y, subject_set, _window(c.valid_time), None)
         if c.polarity is Polarity.AFFIRMED and c.object_id is not None:
             # #441: a negated presence elsewhere that no rule reaches (``uncertain``); the
             # containment is read only when a negation came back.
             for q in presence_predicates(registry, c.predicate_id):
-                found = await read(q.id, subject_set, _window(c.valid_time))
+                found = await read(q.id, subject_set, _window(c.valid_time), None)
                 records += found
                 if q.containment_of is not None and any(
                     r.proposition.polarity is Polarity.NEGATED for r in found
                 ):
                     containment.add(q.containment_of)
     for x in sorted(containment):
-        records += await read(x, None, None)
-    unique = list({(r.fact_id, r.proposition_id): r for r in records}.values())
-    if fetched is not None:
-        fetched.extend(unique)
-    log.debug("verify fetched %d records, %d closed sets", len(unique), len(closed))
-    return check(
-        claim,
-        unique,
-        registry=registry,
-        closed_sets=closed,
-        holder=holder,
-        position=position,
-        options=options,
-    )
+        records += await read(x, None, None, None)
+    return records, closed
 
 
 # -- verify and the rebase re-check -----------------------------------------------------------
@@ -1737,6 +1876,7 @@ __all__ = [
     "Verdict",
     "VerdictKind",
     "VerdictReason",
+    "belief_through",
     "check",
     "check_with",
     "closed_sets_for",

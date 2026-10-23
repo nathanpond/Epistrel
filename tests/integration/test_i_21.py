@@ -116,6 +116,7 @@ from tests.integration.ownership_fixtures import (
     owner_of,
     persona_body,
     request_path,
+    request_query,
 )
 from tests.media_support import blob_path, media_client, scratch, uploaded
 from tests.model_support import config_key
@@ -529,7 +530,7 @@ async def test_i_21__nothing_gates(
                     method,
                     request_path(kind, path, entity, extra),
                     json=call.body(entity),
-                    params=query,
+                    params=request_query(query, extra),
                     headers=headers(requester),
                 )
             finally:

@@ -17,15 +17,15 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | Area | Spec | ADRs |
 |---|---|---|
 | FR-RESP | §1 | 047, 071, 078, 087, 091, 144, 145 |
-| FR-STORE | §2 | 045, 072, 075, 076, 079, 080, 122, 128, 129, 132, 138, 143, 144 |
+| FR-STORE | §2 | 045, 072, 075, 076, 079, 080, 122, 128, 129, 132, 138, 143, 144, 167 |
 | FR-CONC | §2.3 | 045, 052, 057, 062, 072, 144 |
 | FR-MEM | §4 | 070, 071, 072, 075 |
-| FR-EPI | §5 | 024 |
+| FR-EPI | §5 | 024, 167 |
 | FR-BELIEF | §5.1 | 026, 069, 075 |
 | FR-TURN | §6 | 043 |
 | FR-COMMIT | §7 | 018, 022, 043, 053, 129 |
-| FR-RET | §8 | 129 |
-| FR-PROP | §8.1 | 160, 162, 163, 165 |
+| FR-RET | §8 | 129, 167 |
+| FR-PROP | §8.1 | 160, 162, 163, 165, 167 |
 | FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162, 163, 165 |
 | FR-GUARD | §11 | 087, 095, 096, 114, 161 |
 | FR-REWRITE | §12.1 | 144 |
@@ -229,6 +229,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 164 | Model-bound quality floors that miss on the reference model after M4's engine fixes move to M9: Performance tuning | Amended | 166 |
 | 165 | The render's own declared claims surface like extraction claims, and an unknown name or a pronoun with no antecedent counts as untracked | Current | — |
 | 166 | NFR-QUAL-7 (generation conformance) also moves to M9 | Current | — |
+| 167 | Visibility is decided by scope alone, and beliefs are a derived table with a rebuildable projection | Current | — |
 
 ---
 
@@ -1695,6 +1696,21 @@ Everything else keeps the safe disposition: detector findings, the excluded reso
 - M4's live exit evidence is NFR-QUAL-5, 6, 8, 10, 13 and 15 on the reference model tier. NFR-QUAL-5 and NFR-QUAL-10 pass at `eee9fba` (100 % each).
 - M9 receives the remaining causes: model output that declares new people and facts in core relations, temperature-0 non-determinism on the serving stack, and length adherence.
 - Invariant 7 holds; `check-assignment`, `check-parts`, `check-lexicon` and `check-traceability` pass.
+---
+
+### ADR-167 — Visibility is decided by scope alone, and beliefs are a derived table with a rebuildable projection
+**Status:** Accepted.
+**Context:** M5's partitions (#159) give each modeled character its own belief records, and FR-EPI-5 puts one visibility scope on every fact, memory and belief. Two questions had more than one reasonable answer. First, a memory has a holder (`memories.holder_character_id`) as well as a visibility, so a viewpoint filter could ask either. Second, FR-STORE-3 calls the belief state a projection, while #130's registry makes every derived record follow its operation's membership. A belief needs both: the record itself must flip with truncation, and the per-character current state must be cheap to query.
+**Decision:**
+- Whether a viewpoint may read a record is decided by its `visibility` scope alone (`core.visibility`): `objective` and `public` reach every viewpoint, `engine` only `omniscient`, and `characters` only the characters it lists. A record's holder does not take part. A per-perceiver memory (#161) is written `characters: [perceiver]`, and a belief is always `characters: [holder]` (a CHECK). Retrieval composes one predicate from this into every arm (`core.retrieval.viewpoint`), gated by the `partitions` module, and canon's own filter is the same rule.
+- `beliefs` is a derived table in #130's registry (`DerivedTable` with the inner proposition's valid-time and transaction-time). `belief_state` is a rebuildable projection over it: one row per held first-order belief, kept by the belief write's hook in the same transaction and by a membership follower, folded by the same function for a rebuild, erasure's rebuilt stage and a fork, and exempt from the subject index.
+- A `belief(A)` holder is checked by the same deterministic rules as canon. Its record set is A's partition plus the canon A may read. The belief wins, and the merged set decides only whether the claim is known or novel to A.
+**Consequences:**
+- A holder column never widens or narrows what a viewpoint reads. A reader that wants "A's own" records asks for the scope, not the holder.
+- With `partitions` off (every Lite story and M4's structured profile), memories are not filtered and canon keeps its own filter, as in M4.
+- The projection can be dropped and refolded at any time, and the derived rows carry the truth. #160's correction reopens a prior belief through the same membership follower.
+- Tests: `tests/property/test_visibility.py` (VISIBILITY), `tests/integration/test_i_11.py` (I-11), `tests/integration/test_belief_projection.py` (I-01 M5), `tests/integration/test_belief_holder.py` (U-15 M5).
+
 ---
 
 *Every ADR above is Accepted as a record; the indexes at the top show which are amended or partly superseded. No decisions are open.*

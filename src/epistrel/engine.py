@@ -66,6 +66,7 @@ from epistrel.core.commit import lifecycle as commitment
 from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.context import SYSTEM_PRINCIPAL, RequestContext, requesting_principal
 from epistrel.core.enums import EntryStatus, StoryStatus, ThunkState
+from epistrel.core.epistemic import partitions
 from epistrel.core.erasure import boundary as erasure_boundary
 from epistrel.core.erasure import catalog_block
 from epistrel.core.erasure import erase as erasure
@@ -1833,6 +1834,35 @@ class Engine:
             discharged=discharged,
             limit=limit,
             after_id=after_id,
+        )
+
+    @refuses_nul()
+    async def inspect_beliefs(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        character: str,
+        viewpoint: str | None = None,
+        proposition_id: str | None = None,
+        limit: int = partitions.INSPECT_LIMIT_DEFAULT,
+        after: str | None = None,
+    ) -> partitions.BeliefInspection:
+        """``character``'s belief projection (FR-EPI-6, FR-ADMIN-5; docs/02 §9's
+        ``inspect/beliefs``; #159), ``omniscient`` only (403 ``omniscient_required`` otherwise:
+        it shows a partition no other character may read): a page of ``limit`` ``belief_state``
+        rows by proposition id after ``after`` (only ``proposition_id`` when given), each with its
+        current belief. 404 for an unknown story; 422 for a character outside the cast. #178
+        adds the inspection's own authorization rules."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        require_omniscient(ctx.viewpoint or "", field="query.viewpoint")
+        return await partitions.inspect(
+            self.db,
+            story_id,
+            character=character,
+            proposition_id=proposition_id,
+            limit=limit,
+            after=after,
         )
 
     # -- the structured projections (FR-STORE-3, FR-RET-6; #137) ---------------------------------

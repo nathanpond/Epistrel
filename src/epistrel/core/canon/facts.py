@@ -59,9 +59,9 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from types import SimpleNamespace
-from typing import Any, Literal, Protocol, Self
+from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import (
     BigInteger,
     ColumnElement,
@@ -121,6 +121,15 @@ from epistrel.core.propositions.registry import Registry, canonical, load
 from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX, OMNISCIENT
 from epistrel.core.tables import characters, entities, events, predicates, propositions
 from epistrel.core.tables.facts import facts
+from epistrel.core.visibility import (
+    OBJECTIVE,
+    READER_VIEWPOINTS,
+    SHARED_SCOPES,
+    Visibility,
+    VisibilityScope,
+    visible_clause,
+    visible_to,
+)
 
 FACT_COMMITTED = "fact_committed"
 FACT_SUPERSEDED = "fact_superseded"
@@ -129,46 +138,7 @@ TICK = timedelta(microseconds=1)
 """The step a second closure in one transaction takes past its version's ``tx_from``, so no
 transaction-time interval is empty."""
 
-VisibilityScope = Literal["objective", "public", "engine", "characters"]
-
-READER_VIEWPOINTS: frozenset[str] = frozenset({"narrator", "director", "player"})
-"""Readers that are no character: they see ``objective`` and ``public`` facts only."""
-
-SHARED_SCOPES: tuple[str, ...] = ("objective", "public")
-"""The scopes every viewpoint sees."""
-
-
 # -- models -----------------------------------------------------------------------------------
-
-
-class Visibility(BaseModel):
-    """Who may read a fact: ``objective`` (canon narration), ``public`` (publicly known),
-    ``engine`` (engine-only, e.g. true ages: ``omniscient`` alone) or ``characters`` (only the
-    characters listed, e.g. a ``latent`` beat's scope, and ``omniscient``)."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    scope: VisibilityScope = "objective"
-    characters: tuple[str, ...] | None = None
-
-    @model_validator(mode="after")
-    def _characters(self) -> Self:
-        if self.scope == "characters":
-            if not self.characters:
-                raise ValueError("a characters scope names at least one character")
-            object.__setattr__(self, "characters", tuple(sorted(set(self.characters))))
-        elif self.characters is not None:
-            raise ValueError(f"a {self.scope} scope names no characters")
-        return self
-
-    def document(self) -> dict[str, Any]:
-        """The stored ``visibility`` document."""
-        if self.scope == "characters":
-            return {"scope": self.scope, "characters": list(self.characters or ())}
-        return {"scope": self.scope}
-
-
-OBJECTIVE = Visibility()
 
 
 class FactOperation(Protocol):
@@ -379,33 +349,6 @@ async def check_viewpoint(conn: AsyncConnection, story_id: str, viewpoint: str) 
         "character:<id> of the story's cast",
         {"field": "viewpoint", "reason": "unknown_viewpoint"},
     )
-
-
-def visible_clause(table: Any, viewpoint: str) -> ColumnElement[bool] | None:
-    """The visibility predicate on ``table`` (``facts`` or an alias) for ``viewpoint``
-    (``None``: everything, the ``omniscient`` read)."""
-    if viewpoint == OMNISCIENT:
-        return None
-    scope = table.c.visibility["scope"].astext
-    shared: ColumnElement[bool] = scope.in_(SHARED_SCOPES)
-    if not viewpoint.startswith(CHARACTER_VIEWPOINT_PREFIX):
-        return shared
-    member = viewpoint.removeprefix(CHARACTER_VIEWPOINT_PREFIX)
-    return or_(
-        shared,
-        and_(scope == "characters", table.c.visibility.contains({"characters": [member]})),
-    )
-
-
-def visible_to(visibility: Visibility, viewpoint: str) -> bool:
-    """``visible_clause`` for one fact in Python."""
-    if viewpoint == OMNISCIENT:
-        return True
-    if visibility.scope in SHARED_SCOPES:
-        return True
-    if visibility.scope != "characters" or not viewpoint.startswith(CHARACTER_VIEWPOINT_PREFIX):
-        return False
-    return viewpoint.removeprefix(CHARACTER_VIEWPOINT_PREFIX) in (visibility.characters or ())
 
 
 # -- reading versions ---------------------------------------------------------------------------
@@ -1375,6 +1318,7 @@ __all__ = [
     "FACT_SUPERSEDED",
     "OBJECTIVE",
     "READER_VIEWPOINTS",
+    "SHARED_SCOPES",
     "Fact",
     "FactChange",
     "FactHook",
@@ -1383,6 +1327,7 @@ __all__ = [
     "FactRef",
     "Reading",
     "Visibility",
+    "VisibilityScope",
     "canon",
     "canon_as_recorded",
     "canon_at",

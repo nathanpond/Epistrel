@@ -78,6 +78,7 @@ HASH_MARK = "«hash»"
 
 _STORY_RANK = "(SELECT s.created_at FROM stories s WHERE s.id = t.story_id)"
 _CAST_RANK = "(SELECT c.ordinal FROM characters c WHERE c.id = t.character_id)"
+_HOLDER_RANK = "(SELECT c.name FROM characters c WHERE c.id = t.holder_character_id)"
 
 _RECORD_RANK = (
     "(SELECT e.seq FROM events e WHERE e.story_id = t.story_id AND e.id::text = t.record_id) "
@@ -175,6 +176,16 @@ ORDER: dict[str, str] = {
     "facts": (
         f"{_STORY_RANK}, t.tx_from, t.narrative_turn NULLS FIRST, t.valid_from NULLS FIRST, "
         "t.valid_to NULLS LAST"
+    ),
+    # Belief partitions (#159): by holder name, then the belief's held position and level;
+    # the projection by holder name and since-position.
+    "beliefs": (
+        f"{_STORY_RANK}, {_HOLDER_RANK}, t.held_from_turn, t.held_from_slot_k, "
+        "t.held_from_beat, t.held_from_step, t.confidence_level, t.polarity, t.tx_from"
+    ),
+    "belief_state": (
+        f"{_STORY_RANK}, {_HOLDER_RANK}, t.since_turn, t.since_slot_k, t.since_beat, "
+        "t.since_step, t.current_level, t.polarity"
     ),
     # Memory records (#135): by narrative position, beat and kind, then by text.
     "memories": (

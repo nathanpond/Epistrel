@@ -8738,3 +8738,23 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Rejected:** caching the `.deb` files (the first run after a cache miss still meets the slow mirror) and installing only in the shards that need ffmpeg (fragile; any shard may reach a video test).
   **Trade-off:** the runner's ffmpeg is 9.0.2 and the image's is Debian trixie's 7.1. The runner never matched the image (it ran Ubuntu's 6.1). Dependabot does not track an image named in a workflow `env`, so the digest is bumped by hand. This is a CI-only tool; invariant 2 is unchanged (a separate GPL program, never linked or shipped by this step).
   **Issue:** #500
+
+## /n8-exec M4 (verify fixes, pass 2) — 2026-10-23
+
+- **Decision (scope):** Pass 2 takes the four open M4 bugs from the re-verify at `306ce22`: #507 (sev:high), #508 and #509 (sev:low), and #510 (sev:medium, unconfirmed). The lows and the medium were cheap. Branch `milestone/m4-verify-fixes-2` off `306ce22`. The work was small, so no worktree agents.
+  **Why:** The re-verify named #507 as the blocker and the others "if cheap". All four touch only tests, plus one retry loop.
+  **Issue:** #507, #508, #509, #510
+- **Decision (test shape, #507):** The two new refusals join `test_s_promote__seeded_memories`'s existing refusal loop: `([held, stale], 1, "inactive")` and `([planted, held], 0, "quarantined")`. The loop's "nothing written" checks (catalog counts and `promoted_to`) cover them. The inactive memory is a Dale-held derived memory superseded by `core.membership.supersede`, the path #143's rerun takes. The quarantined one goes through the real admin route `POST /admin/stories/{id}/memories/{mid}/quarantine`.
+  **Rejected:** a rewound memory for `inactive`. It needs a played turn and a rewind, and reaches the same `membership != 'active'` predicate.
+  **Evidence:** Deleting either check from `_unseedable` turns the test red. The refused promote then answers 201, and `error_of` fails with `KeyError: 'error'`.
+  **Issue:** #507
+- **Decision (#508):** The M4 test's character is renamed "Dale Mercer". The M3 test keeps "Dale Pruitt" and its catalog-wide "no listing shows him" assertion.
+  **Why:** That assertion is the M3 part's point (a story character stays out of the whole catalog). Scoping it to ids would weaken it, and a distinct name is AC option 1. The two tests share one catalog because the suite shares one database.
+  **Issue:** #508
+- **Decision (#509):** Regenerate joins the REST lock-timeout loop right after respond, while the story still has a last turn to regenerate.
+  **Issue:** #509
+- **Decision (Rule 1, #510):** `core.fork.fork` now pauses between snapshot attempts: `snapshot_backoff_s(n) = 0.1 s · 2^(n-1) ± 50 %`, so about 0.1 s and then about 0.2 s. There is no pause after the last attempt. `SNAPSHOT_ATTEMPTS` stays at 3, and the 503 contract is unchanged.
+  **Why:** With no pause, all three attempts ran inside the same contention window. The issue offered this fix, or making X-03 accept the retryable 503. The engine fix is preferred: a client should not see a 503 for a contention window a short pause outlasts. The pattern follows the job queue's `backoff_s`.
+  **Rejected:** making X-03 accept 503. That hides the engine-side cause the owner asked M4 to fix (2026-10-20 direction).
+  **Caveat:** #510 was never reproduced on an idle host, so this is a mitigation, not a proven fix. The retry test asserts the pauses `[1, 2]` and none after the last attempt. A unit test checks the doubling and the jitter bounds.
+  **Issue:** #510

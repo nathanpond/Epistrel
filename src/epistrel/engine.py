@@ -275,6 +275,9 @@ CODECS: dict[str, ResultCodec[Any]] = {
     # and a promotion, which only reads the story (deployment-scoped, like a catalog create).
     "add_story_character": ResultCodec.of(stories.StoryCharacterAdded, status=201),
     "promote_character": ResultCodec.of(catalog_promote.Promotion, status=201),
+    # #163: an author's weight change and modeling directive (story-scoped control operations).
+    "set_character_weight": ResultCodec.of(stories.CharacterWeighted),
+    "model_entity": ResultCodec.of(stories.CharacterWeighted, status=201),
     "create_content_rating": ResultCodec.of(
         ratings.RatingWrite, status=201, revision_field=_CONFIG
     ),
@@ -2599,6 +2602,74 @@ class Engine:
             run,
             story_id=story_id,
             material={"story_id": story_id, "body": _body(request)},
+        )
+
+    async def set_character_weight(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        character_id: str,
+        request: stories.CharacterWeightRequest,
+    ) -> stories.CharacterWeighted:
+        """Set a story character's narrative weight, ``minor`` or ``major`` (FR-EPI-10; #163):
+        prospective, a control operation that bumps the revision. 404 for an unknown story or a
+        character not in it; 422 ``is_player`` for the player's character; 409
+        ``story_archived``; 409 ``revision_conflict`` for a stale expected revision; 423
+        ``story_busy`` while a turn is in flight. Answers the character as an omniscient read
+        lists it."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> stories.CharacterWeighted:
+            return await stories.set_character_weight(
+                self.db,
+                story_id,
+                character_id,
+                request,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+                expected_revision=ctx.expected_revision,
+            )
+
+        return await self._keyed(
+            ctx,
+            "set_character_weight",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "character_id": character_id, "body": _body(request)},
+        )
+
+    async def model_entity(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        entity_id: str,
+        request: stories.ModelEntityRequest,
+    ) -> stories.CharacterWeighted:
+        """The author's directive to model one of the story's entities as a character
+        (FR-EPI-9; #163): a ``minor`` character with the request's true age, adopting the
+        entity. 404 for an unknown story or entity; 422 ``already_modeled``, ``not_a_person``
+        or ``allow_new_arrivals``; 409 ``story_archived``; 409 ``revision_conflict``; 423
+        ``story_busy`` while a turn is in flight. Answers the new character as an omniscient
+        read lists it (201)."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> stories.CharacterWeighted:
+            return await stories.model_entity(
+                self.db,
+                story_id,
+                entity_id,
+                request,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+                expected_revision=ctx.expected_revision,
+            )
+
+        return await self._keyed(
+            ctx,
+            "model_entity",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "entity_id": entity_id, "body": _body(request)},
         )
 
     async def promote_character(

@@ -290,7 +290,7 @@ Tells content placed to be noticed from background texture in one render's beats
 - **Default model:** the `default` row of `model_config`, unless the purpose has its own
 - **Template:** `salience.j2`
 - **Capability floor:** structured output: constrained `json_schema` decoding, or output reliable enough to parse, validate and retry; minimum context 8,192 tokens
-- **Returns:** `SalienceResult` (`salient`, `texture`), validated strictly; its free text is author-facing
+- **Returns:** `SalienceResult` (`salient`, `texture`, `characters`), validated strictly; its free text is author-facing
 
 **Receives**
 

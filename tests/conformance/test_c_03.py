@@ -99,6 +99,7 @@ from epistrel.api.routes.respond import RespondResponse
 from epistrel.api.routes.retrieval import RetrievalBody
 from epistrel.api.routes.scene import EntityProfileBody, SceneBody
 from epistrel.api.routes.stories import (
+    CharacterWeightedBody,
     IngestResponse,
     PromotionBody,
     StatusBody,
@@ -173,7 +174,12 @@ from epistrel.core.ratings.change import RatingChangeRequest, RatingCheckStarted
 from epistrel.core.ratings.suggest import SuggestionRequest
 from epistrel.core.seeds.profiles import LITE_PRESET_ID, STRUCTURED_M4_PROFILE_ID
 from epistrel.core.seeds.ratings import EVERYONE_ID, EXPLICIT_ID
-from epistrel.core.stories import AdHocCharacter, StorySpec
+from epistrel.core.stories import (
+    AdHocCharacter,
+    CharacterWeightRequest,
+    ModelEntityRequest,
+    StorySpec,
+)
 from epistrel.core.story_texts import CustomInstructionsRequest, PinnedMemoriesRequest
 from epistrel.core.tables.ownership import EntityType
 from epistrel.core.timeline import Swapped, TruncateRequest, UntruncateRequest, Untruncation
@@ -1274,6 +1280,25 @@ def _steps() -> list[Step]:
                     CTX, ids["story"], ids["dale"], PromoteRequest(owner="p-curator")
                 )
             ),
+        ),
+        # #163: the author sets the added character's weight, then models an entity of the
+        # story as a (minor) character.
+        Step(
+            "set_character_weight",
+            lambda ids: Rest("POST", f"{s}/characters/{{dale}}/weight", {"weight": "minor"}),
+            lambda e, ids: _weighted(
+                e.set_character_weight(
+                    CTX, ids["story"], ids["dale"], CharacterWeightRequest(weight="minor")
+                )
+            ),
+        ),
+        Step(
+            "model_entity",
+            lambda ids: Rest("POST", f"{s}/entities/{{neighbor}}/model", {"true_age": 40}),
+            lambda e, ids: _weighted(
+                e.model_entity(CTX, ids["story"], ids["neighbor"], ModelEntityRequest(true_age=40))
+            ),
+            prepare=_modelable,
         ),
         # -- error paths: the same error on both surfaces
         Step(
@@ -2549,6 +2574,16 @@ async def _promoted(call: Awaitable[Any]) -> dict[str, Any]:
     return dump(PromotionBody.of(await call))
 
 
+async def _weighted(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(CharacterWeightedBody.of(await call))
+
+
+async def _modelable(engine: Engine, ids: Ids) -> None:
+    """An unmodeled person of the story (#163's author directive models it)."""
+    async with engine.db.begin() as conn:
+        ids["neighbor"] = await store.add_entity(conn, ids["story"], "person", "the neighbor")
+
+
 async def _persona_write(call: Awaitable[Any]) -> dict[str, Any]:
     return dump(PersonaBody.of(await call))
 
@@ -3024,6 +3059,7 @@ async def test_c_03(surfaces: tuple[Settings, Settings], dummy_dsn: str) -> None
     assert answered == [
         ("add_story_character", 201),
         ("promote_character", 201),
+        ("set_character_weight", 200),
         ("create_character_draft", 201),
         ("save_character_draft", 200),
         ("save_character_draft", 409),

@@ -133,7 +133,7 @@ from epistrel.core.enums import (
     RecordProvenance,
     RetrievalTier,
 )
-from epistrel.core.epistemic import perception
+from epistrel.core.epistemic import modeling, perception
 from epistrel.core.erasure import guard
 from epistrel.core.erasure.index import index_records
 from epistrel.core.erasure.records import memory_record
@@ -568,6 +568,33 @@ async def _place_names(conn: AsyncConnection, story_id: str) -> dict[str, str]:
     return {str(r.id): f"the {r.canonical_name}" for r in found}
 
 
+def _minor_holds(
+    result: perception.PerceptionResult,
+    beat: Beat,
+    seen: perception.Perceived,
+    names: Mapping[str, str],
+) -> bool:
+    """Whether a minor perceiver keeps its memory of ``beat`` (``core.epistemic.modeling``'s
+    sparsity rule): it acted in it, was addressed by it (``addressee``, ``whisper_to``, a remote
+    channel), or is a party to the interaction it states."""
+    q = result.qualifiers
+    addressed = [
+        *([q.addressee] if q.addressee else []),
+        *q.whisper_to,
+        *(q.remote_channel.participants if q.remote_channel is not None else ()),
+    ]
+    return modeling.holds_memory(
+        seen.character_id,
+        actor=beat.character_id,
+        addressed=addressed,
+        participants=beat.participants,
+        kind=beat.kind,
+        text=beat.text,
+        content=seen.fidelity == perception.CONTENT,
+        names=names,
+    )
+
+
 async def write_perceived(
     conn: AsyncConnection,
     operation: MemoryOperation,
@@ -581,18 +608,27 @@ async def write_perceived(
     story_id = operation.story_id
     if story_id is None:
         raise InvalidRequest("a memory belongs to a story", {"field": "operation"})
-    routed = [
-        (r.beat.source, seen)
+    routed_all = [
+        (r, r.beat.source, seen)
         for r in results
         if isinstance(r.beat.source, Beat)
         and r.beat.source.kind in ROUTED
         and r.beat.source.text.strip()
         for seen in r.perceived
     ]
-    if not routed or not await episodic_on(conn, story_id, settings):
+    if not routed_all or not await episodic_on(conn, story_id, settings):
+        return []
+    cast = await _names(conn, story_id)
+    # #163 (FR-EPI-10): a minor's partition accrues only from the interactions it took part in.
+    minors = await modeling.minor_ids(conn, story_id)
+    routed = [
+        (beat, seen)
+        for r, beat, seen in routed_all
+        if seen.character_id not in minors or _minor_holds(r, beat, seen, cast)
+    ]
+    if not routed:
         return []
     beats = list({id(b): b for b, _ in routed}.values())
-    cast = await _names(conn, story_id)
     await _check_beats(conn, story_id, operation.operation_id, beats, cast)
     unknown = sorted({seen.character_id for _, seen in routed} - cast.keys())
     if unknown:

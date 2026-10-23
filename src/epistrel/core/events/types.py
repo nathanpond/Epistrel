@@ -484,6 +484,30 @@ class BeliefTransitioned(EventPayload):
     prior_belief_ids: tuple[str, ...] = ()
 
 
+@register("character_weight_set", category=EventCategory.CONTROL)
+class CharacterWeightSet(EventPayload):
+    """The author set a character's narrative weight (FR-EPI-10; #163's
+    ``POST /stories/{id}/characters/{cid}/weight``): ``minor`` or ``major``, and the weight it
+    had. Prospective: what the character already holds is not rewritten."""
+
+    character_id: str
+    weight: str
+    previous: str
+
+
+@register("character_modeled", category=EventCategory.DERIVED)
+class CharacterModeled(EventPayload):
+    """A story entity became a modeled character (FR-EPI-9; #163): the trigger
+    (``interaction`` or ``salience``), the entity (a story character's entity id is its
+    character id) and the position it was modeled at (``at_turn``, ``at_variant``,
+    ``at_slot_k``, ``at_beat``, ``at_step``). Identifiers only; the ``character_defined`` event
+    beside it names the character."""
+
+    trigger: str
+    entity_id: str
+    position: dict[str, int]
+
+
 @register("belief_authored", category=EventCategory.CONTROL)
 class BeliefAuthored(EventPayload):
     """An author directed a character's belief (FR-EPI-7's author direction; #160's

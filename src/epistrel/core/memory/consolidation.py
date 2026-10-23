@@ -24,7 +24,8 @@ them with it, an untruncation or a swap brings them back. ``coverage`` lists the
 overlapping a window; ``covered_to`` is the last turn consolidated in a scope (one backward
 index scan from the head). Automatic windows are contiguous: ``next_window`` starts at the
 first uncovered episodic memory after ``covered_to`` and fires when
-``memory.consolidation.window_memories`` (50) memories are uncovered **or** the head is
+``memory.consolidation.window_memories`` (50; a scope held by ``minor`` characters only:
+``window_memories // 5``, ``holder_dials``, #163) memories are uncovered **or** the head is
 ``memory.consolidation.cadence_turns`` (20) turns past ``covered_to``, whichever comes first
 (the owner's decision on #143: both triggers). The window holds at most ``window_memories``
 memories and snaps to whole turns. ``force`` (after a truncation, untruncation, swap or fork,
@@ -68,7 +69,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
@@ -78,6 +79,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.canon.facts import Fact, Visibility, canon
 from epistrel.core.enums import MemoryKind, OperationKind, OperationStatus, RetrievalTier
+from epistrel.core.epistemic import modeling
 from epistrel.core.errors import ScopeMismatch
 from epistrel.core.input_versions import input_key
 from epistrel.core.membership import active_only, active_operation, supersede
@@ -358,6 +360,20 @@ async def covered_to(conn: AsyncConnection, story_id: str, scope_key: str, level
     return int(found or 0)
 
 
+async def holder_dials(
+    conn: AsyncConnection, story_id: str, scope: Scope, dials: ConsolidationSettings
+) -> ConsolidationSettings:
+    """``dials`` for ``scope``: a scope held by ``minor`` characters only consolidates
+    aggressively, at ``core.epistemic.modeling.minor_window`` (``window_memories // 5``;
+    FR-EPI-10, #163). The shared scope and any scope with a major holder keep the dials."""
+    if not scope.characters:
+        return dials
+    minors = await modeling.minor_ids(conn, story_id)
+    if not set(scope.characters) <= minors:
+        return dials
+    return replace(dials, window_memories=modeling.minor_window(dials.window_memories))
+
+
 async def next_window(
     conn: AsyncConnection,
     story_id: str,
@@ -375,6 +391,7 @@ async def next_window(
     head = max(head or 0, await head_turn(conn, story_id))
     if head <= after:
         return None
+    dials = await holder_dials(conn, story_id, scope, dials)
     m = memories.c
     turns = list(
         await conn.scalars(

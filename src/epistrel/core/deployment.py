@@ -202,6 +202,7 @@ class SettingsPatch(BaseModel):
     memory_importance_half_life_turns: StrictInt | None = None
     max_pinned_per_character: StrictInt | None = None
     max_pinned_per_story: StrictInt | None = None
+    minor_hot_budget_fraction: StrictFloat | None = None
     embedding_batch_max: StrictInt | None = None
     reembed_batch_size: StrictInt | None = None
     embedding_hnsw_m: StrictInt | None = None

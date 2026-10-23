@@ -449,6 +449,14 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "erased_subject_referenced",
     ),
     "promote_character": ("rating_retired", "seed_memory_invalid", "erased_subject_referenced"),
+    # #163: an author's weight change and modeling directive (control operations).
+    "set_character_weight": ("story_archived", "story_paused", "story_busy"),
+    "model_entity": (
+        "story_archived",
+        "story_paused",
+        "story_busy",
+        "erased_subject_referenced",
+    ),
     # Its ``policies`` are refused while the story is paused (#118); its settings are not.
     "update_story_settings": (
         "cannot_relax",

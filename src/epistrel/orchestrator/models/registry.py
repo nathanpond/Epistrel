@@ -680,6 +680,8 @@ SALIENCE_LAST_BEATS = 6
 """How many earlier beats ``scene_context.last_beats`` holds."""
 SALIENCE_MAX_SPANS = 50
 """The most salient spans, and texture spans, one answer may hold."""
+SALIENCE_MAX_CHARACTERS = 8
+"""The most characters one answer may mark for modeling (#163)."""
 
 
 class SalienceBeat(InputSchema):
@@ -780,6 +782,11 @@ class SalienceResult(BaseModel):
 
     salient: list[SalientQuote] = Field(default_factory=list, max_length=SALIENCE_MAX_SPANS)
     texture: list[SalienceQuote] = Field(default_factory=list, max_length=SALIENCE_MAX_SPANS)
+    characters: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(
+        default_factory=list, max_length=SALIENCE_MAX_CHARACTERS
+    )
+    """The figures the render singles out as characters to model (FR-EPI-9's explicit salience;
+    #163), each by the words of a beat that name it. Empty (the default) models nobody."""
 
 
 EXTRACTION_MAX_BEATS = 50

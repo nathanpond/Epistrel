@@ -47,7 +47,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core.epistemic import partitions, perception, testimony
+from epistrel.core.epistemic import modeling, partitions, perception, testimony
 from epistrel.core.epistemic import scene as scene_loader
 from epistrel.core.profiles.capabilities import module_on
 from epistrel.core.profiles.schema import ProfileSettings
@@ -377,13 +377,16 @@ async def adjudicate_turn(
         state = await scene_loader.load_scene_state(conn, story_id, turn)
         holders = await _holders(conn, story_id, cast)
         minors = await testimony.minors(conn, story_id)
+        # #163: a ``minor``-weight (lazily modeled) witness never takes the model adjudication;
+        # it gets the default at commit.
+        lazy = await modeling.minor_ids(conn, story_id)
         registry = await load(conn, story_id)
         lookup = KeyedLookup(conn, read_set)
         queue: list[tuple[int, int, Heard, str]] = []
         for heard in says:
             routed = perception.route_perception(heard.route_beat(), state, level=level)
             for witness, partial in witnesses_of(routed, heard.speaker, holders):
-                if partial is not None or witness in minors:
+                if partial is not None or witness in minors or witness in lazy:
                     continue
                 if not await is_salient(
                     conn, story_id, heard, witness, marked=marked, minors=minors

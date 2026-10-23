@@ -1203,6 +1203,16 @@
       "requirement": "FR-EPI-7"
     },
     {
+      "method": "POST",
+      "path": "/stories/{story_id}/characters/{character_id}/weight",
+      "requirement": "FR-EPI-10"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/entities/{entity_id}/model",
+      "requirement": "FR-EPI-9"
+    },
+    {
       "method": "GET",
       "path": "/admin/evals/extraction-shadow",
       "requirement": "FR-OBS-4"

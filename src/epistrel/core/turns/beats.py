@@ -41,7 +41,10 @@ the introducing beat's text, the next ``ordinal``, the one true age (``true_age_
 entity (#139) and a canon ``age`` fact at the story-time of the introducing turn
 (``story_time_at``), visible as objective canon, so a later claim about the age is checked
 against it. A name the cast already has is a mention of that character, never a new row. The
-character joins the cast from the next turn.
+character joins the cast from the next turn. An introduced character is modeled at creation
+(#163, a salience trigger): ``weight = minor`` and ``modeled_at`` = the introducing beat.
+``write_character_facts`` writes a new character's ``age`` (and, for #163's modeling, its
+``located_at`` in the scene): ``core.epistemic.modeling`` writes no canon itself.
 
 Log lines carry ids and counts only (invariant 3).
 """
@@ -58,7 +61,7 @@ from sqlalchemy import func, insert, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.canon.facts import OBJECTIVE, Fact, FactOperation, Visibility, commit_fact
-from epistrel.core.enums import Authority, Provenance, RecordProvenance
+from epistrel.core.enums import Authority, CharacterWeight, Provenance, RecordProvenance
 from epistrel.core.epistemic.perception import Qualifiers
 from epistrel.core.erasure import guard
 from epistrel.core.erasure.index import index_records, reindex_story
@@ -74,14 +77,14 @@ from epistrel.core.events.types import (
     DetectedRef,
 )
 from epistrel.core.ids import new_ulid
-from epistrel.core.membership import insert_derived
+from epistrel.core.membership import Position, insert_derived
 from epistrel.core.propositions.model import (
     Interval,
     LiteralKind,
     Proposition,
     TypedLiteral,
 )
-from epistrel.core.propositions.vocabulary import CORE_BY_NAME
+from epistrel.core.propositions.vocabulary import CORE_BY_NAME, LOCATED_AT
 from epistrel.core.resolution.context import load_time_basis
 from epistrel.core.resolution.entities import add_entities, character_spec
 from epistrel.core.resolution.time import story_time_at
@@ -424,6 +427,11 @@ async def write_introductions(
                 "true_age_source": intro.source,
                 "age_recorded_at": func.transaction_timestamp(),
                 "is_player": False,
+                # #163: an introduced character is modeled at creation, a minor.
+                "weight": CharacterWeight.MINOR.value,
+                **Position(
+                    operation.narrative_turn or 0, operation.turn_variant or 0, 0, intro.beat, 0
+                ).columns("modeled"),
             }
         )
     await conn.execute(insert(characters).values(rows))
@@ -452,27 +460,66 @@ async def write_introductions(
     )
     # The new names may already be in the story's records (FR-ADMIN-6; #123).
     await reindex_story(conn, story_id)
-    basis = await load_time_basis(conn, story_id)
-    turn = operation.narrative_turn or 0
-    since = story_time_at(turn, basis)
-    written: list[Fact] = []
-    for intro in fresh:
-        written.append(
-            await commit_fact(
-                conn,
-                story_id,
-                Proposition(
-                    subject_id=intro.character_id,
-                    predicate_id=AGE,
-                    literal=TypedLiteral(kind=LiteralKind.INT, value=intro.age),
-                    valid_time=Interval.of(since, None),
-                ),
-                provenance=RecordProvenance.RENDER,
-                operation=operation,
-                beat=intro.beat,
-            )
-        )
+    written = await write_character_facts(
+        conn, operation, [(i.character_id, i.age, i.beat) for i in fresh]
+    )
     log.debug("introductions written: %d", len(fresh))
+    return written
+
+
+async def write_character_facts(
+    conn: AsyncConnection,
+    operation: FactOperation,
+    joined: Sequence[tuple[str, int | None, int]],
+    *,
+    location: str | None = None,
+) -> list[Fact]:
+    """The canon a new character needs, in ``operation``'s commit transaction: for each
+    ``(character_id, age, beat)`` its ``age`` fact at the story-time of the turn (objective, so a
+    later claim about the age is checked against it; none for a ``None`` age, a character whose
+    age is already canon) and, with a ``location``, its
+    ``located_at`` there (#163: a modeled character joins the scene it was modeled in). Answers
+    the facts written. Canon's writer for ``core.epistemic.modeling``, which never writes canon
+    itself (#160's gate)."""
+    story_id = operation.story_id
+    if story_id is None or not joined:
+        return []
+    basis = await load_time_basis(conn, story_id)
+    since = story_time_at(operation.narrative_turn or 0, basis)
+    written: list[Fact] = []
+    for character_id, age, beat in joined:
+        if age is not None:
+            written.append(
+                await commit_fact(
+                    conn,
+                    story_id,
+                    Proposition(
+                        subject_id=character_id,
+                        predicate_id=AGE,
+                        literal=TypedLiteral(kind=LiteralKind.INT, value=age),
+                        valid_time=Interval.of(since, None),
+                    ),
+                    provenance=RecordProvenance.RENDER,
+                    operation=operation,
+                    beat=beat,
+                )
+            )
+        if location is not None:
+            written.append(
+                await commit_fact(
+                    conn,
+                    story_id,
+                    Proposition(
+                        subject_id=character_id,
+                        predicate_id=LOCATED_AT,
+                        object_id=location,
+                        valid_time=Interval.of(since, None),
+                    ),
+                    provenance=RecordProvenance.RENDER,
+                    operation=operation,
+                    beat=beat,
+                )
+            )
     return written
 
 
@@ -501,6 +548,7 @@ __all__ = [
     "taken_names",
     "utterance_of",
     "visibility_of",
+    "write_character_facts",
     "write_introductions",
     "write_utterances",
 ]

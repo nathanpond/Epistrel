@@ -279,6 +279,16 @@ class BeliefHoldState(StrEnum):
     CORRECTED = "corrected"
 
 
+class CharacterWeight(StrEnum):
+    """A modeled character's narrative weight (FR-EPI-10; #163): ``minor`` (modeled lazily by
+    interaction or salience: a sparse partition, a smaller consolidation window and hot budget,
+    never a default render) or ``major`` (the cast, the player's character, an author-created or
+    author-promoted character). Postgres enum ``character_weight``."""
+
+    MINOR = "minor"
+    MAJOR = "major"
+
+
 PG_ENUM_TYPES: dict[str, type[StrEnum]] = {
     "event_category": EventCategory,
     "operation_kind": OperationKind,
@@ -303,6 +313,7 @@ PG_ENUM_TYPES: dict[str, type[StrEnum]] = {
     "belief_transition_kind": BeliefTransitionKind,
     "antecedent_kind": AntecedentKind,
     "belief_hold_state": BeliefHoldState,
+    "character_weight": CharacterWeight,
 }
 """Postgres enum type name (``<schema>.<name>`` outside ``public``) → the Python enum whose
 values it holds (creation order)."""

@@ -2989,6 +2989,59 @@
         "title": "CharacterVersionsBody",
         "type": "object"
       },
+      "CharacterWeightRequest": {
+        "additionalProperties": false,
+        "description": "``POST /stories/{id}/characters/{cid}/weight``: the narrative weight to give the\ncharacter (FR-EPI-10).",
+        "examples": [
+          {
+            "weight": "major"
+          }
+        ],
+        "properties": {
+          "weight": {
+            "enum": [
+              "minor",
+              "major"
+            ],
+            "title": "Weight",
+            "type": "string"
+          }
+        },
+        "required": [
+          "weight"
+        ],
+        "title": "CharacterWeightRequest",
+        "type": "object"
+      },
+      "CharacterWeightedBody": {
+        "description": "A character after a weight change or a modeling directive (#163): the character as an\nomniscient read lists it, and the story's revision after.",
+        "properties": {
+          "character": {
+            "$ref": "#/components/schemas/OmniscientCharacterBody"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "character"
+        ],
+        "title": "CharacterWeightedBody",
+        "type": "object"
+      },
       "CheckProgressBody": {
         "description": "How many of the history's records the check has checked, of how many.",
         "properties": {
@@ -13341,6 +13394,42 @@
         "title": "ModelConfigMutation",
         "type": "object"
       },
+      "ModelEntityRequest": {
+        "additionalProperties": false,
+        "description": "``POST /stories/{id}/entities/{eid}/model``: the author's directive to model an entity as\na character (FR-EPI-9's explicit salience). Its one true age is required (FR-CAT-12);\n``definition`` defaults to the entity's name.",
+        "examples": [
+          {
+            "definition": "The neighbor across the street.",
+            "true_age": 45
+          }
+        ],
+        "properties": {
+          "definition": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Definition"
+          },
+          "true_age": {
+            "maximum": 150.0,
+            "minimum": 0.0,
+            "title": "True Age",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "true_age"
+        ],
+        "title": "ModelEntityRequest",
+        "type": "object"
+      },
       "ModelIdentity": {
         "description": "One model purpose's model as a fingerprint names it: the configured model id, and the\nversion the provider reports (``null`` until an adapter reports one).",
         "properties": {
@@ -13459,6 +13548,40 @@
           }
         },
         "title": "ModelParams",
+        "type": "object"
+      },
+      "ModeledAtBody": {
+        "description": "A narrative position (#163's ``modeled_at``): the turn and its variant, the inter-turn\nslot (0: the turn itself), the beat and the step. The genesis cast is at 0.",
+        "properties": {
+          "beat": {
+            "title": "Beat",
+            "type": "integer"
+          },
+          "slot_k": {
+            "title": "Slot K",
+            "type": "integer"
+          },
+          "step": {
+            "title": "Step",
+            "type": "integer"
+          },
+          "turn": {
+            "title": "Turn",
+            "type": "integer"
+          },
+          "variant": {
+            "title": "Variant",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "turn",
+          "variant",
+          "slot_k",
+          "beat",
+          "step"
+        ],
+        "title": "ModeledAtBody",
         "type": "object"
       },
       "NameOverrides": {
@@ -13968,7 +14091,7 @@
         "type": "object"
       },
       "OmniscientCharacterBody": {
-        "description": "A character as an omniscient read returns it: with its true age (FR-CAT-12) and the\ncatalog entries promoted from it (``promoted_to``, FR-CAT-8; oldest first).",
+        "description": "A character as an omniscient read returns it: with its true age (FR-CAT-12), the\ncatalog entries promoted from it (``promoted_to``, FR-CAT-8; oldest first), its narrative\n``weight`` (``minor``: modeled lazily by interaction or salience; ``major``: the cast, the\nplayer, an author-created or promoted character; FR-EPI-10) and the position it was\nmodeled at (``modeled_at``, #163).",
         "properties": {
           "id": {
             "title": "Id",
@@ -13977,6 +14100,16 @@
           "is_player": {
             "title": "Is Player",
             "type": "boolean"
+          },
+          "modeled_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModeledAtBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "name": {
             "title": "Name",
@@ -14013,6 +14146,15 @@
           "true_age": {
             "title": "True Age",
             "type": "integer"
+          },
+          "weight": {
+            "default": "major",
+            "enum": [
+              "minor",
+              "major"
+            ],
+            "title": "Weight",
+            "type": "string"
           }
         },
         "required": [
@@ -26739,6 +26881,13 @@
             "title": "Minor Age Threshold",
             "type": "integer"
           },
+          "minor_hot_budget_fraction": {
+            "default": 0.2,
+            "exclusiveMinimum": 0.0,
+            "maximum": 1.0,
+            "title": "Minor Hot Budget Fraction",
+            "type": "number"
+          },
           "neighborhood_max_facts": {
             "default": 50,
             "maximum": 1000.0,
@@ -27954,6 +28103,17 @@
               }
             ],
             "title": "Minor Age Threshold"
+          },
+          "minor_hot_budget_fraction": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Minor Hot Budget Fraction"
           },
           "neighborhood_max_facts": {
             "anyOf": [
@@ -32658,6 +32818,7 @@
                           "media_upload_ttl",
                           "memory_importance_half_life_turns",
                           "minor_age_threshold",
+                          "minor_hot_budget_fraction",
                           "neighborhood_max_facts",
                           "offboarding_report_retention_days",
                           "profile_defaults",
@@ -52943,6 +53104,215 @@
         ]
       }
     },
+    "/stories/{story_id}/characters/{character_id}/weight": {
+      "post": {
+        "description": "Set a character's narrative `weight` (FR-EPI-10): `minor` (a character modeled lazily by interaction or salience: a sparse partition that accrues only from the interactions it takes part in, a smaller consolidation window and hot budget, never rendered unless a request names it) or `major`. Prospective: what the character already holds stays as it is, and nothing promotes automatically. The player's character is always `major` (422 `is_player`). A control operation: it bumps the story's revision and records `character_weight_set`; 409 `story_archived`, 423 `story_busy` while a turn is in flight. Answers the character as an omniscient read lists it.",
+        "operationId": "set_character_weight",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The id of one of the story's characters (a ULID), as `GET /stories/{id}` lists them.",
+            "in": "path",
+            "name": "character_id",
+            "required": true,
+            "schema": {
+              "description": "The id of one of the story's characters (a ULID), as `GET /stories/{id}` lists them.",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2CA"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Character Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CharacterWeightRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CharacterWeightedBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Set a story character's narrative weight",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
     "/stories/{story_id}/config-changes": {
       "get": {
         "description": "The story's configuration changes (settings, story and character policies), newest first (#64); filter by `setting` (repeatable), `class` and `since`; `next` pages on (`after`).",
@@ -54146,6 +54516,215 @@
         "summary": "Assign a story's engine profile",
         "tags": [
           "profiles"
+        ]
+      }
+    },
+    "/stories/{story_id}/entities/{entity_id}/model": {
+      "post": {
+        "description": "The author's directive to model one of the story's entities (a `person`, or an `other` entity) as a character (FR-EPI-9's explicit salience): a `minor` character with the entity's name, the request's required `true_age` (FR-CAT-12) and its `definition` (default: the entity's name). The entity's id becomes the character's, so what canon says of the entity is said of the character. Story-scoped (FR-CAT-7) and exempt from the cast cap. 404 for an entity the story does not have; 422 `already_modeled`, `not_a_person` or `allow_new_arrivals` (`details.reason`); 409 `story_archived`; 423 `story_busy` while a turn is in flight. A control operation: it bumps the revision and records `character_defined` and `character_modeled`. Answers 201 with the new character as an omniscient read lists it.",
+        "operationId": "model_entity",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The id of one of the story's entities (a ULID), as `GET /stories/{id}/scene` and the inspect reads list them.",
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "schema": {
+              "description": "The id of one of the story's entities (a ULID), as `GET /stories/{id}/scene` and the inspect reads list them.",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C9"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Entity Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModelEntityRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CharacterWeightedBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Model a story entity as a character",
+        "tags": [
+          "stories"
         ]
       }
     },

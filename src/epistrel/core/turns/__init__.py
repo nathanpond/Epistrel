@@ -85,6 +85,8 @@ class CastEntry:
     deflection_style: str | None = None
     """How the character refuses or changes the subject (FR-GUARD-7; #115): rendered with its
     author notes, so a reply regenerated after a guardrail violation stays in character."""
+    minor: bool = False
+    """``weight = minor`` (#163): a lazily modeled character, never rendered by default."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +153,7 @@ def _cast_query(story_id: str) -> Any:
             characters.c.is_player,
             characters.c.safe_fallback_text,
             characters.c.deflection_style,
+            characters.c.weight,
         )
         .where(characters.c.story_id == story_id)
         .order_by(characters.c.ordinal)
@@ -166,6 +169,7 @@ def _cast(rows: Any) -> tuple[CastEntry, ...]:
             is_player=bool(r.is_player),
             safe_fallback_text=r.safe_fallback_text,
             deflection_style=r.deflection_style,
+            minor=getattr(r, "weight", None) == "minor",
         )
         for r in rows
     )

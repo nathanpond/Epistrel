@@ -20,7 +20,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-STORE | §2 | 045, 072, 075, 076, 079, 080, 122, 128, 129, 132, 138, 143, 144, 167 |
 | FR-CONC | §2.3 | 045, 052, 057, 062, 072, 144, 169 |
 | FR-MEM | §4 | 070, 071, 072, 075, 169 |
-| FR-EPI | §5 | 024, 167, 168 |
+| FR-EPI | §5 | 024, 167, 168, 171 |
 | FR-BELIEF | §5.1 | 026, 069, 075, 168, 170 |
 | FR-TURN | §6 | 043, 169, 170 |
 | FR-COMMIT | §7 | 018, 022, 043, 053, 129 |
@@ -37,7 +37,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-API | §17 | 092, 138 |
 | FR-AUTH | §17.1 | 078, 091, 093, 144, 149, 152 |
 | FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144, 153, 154, 155, 156, 157, 159, 161 |
-| FR-CAT | §18.1 | 081, 088, 089, 090, 091, 095, 097, 107, 108, 138, 144 |
+| FR-CAT | §18.1 | 081, 088, 089, 090, 091, 095, 097, 107, 108, 138, 144, 171 |
 | FR-SCN | §18.2 | 081, 082, 087, 088, 091, 097, 107, 140, 141, 142 |
 | FR-PROF | §18.3 | 084, 086, 087, 107, 134, 138, 141, 142, 144, 158 |
 | FR-LITE | §18.4 | 085, 086, 087 |
@@ -233,6 +233,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 168 | A belief and its producing transition name each other, and one function writes every belief | Current | — |
 | 169 | Perception routing is one pure function over authoritative state, and it writes one memory per perceiver | Current | — |
 | 170 | Testimony is a speech-act belief for every witness and a separate, gated transition; trust is derived, never stored | Current | — |
+| 171 | A character is modeled lazily by interaction or salience, at minor weight, and a minor's partition is sparse by rule | Current | — |
 
 ---
 
@@ -1760,6 +1761,22 @@ Everything else keeps the safe disposition: detector findings, the excluded reso
 - Hearing is recorded for everyone and believing is per witness, in the same commit, from the same routing results as the memories.
 - A model can make a witness more cautious or accept an open claim, but it cannot make anyone believe what their own records contradict.
 - Tests: `tests/scenario/test_s_testimony.py` (S-TESTIMONY M5), `tests/conformance/test_c_04.py::test_c_04__adjudication_row` (C-04 M5), `tests/perf/test_p_09_m5.py` (P-09 M5), `tests/test_u_05.py::test_u_05__hearer_intent` (U-05 M5).
+
+---
+
+### ADR-171 — A character is modeled lazily by interaction or salience, at minor weight, and a minor's partition is sparse by rule
+**Status:** Accepted.
+**Context:** M5's character modeling (#163; FR-EPI-9,10,11,12, FR-CAT-7) must model a person only on direct interaction or explicit salience, never on appearance, and must keep modeling every waved-at neighbor from becoming a scaling burden. The player is a character to others but has no engine-held mind. M4 already created a `characters` row for every person a render `introduces` (#150), with no notion of weight.
+**Decision:**
+- `core.epistemic.modeling` is the one gate: `maybe_model(entity, trigger)` with `interaction` (a deterministic detector over the turn's beats: an interaction-verb lexicon in the #148 table style for `do` and narration, a vocative for `say`, the player's own input included) or `salience` (the salience step's new `characters` list, a render's `introduces`, the author's `POST /stories/{id}/entities/{eid}/model`). It runs only under per-character partitions. Under shared knowledge only introductions and the author create characters, as in M4.
+- A modeled character is an ordinary `characters` row (`weight = minor`, `modeled_at` a five-column position), created in the turn's commit before routing so the triggering beat reaches its new partition. An existing entity is adopted (its id becomes the character's). A description mints the entity, with its words as descriptors. Its true age comes from one optional age-repair call; an unfunded or implausible repair defers it (`modeling_deferred`). The epistemic model writes no canon, so the `age` and `located_at` facts are `core.turns.beats.write_character_facts`'.
+- Weight is a Postgres enum on `characters`: the cast, the player (a CHECK) and author-added characters are `major`, and M4's render-introduced rows are backfilled `minor`. Only the author changes it, prospectively (`POST /stories/{id}/characters/{cid}/weight`, a control operation that bumps the revision).
+- Sparsity is keyed on weight in the consumers, not in routing: the memory sink drops a minor's memory of a beat it neither acted in, nor was addressed by, nor took part in the interaction of. A minor's consolidation window is `window_memories // 5`. Its hot budget is scaled by the deployment's `minor_hot_budget_fraction` (0.2). Its records score × 0.5 in retrieval. It is never the default render character and never takes a testimony adjudication. Privacy is untouched (FR-EPI-11).
+**Consequences:**
+- Modeling is liberal and cheap: a minor costs one row, one optional age call and only the memories of its own interactions. Promotion is the author's decision.
+- A modeled character persists like any character: a truncation or regeneration of the turn that modeled it keeps the row, as M4's introductions do, and erasure removes it and its partition like any character's.
+- The retrieval penalty reads the holder's current weight, so a promoted minor's earlier records rank as a major's.
+- Tests: `tests/scenario/test_s_modeling.py` (S-MODELING M5), `tests/scenario/test_s_promote_m5.py` (S-PROMOTE M5), `tests/scenario/test_s_minor_interiority.py::test_s_minor_interiority__minor_privacy` (S-MINOR-INTERIORITY M5, #163's slice), `tests/scenario/test_s_player.py::test_s_player__modeling` (S-PLAYER M5), `tests/test_modeling.py`.
 
 ---
 

@@ -76,6 +76,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from epistrel.core import audit, clock, ownership, pause
 from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.enums import OperationKind, OperationStatus, Provenance, StoryStatus
+from epistrel.core.epistemic import modeling
 from epistrel.core.erasure import ledger as erasure_ledger
 from epistrel.core.erasure.index import drop_many, reindex_story
 from epistrel.core.erasure.records import character_record, idempotency_id, index_rows, story_record
@@ -83,6 +84,8 @@ from epistrel.core.errors import (
     InvalidRequest,
     StoryArchived,
     StoryBusy,
+    StoryCharacterNotFound,
+    StoryEntityNotFound,
     StoryNotFound,
     ViewpointUnresolved,
 )
@@ -90,6 +93,7 @@ from epistrel.core.events import Operation
 from epistrel.core.events.types import (
     CastMember,
     CharacterDefined,
+    CharacterWeightSet,
     ScenarioOrigin,
     StoryArchivedEvent,
     StoryCreated,
@@ -100,6 +104,7 @@ from epistrel.core.genesis.models import CreationReport
 from epistrel.core.idempotency import Scope
 from epistrel.core.ids import Ulid, new_ulid
 from epistrel.core.media.assets import assert_referenceable
+from epistrel.core.membership import Position
 from epistrel.core.ownership import Owner, RelationFilter
 from epistrel.core.profiles import store as profiles
 from epistrel.core.profiles.effective import ProfileVersionRef
@@ -482,7 +487,8 @@ class CharacterView:
     """A character as a read returns it; ``true_age`` (FR-CAT-12) and ``promoted_to`` (the
     catalog entries promoted from it, FR-CAT-8) are ``None`` unless the read is omniscient.
     ``role_id`` and ``source`` (the catalog version it was created from) are a story created
-    from a scenario's (#119), ``None`` otherwise."""
+    from a scenario's (#119), ``None`` otherwise. ``weight`` and ``modeled_at`` (#163) are an
+    omniscient read's too."""
 
     id: str
     name: str
@@ -491,6 +497,11 @@ class CharacterView:
     promoted_to: tuple[str, ...] | None = None
     role_id: str | None = None
     source: CatalogVersionRef | None = None
+    weight: str | None = None
+    """``minor`` or ``major`` (FR-EPI-10; #163); ``None`` unless the read is omniscient."""
+    modeled_at: Position | None = None
+    """The position the character was modeled at (0 for the genesis cast; #163); ``None``
+    unless the read is omniscient."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -946,6 +957,250 @@ async def add_story_character(
     )
 
 
+# -- modeling (#163) -------------------------------------------------------------------------
+
+
+class CharacterWeightRequest(BaseModel):
+    """``POST /stories/{id}/characters/{cid}/weight``: the narrative weight to give the
+    character (FR-EPI-10)."""
+
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, json_schema_extra={"examples": [{"weight": "major"}]}
+    )
+
+    weight: Literal["minor", "major"]
+
+
+class ModelEntityRequest(BaseModel):
+    """``POST /stories/{id}/entities/{eid}/model``: the author's directive to model an entity as
+    a character (FR-EPI-9's explicit salience). Its one true age is required (FR-CAT-12);
+    ``definition`` defaults to the entity's name."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        json_schema_extra={
+            "examples": [{"true_age": 45, "definition": "The neighbor across the street."}]
+        },
+    )
+
+    true_age: Annotated[int, Field(ge=TRUE_AGE_MIN, le=TRUE_AGE_MAX)]
+    definition: Annotated[str, Field(min_length=1, max_length=4_000)] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CharacterWeighted:
+    """A character as a weight change or a modeling directive left it (the omniscient item:
+    its weight and the position it was modeled at) and the story's revision after."""
+
+    character: CharacterView
+    timeline_revision: int
+    replayed: bool = False
+    """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
+
+
+async def _character_view(conn: AsyncConnection, story_id: str, character_id: str) -> CharacterView:
+    row = (
+        await conn.execute(
+            select(characters).where(
+                characters.c.story_id == story_id, characters.c.id == character_id
+            )
+        )
+    ).one_or_none()
+    if row is None:
+        raise StoryCharacterNotFound(
+            f"story {story_id} has no character {character_id}",
+            {"story_id": story_id, "character_id": character_id},
+        )
+    return CharacterView(
+        id=str(row.id),
+        name=str(row.name),
+        is_player=bool(row.is_player),
+        true_age=int(row.true_age),
+        promoted_to=tuple(str(i) for i in row.promoted_to or ()),
+        role_id=row.role_id,
+        source=None
+        if row.source_catalog_id is None or row.source_catalog_version is None
+        else CatalogVersionRef(
+            catalog_id=str(row.source_catalog_id), version=int(row.source_catalog_version)
+        ),
+        weight=str(row.weight),
+        modeled_at=_modeled_at(row),
+    )
+
+
+async def _story_exists(conn: AsyncConnection, story_id: str) -> None:
+    exists = await conn.scalar(select(stories.c.id).where(stories.c.id == story_id))
+    if exists is None:
+        raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
+
+
+async def set_character_weight(
+    db: AsyncEngine,
+    story_id: str,
+    character_id: str,
+    request: CharacterWeightRequest,
+    *,
+    principal: str,
+    idempotency_key: str | None = None,
+    expected_revision: int | None = None,
+) -> CharacterWeighted:
+    """Set a character's narrative weight (FR-EPI-10; #163): a control operation recording
+    ``character_weight_set``, prospective (what the character already holds stays as it is;
+    nothing promotes automatically). 404 for an unknown story or character; 422 ``is_player``
+    for the player's character (always ``major``, FR-EPI-12); 409 ``story_archived``; 409
+    ``revision_conflict`` for a stale expected revision; 423 ``story_busy`` while a turn is in
+    flight. Setting the weight it has records nothing new but still answers it."""
+    async with db.connect() as conn, conn.begin():
+        await _story_exists(conn, story_id)
+        view = await _character_view(conn, story_id, character_id)
+    if view.is_player:
+        raise InvalidRequest(
+            "the player's character is always major (FR-EPI-12)",
+            {"field": "character_id", "reason": "is_player"},
+        )
+    await require_writable(db, story_id)
+    await check_expected_revision(db, story_id, expected_revision)
+    async with db.connect() as conn:
+        await _refuse_busy(conn, story_id, turns_only=True)
+    op = Operation(
+        db,
+        story_id=story_id,
+        kind=OperationKind.CONTROL,
+        principal=principal,
+        provenance=Provenance.CONSUMER,
+        bumps_revision=True,
+        idempotency_key=idempotency_key,
+    )
+
+    async def set_weight(conn: AsyncConnection) -> None:
+        await _refuse_busy(conn, story_id, turns_only=True, own=op.operation_id)
+        await conn.execute(
+            update(characters)
+            .where(characters.c.story_id == story_id, characters.c.id == character_id)
+            .values(weight=request.weight)
+        )
+
+    async with op:
+        op.append(
+            "character_weight_set",
+            CharacterWeightSet(
+                character_id=character_id, weight=request.weight, previous=view.weight or "major"
+            ),
+        )
+        op.add_commit_step(set_weight)
+        await op.commit()
+    assert op.timeline_revision is not None  # noqa: S101 - set by a committed story operation
+    async with db.connect() as conn:
+        after = await _character_view(conn, story_id, character_id)
+    return CharacterWeighted(character=after, timeline_revision=op.timeline_revision)
+
+
+async def model_entity(
+    db: AsyncEngine,
+    story_id: str,
+    entity_id: str,
+    request: ModelEntityRequest,
+    *,
+    principal: str,
+    idempotency_key: str | None = None,
+    expected_revision: int | None = None,
+) -> CharacterWeighted:
+    """The author's directive to model one of the story's entities as a character (FR-EPI-9;
+    #163's ``core.epistemic.modeling.maybe_model`` with trigger ``salience``): a control
+    operation that creates the ``characters`` row (``weight = minor``, the entity's name, the
+    request's true age, ``true_age_source = declared``, modeled at the story's head), adopts the
+    entity and writes its ``age`` fact. 404 for an unknown story or entity; 422
+    ``already_modeled`` for an entity that is a character, ``not_a_person`` for a place, item,
+    organization or event; 422 ``allow_new_arrivals`` when the story refuses new arrivals; 409
+    ``story_archived``; 409 ``revision_conflict``; 423 ``story_busy`` while a turn is in flight.
+    Minors are exempt from the cast cap."""
+    # Imported here: ``core.turns.beats`` reaches this module through the turn package.
+    from epistrel.core.turns.beats import write_character_facts
+
+    async with db.connect() as conn, conn.begin():
+        await _story_exists(conn, story_id)
+        entity = (
+            await conn.execute(
+                select(entities).where(entities.c.story_id == story_id, entities.c.id == entity_id)
+            )
+        ).one_or_none()
+        if entity is None:
+            raise StoryEntityNotFound(
+                f"story {story_id} has no entity {entity_id}",
+                {"story_id": story_id, "entity_id": entity_id},
+            )
+        stored = await conn.scalar(select(stories.c.settings).where(stories.c.id == story_id))
+        arrivals = bool(dict(stored or {}).get("allow_new_arrivals", True))
+    if entity.character_id is not None:
+        raise InvalidRequest(
+            "the entity is a character already",
+            {
+                "field": "entity_id",
+                "reason": "already_modeled",
+                "character_id": entity.character_id,
+            },
+        )
+    if entity.kind not in ("person", "other"):
+        raise InvalidRequest(
+            "only a person is modeled as a character",
+            {"field": "entity_id", "reason": "not_a_person", "kind": entity.kind},
+        )
+    if not arrivals:
+        raise InvalidRequest(
+            "the story allows no new arrivals",
+            {"field": "entity_id", "reason": "allow_new_arrivals"},
+        )
+    await require_writable(db, story_id)
+    await check_expected_revision(db, story_id, expected_revision)
+    async with db.connect() as conn:
+        await _refuse_busy(conn, story_id, turns_only=True)
+        head = int(
+            await conn.scalar(select(stories.c.next_turn_index).where(stories.c.id == story_id))
+            or 1
+        )
+    op = Operation(
+        db,
+        story_id=story_id,
+        kind=OperationKind.CONTROL,
+        principal=principal,
+        provenance=Provenance.CONSUMER,
+        bumps_revision=True,
+        idempotency_key=idempotency_key,
+    )
+    made: list[Any] = []
+    definition = request.definition or str(entity.canonical_name)
+
+    async def model(conn: AsyncConnection) -> None:
+        await _refuse_busy(conn, story_id, turns_only=True, own=op.operation_id)
+        candidate = modeling.Candidate(
+            modeling.SALIENCE, "author", 0, definition, str(entity.canonical_name), entity_id
+        )
+        found = await modeling.maybe_model(
+            conn,
+            op,
+            modeling.ModelRequest(candidate, request.true_age, age_source="declared"),
+            position=Position(max(0, head - 1)),
+            base_revision=op.base_revision,
+        )
+        if found is None:
+            raise InvalidRequest(
+                "the entity is a character already",
+                {"field": "entity_id", "reason": "already_modeled"},
+            )
+        made.append(found)
+        await write_character_facts(conn, op, [(found.character_id, request.true_age, 0)])
+        await reindex_story(conn, story_id)
+
+    async with op:
+        op.add_commit_step(model)
+        await op.commit()
+    assert op.timeline_revision is not None  # noqa: S101 - set by a committed story operation
+    async with db.connect() as conn:
+        after = await _character_view(conn, story_id, made[0].character_id)
+    return CharacterWeighted(character=after, timeline_revision=op.timeline_revision)
+
+
 # -- archive --------------------------------------------------------------------------------
 
 
@@ -1191,6 +1446,16 @@ def _view(row: Any, cast: tuple[CharacterView, ...] = ()) -> StoryView:
     )
 
 
+def _modeled_at(row: Any) -> Position:
+    return Position(
+        int(row.modeled_turn),
+        int(row.modeled_variant),
+        int(row.modeled_slot_k),
+        int(row.modeled_beat),
+        int(row.modeled_step),
+    )
+
+
 async def get_story(db: AsyncEngine, story_id: str, *, omniscient: bool = False) -> StoryView:
     """The story with its cast in order and its engine profile at the version it runs on. True
     ages only when ``omniscient`` (FR-CAT-12)."""
@@ -1229,6 +1494,12 @@ async def get_story(db: AsyncEngine, story_id: str, *, omniscient: bool = False)
                     characters.c.role_id,
                     characters.c.source_catalog_id,
                     characters.c.source_catalog_version,
+                    characters.c.weight,
+                    characters.c.modeled_turn,
+                    characters.c.modeled_variant,
+                    characters.c.modeled_slot_k,
+                    characters.c.modeled_beat,
+                    characters.c.modeled_step,
                 )
                 .where(characters.c.story_id == story_id)
                 .order_by(characters.c.ordinal)
@@ -1249,6 +1520,8 @@ async def get_story(db: AsyncEngine, story_id: str, *, omniscient: bool = False)
                 else CatalogVersionRef(
                     catalog_id=str(c.source_catalog_id), version=int(c.source_catalog_version)
                 ),
+                weight=str(c.weight) if omniscient else None,
+                modeled_at=_modeled_at(c) if omniscient else None,
             )
             for c in cast
         ),

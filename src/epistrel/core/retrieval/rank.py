@@ -16,7 +16,8 @@ and decayed importance:
   memory_importance_half_life_turns)`` from the turn it holds from, an unscored memory counting
   as ``DEFAULT_IMPORTANCE``.
 - ``score = w_sim · fused + w_rec · recency + w_imp · decayed_importance`` with the profile's
-  ``memory.episodic.weight_*`` dials (0.6 / 0.2 / 0.2 by default; they need not sum to 1).
+  ``memory.episodic.weight_*`` dials (0.6 / 0.2 / 0.2 by default; they need not sum to 1),
+  times the candidate's ``factor`` (0.5 for a ``minor`` holder's record, #163; else 1).
 
 ``rank`` orders by score, best first. Ties go by story position, earliest first (``turn``, then
 ``beat``; a memory with no position after those with one), then by text, and only then by memory
@@ -59,6 +60,9 @@ class Candidate:
     importance_at: int | None
     beat: int | None = None
     text: str = ""
+    factor: float = 1.0
+    """What the score is multiplied by (``core.epistemic.modeling.MINOR_SCORE_FACTOR`` for a
+    ``minor`` holder's record, #163; 1.0 otherwise)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,7 +126,7 @@ def rank(
         sim = float(similarity.get(c.memory_id, 0.0))
         rec = recency(c.turn, now, recency_half_life)
         imp = decayed_importance(c.importance, c.importance_at, now, importance_half_life)
-        total = score(sim, rec, imp, weights)
+        total = score(sim, rec, imp, weights) * c.factor
         key = (
             -total,
             c.turn is None,

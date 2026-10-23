@@ -157,6 +157,7 @@ from epistrel.core.enums import (
     RecordProvenance,
     StoryStatus,
 )
+from epistrel.core.epistemic import modeling as char_modeling
 from epistrel.core.epistemic import perception
 from epistrel.core.epistemic import scene as scene_loader
 from epistrel.core.erasure.index import index_records
@@ -204,6 +205,7 @@ from epistrel.core.settings_schema import (
     resolve_generation,
 )
 from epistrel.core.tables import entity_aliases, events, operations, stories
+from epistrel.core.tables.characters import TRUE_AGE_MAX, TRUE_AGE_MIN
 from epistrel.core.tables.commitments import thunks
 from epistrel.core.tables.operations import REGENERATED_VARIANT
 from epistrel.core.tables.propositions import entities
@@ -231,6 +233,7 @@ from epistrel.core.turns.beats import (
     stage_introductions,
     utterance_of,
     visibility_of,
+    write_character_facts,
     write_introductions,
     write_utterances,
 )
@@ -246,7 +249,11 @@ from epistrel.core.viewpoint import (
 )
 from epistrel.observability import stages
 from epistrel.observability.logging import get_logger
-from epistrel.observability.metrics import count_perception_repair, count_repair
+from epistrel.observability.metrics import (
+    CHARACTERS_MODELED,
+    count_perception_repair,
+    count_repair,
+)
 from epistrel.orchestrator.budget import (
     EXTRACTION,
     FOLLOW_UP,
@@ -355,8 +362,9 @@ def is_structured(configuration: StoryProfile) -> bool:
 
 def resolve_structured_cast(story: StoryCast, request: RespondRequest) -> ResolvedCast:
     """The actor and the one character rendered (M4's one primary, #156): the request's, or
-    the first non-player character after the actor by ``ordinal`` (else the first other one,
-    else the actor). Two or more named are 422 ``validation_error``."""
+    the first non-player, non-``minor`` character after the actor by ``ordinal`` (#163; else the
+    first non-player one, else the first other one, else the actor). Two or more named are 422
+    ``validation_error``."""
     resolved = resolve_cast(story, request)
     if request.render_character_ids is not None:
         named = list(dict.fromkeys(request.render_character_ids))
@@ -377,7 +385,11 @@ def resolve_structured_cast(story: StoryCast, request: RespondRequest) -> Resolv
             )
         return resolved
     others = [c for c in story.cast if c.id != resolved.actor.id]
-    chosen = next((c for c in others if not c.is_player), others[0] if others else resolved.actor)
+    # #163: a minor (lazily modeled) character is never the default render character.
+    chosen = next(
+        (c for c in others if not c.is_player and not c.minor),
+        next((c for c in others if not c.is_player), others[0] if others else resolved.actor),
+    )
     return ResolvedCast(actor=resolved.actor, render=(chosen,))
 
 
@@ -979,6 +991,100 @@ async def _introductions(
     return intros, (1 if missing else 0), 0
 
 
+# -- character modeling (#163) ------------------------------------------------------------------
+
+MODELING = "modeling"
+"""The budget kind of the modeling step's age repair (optional work: unfunded, the entities wait
+for a later interaction, ``modeling_deferred``)."""
+
+
+def _modeling_views(
+    checked: Checked, read: TurnRead, *, say: str | None, do: str | None
+) -> list[char_modeling.BeatView]:
+    """The turn's beats as modeling reads them: the player's ``say``/``do`` (beat 1, read by
+    name: its mentions are not split between the two texts) and every rendered observable beat
+    with its resolved mentions."""
+    views = [
+        char_modeling.BeatView(kind, 1, text, read.actor.id)
+        for kind, text in ((SAY, say), (DO, do))
+        if text
+    ]
+    views += [
+        char_modeling.BeatView(
+            b.kind,
+            b.beat,
+            b.text,
+            None if b.kind == NARRATION else b.character_id,
+            tuple(checked.mentions.get(b.beat, ())),
+        )
+        for b in checked.beats
+        if b.kind in (SAY, DO, NARRATION)
+    ]
+    return views
+
+
+async def plan_modeling(
+    db: AsyncEngine,
+    models: ModelAccessLayer,
+    story_id: str,
+    read: TurnRead,
+    checked: Checked,
+    *,
+    say: str | None,
+    do: str | None,
+    settings: ProfileSettings,
+    budget: TurnBudget,
+    sections: prompts.RenderSections,
+) -> char_modeling.ModelingPlan | None:
+    """The entities the turn models (FR-EPI-9; ``core.epistemic.modeling.candidates``), each
+    with its true age from one batched age-repair call (the triggering beat's text and the
+    descriptor as its clue): optional work, so an unaffordable or failed (implausible) repair
+    leaves them unmodeled this turn (``modeling_deferred``). ``None`` without per-character
+    partitions or while the story refuses new arrivals."""
+    if not char_modeling.modeling_on(settings) or not read.allow_new_arrivals:
+        return None
+    async with db.connect() as conn:
+        known = await char_modeling.load_entities(conn, story_id)
+    found = char_modeling.candidates(
+        _modeling_views(checked, read, say=say, do=do),
+        known,
+        salient=checked.salient_characters,
+    )
+    plan = char_modeling.ModelingPlan()
+    if not found:
+        return plan
+    held = budget.held
+    if not budget.try_optional(MODELING, 1):
+        plan.deferred = found
+        checked.degradation.append((char_modeling.MODELING_DEFERRED, "budget"))
+        return plan
+    bounds = {c.name: (TRUE_AGE_MIN, TRUE_AGE_MAX) for c in found}
+    try:
+        with budget.charging("age_repair"):
+            ages = await repair_ages(
+                models,
+                prompts.age_inputs(sections, read.actor, [(c.name, c.clue) for c in found]),
+                bounds,
+                params=ModelParams(temperature=0.0),
+                budget=budget,
+            )
+    except ModelError:
+        plan.deferred = found
+        checked.degradation.append((char_modeling.MODELING_DEFERRED, "modeling"))
+        return plan
+    finally:
+        budget.release_to(min(budget.held, held))
+    for candidate in found:
+        age = ages.get(candidate.name.casefold())
+        if age is None:
+            plan.deferred.append(candidate)
+        else:
+            plan.ready.append(char_modeling.ModelRequest(candidate, age))
+    if plan.deferred:
+        checked.degradation.append((char_modeling.MODELING_DEFERRED, "modeling"))
+    return plan
+
+
 # -- the same-turn overlay -----------------------------------------------------------------------
 
 
@@ -1048,6 +1154,8 @@ class Checked:
     mentions: dict[int, tuple[Mention, ...]]
     verifier: Verifier | None
     salient: list[tuple[salience.Beat, Any, tuple[int, int] | None]]
+    salient_characters: list[str] = field(default_factory=list)
+    """The figures #146's salience step marked as characters to model (#163)."""
     degradation: list[tuple[str, str]] = field(default_factory=list)
     staged: list[Record] = field(default_factory=list)
     """The overlay's staged claims after this check (a follow-up's check starts from them)."""
@@ -1077,6 +1185,8 @@ class Checked:
     adjudications: adjudicate.Adjudications | None = None
     """The salient witnesses' testimony adjudications (#162), by ``(beat, witness)``: the commit
     applies them to the default it recomputes."""
+    modeling: char_modeling.ModelingPlan | None = None
+    """The entities the turn models (#163, ``plan_modeling``): their ages found, or deferred."""
 
 
 def _verdict_of(result: CheckedClaim) -> str | None:
@@ -1334,6 +1444,7 @@ async def check_turn(
             degradation.append((CONTRADICTED_LATENT, "latent"))
     # Salience (#146): every render's observable beats.
     salient: list[tuple[salience.Beat, Any, tuple[int, int] | None]] = []
+    salient_characters: list[str] = []
     mode = salience.salience_mode(settings) if with_salience else None
     if mode is not None:
         for render_group in (narrator_beats, character_beats):
@@ -1357,6 +1468,7 @@ async def check_turn(
                 # #156: salience is optional work; unfunded, every beat is texture.
                 continue
             index = {b.index: b for b in sal_beats}
+            salient_characters.extend(verdict.characters)
             for span in verdict.salient:
                 at = index.get(span.span.beat)
                 if at is not None:
@@ -1383,6 +1495,7 @@ async def check_turn(
         mentions=mentions,
         verifier=verifier,
         salient=salient,
+        salient_characters=list(dict.fromkeys(salient_characters)),
         degradation=degradation,
         staged=list(staged.staged),
         rejected_bindings=rejected_bindings,
@@ -2038,6 +2151,7 @@ def _routed_beats(
     do: str | None,
     ids: Mapping[int, str],
     moves: scene_loader.Moves,
+    participants: Mapping[int, tuple[str, ...]] | None = None,
 ) -> list[perception.RouteBeat]:
     """The turn's beats as routing takes them (#161): the player's ``say`` and ``do`` (beat 1)
     and every rendered beat, each with the episodic writer's beat as its ``source`` (a ``latent``
@@ -2046,9 +2160,10 @@ def _routed_beats(
     found: list[perception.RouteBeat] = []
     input_id = ids.get(1)
     mentions = checked.mentions.get(1, ())
+    extra = participants or {}
     for kind, text in ((SAY, say), (DO, do)):
         if text and input_id is not None:
-            event_type, participants = beat_occasion(text, mentions)
+            event_type, found_parts = beat_occasion(text, mentions)
             found.append(
                 perception.RouteBeat(
                     kind=cast(perception.RouteKind, kind),
@@ -2063,7 +2178,9 @@ def _routed_beats(
                         character_id=read.actor.id,
                         provenance=RecordProvenance.PLAYER,
                         event_type=event_type,
-                        participants=_participants(participants, read.actor.id),
+                        participants=_participants(
+                            (*found_parts, *extra.get(1, ())), read.actor.id
+                        ),
                     ),
                 )
             )
@@ -2075,7 +2192,8 @@ def _routed_beats(
         if beat.kind == LATENT:
             found.append(replace(routed, actor=None if beat.narrator else beat.character_id))
             continue
-        event_type, participants = beat_occasion(beat.text, checked.mentions.get(beat.beat, ()))
+        event_type, found_parts = beat_occasion(beat.text, checked.mentions.get(beat.beat, ()))
+        found_parts = (*found_parts, *extra.get(beat.beat, ()))
         actor = routed.actor
         found.append(
             replace(
@@ -2091,7 +2209,7 @@ def _routed_beats(
                     if beat.kind == NARRATION
                     else RecordProvenance.RENDER,
                     event_type=event_type,
-                    participants=_participants(participants, beat.character_id),
+                    participants=_participants(found_parts, beat.character_id),
                 ),
             )
         )
@@ -2100,6 +2218,61 @@ def _routed_beats(
         if last and moves.get(routed.beat):
             found[index] = replace(routed, moves=moves[routed.beat])
     return found
+
+
+async def model_committed(
+    conn: AsyncConnection,
+    op: Operation,
+    read: TurnRead,
+    rendered: Rendered,
+    checked: Checked,
+    *,
+    level: perception.Level,
+    settings: ProfileSettings,
+    fixed: dict[str, Any],
+) -> tuple[list[tuple[str, str]], dict[int, tuple[str, ...]]]:
+    """The turn's modeling in its commit step (#163; ``core.epistemic.modeling``), before
+    routing: every planned entity modeled (``model_all``: its row, entity, events) with its age
+    and its place in the scene (``write_character_facts``), and every character the renders
+    introduced recorded as modeled (salience). Answers the characters joining the routed scene
+    (with its location) and, by beat, the new characters each triggering beat involves; sets
+    ``fixed["modeling"]`` (``turn_report.modeling``) and counts
+    ``epistrel_characters_modeled_total{trigger}``."""
+    plan = checked.modeling
+    if plan is None or not char_modeling.modeling_on(settings):
+        return [], {}
+    introduced = await char_modeling.record_introduced(
+        conn, op, [(i.character_id, i.beat) for i in rendered.introductions]
+    )
+    made = await char_modeling.model_all(
+        conn,
+        op,
+        plan.ready,
+        allow_new_arrivals=read.allow_new_arrivals,
+        base_revision=op.base_revision,
+    )
+    everyone = [*introduced, *made]
+    location: str | None = None
+    if everyone and level != perception.NONE and op.story_id is not None:
+        state, _ = await scene_loader.load_scene(conn, op.story_id, read.turn)
+        location = state.location
+    await write_character_facts(
+        conn,
+        op,
+        [
+            *((m.character_id, None, m.beat) for m in introduced),
+            *((m.character_id, m.age, m.beat) for m in made),
+        ],
+        location=location,
+    )
+    for m in everyone:
+        CHARACTERS_MODELED.labels(trigger=m.trigger).inc()
+    fixed["modeling"] = plan.report(everyone)
+    joined = [(m.character_id, location) for m in everyone] if location is not None else []
+    participants: dict[int, tuple[str, ...]] = {}
+    for m in everyone:
+        participants[m.beat] = (*participants.get(m.beat, ()), m.character_id)
+    return joined, participants
 
 
 async def route_committed(
@@ -2114,6 +2287,8 @@ async def route_committed(
     level: perception.Level,
     settings: ProfileSettings,
     routed: list[perception.PerceptionResult] | None = None,
+    joined: Sequence[tuple[str, str]] = (),
+    participants: Mapping[int, tuple[str, ...]] | None = None,
 ) -> dict[str, Any]:
     """Route the committed turn (#161), in its commit step after canon (so the moves the turn
     committed are in #137's placement projection): every beat through
@@ -2126,8 +2301,15 @@ async def route_committed(
     story_id = op.story_id
     assert story_id is not None  # noqa: S101 - a turn belongs to a story
     state, moves = await scene_loader.load_scene(conn, story_id, read.turn)
+    if joined:
+        # #163: a character the turn modeled joins the scene from the turn's start.
+        state = replace(state.moved(joined), characters=state.characters | {c for c, _ in joined})
     results = perception.route_turn(
-        _routed_beats(checked, read, say=say, do=do, ids=ids, moves=moves), state, level
+        _routed_beats(
+            checked, read, say=say, do=do, ids=ids, moves=moves, participants=participants or {}
+        ),
+        state,
+        level,
     )
     await perception.deliver(conn, op, results)
     if routed is not None:
@@ -2737,6 +2919,19 @@ async def play(
             ),
         )
         clock.add("repair", time.perf_counter() - repairing)
+        # #163: who the turn models (after verify/repair, before routing), their ages found.
+        checked.modeling = await plan_modeling(
+            db,
+            models,
+            story_id,
+            read,
+            checked,
+            say=say,
+            do=do,
+            settings=settings,
+            budget=budget,
+            sections=base,
+        )
         scene_loader.remember_level(read_set, scene_loader.level_of(settings))
         checked = await validate_perception(db, story_id, read, checked, settings)
         # #162: salient witnesses' testimony, adjudicated as optional work before the polish.
@@ -2953,6 +3148,11 @@ async def play(
         # #161: under per-character partitions, routing writes one memory per perceiver (the
         # level read now, under the story lock: a mid-turn change routes under the new one).
         level = await scene_loader.current_level(conn, story_id)
+        # #163: the turn's modeled characters, before routing (the triggering beat lands in the
+        # new partition: they join the routed scene).
+        joined, participants = await model_committed(
+            conn, op, read, rendered, checked, level=level, settings=settings, fixed=fixed
+        )
         if level == perception.NONE:
             await records.write_episodic(
                 conn, op, _episodic(checked, read, say=say, do=do, ids=ids), settings=settings
@@ -2970,6 +3170,8 @@ async def play(
                 level=level,
                 settings=settings,
                 routed=results,
+                joined=joined,
+                participants=participants,
             )
             # #162: every witness's speech act, and the testimony its salience calls for.
             told = await adjudicate.testify_committed(
@@ -3108,6 +3310,8 @@ async def play(
             report["perception"] = fixed["perception"]
         if "epistemic" in fixed:
             report["epistemic"] = fixed["epistemic"]
+        if "modeling" in fixed:
+            report["modeling"] = fixed["modeling"]
         if checked.repairs:
             report["repairs"] = repairs_report(checked)
         report["eval_hooks"] = eval_hooks(

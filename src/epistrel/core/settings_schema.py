@@ -764,6 +764,7 @@ class MemorySettings(BaseModel):
 
 
 DEFAULT_MAX_PINNED_PER_CHARACTER = 200
+DEFAULT_MINOR_HOT_BUDGET_FRACTION = 0.2
 DEFAULT_MAX_PINNED_PER_STORY = 2_000
 MAX_PINNED_PER_CHARACTER_LIMIT = 10_000
 MAX_PINNED_PER_STORY_LIMIT = 100_000
@@ -787,6 +788,12 @@ class HotSetSettings(BaseModel):
     max_pinned_per_story: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_MAX_PINNED_PER_STORY, ge=1, le=MAX_PINNED_PER_STORY_LIMIT
     )
+    minor_hot_budget_fraction: Annotated[StrictFloat, PROSPECTIVE] = Field(
+        default=DEFAULT_MINOR_HOT_BUDGET_FRACTION, gt=0.0, le=1.0
+    )
+    """The share of the per-character hot budget (``memory.hot_set.memories_per_character``) a
+    ``minor`` character's unpinned hot memories are held to (FR-EPI-10; #163): lazily modeled
+    characters are consolidated and retired sooner. Prospective."""
 
 
 DEFAULT_EMBEDDING_BATCH_MAX = 64

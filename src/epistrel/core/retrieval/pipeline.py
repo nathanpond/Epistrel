@@ -109,6 +109,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from epistrel.core import clock, embeddings
 from epistrel.core.config_changes import section
 from epistrel.core.enums import MemoryKind, RetrievalTier
+from epistrel.core.epistemic import modeling
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.membership import POSITION_MAX, active_only, active_only_sql
 from epistrel.core.membership import Position as NarrativePosition
@@ -506,6 +507,7 @@ _COLUMNS = (
     memories.c.importance_at,
     memories.c.membership_tx,
     memories.c.quarantined_at,
+    memories.c.holder_character_id,
 )
 
 
@@ -1113,9 +1115,21 @@ async def retrieve(
     details = await _by_id(conn, story_id, candidates, iq, scope)
     if wanted is not None:
         details = {i: r for i, r in details.items() if MemoryKind(r.kind) in wanted}
+    # #163 (FR-EPI-10): a minor holder's records rank below a major character's.
+    minors = await modeling.minor_ids(conn, story_id) if details else frozenset()
     ranked = ranking.rank(
         (
-            ranking.Candidate(i, r.narrative_turn, r.importance, r.importance_at, r.beat, r.text)
+            ranking.Candidate(
+                i,
+                r.narrative_turn,
+                r.importance,
+                r.importance_at,
+                r.beat,
+                r.text,
+                factor=modeling.MINOR_SCORE_FACTOR
+                if r.holder_character_id is not None and str(r.holder_character_id) in minors
+                else 1.0,
+            )
             for i, r in details.items()
         ),
         fused,

@@ -15,6 +15,8 @@
   story's characters, copying only its definition fields (FR-CAT-8; #114), and seeding the
   memories ``seed_memories`` names into its companion scenario draft (#498); 201 with
   ``Location: /catalog/characters/{id}``. Tagged ``catalog``.
+- ``POST /stories/{id}/characters/{cid}/weight`` and ``POST /stories/{id}/entities/{eid}/model``:
+  an author's weight change and modeling directive (FR-EPI-9,10; #163), control operations.
 - ``POST /stories/{id}/archive`` and ``…/unarchive``: control operations, idempotent (200).
 - ``DELETE /stories/{id}``: removes every row of the story and nothing else (204).
 - ``POST /stories/{id}/ingest``: record consumer events (a player-only turn, narration) without
@@ -34,9 +36,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Any, Self
+from typing import Annotated, Any, Literal, Self
 
-from fastapi import APIRouter, Body, Query, Response
+from fastapi import APIRouter, Body, Path, Query, Response
 from fastapi import status as http_status
 from pydantic import (
     AfterValidator,
@@ -72,6 +74,7 @@ from epistrel.core.enums import StoryStatus
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.genesis.create import CreationHeld
 from epistrel.core.genesis.models import CreationReport, StoryFromScenario, is_scenario_body
+from epistrel.core.ids import ULID_PATTERN
 from epistrel.core.ingest import IngestRequest, IngestResult
 from epistrel.core.ownership import RELATION_FILTER_PATTERN, relation_filter_problem
 from epistrel.core.policies.model import Policy, PolicyKind, Scope, Target, WithheldPolicy
@@ -81,7 +84,10 @@ from epistrel.core.settings_schema import ConfigClass, StorySettings
 from epistrel.core.stories import (
     AdHocCharacter,
     CharacterView,
+    CharacterWeighted,
+    CharacterWeightRequest,
     CreatedStory,
+    ModelEntityRequest,
     RatingRef,
     StatusChange,
     StoryCharacterAdded,
@@ -98,6 +104,16 @@ from epistrel.orchestrator.policies.schemas import StoryPolicyItem
 from epistrel.orchestrator.policies.store import StoryGuardrails
 
 router = APIRouter(prefix="/stories", tags=["stories"])
+
+StoryEntityId = Annotated[
+    str,
+    Path(
+        pattern=ULID_PATTERN,
+        description="The id of one of the story's entities (a ULID), as "
+        "`GET /stories/{id}/scene` and the inspect reads list them.",
+        examples=["01J9Z8Q4N5V6W7X8Y9Z0A1B2C9"],
+    ),
+]
 
 
 class StoryRatingBody(BaseModel):
@@ -143,12 +159,41 @@ class CharacterBody(CharacterRefBody):
     source: CatalogSourceBody | None = Field(default=None, exclude_if=lambda v: v is None)
 
 
+class ModeledAtBody(BaseModel):
+    """A narrative position (#163's ``modeled_at``): the turn and its variant, the inter-turn
+    slot (0: the turn itself), the beat and the step. The genesis cast is at 0."""
+
+    turn: int
+    variant: int
+    slot_k: int
+    beat: int
+    step: int
+
+
 class OmniscientCharacterBody(CharacterBody):
-    """A character as an omniscient read returns it: with its true age (FR-CAT-12) and the
-    catalog entries promoted from it (``promoted_to``, FR-CAT-8; oldest first)."""
+    """A character as an omniscient read returns it: with its true age (FR-CAT-12), the
+    catalog entries promoted from it (``promoted_to``, FR-CAT-8; oldest first), its narrative
+    ``weight`` (``minor``: modeled lazily by interaction or salience; ``major``: the cast, the
+    player, an author-created or promoted character; FR-EPI-10) and the position it was
+    modeled at (``modeled_at``, #163)."""
 
     true_age: int
     promoted_to: list[str]
+    weight: Literal["minor", "major"] = "major"
+    modeled_at: ModeledAtBody | None = None
+
+
+class CharacterWeightedBody(MutationResponse):
+    """A character after a weight change or a modeling directive (#163): the character as an
+    omniscient read lists it, and the story's revision after."""
+
+    character: OmniscientCharacterBody
+
+    @classmethod
+    def of(cls, done: CharacterWeighted) -> CharacterWeightedBody:
+        body = _character(done.character)
+        assert isinstance(body, OmniscientCharacterBody)  # noqa: S101 - an omniscient item
+        return cls(character=body, timeline_revision=done.timeline_revision)
 
 
 class StoryCharacterBody(MutationResponse):
@@ -638,6 +683,16 @@ def _character(character: CharacterView) -> OmniscientCharacterBody | CharacterB
             source=source,
             true_age=character.true_age,
             promoted_to=list(character.promoted_to or ()),
+            weight="minor" if character.weight == "minor" else "major",
+            modeled_at=None
+            if character.modeled_at is None
+            else ModeledAtBody(
+                turn=character.modeled_at.turn,
+                variant=character.modeled_at.variant,
+                slot_k=character.modeled_at.slot_k,
+                beat=character.modeled_at.beat,
+                step=character.modeled_at.step,
+            ),
         )
     return CharacterBody(
         id=character.id,
@@ -979,6 +1034,66 @@ async def promote_character(
     promotion = await engine.promote_character(ctx, story_id, character_id, body)
     response.headers["Location"] = f"/catalog/characters/{promotion.catalog_id}"
     return answered(PromotionBody.of(promotion), ctx, response, replayed=promotion.replayed)
+
+
+@router.post(
+    "/{story_id}/characters/{character_id}/weight",
+    response_model=CharacterWeightedBody,
+    operation_id="set_character_weight",
+    summary="Set a story character's narrative weight",
+    description=(
+        "Set a character's narrative `weight` (FR-EPI-10): `minor` (a character modeled lazily "
+        "by interaction or salience: a sparse partition that accrues only from the "
+        "interactions it takes part in, a smaller consolidation window and hot budget, never "
+        "rendered unless a request names it) or `major`. Prospective: what the character "
+        "already holds stays as it is, and nothing promotes automatically. The player's "
+        "character is always `major` (422 `is_player`). A control operation: it bumps the "
+        "story's revision and records `character_weight_set`; 409 `story_archived`, 423 "
+        "`story_busy` while a turn is in flight. Answers the character as an omniscient read "
+        "lists it."
+    ),
+)
+async def set_character_weight(
+    story_id: StoryId,
+    character_id: StoryCharacterId,
+    body: CharacterWeightRequest,
+    response: Response,
+    ctx: ContextDep,
+    engine: EngineDep,
+) -> CharacterWeightedBody:
+    done = await engine.set_character_weight(ctx, story_id, character_id, body)
+    return answered(CharacterWeightedBody.of(done), ctx, response, replayed=done.replayed)
+
+
+@router.post(
+    "/{story_id}/entities/{entity_id}/model",
+    status_code=http_status.HTTP_201_CREATED,
+    response_model=CharacterWeightedBody,
+    operation_id="model_entity",
+    summary="Model a story entity as a character",
+    description=(
+        "The author's directive to model one of the story's entities (a `person`, or an "
+        "`other` entity) as a character (FR-EPI-9's explicit salience): a `minor` character "
+        "with the entity's name, the request's required `true_age` (FR-CAT-12) and its "
+        "`definition` (default: the entity's name). The entity's id becomes the character's, so "
+        "what canon says of the entity is said of the character. Story-scoped (FR-CAT-7) and "
+        "exempt from the cast cap. 404 for an entity the story does not have; 422 "
+        "`already_modeled`, `not_a_person` or `allow_new_arrivals` (`details.reason`); 409 "
+        "`story_archived`; 423 `story_busy` while a turn is in flight. A control operation: it "
+        "bumps the revision and records `character_defined` and `character_modeled`. Answers "
+        "201 with the new character as an omniscient read lists it."
+    ),
+)
+async def model_entity(
+    story_id: StoryId,
+    entity_id: StoryEntityId,
+    body: ModelEntityRequest,
+    response: Response,
+    ctx: ContextDep,
+    engine: EngineDep,
+) -> CharacterWeightedBody:
+    done = await engine.model_entity(ctx, story_id, entity_id, body)
+    return answered(CharacterWeightedBody.of(done), ctx, response, replayed=done.replayed)
 
 
 @router.post(

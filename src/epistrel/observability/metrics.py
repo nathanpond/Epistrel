@@ -140,6 +140,13 @@ ADJUDICATIONS = Counter(
     "(the budget or the per-turn cap left no call), unavailable (the model failed).",
     ("result",),
 )
+CHARACTERS_MODELED = Counter(
+    "epistrel_characters_modeled",
+    "Characters modeled lazily (#163, FR-EPI-9), by trigger: interaction (a direct interaction "
+    "with a modeled character) or salience (the salience step, a render's introduction or the "
+    "author's directive).",
+    ("trigger",),
+)
 BELIEF_TRANSITIONS_REFUSED = Counter(
     "epistrel_belief_transitions_refused",
     "Belief transitions refused (self-attestation, an invalid antecedent, inconsistent "
@@ -410,6 +417,7 @@ __all__ = [
     "ADJUDICATIONS",
     "BELIEF_TRANSITIONS",
     "BELIEF_TRANSITIONS_REFUSED",
+    "CHARACTERS_MODELED",
     "GAUGES",
     "HOT_COUNTS_CORRECTED",
     "HOT_SCOPES",

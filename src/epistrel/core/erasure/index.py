@@ -692,8 +692,14 @@ SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
     ),
     SubjectWriter(
         "characters",
-        # #150: a structured turn creates the characters its renders introduce.
-        ("epistrel.core.stories", "epistrel.core.genesis.create", "epistrel.core.turns.beats"),
+        # #150: a structured turn creates the characters its renders introduce; #163 the
+        # characters it models lazily (and the author's modeling directive).
+        (
+            "epistrel.core.stories",
+            "epistrel.core.genesis.create",
+            "epistrel.core.turns.beats",
+            "epistrel.core.epistemic.modeling",
+        ),
         f"{_RECORDS}:read_characters",
     ),
     SubjectWriter(

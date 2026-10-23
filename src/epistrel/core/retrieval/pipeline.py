@@ -145,6 +145,7 @@ from epistrel.core.resolution.types import (
 )
 from epistrel.core.retrieval import rank as ranking
 from epistrel.core.retrieval.assemble import Context, ContextItem, Tier, assemble
+from epistrel.core.retrieval.filtered import _seal
 from epistrel.core.retrieval.lexical import (
     LexicalFilters,
     LexicalSearch,
@@ -1223,7 +1224,8 @@ async def retrieve(
         ),
         *(ContextItem(Tier.MEMORIES, "memory", m.id, m.text) for m in ranked_memories),
     ]
-    assembled = assemble(items, params.token_budget)
+    # #170 (U-31): every item above came through #159's viewpoint filter.
+    assembled = assemble(_seal(items, viewpoint), params.token_budget)
     returned = (*episodes, *assessments, *ranked_memories)
     for memory in returned:
         read_set.record_retrieved(memories.name, memory.id, memory.membership_tx)

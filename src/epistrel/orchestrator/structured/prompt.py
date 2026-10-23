@@ -1,16 +1,18 @@
 """Assembling a structured render's prompt (docs/02 §5's Generation and Director rows,
 FR-MEM-5, FR-RATE-4, FR-LITE-3, FR-SCN-11; #150).
 
-``character_inputs`` builds the ``generation`` inputs of one character's render from what the
-turn read: the rating guidance first, the custom instructions, a scenario story's scenario text,
-the rendering character's definition (``core.turns.CastEntry`` carries no true age), its
-deflection style, the story's text pins (#60: author-pinned memories in every render's prompt,
-FR-LITE-3), the rolling summary when the profile keeps one, the scene (#137: the place and who is
-present), its working memory (the latest ``render.working_memory_beats`` beats as it perceived
-them, this turn's narration and the player's input included), #141's retrieved context and the
-canon retrieval found, without its own true age (M5 adds the character's own age). Nothing from
-another character's private records is there: working memory and retrieval are read for the
-rendering character's viewpoint, and the director's notes are the narrator's alone.
+``character_inputs`` builds the ``generation`` inputs of one character's render: the turn's
+shared sections (the rating guidance first, the custom instructions, a scenario story's scenario
+text, the story's text pins (#60: author-pinned memories in every render's prompt, FR-LITE-3),
+the rolling summary when the profile keeps one), the rendering character's definition and
+deflection style, and every knowledge section from its ``core.epistemic.context.CharacterContext``
+and nothing else (#170, NFR-PRIV-4): its own age and belief state under per-character partitions,
+the scene (#137: the place and who is present, with apparent age bands), its viewpoint-filtered
+working memory (FR-MEM-11: this turn's narration and the player's input included, as it
+perceived them), #141's retrieved context and the canon retrieval found. Nothing from another
+character's private records is there, and the director's notes are the narrator's alone.
+``python -m tools.gates check-character-context`` keeps ``structured_generation.j2`` rendered
+only from inputs this function built.
 
 ``narrator_inputs`` builds the narrator's: the same sections for the omniscient narrator, plus
 the scenario's director guidance labelled apart from the facts (``director_notes``, #122; and
@@ -19,7 +21,9 @@ definition. ``age_inputs`` builds the age repair's: the guidance, the custom ins
 scene and each introduced character with its clue.
 
 **The cap** (``render.prompt_token_budget``, ``len // 4`` tokens): over it, retrieved items
-are dropped from the end first, then canon lines, then working memory from the oldest beat.
+are dropped from the end first, then canon lines, then working memory from the oldest beat. The
+belief state sits with the definition and the pins (U-31's top tier): it is never dropped before
+a retrieved item (it is bounded at the source, ``context.BELIEFS_MAX``).
 """
 
 from __future__ import annotations
@@ -27,6 +31,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 
+from epistrel.core.epistemic.context import CharacterContext
 from epistrel.core.turns import CastEntry
 from epistrel.orchestrator.models.registry import (
     AgeClue,
@@ -115,6 +120,7 @@ def _player(actor: CastEntry, say: str | None, do: str | None) -> PlayerInput:
 
 
 def character_inputs(
+    context: CharacterContext,
     sections: RenderSections,
     character: CastEntry,
     actor: CastEntry,
@@ -123,8 +129,20 @@ def character_inputs(
     do: str | None,
     budget: int,
 ) -> GenerationInputs:
-    """The ``generation`` inputs of ``character``'s render (``structured_generation.j2``)."""
-    s = capped(sections, budget)
+    """The ``generation`` inputs of ``character``'s render (``structured_generation.j2``): the
+    shared ``sections`` and ``context``'s knowledge sections (see the module docstring)."""
+    if context.character_id != character.id:
+        raise ValueError("a character's render takes that character's own context")
+    s = capped(
+        replace(
+            sections,
+            scene=context.scene,
+            working_memory=context.working_memory,
+            retrieved=context.retrieved,
+            canon=context.canon,
+        ),
+        budget,
+    )
     return GenerationInputs(
         rating_guidance=s.guidance,
         custom_instructions=s.instructions,
@@ -136,6 +154,8 @@ def character_inputs(
                 deflection_style=character.deflection_style,
             )
         ],
+        own_age=context.own_age,
+        beliefs=list(context.belief_lines),
         pinned_memories=list(s.pins),
         summary_segments=list(s.segments),
         voiced_characters=[character.name],

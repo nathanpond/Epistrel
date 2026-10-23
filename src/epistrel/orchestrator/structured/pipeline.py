@@ -158,12 +158,14 @@ from epistrel.core.enums import (
     RecordProvenance,
     StoryStatus,
 )
+from epistrel.core.epistemic import context as character_context
 from epistrel.core.epistemic import exposure as exposure_records
 from epistrel.core.epistemic import modeling as char_modeling
 from epistrel.core.epistemic import observation as _observation  # noqa: F401 - registers the sink
 from epistrel.core.epistemic import perception, replay
 from epistrel.core.epistemic import scene as scene_loader
 from epistrel.core.epistemic import transitions as belief_transitions
+from epistrel.core.epistemic.context import CharacterContext
 from epistrel.core.erasure.index import index_records
 from epistrel.core.erasure.records import operation_record
 from epistrel.core.errors import InvalidRequest, RevisionConflict, StoryArchived, TimelineChanged
@@ -249,7 +251,6 @@ from epistrel.core.verify.introduce import Introductions
 from epistrel.core.verify.normalize import ClaimSketch, Unnormalizable, normalize_declared
 from epistrel.core.verify.rules import CANON, Record, VerdictKind, check
 from epistrel.core.viewpoint import (
-    character_viewpoint,
     is_omniscient,
     resolve_viewpoint,
     try_resolve,
@@ -692,7 +693,6 @@ class TurnRead:
     actor: CastEntry
     names: Mapping[str, str]
     player_id: str | None
-    character_memory: tuple[str, ...]
     narrator_memory: tuple[str, ...]
     last_beats: tuple[str, ...]
     scene: str
@@ -700,6 +700,9 @@ class TurnRead:
     director: str
     triggers: tuple[str, ...]
     allow_new_arrivals: bool
+    present_ids: tuple[str, ...] = ()
+    """The entities authoritatively present (#170: the character's ``## Scene`` card)."""
+    location_name: str | None = None
     deferred: bool = False
     """#154 (FR-COMMIT-11): an open thunk an earlier turn introduced is in the context, so the
     renders carry the deferral bias (``prompts.RESOLUTION_STEERING``)."""
@@ -808,14 +811,10 @@ async def read_turn(
     names = {c.id: c.name for c in inputs.cast}
     player = next((c.id for c in inputs.cast if c.is_player), None)
     n = settings.render.working_memory_beats
+    # The orchestration context's shared view (detection's last beats); the character's own
+    # prompt is #170's ``build_context``, viewpoint-filtered.
     mine = await records.working_memory(conn, story_id, character.id, None, n)
     everyone = await records.working_memory(conn, story_id, None, None, n)
-    character_memory = tuple(
-        prompts.working_line(
-            b.kind, names.get(b.character_id or ""), b.text, own=b.character_id == character.id
-        )
-        for b in mine
-    )
     narrator_memory = tuple(
         prompts.working_line(b.kind, names.get(b.character_id or ""), b.text, own=False)
         for b in everyone
@@ -858,7 +857,6 @@ async def read_turn(
         actor=actor,
         names=names,
         player_id=player,
-        character_memory=character_memory,
         narrator_memory=narrator_memory,
         last_beats=last_beats,
         scene=scene_text,
@@ -866,6 +864,8 @@ async def read_turn(
         director="\n\n".join(director),
         triggers=tuple(triggers),
         allow_new_arrivals=story.settings.allow_new_arrivals,
+        present_ids=tuple(e.entity_id for e in scene.present) if scene is not None else (),
+        location_name=None if scene is None or scene.location is None else str(scene.location.name),
         deferred=lifecycle.commitment_enabled(settings) and await _deferred(conn, story_id, turn),
         flagged=lifecycle.commitment_enabled(settings) and await _flagged(conn, story_id, turn),
     )
@@ -900,6 +900,9 @@ class Rendered:
     """The rendering character's declared causal steps (#168, FR-TURN-12)."""
     steps_beat: int = 0
     """The character render's first beat: where its steps sit (``steps.position_of``)."""
+    context: CharacterContext | None = None
+    """The rendering character's context (#170): what its prompt knew, and the exposures it
+    needed (resolved in the commit)."""
 
 
 def _canon_lines(result: RetrievalResult, own: str | None) -> tuple[list[str], list[str]]:
@@ -3109,6 +3112,54 @@ async def play(
         stages.observe("retrieve", found.timings.get("total", 0.0) / 1000)
         return found
 
+    adjudicated: dict[str, tuple[Any, float] | None] = {}
+    """#170: the needed exposures the model adjudicated this turn, by id (once per turn)."""
+    context_degradation: list[tuple[str, str]] = []
+    adjudicator = adjudicate.ExposureAdjudicator(models, settings, budget, context_degradation)
+
+    async def adjudicate_needed(
+        conn: AsyncConnection, item: Any, outcome: Any
+    ) -> tuple[Any, float] | None:
+        if item.id not in adjudicated:
+            adjudicated[item.id] = await adjudicator(conn, item, outcome)
+        return adjudicated[item.id]
+
+    async def context_for(read: TurnRead, narration: Sequence[TurnBeat]) -> CharacterContext:
+        """The rendering character's context (#170's ``build_context``): this turn's input and
+        narration routed like history, retrieval under its viewpoint (the turn's read set,
+        embedders counted)."""
+        embeddings = models.embeddings
+        pending = [
+            *([character_context.PendingBeat("say", read.actor.id, say)] if say else []),
+            *([character_context.PendingBeat("do", read.actor.id, do)] if do else []),
+            *(
+                character_context.PendingBeat("narration", None, b.text, b.qualifiers)
+                for b in narration
+            ),
+        ]
+        state = character_context.TurnState(
+            story_id=story_id,
+            turn=read.turn,
+            settings=settings,
+            say=say,
+            do=do,
+            pending=tuple(pending),
+            location_name=read.location_name,
+            present=read.present_ids,
+            scene_text=read.scene,
+            read_set=read_set,
+            embed=counted_embedder(embeddings.query_embedder(), budget),
+            embed_batch=counted_embedder(embeddings.batch_embedder(), budget),
+            lexical=lexical,
+            adjudicate=adjudicate_needed if planner.adjudicates(settings) else None,
+        )
+        async with db.begin() as conn:
+            found = await character_context.build_context(conn, read.character.id, state)
+        if found.retrieval is not None:
+            # NFR-PERF-1's span: the pipeline's own total, the query embedding left out (#153).
+            stages.observe("retrieve", found.retrieval.timings.get("total", 0.0) / 1000)
+        return found
+
     async def generate(op: Operation, read: TurnRead) -> None:
         context = await guard_context(db, story_id)
         policies = output_policies(context, cast_.render_ids)
@@ -3174,7 +3225,7 @@ async def play(
             beats: list[TurnBeat] = []
             sketches: dict[int, list[PropositionSketch]] = {}
             retries = 0
-            narration: list[str] = []
+            narration: list[TurnBeat] = []
             narrator_inputs: GenerationInputs | None = None
             next_beat = 2
             used = 0
@@ -3213,29 +3264,17 @@ async def play(
                 beats += made
                 sketches.update(found_sketches)
                 renders.append((narr, made))
-                narration = [b.text for b in made if b.kind == NARRATION]
+                narration = [b for b in made if b.kind == NARRATION]
                 next_beat += len(made)
             assembling = time.perf_counter()
-            query = " ".join([joined, *read.last_beats])
-            char_retrieval = await retrieve_for(
-                read.character.id, character_viewpoint(read.character.id), query
-            )
-            retrievals.append(char_retrieval)
-            retrieved, canon = _canon_lines(char_retrieval, read.character.id)
-            player_line = prompts.working_line(SAY, read.actor.name, say or "", own=False)
-            this_turn = tuple(narration) + ((player_line,) if say else ())
-            if do:
-                this_turn += (prompts.working_line(DO, read.actor.name, do, own=False),)
-            sections = replace(
-                base,
-                working_memory=(*read.character_memory, *this_turn),
-                retrieved=tuple(retrieved),
-                canon=tuple(canon),
-                constraints=constraints,
-            )
+            # #170 (NFR-PRIV-4): the character's knowledge sections, built structurally.
+            knowing = await context_for(read, narration)
+            if knowing.retrieval is not None:
+                retrievals.append(knowing.retrieval)
+            sections = replace(base, constraints=constraints)
             timing.assemble_s += time.perf_counter() - assembling
             inputs: GenerationInputs = prompts.character_inputs(
-                sections, read.character, read.actor, say=say, do=do, budget=budget_tokens
+                knowing, sections, read.character, read.actor, say=say, do=do, budget=budget_tokens
             )
             char_render, n = await render_beats(
                 models,
@@ -3281,6 +3320,7 @@ async def play(
                 narrator_inputs=narrator_inputs,
                 steps=list(char_render.steps),
                 steps_beat=char_start,
+                context=knowing,
             )
             draft = Draft(
                 text="\n".join(b.text for b in beats),
@@ -3356,7 +3396,7 @@ async def play(
             backstop=not replaced,
             clock=clock,
         )
-        checked.degradation[:0] = planned
+        checked.degradation[:0] = [*planned, *dict.fromkeys(context_degradation)]
         # The composed message's detection call (C): held before any optional work (#152).
         async with db.connect() as conn:
             detection_config = DetectionConfig.of(
@@ -3676,6 +3716,7 @@ async def play(
             conn, op, read, rendered, checked, level=level, settings=settings, fixed=fixed
         )
         told: adjudicate.Testified | None = None
+        context_resolved: exposure_records.Pass | None = None
         spoken: speech.Spoken | None = None
         stepped: render_steps.Written | None = None
         results: list[perception.PerceptionResult] = []
@@ -3732,10 +3773,31 @@ async def play(
                         if n < len(utterance_ids)
                     },
                 )
+            used = 0 if told is None else sum(told.exposures["resolutions"].values())
+            needed = () if rendered.context is None else rendered.context.needed
+            if partitioned and needed and exposure_records.lazy_on(settings):
+                # #170: the exposures the character's context needed (#164's need site), with
+                # the model's adjudications where the turn afforded them.
+                needing = exposure_records.Pass(
+                    cap=max(0, exposure_records.max_lazy_resolutions(settings) - used)
+                )
+                await exposure_records.resolve_needed(
+                    conn,
+                    op,
+                    read.character.id,
+                    [n.exposure.proposition for n in needed],
+                    budget=needing,
+                    settings=settings,
+                    registry=registry,
+                    decisions={
+                        n.exposure.id: n.adjudicated for n in needed if n.adjudicated is not None
+                    },
+                )
+                used += len(needing.made)
+                context_resolved = needing
             if checked.verifier is not None and checked.verifier.beliefs is not None:
                 # #166: what the first-person claims license: the speaker's exposures on the
                 # claims' keys (the need site), licensed beliefs and the lies' divergences.
-                used = 0 if told is None else sum(told.exposures["resolutions"].values())
                 spoken = await speech.speech_committed(
                     conn,
                     op,
@@ -3776,9 +3838,19 @@ async def play(
             reveals = await reveals_committed(
                 conn, op, checked, read, results, ids=ids, level=level, registry=registry
             )
-        if told is not None or spoken is not None or stepped is not None:
+        if (
+            told is not None
+            or spoken is not None
+            or stepped is not None
+            or context_resolved is not None
+        ):
             fixed["epistemic"] = {
                 **({} if told is None else {"testimony": told.testimony, **told.exposures}),
+                **(
+                    {}
+                    if context_resolved is None
+                    else {"context_resolutions": context_resolved.report()}
+                ),
                 "transitions": tally.report(),
                 **({} if spoken is None else {"speech": spoken.report()}),
                 **(
@@ -3793,7 +3865,11 @@ async def play(
                     }
                 ),
             }
-            if (told is not None and told.capped) or (spoken is not None and spoken.capped):
+            if (
+                (told is not None and told.capped)
+                or (spoken is not None and spoken.capped)
+                or (context_resolved is not None and context_resolved.capped)
+            ):
                 checked.degradation.append(
                     (exposure_records.LAZY_RESOLUTION_CAPPED, "lazy_resolution")
                 )
@@ -3951,6 +4027,9 @@ async def play(
             report["epistemic"] = fixed["epistemic"]
         if "modeling" in fixed:
             report["modeling"] = fixed["modeling"]
+        if rendered.context is not None:
+            # #170 (#182's source): what the character's context assembly read.
+            report["context"] = dict(rendered.context.report)
         if checked.repairs:
             report["repairs"] = repairs_report(checked)
         report["eval_hooks"] = eval_hooks(

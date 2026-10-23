@@ -11,6 +11,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from tools.gates.assignment import check_assignment
+from tools.gates.character_context import main as check_character_context
 from tools.gates.config import ConfigError, load_config
 from tools.gates.deps import DepsError, check_deps, load_deny, load_lock
 from tools.gates.epistemic import main as check_epistemic_separation
@@ -80,6 +81,10 @@ def build_parser() -> argparse.ArgumentParser:
         "check-perception-authority",
         help="only core.epistemic.perception decides who perceives a beat (FR-TURN-10; #161)",
     )
+    sub.add_parser(
+        "check-character-context",
+        help="a character's prompt is built only by build_context (NFR-PRIV-4; #170)",
+    )
     lic = sub.add_parser("check-licenses", help="runtime dependency licenses are allowlisted")
     lic.add_argument("--lock", type=Path, default=DEFAULT_LOCK, help="uv.lock path")
     lic.add_argument("--runtime-env", type=Path, default=DEFAULT_RUNTIME_ENV, help="runtime venv")
@@ -97,6 +102,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return check_epistemic_separation([])
     if args.check == "check-perception-authority":
         return check_perception_authority([])
+    if args.check == "check-character-context":
+        return check_character_context([])
     if args.check == "check-licenses":
         try:
             lic_report = run_licenses(

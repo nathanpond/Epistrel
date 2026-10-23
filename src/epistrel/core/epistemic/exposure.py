@@ -56,7 +56,7 @@ and ``resolutions = {defaulted, adjudicated}``. Log lines carry identifiers and 
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
@@ -518,11 +518,15 @@ async def resolve_exposure(
     *,
     settings: Any = None,
     registry: Registry | None = None,
+    adjudicated: tuple[testimony.Decision, float] | None = None,
 ) -> Resolution:
     """Resolve ``exposure`` inside ``needing_operation``'s commit (see the module docstring):
-    the default decided in the frame through the exposure position, the said and first-order
-    beliefs written there by the needing operation, later dated contradicting beliefs folded
-    forward as corrections, the exposure marked resolved and ``belief_resolved`` appended."""
+    the default decided in the frame through the exposure position (``adjudicated``: the
+    model's decision and confidence, applied where #162's guards allow, ``apply_adjudication``;
+    #170's context assembly adjudicates the rendering character's exposures when the turn's
+    pool affords it), the said and first-order beliefs written there by the needing operation,
+    later dated contradicting beliefs folded forward as corrections, the exposure marked
+    resolved and ``belief_resolved`` appended."""
     op = needing_operation
     story_id = exposure.story_id
     if op.story_id != story_id:
@@ -536,6 +540,12 @@ async def resolve_exposure(
     written: list[transitions.TransitionResult] = []
     with including([op.operation_id]):
         outcome = await decide(conn, exposure, registry=found, read_set=reads)
+        how = DEFAULTED
+        if adjudicated is not None:
+            intent = testimony.perceived(await _intent(conn, exposure.source_event_id))
+            taken = testimony.apply_adjudication(outcome, adjudicated[0], adjudicated[1], intent)
+            if taken is not None:
+                outcome, how = taken, ADJUDICATED
         antecedent = transitions.Antecedent.record("events", exposure.source_event_id)
         common: dict[str, Any] = {
             "holder": witness,
@@ -622,7 +632,7 @@ async def resolve_exposure(
             BeliefResolved(
                 exposure_id=exposure.id,
                 transition_id=resolving.transition.id,
-                resolution=DEFAULTED,
+                resolution=how,
             ),
             None,
             BELIEF_RESOLVED,
@@ -634,7 +644,7 @@ async def resolve_exposure(
         tuple(written),
         belief,
         corrected_by,
-        DEFAULTED,
+        how,
         tuple(reads.query_keys),
     )
 
@@ -778,10 +788,12 @@ async def resolve_needed(
     budget: Pass,
     settings: Any = None,
     registry: Registry | None = None,
+    decisions: Mapping[str, tuple[testimony.Decision, float]] | None = None,
 ) -> list[Resolution]:
     """Resolve ``witness``'s unresolved exposures whose proposition shares a functional key
     (subject and predicate) with one of ``claims``, oldest first, inside ``op``'s commit (see the
-    module docstring), within ``budget``'s cap. Answers the resolutions made."""
+    module docstring), within ``budget``'s cap; ``decisions``: a model's adjudication of some of
+    them, by exposure id (#170). Answers the resolutions made."""
     story_id = op.story_id
     if story_id is None or not claims:
         return []
@@ -797,7 +809,14 @@ async def resolve_needed(
         if len(budget.made) >= budget.cap:
             budget.capped = True
             break
-        resolution = await resolve_exposure(conn, exposure, op, settings=settings, registry=found)
+        resolution = await resolve_exposure(
+            conn,
+            exposure,
+            op,
+            settings=settings,
+            registry=found,
+            adjudicated=(decisions or {}).get(exposure.id),
+        )
         made.append(resolution)
         budget.made.append(resolution)
     return made

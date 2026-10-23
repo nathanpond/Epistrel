@@ -56,7 +56,7 @@ from epistrel.core.propositions.model import Proposition
 from epistrel.core.propositions.registry import Registry, canonical, load
 from epistrel.core.propositions.store import write_proposition
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
-from epistrel.core.tables import entities
+from epistrel.core.tables import characters, entities, events
 from epistrel.core.verify.rules import VerdictKind
 from epistrel.observability.metrics import ADJUDICATIONS
 from epistrel.orchestrator.budget import TESTIMONY, TurnBudget
@@ -523,6 +523,131 @@ async def adjudicate_turn(
     return found
 
 
+# -- a needed exposure (#170) ------------------------------------------------------------------
+
+
+class ExposureAdjudicator:
+    """``core.epistemic.context``'s adjudication hook (#170, completing #164's "adjudication only
+    when the needing turn's budget affords it"): the rendering character is the turn's primary
+    witness, so an exposure its context needs is adjudicated by ``belief_adjudication`` under
+    ``planner.adjudicates`` when the pool affords the call (``try_optional("testimony", 1)``), at
+    most ``max_adjudications`` a turn; otherwise, and for a joke or a claim the witness's records
+    contradict, the default decides (``None``), with ``testimony_defaulted`` (``cap``,
+    ``budget``) or ``adjudication_unavailable`` in ``degradation``."""
+
+    def __init__(
+        self,
+        models: ModelAccessLayer,
+        settings: ProfileSettings,
+        budget: TurnBudget,
+        degradation: list[tuple[str, str]],
+    ) -> None:
+        self.models = models
+        self.settings = settings
+        self.budget = budget
+        self.degradation = degradation
+        self.calls = 0
+
+    async def __call__(
+        self,
+        conn: AsyncConnection,
+        item: exposure.Exposure,
+        outcome: testimony.TestimonyOutcome,
+    ) -> tuple[testimony.Decision, float] | None:
+        if not planner.adjudicates(self.settings) or item.source is None:
+            return None
+        story_id = item.story_id
+        source = await conn.execute(
+            select(events.c.payload).where(events.c.id == item.source_event_id)
+        )
+        payload = source.scalar_one_or_none() or {}
+        intent = str(payload.get("intent") or "unspecified")
+        if testimony.perceived(intent) == "joking":
+            return None
+        registry = await load(conn, story_id)
+        frame = item.position
+        consistency = await testimony.consistency_of(
+            KeyedLookup(conn, StructuredReadSet()),
+            story_id,
+            item.witness,
+            [item.proposition],
+            registry=registry,
+            through=frame,
+        )
+        if all(c.verdict is VerdictKind.CONTRADICTED for c in consistency):
+            return None
+        if self.calls >= max_adjudications(self.settings):
+            self.degradation.append((planner.TESTIMONY_DEFAULTED, "cap"))
+            ADJUDICATIONS.labels(result="defaulted").inc()
+            return None
+        held = self.budget.held
+        if not self.budget.try_optional(TESTIMONY, 1):
+            self.degradation.append((planner.TESTIMONY_DEFAULTED, "budget"))
+            ADJUDICATIONS.labels(result="defaulted").inc()
+            return None
+        self.calls += 1
+        heard = Heard(
+            speaker=item.source,
+            beat=frame.beat,
+            text=str(payload.get("text") or ""),
+            intent=intent,
+            claims=(Claim(item.proposition),),
+        )
+        cast = {
+            str(r.id): str(r.name)
+            for r in await conn.execute(
+                select(characters.c.id, characters.c.name).where(
+                    characters.c.story_id == story_id,
+                    characters.c.id.in_([item.witness, item.source]),
+                )
+            )
+        }
+        inputs = await _inputs(
+            conn,
+            story_id,
+            heard,
+            item.witness,
+            [outcome],
+            consistency,
+            outcome.trust,
+            registry=registry,
+            names=cast,
+        )
+        routes = routes_of(self.settings)
+        route = routes.get(BELIEF_ADJUDICATION.name)
+        answer: BeliefAdjudicationResult | Uncertain | None = None
+        try:
+            with routing(routes):
+                answer = await self.models.structured_call(
+                    BELIEF_ADJUDICATION.name,
+                    BeliefAdjudicationResult,
+                    inputs,
+                    params=route.params if route is not None else None,
+                    deterministic_first=lambda: None,
+                    budget=self.budget,
+                )
+        except BudgetExhausted:
+            answer = Uncertain("budget_exhausted", 0)
+        except ModelUnavailable:
+            answer = None
+        finally:
+            self.budget.release_to(min(self.budget.held, held))
+        if answer is None or isinstance(answer, Uncertain):
+            if answer is not None and answer.reason == "budget_exhausted":
+                self.degradation.append((planner.TESTIMONY_DEFAULTED, "budget"))
+                ADJUDICATIONS.labels(result="defaulted").inc()
+            else:
+                self.degradation.append((planner.ADJUDICATION_UNAVAILABLE, "model"))
+                ADJUDICATIONS.labels(result="unavailable").inc()
+            return None
+        if answer.confidence < testimony.ADJUDICATION_MIN_CONFIDENCE:
+            self.degradation.append((planner.TESTIMONY_DEFAULTED, "low_confidence"))
+            ADJUDICATIONS.labels(result="kept").inc()
+            return None
+        ADJUDICATIONS.labels(result="adjudicated").inc()
+        return answer.decision, answer.confidence
+
+
 # -- the commit ----------------------------------------------------------------------------------
 
 
@@ -752,6 +877,7 @@ __all__ = [
     "Adjudication",
     "Adjudications",
     "Claim",
+    "ExposureAdjudicator",
     "Heard",
     "Testified",
     "adjudicate_turn",

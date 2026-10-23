@@ -22,6 +22,12 @@ transition tally), what those classifications license:
   resolutions are). A refusal by the antecedent guard is counted, never raised: the claim was
   accepted on a licence the guard re-checks (a race would regenerate the turn through the read
   set).
+- **A permitted own backstory** (#170, carried from #166's Discretion): a sincere claim about
+  the speaker itself that canon left open and #144 permitted as its own (``Permitted(basis =
+  own)``, canonized by this turn) gives the speaker an ``observation`` belief at ``known``
+  citing the say's beat event (the event its canonized fact comes from), one step after the say:
+  the character knows its own history from then on. A belief it already holds is strengthened in
+  place.
 - **A lie** writes a ``divergences`` row (``core.epistemic.divergences``): the utterance, the
   asserted proposition and the contrary belief the speaker holds (its strongest, then most
   recent; for a lie about its own true age, canon's ``age`` proposition, FR-CAT-12; none for a
@@ -29,7 +35,7 @@ transition tally), what those classifications license:
 
 A hallucination writes nothing: it was repaired (or surfaced), and the belief set never changes
 without an antecedent-backed cause. ``turn_report.epistemic.speech`` = ``{resolutions, licensed,
-refused, divergences_written}``.
+refused, divergences_written, observed}``.
 
 Log lines carry identifiers and counts only (invariant 3).
 """
@@ -54,6 +60,8 @@ from epistrel.core.errors import InvalidRequest
 from epistrel.core.membership import Position, step_of
 from epistrel.core.propositions.registry import Registry
 from epistrel.core.verify import speech_acts
+from epistrel.core.verify.permission import Basis, Permitted
+from epistrel.core.verify.rules import VerdictKind
 from epistrel.orchestrator.verify.extraction import CheckedClaim
 
 log = logging.getLogger(__name__)
@@ -71,6 +79,8 @@ class Spoken:
     refused: int = 0
     divergence_ids: list[str] = field(default_factory=list)
     capped: bool = False
+    observed: int = 0
+    """#170: own-backstory observation beliefs written."""
 
     def report(self) -> dict[str, int]:
         return {
@@ -78,6 +88,7 @@ class Spoken:
             "licensed": self.licensed,
             "refused": self.refused,
             "divergences_written": len(self.divergence_ids),
+            "observed": self.observed,
         }
 
 
@@ -145,6 +156,13 @@ async def speech_committed(
                     found.licensed += 1
                 else:
                     found.refused += 1
+            elif say.event_id is not None and own_backstory(c):
+                if await _observe_own(
+                    conn, op, say, proposition, position, settings=settings, registry=registry
+                ):
+                    found.observed += 1
+                else:
+                    found.refused += 1
             if speech.classification == speech_acts.LIE and say.utterance_id is not None:
                 asserted = say.proposition_ids.get(c.claim_id or "")
                 if asserted is None:
@@ -178,6 +196,59 @@ async def speech_committed(
         len(found.divergence_ids),
     )
     return found
+
+
+def own_backstory(c: CheckedClaim) -> bool:
+    """Whether ``c`` is a sincere claim about the speaker itself that canon left open and #144
+    permitted as the speaker's own (see the module docstring)."""
+    result = c.result
+    if result is None or result.speech is None or result.self_attested:
+        return False
+    speech = result.speech
+    return (
+        speech.classification == speech_acts.SINCERE
+        and not speech.writes
+        and result.kind is VerdictKind.NOVEL
+        and isinstance(result.permission, Permitted)
+        and result.permission.basis is Basis.OWN
+    )
+
+
+async def _observe_own(
+    conn: AsyncConnection,
+    op: Any,
+    say: SpokenBeat,
+    proposition: Any,
+    position: Position,
+    *,
+    settings: Any,
+    registry: Registry,
+) -> bool:
+    """The speaker's observation of its own permitted backstory (see the module docstring);
+    ``False`` when the guard refused it."""
+    assert say.event_id is not None  # noqa: S101 - checked by the caller
+    at = Position(
+        position.turn, position.variant, position.slot_k, position.beat, position.step + 1
+    )
+    try:
+        await transitions.transition(
+            conn,
+            op,
+            holder=say.speaker,
+            kind=transitions.Kind.OBSERVATION,
+            proposition=proposition,
+            antecedent=transitions.Antecedent.record("events", say.event_id),
+            position=at,
+            confidence=transitions.Confidence(BeliefConfidenceLevel.KNOWN),
+            settings=settings,
+            registry=registry,
+        )
+    except SelfAttestation, AntecedentInvalid, ConfidenceInconsistent:
+        return False
+    except InvalidRequest:
+        transitions.refused()
+        return False
+    return True
 
 
 async def _write(
@@ -225,4 +296,4 @@ async def _write(
     return True
 
 
-__all__ = ["Spoken", "SpokenBeat", "speech_committed"]
+__all__ = ["Spoken", "SpokenBeat", "own_backstory", "speech_committed"]

@@ -141,6 +141,12 @@ CATEGORY_DESCRIPTIONS: Mapping[ContentCategory, str] = {
         "The say a witness heard (#162): the speaker's name, the words as the witness perceived "
         "them, the visible manner, the claims they carry and the intent the witness reads."
     ),
+    ContentCategory.BELIEF_STATE: (
+        "A structured character render's own belief state (#170, FR-TURN-8): its beliefs as "
+        '"you suspect / believe / know ..." lines, its nested beliefs ("you think Bobby '
+        'believes ...") and the speech acts it heard ("you heard Bobby say ..."). Its own '
+        "partition only; never another character's, a scalar, a provenance or a divergence."
+    ),
 }
 
 STRUCTURED_LABELS: Mapping[StructuredOutput, str] = {

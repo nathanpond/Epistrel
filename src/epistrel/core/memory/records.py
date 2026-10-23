@@ -75,9 +75,19 @@ second writer of ``semantic`` rows beside consolidation; it runs the guard, the 
 
 **Working memory** (FR-MEM-5) is a function over events, never a table:
 ``working_memory(conn, story_id, character_id, through_position, n)`` answers the last ``n``
-beats of the active timeline at or before the position, as the character perceives them. M4
-is shared knowledge: a character perceives every beat except other characters' ``think`` and
-every ``latent``; ``character_id=None`` (the narrator, omniscient) perceives everything.
+beats of the active timeline at or before the position, as the character perceives them. With
+perception ``none`` (shared knowledge, every M4 profile) a character perceives every beat except
+other characters' ``think`` and every ``latent``; ``character_id=None`` (the narrator,
+omniscient) perceives everything. **Viewpoint-filtered** (FR-MEM-11; #170): at ``co_location``
+or ``full`` (``level``), a character's window is rebuilt from history through the same routing
+as memory writes: each turn's beats are re-routed by ``core.epistemic.perception.route_turn``
+over that turn's authoritative scene (``scene_loader``, by default
+``core.epistemic.scene.load_scene``; one load per turn read) with the qualifiers stored on each
+beat event, so a beat whose content the character perceived reads in full, an envelope-only
+beat as its envelope ("Jenni whispers something to Marcus"), a beat it did not perceive not at
+all, and no ``latent`` and no other character's ``think`` ever. ``n`` counts perceived beats:
+earlier turns are read until ``n`` are found (at most ``SCAN_TURNS_PER_BEAT · n`` turns back).
+Pure re-routing over stored beats (``perceived_window``): nothing is stored.
 
 **Importance** (FR-MEM-7). The ``importance_scoring`` purpose scores a memory 0..1 through the
 Model Access Layer (the importance job); ``set_importance`` writes a score only where none is
@@ -99,7 +109,7 @@ Log lines carry identifiers and counts only (invariant 3); this module logs noth
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any, Literal, Protocol, cast
@@ -558,6 +568,14 @@ def perceived_line(
     if beat.kind == "think" and name:
         return f"{name} thinks: {beat.text.strip()}"[:TEXT_MAX]
     return render_line(beat.kind, name, beat.text)
+
+
+async def places_and_names(
+    conn: AsyncConnection, story_id: str
+) -> tuple[dict[str, str], dict[str, str]]:
+    """The story's character names by id and its place names ("the parlor") by entity id:
+    what an envelope's text names (``perception.envelope_text``)."""
+    return await _names(conn, story_id), await _place_names(conn, story_id)
 
 
 async def _place_names(conn: AsyncConnection, story_id: str) -> dict[str, str]:
@@ -1143,9 +1161,14 @@ async def beats_of_operation(conn: AsyncConnection, operation_id: str) -> list[B
 # -- working memory -----------------------------------------------------------------------------
 
 
+WorkingFidelity = Literal["content", "envelope", "partial"]
+
+
 @dataclass(frozen=True, slots=True)
 class WorkingBeat:
-    """One beat of working memory: where it is, what kind, whose and what it says."""
+    """One beat of working memory: where it is, what kind, whose and what it says, and how the
+    character perceived it (#170: ``envelope``: ``text`` is the envelope; ``partial``: ``text``
+    is the part an eavesdropper caught)."""
 
     event_id: str
     narrative_turn: int
@@ -1154,6 +1177,7 @@ class WorkingBeat:
     kind: BeatKind
     character_id: str | None
     text: str
+    fidelity: WorkingFidelity = "content"
 
 
 Position = int | tuple[int, int] | NarrativePosition
@@ -1177,20 +1201,42 @@ def _working(row: Any) -> list[WorkingBeat]:
     ]
 
 
-async def working_memory(
-    conn: AsyncConnection,
-    story_id: str,
-    character_id: str | None,
-    through_position: Position | None = None,
-    n: int = DEFAULT_WORKING_MEMORY_BEATS,
-) -> list[WorkingBeat]:
-    """The last ``n`` beat events of the active timeline at or before ``through_position`` (the
-    head when ``None``), oldest first, as ``character_id`` perceives them (see the module
-    docstring). Read from ``events``; nothing is stored."""
-    if n < 1:
+SceneLoader = Callable[
+    [AsyncConnection, str, int],
+    Awaitable[tuple[perception.SceneState, Mapping[int, tuple[tuple[str, str | None], ...]]]],
+]
+"""Loads the scene at the start of a turn and the moves its beats committed
+(``core.epistemic.scene.load_scene``'s shape)."""
+
+SCAN_TURNS_PER_BEAT = 4
+"""How many turns back a routed window reads per beat it holds, at most (a character long
+absent gets fewer beats rather than an unbounded scan)."""
+
+
+def _through_clause(through_position: Position | None) -> list[Any]:
+    e = events
+    if through_position is None:
         return []
+    turn, beat = (
+        (through_position, None)
+        if isinstance(through_position, int)
+        else (through_position.turn, through_position.beat)
+        if isinstance(through_position, NarrativePosition)
+        else through_position
+    )
+    if beat is None:
+        return [e.c.narrative_turn <= turn]
+    return [
+        or_(
+            e.c.narrative_turn < turn,
+            and_(e.c.narrative_turn == turn, or_(e.c.beat.is_(None), e.c.beat <= beat)),
+        )
+    ]
+
+
+def _beat_where(story_id: str, through_position: Position | None) -> list[Any]:
     e, o = events, operations
-    where = [
+    return [
         e.c.story_id == story_id,
         e.c.type.in_(BEAT_EVENT_TYPES),
         e.c.category.in_([EventCategory.NARRATIVE_STATE.value, EventCategory.INPUT.value]),
@@ -1198,25 +1244,163 @@ async def working_memory(
         e.c.slot_k.is_(None),
         o.c.status == OperationStatus.COMMITTED.value,
         active_operation(o),
+        *_through_clause(through_position),
+        not_composed(),
     ]
-    if through_position is not None:
-        turn, beat = (
-            (through_position, None)
-            if isinstance(through_position, int)
-            else (through_position.turn, through_position.beat)
-            if isinstance(through_position, NarrativePosition)
-            else through_position
-        )
-        if beat is None:
-            where.append(e.c.narrative_turn <= turn)
-        else:
-            where.append(
-                or_(
-                    e.c.narrative_turn < turn,
-                    and_(e.c.narrative_turn == turn, or_(e.c.beat.is_(None), e.c.beat <= beat)),
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryBeat:
+    """One stored beat as routing re-reads it (#170): the working beat as stored, its stored
+    perception qualifiers, and the moves its beat number committed."""
+
+    beat: WorkingBeat
+    qualifiers: perception.Qualifiers = field(default_factory=perception.Qualifiers)
+    moves: tuple[tuple[str, str | None], ...] = ()
+
+
+def _route_kind(kind: BeatKind) -> perception.RouteKind:
+    return kind
+
+
+def perceived_window(
+    turns: Sequence[tuple[perception.SceneState, Sequence[HistoryBeat]]],
+    character_id: str,
+    level: perception.Level,
+    names: Mapping[str, str],
+    places: Mapping[str, str],
+) -> list[WorkingBeat]:
+    """What ``character_id`` perceived of each turn's beats (``turns``: each turn's scene at its
+    start and its beats in order), oldest first: every beat re-routed at ``level`` by
+    ``perception.route_turn``; a content perceiver keeps the beat (an eavesdropper limited to
+    part of the words, that part), an envelope perceiver its envelope, anyone else nothing; a
+    ``latent`` is never kept, a ``think`` only by its thinker. Pure."""
+    found: list[WorkingBeat] = []
+    for scene, beats in turns:
+        routed = perception.route_turn(
+            [
+                perception.RouteBeat(
+                    kind=_route_kind(h.beat.kind),
+                    beat=int(h.beat.beat or 0),
+                    actor=None if h.beat.kind == "narration" else h.beat.character_id,
+                    qualifiers=h.qualifiers,
+                    sound=perception.sound_of(h.beat.text) if h.beat.kind == "do" else None,
+                    moves=h.moves,
+                    source=h.beat,
                 )
+                for h in beats
+            ],
+            scene,
+            level,
+        )
+        for result in routed:
+            source = result.beat.source
+            assert isinstance(source, WorkingBeat)  # noqa: S101 - built above
+            if source.kind == "latent":
+                continue
+            seen = result.of(character_id)
+            if seen is None:
+                continue
+            if source.kind == "think" and source.character_id != character_id:
+                continue  # pragma: no cover - routing gives a think to its thinker only
+            if seen.fidelity == perception.ENVELOPE and seen.envelope is not None:
+                text = perception.envelope_text(seen.envelope, names, places)
+                found.append(replace(source, text=text, fidelity="envelope"))
+            elif seen.partial_text:
+                found.append(replace(source, text=seen.partial_text.strip(), fidelity="partial"))
+            else:
+                found.append(source)
+    return found
+
+
+async def _routed_memory(
+    conn: AsyncConnection,
+    story_id: str,
+    character_id: str,
+    through_position: Position | None,
+    n: int,
+    level: perception.Level,
+    scene_loader: SceneLoader | None,
+) -> list[WorkingBeat]:
+    """``working_memory``'s viewpoint-filtered window (see the module docstring)."""
+    if scene_loader is None:
+        from epistrel.core.epistemic import scene as scenes
+
+        async def default_loader(
+            c: AsyncConnection, story: str, turn: int
+        ) -> tuple[perception.SceneState, Mapping[int, tuple[tuple[str, str | None], ...]]]:
+            return await scenes.load_scene(c, story, turn)
+
+        scene_loader = default_loader
+    e, o = events, operations
+    where = _beat_where(story_id, through_position)
+    found_turns = await conn.scalars(
+        select(e.c.narrative_turn)
+        .join(o, o.c.operation_id == e.c.operation_id)
+        .where(*where)
+        .group_by(e.c.narrative_turn)
+        .order_by(e.c.narrative_turn.desc())
+        .limit(max(1, SCAN_TURNS_PER_BEAT * n))
+    )
+    names = await _names(conn, story_id)
+    places = await _place_names(conn, story_id)
+    window: list[WorkingBeat] = []
+    for turn in [int(t) for t in found_turns]:
+        rows = await conn.execute(
+            select(
+                e.c.id,
+                e.c.type,
+                e.c.narrative_turn,
+                e.c.turn_variant,
+                e.c.beat,
+                e.c.character_id,
+                e.c.payload,
             )
-    where.append(not_composed())
+            .join(o, o.c.operation_id == e.c.operation_id)
+            .where(*where, e.c.narrative_turn == turn)
+            .order_by(e.c.beat.asc().nulls_first(), e.c.seq)
+        )
+        scene, moves = await scene_loader(conn, story_id, turn)
+        beats: list[HistoryBeat] = []
+        for row in rows:
+            stored = perception.Qualifiers.of((row.payload or {}).get("perception"))
+            beats += [HistoryBeat(b, stored) for b in _working(row)]
+        for index, item in enumerate(beats):
+            last = index == len(beats) - 1 or beats[index + 1].beat.beat != item.beat.beat
+            committed = moves.get(int(item.beat.beat or 0))
+            if last and committed:
+                beats[index] = replace(item, moves=tuple(committed))
+        window = [
+            *perceived_window([(scene, beats)], character_id, level, names, places),
+            *window,
+        ]
+        if len(window) >= n:
+            break
+    return window[-n:]
+
+
+async def working_memory(
+    conn: AsyncConnection,
+    story_id: str,
+    character_id: str | None,
+    through_position: Position | None = None,
+    n: int = DEFAULT_WORKING_MEMORY_BEATS,
+    *,
+    level: perception.Level = perception.NONE,
+    scene_loader: SceneLoader | None = None,
+) -> list[WorkingBeat]:
+    """The last ``n`` beats of the active timeline at or before ``through_position`` (the head
+    when ``None``), oldest first, as ``character_id`` perceives them at perception ``level``
+    (see the module docstring: ``none`` and ``character_id=None`` read as M4 did; above it, the
+    window is re-routed). Read from ``events``; nothing is stored."""
+    if n < 1:
+        return []
+    if character_id is not None and level != perception.NONE:
+        return await _routed_memory(
+            conn, story_id, character_id, through_position, n, level, scene_loader
+        )
+    e, o = events, operations
+    where = _beat_where(story_id, through_position)
     if character_id is not None:
         where.append(
             or_(
@@ -1441,15 +1625,19 @@ __all__ = [
     "MEMORY_HOOKS",
     "OBSERVABLE",
     "ROUTED",
+    "SCAN_TURNS_PER_BEAT",
     "SEED_IMPORTANCE",
     "Beat",
     "BeatKind",
+    "HistoryBeat",
     "Memory",
     "MemoryHook",
     "MemoryOperation",
     "Position",
+    "SceneLoader",
     "SeedMemory",
     "WorkingBeat",
+    "WorkingFidelity",
     "after_rewrite",
     "beats_of_operation",
     "committed_turns",
@@ -1462,6 +1650,8 @@ __all__ = [
     "memory_sink",
     "participants_of",
     "perceived_line",
+    "perceived_window",
+    "places_and_names",
     "register_episodic_hook",
     "register_memory_hook",
     "remove_memory_hook",

@@ -345,6 +345,11 @@ def test_redteam_runs_nightly_and_on_dispatch_and_reports_a_red_run() -> None:
     assert '-m "redteam or redteam_long"' in run["run"]
     report = next(s for s in _steps(wf, "redteam") if s.get("name") == "Report a red run")
     assert "Nightly red-team run failed" in report["run"]
+    # #170: PRIV's extended run (5,000 examples), reported like the corpus.
+    priv = next(s for s in _steps(wf, "redteam") if s.get("id") == "priv")
+    assert priv["env"] == {"EPISTREL_HYPOTHESIS_PROFILE": "nightly"}
+    assert "tests/property/test_priv.py" in priv["run"]
+    assert "steps.priv.outcome == 'failure'" in report["if"]
     (pytest_step,) = [
         s for s in _steps(_workflow("ci.yml"), "test") if "pytest" in s.get("run", "")
     ]

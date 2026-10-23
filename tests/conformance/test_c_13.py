@@ -4,6 +4,16 @@ Who acts, who is rendered, and who asked are three different fields with three m
 actor may be any character of the story (who acts as whom is the consumer's decision), the
 render characters are the cast members who answer, and the requesting principal is recorded for
 attribution and changes nothing else. Every check runs over REST and the library (``surface``).
+
+``test_c_13__m5`` (FR-RESP-11, NFR-PRIV-4; #170; #180 adds the authority clauses: Jenni's speech
+as actor verified against her viewpoint, a narrated hand-over as a request or as co-author
+narration): with per-character partitions at perception ``full``, Jenni renders a private
+``think`` and whispers to Wren (the player's character) with Bobby in the room. The response for
+the player character's viewpoint carries no NPC private content (no ``think`` beat, not the
+thought's words). Bobby's next context (``core.epistemic.context.build_context``) holds neither
+the thought nor the whispered words, only the whisper's envelope, and none of the consumer's
+``scene_context.recent_messages`` (a planted sentinel). Complement: Jenni's own next context
+holds her thought, and neither context the consumer's message.
 """
 
 from __future__ import annotations
@@ -13,11 +23,15 @@ from typing import Any
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.config import Settings
 from epistrel.orchestrator.models.stub import StubAdapter
+from tests import perception_support as ps
+from tests.auth_support import auth_settings
 from tests.conformance.conftest import Surface
 from tests.event_support import rows
-from tests.respond_support import body, generation_calls, system_of
+from tests.respond_support import body, generation_calls, respond, respond_client, system_of
 from tests.story_support import count, story_body
+from tests.structured_turn_support import beat, render, schema_calls, structured_story, text_of
 
 PLAYER, JENNI, BOBBY = "Wren", "Jenni", "Bobby"
 INPUT, REPLY = 1, 2
@@ -157,3 +171,79 @@ async def test_c_13(surface: Surface, engine: AsyncEngine) -> None:
         assert {e.principal for e in recorded} == {principal}
         answers.append((played["message"]["text"], played["turn"], played["timeline_revision"]))
     assert answers[0] == answers[1]
+
+
+THOUGHT = "PRIVATESENTINEL she means to burn the letter tonight"
+WHISPER = "WHISPERSENTINEL the key is under the blue mat"
+RECENT = "RECENTSENTINEL the consumer says Bobby saw everything"
+
+
+@pytest.fixture
+def stub_settings(pg_url: str) -> Settings:
+    return auth_settings(pg_url, model_adapter="stub")
+
+
+@pytest.mark.integration
+@pytest.mark.part("M5", "FR-RESP-11; NFR-PRIV-4")
+async def test_c_13__m5(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+    perception_delivered: None,
+) -> None:
+    """See the module docstring."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        story, ids = await structured_story(client, PLAYER, JENNI, BOBBY)
+        await ps.perceive(engine, story, "full")
+        parlor = await ps.place_entity(engine, story, "parlor")
+        for name in ids:
+            await ps.put(engine, story, ids[name], parlor)
+        stub = epistrel.models.stub
+        wren = ids[PLAYER]
+        recent = {"recent_messages": [{"character_id": ids[BOBBY], "text": RECENT}]}
+
+        stub.script(
+            "generation",
+            [
+                render(
+                    beat("think", THOUGHT),
+                    beat("say", WHISPER, intent="sincere", whisper_to=[wren], addressee=wren),
+                )
+            ],
+        )
+        first = await respond(
+            client,
+            story,
+            body(wren, "Jenni, what is it?", render_character_ids=[ids[JENNI]]),
+        )
+        assert first.status_code == 200, first.text
+        # The player character's viewpoint: no NPC private content.
+        assert [b for b in first.json()["beats"] if "think" in b["kind"]] == []
+        assert "PRIVATESENTINEL" not in first.text
+
+        async def context_of(name: str) -> str:
+            stub.calls.clear()
+            stub.script("generation", [render(beat("do", f"{name} waits."))])
+            answer = await respond(
+                client,
+                story,
+                body(
+                    wren,
+                    "Anything else?",
+                    render_character_ids=[ids[name]],
+                    scene_context=recent,
+                ),
+            )
+            assert answer.status_code == 200, answer.text
+            (call,) = schema_calls(stub, "CharacterRender")
+            return text_of(call)
+
+        bobby = await context_of(BOBBY)
+        assert "PRIVATESENTINEL" not in bobby
+        assert "WHISPERSENTINEL" not in bobby
+        assert f"{JENNI} whispers something to {PLAYER}" in bobby
+        assert "RECENTSENTINEL" not in bobby
+        # Complement: Jenni's own context holds her thought; still no consumer message.
+        jenni = await context_of(JENNI)
+        assert f"(You think) {THOUGHT}" in jenni
+        assert "RECENTSENTINEL" not in jenni

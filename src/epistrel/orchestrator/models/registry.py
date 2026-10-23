@@ -100,6 +100,12 @@ class ContentCategory(StrEnum):
     the witness may read, each rendered like a claim), its trust in the speaker, its prior
     outcomes with that speaker and the rules' default decision. Never another character's
     private record, never canon the witness cannot know."""
+    BELIEF_STATE = "belief_state"
+    """A structured character render's own belief state (FR-TURN-8; #170,
+    ``core.epistemic.context``): its first-order beliefs as "you suspect / believe / know …"
+    lines, its nested beliefs ("you think Bobby believes …") and the speech acts it heard ("you
+    heard Bobby say …"). The rendering character's partition only, never another's, never a
+    scalar, a provenance or a divergence."""
     UTTERANCE_TEXT = "utterance_text"
     """The say a witness heard (#162): the speaker's name, the words as the witness perceived
     them, the visible manner, the claims they carry and the intent as the witness reads it."""
@@ -203,6 +209,13 @@ class GenerationInputs(InputSchema):
     story's snapshot (the world, the seeds as text, the relationships, the starting places, the
     player's persona), closed by the instruction that scenario facts prevail."""
     character_definitions: list[CharacterDefinition] = Field(default_factory=list)
+    own_age: Annotated[str, C.CHARACTER_DEFINITION] = Field(default="", max_length=100)
+    """A structured character render under per-character partitions (#170, FR-CAT-12): the
+    rendering character's own true age ("You are 34."), part of its own definition; empty in
+    every other prompt. Another character's age reaches it only as an apparent band (``scene``)."""
+    beliefs: Annotated[list[str], C.BELIEF_STATE] = Field(default_factory=list, max_length=200)
+    """A structured character render's ``## What you believe`` (FR-TURN-8; #170): its own belief
+    state (``core.epistemic.context.CharacterContext.belief_lines``)."""
     director_notes: Annotated[str, C.DIRECTOR_NOTES] = ""
     """A story created from a scenario (#122): its ``## Author notes (not facts)`` block (the
     plot hooks, objectives, guidance, planned reveals, milestones and endings)."""

@@ -369,8 +369,10 @@ async def test_an_added_character_stays_through_truncation_and_forks(
 
 async def test_promotion_refusals_and_options(stub_settings: Settings, engine: AsyncEngine) -> None:
     """A promotion is 404 for an unknown story and for a character of another story, 422 for a
-    player character (``reason: player_character``) and for a rating that cannot be assigned
-    (``rating_retired``), and 409 for a stale expected revision, each with nothing written. It
+    player character (``reason: player_character``), for a rating that cannot be assigned
+    (``rating_retired``), for a memory to seed that is not the story's (``seed_memory_invalid``,
+    #498) and for a field the request does not have, and 409 for a stale expected revision,
+    each with nothing written. It
     only reads the story, so it runs while a turn is in flight (the turn holds the story's turn
     slot, its generation held; the promotion is 201 at the unchanged revision, and the turn then
     commits), and on an archived story. Without an owner it is owned by its requester, not by
@@ -394,7 +396,13 @@ async def test_promotion_refusals_and_options(stub_settings: Settings, engine: A
                 await promote(client, sid, ada, extra=STALE),
                 (409, "revision_conflict"),
             ),
-            (await promote(client, sid, ada, {"seed_memories": []}), (422, "validation_error")),
+            # #498: seeds are memories of this story; an unknown id seeds nothing, and a field
+            # the request does not have is still refused.
+            (
+                await promote(client, sid, ada, {"seed_memories": [new_ulid()]}),
+                (422, "seed_memory_invalid"),
+            ),
+            (await promote(client, sid, ada, {"seed_facts": []}), (422, "validation_error")),
         ):
             assert error_of(refused)[:2] == expected, refused.text
         assert error_of(await promote(client, sid, wren))[2] == {

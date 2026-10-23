@@ -739,7 +739,10 @@ SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
         f"{_RECORDS}:read_character_versions",
     ),
     SubjectWriter(
-        "scenario_catalog", ("epistrel.core.catalog.scenarios",), f"{_RECORDS}:read_scenario_drafts"
+        "scenario_catalog",
+        # #498: a promotion seeds a story's memories into the new character's companion draft.
+        ("epistrel.core.catalog.scenarios", "epistrel.core.catalog.promote"),
+        f"{_RECORDS}:read_scenario_drafts",
     ),
     SubjectWriter(
         "scenario_versions",

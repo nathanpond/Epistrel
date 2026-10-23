@@ -2552,10 +2552,17 @@ class Engine:
         ``promoted_to`` and nothing else changes. Owned by ``request.owner`` or else the
         requesting principal, rated ``request.content_rating_id`` or else as the story. Keyed per
         deployment; the expected revision, when sent, is checked first; allowed on an archived
-        story and while a turn is in flight. 404 for an unknown story or a character not in it;
-        422 for a player character or a rating that cannot be assigned."""
+        story and while a turn is in flight. ``request.seed_memories`` (#498) are seeded into
+        the new character's companion scenario draft, never into the character. 404 for an
+        unknown story or a character not in it; 422 for a player character, a rating that
+        cannot be assigned, or a memory the character neither holds nor can know
+        (``seed_memory_invalid``)."""
         principal = self.require_principal(ctx)
         request = request or catalog_promote.PromoteRequest()
+        body = _body(request)
+        if not body["seed_memories"]:
+            # An M3 body (no seeds) keeps the fingerprint it had before the field existed.
+            del body["seed_memories"]
 
         async def run(ctx: RequestContext) -> catalog_promote.Promotion:
             await self.check_expected_revision(ctx, story_id)
@@ -2570,7 +2577,7 @@ class Engine:
             material={
                 "story_id": story_id,
                 "character_id": character_id,
-                "body": _body(request),
+                "body": body,
             },
         )
 

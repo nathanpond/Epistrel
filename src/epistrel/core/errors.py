@@ -1125,6 +1125,17 @@ class PinLimitExceeded(EpistrelError):
     http_status = 422
 
 
+class SeedMemoryInvalid(EpistrelError):
+    """A memory a promotion names to seed into the new character's companion scenario cannot
+    be seeded (FR-CAT-8; #498). ``details``: ``field`` (``body.seed_memories[n]``),
+    ``memory_id`` and ``reason``: ``not_in_story`` (no such memory in the story),
+    ``inactive`` (off the active timeline), ``quarantined``, or ``not_known`` (the character
+    neither holds it nor can know it). Nothing is written."""
+
+    code = "seed_memory_invalid"
+    http_status = 422
+
+
 class SpanNotFound(EpistrelError):
     """A sanitize's ``span`` does not occur in the memory's text (FR-GUARD-4; #145): it is an
     exact substring, every occurrence of which is replaced. ``details``: ``memory_id``.

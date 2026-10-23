@@ -278,6 +278,7 @@ ERROR_STATUS: dict[str, int] = {
     "rating_retired": 422,
     "scope_mismatch": 422,
     "seed_unnormalizable": 422,
+    "seed_memory_invalid": 422,
     "span_not_found": 422,
     "pin_limit_exceeded": 422,
     "key_mismatch": 422,
@@ -432,7 +433,9 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "unarchive_story": ("story_paused", "story_busy"),
     "delete_story": ("story_busy",),
     # A story's characters (#114): one added to a running story is gated and refused on an
-    # archived or busy story; a promotion's rating must be assignable.
+    # archived or busy story; a promotion's rating must be assignable, and the memories it
+    # seeds into the companion must be ones the character holds or can know (#498); the
+    # copied texts pass the resurrection guard.
     "add_story_character": (
         *_GATED,
         "story_archived",
@@ -441,7 +444,7 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "media_retired",
         "erased_subject_referenced",
     ),
-    "promote_character": ("rating_retired",),
+    "promote_character": ("rating_retired", "seed_memory_invalid", "erased_subject_referenced"),
     # Its ``policies`` are refused while the story is paused (#118); its settings are not.
     "update_story_settings": (
         "cannot_relax",

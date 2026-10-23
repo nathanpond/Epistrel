@@ -383,6 +383,9 @@ CONTENT_WRITE_PATHS: tuple[WritePath, ...] = (
         EXEMPT,
         "a persona defines its own subject and references no other",
     ),
+    # #498: a promotion copies story memory texts into a catalog companion draft; it checks
+    # them against the story's erasures in its own transaction.
+    WritePath("epistrel.core.catalog.promote", DIRECT),
     WritePath("epistrel.core.propositions.registry", DIRECT),
     WritePath("epistrel.core.propositions.store", DIRECT),
     WritePath("epistrel.core.canon.facts", DIRECT),

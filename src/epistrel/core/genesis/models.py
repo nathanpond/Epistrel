@@ -395,11 +395,27 @@ class ClassCapabilityCounts(BaseModel):
         return cls(by_class=by_class, by_capability=by_capability)
 
 
-MaterializedOutcome = Literal["canon", "memory", "deferred", "merge_conflict", "entity", "rule"]
+MaterializedOutcome = Literal[
+    "canon",
+    "memory",
+    "deferred",
+    "merge_conflict",
+    "entity",
+    "rule",
+    "belief",
+    "nested",
+    "belief_conflict",
+    "visibility_conflict",
+    "seed_audience_unfilled",
+]
 """What structured genesis did with an item (#149): ``canon`` (facts written), ``memory`` (a
 seed memory written), ``deferred`` (a part waits for a capability the story lacks),
 ``merge_conflict`` (a fact lost the merge and was not written), ``entity`` (a place, an entity
-or a name override recorded), ``rule`` (a story rule registered)."""
+or a name override recorded), ``rule`` (a story rule registered). With partitions (#173):
+``belief`` (first-order beliefs seeded), ``nested`` (nested beliefs seeded), ``belief_conflict``
+(a belief lost to another of the same holder and layer), ``visibility_conflict`` (the same fact
+from a higher source with another audience won) and ``seed_audience_unfilled`` (an audience
+token named an unfilled role or the player's, and was dropped)."""
 
 
 class OutcomeCounts(BaseModel):

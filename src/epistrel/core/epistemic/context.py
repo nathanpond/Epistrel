@@ -259,6 +259,10 @@ def statement(p: Proposition, predicates: Mapping[str, str], names: Mapping[str,
     return " ".join(str(w) for w in words)[:TEXT_MAX]
 
 
+DISCLOSURE_MARKS: Mapping[str, str] = {"secret": "(secret)", "guarded": "(guarded)"}
+"""How a seeded belief's disclosure marks its context line (``beliefs.disclosure``; #173)."""
+
+
 def belief_line(level: BeliefConfidenceLevel, text: str) -> str | None:
     """ "you suspect / believe / know <text>"; ``None`` at ``unknown``."""
     word = LEVEL_WORDS.get(BeliefConfidenceLevel(level))
@@ -505,7 +509,10 @@ async def _belief_lines(
         said = statement(belief.proposition, predicates, names)
         line = belief_line(belief.confidence_level, said)
         if line is not None:
-            found.append(line)
+            # #173: a seeded secret or guarded belief says so; how the character keeps it
+            # follows its own honesty disposition (the definition block), never the role.
+            mark = DISCLOSURE_MARKS.get(belief.disclosure or "")
+            found.append(line if mark is None else f"{line} {mark}")
         if len(found) >= BELIEFS_MAX:
             break
     return found

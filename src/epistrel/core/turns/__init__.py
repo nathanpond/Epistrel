@@ -142,6 +142,9 @@ class TurnInputs:
     on every turn (``core.genesis.render``; #122). ``""`` for a blank story."""
     director_notes: str = ""
     """A story created from a scenario: its ``## Author notes (not facts)`` block (#122)."""
+    shared_scenario_text: str = ""
+    """The ``## Scenario`` block without the seeds and player notes a partition holds (#173):
+    what a character render of a partitioned story gets."""
 
 
 def _cast_query(story_id: str) -> Any:
@@ -388,6 +391,7 @@ async def read_turn_inputs(
         default_safe_fallback=guardrails.default_safe_fallback,
         scenario_text=scenario.scenario_text,
         director_notes=scenario.director_notes,
+        shared_scenario_text=scenario.shared_text,
     )
 
 

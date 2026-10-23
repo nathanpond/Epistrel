@@ -12238,6 +12238,41 @@
         "title": "LiteralKind",
         "type": "string"
       },
+      "LocationAdjacency": {
+        "additionalProperties": false,
+        "description": "A place this one adjoins (#161's ``adjacent_to``, symmetric) and the barrier between them\n(default ``door_open``).",
+        "properties": {
+          "barrier": {
+            "anyOf": [
+              {
+                "enum": [
+                  "none",
+                  "door_open",
+                  "door_closed",
+                  "window",
+                  "thin_wall",
+                  "wall"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Barrier"
+          },
+          "location": {
+            "pattern": "^[a-z0-9_]{1,40}$",
+            "title": "Location",
+            "type": "string"
+          }
+        },
+        "required": [
+          "location"
+        ],
+        "title": "LocationAdjacency",
+        "type": "object"
+      },
       "MaterializedEntry": {
         "additionalProperties": false,
         "description": "One item structured genesis materialized (#149): its dotted ``field_ref``, its location\n(#111's shape), what happened to it (``outcomes``, in that order) and, for an item that\nlost the fact merge, the ``winner`` and ``loser`` (seed ids, or ``<role>:<field>`` for a\ncharacter's definition prose) and the ``rule`` that decided it (#140's).",
@@ -12268,7 +12303,12 @@
                 "deferred",
                 "merge_conflict",
                 "entity",
-                "rule"
+                "rule",
+                "belief",
+                "nested",
+                "belief_conflict",
+                "visibility_conflict",
+                "seed_audience_unfilled"
               ],
               "type": "string"
             },
@@ -13846,6 +13886,45 @@
           "step"
         ],
         "title": "NarrativePositionBody",
+        "type": "object"
+      },
+      "NestedSeed": {
+        "additionalProperties": false,
+        "description": "A ``kind: nested`` seed's content (#173): the holder believes ``attributed_holder`` (a\nrole id) believes ``proposition`` (prose, read like a seed's text), at\n``attributed_confidence`` (default ``known``).",
+        "properties": {
+          "attributed_confidence": {
+            "anyOf": [
+              {
+                "enum": [
+                  "suspected",
+                  "believed",
+                  "known"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attributed Confidence"
+          },
+          "attributed_holder": {
+            "pattern": "^[a-z0-9_]{1,40}$",
+            "title": "Attributed Holder",
+            "type": "string"
+          },
+          "proposition": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Proposition",
+            "type": "string"
+          }
+        },
+        "required": [
+          "attributed_holder",
+          "proposition"
+        ],
+        "title": "NestedSeed",
         "type": "object"
       },
       "OffboardingActions": {
@@ -24520,6 +24599,23 @@
         "additionalProperties": false,
         "description": "A relationship of the role to another role (``mother_of``, ``sibling_of``), seeded as\ncanon and as beliefs of the roles that know it. Free text; no inverse is added.",
         "properties": {
+          "audience": {
+            "anyOf": [
+              {
+                "items": {
+                  "pattern": "^[a-z0-9_]{1,40}$",
+                  "type": "string"
+                },
+                "maxItems": 32,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audience"
+          },
           "name": {
             "maxLength": 120,
             "minLength": 1,
@@ -24530,6 +24626,19 @@
             "pattern": "^[a-z0-9_]{1,40}$",
             "title": "To Role",
             "type": "string"
+          },
+          "trust": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trust"
           }
         },
         "required": [
@@ -24793,8 +24902,29 @@
       },
       "ScenarioCast": {
         "additionalProperties": false,
-        "description": "The cast: the roles, and the most character slots (player slots included) a story\nstarts with (FR-SCN-4; ``null``: the deployment's default).",
+        "description": "The cast: the roles, the named groups a seed's audience may name (``groups``: a group's\nname → its role ids; #173), and the most character slots (player slots included) a story\nstarts with (FR-SCN-4; ``null``: the deployment's default).",
         "properties": {
+          "groups": {
+            "anyOf": [
+              {
+                "maxProperties": 32,
+                "patternProperties": {
+                  "^[a-z0-9_]([a-z0-9 _-]{0,58}[a-z0-9_])?$": {
+                    "items": {
+                      "pattern": "^[a-z0-9_]{1,40}$",
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Groups"
+          },
           "max_characters_at_start": {
             "anyOf": [
               {
@@ -24818,6 +24948,32 @@
           }
         },
         "title": "ScenarioCast",
+        "type": "object"
+      },
+      "ScenarioChannel": {
+        "additionalProperties": false,
+        "description": "A remote channel open when the story starts (#161's ``on_channel``; #173): its token and\nthe roles on it.",
+        "properties": {
+          "id": {
+            "maxLength": 60,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "participants": {
+            "items": {
+              "pattern": "^[a-z0-9_]{1,40}$",
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Participants",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "ScenarioChannel",
         "type": "object"
       },
       "ScenarioCreate": {
@@ -25570,8 +25726,16 @@
       },
       "ScenarioLocation": {
         "additionalProperties": false,
-        "description": "A named place in the world: an id roles and the opening start at, a name and a\ndescription.",
+        "description": "A named place in the world: an id roles and the opening start at, a name, a description\nand its topology (#161, #173): the place it lies in (``located_in``, a location id) and the\nplaces it adjoins (``adjacent_to``), seeded as canon by a structured genesis.",
         "properties": {
+          "adjacent_to": {
+            "items": {
+              "$ref": "#/components/schemas/LocationAdjacency"
+            },
+            "maxItems": 100,
+            "title": "Adjacent To",
+            "type": "array"
+          },
           "description": {
             "anyOf": [
               {
@@ -25588,6 +25752,18 @@
             "pattern": "^[a-z0-9_]{1,40}$",
             "title": "Id",
             "type": "string"
+          },
+          "located_in": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z0-9_]{1,40}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Located In"
           },
           "name": {
             "maxLength": 120,
@@ -26261,6 +26437,14 @@
         "additionalProperties": false,
         "description": "The story's starting state: seeded world memories, State trackers with initial values,\nthe starting clock, pre-scheduled events, author-declared predicates, closed sets and rules\n(each stored as given in M3), and the opening.",
         "properties": {
+          "channels": {
+            "items": {
+              "$ref": "#/components/schemas/ScenarioChannel"
+            },
+            "maxItems": 100,
+            "title": "Channels",
+            "type": "array"
+          },
           "clock": {
             "anyOf": [
               {
@@ -26651,6 +26835,22 @@
             ],
             "title": "Audience"
           },
+          "confidence": {
+            "anyOf": [
+              {
+                "enum": [
+                  "suspected",
+                  "believed",
+                  "known"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          },
           "disclosure": {
             "anyOf": [
               {
@@ -26707,6 +26907,16 @@
               }
             ],
             "title": "Kind"
+          },
+          "nested": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NestedSeed"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "text": {
             "maxLength": 8000,

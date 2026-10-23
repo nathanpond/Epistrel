@@ -246,12 +246,14 @@ async def write_nested(
     registry: Registry | None = None,
     frame: Position | None = None,
     resolution: bool = False,
+    story_time: int | None = None,
 ) -> NestedWrite:
     """``holder`` comes to believe that ``attributed_holder`` believes ``proposition`` (through
     ``deeper``'s further attributions, and a speech act of ``said_by`` innermost when given), in
     ``op``'s commit transaction: see the module docstring. 409 ``module_off`` unless the story
     keeps nested beliefs; 422 ``nesting_too_deep`` for an API writer past the dial. ``frame`` and
-    ``resolution``: #164's lazy resolution (one exposure yields a ``said`` and a nested row)."""
+    ``resolution``: #164's lazy resolution (one exposure yields a ``said`` and a nested row).
+    ``story_time``: an ``author`` write's own story-time (#173's seeds: before the story)."""
     story_id = op.story_id
     if story_id is None:
         raise InvalidRequest("a belief belongs to a story", {"field": "operation"})
@@ -292,6 +294,7 @@ async def write_nested(
         "registry": found,
         "frame": frame,
         "resolution": resolution,
+        "story_time": story_time,
     }
     chain_holders = (attributed_holder, *layers)
     signature: transitions.Signature = (chain_holders, said)

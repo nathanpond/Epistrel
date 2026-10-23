@@ -163,10 +163,18 @@ from epistrel.core.events.types import (
     CharacterDefined,
     MessageRendered,
     ScenarioOrigin,
+    SeedMaterialized,
     StoryCreated,
 )
-from epistrel.core.genesis import merge, render, structured
-from epistrel.core.genesis.materialize import STRUCTURED, CastRole, Materialized, materialize
+from epistrel.core.genesis import epistemic, merge, render, structured
+from epistrel.core.genesis.epistemic import SEED_MATERIALIZED
+from epistrel.core.genesis.materialize import (
+    PARTITIONS,
+    STRUCTURED,
+    CastRole,
+    Materialized,
+    materialize,
+)
 from epistrel.core.genesis.models import (
     PLAYER,
     AdHocSlotCharacter,
@@ -200,6 +208,7 @@ from epistrel.core.profiles.impact import (
     two_stage,
 )
 from epistrel.core.profiles.schema import Purposes
+from epistrel.core.propositions.registry import load as load_registry
 from epistrel.core.ratings import load_graph
 from epistrel.core.ratings.change import (
     Direction,
@@ -1176,15 +1185,17 @@ def creation_report_of(
 
 def deferred_of(found: Plan) -> list[DeferredItem]:
     """What the story keeps deferred: every item under Lite; under ``structured``, the items it
-    did not materialize and the seed memories waiting for ``episodic`` (#149)."""
+    did not materialize and the seed memories waiting for ``episodic`` (#149); with partitions,
+    the ``partitions`` items its branch consumed are not deferred either (#173)."""
     items = list(found.materialized.deferred)
     plan_ = found.structured
     if plan_ is None:
         return items
+    consumed = {STRUCTURED} if plan_.epistemic is None else {STRUCTURED, PARTITIONS}
     kept = [
         item
         for item in items
-        if not (item.capability_needed == STRUCTURED and item.field_ref in plan_.materialized)
+        if not (item.capability_needed in consumed and item.field_ref in plan_.materialized)
     ]
     return [*kept, *plan_.deferred]
 
@@ -1412,6 +1423,7 @@ def _cast_inputs(found: Plan) -> list[structured.CastInput]:
                 definition=m.definition if m.catalog_id is None and m.persona is None else None,
                 persona_description=None if m.persona is None else m.persona.description,
             ),
+            is_player=m.is_player,
         )
         for m in found.members
     ]
@@ -1448,6 +1460,12 @@ async def plan_structured(
         _cast_inputs(found),
         placements=_placements(found.draft),
         episodic=module_on(settings, "episodic"),
+        settings=settings,
+        groups=found.draft.cast.groups,
+        opening=(
+            found.draft.starting_state.opening.narration,
+            found.draft.starting_state.opening.roles_present,
+        ),
     )
     found.entries.extend(found.structured.errors)
     found.unavailable = [name for name in found.unavailable if name not in STRUCTURED_CHECKS]
@@ -1459,6 +1477,25 @@ def _structured_step(
 ) -> Callable[[AsyncConnection], Awaitable[None]]:
     async def step(conn: AsyncConnection) -> None:
         await structured.write(conn, story_id, op, planned)
+
+    return step
+
+
+def _opening_step(
+    turn: Operation, seeded: epistemic.EpistemicPlan
+) -> Callable[[AsyncConnection], Awaitable[None]]:
+    """Turn 1's exposures for the roles present (#173)."""
+
+    async def step(conn: AsyncConnection) -> None:
+        assert turn.story_id is not None  # noqa: S101 - a story's turn
+        await epistemic.write_opening(
+            conn,
+            turn,
+            seeded.opening,
+            seeded.witnesses,
+            beat=NARRATION_BEAT,
+            registry=await load_registry(conn, turn.story_id),
+        )
 
     return step
 
@@ -1687,6 +1724,10 @@ async def genesis(
                 )
             await insert_deferred(conn, story_id, op.operation_id, found)
             if found.structured is not None:
+                seeded = found.structured.epistemic
+                for act in () if seeded is None else seeded.acts:
+                    # #173: each seeded item's author act, which its beliefs cite.
+                    op.append(SEED_MATERIALIZED, SeedMaterialized(**act.payload()))
                 op.add_commit_step(_structured_step(story_id, op, found.structured))
             await op.write_in(conn)
             await conn.execute(
@@ -1724,6 +1765,9 @@ async def genesis(
                     ),
                     beat=NARRATION_BEAT,
                 )
+                seeded = None if found.structured is None else found.structured.epistemic
+                if seeded is not None and seeded.witnesses:
+                    turn.add_commit_step(_opening_step(turn, seeded))
                 await turn.write_in(conn)
                 revision = 2
     except BaseException as exc:

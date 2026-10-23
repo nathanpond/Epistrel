@@ -18,8 +18,9 @@ Only active (``membership.active_only``), canon, affirmed facts with an object t
 the story's entities make rows: a negated fact closes the affirmed row it supersedes and never
 makes one, and a literal, unresolved or closed-set object is skipped silently. A symmetric
 predicate's row is in canonical direction (the lower id is the subject) and is inverted at read.
-``qualifiers`` keeps the key qualifiers only (ids and typed literals, never prose). Valid-time
-is the fact's outer bounds (approximate bounds collapse to them).
+``qualifiers`` keeps the key qualifiers only (ids and typed literals, never prose), and a
+relationship's numeric ``trust`` (``PROJECTED_QUALIFIERS``, #173: what #162's seeded trust reads).
+Valid-time is the fact's outer bounds (approximate bounds collapse to them).
 
 **Closed, never deleted.** A row carries its fact's narrative position (``since_turn``,
 ``since_slot``) and the active version that closed it (``closed_by_fact_id`` and its position,
@@ -123,6 +124,11 @@ inside the transaction (an exception aborts the write's whole commit)."""
 
 
 # -- the pure fold ----------------------------------------------------------------------------
+
+
+PROJECTED_QUALIFIERS: tuple[str, ...] = ("trust",)
+"""The non-key qualifiers a row keeps beside the key ones: a relationship's ``trust`` (0 to 1),
+which ``core.epistemic.testimony.seed_trust`` reads (#162, #173)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -370,7 +376,9 @@ async def _versions(
                 affirmed=r.polarity == "affirmed",
                 object_ids=objects,
                 key_qualifiers={
-                    k: qualifiers[k] for k in r.key_qualifiers or () if k in qualifiers
+                    k: qualifiers[k]
+                    for k in (*(r.key_qualifiers or ()), *PROJECTED_QUALIFIERS)
+                    if k in qualifiers
                 },
                 valid_from=r.valid_from,
                 valid_to=r.valid_to,

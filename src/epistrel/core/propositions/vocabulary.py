@@ -124,6 +124,10 @@ def _core(family: Family, **fields: Any) -> Predicate:
 _F, _M = Cardinality.FUNCTIONAL, Cardinality.MULTI
 _PERM, _FLUENT, _EVENT = TemporalKind.PERMANENT, TemporalKind.FLUENT, TemporalKind.EVENT
 _STR = QualifierKind.STR
+_TRUST = {"trust": QualifierKind.FLOAT}
+"""A relationship's optional ``trust`` (0 to 1, not part of the key): how far the subject trusts
+the object, which #162's seeded trust reads (a scenario's ``cast.relationships[].trust``,
+#173)."""
 
 CORE_PREDICATES: tuple[Predicate, ...] = (
     _core(
@@ -269,6 +273,7 @@ CORE_PREDICATES: tuple[Predicate, ...] = (
         object_type="person",
         cardinality=_M,
         temporal_kind=_PERM,
+        qualifiers=_TRUST,
         projection="relationships",
         docs="The subject is a parent of the object.",
     ),
@@ -281,6 +286,7 @@ CORE_PREDICATES: tuple[Predicate, ...] = (
         cardinality=_M,
         temporal_kind=_PERM,
         inverse_of=PARENT_OF,
+        qualifiers=_TRUST,
         projection="relationships",
         docs="The inverse of `parent_of`, stored as `parent_of`.",
     ),
@@ -293,6 +299,7 @@ CORE_PREDICATES: tuple[Predicate, ...] = (
         cardinality=_M,
         temporal_kind=_PERM,
         symmetric=True,
+        qualifiers=_TRUST,
         projection="relationships",
         docs="The two people are siblings (symmetric).",
     ),
@@ -305,6 +312,7 @@ CORE_PREDICATES: tuple[Predicate, ...] = (
         cardinality=_M,
         temporal_kind=_FLUENT,
         symmetric=True,
+        qualifiers=_TRUST,
         projection="relationships",
         docs="The two people are married (symmetric, over an interval).",
     ),
@@ -315,6 +323,7 @@ CORE_PREDICATES: tuple[Predicate, ...] = (
         subject_type="person",
         cardinality=_M,
         temporal_kind=_FLUENT,
+        qualifiers=_TRUST,
         projection="relationships",
         docs="The subject is acquainted with the object (not symmetric: being known is not "
         "knowing).",
@@ -328,6 +337,7 @@ CORE_PREDICATES: tuple[Predicate, ...] = (
         cardinality=_M,
         temporal_kind=_FLUENT,
         symmetric=True,
+        qualifiers=_TRUST,
         projection="relationships",
         docs="The two are friends (symmetric).",
     ),
@@ -337,6 +347,7 @@ CORE_PREDICATES: tuple[Predicate, ...] = (
         name="enemy_of",
         cardinality=_M,
         temporal_kind=_FLUENT,
+        qualifiers=_TRUST,
         projection="relationships",
         docs="The subject is hostile to the object (not symmetric).",
     ),

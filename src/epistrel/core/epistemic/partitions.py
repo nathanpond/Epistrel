@@ -198,6 +198,7 @@ class Belief(BaseModel):
     utterance_id: str | None = None
     staged_ref: dict[str, Any] | None = None
     perceived_intent: str | None = None
+    disclosure: str | None = None
     closed_id: str | None = None
 
     def held_at(self, position: Position) -> bool:
@@ -324,6 +325,7 @@ def _belief_of(row: Any) -> Belief:
         utterance_id=_id(m.get("utterance_id")),
         staged_ref=m.get("staged_ref"),
         perceived_intent=m.get("perceived_intent"),
+        disclosure=m.get("disclosure"),
     )
 
 
@@ -989,6 +991,7 @@ BELIEF_SHAPE_COLUMNS: frozenset[str] = frozenset(
         "utterance_id",
         "staged_ref",
         "perceived_intent",
+        "disclosure",
     }
 )
 """The nested and speech-act columns a write may set (#167, ``_insert_belief``'s ``shape``; a

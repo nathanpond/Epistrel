@@ -120,6 +120,10 @@ def expected_deferred(body: Mapping[str, Any], *, player: bool = True) -> list[t
             (f"starting_state.{name}[{i}]", "structured") for i in range(len(state.get(name, [])))
         ]
     found += [
+        (f"starting_state.channels[{i}]", "structured")
+        for i in range(len(state.get("channels", [])))
+    ]
+    found += [
         (f"drivers.planned_reveals[{i}].truth", "structured")
         for i in range(len(body.get("drivers", {}).get("planned_reveals", [])))
     ]

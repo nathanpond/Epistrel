@@ -3325,7 +3325,11 @@ async def play(
         base = prompts.RenderSections(
             guidance=read.inputs.guidance,
             instructions=read.inputs.instructions,
-            scenario_text=read.inputs.scenario_text,
+            # #173: a partitioned story's seeds are in the partitions, so a character render
+            # gets the scenario text without them; the narrator (omniscient) keeps them all.
+            scenario_text=read.inputs.shared_scenario_text
+            if module_on(settings, belief_transitions.PARTITIONS_MODULE)
+            else read.inputs.scenario_text,
             pins=read.inputs.pins,
             segments=read.inputs.segments,
             scene=read.scene,
@@ -3366,6 +3370,7 @@ async def play(
                 retrieved, canon = _canon_lines(narr_retrieval, None)
                 sections = replace(
                     base,
+                    scenario_text=read.inputs.scenario_text,
                     director_notes=read.director,
                     working_memory=read.narrator_memory,
                     retrieved=tuple(retrieved),
@@ -3550,7 +3555,10 @@ async def play(
             configuration=configuration,
             budget=budget,
             sections=replace(
-                base, director_notes=read.director, working_memory=read.narrator_memory
+                base,
+                scenario_text=read.inputs.scenario_text,
+                director_notes=read.director,
+                working_memory=read.narrator_memory,
             ),
             context=context,
             render_ids=cast_.render_ids,
@@ -3575,7 +3583,12 @@ async def play(
             render_ids=cast_.render_ids,
             fallback=lite._fallback_lines(read.inputs, cast_),
             narrator_inputs=prompts.narrator_inputs(
-                replace(base, director_notes=read.director, working_memory=read.narrator_memory),
+                replace(
+                    base,
+                    scenario_text=read.inputs.scenario_text,
+                    director_notes=read.director,
+                    working_memory=read.narrator_memory,
+                ),
                 read.actor,
                 say=say,
                 do=do,

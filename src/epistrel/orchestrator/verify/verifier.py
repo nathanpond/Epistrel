@@ -989,14 +989,26 @@ class BeliefSource:
     async def secret(self, belief_ids: Sequence[str]) -> bool:
         """Whether one of ``belief_ids`` is a belief its holder keeps ``secret``: its author act
         (the ``belief_authored`` event or a seed its ``author`` transition cites) declared
-        ``disclosure = secret`` (FR-SCN-8; #167's deceptive inference)."""
+        ``disclosure = secret`` (FR-SCN-8; #167's deceptive inference), or the belief itself
+        keeps a seed's ``secret`` disclosure (``beliefs.disclosure``, #173)."""
         from sqlalchemy import and_
 
         from epistrel.core.tables import events
-        from epistrel.core.tables.beliefs import belief_transitions
+        from epistrel.core.tables.beliefs import belief_transitions, beliefs
 
         if not belief_ids:
             return False
+        seeded = await self.conn.scalar(
+            select(beliefs.c.id)
+            .where(
+                beliefs.c.story_id == self.story_id,
+                beliefs.c.id.in_(list(belief_ids)),
+                beliefs.c.disclosure == "secret",
+            )
+            .limit(1)
+        )
+        if seeded is not None:
+            return True
         t = belief_transitions.c
         e = events.c
         found = await self.conn.scalar(

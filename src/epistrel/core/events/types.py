@@ -543,6 +543,21 @@ class BeliefAuthored(EventPayload):
     disclosure: str | None = None
 
 
+@register("seed_materialized", category=EventCategory.CONTROL)
+class SeedMaterialized(EventPayload):
+    """A structured genesis seeded what characters start out believing (FR-SCN-8; #173): the
+    author act each ``author`` transition of the seed cites. ``field_ref`` names the item (a
+    seed, a relationship, the persona), ``seed_id`` the seed, ``holder_character_id`` its holder
+    (``None`` for the world's), ``audience`` its tokens as written and ``disclosure`` how the
+    holder treats it (what #166's lie rule reads). Identifiers and tokens only."""
+
+    field_ref: str
+    seed_id: str | None = None
+    holder_character_id: str | None = None
+    audience: tuple[str, ...] = ()
+    disclosure: str | None = None
+
+
 # -- commitments (FR-COMMIT-1..3,5..7,10,13; #146) ---------------------------------------------
 
 

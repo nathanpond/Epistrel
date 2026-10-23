@@ -35,7 +35,7 @@ nesting, or at a ``speech_act`` row. Both carry the innermost proposition ``P`` 
 ``P``'s ``valid_from``/``valid_to``. A ``speech_act`` row (``believes(H, said(S, X))``) names its
 ``speaker_character_id``, the ``utterance_id`` heard (``NULL`` for one learned by testimony), a
 ``staged_ref`` (a staged beat's, #174) and the ``perceived_intent``. CHECK ``kind_shape`` keeps
-each kind's columns.
+each kind's columns. A seeded belief keeps its seed's ``disclosure`` (#173, migration 0077).
 
 **How it is held now** (#160): ``accessibility`` (``1.0``; forgetting lowers it), ``state``
 (``held``, ``decayed``, ``corrected``), ``corrected_by`` (the belief that corrected it) and
@@ -113,6 +113,10 @@ POLARITIES: tuple[str, ...] = ("affirmed", "negated")
 
 PERCEIVED_INTENTS: tuple[str, ...] = ("sincere", "joking", "deceptive")
 """A speech-act row's ``perceived_intent`` (#167)."""
+
+DISCLOSURES: tuple[str, ...] = ("open", "guarded", "secret")
+"""How a seeded belief's holder treats it (``disclosure``, FR-SCN-8; #173): ``NULL`` on every
+belief a genesis seed did not write."""
 
 KIND_SHAPE_CHECK = (
     "(kind = 'first_order' AND attributed_holder_id IS NULL AND inner_belief_id IS NULL "
@@ -221,6 +225,7 @@ beliefs = Table(
     Column("utterance_id", ulid_type(), nullable=True),
     Column("staged_ref", JSONB(none_as_null=True), nullable=True),
     Column("perceived_intent", Text, nullable=True),
+    Column("disclosure", Text, nullable=True),
     CheckConstraint(
         "polarity IN (" + ", ".join(f"'{p}'" for p in POLARITIES) + ")", name="polarity"
     ),
@@ -261,6 +266,10 @@ beliefs = Table(
         + ", ".join(f"'{i}'" for i in PERCEIVED_INTENTS)
         + ")",
         name="perceived_intent",
+    ),
+    CheckConstraint(
+        "disclosure IS NULL OR disclosure IN (" + ", ".join(f"'{d}'" for d in DISCLOSURES) + ")",
+        name="disclosure",
     ),
     *derived_indexes("beliefs"),
 )
@@ -451,6 +460,7 @@ Index(
 __all__ = [
     "BELIEFS",
     "BELIEF_TRANSITIONS",
+    "DISCLOSURES",
     "HOLDER_ONLY_CHECK",
     "KIND_SHAPE_CHECK",
     "MUTABLE_BELIEF_COLUMNS",

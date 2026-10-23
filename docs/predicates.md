@@ -59,18 +59,18 @@ does not name its only institution. An author declares such rules where they hol
 
 | Predicate | Subject → object | Cardinality | Temporal | Direction | Exclusions, containment | Qualifiers | Projection | Semantics |
 |---|---|---|---|---|---|---|---|---|
-| `parent_of`<br>`01JPRED0000000000000000011` | person → person | multi per (subject) | permanent | — | — | — | relationships | The subject is a parent of the object. |
-| `child_of`<br>`01JPRED0000000000000000012` | person → person | multi per (subject) | permanent | inverse of `parent_of` | — | — | relationships | The inverse of `parent_of`, stored as `parent_of`. |
-| `sibling_of`<br>`01JPRED0000000000000000013` | person → person | multi per (subject) | permanent | symmetric | — | — | relationships | The two people are siblings (symmetric). |
-| `married_to`<br>`01JPRED0000000000000000014` | person → person | multi per (subject) | fluent | symmetric | — | — | relationships | The two people are married (symmetric, over an interval). |
+| `parent_of`<br>`01JPRED0000000000000000011` | person → person | multi per (subject) | permanent | — | — | `trust` (float) | relationships | The subject is a parent of the object. |
+| `child_of`<br>`01JPRED0000000000000000012` | person → person | multi per (subject) | permanent | inverse of `parent_of` | — | `trust` (float) | relationships | The inverse of `parent_of`, stored as `parent_of`. |
+| `sibling_of`<br>`01JPRED0000000000000000013` | person → person | multi per (subject) | permanent | symmetric | — | `trust` (float) | relationships | The two people are siblings (symmetric). |
+| `married_to`<br>`01JPRED0000000000000000014` | person → person | multi per (subject) | fluent | symmetric | — | `trust` (float) | relationships | The two people are married (symmetric, over an interval). |
 
 ## Relationships
 
 | Predicate | Subject → object | Cardinality | Temporal | Direction | Exclusions, containment | Qualifiers | Projection | Semantics |
 |---|---|---|---|---|---|---|---|---|
-| `knows`<br>`01JPRED0000000000000000015` | person → any | multi per (subject) | fluent | — | — | — | relationships | The subject is acquainted with the object (not symmetric: being known is not knowing). |
-| `friend_of`<br>`01JPRED0000000000000000016` | person → person | multi per (subject) | fluent | symmetric | — | — | relationships | The two are friends (symmetric). |
-| `enemy_of`<br>`01JPRED0000000000000000017` | any → any | multi per (subject) | fluent | — | — | — | relationships | The subject is hostile to the object (not symmetric). |
+| `knows`<br>`01JPRED0000000000000000015` | person → any | multi per (subject) | fluent | — | — | `trust` (float) | relationships | The subject is acquainted with the object (not symmetric: being known is not knowing). |
+| `friend_of`<br>`01JPRED0000000000000000016` | person → person | multi per (subject) | fluent | symmetric | — | `trust` (float) | relationships | The two are friends (symmetric). |
+| `enemy_of`<br>`01JPRED0000000000000000017` | any → any | multi per (subject) | fluent | — | — | `trust` (float) | relationships | The subject is hostile to the object (not symmetric). |
 
 ## Membership and roles
 

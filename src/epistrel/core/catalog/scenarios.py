@@ -254,6 +254,12 @@ def indexed_fields(draft: ScenarioDraft) -> dict[str, str | None]:
         )
     for loc, seed in draft.seeds():
         fields[dotted((*loc, "text"))] = seed.text
+        if seed.nested is not None:
+            fields[dotted((*loc, "nested", "proposition"))] = seed.nested.proposition
+    for index, channel in enumerate(start.channels):
+        fields[f"starting_state.channels[{index}].id"] = channel.id
+    for name in sorted(draft.cast.groups or {}):
+        fields[f"cast.groups.{name}"] = name
     drivers = draft.drivers
     for name, items in (
         ("plot_hooks", drivers.plot_hooks),

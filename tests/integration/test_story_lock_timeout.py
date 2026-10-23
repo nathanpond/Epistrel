@@ -159,9 +159,9 @@ def _busy(response: httpx.Response, story: str) -> None:
 async def test_rest_lock_timeout_is_story_busy(
     stub_settings: Settings, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#472: respond, ingest (a batch commit) and a control action (truncate) whose commit
-    times out on the story lock answer 423 ``story_busy`` with ``Retry-After``, nothing is
-    written, and the story plays on once the lock is free."""
+    """#472: respond, regenerate (#509), ingest (a batch commit) and a control action
+    (truncate) whose commit times out on the story lock answer 423 ``story_busy`` with
+    ``Retry-After``, nothing is written, and the story plays on once the lock is free."""
     async with respond_client(stub_settings, engine) as (client, _):
         story, ids = await new_story(client)
         first = await respond(client, story, body(ids[PLAYER], "One."))
@@ -169,6 +169,7 @@ async def test_rest_lock_timeout_is_story_busy(
 
         calls: list[tuple[str, Callable[[], Awaitable[httpx.Response]]]] = [
             ("respond", lambda: respond(client, story, body(ids[PLAYER], "Two."))),
+            ("regenerate", lambda: client.post(f"/stories/{story}/regenerate", headers=WRITE)),
             (
                 "ingest",
                 lambda: client.post(

@@ -417,6 +417,7 @@ class ClaimSource(Protocol):
         *,
         position: tuple[int, int] | None,
         protected: bool,
+        resolves: str | None = None,
     ) -> Permission | None: ...
 
     async def anchor(
@@ -484,6 +485,7 @@ class RecordsSource:
         *,
         position: tuple[int, int] | None,
         protected: bool,
+        resolves: str | None = None,
     ) -> Permission | None:
         del position
         facts = PermissionFacts(
@@ -493,6 +495,7 @@ class RecordsSource:
             placed=claim.subject_id in self.placed,
             allow_new_arrivals=self.allow_new_arrivals,
             protected=protected,
+            resolves=resolves,
         )
         return permissions.permission(claim, asserter, permissions.owner_of(claim, facts), facts)
 
@@ -579,6 +582,7 @@ class CanonSource:
         *,
         position: tuple[int, int] | None,
         protected: bool,
+        resolves: str | None = None,
     ) -> Permission | None:
         return await permissions.check(
             self.conn,
@@ -590,6 +594,7 @@ class CanonSource:
             protected=protected,
             registry=await self.registry(),
             remember=self.remember,
+            resolves=resolves,
         )
 
     async def anchor(
@@ -827,11 +832,13 @@ class Verifier:
         ref: ClaimRef | None = None,
         asserter: Asserter | None = None,
         protected: bool = False,
+        resolves: str | None = None,
     ) -> VerifyResult | None:
         """``claim``'s verdict as ``viewpoint`` may know it, at narrative ``position`` (canon
         written at or before it); ``None`` when the story's verification is off. A claim that
         ends ``novel`` passes ``asserter``'s permission check (``protected``: the claim's text
-        matched protected content, #148's detector) before it can be canonized or repaired."""
+        matched protected content, #148's detector; ``resolves``: the open thunk the claim fills,
+        #146's resolution exemption) before it can be canonized or repaired."""
         if not self.config.on:
             return None
         checking = time.perf_counter()
@@ -847,7 +854,9 @@ class Verifier:
         at = _At(viewpoint, position, holder)
         result = await self._settle(claim, verdict, fetched, at, where, top=True)
         if asserter is not None and result.kind is VerdictKind.NOVEL:
-            result = await self._permit(result, claim, asserter, at, protected=protected)
+            result = await self._permit(
+                result, claim, asserter, at, protected=protected, resolves=resolves
+            )
         self.results.append((where, result))
         if result.surfaced:
             self.rendered[id(result)] = await self._render_claim(claim)
@@ -900,9 +909,10 @@ class Verifier:
         at: _At,
         *,
         protected: bool,
+        resolves: str | None = None,
     ) -> VerifyResult:
         found = await self.source.permission(
-            claim, asserter, position=at.position, protected=protected
+            claim, asserter, position=at.position, protected=protected, resolves=resolves
         )
         anchor = None
         if isinstance(found, Permitted):

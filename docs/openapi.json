@@ -3512,6 +3512,30 @@
         "title": "ContextItemBody",
         "type": "object"
       },
+      "CouldHaveKnownFlagBody": {
+        "description": "A could-have-known soft flag on the thunk's resolution (FR-COMMIT-11; #165): the bound\ncharacter, the severity (``mild`` under a story-day, ``moderate`` under 30, ``strong``\nbeyond) and the story-time gap in minutes. A warning, never a rejection.",
+        "properties": {
+          "character_id": {
+            "title": "Character Id",
+            "type": "string"
+          },
+          "gap_minutes": {
+            "title": "Gap Minutes",
+            "type": "integer"
+          },
+          "severity": {
+            "title": "Severity",
+            "type": "string"
+          }
+        },
+        "required": [
+          "character_id",
+          "severity",
+          "gap_minutes"
+        ],
+        "title": "CouldHaveKnownFlagBody",
+        "type": "object"
+      },
       "CreatedCharacterBody": {
         "description": "A character of the new story: its id and name, and the scenario role it fills (absent\nfor a blank story).",
         "properties": {
@@ -23093,6 +23117,14 @@
             ],
             "title": "Claim Id"
           },
+          "conflicting_lines": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Conflicting Lines",
+            "type": "array"
+          },
           "conflicting_records": {
             "default": [],
             "items": {
@@ -31008,8 +31040,16 @@
         "type": "object"
       },
       "ThunkBody": {
-        "description": "One thunk: its proposition sketch (texts, the predicate and the known arguments by id,\nthe open slot, the candidates), its effective ``state`` (``resolved`` only while the\nresolving turn is in the timeline), where it was introduced, whether it was made salient,\nthe story-minute it is about, the fact that resolved it and its resolution level\n(FR-COMMIT-9: ``consequential`` or ``incidental``), and the bindings reconciliation rejected\n(#154).",
+        "description": "One thunk: its proposition sketch (texts, the predicate and the known arguments by id,\nthe open slot, the candidates), its effective ``state`` (``resolved`` only while the\nresolving turn is in the timeline), where it was introduced, whether it was made salient,\nthe story-minute it is about, the fact that resolved it and its resolution level\n(FR-COMMIT-9: ``consequential`` or ``incidental``), the bindings reconciliation rejected\n(#154) and the could-have-known soft flags its resolution raised (#165).",
         "properties": {
+          "could_have_known_flags": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/CouldHaveKnownFlagBody"
+            },
+            "title": "Could Have Known Flags",
+            "type": "array"
+          },
           "description": {
             "title": "Description",
             "type": "string"

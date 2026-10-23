@@ -67,6 +67,12 @@ RESOLUTION_STEERING = (
 )
 """The deferral bias (FR-COMMIT-11, #154): generation steering, not a hard check."""
 
+KNOWLEDGE_STEERING = (
+    "An earlier turn settled something on a character who would plausibly have known it all "
+    "along; keep what that character says and does consistent with having known it."
+)
+"""The could-have-known steer (FR-COMMIT-11, #165): the render after a soft flag only."""
+
 
 def tokens(text: str) -> int:
     return len(text) // 4
@@ -202,6 +208,7 @@ def working_line(kind: str, name: str | None, text: str, *, own: bool) -> str:
 
 
 __all__ = [
+    "KNOWLEDGE_STEERING",
     "PLAYER",
     "RESOLUTION_STEERING",
     "RenderSections",

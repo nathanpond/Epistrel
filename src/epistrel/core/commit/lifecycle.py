@@ -64,7 +64,7 @@ import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel
 from sqlalchemy import (
@@ -109,7 +109,7 @@ from epistrel.core.events.types import (
     ThunkResolved,
 )
 from epistrel.core.ids import new_ulid
-from epistrel.core.membership import active_only, active_operation, insert_derived
+from epistrel.core.membership import Position, active_only, active_operation, insert_derived
 from epistrel.core.profiles.capabilities import level_at_least, module_on
 from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.profiles.schema import ProfileSettings
@@ -784,7 +784,9 @@ class Dependence:
     recorded history, ``reconciliation`` says how; nothing written, the thunk stays open),
     ``mention`` (a ``say``: nothing written), ``mismatch`` (the claim does not fill the thunk),
     ``ignored`` (an expired thunk: a later matching claim is plain novelty) or ``inert``
-    (commitment off). ``obligations`` are the obligation facts committed with a resolution."""
+    (commitment off). ``obligations`` are the obligation facts committed with a resolution;
+    ``knowledge`` the bound character's knowledge transitions and ``memories`` its backdated
+    memory (#165, M5)."""
 
     kind: DependenceKind
     thunk_id: str
@@ -792,6 +794,13 @@ class Dependence:
     discharged: tuple[str, ...] = ()
     reconciliation: reconciling.Reconciliation | None = None
     obligations: tuple[str, ...] = ()
+    knowledge: tuple[str, ...] = ()
+    memories: tuple[str, ...] = ()
+
+    @property
+    def flag(self) -> Any:
+        """The could-have-known soft flag the reconciliation raised (#165), or ``None``."""
+        return getattr(self.reconciliation, "flag", None)
 
 
 BeforeResolve = Callable[[AsyncConnection, Thunk, Proposition], Awaitable[None]]
@@ -865,7 +874,10 @@ async def depend(
     resolved_at = _resolution_time(claim, thunk.valid_time)
     binding = binding_of(thunk, claim)
     registry = registry or await load(conn, story_id)
-    reconciled = await reconciling.reconcile(conn, story_id, thunk, binding, registry=registry)
+    now = Position(operation.narrative_turn or 0, operation.turn_variant or 0, 0, beat or 0, 0)
+    reconciled = await reconciling.reconcile(
+        conn, story_id, thunk, binding, registry=registry, now=now
+    )
     if isinstance(reconciled, reconciling.Conflict):
         THUNKS.labels(event="rejected").inc()
         return Dependence("rejected", thunk_id, reconciliation=reconciled)
@@ -921,6 +933,7 @@ async def depend(
         beat,
     )
     THUNKS.labels(event="resolved").inc()
+    knowledge, memories = await _commit_knowledge(conn, operation, thunk, reconciled, now)
     discharged = []
     for entry in owed:
         await discharge(conn, operation, entry.id, DischargeMode.DEPENDENCE, beat=beat)
@@ -932,7 +945,60 @@ async def depend(
         tuple(discharged),
         reconciliation=reconciled,
         obligations=tuple(obligations),
+        knowledge=knowledge,
+        memories=memories,
     )
+
+
+def _phrase(sketch: ThunkSketch) -> str:
+    """The act a resolution's knowledge memory describes, from the thunk's sketch (no model
+    call): its relation and object texts ("knocked at the porch")."""
+    relation = sketch.relation_text.replace("_", " ").strip()
+    obj = (sketch.object_text or "").strip()
+    return " ".join(x for x in (relation, obj) if x)
+
+
+async def _commit_knowledge(
+    conn: AsyncConnection,
+    operation: canon.FactOperation,
+    thunk: Thunk,
+    reconciled: reconciling.Reconciliation,
+    now: Position,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The bound character's knowledge obligations (#165, FR-COMMIT-14): one ``resolution``
+    transition per proposition, citing the thunk this operation resolved, held from the thunk's
+    introduction at its story-time, at ``known``; and its backdated memory of the act
+    (``provenance = resolution``, its own), when the story keeps episodic memory."""
+    from epistrel.core.epistemic import transitions
+    from epistrel.core.memory import records
+
+    knowledge = getattr(reconciled, "knowledge", None)
+    if knowledge is None:
+        return (), ()
+    written: list[str] = []
+    for proposition in knowledge.propositions:
+        result = await transitions.transition(
+            conn,
+            operation,
+            holder=knowledge.holder,
+            kind=transitions.Kind.RESOLUTION,
+            proposition=proposition,
+            antecedent=transitions.Antecedent.resolution(thunk.id),
+            position=now,
+            held_from=knowledge.held_from,
+            story_time=knowledge.story_time,
+            confidence=transitions.Confidence(transitions.Level.KNOWN),
+        )
+        written.append(result.transition.id)
+    memory = await records.write_resolution(
+        conn,
+        cast("records.MemoryOperation", operation),
+        holder=knowledge.holder,
+        act=_phrase(thunk.sketch),
+        at=knowledge.held_from,
+        source_event_ids=[e for e in (thunk.introduced_event_id,) if e is not None],
+    )
+    return tuple(written), (() if memory is None else (memory.id,))
 
 
 # -- closing a turn ----------------------------------------------------------------------------
@@ -1261,6 +1327,10 @@ class LedgerPage:
     rejected: Mapping[str, tuple[Mapping[str, Any], ...]] = field(default_factory=dict)
     """#154: the bindings of each thunk reconciliation rejected in the timeline's turns
     (``turn_report.commit.rejected_bindings``: ids only), by thunk id."""
+    flags: Mapping[str, tuple[Mapping[str, Any], ...]] = field(default_factory=dict)
+    """#165: the could-have-known soft flags each thunk's resolution raised in the timeline's
+    turns (``turn_report.commit.could_have_known_flags``: ids, severity and gap), by thunk
+    id."""
 
 
 async def inspect_ledger(
@@ -1299,7 +1369,30 @@ async def inspect_ledger(
         }
         names.update(await predicate_names(conn, [t.sketch.predicate_id for t in found.thunks]))
         levels, rejected = await _resolutions(conn, story_id, found.thunks)
-    return LedgerPage(found, revision, names, levels, rejected)
+        flags = await _reported(conn, story_id, found.thunks, "could_have_known_flags")
+    return LedgerPage(found, revision, names, levels, rejected, flags)
+
+
+async def _reported(
+    conn: AsyncConnection, story_id: str, page: Sequence[Thunk], key: str
+) -> dict[str, tuple[Mapping[str, Any], ...]]:
+    """The items of ``turn_report.commit.<key>`` naming the page's thunks, in the timeline's
+    turns, by thunk id."""
+    ids = {t.id for t in page}
+    found: dict[str, list[Mapping[str, Any]]] = {}
+    if not ids:
+        return {}
+    o = operations.alias("o")
+    reported = o.c.turn_report["commit"][key]
+    for items in await conn.scalars(
+        select(reported)
+        .where(o.c.story_id == story_id, active_operation(o), reported.is_not(None))
+        .order_by(o.c.narrative_turn, o.c.operation_id)
+    ):
+        for item in items or ():
+            if isinstance(item, dict) and item.get("thunk_id") in ids:
+                found.setdefault(str(item["thunk_id"]), []).append(item)
+    return {k: tuple(v) for k, v in found.items()}
 
 
 async def _resolutions(

@@ -146,6 +146,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from epistrel.core import idempotency, pause, turn_gate
 from epistrel.core.canon.canonize import CanonRequest, canonize_all
 from epistrel.core.commit import boundary, lifecycle, matching
+from epistrel.core.commit import epistemic as knowledge_flags
 from epistrel.core.commit.sketch import ThunkSketch, fills, open_sketch
 from epistrel.core.concurrency import check_expected_revision, run_with_revalidation
 from epistrel.core.config_changes import read_section
@@ -160,7 +161,7 @@ from epistrel.core.enums import (
 from epistrel.core.epistemic import exposure as exposure_records
 from epistrel.core.epistemic import modeling as char_modeling
 from epistrel.core.epistemic import observation as _observation  # noqa: F401 - registers the sink
-from epistrel.core.epistemic import perception
+from epistrel.core.epistemic import perception, replay
 from epistrel.core.epistemic import scene as scene_loader
 from epistrel.core.epistemic import transitions as belief_transitions
 from epistrel.core.erasure.index import index_records
@@ -696,6 +697,9 @@ class TurnRead:
     deferred: bool = False
     """#154 (FR-COMMIT-11): an open thunk an earlier turn introduced is in the context, so the
     renders carry the deferral bias (``prompts.RESOLUTION_STEERING``)."""
+    flagged: bool = False
+    """#165 (FR-COMMIT-11): the previous turn's resolution raised a could-have-known soft flag,
+    so this turn's renders (only) carry ``prompts.KNOWLEDGE_STEERING``."""
 
 
 async def _deferred(conn: AsyncConnection, story_id: str, turn: int) -> bool:
@@ -712,6 +716,33 @@ async def _deferred(conn: AsyncConnection, story_id: str, turn: int) -> bool:
         .limit(1)
     )
     return found is not None
+
+
+async def _flagged(conn: AsyncConnection, story_id: str, turn: int) -> bool:
+    """Whether the active turn before ``turn`` reported a could-have-known soft flag (#165)."""
+    o = operations.alias("flagged_turn")
+    flags = o.c.turn_report["commit"]["could_have_known_flags"]
+    found = await conn.scalar(
+        select(flags)
+        .where(
+            o.c.story_id == story_id,
+            o.c.narrative_turn == turn - 1,
+            active_operation(o),
+            flags.is_not(None),
+        )
+        .limit(1)
+    )
+    return bool(found)
+
+
+def _steering(read: TurnRead) -> str:
+    """The renders' ``resolution_steering`` line(s): the deferral bias (#154) and the knowledge
+    steer after a could-have-known flag (#165)."""
+    lines = [
+        prompts.RESOLUTION_STEERING if read.deferred else "",
+        prompts.KNOWLEDGE_STEERING if read.flagged else "",
+    ]
+    return " ".join(x for x in lines if x)
 
 
 async def _aliases(conn: AsyncConnection, story_id: str, ids: Sequence[str]) -> list[str]:
@@ -830,6 +861,7 @@ async def read_turn(
         triggers=tuple(triggers),
         allow_new_arrivals=story.settings.allow_new_arrivals,
         deferred=lifecycle.commitment_enabled(settings) and await _deferred(conn, story_id, turn),
+        flagged=lifecycle.commitment_enabled(settings) and await _flagged(conn, story_id, turn),
     )
 
 
@@ -2666,7 +2698,7 @@ async def play(
             pins=read.inputs.pins,
             segments=read.inputs.segments,
             scene=read.scene,
-            resolution_steering=prompts.RESOLUTION_STEERING if read.deferred else "",
+            resolution_steering=_steering(read),
             length_target=length_line(read.resolved.max_tokens),
         )
         budget_tokens = settings.render.prompt_token_budget
@@ -3208,42 +3240,48 @@ async def play(
                     )
         commit_report: dict[str, Any] = {}
         if lifecycle.commitment_enabled(settings):
-            position = (read.turn, 0)
-            sal = await salience.record_salience(
-                conn,
-                op,
-                checked.salient,
-                read_set=read_set,
-                position=position,
-                registry=registry,
-                on=True,
-            )
-            depended = await extraction.apply_dependences(
-                conn, op, checked.checked, read_set=read_set, registry=registry
-            )
-            depended += await resolve_details(conn, op, details, registry=registry)
-            await settle_follow_up(conn, op, checked, read_set=read_set, registry=registry)
-            # What the follow-up render did not settle is discharged by the minimal commit.
-            closed = await lifecycle.close_turn(conn, op, follow_up=None, on=True)
-            commit_report = {
-                **closed.model_dump(mode="json"),
-                "salience": {
-                    "entries": sal.entries,
-                    "recorded": [
-                        {"beat": r.beat, "outcome": r.outcome, "thunk_id": r.thunk_id}
-                        for r in sal.recorded
-                    ],
-                    "degradation": list(sal.degradation),
-                },
-                "canonized": len(canonized),
-                "follow_up": {
-                    **checked.follow_up,
-                    "path": _close_path(checked.follow_up, closed.minimal_commits),
-                },
-                **(await _boundary_report(conn, story_id, regenerating, depended, checked)),
-            }
+            with replay.checking() as replayed:
+                position = (read.turn, 0)
+                sal = await salience.record_salience(
+                    conn,
+                    op,
+                    checked.salient,
+                    read_set=read_set,
+                    position=position,
+                    registry=registry,
+                    on=True,
+                )
+                depended = await extraction.apply_dependences(
+                    conn, op, checked.checked, read_set=read_set, registry=registry
+                )
+                depended += await resolve_details(conn, op, details, registry=registry)
+                await settle_follow_up(conn, op, checked, read_set=read_set, registry=registry)
+                # What the follow-up render did not settle is discharged by the minimal commit.
+                closed = await lifecycle.close_turn(conn, op, follow_up=None, on=True)
+                commit_report = {
+                    **closed.model_dump(mode="json"),
+                    "salience": {
+                        "entries": sal.entries,
+                        "recorded": [
+                            {"beat": r.beat, "outcome": r.outcome, "thunk_id": r.thunk_id}
+                            for r in sal.recorded
+                        ],
+                        "degradation": list(sal.degradation),
+                    },
+                    "canonized": len(canonized),
+                    "follow_up": {
+                        **checked.follow_up,
+                        "path": _close_path(checked.follow_up, closed.minimal_commits),
+                    },
+                    **(await _boundary_report(conn, story_id, regenerating, depended, checked)),
+                }
+            if "epistemic" in fixed:
+                # #165: the turn's could-have-known checks (its resolutions' soft flags).
+                fixed["epistemic"]["could_have_known"] = replayed.report()
             for step in closed.degradation:
                 checked.degradation.append((step, "commitment"))
+            if commit_report["could_have_known_flags"]:
+                checked.degradation.append((knowledge_flags.FLAG_DEGRADATION, "commitment"))
         else:
             commit_report = {"canonized": len(canonized)}
         fixed["commit"] = commit_report
@@ -3459,6 +3497,7 @@ async def _boundary_report(
             "thunk_id": d.thunk_id,
             "bound_entity": getattr(d.reconciliation, "bound_entity", None),
             "conflicting_records": list(getattr(d.reconciliation, "conflicting_records", ())),
+            "conflicting_lines": list(getattr(d.reconciliation, "conflicting_lines", ())),
         }
         for d in depended
         if d.kind == "rejected"
@@ -3469,6 +3508,10 @@ async def _boundary_report(
         "reconciliations": len(checked.rejected_bindings)
         + sum(1 for d in depended if d.reconciliation is not None),
         "rejected_bindings": rejected,
+        # #165 (FR-COMMIT-11): a warning, never a rejection.
+        "could_have_known_flags": [
+            d.flag.as_payload() for d in depended if d.kind == "committed" and d.flag is not None
+        ],
     }
 
 

@@ -20,13 +20,13 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-STORE | §2 | 045, 072, 075, 076, 079, 080, 122, 128, 129, 132, 138, 143, 144, 167 |
 | FR-CONC | §2.3 | 045, 052, 057, 062, 072, 144, 169 |
 | FR-MEM | §4 | 070, 071, 072, 075, 169 |
-| FR-EPI | §5 | 024, 167, 168, 171 |
-| FR-BELIEF | §5.1 | 026, 069, 075, 168, 170 |
+| FR-EPI | §5 | 024, 167, 168, 171, 173 |
+| FR-BELIEF | §5.1 | 026, 069, 075, 168, 170, 172, 173 |
 | FR-TURN | §6 | 043, 169, 170 |
-| FR-COMMIT | §7 | 018, 022, 043, 053, 129 |
+| FR-COMMIT | §7 | 018, 022, 043, 053, 129, 173 |
 | FR-RET | §8 | 129, 167 |
 | FR-PROP | §8.1 | 160, 162, 163, 165, 167 |
-| FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162, 163, 165 |
+| FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162, 163, 165, 173 |
 | FR-GUARD | §11 | 087, 095, 096, 114, 161, 169 |
 | FR-REWRITE | §12.1 | 144 |
 | FR-MODEL | §13 | 129, 136, 144, 150, 170 |
@@ -234,6 +234,8 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 169 | Perception routing is one pure function over authoritative state, and it writes one memory per perceiver | Current | — |
 | 170 | Testimony is a speech-act belief for every witness and a separate, gated transition; trust is derived, never stored | Current | — |
 | 171 | A character is modeled lazily by interaction or salience, at minor weight, and a minor's partition is sparse by rule | Current | — |
+| 172 | A non-salient witness's exposure is resolved lazily in its own frame, by the turn that needs it | Current | — |
+| 173 | Could-have-known is a replay of dated acquisitions; a thunk binding obliges its character's knowledge | Current | — |
 
 ---
 
@@ -1794,6 +1796,22 @@ Everything else keeps the safe disposition: detector findings, the excluded reso
 - The need sites are #162's testimony of an eager witness today; #166's verification and #170's context assembly call `resolve_needed` too. With `lazy_resolution` off, exposures are resolved at once, by the default.
 - Adjudicated lazy resolution (the needing turn's model call for a primary witness) is not built; every lazy resolution is `defaulted`.
 - Tests: `tests/property/test_exposure_frame.py` (EXPOSURE-FRAME M5), `tests/scenario/test_s_pollution.py` (S-POLLUTION M5, S-INTRA-TURN-FRAME M5), `tests/scenario/test_s_resolution_anchors.py` (S-RESOLUTION-ANCHORS M5, S-UNDO-SWAP M5), `tests/scenario/test_s_testimony.py::test_s_testimony__exposure` (S-TESTIMONY M5).
+
+---
+
+### ADR-173 — Could-have-known is a replay of dated acquisitions; a thunk binding obliges its character's knowledge
+**Status:** Accepted.
+**Context:** M5's could-have-known (#165; FR-EPI-4, FR-BELIEF-2,11, FR-COMMIT-11,14) must decide mechanically whether a character could know a fact at a narrative position, for #166's hallucination rule, #176's reactive bounds and #154's thunk reconciliation. A late answer to "who did it?" must not land on a character whose own later words show they did not know. M4 left `core/commit/epistemic.could_have_known` as a stub that never flags.
+**Decision:**
+- `core.epistemic.replay.could_have_known(character, proposition, T)` answers `Known(path)`, `NoPath(nearest)` or `NotApplicable`. It replays the character's dated acquisition records through T: its beliefs held at T (bitemporal, a closed one not counted, a decayed one counted) with their transitions' levels, canon the character may read, `imply()` over its partition, and its unresolved exposures before T, dry-run in their frame by `exposure.decide` with nothing persisted. A pure `replay()` over in-memory records decides, so the property runs without a database. The player is always `Known`, the narrator and a story without partitions are `NotApplicable`, an unmodeled entity is `NoPath`. An envelope is a `spoke_to`/`spoke` observation and no path to the words.
+- Reconciliation (`core.commit.reconcile`) derives knowledge obligations for a binding to a modeled, non-player character under partitions: the binding and its implied obligations, held at `known` from the thunk's introduction at its story-time. It searches the character's later sincere `say` (sincere or unlabelled), `do` and `think` beats for a declared proposition that contradicts them, or a wh-question about the thunk's event (a new `question` detector table, `core/verify/detectors/question.json`). A hit is a `Conflict` (`conflicting_lines`), rejected and steered like a positional one. A non-conflicting binding commits the knowledge with the resolution, as `resolution` transitions citing the thunk and a backdated memory of the act made from the sketch without a model call.
+- The M4 hook becomes the soft flag over the replay. It fires, in the resolving turn's commit, for a character modeled before the thunk, outside the thunk's own turn, co-located with the thunk's event per #137's scene, who has no path to the binding. Severity is banded by the story-time gap: `mild` under a day, `moderate` under 30, `strong` beyond. It is a warning: `turn_report.commit.could_have_known_flags`, the `could_have_known_flag` degradation, `/inspect/ledger`, and a steer on the next render only.
+- #146's resolution exemption reaches #144's permission check: the verifier passes the claim's matched thunk (`resolves`), so binding a thunk to a modeled character is reconciliation's to judge, not a permission denial.
+**Consequences:**
+- One function answers "could they know this at T" for every caller; its answers are counted (`turn_report.epistemic.could_have_known`, `epistrel_could_have_known_checks_total{outcome}`) and memoized within a turn.
+- A knowledge proposition the character already held (it observed the binding narration in the same turn) is changed in place by #160's rule and keeps its `held_from`. The resolution's anchor at t is the transition's story-time.
+- Same-turn staged beats and render steps license only once #174's and #168's oracles exist; nested propositions replay against #167's rows; P-02's `could_have_known` span is #153's to measure.
+- Tests: `tests/property/test_could_have_known.py` (COULD-HAVE-KNOWN M5), `tests/test_u_19_m5.py` (U-19 M5), `tests/scenario/test_s_thunk_resolve_m5.py` (S-THUNK-RESOLVE M5), `tests/scenario/test_s_whisper.py::test_s_whisper__inference` (S-WHISPER M5), `tests/test_replay.py`.
 
 ---
 

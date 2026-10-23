@@ -859,6 +859,71 @@ async def write_author(
     return (await memories_by_id(conn, story_id, ids))[0]
 
 
+async def write_resolution(
+    conn: AsyncConnection,
+    operation: MemoryOperation,
+    *,
+    holder: str,
+    act: str,
+    at: NarrativePosition,
+    source_event_ids: Sequence[str] = (),
+    settings: ProfileSettings | None = None,
+) -> Memory | None:
+    """The bound character's backdated memory of the act a thunk resolution names (#165,
+    FR-COMMIT-14): an ``episodic`` row of ``holder`` alone (``characters: [holder]``),
+    provenance ``resolution``, its text made from the thunk's sketch without a model call
+    ("Bobby knocked at the porch."), anchored at the thunk's introduction (``at``: its turn,
+    variant and beat) and written by the resolving operation, so it follows that operation's
+    membership; importance takes the default. Inert (``None``) unless the story keeps episodic
+    memory. Runs the resurrection guard, the erasure index and ``MEMORY_HOOKS`` like every
+    writer."""
+    from epistrel.core.visibility import private_to
+
+    story_id = operation.story_id
+    if story_id is None:
+        raise InvalidRequest("a memory belongs to a story", {"field": "operation"})
+    if not await episodic_on(conn, story_id, settings):
+        return None
+    name = await conn.scalar(
+        select(characters.c.name).where(
+            characters.c.story_id == story_id, characters.c.id == holder
+        )
+    )
+    line = f"{name or 'You'} {act.strip()}.".strip()[:TEXT_MAX]
+    provenance = RecordProvenance.RESOLUTION
+    row: dict[str, Any] = {
+        "id": new_ulid(),
+        "story_id": story_id,
+        "kind": MemoryKind.EPISODIC.value,
+        "text": line,
+        "holder_character_id": holder,
+        "character_id": holder,
+        "visibility": private_to(holder).document(),
+        "provenance": provenance.value,
+        "trust_tier": trust_tier_of(provenance).value,
+        "operation_id": operation.operation_id,
+        "source_event_ids": list(source_event_ids),
+        "narrative_turn": at.turn,
+        "turn_variant": at.variant,
+        "beat": at.beat,
+        "proposition_ids": [],
+        "participants": [holder],
+    }
+    await guard.check_content(
+        conn,
+        story_id,
+        [guard.Content((line,), frozenset({holder}))],
+        base_revision=operation.base_revision,
+        path=__name__,
+    )
+    await insert_derived(conn, memories, [row])
+    await index_records(conn, [memory_record(SimpleNamespace(**row))])
+    ids = (str(row["id"]),)
+    for hook in list(MEMORY_HOOKS):
+        await hook(conn, story_id, ids)
+    return (await memories_by_id(conn, story_id, ids))[0]
+
+
 SEED_IMPORTANCE = 0.8
 """The importance a seed memory starts with: the author's knowledge (#149)."""
 
@@ -1350,6 +1415,7 @@ __all__ = [
     "write_author",
     "write_consolidated",
     "write_perceived",
+    "write_resolution",
     "write_seed",
 ]
 

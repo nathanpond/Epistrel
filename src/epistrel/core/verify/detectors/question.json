@@ -1,0 +1,25 @@
+{
+  "category": "question",
+  "language": "en",
+  "description": "Sincere wh-questions (#165): a say beat that asks who, what, where, which or whose about an event is evidence that the speaker does not know that part of it (a later sincere 'who was at your door?' maps to not-knows(who knocked)). Each wh-word names the thunk slots it asks about; stopwords are dropped before the question's words are compared with the event's.",
+  "wh_words": {
+    "who": ["subject", "object"],
+    "whom": ["subject", "object"],
+    "whose": ["subject", "object"],
+    "what": ["subject", "object"],
+    "which": ["subject", "object"],
+    "where": ["object"]
+  },
+  "suffixes": ["ing", "ed", "es", "s"],
+  "stopwords": [
+    "a", "an", "the", "this", "that", "these", "those", "it", "its", "it's",
+    "i", "me", "my", "you", "your", "yours", "he", "him", "his", "she", "her", "hers",
+    "we", "us", "our", "they", "them", "their", "someone", "somebody", "something", "anyone",
+    "is", "are", "was", "were", "be", "been", "being", "am", "do", "does", "did", "done",
+    "has", "have", "had", "will", "would", "could", "should", "can", "may", "might", "must",
+    "at", "on", "in", "to", "of", "for", "from", "by", "with", "about", "into", "onto", "over",
+    "and", "or", "but", "so", "then", "there", "here", "just", "really", "earlier", "today",
+    "tonight", "yesterday", "now", "ever", "again", "all", "else", "who", "whom", "whose",
+    "what", "which", "where", "when", "why", "how", "hey", "oh", "um", "uh", "well", "know"
+  ]
+}

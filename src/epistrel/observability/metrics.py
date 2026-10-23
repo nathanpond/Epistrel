@@ -147,6 +147,18 @@ CHARACTERS_MODELED = Counter(
     "author's directive).",
     ("trigger",),
 )
+COULD_HAVE_KNOWN = Counter(
+    "epistrel_could_have_known_checks",
+    "Could-have-known checks by acquisition replay (#165), by outcome (known, no_path, "
+    "not_applicable).",
+    ("outcome",),
+)
+COULD_HAVE_KNOWN_FLAGS = Counter(
+    "epistrel_could_have_known_flags",
+    "Thunk resolutions flagged because the bound character would plausibly have known (#165), "
+    "by severity (mild, moderate, strong).",
+    ("severity",),
+)
 BELIEF_TRANSITIONS_REFUSED = Counter(
     "epistrel_belief_transitions_refused",
     "Belief transitions refused (self-attestation, an invalid antecedent, inconsistent "
@@ -418,6 +430,8 @@ __all__ = [
     "BELIEF_TRANSITIONS",
     "BELIEF_TRANSITIONS_REFUSED",
     "CHARACTERS_MODELED",
+    "COULD_HAVE_KNOWN",
+    "COULD_HAVE_KNOWN_FLAGS",
     "GAUGES",
     "HOT_COUNTS_CORRECTED",
     "HOT_SCOPES",

@@ -64,6 +64,18 @@ class RejectedBindingBody(BaseModel):
     beat: int | None = None
     bound_entity: str | None = None
     conflicting_records: list[str] = []
+    conflicting_lines: list[str] = []
+    """#165: the bound character's later sincere lines (event ids) its knowledge contradicts."""
+
+
+class CouldHaveKnownFlagBody(BaseModel):
+    """A could-have-known soft flag on the thunk's resolution (FR-COMMIT-11; #165): the bound
+    character, the severity (``mild`` under a story-day, ``moderate`` under 30, ``strong``
+    beyond) and the story-time gap in minutes. A warning, never a rejection."""
+
+    character_id: str
+    severity: str
+    gap_minutes: int
 
 
 class ThunkBody(BaseModel):
@@ -71,8 +83,8 @@ class ThunkBody(BaseModel):
     the open slot, the candidates), its effective ``state`` (``resolved`` only while the
     resolving turn is in the timeline), where it was introduced, whether it was made salient,
     the story-minute it is about, the fact that resolved it and its resolution level
-    (FR-COMMIT-9: ``consequential`` or ``incidental``), and the bindings reconciliation rejected
-    (#154)."""
+    (FR-COMMIT-9: ``consequential`` or ``incidental``), the bindings reconciliation rejected
+    (#154) and the could-have-known soft flags its resolution raised (#165)."""
 
     id: str
     sketch: dict[str, Any]
@@ -85,6 +97,7 @@ class ThunkBody(BaseModel):
     resolved_fact_id: str | None
     resolution_level: str | None = None
     rejected_bindings: list[RejectedBindingBody] = []
+    could_have_known_flags: list[CouldHaveKnownFlagBody] = []
 
     @classmethod
     def of(cls, found: Thunk, names: dict[str, str], page: LedgerPage | None = None) -> ThunkBody:
@@ -108,6 +121,14 @@ class ThunkBody(BaseModel):
                     {k: v for k, v in item.items() if k in RejectedBindingBody.model_fields}
                 )
                 for item in page.rejected.get(found.id, ())
+            ],
+            could_have_known_flags=[]
+            if page is None
+            else [
+                CouldHaveKnownFlagBody.model_validate(
+                    {k: v for k, v in item.items() if k in CouldHaveKnownFlagBody.model_fields}
+                )
+                for item in page.flags.get(found.id, ())
             ],
         )
 

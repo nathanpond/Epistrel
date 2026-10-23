@@ -476,6 +476,41 @@ async def _intent(conn: AsyncConnection, event_id: str) -> str | None:
     return payload.get("intent") if isinstance(payload, dict) else None
 
 
+async def decide(
+    conn: AsyncConnection,
+    exposure: Exposure,
+    *,
+    registry: Registry | None = None,
+    read_set: StructuredReadSet | None = None,
+) -> testimony.TestimonyOutcome:
+    """#162's deterministic default for ``exposure``, decided in its frame (the witness's
+    partition and canon through the exposure position, its trust in the source as of then).
+    It only reads, so ``resolve_exposure`` writes what it decides, and #165's could-have-known
+    replay dry-runs an unresolved exposure through it with nothing persisted."""
+    story_id = exposure.story_id
+    frame = exposure.position
+    found = registry or await load(conn, story_id)
+    witness = exposure.witness
+    lookup = KeyedLookup(conn, read_set if read_set is not None else StructuredReadSet())
+    consistency = await testimony.consistency_of(
+        lookup, story_id, witness, [exposure.proposition], registry=found, through=frame
+    )
+    trust = (
+        testimony.TRUST_NEUTRAL
+        if exposure.source is None
+        else await testimony.trust(conn, story_id, witness, exposure.source, through=frame)
+    )
+    intent = testimony.perceived(await _intent(conn, exposure.source_event_id))
+    act = testimony.SpeechAct(
+        speaker=exposure.source or witness,
+        beat=frame.beat,
+        propositions=(exposure.proposition,),
+        event_id=exposure.source_event_id,
+    )
+    (outcome,) = testimony.testimony(witness, act, intent, consistency=consistency, trust=trust)
+    return outcome
+
+
 async def resolve_exposure(
     conn: AsyncConnection,
     exposure: Exposure,
@@ -500,23 +535,7 @@ async def resolve_exposure(
     witness = exposure.witness
     written: list[transitions.TransitionResult] = []
     with including([op.operation_id]):
-        lookup = KeyedLookup(conn, reads)
-        consistency = await testimony.consistency_of(
-            lookup, story_id, witness, [exposure.proposition], registry=found, through=frame
-        )
-        trust = (
-            testimony.TRUST_NEUTRAL
-            if exposure.source is None
-            else await testimony.trust(conn, story_id, witness, exposure.source, through=frame)
-        )
-        intent = testimony.perceived(await _intent(conn, exposure.source_event_id))
-        act = testimony.SpeechAct(
-            speaker=exposure.source or witness,
-            beat=frame.beat,
-            propositions=(exposure.proposition,),
-            event_id=exposure.source_event_id,
-        )
-        (outcome,) = testimony.testimony(witness, act, intent, consistency=consistency, trust=trust)
+        outcome = await decide(conn, exposure, registry=found, read_set=reads)
         antecedent = transitions.Antecedent.record("events", exposure.source_event_id)
         common: dict[str, Any] = {
             "holder": witness,
@@ -774,6 +793,7 @@ __all__ = [
     "Framed",
     "Pass",
     "Resolution",
+    "decide",
     "exposure_position",
     "exposures_of",
     "first_correction",

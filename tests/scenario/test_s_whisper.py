@@ -20,6 +20,14 @@ perceiver, ``core.memory.records.write_perceived``) are the partitions' episodic
 - Security: a roster (``scene_context.characters_present``) falsely listing the absent Clara
   and omitting the present Bobby grants Clara nothing, and Bobby still perceives.
 - Co-location only: at ``co_location`` the same whisper writes the words to Bobby too.
+
+``test_s_whisper__inference`` (FR-BELIEF-11; #165) plays the whisper under per-character
+partitions with testimony at ``defaulted``: Bobby's envelope is an observation that Jenni spoke to
+Marcus and no path to the words (``core.epistemic.replay.could_have_known`` finds ``NoPath``),
+while Marcus, addressed, believes them by testimony (``Known``). The envelope observation is a
+valid antecedent for Bobby's low-confidence inference that they are hiding something (written
+through #160), which still licenses nothing about the words. Complement: once Marcus tells Bobby
+the words, the same claim has a path (the exposure, dry-run; then the testimony it resolves to).
 """
 
 from __future__ import annotations
@@ -30,10 +38,20 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core.enums import BeliefConfidenceLevel
+from epistrel.core.epistemic import replay, transitions
 from epistrel.core.events.types import BeatSay, RenderRejected
+from epistrel.core.membership import Position
+from epistrel.core.propositions.model import Interval, Proposition
+from epistrel.core.propositions.vocabulary import SPOKE_TO
 from epistrel.core.views import audit_view
+from tests import exposure_support as xs
+from tests import partition_support as parts
 from tests import perception_support as ps
+from tests import testimony_support as ts
 from tests.auth_support import auth_settings
+from tests.canon_support import auto_predicate
+from tests.event_support import rows
 from tests.respond_support import body, respond, respond_client
 from tests.structured_turn_support import beat, claim, render, structured_story, turn_report
 
@@ -243,3 +261,90 @@ async def test_s_whisper__routing(
         bobby = _texts(await ps.memories_of(engine, story, ids["Bobby"]))
         assert (f"Jenni says: {WORDS}", "content", "room") in bobby
         assert not [f for _, f, _ in bobby if f == "envelope"]
+
+
+async def _knows(
+    engine: AsyncEngine, story: str, who: str, p: Proposition, at: Position
+) -> replay.Answer:
+    async with engine.connect() as conn:
+        return await replay.could_have_known(conn, story, who, p, at)
+
+
+@pytest.mark.part("M5", "FR-BELIEF-11")
+async def test_s_whisper__inference(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+    testimony_delivered: None,
+) -> None:
+    """See the module docstring (the inference clause)."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        story, ids, things = await ts.room(client, engine, "Wren", "Jenni", "Marcus", "Bobby")
+        await ts.enable_testimony(engine, story, "defaulted")
+        words = ts.sent(things)
+        answer = render(
+            beat(
+                "say",
+                ts.CLAIM_LINE,
+                intent="sincere",
+                whisper_to=[ids["Marcus"]],
+                addressee=ids["Marcus"],
+                propositions=[claim("Olivia", "sent", "the text")],
+            )
+        )
+        await _play(client, epistrel, story, ids, answer)
+        report = await turn_report(engine, story)
+        assert report["epistemic"]["could_have_known"] == {"checks": 0, "no_path": 0}
+        now = Position.end_of(1)
+
+        # Bobby observed the envelope (Jenni spoke to Marcus), never the words.
+        (envelope,) = await rows(
+            engine,
+            "SELECT b.id, t.kind FROM beliefs b JOIN propositions p ON p.id = b.proposition_id "
+            "JOIN belief_transitions t ON t.belief_id = b.id WHERE b.story_id = :s "
+            "AND b.holder_character_id = :h AND p.predicate_id = :q",
+            s=story,
+            h=ids["Bobby"],
+            q=SPOKE_TO,
+        )
+        assert str(envelope.kind) == "observation"
+        assert await _knows(engine, story, ids["Bobby"], words, now) == replay.NoPath()
+        heard = await _knows(engine, story, ids["Marcus"], words, now)
+        assert isinstance(heard, replay.Known)
+        assert heard.path.transition_kind == "testimony"
+
+        # The envelope seeds a low-confidence inference: they're hiding something.
+        hiding = Proposition(
+            subject_id=ids["Jenni"],
+            predicate_id=await auto_predicate(engine, story, "hiding_something_from"),
+            object_id=ids["Bobby"],
+            valid_time=Interval.of(None, None),
+        )
+        inferred = await parts.transit(
+            engine,
+            story,
+            ids["Bobby"],
+            hiding,
+            cause=transitions.Kind.INFERENCE,
+            antecedent=transitions.Antecedent.record("beliefs", envelope.id),
+            confidence=transitions.Confidence(BeliefConfidenceLevel.SUSPECTED),
+        )
+        assert inferred.belief.confidence_level is BeliefConfidenceLevel.SUSPECTED
+        later = Position.end_of(inferred.belief.held_from.turn)
+        assert isinstance(await _knows(engine, story, ids["Bobby"], hiding, later), replay.Known)
+        assert await _knows(engine, story, ids["Bobby"], words, later) == replay.NoPath()
+
+        # Complement: Marcus tells Bobby the words. The hearing is a path, and so is the
+        # testimony it resolves to.
+        exposure_id, _ = await xs.expose(engine, story, ids["Bobby"], words, source=ids["Marcus"])
+        (told,) = await rows(engine, "SELECT * FROM exposures WHERE id = :e", e=exposure_id)
+        after = Position.end_of(told.position_turn)
+        found = await _knows(engine, story, ids["Bobby"], words, after)
+        assert isinstance(found, replay.Known)
+        assert (found.path.kind, found.path.ref_id) == ("exposure", exposure_id)
+        await xs.resolve(engine, story, exposure_id)
+        found = await _knows(engine, story, ids["Bobby"], words, Position.end_of(after.turn + 1))
+        assert isinstance(found, replay.Known)
+        assert found.path.transition_kind == "testimony"
+        # ... and only from then: at the whisper, still none.
+        assert isinstance(await _knows(engine, story, ids["Bobby"], words, now), replay.NoPath)

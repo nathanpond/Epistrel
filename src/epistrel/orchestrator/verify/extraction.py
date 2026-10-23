@@ -778,6 +778,12 @@ async def verify_detected(
             ref=ref,
             asserter=asserter,
             protected=claim.protected,
+            # #146's resolution exemption: a claim filling an open thunk resolves it, so
+            # binding the thunk to a modeled character is reconciliation's to judge (#154,
+            # #165), not a permission denial.
+            resolves=claim.matched_thunk_id
+            if claim.channel in lifecycle.DEPENDENCE_CHANNELS
+            else None,
         )
         checked.append(CheckedClaim(claim, result, claim_id))
     return checked

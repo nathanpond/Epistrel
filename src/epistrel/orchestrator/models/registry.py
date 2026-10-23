@@ -216,6 +216,11 @@ class GenerationInputs(InputSchema):
     beliefs: Annotated[list[str], C.BELIEF_STATE] = Field(default_factory=list, max_length=200)
     """A structured character render's ``## What you believe`` (FR-TURN-8; #170): its own belief
     state (``core.epistemic.context.CharacterContext.belief_lines``)."""
+    private_memories: Annotated[list[str], C.WORKING_MEMORY] = Field(
+        default_factory=list, max_length=20
+    )
+    """A structured character render's ``## Your private memories`` (#172, FR-VERIFY-9): its
+    own ``think`` memories ("you thought: …", ``CharacterContext.private_memories``)."""
     director_notes: Annotated[str, C.DIRECTOR_NOTES] = ""
     """A story created from a scenario (#122): its ``## Author notes (not facts)`` block (the
     plot hooks, objectives, guidance, planned reveals, milestones and endings)."""

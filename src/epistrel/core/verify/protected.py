@@ -40,6 +40,25 @@ turn's read set, and ``recheck`` (a ``core.readset.REBASE_CHECKS`` entry) rebuil
 the story lock at a rebase: a changed index (a fact newly hidden or revealed, a thunk resolved)
 regenerates the turn, so a turn never commits text checked against stale protected content.
 
+**Belief-only records** (#172, U-22 M5, FR-VERIFY-13). Another character's first-order belief
+(its partition, #159) is hidden from the speaker unless the speaker may read it as canon. Its
+terms are the names and aliases of its **object** people (``BELIEF_TERM_KINDS``) the speaker has
+no other way to know (never a common thing such as "the text", never its bare subject: Bobby
+may say "Marcus"; "Dana", whom only Marcus's belief that he is seeing her names, is protected);
+a hit claims the belief's proposition, so #144's permission check denies it and #151 repairs
+it. A hit restating a beat's declared attribution ("Bobby thinks …") is that attribution.
+
+**Private thoughts** (#172, FR-TURN-3, NFR-PRIV-1; the secondary control). A side index, outside
+the digest and the rebase re-check (it changes only as turns commit, which a rebase already
+regenerates): ``PrivateRecord``s, every other character's ``think`` (its stored ``think``
+memories of the last ``THOUGHT_WINDOW`` turns, ``load_private_records``, and this turn's
+``think`` beats, which the pipeline adds after each render) and, for the inner-state check
+(``core.verify.inner_state``), the statements of their belief records. ``match_thoughts`` finds
+a text that repeats a thought: its ``SHINGLE``-word shingles (fewer for a shorter thought) hit
+at least twice (once for a thought of one shingle), or one run of at least ``RUN`` words (the
+whole thought, if shorter), found by a sequence matcher over folded words. A thinker's own
+thoughts are never matched, and neither is the player's own input.
+
 Nothing here calls a model; logs carry counts only (invariant 3).
 """
 
@@ -50,9 +69,10 @@ import json
 import logging
 import re
 import weakref
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import date
+from difflib import SequenceMatcher
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
@@ -517,6 +537,7 @@ async def load_protected_index(
             if entity not in known:
                 texts += _names(index, entity)
         hidden_terms += [term(t, "fact", fact.id, p) for t in texts]
+    hidden_terms += await _belief_terms(conn, story_id, viewpoint, known, index, cast)
     candidate_terms: list[ProtectedTerm] = []
     t = thunks.alias("t")
     rows = await conn.execute(
@@ -542,6 +563,45 @@ async def load_protected_index(
         )
     log.debug("protected index: %d terms (truncated=%s)", len(built), built.truncated)
     return built
+
+
+BELIEF_TERM_KINDS = frozenset({"person"})
+"""The entity kinds a belief-only record protects by name (#172): people the speaker has no
+way to know ("Dana"), never a common thing ("the text") the speaker may name for itself."""
+
+
+async def _belief_terms(
+    conn: AsyncConnection,
+    story_id: str,
+    viewpoint: str,
+    known: set[str],
+    index: EntityIndex,
+    cast: set[str],
+) -> list[ProtectedTerm]:
+    """The terms of every other character's belief-only records (see the module docstring):
+    their object entities' names the speaker has no other way to know, newest first."""
+    from epistrel.core.epistemic import partitions
+
+    speaker = (
+        viewpoint.removeprefix(CHARACTER_VIEWPOINT_PREFIX)
+        if viewpoint.startswith(CHARACTER_VIEWPOINT_PREFIX)
+        else None
+    )
+    found: list[ProtectedTerm] = []
+    for holder in sorted(cast):
+        if holder == speaker:
+            continue
+        held = await partitions.partition(conn, story_id, holder)
+        for belief in sorted(held, key=lambda b: b.id, reverse=True):
+            p = belief.proposition
+            objects = [p.object_id] if p.object_id is not None else []
+            objects += list(p.object_set or ())
+            for entity in objects:
+                entry = index.get(entity)
+                if entity in known or entry is None or entry.kind not in BELIEF_TERM_KINDS:
+                    continue
+                found += [term(n, "belief", belief.id, p) for n in _names(index, entity)]
+    return found
 
 
 def _filled(sketch: object, entity_id: str, valid_time: int | None) -> Proposition | None:
@@ -570,6 +630,134 @@ def _filled(sketch: object, entity_id: str, valid_time: int | None) -> Propositi
         )
     except ValueError:
         return None
+
+
+# -- private thoughts (#172) -----------------------------------------------------------------
+
+SHINGLE = 4
+"""The word shingle a private thought is matched by (#152's)."""
+RUN = 6
+"""A run of this many words of a thought (the whole thought, if shorter) is a hit on its own."""
+THOUGHT_WINDOW = 50
+"""How many turns back the stored ``think`` memories are read."""
+THOUGHTS_MAX = 400
+"""The most private records one turn's side index holds (newest first)."""
+_WORDS = re.compile(r"[^\W_]+(?:['\u2019][^\W_]+)*", re.UNICODE)
+_THINKS_PREFIX = re.compile(r"^[^:\n]{1,200}? thinks: ")
+
+
+def folded_words(text: str) -> list[tuple[int, int, str]]:
+    """``text``'s words, folded, with their offsets in ``text``."""
+    return [
+        (m.start(), m.end(), fold(m.group()).replace("\u2019", "'")) for m in _WORDS.finditer(text)
+    ]
+
+
+@dataclass(frozen=True, slots=True)
+class PrivateRecord:
+    """One private record of a character (see the module docstring): its holder, a reference
+    (``memory:<id>``, ``beat:<n>`` or ``belief:<id>``), its kind (``think`` or ``belief``)
+    and its text (a thought's words, a belief's statement)."""
+
+    holder: str
+    ref: str
+    kind: str
+    text: str
+    words: tuple[str, ...] = field(default=(), compare=False)
+
+    @classmethod
+    def of(cls, holder: str, ref: str, kind: str, text: str) -> PrivateRecord:
+        body = _THINKS_PREFIX.sub("", text.strip()) if kind == "think" else text
+        return cls(holder, ref, kind, body, tuple(w for _, _, w in folded_words(body)))
+
+
+def _shingles(words: Sequence[str], n: int) -> set[tuple[str, ...]]:
+    return {tuple(words[i : i + n]) for i in range(len(words) - n + 1)}
+
+
+def match_thoughts(
+    text: str | None, records: Sequence[PrivateRecord], *, speaker: str
+) -> list[tuple[int, int, PrivateRecord]]:
+    """Every other character's ``think`` that ``text`` repeats (see the module docstring), as
+    ``(start, end, record)`` over the matched words; ``speaker``'s own are never matched."""
+    if not text or not records:
+        return []
+    said = folded_words(text)
+    words = [w for _, _, w in said]
+    found: list[tuple[int, int, PrivateRecord]] = []
+    for record in records:
+        if record.kind != "think" or record.holder == speaker or len(record.words) < 2:
+            continue
+        n = min(SHINGLE, len(record.words))
+        own = _shingles(record.words, n)
+        hits = own & _shingles(words, n)
+        matcher = SequenceMatcher(None, record.words, words, autojunk=False)
+        blocks = [b for b in matcher.get_matching_blocks() if b.size]
+        longest = max((b.size for b in blocks), default=0)
+        if len(hits) < min(2, len(own)) and longest < min(RUN, len(record.words)):
+            continue
+        spans = [b for b in blocks if b.size >= min(n, len(record.words))] or blocks
+        first = min(b.b for b in spans)
+        last = max(b.b + b.size for b in spans) - 1
+        found.append((said[first][0], said[last][1], record))
+    return sorted(found, key=lambda f: (f[0], f[1]))
+
+
+async def load_private_records(
+    conn: AsyncConnection,
+    story_id: str,
+    turn: int,
+    *,
+    names: Mapping[str, str] | None = None,
+    predicates: Mapping[str, str] | None = None,
+) -> tuple[PrivateRecord, ...]:
+    """The story's stored private records a turn's scan reads (see the module docstring): every
+    character's active ``think`` memories of the last ``THOUGHT_WINDOW`` turns and, with
+    ``names``/``predicates`` given, every character's belief statements."""
+    from epistrel.core.epistemic import partitions
+    from epistrel.core.membership import active_only
+    from epistrel.core.tables import characters
+    from epistrel.core.tables.memories import memories
+
+    m = memories.c
+    rows = await conn.execute(
+        select(m.id, m.holder_character_id, m.text)
+        .where(
+            m.story_id == story_id,
+            m.channel == "think",
+            m.holder_character_id.is_not(None),
+            m.narrative_turn >= turn - THOUGHT_WINDOW,
+            m.narrative_turn <= turn,
+            active_only(memories),
+        )
+        .order_by(m.narrative_turn.desc(), m.id.desc())
+        .limit(THOUGHTS_MAX)
+    )
+    found = [
+        PrivateRecord.of(str(r.holder_character_id), f"memory:{r.id}", "think", str(r.text))
+        for r in rows
+    ]
+    if names is not None and predicates is not None:
+        cast = [
+            str(c)
+            for c in await conn.scalars(
+                select(characters.c.id).where(
+                    characters.c.story_id == story_id, characters.c.is_player.is_(False)
+                )
+            )
+        ]
+        for holder in cast:
+            for belief in await partitions.partition(conn, story_id, holder):
+                p = belief.proposition
+                words = [names.get(p.subject_id, ""), predicates.get(p.predicate_id, "")]
+                if p.object_id is not None:
+                    words.append(names.get(p.object_id, ""))
+                if p.literal is not None:
+                    words.append(str(p.literal.value))
+                text = " ".join(w.replace("_", " ") for w in words if w)
+                if text:
+                    found.append(PrivateRecord.of(holder, f"belief:{belief.id}", "belief", text))
+    return tuple(found[:THOUGHTS_MAX])
 
 
 # -- the rebase re-check ---------------------------------------------------------------------
@@ -651,11 +839,15 @@ register_rebase_check(recheck)
 __all__ = [
     "DEFAULT_PROTECTED_INDEX_MAX",
     "CanonReads",
+    "PrivateRecord",
     "ProtectedIndex",
     "ProtectedPair",
     "ProtectedTerm",
     "build_index",
+    "folded_words",
+    "load_private_records",
     "load_protected_index",
+    "match_thoughts",
     "number_words",
     "ordinal_words",
     "recheck",

@@ -29,6 +29,11 @@ takes nothing else, and ``python -m tools.gates check-character-context`` checks
   viewpoint filter (#159) composes into every arm. The assembler takes only that already
   filtered set (``core.retrieval.filtered.ViewpointFiltered``, U-31). Every ``age`` canon fact
   about a character is left out: true ages travel only as below.
+- **Your private memories** (#172, FR-VERIFY-9, FR-EPI-11; per-character partitions only): the
+  character's own ``think`` memories, at most ``PRIVATE_MAX``, those retrieval ranked first, then
+  the most recent, each "you thought: …". They sit in U-31's pins tier (never cut by the prompt
+  cap), so a later render can resurface a recorded state (a grounded callback,
+  ``core.epistemic.resurface``) rather than invent one. Omitted when there are none.
 - **Ages** (FR-CAT-12, FR-RESP-12, S-AGE-ASSIGNMENT M5; per-character partitions only): the
   character's own true age ("You are 34."). Every other present character on the ``## Scene``
   line gets only an apparent band (``age_band``: "early twenties"), or the exact age when the
@@ -94,6 +99,8 @@ BELIEFS_MAX = 40
 """The most first-order belief lines one context carries (the rest reach it through retrieval)."""
 NESTED_MAX = 20
 """The most nested-belief and speech-act lines one context carries, each."""
+PRIVATE_MAX = 8
+"""The most of a character's own ``think`` memories its context carries (#172)."""
 QUERY_BEATS = 3
 """How many of the character's own latest perceived beats join the retrieval query."""
 TEXT_MAX = 1_000
@@ -170,7 +177,7 @@ class CharacterContext:
     own_age: str = ""
     """"You are N." (per-character partitions only)."""
     private_memories: tuple[str, ...] = ()
-    """#172's section (empty until it lands)."""
+    """#172: "you thought: …" lines, the character's own ``think`` memories."""
     player_requests: tuple[str, ...] = ()
     """#180's section (empty until it lands)."""
     time_belief: None = None
@@ -292,6 +299,7 @@ def compose(
     speech_lines: Sequence[str] = (),
     scene: str = "",
     own_age: str = "",
+    private_memories: Sequence[str] = (),
     needed: Sequence[Needed] = (),
     retrieval: RetrievalResult | None = None,
     report: Mapping[str, Any] | None = None,
@@ -309,6 +317,7 @@ def compose(
         canon=tuple(canon or ()),
         scene=scene,
         own_age=own_age,
+        private_memories=tuple(private_memories[:PRIVATE_MAX]),
         needed=tuple(needed),
         retrieval=retrieval,
         report=dict(report or {}),
@@ -521,6 +530,39 @@ async def _nested_lines(
     return [line(n) for n in held[:NESTED_MAX]], [line(s.belief) for s in said[-NESTED_MAX:]]
 
 
+async def _private_lines(
+    conn: AsyncConnection, story_id: str, character_id: str, ranked: Sequence[str]
+) -> list[str]:
+    """#172: the character's own ``think`` memories as "you thought: …" lines, those retrieval
+    ranked (``ranked``, memory ids in order) first, then the most recent."""
+    from epistrel.core.membership import active_only
+    from epistrel.core.tables.memories import memories
+
+    m = memories.c
+    rows = list(
+        await conn.execute(
+            select(m.id, m.text)
+            .where(
+                m.story_id == story_id,
+                m.holder_character_id == character_id,
+                m.channel == "think",
+                m.quarantined_at.is_(None),
+                active_only(memories),
+            )
+            .order_by(m.narrative_turn.desc(), m.beat.desc(), m.id.desc())
+            .limit(PRIVATE_MAX * 8)
+        )
+    )
+    order = {memory_id: i for i, memory_id in enumerate(ranked)}
+    rows.sort(key=lambda r: order.get(str(r.id), len(order)))
+    lines = []
+    for row in rows[:PRIVATE_MAX]:
+        body = str(row.text)
+        body = body.split(" thinks: ", 1)[1] if " thinks: " in body else body
+        lines.append(f"you thought: {body.strip()}"[:TEXT_MAX])
+    return lines
+
+
 async def _apparent(
     conn: AsyncConnection,
     story_id: str,
@@ -628,6 +670,7 @@ async def build_context(
     speech_lines: list[str] = []
     needed: list[Needed] = []
     own_age = ""
+    private_memories: list[str] = []
     scene = state.scene_text
     if partitioned:
         registry = await load(conn, story_id)
@@ -650,6 +693,8 @@ async def build_context(
         speech_lines = pending_heard + speech_lines
         age = cast.ages.get(character_id)
         own_age = "" if age is None else f"You are {age}."
+        ranked = [i.item_id for i in retrieval.context.items if i.kind != "canon"]
+        private_memories = await _private_lines(conn, story_id, character_id, ranked)
         scene = await _scene_line(conn, state, character_id, cast)
     report = {
         "context_ms": round((time.perf_counter() - started) * 1000, 3),
@@ -671,6 +716,7 @@ async def build_context(
         speech_lines=speech_lines,
         scene=scene,
         own_age=own_age,
+        private_memories=private_memories,
         needed=needed,
         retrieval=retrieval,
         report=report,
@@ -680,6 +726,7 @@ async def build_context(
 __all__ = [
     "BELIEFS_MAX",
     "NESTED_MAX",
+    "PRIVATE_MAX",
     "QUERY_BEATS",
     "Adjudicator",
     "CharacterContext",

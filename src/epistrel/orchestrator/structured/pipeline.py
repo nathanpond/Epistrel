@@ -256,6 +256,7 @@ from epistrel.core.verify import attribution
 from epistrel.core.verify.detect import DeclaredClaim, DetectBeat, DetectedClaim
 from epistrel.core.verify.introduce import Introductions
 from epistrel.core.verify.normalize import ClaimSketch, Unnormalizable, normalize_declared
+from epistrel.core.verify.protected import PrivateRecord
 from epistrel.core.verify.rules import CANON, Record, VerdictKind, check
 from epistrel.core.viewpoint import (
     is_omniscient,
@@ -1475,6 +1476,16 @@ def _speaker(beat: TurnBeat) -> str:
     return beat.character_id or NARRATOR
 
 
+def _turn_thoughts(beats: Sequence[TurnBeat]) -> list[PrivateRecord]:
+    """#172: this turn's ``think`` beats as private records (the thought side index's
+    turn-local part: every other speaker's beats are scanned for them)."""
+    return [
+        PrivateRecord.of(b.character_id, f"beat:{b.beat}", THINK, b.text)
+        for b in beats
+        if b.kind == THINK and b.character_id
+    ]
+
+
 async def check_turn(
     db: AsyncEngine,
     models: ModelAccessLayer,
@@ -1534,7 +1545,7 @@ async def _check_turn(
             conn, story_id, read_set, position=(turn, 0), speakers=speakers, config=config
         )
     introductions = Introductions() if introductions is None else introductions
-    env = replace(env, introductions=introductions)
+    env = replace(env, introductions=introductions).with_private(_turn_thoughts(rendered.beats))
     clock.add("detection", time.perf_counter() - detecting)
     # The declared propositions, normalized (an unregistered relation registers, in a short
     # transaction of its own).
@@ -3052,8 +3063,11 @@ async def compose_turn(
                 speakers=[speaker],
                 config=config,
             )
-            # The message names the turn's places and objects by the beats' minted ids (#479).
-            env = replace(env, introductions=checked.introductions)
+            # The message names the turn's places and objects by the beats' minted ids (#479),
+            # and is scanned for the turn's private thoughts too (#172).
+            env = replace(env, introductions=checked.introductions).with_private(
+                _turn_thoughts(checked.beats)
+            )
             detector = ClaimDetector(
                 config,
                 env,

@@ -26,6 +26,9 @@ Bobby's render introduces new material in a structured story (the Bobby/Jenni fi
   precedence order are unit-tested in ``tests/test_permission.py``).
 - ``test_s_novelty_permission__model_free``: the complement: ``core/verify/permission.py``
   calls no model purpose and depends on nothing in the Orchestrator.
+- ``test_s_novelty_permission__b`` (M5, #172): (b) a secret about Jenni held only in her
+  partition, introduced by Bobby, is matched by the protected-content index and repaired, never
+  canonized; spoken by Jenni herself, it is permitted.
 """
 
 from __future__ import annotations
@@ -58,7 +61,9 @@ from tests import structured_turn_support as st
 from tests import verify_support as vs
 from tests.auth_support import auth_settings
 from tests.canon_support import PRINCIPAL
+from tests.event_support import rows
 from tests.respond_support import body, respond, respond_client
+from tests.secrets_support import play, secret, secret_story
 
 PERMISSION_MODULE = Path(pm.__file__)
 
@@ -391,3 +396,60 @@ def test_s_novelty_permission__model_free() -> None:
     assert not purposes & strings, purposes & strings
     for entry in ("structured_call", "ModelAccessLayer", "chat", "complete", "embed"):
         assert entry not in names, entry
+
+
+# -- the M5 part (#172): (b) a secret about Jenni -------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.part("M5", "FR-VERIFY-11,12")
+async def test_s_novelty_permission__b(
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None, testimony_delivered: None
+) -> None:
+    """(b) Bobby's render introduces a secret about Jenni that exists only in Jenni's partition
+    (she believes she works for Vince; no canon names Vince): "Jenni works for Vince, you
+    know." The protected-content index (other characters' belief-only records, #172) matches
+    "Vince" in Bobby's say; the hit claims Jenni's belief, its permission is denied and the
+    beat is repaired, and nothing about Vince is canonized. Complement: the same sentence
+    spoken by Jenni herself is permitted (her own record, which her index never protects from
+    her) and stands."""
+    settings = auth_settings(pg_url, model_adapter="stub")
+    async with respond_client(settings, engine) as (client, epistrel):
+        story, ids = await secret_story(client, engine, "Wren", "Bobby", "Jenni")
+        vince, belief = await secret(
+            engine, story, ids["Jenni"], ids["Jenni"], "employed_by", "Vince"
+        )
+        stub = epistrel.models.stub
+        secret_line = "Jenni works for Vince, you know."
+        bobby = await play(
+            client,
+            engine,
+            stub,
+            story,
+            ids["Wren"],
+            ids["Bobby"],
+            st.beat("say", secret_line, intent="sincere"),
+        )
+        assert belief in bobby.protected_refs()
+        assert bobby.denied
+        assert bobby.tags
+        assert "Vince" not in bobby.message
+        about = (
+            "SELECT f.id FROM facts f JOIN propositions p ON p.id = f.proposition_id "
+            "WHERE f.story_id = :s AND (p.object_id = :v OR p.subject_id = :v)"
+        )
+        assert await rows(engine, about, s=story, v=vince) == []
+
+        jenni = await play(
+            client,
+            engine,
+            stub,
+            story,
+            ids["Wren"],
+            ids["Jenni"],
+            st.beat("say", "I work for Vince, you know.", intent="sincere"),
+        )
+        assert belief not in jenni.protected_refs()
+        assert not jenni.denied
+        assert not jenni.tags
+        assert "Vince" in jenni.message

@@ -5,6 +5,7 @@ FR-RATE-4), the custom instructions, a scenario story's scenario text (#122), th
 character's definition, its deflection style and, under per-character partitions, its own true
 age ("You are 34.", #170), then ``## What you believe`` (its own belief state, FR-TURN-8; #170's
 ``core.epistemic.context``: every knowledge section below comes from its ``CharacterContext``),
+``## Your private memories`` (its own ``think`` memories, #172),
 the pinned memories (#60's text pins), the rolling summary when the profile keeps one, then ``## Scene`` (the place and
 who is present, #137), ``## What you remember`` (its working memory, FR-MEM-5), ``## Retrieved``
 (#141's assembled context) and ``## Canon`` (the facts retrieval found that it may know), then
@@ -47,6 +48,13 @@ When {{ character.name }} refuses or changes the subject: {{ character.deflectio
 ## What you believe
 {% for line in beliefs %}
 - {{ line }}
+{% endfor %}
+
+{% endif %}
+{% if private_memories %}
+## Your private memories
+{% for memory in private_memories %}
+- {{ memory }}
 {% endfor %}
 
 {% endif %}

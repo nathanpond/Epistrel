@@ -92,10 +92,11 @@ from epistrel.core.resolution.entities import (
 )
 from epistrel.core.resolution.time import Position, TimeBasis, find_time_expressions, turn_of
 from epistrel.core.resolution.types import Mention, MentionKind, ReasonCode
+from epistrel.core.verify import inner_state
 from epistrel.core.verify.attribution import ClaimAttribution
 from epistrel.core.verify.introduce import Introductions
 from epistrel.core.verify.normalize import ClaimSketch, Unnormalizable, normalize
-from epistrel.core.verify.protected import ProtectedIndex
+from epistrel.core.verify.protected import PrivateRecord, ProtectedIndex, match_thoughts
 from epistrel.core.verify.rules import VerdictReason
 
 Layer = Literal["declared", "detector", "extraction"]
@@ -112,6 +113,8 @@ Category = Literal[
     "movement",
     "time",
     "protected_content",
+    "inner_state",
+    "recall",
 ]
 DETECTOR_CATEGORIES: tuple[Category, ...] = (
     "entity_mention",
@@ -123,6 +126,8 @@ DETECTOR_CATEGORIES: tuple[Category, ...] = (
     "movement",
     "time",
     "protected_content",
+    "inner_state",
+    "recall",
 )
 """The categories of layer (b); a declared claim's is ``declared``, an extraction claim's
 ``extracted``."""
@@ -143,6 +148,10 @@ SCENE_CHANNELS: frozenset[str] = frozenset({"do", "narration", "latent", "messag
 in ``say`` and ``think`` a mention is the speaker's reference, a hit with no claim."""
 MESSAGE = "message"
 """The channel of a composed message (``detect_message``)."""
+THINK_REF = "think:"
+"""The ``protected_ref`` prefix of a claim that leaks a private thought (#172)."""
+INNER_STATE_CHANNELS: frozenset[str] = frozenset({"say", "do", "narration", "message"})
+"""The beats the inner-state check reads (#172): every player-facing channel."""
 
 Span = tuple[int | None, int, int]
 
@@ -388,6 +397,14 @@ class DetectedClaim:
     """#167: whom the claim attributes its proposition to (declared, or the attribution
     lexicon's cue before its span): checked against the speaker's nested beliefs, never as the
     speaker's own assertion."""
+    recalled: str | None = field(default=None, compare=False, repr=False)
+    """#172: a ``recall`` claim's recalled content (never in a payload)."""
+
+    @property
+    def think_leak(self) -> bool:
+        """#172: the claim repeats or narrates another character's private thought (a
+        ``think:`` reference: the thought side index or the inner-state check)."""
+        return self.protected_ref is not None and self.protected_ref.startswith(THINK_REF)
 
     @property
     def beat(self) -> int | None:
@@ -502,6 +519,15 @@ class DetectionEnv:
     introductions: Introductions | None = None
     """The turn's minted ids for new places and objects (``core.verify.introduce``, #479);
     ``None``: nothing is minted (an eval, the shadow job)."""
+    private: tuple[PrivateRecord, ...] = ()
+    """#172: the characters' private records (their ``think``s and belief statements) the
+    thought side index and the inner-state check read (``core.verify.protected``)."""
+
+    def with_private(self, records: Sequence[PrivateRecord]) -> DetectionEnv:
+        """This environment with ``records`` added to its private records (a render's
+        ``think`` beats, after it)."""
+        known = {r.ref for r in self.private}
+        return replace(self, private=(*self.private, *(r for r in records if r.ref not in known)))
 
 
 # -- the detector pass -----------------------------------------------------------------------
@@ -1119,13 +1145,17 @@ def _detect_beat(
     # Every channel is scanned for protected content but a speaker's own ``think``.
     if not seed and not (beat.channel == "think" and beat.speaker != NARRATOR):
         found_claims += _protected(work, env.protected_for(beat.speaker))
+        found_claims += _private(work, env, message=message)
     # A detector claim with a declared claim's shape is that claim (declared > detector).
     by_shape = {
         shape_of(c.proposition): i for i, c in enumerate(claims) if c.proposition is not None
     }
     for claim in found_claims:
         target = None if claim.proposition is None else by_shape.get(shape_of(claim.proposition))
-        if target is not None and not claim.protected:
+        # #172: a protected hit restating what the beat declares as someone's belief ("Bobby
+        # thinks it was the delivery guy") is that attribution, checked against the speaker's
+        # nested beliefs: not a second claim.
+        if target is not None and (not claim.protected or claims[target].attribution is not None):
             old = claims[target]
             claims[target] = replace(old, merged=tuple(dict.fromkeys((*old.merged, "detector"))))
             continue
@@ -1201,6 +1231,50 @@ def _protected(beat: _Beat, index: ProtectedIndex | None) -> list[DetectedClaim]
                 protected_ref=term.ref_id,
             )
         )
+    return found
+
+
+def _private(beat: _Beat, env: DetectionEnv, *, message: bool) -> list[DetectedClaim]:
+    """#172: another character's thought repeated (the side index), an inner state narrated
+    (``core.verify.inner_state``) and, on a character's ``say``, its recall claims."""
+    from epistrel.core.epistemic.resurface import find_recalls
+
+    found: list[DetectedClaim] = []
+
+    def claim(start: int, end: int, category: str, ref: str | None, **extra: Any) -> None:
+        beat.hit(category)
+        found.append(
+            DetectedClaim(
+                span=(beat.index, start, end),
+                layer="detector",
+                category=cast(Category, category),
+                channel=beat.channel,
+                speaker=beat.speaker,
+                protected_ref=ref,
+                **extra,
+            )
+        )
+
+    if env.private and (message or beat.speaker != PLAYER):
+        for start, end, record in match_thoughts(beat.text, env.private, speaker=beat.speaker):
+            claim(start, end, "protected_content", f"{THINK_REF}{record.ref}")
+        if beat.channel in INNER_STATE_CHANNELS:
+            exempt = frozenset({beat.speaker}) if message else frozenset()
+            for hit in inner_state.find(
+                beat.text,
+                beat.mentions,
+                env.private,
+                channel=beat.channel,
+                speaker=beat.speaker,
+                actor=beat.speaker if beat.channel == "do" else None,
+                exempt=exempt,
+            ):
+                if any(c.span[1] <= hit.start < c.span[2] for c in found):
+                    continue
+                claim(hit.start, hit.end, "inner_state", f"{THINK_REF}{hit.record.ref}")
+    if beat.channel == "say" and not message and beat.speaker not in (PLAYER, NARRATOR):
+        for recall in find_recalls(beat.text):
+            claim(recall.start, recall.end, "recall", None, recalled=recall.content)
     return found
 
 
@@ -1320,6 +1394,7 @@ __all__ = [
     "RISK_CATEGORIES",
     "SCENE_CHANNELS",
     "STRUCTURED_CHANNELS",
+    "THINK_REF",
     "UNCOVERED_MENTION",
     "BeatDetection",
     "Category",

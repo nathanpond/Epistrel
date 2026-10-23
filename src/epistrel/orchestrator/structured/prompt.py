@@ -6,7 +6,8 @@ shared sections (the rating guidance first, the custom instructions, a scenario 
 text, the story's text pins (#60: author-pinned memories in every render's prompt, FR-LITE-3),
 the rolling summary when the profile keeps one), the rendering character's definition and
 deflection style, and every knowledge section from its ``core.epistemic.context.CharacterContext``
-and nothing else (#170, NFR-PRIV-4): its own age and belief state under per-character partitions,
+and nothing else (#170, NFR-PRIV-4): its own age, belief state and private memories (#172) under
+per-character partitions,
 the scene (#137: the place and who is present, with apparent age bands), its viewpoint-filtered
 working memory (FR-MEM-11: this turn's narration and the player's input included, as it
 perceived them), #141's retrieved context and the canon retrieval found. Nothing from another
@@ -22,8 +23,9 @@ scene and each introduced character with its clue.
 
 **The cap** (``render.prompt_token_budget``, ``len // 4`` tokens): over it, retrieved items
 are dropped from the end first, then canon lines, then working memory from the oldest beat. The
-belief state sits with the definition and the pins (U-31's top tier): it is never dropped before
-a retrieved item (it is bounded at the source, ``context.BELIEFS_MAX``).
+belief state and the private memories sit with the definition and the pins (U-31's top tier):
+they are never dropped before a retrieved item (they are bounded at the source,
+``context.BELIEFS_MAX`` and ``context.PRIVATE_MAX``).
 """
 
 from __future__ import annotations
@@ -156,6 +158,7 @@ def character_inputs(
         ],
         own_age=context.own_age,
         beliefs=list(context.belief_lines),
+        private_memories=list(context.private_memories),
         pinned_memories=list(s.pins),
         summary_segments=list(s.segments),
         voiced_characters=[character.name],

@@ -42,7 +42,9 @@ call the turn reserved), then ``trace``:
   omniscient thought keeps its ``[Name thinks]`` label (a latent its ``[latent]``);
 - **no private content** (character viewpoint): no unit aligns to a ``think`` or ``latent``
   beat of the turn, no unit shares a 4-word shingle with one (other than the shingles the
-  observable beats share), and no claim traces only to one (``think_leak``);
+  observable beats share), and no claim traces only to one (``think_leak``); nor does any
+  claim detection marked as leaking a private thought (#172: another character's stored or
+  turn-local ``think`` repeated, or an inner state narrated, ``core.verify.inner_state``);
 - **completeness**: every viewpoint beat is aligned to a unit, in turn order.
 
 Failures are ``{kind, span, beat}``: ``untraced``, ``attribution``, ``think_leak``,
@@ -669,6 +671,14 @@ def trace(
         at_unit = _unit_at(found, start)
         holder = None if at_unit is None else found[at_unit]
         at = None if at_unit is None else aligned[at_unit]
+        if claim.think_leak:
+            # #172: another character's private thought, repeated or narrated as an inner state
+            # (an omniscient reader sees every thought, labelled).
+            if omniscient:
+                traced += 1
+            else:
+                fail("think_leak", holder, None)
+            continue
         said = words_of(text[start:end])
         if at is not None and _contains(words_of(beats[at].text), said):
             traced += 1

@@ -119,6 +119,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.canon.canonize import CanonRequest, anchor_for, visibility_of
 from epistrel.core.config_changes import read_section
+from epistrel.core.epistemic import resurface
 from epistrel.core.membership import Position as NarrativePosition
 from epistrel.core.membership import step_of
 from epistrel.core.profiles.effective import effective_configuration
@@ -197,6 +198,13 @@ UNPERMITTED = "unpermitted"
 HALLUCINATION = "hallucination"
 """#166: the repair tag of a first-person claim with no legitimate basis (FR-VERIFY-10)."""
 RESOLUTION_CONFLICT = "resolution_conflict"
+THINK_LEAK = "think_leak"
+"""#172: the repair tag of a claim that repeats or narrates another character's private thought
+(the thought side index or the inner-state check; FR-TURN-3, NFR-PRIV-1)."""
+CONFABULATION = resurface.CONFABULATION
+"""#172: the repair tag of a recall no record of the speaker's backs (FR-VERIFY-9)."""
+RECALL_RULE = resurface.RECALL
+"""#172: the rule of a grounded recall's ``supported`` verdict."""
 HIDDEN_CONFLICT = "hidden_conflict"
 """#169 (FR-EPI-8): a character's claim the character's view leaves open but hidden canon
 contradicts (a different value for a determined fact): ``contradicted``, citing nothing, so no
@@ -322,6 +330,17 @@ class VerifyResult:
     beats of the first ``act`` citing it (FR-TURN-12): self-attestation, a hallucination."""
     hidden_conflict: bool = False
     """#169: ``contradicted`` by canon hidden from the claim's viewpoint (``HIDDEN_CONFLICT``)."""
+    think_leak: str | None = None
+    """#172: the private record (``think:<ref>``) the claim repeats or narrates (``THINK_LEAK``):
+    always repaired, never canonized."""
+    recall: resurface.RecallCheck | None = None
+    """#172: a first-person recall's check against the speaker's own records (FR-VERIFY-9):
+    grounded (``supported``, rule ``recall``) or a confabulation (repaired)."""
+
+    @property
+    def confabulated(self) -> bool:
+        """#172: an unbacked recall."""
+        return self.recall is not None and not self.recall.grounded
 
     @property
     def reason(self) -> VerdictReason | None:
@@ -329,6 +348,8 @@ class VerifyResult:
 
     @property
     def rule(self) -> str | None:
+        if self.recall is not None and self.recall.grounded:
+            return RECALL_RULE
         if self.source == "entailment" and self.kind in (
             VerdictKind.SUPPORTED,
             VerdictKind.CONTRADICTED,
@@ -362,6 +383,8 @@ class VerifyResult:
         hallucination (#166)."""
         if self.attribution is not None:
             return False  # #167: an attribution asserts someone's belief, never canon
+        if self.think_leak is not None or self.recall is not None:
+            return False  # #172: a private thought or a memory reference is never canon
         return self.speech is None or self.speech.decision.classification in (
             speech_acts.SINCERE,
             speech_acts.SINCERE_ERROR,
@@ -372,6 +395,10 @@ class VerifyResult:
         """Whether #151 repairs the claim: contradicted, undecided under ``repair``, or novel
         and not permitted (``repair_tag``); under partitions (#166) a hallucination always
         (unless surfaced), and never a sincere error, a lie or a joke."""
+        if self.think_leak is not None or self.confabulated:
+            return True  # #172: under every profile (the channel is private)
+        if self.recall is not None:
+            return False
         if self.hallucinated:
             return not self.surfaced
         if self.stands or self.attribution is not None:
@@ -387,6 +414,10 @@ class VerifyResult:
         """``unpermitted`` for a denied novel claim #151 repairs (FR-VERIFY-12);
         ``resolution_conflict`` for a binding reconciliation rejected (#154); ``hallucination``
         for a first-person claim with no legitimate basis (#166)."""
+        if self.think_leak is not None:
+            return THINK_LEAK
+        if self.confabulated:
+            return CONFABULATION
         if self.resolution_conflict:
             return RESOLUTION_CONFLICT
         if self.hallucinated:
@@ -425,6 +456,8 @@ class VerifyResult:
         } | (
             ({"cause": RESOLUTION_CONFLICT} if self.resolution_conflict else {})
             | ({"cause": HIDDEN_CONFLICT} if self.hidden_conflict else {})
+            | ({"cause": THINK_LEAK, "private_ref": self.think_leak} if self.think_leak else {})
+            | ({"recall": self.recall.payload()} if self.recall is not None else {})
             | ({"speech": self.speech.payload()} if self.speech is not None else {})
             | ({"attribution": self.attribution.payload()} if self.attribution is not None else {})
         )
@@ -1487,6 +1520,69 @@ class Verifier:
         )
         result = self._safe(None, verdict, decision, where, disposition=disposition)
         self.results.append((where, result))
+        return result
+
+    # -- private thoughts and recall (#172) -----------------------------------------------
+
+    def leaked(self, private_ref: str, *, ref: ClaimRef | None = None) -> VerifyResult | None:
+        """A claim that repeats or narrates another character's private thought
+        (``private_ref``: ``think:<record>``): ``uncertain``, always repaired (``THINK_LEAK``,
+        FR-TURN-3), never canonized; ``None`` when the story's verification is off."""
+        if not self.config.on:
+            return None
+        where = ref or ClaimRef()
+        result = VerifyResult(
+            None, Verdict(VerdictKind.UNCERTAIN), VerdictKind.UNCERTAIN, think_leak=private_ref
+        )
+        self.results.append((where, result))
+        return result
+
+    async def verify_recall(
+        self,
+        content: str,
+        speaker: str,
+        position: tuple[int, int] | None,
+        *,
+        ref: ClaimRef | None = None,
+        claim_id: str | None = None,
+    ) -> VerifyResult | None:
+        """A first-person recall of ``content`` by ``speaker`` (FR-VERIFY-9;
+        ``core.epistemic.resurface``): ``supported`` with rule ``recall`` when one of the
+        speaker's dated records backs it, else a confabulation (``novel``, repaired, an
+        escalation record with gate reason ``confabulation``). ``None`` when verification is
+        off or the story has no per-character partitions (no record of the speaker's own)."""
+        if not self.config.on or self.beliefs is None:
+            return None
+        where = ref or ClaimRef()
+        turn = 0 if position is None else position[0]
+        check = await resurface.check_recall(
+            self.beliefs.conn, self.beliefs.story_id, speaker, turn=turn, content=content
+        )
+        kind = VerdictKind.SUPPORTED if check.grounded else VerdictKind.NOVEL
+        result = VerifyResult(None, Verdict(kind), kind, recall=check)
+        self.results.append((where, result))
+        if not check.grounded:
+            record = EscalationRecord(
+                claim_id=claim_id,
+                gate_reason=CONFABULATION,
+                predicate_shape=UNNORMALIZED_SHAPE.key(),
+                deterministic_confidence=1.0,
+                threshold=None,
+                called=False,
+                reused=False,
+                model_verdict=None,
+                model_confidence=None,
+                model_uncertain=None,
+                final_kind=kind.value,
+                disposition="repair",
+                degradation=(),
+                tentative_verdict=kind.value,
+                gate_outcome=CONFABULATION,
+                escalation_on=True,
+            )
+            self.escalations.append(record)
+            if self.on_escalation is not None:
+                self.on_escalation(record)
         return result
 
     # -- the speaker's beliefs (#166) -----------------------------------------------------

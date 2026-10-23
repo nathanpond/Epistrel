@@ -52,6 +52,7 @@ Writes the reply of a Lite turn from the story's prompt sections; in a structure
 | `character_definitions.deflection_style` | `character_definition` |
 | `own_age` | `character_definition` |
 | `beliefs` | `belief_state` |
+| `private_memories` | `working_memory` |
 | `director_notes` | `director_notes` |
 | `pinned_memories` | `pinned_memory` |
 | `summary_segments` | `rolling_summary` |
@@ -353,6 +354,7 @@ Rewrites one beat of a structured render that contradicted canon or asserted wha
 | `character_definitions.deflection_style` | `character_definition` |
 | `own_age` | `character_definition` |
 | `beliefs` | `belief_state` |
+| `private_memories` | `working_memory` |
 | `director_notes` | `director_notes` |
 | `pinned_memories` | `pinned_memory` |
 | `summary_segments` | `rolling_summary` |

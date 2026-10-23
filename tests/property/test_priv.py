@@ -28,7 +28,9 @@ each character may know, and for every character:
 
 Complement: the same stories read ``omniscient`` (no filter) do contain the private rows. 500
 examples in CI. ``EPISTREL_HYPOTHESIS_PROFILE=nightly`` (the nightly red-team workflow) runs
-5,000. The output half (player-facing disclosure) is #172's and #177's.
+5,000. The output half (player-facing disclosure) is #172's (R-03, S-MINOR-INTERIORITY) and
+#177's. ``test_priv__minors`` (#172, FR-EPI-11) runs the generator with every non-player
+character a minor, each context also carrying its own private memories.
 """
 
 from __future__ import annotations
@@ -74,11 +76,15 @@ class Story:
 
 
 @st.composite
-def stories(draw: Any) -> Story:
+def stories(draw: Any, all_minors: bool = False) -> Story:
     size = draw(st.integers(2, 8))
     cast = tuple(f"C{i}" for i in range(size))
     player = cast[0]
-    minors = frozenset(draw(st.lists(st.sampled_from(cast[1:]), max_size=2, unique=True)))
+    minors = (
+        frozenset(cast[1:])
+        if all_minors
+        else frozenset(draw(st.lists(st.sampled_from(cast[1:]), max_size=2, unique=True)))
+    )
     level = draw(st.sampled_from([perception.CO_LOCATION, perception.FULL]))
     turns = []
     for _ in range(draw(st.integers(1, 30))):
@@ -212,6 +218,7 @@ def _text(context: CharacterContext) -> str:
             *context.retrieved,
             *context.canon,
             *context.belief_lines,
+            *context.private_memories,
             context.scene,
             context.own_age,
         )
@@ -231,11 +238,18 @@ def _context(
     seen_as = Viewpoint.parse(viewpoint)
     scope = scope_for(seen_as, partitions=True, player=False)
     retrieved = [text for text, visibility, _ in memories if admits(scope, visibility)]
+    # #172: its own thoughts, as ``context._private_lines`` reads them (the holder's alone).
+    own = [
+        text
+        for text, visibility, owner in memories
+        if owner == character and admits(scope, visibility)
+    ]
     return compose(
         character,
         working=_seal(window, f"character:{character}"),
         names={c: c for c in story.cast},
         retrieved=_seal(retrieved, viewpoint),
+        private_memories=[f"you thought: {t}" for t in own[-8:]],
     )
 
 
@@ -248,6 +262,32 @@ def _context(
 @given(story=stories())
 def test_priv(story: Story) -> None:
     """See the module docstring."""
+    _check(story)
+
+
+@pytest.mark.part("M5", "NFR-PRIV-1")
+@settings(
+    max_examples=EXAMPLES // 5,
+    deadline=None,
+    suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large],
+)
+@given(story=stories(all_minors=True))
+def test_priv__minors(story: Story) -> None:
+    """#172 (FR-EPI-11): PRIV's generator with every non-player character a minor. "Minor"
+    limits weight and sparsity, never privacy: the same assertions hold, and each minor's
+    own thoughts are first-class (its ``## Your private memories`` holds only its own)."""
+    _check(story)
+    turns, plans, _ = _history(story)
+    memories = _memories(story, turns)
+    for character in story.minors:
+        context = _context(story, character, f"character:{character}", turns, memories)
+        held = {t for t, p in plans.items() if p.kind == "think" and p.actor == character}
+        shown = {t for t in plans if any(t in line for line in context.private_memories)}
+        assert shown <= held, (character, sorted(shown - held))
+        assert len(shown) == min(len(held), 8), (character, len(shown), len(held))
+
+
+def _check(story: Story) -> None:
     turns, plans, when = _history(story)
     memories = _memories(story, turns)
     consumer_recent = [{"name": story.player, "say": RECENT_MESSAGE}]

@@ -48,6 +48,9 @@ not normalize takes ``Verifier.unnormalizable`` (``uncertain``, never a guess, F
 with the safe disposition, except an extraction finding of its own that is uncertain only
 because a weak relation names something no entity holds: it is surfaced, not repaired
 (``surfaces``; #479, ADR-163).
+A claim leaking another character's private thought (#172: the thought side index or the
+inner-state check, ``DetectedClaim.think_leak``) takes ``Verifier.leaked`` (always repaired,
+``think_leak``), and a ``recall`` claim ``Verifier.verify_recall`` (grounded, or a confabulation).
 With verification off nothing is verified, and no verify call is made.
 
 **After verification** (#150 calls these per beat): ``dependences`` lists the claims of
@@ -82,6 +85,7 @@ from epistrel.core.commit.lifecycle import open_clause, thunk_columns, thunk_of
 from epistrel.core.commit.sketch import ThunkSketch
 from epistrel.core.config_changes import read_section
 from epistrel.core.enums import OperationKind
+from epistrel.core.epistemic.resurface import RECALL
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.profiles.schema import ProfileSettings
@@ -124,6 +128,7 @@ from epistrel.core.verify.permission import Asserter
 from epistrel.core.verify.protected import (
     CanonReads,
     ProtectedIndex,
+    load_private_records,
     load_protected_index,
     viewpoint_of,
 )
@@ -298,6 +303,16 @@ async def load_env(
     )
     open_thunks: list[tuple[str, ThunkSketch]] = [(x.id, x.sketch) for x in map(thunk_of, rows)]
 
+    # #172: the characters' private records, the thought side index and the inner-state
+    # check's (``core.verify.protected``).
+    private = await load_private_records(
+        conn,
+        story_id,
+        turn,
+        names={i: e.canonical_name for i, e in index.entries.items()},
+        predicates={pid: p.name for pid, p in registry.predicates.items()},
+    )
+
     def context_for(speaker: str) -> ResolutionContext:
         return contexts.get(speaker) or contexts[NARRATOR]
 
@@ -312,6 +327,7 @@ async def load_env(
         scene_entity=scene_entity,
         placement=placement,
         open_thunks=open_thunks,
+        private=private,
     )
 
 
@@ -760,6 +776,28 @@ async def verify_detected(
             channel=claim.channel if claim.channel != MESSAGE else "narration",
             scope=None if scope_of is None else scope_of(claim),
         )
+        if claim.think_leak and claim.protected_ref is not None:
+            # #172: another character's private thought, repeated or narrated.
+            checked.append(
+                CheckedClaim(claim, verifier.leaked(claim.protected_ref, ref=ref), claim_id)
+            )
+            continue
+        if claim.category == RECALL:
+            # #172 (FR-VERIFY-9): a first-person recall, checked against the speaker's records.
+            checked.append(
+                CheckedClaim(
+                    claim,
+                    await verifier.verify_recall(
+                        claim.recalled or "",
+                        claim.speaker,
+                        position,
+                        ref=ref,
+                        claim_id=claim_id,
+                    ),
+                    claim_id,
+                )
+            )
+            continue
         if claim.proposition is None:
             reason = claim.unnormalized or Unnormalizable(VerdictReason.UNRESOLVED_ENTITY)
             disposition: SafeDisposition | None = SURFACE if surfaces(claim) else None

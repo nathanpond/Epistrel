@@ -30,6 +30,11 @@ from epistrel.core.verify.detect import DetectBeat
 from epistrel.core.verify.rules import VerdictKind
 from tests import detection_support as ds
 from tests import verify_support as vs
+from tests.auth_support import auth_settings
+from tests.event_support import rows
+from tests.respond_support import respond_client
+from tests.secrets_support import play, secret, secret_story
+from tests.structured_turn_support import beat
 
 pytestmark = pytest.mark.integration
 
@@ -176,3 +181,68 @@ async def test_s_extract_adversarial__m4(engine: AsyncEngine, mode: str) -> None
         )
     assert stored is not None
     assert (stored["detection"]["shadow"], stored["detection"]["shadow_missed"]) == ("sampled", 1)
+
+
+# -- the M5 part (#172): protected content in a ``say`` --------------------------------------------
+
+UNLIKE_MARCUS = "You deserve better, unlike Marcus, who's been seeing Dana behind your back."
+
+
+@pytest.mark.part("M5", "FR-VERIFY-14; NFR-PRIV-1")
+async def test_s_extract_adversarial__m5(
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None, testimony_delivered: None
+) -> None:
+    """(b) Bobby's ``say`` "…unlike Marcus, who's been seeing Dana behind your back…" is
+    structurally complete and declares nothing, but the affair exists only in Marcus's private
+    partition (his belief that he is married to Dana; no canon names her). The protected-content
+    index (#148, extended by #172 to other characters' belief-only records) protects "Dana"
+    from Bobby: the hit claims Marcus's belief, Bobby's permission to introduce it is denied
+    (#144: another character's secret, which precedes ``protected_content``; as Bobby's
+    first-person word it has no legitimate basis either, #166's hallucination) and the beat is
+    repaired; the secret is never canonized and never
+    reaches the message. Complement: Marcus saying it himself matches nothing of his own.
+    ((f), a reactive narration implying the reactor already knew a secret, is #176's slice.)"""
+    settings = auth_settings(pg_url, model_adapter="stub")
+    async with respond_client(settings, engine) as (client, epistrel):
+        story, ids = await secret_story(client, engine, "Jenni", "Bobby", "Marcus")
+        dana, belief = await secret(
+            engine, story, ids["Marcus"], ids["Marcus"], "married_to", "Dana"
+        )
+        stub = epistrel.models.stub
+
+        leaked = await play(
+            client,
+            engine,
+            stub,
+            story,
+            ids["Jenni"],
+            ids["Bobby"],
+            beat("say", UNLIKE_MARCUS, intent="sincere"),
+        )
+        assert belief in leaked.protected_refs()
+        assert leaked.denied
+        assert set(leaked.denied) <= {"protected_content", "other_character_secret"}
+        assert leaked.tags
+        assert set(leaked.tags) <= {"unpermitted", "hallucination"}
+        assert "Dana" not in leaked.message
+        facts = await rows(
+            engine,
+            "SELECT f.id FROM facts f JOIN propositions p ON p.id = f.proposition_id "
+            "WHERE f.story_id = :s AND (p.object_id = :d OR p.subject_id = :d)",
+            s=story,
+            d=dana,
+        )
+        assert facts == []
+
+        own = await play(
+            client,
+            engine,
+            stub,
+            story,
+            ids["Jenni"],
+            ids["Marcus"],
+            beat("say", "I've been seeing Dana, and I'm sorry.", intent="sincere"),
+        )
+        assert belief not in own.protected_refs()
+        assert not own.denied
+        assert "Dana" in own.message

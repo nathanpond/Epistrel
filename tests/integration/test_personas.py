@@ -1,6 +1,6 @@
 """Personas, ad-hoc story characters and their promotion to the catalog (#114).
 
-Two milestone parts live here, each the only file for its test ID's M3 part:
+Three milestone parts live here, each the only file for its test ID's part:
 
 - ``test_c_19``, C-19's M3 part (docs/04 §5): saved personas created, read, listed by owner,
   edited and deleted; a player character's snapshot unchanged by the persona's edit and
@@ -15,6 +15,9 @@ Two milestone parts live here, each the only file for its test ID's M3 part:
 - ``test_s_promote``, S-PROMOTE's M3 part (docs/04 §7): a delivery driver added mid-story stays
   out of the catalog until the author promotes him, and the draft promotion makes carries his
   definition and none of the story's facts.
+- ``test_s_promote__seeded_memories``, S-PROMOTE's M4 part (FR-CAT-8; #498): promoting him
+  again with two selected memories seeds exactly those into the new character's companion
+  scenario draft, never into the character.
 
 The persona details follow here; a story character's addition and promotion, and the catalog
 draft fields promotion fills, are in ``tests/integration/test_story_characters.py``.
@@ -43,6 +46,7 @@ from epistrel.core.genesis.models import (
 )
 from epistrel.core.ids import new_ulid
 from tests import genesis_support as g
+from tests import memory_support as memory
 from tests import scenario_support as scenarios
 from tests.auth_support import auth_settings, bearer
 from tests.catalog_support import every, ids
@@ -459,6 +463,187 @@ async def test_s_promote(stub_settings: Settings, engine: AsyncEngine) -> None:
         assert plain.status_code == 200, plain.text
         (plain_dale,) = [c for c in plain.json()["characters"] if c["id"] == dale]
         assert "promoted_to" not in plain_dale
+
+
+HELD = "Dale remembers that the ferryman still owes him for the March crossing"
+"""A memory Dale holds (S-PROMOTE M4): one of the two seeded."""
+FORGED = "Ada remembers forging the harbourmaster's signature"
+"""A memory Ada holds: Dale can neither hold nor know it."""
+
+
+async def companion_draft(client: httpx.AsyncClient, catalog_id: str) -> dict[str, Any]:
+    """The draft of the catalog character's companion scenario, in ``full``."""
+    found = await client.get(
+        f"/catalog/characters/{catalog_id}/companion",
+        params={"draft": "true", "projection": "full"},
+        headers=READ,
+    )
+    assert found.status_code == 200, found.text
+    document: dict[str, Any] = found.json()
+    return document
+
+
+async def catalog_counts(engine: AsyncEngine) -> tuple[int, int]:
+    """``(catalog characters, scenarios)``."""
+    found = await rows(
+        engine,
+        "SELECT (SELECT count(*) FROM catalog.character_catalog), "
+        "(SELECT count(*) FROM catalog.scenario_catalog)",
+    )
+    return int(found[0][0]), int(found[0][1])
+
+
+@pytest.mark.integration
+@pytest.mark.part("M4", "FR-CAT-8")
+async def test_s_promote__seeded_memories(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """Promoting Dale again with two selected memories (one he holds, one the story's shared
+    episodic memory of his reply) seeds exactly those two into the new character's companion
+    scenario draft: two ``starting_state.seeded_memories`` items, in the order named, each
+    with the memory's text, held by the locked ``npc`` role, audience ``self`` and disclosure
+    ``open`` (FR-SCN-8), and nothing of either memory, nor of the memory left unselected, goes
+    into the character itself. The companion's validation (the one a publish runs) reaches
+    the seeds and finds their attributes declared, and a retry under the same key
+    replays the promotion without seeding again.
+
+    Complements asserted: a memory of another story (``not_in_story``) and a memory Ada holds
+    (``not_known``, named after one Dale may seed) are each 422 ``seed_memory_invalid`` at
+    their index, with no catalog character, scenario or link written; an empty
+    ``seed_memories`` promotes as M3 does, with an unseeded companion."""
+    async with respond_client(stub_settings, engine) as (client, _):
+        story = await create(client, story_body("Wren", "Ada"))
+        story_id = story["story_id"]
+        wren, ada = (c["id"] for c in story["characters"])
+        await memory.use_structured(engine, story_id)
+        added = await client.post(
+            f"/stories/{story_id}/characters",
+            json={"name": "Dale Pruitt", "definition": DRIVER, "true_age": 52},
+            headers=as_(AUTHOR),
+        )
+        assert added.status_code == 201, added.text
+        dale = added.json()["id"]
+        op, shared = await memory.turn(
+            engine,
+            story_id,
+            actor=wren,
+            say="Where is the ferry?",
+            reply="Late again, love.",
+            voiced=[dale],
+        )
+        asked, replied = shared  # public episodic memories: anyone in the story can know them
+        sources = list((await memory.event_ids(engine, op.operation_id)).values())
+        held = await memory.derived_memory(engine, story_id, HELD, sources, holder=dale)
+        forged = await memory.derived_memory(engine, story_id, FORGED, sources, holder=ada)
+        other = await create(client, story_body("Kit", "Lee"))
+        await memory.use_structured(engine, other["story_id"])
+        _, (elsewhere, *_) = await memory.turn(engine, other["story_id"])
+
+        # -- refused: nothing written
+        before = await catalog_counts(engine)
+        for seeds, index, reason in (
+            ([elsewhere.id], 0, "not_in_story"),
+            ([held, forged], 1, "not_known"),
+        ):
+            refused = await client.post(
+                f"/stories/{story_id}/characters/{dale}/promote",
+                json={"seed_memories": seeds},
+                headers=as_(AUTHOR),
+            )
+            assert error_of(refused)[:2] == (422, "seed_memory_invalid"), refused.text
+            details = error_of(refused)[2]
+            assert (details["field"], details["memory_id"], details["reason"]) == (
+                f"body.seed_memories[{index}]",
+                seeds[index],
+                reason,
+            )
+        assert await catalog_counts(engine) == before
+        promoted = await scalar(engine, "SELECT promoted_to FROM characters WHERE id = :c", c=dale)
+        assert promoted == []
+
+        # -- an empty list: M3's promotion, an unseeded companion
+        plain = await client.post(
+            f"/stories/{story_id}/characters/{dale}/promote",
+            json={"seed_memories": []},
+            headers=as_(AUTHOR),
+        )
+        assert plain.status_code == 201, plain.text
+        unseeded = await companion_draft(client, plain.json()["catalog_id"])
+        assert unseeded["starting_state"]["seeded_memories"] == []
+
+        # -- two selected memories: exactly those, in the companion only
+        key = new_ulid()
+        body = {"seed_memories": [held, replied.id]}
+        seeded = await client.post(
+            f"/stories/{story_id}/characters/{dale}/promote", json=body, headers=as_(AUTHOR, key)
+        )
+        assert seeded.status_code == 201, seeded.text
+        catalog_id = seeded.json()["catalog_id"]
+        assert seeded.json()["draft_revision"] == 1
+        companion = await companion_draft(client, catalog_id)
+        assert companion["draft_revision"] == 1
+        items = companion["starting_state"]["seeded_memories"]
+        assert [
+            (i["text"], i["holder"], i["audience"], i["disclosure"], i["valid_time"]) for i in items
+        ] == [
+            (HELD, "npc", ["self"], "open", None),
+            (replied.text, "npc", ["self"], "open", None),
+        ]
+        assert all(i["id"] for i in items)
+        assert companion["starting_state"] == {
+            **unseeded["starting_state"],
+            "seeded_memories": items,
+        }
+        (npc,) = [r for r in companion["cast"]["roles"] if r["id"] == "npc"]
+        assert (npc["fill"], npc["character"]["catalog_id"]) == ("locked", catalog_id)
+        stored = json.dumps(companion)
+        for left_out in (asked.text, FORGED, elsewhere.text):
+            assert left_out not in stored
+        character = await client.get(
+            f"/catalog/characters/{catalog_id}",
+            params={"draft": "true", "projection": "full"},
+            headers=READ,
+        )
+        assert character.status_code == 200, character.text
+        row = await scalar(
+            engine,
+            "SELECT row_to_json(c)::text FROM catalog.character_catalog c WHERE id = :c",
+            c=catalog_id,
+        )
+        for text_ in (HELD, replied.text, asked.text, FORGED):
+            assert text_ not in json.dumps(character.json())
+            assert text_ not in str(row)
+        assert character.json()["definition"] == {
+            **{k: None for k in character.json()["definition"]},
+            "true_age": 52,
+            "background_flavor": DRIVER,
+        }
+        # The seeds go through the companion's own validation, the one a publish runs (FR-SCN-5):
+        # their holder, audience and disclosure are declared, so no ``seed_missing_*`` error;
+        # on this Structured story's deployment the seed normalization reaches them too, and the
+        # stub model normalizes no prose (``seed_unnormalizable``), which an author resolves
+        # before publishing.
+        checked = await client.post(
+            f"/catalog/scenarios/{companion['id']}/validate", json={}, headers=as_(AUTHOR)
+        )
+        assert checked.status_code == 200, checked.text
+        report = checked.json()["report"]
+        on_seeds = {
+            e["code"]
+            for e in report["errors"] + report["warnings"]
+            if "seeded_memories" in str(e["location"].get("field"))
+        }
+        assert on_seeds <= {"seed_unnormalizable"}, report
+
+        # -- replayed under its key: the same answer, no second seeding
+        counts = await catalog_counts(engine)
+        replay = await client.post(
+            f"/stories/{story_id}/characters/{dale}/promote", json=body, headers=as_(AUTHOR, key)
+        )
+        assert (replay.json(), replay.headers.get("Idempotent-Replay")) == (seeded.json(), "true")
+        assert await catalog_counts(engine) == counts
+        promoted = await scalar(engine, "SELECT promoted_to FROM characters WHERE id = :c", c=dale)
+        assert promoted == [plain.json()["catalog_id"], catalog_id]
 
 
 # -- persona details -------------------------------------------------------------------------------

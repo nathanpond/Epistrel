@@ -28,7 +28,10 @@ or ``do`` depending on an attribute of the fact's object, and resolves it once t
 ``lifecycle.depend`` (and so through ``core.commit.reconcile``), at ``incidental``. A ``say``
 only mentions it: nothing is introduced or written. A rewind past the resolving turn discards the
 detail's thunk and fact with that turn, so the detail is undetermined again while the
-consequential fact, committed earlier, stays.
+consequential fact, committed earlier, stays. ``detail_parent`` is the detail rule (the owner's
+decision on #494): which consequential fact, if any, a ``think``/``do`` claim is a detail of. The
+structured turn's commit (``orchestrator.structured.pipeline``) routes each novel claim it names
+to ``depend_on_detail`` instead of canonizing it.
 
 Logs carry ids and counts only (invariant 3).
 """
@@ -260,6 +263,47 @@ async def depend_on_detail(
     return Detail(found.id, dependence)
 
 
+DETAIL_CHANNELS: frozenset[str] = frozenset({"think", "do"})
+"""The beats whose claim about an open attribute is a detail's dependence (FR-COMMIT-9: a
+character's ``think`` or ``do``); a ``say`` only mentions it."""
+
+
+async def detail_parent(
+    conn: AsyncConnection, story_id: str, claim: Any, *, channel: str
+) -> str | None:
+    """The detail rule (FR-COMMIT-9; the owner's decision on #494, 2026-10-22): the consequential
+    fact whose incidental detail ``claim`` (of a ``channel`` beat) is, or ``None``. A ``think``
+    or ``do`` claim about an attribute a committed fact stored at ``consequential`` leaves open
+    is a detail of that fact: the claim's subject is the fact's object (its subject when it has
+    none, ``depend_on_detail``'s owner), its predicate is not the fact's, and canon holds no
+    committed value of that predicate for that subject (a claim against what canon fixed is the
+    verifier's contradiction, never a resolution). The oldest such fact when several are; a
+    ``say`` is a mention and names none. ``NULL`` levels are ordinary canon, not a parent: only
+    a fact written at ``consequential`` defers its detail. The caller hands only claims the
+    verifier found novel."""
+    from epistrel.core.canon import facts as canon
+
+    subject = getattr(claim, "subject_id", None)
+    if channel not in DETAIL_CHANNELS or subject is None:
+        return None
+    committed = FactCommitState.COMMITTED
+    fixed = await canon.canon(conn, story_id, subject=subject, predicate=claim.predicate_id)
+    if any(f.commit_state is committed for f in fixed):
+        return None
+    found = {
+        f.id: f
+        for f in (
+            *await canon.canon(conn, story_id, object=subject),
+            *await canon.canon(conn, story_id, subject=subject),
+        )
+        if f.commit_state is committed
+        and f.resolution_level == CONSEQUENTIAL
+        and (f.proposition.object_id or f.proposition.subject_id) == subject
+        and f.proposition.predicate_id != claim.predicate_id
+    }
+    return min(found) if found else None
+
+
 async def _resolved_detail(conn: AsyncConnection, story_id: str, sketch: Any) -> Any:
     """The detail's thunk when it is already resolved in the timeline (so a later claim is
     checked against its value, never a second thunk)."""
@@ -286,12 +330,14 @@ async def _resolved_detail(conn: AsyncConnection, story_id: str, sketch: Any) ->
 
 __all__ = [
     "CONSEQUENTIAL",
+    "DETAIL_CHANNELS",
     "INCIDENTAL",
     "RESOLUTION_LEVELS",
     "BoundaryChange",
     "Detail",
     "Summary",
     "depend_on_detail",
+    "detail_parent",
     "level_of",
     "revert",
     "summary",

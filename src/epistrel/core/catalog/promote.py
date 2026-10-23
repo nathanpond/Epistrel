@@ -30,9 +30,26 @@ draft: nothing is deduplicated.
   when it cannot be assigned).
 
 Nothing else of the story goes into the draft: no event, pinned memory, custom instruction,
-summary, fact, or other character. The public description and the labels stay empty. Selecting
-memories to seed into the new character's companion scenario is M4's (no ``seed_memories``
-field yet).
+summary, fact, or other character. The public description and the labels stay empty.
+
+**Seeded memories (FR-CAT-8's second half, M4; #498).** ``seed_memories`` names memories of the
+story (at most ``SEED_MEMORIES_MAX``, each once) whose text is seeded into the new character's
+**companion scenario** draft, never into the character: each becomes one
+``starting_state.seeded_memories`` item, in the order named, held by the companion's locked
+``npc`` role with audience ``self`` and disclosure ``open`` (FR-SCN-8). Its ``valid_time`` is
+left out, which FR-SCN-8 reads as before the story began, and genesis records it with provenance
+``seed`` like any scenario seed. Each id must be an **active** memory of this story that is not
+quarantined and that the character holds or can know: its ``holder_character_id`` is the
+character, or it has no holder and its visibility is ``objective``, ``public`` or ``characters``
+naming the character. Anything else is 422 ``seed_memory_invalid`` (``details {field, memory_id,
+reason}``; ``SeedMemoryInvalid``), and nothing is written. The memory rows are read ``FOR
+SHARE``, so an erasure that rewrites one waits for the promotion, or the promotion reads what
+the erasure left. The copied texts pass the resurrection guard (``check_content``, a ``DIRECT``
+write path) against the story's erasures. The companion draft keeps its save rules
+(``scenarios.stored_document``) and size limit, stays at draft revision 1, and is re-indexed in
+the subject index (catalog scope), so a catalog-scope erasure reaches what it holds. Publishing
+or validating the companion runs the full scenario validation over the seeds, input policies
+included (FR-SCN-5, FR-GUARD-10). Log lines carry counts and ids only (invariant 3).
 
 **One transaction.** The character's row is locked ``FOR NO KEY UPDATE`` (so the story cannot be
 deleted under it), the images ``FOR SHARE``; the entry is inserted with its committed,
@@ -50,11 +67,13 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import Text, cast, func, literal, select, update
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from epistrel.core import clock
+from epistrel.core.catalog import scenarios
 from epistrel.core.catalog.characters import (
     BACKGROUND_FLAVOR_MAX,
     GALLERY_MAX,
@@ -62,13 +81,28 @@ from epistrel.core.catalog.characters import (
     Name,
 )
 from epistrel.core.catalog.checks.character_documents import images_of
+from epistrel.core.catalog.companion import companion_of
+from epistrel.core.catalog.companion_slots import NPC_ROLE
 from epistrel.core.catalog.report import DRAFT, Entry, EntryLocation, Outcome
-from epistrel.core.errors import InvalidRequest, StoryCharacterNotFound, StoryNotFound
+from epistrel.core.erasure import guard as erasure_guard
+from epistrel.core.erasure.index import index_records
+from epistrel.core.errors import (
+    InvalidRequest,
+    SeedMemoryInvalid,
+    StoryCharacterNotFound,
+    StoryNotFound,
+)
 from epistrel.core.ids import Ulid, new_ulid
+from epistrel.core.membership import active_only
 from epistrel.core.ownership import Owner
 from epistrel.core.ratings import require_assignable
 from epistrel.core.tables import character_snapshots, characters, media_assets, stories
+from epistrel.core.tables.catalog import scenario_catalog
 from epistrel.core.tables.media import MediaState
+from epistrel.core.tables.memories import memories
+from epistrel.observability.logging import get_logger
+
+log = get_logger(__name__)
 
 DEFINITION_TRUNCATED = "definition_truncated"
 """A warning: the character's definition was longer than ``background_flavor`` holds."""
@@ -77,16 +111,36 @@ IMAGE_LEFT_OUT = "media_retired"
 PLAYER_CHARACTER = "player_character"
 """``details.reason`` of the 422 refusing a player character."""
 
+SEED_MEMORIES_MAX = 50
+"""The most memories one promotion seeds (#498): well under a scenario's ``SEEDS_MAX`` (200),
+so an author can still add seeds of their own to the companion."""
+SEED_AUDIENCE = ("self",)
+"""A seeded memory's audience: the holder alone (FR-SCN-8's default for a memory)."""
+SEED_DISCLOSURE = "open"
+"""How the holder treats a seeded memory: shares it when relevant (FR-SCN-8)."""
+SHARED_SCOPES = ("objective", "public")
+"""The visibility scopes every character can know (``core.canon.facts.SHARED_SCOPES``)."""
+NOT_IN_STORY = "not_in_story"
+INACTIVE = "inactive"
+QUARANTINED = "quarantined"
+NOT_KNOWN = "not_known"
+"""``details.reason`` of a 422 ``seed_memory_invalid``."""
+
 
 class PromoteRequest(BaseModel):
     """``POST /stories/{id}/characters/{cid}/promote``: optionally the new entry's ``name``
     (default: the character's), its ``owner`` (default: the requesting principal; never
-    ``system``) and its ``content_rating_id`` (default: the story's rating)."""
+    ``system``), its ``content_rating_id`` (default: the story's rating) and the
+    ``seed_memories`` to seed into its companion scenario (default: none)."""
 
     model_config = ConfigDict(
         extra="forbid",
         json_schema_extra={
-            "examples": [{}, {"name": "Dale the courier", "owner": "p-7f3a9c"}],
+            "examples": [
+                {},
+                {"name": "Dale the courier", "owner": "p-7f3a9c"},
+                {"seed_memories": ["01J9Z3X4M8Q2V6R1T5Y7W0K3N9"]},
+            ],
         },
     )
 
@@ -101,6 +155,22 @@ class PromoteRequest(BaseModel):
     content_rating_id: Ulid | None = Field(
         default=None, description="The entry's content rating (default: the story's)."
     )
+    seed_memories: list[Ulid] = Field(
+        default_factory=list,
+        max_length=SEED_MEMORIES_MAX,
+        description="Memories of the story to seed into the new character's companion "
+        "scenario draft (never into the character), in this order: each an active, "
+        "unquarantined memory the character holds or can know. Each is seeded as "
+        "`starting_state.seeded_memories` held by the `npc` role, audience `self`, disclosure "
+        "`open`. Any other id is 422 `seed_memory_invalid` and nothing is written.",
+    )
+
+    @field_validator("seed_memories")
+    @classmethod
+    def _distinct(cls, value: list[str]) -> list[str]:
+        if len(set(value)) != len(value):
+            raise ValueError("names a memory more than once")
+        return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +210,108 @@ async def _live_images(conn: AsyncConnection, images: Sequence[str]) -> tuple[li
     states = {str(row.id): str(row.state) for row in rows}
     live = [m for m in wanted if states.get(m) == MediaState.LIVE.value]
     return live, [m for m in wanted if states.get(m) != MediaState.LIVE.value]
+
+
+async def seeds_of(
+    conn: AsyncConnection, story_id: str, character_id: str, memory_ids: Sequence[str]
+) -> list[dict[str, Any]]:
+    """The companion seeds the memories ``memory_ids`` of the story make for the character
+    ``character_id`` (see the module docstring), in order, with the rows held ``FOR SHARE``:
+    422 ``seed_memory_invalid`` for the first id that cannot be seeded. The copied texts pass
+    the resurrection guard against the story's erasures."""
+    if not memory_ids:
+        return []
+    m = memories.c
+    found = await conn.execute(
+        select(
+            m.id,
+            m.text,
+            m.holder_character_id,
+            m.character_id,
+            m.visibility,
+            m.quarantined_at,
+            active_only(memories).label("active"),
+        )
+        .where(m.story_id == story_id, m.id.in_(list(memory_ids)))
+        .with_for_update(read=True)
+    )
+    rows = {str(r.id): r for r in found}
+    texts: list[str] = []
+    references: set[str] = set()
+    for index, memory_id in enumerate(memory_ids):
+        row = rows.get(memory_id)
+        reason = None if row is None else _unseedable(row, character_id)
+        if row is None or reason is not None:
+            raise SeedMemoryInvalid(
+                f"memory {memory_id} cannot be seeded into the companion of story character "
+                f"{character_id}",
+                {
+                    "field": f"body.seed_memories[{index}]",
+                    "memory_id": memory_id,
+                    "reason": reason or NOT_IN_STORY,
+                },
+            )
+        texts.append(str(row.text))
+        references.update(str(i) for i in (row.holder_character_id, row.character_id) if i)
+    await erasure_guard.check_content(
+        conn,
+        story_id,
+        [erasure_guard.Content(tuple(texts), frozenset(references))],
+        base_revision=None,
+        path=__name__,
+    )
+    return [
+        {
+            "text": text,
+            "holder": NPC_ROLE,
+            "audience": list(SEED_AUDIENCE),
+            "disclosure": SEED_DISCLOSURE,
+        }
+        for text in texts
+    ]
+
+
+def _unseedable(row: Any, character_id: str) -> str | None:
+    """Why the memory ``row`` cannot be seeded for ``character_id`` (``None``: it can)."""
+    if not row.active:
+        return INACTIVE
+    if row.quarantined_at is not None:
+        return QUARANTINED
+    if row.holder_character_id is not None:
+        return None if str(row.holder_character_id) == character_id else NOT_KNOWN
+    visibility = row.visibility if isinstance(row.visibility, Mapping) else {}
+    scope = visibility.get("scope")
+    if scope in SHARED_SCOPES:
+        return None
+    if scope == "characters" and character_id in (visibility.get("characters") or ()):
+        return None
+    return NOT_KNOWN
+
+
+async def seed_companion(
+    conn: AsyncConnection, catalog_id: str, seeds: Sequence[Mapping[str, Any]]
+) -> None:
+    """Seed ``seeds`` into the companion draft of the new catalog character ``catalog_id``
+    (created with it in this transaction), as ``starting_state.seeded_memories``: kept by the
+    companion's save rules and size limit, at its draft revision, and re-indexed."""
+    if not seeds:
+        return
+    row = await companion_of(conn, catalog_id, lock=True)
+    if row is None:  # pragma: no cover - create_in makes every character's companion
+        raise RuntimeError(f"catalog character {catalog_id} was created without its companion")
+    document = dict(row.draft)
+    starting = dict(document.get("starting_state") or {})
+    starting["seeded_memories"] = [*(starting.get("seeded_memories") or ()), *seeds]
+    document["starting_state"] = starting
+    draft = scenarios.stored_document(document, companion=True)
+    scenarios.SERVICE.check_size(draft)
+    await conn.execute(
+        update(scenario_catalog)
+        .where(scenario_catalog.c.id == row.id)
+        .values(draft=draft, updated_at=clock.now())
+    )
+    await index_records(conn, [scenarios.draft_record(str(row.id), draft)])
+    log.debug("companion seeded", catalog_id=catalog_id, scenario_id=str(row.id), seeds=len(seeds))
 
 
 def draft_of(
@@ -224,6 +396,7 @@ async def promote(
             )
         rating_id = request.content_rating_id or str(story.content_rating_id)
         await require_assignable(conn, rating_id, field="body.content_rating_id")
+        seeds = await seeds_of(conn, story_id, character_id, request.seed_memories)
         snapshot = await conn.scalar(
             select(character_snapshots.c.content).where(
                 character_snapshots.c.story_id == story_id,
@@ -244,6 +417,7 @@ async def promote(
             principal=principal,
             entry_id=catalog_id,
         )
+        await seed_companion(conn, catalog_id, seeds)
         await conn.execute(
             update(characters)
             .where(characters.c.id == character_id)
@@ -287,8 +461,11 @@ __all__ = [
     "DEFINITION_TRUNCATED",
     "IMAGE_LEFT_OUT",
     "PLAYER_CHARACTER",
+    "SEED_MEMORIES_MAX",
     "PromoteRequest",
     "Promotion",
     "draft_of",
     "promote",
+    "seed_companion",
+    "seeds_of",
 ]

@@ -68,7 +68,6 @@ from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.enums import Membership
-from epistrel.core.tables.base import pg_enum, ulid_type
 
 if TYPE_CHECKING:
     from epistrel.core.timeline import MembershipChange
@@ -230,6 +229,11 @@ def derived_columns() -> list[Column[Any]]:
     position-less rows; ``membership`` reuses the operations' enum, ``active`` by default;
     ``membership_tx`` has no default, so a row is written through ``insert_derived()``.
     """
+    # The column helpers are imported where they are used: importing ``core.tables.base`` runs
+    # the ``core.tables`` package, whose table modules import this one, so a top-level import
+    # makes importing this module first a cycle (#499).
+    from epistrel.core.tables.base import pg_enum, ulid_type
+
     return [
         Column(
             "operation_id",
@@ -349,6 +353,8 @@ async def flip_membership(
     ids = _ids(operation_ids)
     if not ids or not DERIVED_TABLES:
         return 0
+    from epistrel.core.tables.base import ulid_type  # see derived_columns (#499)
+
     param = bindparam("flip_operation_ids", ids, type_=ARRAY(ulid_type()))
     changed = 0
     for entry in list(DERIVED_TABLES.values()):
@@ -371,6 +377,8 @@ async def flip_by_sources(
     ids = _ids(event_ids)
     if not ids or not DERIVED_TABLES:
         return 0
+    from epistrel.core.tables.base import ulid_type  # see derived_columns (#499)
+
     param = bindparam("flip_event_ids", ids, type_=ARRAY(ulid_type()))
     changed = 0
     for entry in list(DERIVED_TABLES.values()):

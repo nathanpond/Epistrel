@@ -34,6 +34,9 @@ Reads the ``transcript_messages`` projection (joined to each beat's event for a 
   turn 0, so on the last page) as ``[erasure marker: <subject id>, <scope>]``.
 - **Redaction** (#124): an item whose event an erasure rewrote carries ``redacted: true``; its
   text reads ``[erased]`` where it named the subject.
+- **Quarantine** (#145, #497): a quarantine leaves history alone. Under ``omniscient`` an item
+  whose event is a source of a quarantined memory carries ``quarantined: true``; a character
+  viewpoint never sees the flag.
 - **Composed messages** (#152): a structured turn stores one composed message, for the
   viewpoint its turn was played for (``operations.viewpoint``). A read for any other viewpoint
   gets the deterministic assembly of the beats it receives instead
@@ -49,7 +52,8 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import and_, case, func, literal_column, or_, select
+from sqlalchemy import and_, bindparam, case, func, literal_column, or_, select
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.enums import EventCategory, Membership, OperationStatus
@@ -57,6 +61,8 @@ from epistrel.core.errors import InvalidRequest, StoryNotFound
 from epistrel.core.settings_schema import StorySettings
 from epistrel.core.summary import read_included_segments
 from epistrel.core.tables import characters, events, operations, stories, transcript_messages
+from epistrel.core.tables.base import ulid_type
+from epistrel.core.tables.memories import memories
 from epistrel.core.turns.assembly import AssemblyBeat, deterministic_assembly
 from epistrel.core.variants import ChainRef, ChainSelection, chain_operations
 from epistrel.core.viewpoint import (
@@ -96,6 +102,8 @@ class HistoryItem:
     redacted: bool = False
     """Erasure (#124) rewrote the item's event in place: its spans naming the erased subject
     read ``[erased]``."""
+    quarantined: bool = False
+    """Omniscient reads only (#145): the item's event is a source of a quarantined memory."""
     propositions: list[dict[str, Any]] | None = None
     """A structured turn's beat (#150): the propositions it asserts, each
     ``{proposition, verdict}``; ``None`` for a Lite item."""
@@ -198,7 +206,13 @@ async def read_history(
         upper = through if before_turn is None else min(through, before_turn - 1)
         lower, next_before = await _page(conn, story_id, resolved, upper, limit, chain)
         rows = await _rows(conn, story_id, lower=lower, upper=upper, chain=chain)
-        items = _items(rows, resolved, story.ages, await _names(conn, story_id, rows, resolved))
+        items = _items(
+            rows,
+            resolved,
+            story.ages,
+            await _names(conn, story_id, rows, resolved),
+            await _quarantined(conn, story_id, rows, resolved),
+        )
         audit = (
             await _audit(conn, story_id, lower, upper, story.ages, chain) if include_audit else None
         )
@@ -230,7 +244,8 @@ async def turn_beats(
         ages = await _ages(conn, story_id) if is_omniscient(viewpoint) else {}
         rows = await _rows(conn, story_id, operation_id=operation_id)
         names = await _names(conn, story_id, rows, viewpoint)
-    return _items(rows, viewpoint, ages, names)
+        quarantined = await _quarantined(conn, story_id, rows, viewpoint)
+    return _items(rows, viewpoint, ages, names, quarantined)
 
 
 # -- reads ------------------------------------------------------------------------------------
@@ -485,6 +500,27 @@ async def _names(
     return {r.id: r.name for r in found}
 
 
+async def _quarantined(
+    conn: AsyncConnection, story_id: str, rows: Sequence[Any], viewpoint: str
+) -> set[str]:
+    """The page's events that are a source of a quarantined memory (#145): omniscient reads
+    only, an empty set for a character viewpoint."""
+    page = sorted({str(r.message_id) for r in rows})
+    if not page or not is_omniscient(viewpoint):
+        return set()
+    m = memories.c
+    found = await conn.scalars(
+        select(func.unnest(m.source_event_ids)).where(
+            m.story_id == story_id,
+            m.quarantined_at.is_not(None),
+            m.source_event_ids.overlap(
+                bindparam("history_page_events", page, type_=ARRAY(ulid_type()))
+            ),
+        )
+    )
+    return {str(i) for i in found} & set(page)
+
+
 def _assemblies(rows: Sequence[Any], viewpoint: str, names: Mapping[str, str]) -> dict[str, str]:
     """Each recomposed message's text (``_recomposed``), by its ``message_id``: the
     deterministic assembly of its operation's beats for ``viewpoint``."""
@@ -508,6 +544,7 @@ def _items(
     viewpoint: str,
     ages: Mapping[str, int],
     names: Mapping[str, str] | None = None,
+    quarantined: Collection[str] = (),
 ) -> list[HistoryItem]:
     omniscient = is_omniscient(viewpoint)
     recomposed = _assemblies(rows, viewpoint, names or {})
@@ -536,6 +573,7 @@ def _items(
                         else None
                     ),
                     redacted=bool(row.redacted),
+                    quarantined=omniscient and row.message_id in quarantined,
                     **_structured(row, channel),
                 )
             )

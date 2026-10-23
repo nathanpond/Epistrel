@@ -8599,3 +8599,142 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Issue:** #153
 - **Decision (core):** `erasure.index.story_subjects` reads the story's scenario snapshot, character snapshots and characters in one statement (scalar `jsonb_agg` subqueries) instead of three. A turn indexes about 7 records, each reading its subjects. A per-transaction cache of the subjects was **rejected**: a character added in the same transaction would be missed, and the erasure index would silently fail to record a reference. A per-operation cache of the content guard's reads (content rating, policies) was also **rejected**: it is a guardrail input, for about 4 statements a turn.
   **Issue:** #153
+
+## /n8-exec M4 (verify fixes, pass 1) — 2026-10-22
+
+- **Owner decision (2026-10-22):** #496 (#472 answers 423, the bug asked for 409): "whatever you recommend" → 423 is kept. #472's AC was amended and #496 closed.
+  **Issue:** #496, #472
+- **Owner decision (2026-10-22):** #494 takes option (a), "connect it now": resolution levels are wired into the structured pipeline in this pass (detail rule, pipeline wiring, end-to-end test, U-30's M4 part). The scope is the decision comment on #494.
+  **Issue:** #494, #154
+- **Decision (method):** the fix pass runs five worktree agents in parallel (#491; #494; #498's S-PROMOTE, C-20 and P-10 parts; the guard tests #492, #493, #495, #497; #499, #500, #501). Their commits are cherry-picked onto `milestone/m4-verify-fixes-1`, and each agent's head gets a full suite plus every CI gate before its issues' completion comments. `current_milestone` goes to 4 in the last commit (#498).
+  **Why:** the items are independent apart from U-30 (#494 and #498), which is assigned to #494 alone.
+
+## Blocker — 2026-10-22
+
+- **Blocked (Rule 4):** S-PROMOTE's M4 part (FR-CAT-8: promoting with selected memories seeds them into the companion scenario) needs a new `seed_memories` field on `PromoteRequest` (`extra="forbid"` today; M3's test asserts it is refused 422) and a new companion-draft write. That is an API-contract change.
+  **Options:** (1) add `seed_memories` now (openapi, docs/02, the M3 refusal test, the M4 part); (2) move the part to a later milestone (docs/04 §15/§22, `/n8-replan`); (3) drop the M4 part (FR-CAT-8 is S priority and its seeding clause is "may").
+  **Holds up:** `current_milestone = 4` (#498), so the M4 gate and re-verify. Question and options are on #498 (comment 6353456235).
+  **Issue:** #498
+
+## /n8-exec M4 (verify fixes, pass 1, agent decisions) — 2026-10-22
+
+- **Decision (Rule 2, proposals wiring):** A structured turn's commit (`orchestrator/structured/pipeline.py`, `write_turn`, in the turn's transaction after its canon, utterance and commitment writes) calls a new core helper, `registry.consider_proposals(conn, story_id, predicate_ids, registry)`. It runs #131's `consider_proposal` for each weak auto predicate among the predicates of the turn's canon requests (latent ones included), render-beat claims and input claims. Core and author predicates are skipped, so `_story_predicate` never answers 404 mid-commit. The trigger is #131's existing rule (a `functional` proposal once `PROPOSAL_OBSERVATIONS` = 5 affirmed propositions are single-valued per subject), not a new one.
+  **Why:** #131's decision named this callable "for #140/#150, which run it after a commit", and that call was never made. The trigger is determinable from the existing `propositions` and `predicate_proposals` tables, so this needs no new table or contract (not Rule 4).
+  **Issue:** #491
+- **Decision (Rule 1, proposals):** `consider_proposal` returns early with the pending proposal's id when one exists. It files nothing when a proposal with the same changes was already rejected for that predicate.
+  **Why:** Once the call runs on every turn, a rejection would be undone on the predicate's next use: the author's "no" would re-open as a fresh pending proposal. The early return also skips the full proposition scan while a proposal is pending.
+  **Issue:** #491
+- **Decision (test):** `test_s_predicate_layers__proposal_from_turns` `part("M4", "FR-PROP-4")` (docs/04 S-PREDICATE-LAYERS: "the engine may file a proposal to make it functional, which has no effect until the author approves it") plays structured turns on the stub over REST: turn → proposal row → approve → 200. Complements: below the threshold (approve 404), two objects for one subject (no proposal, approve 404), and a rejected proposal not re-filed.
+  **Why:** The existing registry slice files the proposal by hand, so it could not catch the missing caller.
+  **Issue:** #491
+
+- **Decision (Rule 2, design call: the detail rule, FR-COMMIT-9):** following the owner's decision on #494 (2026-10-22, option (a) "connect it now"), the rule lives in Core as `core.commit.boundary.detail_parent`. A `think` or `do` claim is a detail of a committed fact when four things hold. (1) The fact's stored `resolution_level` is exactly `consequential`. (2) The claim's subject is that fact's object, or its subject when the fact has no object (`depend_on_detail`'s owner). (3) The claim's predicate is not the fact's. (4) Canon holds no committed value of that predicate for that subject. When several facts qualify, the oldest one is the parent. The structured commit (`pipeline.detail_claims`) only hands it claims the verifier found `novel`: permitted, not handed to repair, and not matching an open thunk. Each routed claim's canon request is dropped, and after `apply_dependences` the claim goes to `boundary.depend_on_detail` (`pipeline.resolve_details`). The claim then resolves once, through `reconcile`, at `incidental`. Its dependence counts in `turn_report.commit.reconciliations`, and a rejection shows in `rejected_bindings`. Routing happens only with commitment on. A `say` is a mention and resolves nothing. A claim that conflicts with a value canon holds, including the resolved detail itself, stays the verifier's contradiction and is never routed.
+  **Why:** the owner's scope, followed exactly. Two parts are my interpretation. First, ordinary canon with a `NULL` level is not a parent: only a fact written explicitly at `consequential` defers its detail. Otherwise every novel `think`/`do` claim about any entity that canon mentions would turn into a thunk. Second, the no-committed-value check keeps a second value for a fixed attribute, such as the letter's author, out of the resolution path.
+  **Issue:** #494 (#154 AC4)
+- **Decision (tests):** U-30's existing core test now carries `[M4: FR-COMMIT-9,14; FR-STORE-29]`. The new `test_u_30__structured` (same part) plays U-30 end to end through four structured turns on the stub. The author commits, at `consequential`, that the drawer holds the letter and that Marcus wrote it. Turn 1: a `say` mentions the handwriting and nothing is introduced. In the same turn, a `do` claims the drawer is painted, a novel claim about no open attribute: it is canonized at `NULL` level with no thunk. Turn 2: a `think` resolves the handwriting once, through a thunk whose `parent_fact_id` is the letter's fact, at `incidental`, provenance `resolution`, with one reconciliation. Turn 3: a `do` claiming "neat" is `contradicted` (`functional_key`) and the detail keeps one value. Rewinding to turn 1 leaves the letter's facts byte-identical, sets the detail fact to `revised` and reopens the thunk, and a new turn 2 resolves it afresh. `handwriting_of` is registered as a functional author predicate, so the verifier can catch the contradiction (an auto predicate is weak).
+  **Issue:** #494, #498
+
+- **Decision (Rule 4, catalog / API contract):** S-PROMOTE's M4 part (FR-CAT-8: "promoting again with two selected memories seeds exactly those into the new character's companion scenario") is not implemented. It is reported as a blocker. `PromoteRequest` (`src/epistrel/core/catalog/promote.py`, `docs/openapi.json`) has `extra="forbid"` and no `seed_memories` field. #114 deferred that half to M4 ("the request model accepts no `seed_memories` field yet"), M3's `tests/integration/test_story_characters.py` asserts that `{"seed_memories": []}` is refused 422, and no M4 story ever picked it up. Delivering it would add a request field and a new write path (a promotion editing the companion scenario's draft `starting_state.seeded_memories` from story memories), which is an API-contract change.
+  **Why:** the brief says a request-shape change that is not already in the contract is Rule 4. FR-API-6 names the promote endpoint but not its fields.
+  **Issue:** #498
+- **Decision (Rule 2, tests):** C-20 (M4) is `test_c_20__structured`. It drives the real routes rather than #56's `_test` gated-input caller, because the fixture caller does not branch on the profile: on a structured story, respond goes through `orchestrator.structured.pipeline`. The real routes are respond, ingest, pinned memories, custom instructions and add-character, plus structured creation from a scenario (tainted seed, persona description, ad-hoc definition, cast catalog character). The test also asserts that a Lite story refuses the same inputs with an identical code, message and violation list. No product gap was found: every path already gated.
+  **Why:** docs/04 C-20 [M4] "Structured stories gate input exactly as Lite stories do". The structured respond's gate call is the one that matters, and removing it makes the test fail.
+  **Issue:** #498
+- **Decision (Discretion, perf):** P-10 reuses the existing `epistrel.tools.capacity` (#153). Its measurement is split out as `measure_steps(db, lib, fixture, steps, ...)` so that `tests/perf/test_p_10.py` drives the same code on the suite's scale database. Changes to what it records:
+  - HNSW build memory: the `maintenance_work_mem` the build ran under, plus pgvector's "graph no longer fits" NOTICE tuple count, captured by a psycopg notice handler on the engine's connections;
+  - memory-table throughput both as a bulk load (index dropped) and with the index live;
+  - commit latency as p50/p95/p99/max over 100 single-turn `Operation.commit()` spans, replacing the old per-turn average of batched commits. The commit budget is now p95 > 250 ms;
+  - requested steps that went unmeasured are listed in the page and the JSON.
+
+  The CLI gains `--start-memories` and `--json`.
+  **Why:** docs/04 P-10 asks for "HNSW build time and memory" and "commit latency". The old tool recorded neither build memory nor a commit latency distribution.
+  **Issue:** #498
+- **Decision (Discretion, perf/markers):** new opt-in marker `perf_capacity` (pyproject markers plus `tests/conftest.py` `OPT_IN_MARKERS`). `test_p_10` carries it and `part("M4", "NFR-SCALE-1")`, and asserts no budget, only that the curve is as designed. No workflow names the marker. `test_p_10__smoke` (`perf_smoke`, no part marker) runs a 500 → 1k step in PR CI under `maintenance_work_mem` 1MB, so the NOTICE capture is exercised. `test_p_10` starts from the 1k fixture (P-06's start) by default (`EPISTREL_TEST_CAPACITY_START`), because building the 50k/100k-event fixture took over an hour locally (#490).
+  **Why:** P-10 is informational and never a gate (docs/04, NFR-SCALE-1). `perf_weekly` is documented as the only budget-asserting suite and runs on a schedule.
+  **Issue:** #498
+- **Decision (Rule: outside scope, filed):** 1M and 5M P-10 steps are unmeasured (not attempted locally per the brief); no issue covered running them, so filed #502 (needs-triage, performance) with the options (reference host by hand / workflow_dispatch job / leave unmeasured).
+  **Why:** the brief; #153 only delivers the on-demand tool.
+  **Issue:** #498, #502
+
+- **Decision (Rule 1, test placement):** The repair-rung output-policy test is `test_r_01__repair_rung` in `tests/redteam/test_r_01.py` with `part("M4", "FR-GUARD-6")`, not a slice of I-12.
+  **Why:** In §15, R-01 (M4) is FR-GUARD-6's only M4 entry. An I-12 part naming FR-GUARD-6 would fail check-traceability ("missing from §15") unless docs/04 were edited. R-01's clause ("loop terminates, content never emitted") covers a repair loop whose regeneration produces the violating content.
+  **Issue:** #493
+- **Decision (Rule 1, test placement):** The NUL-strip log test is unmarked in `tests/test_nul_text.py`, next to #275's other model-output tests, which carry no part marker. It captures through the production JSON handler (`configure_logging` on a buffer, the #74 pattern in `tests/test_observability.py`) and also through a raw record handler.
+  **Why:** C-08's subprocess scan can't target this one path cheaply. The raw records also catch content smuggled in via `extra=` (the content filter only cleans JSON lines).
+  **Issue:** #495
+- **Decision (Rule 1, soak slice):** `test_x_01__consolidation` lives in `tests/soak/test_x_01.py` (X-01 (M4), `part("M4", "FR-MEM-6")`, the module's `soak` marker). It runs on the X-01 scratch database and uses the profile's default dials and 3,000-token budget. Lines are long, so the budget binds at every checkpoint, and that is asserted. `EPISTREL_SOAK_CONSOLIDATION_TURNS` (default 5000) allows a shorter local run. `soak.yml` already runs `tests/soak -m soak`; only its header comment changed.
+  **Why:** A budget that never binds would prove nothing. Without long lines, 40 retrieved items used only 1,616 of 3,000 tokens.
+  **Issue:** #492
+- **Decision (Rule 1 as the lead classed it, API addition):** `GET /stories/{id}/history` items gain an optional `quarantined: true`. It appears on omniscient reads only, on an item whose event is a source of a quarantined memory, and is omitted otherwise, like `redacted`. `core.history` reads it from `memories.quarantined_at` and `source_event_ids`. `docs/openapi.json` was regenerated, and docs/02 §10's quarantine bullet notes it. A character viewpoint still sees the beat, without the flag: hiding transcript beats because a memory is quarantined would break history.
+  **Why:** No history view showed the flag, so #145 AC1's clause was unmet; the new test failed on the unfixed code. The brief's Rule 4 lists API-contract changes. The lead pre-classed this as Rule 1, and the change is additive and omitted by default. The Console may want to surface the flag.
+  **Issue:** #497
+
+- **Decision (Rule 1, import cycles):** Broke both cycles with function-local imports at the only call sites: `extraction.enqueue_shadow` imports `jobs.queue` when it runs, and `membership.derived_columns`, `flip` and `flip_by_sources` import `core.tables.base` helpers when they run. No module moved.
+  **Why:** `jobs.handlers` must register `SHADOW_HANDLER`, and `core.tables` must import its table modules, so the back edges are structural. A local import at one call site is the smallest break, and both files already use the pattern (`extraction` line ~993). Moving `ulid_type`/`pg_enum`/`metadata` out of the `tables` package would touch many importers for no other gain.
+  **Issue:** #499
+- **Decision (Rule 1, scope):** Fixed the second cycle (`core.membership` <-> `core.tables`) under #499. It made 9 more modules fail standalone, including 7 in `epistrel.core`.
+  **Why:** The lead's instruction: other standalone failures are fixed under the same issue.
+  **Issue:** #499
+- **Decision (Rule 1, test design):** The import test runs one subprocess per module (450), parallel at `os.process_cpu_count()` workers, with cwd at the repo root. It takes about 35 s locally on 16 cores, so expect roughly 2 min on a 4-core runner in the `rest` shard.
+  **Why:** One fresh interpreter per module, as asked. cwd is the repo root because `epistrel.tools.capability_map` and `epistrel.tools.guarantees` import the checkout's `tools.gates`. That is a deliberate dev-tool dependency, not a cycle.
+  **Issue:** #499
+- **Decision (Rule 1, #501 cause):** Fixed the query, not the test. With an `after_turn`/`through_turn` bound, `transcript_rows` now emits `narrative_turn < before` instead of `(IS NULL OR < before)`. The result rows are the same: the other bound already excludes NULL positions.
+  **Why:** The OR left the planner two index plans: a BitmapOr bounding both ends (12 rows), or an index range on `> after` that filters the regenerated turn's 2 rows (14). It chose by whole-table statistics, which `test_memory_records`' leftover rows shift. The single range gives one plan. The test's assertion (same statements, same rows per statement, below the segment count) is untouched.
+  **Issue:** #501
+- **Decision (Rule 2, CI guard):** Added `test_apt_steps_cannot_eat_the_job_budget` to `tests/test_workflows.py`. Every workflow step that runs apt-get must have `timeout-minutes`, a `timeout` on each apt-get call, `Acquire::http::Timeout`/`Acquire::Retries`, and a retry loop.
+  **Why:** Keeps the fix from regressing when someone adds or edits an apt step.
+  **Issue:** #500
+
+- **Decision (lead, #497):** the optional `quarantined: true` on omniscient history items is accepted as Rule 1, not Rule 4. #145's AC1 already promises it ("history views still show it under `omniscient` with a `quarantined` flag"), the field is additive and omitted by default, and no existing response changes.
+  **Issue:** #497, #145
+- **Decision (lead, #500):** the owner-approved re-run of the M4 edge publish (run 39835278625 attempt 2) stalled the same way (ffmpeg apt step, 25 minutes). It was not re-run a third time. The edge publish comes from this pass's merge to main (`publish-edge.yml` runs on push to main).
+  **Issue:** #500
+
+## Owner decisions — 2026-10-22 (fix pass 1)
+
+- **Owner decision (2026-10-22):** S-PROMOTE's M4 part takes option 1: add `seed_memories` to `PromoteRequest` now (an API-contract change the owner approved), seeding the selected memories into the companion scenario's draft, never into the character. This resolves the 2026-10-22 blocker above.
+  **Issue:** #498, #114
+- **Decision (Rule 3, core):** the full suite at `c39ea8e` failed once: C-01's schemathesis run found that `GET /admin/evals/escalation-yield?to=0001-01-01T00:00Z` answers 500 (`OverflowError` in `to - 30 days`). That code is unchanged since `ab13059`, and the bug blocks the gate. Filed as #503, fixed in this pass: `clock.window_start` clamps the default window start at `datetime.min`, in both reports that default this way (escalation yield and extraction shadow). Regression tests are in `test_escalations.py` (both routes answer 200, empty) and `test_idempotency.py` (the helper). The integration test failed on the unfixed code.
+  **Issue:** #503
+
+- **Decision (owner-approved API change, S-PROMOTE M4):** `PromoteRequest.seed_memories: list[ULID]`. It is optional, defaults to `[]`, holds at most `SEED_MEMORIES_MAX = 50` ids, and refuses a duplicate id with 422 `validation_error`.
+  **Why:** The owner chose option 1 on #498. 50 stays well under a scenario's `SEEDS_MAX` (200), so the author can still add seeds of their own to the companion.
+  **Issue:** #498
+- **Decision (Rule 2, error code):** A new error, `seed_memory_invalid` (422, `SeedMemoryInvalid`). Its `details` are `{field: body.seed_memories[n], memory_id, reason}`, where `reason` is one of `not_in_story`, `inactive`, `quarantined` or `not_known`. It is registered in `ERROR_STATUS`, and `promote_character` lists it in `OPERATION_ERRORS`, together with `erased_subject_referenced`.
+  **Why:** The brief asked for a precise code. `validation_error` would not tell a client which id failed or why.
+  **Issue:** #498
+- **Decision (Rule 2, "can know"):** A memory is seedable when three things hold. It is active (`membership`). It is not quarantined. Either the promoted character is its `holder_character_id`, or it has no holder and its visibility is `objective`/`public` or `characters` naming the character. A quarantined memory is refused.
+  **Why:** This follows how memories record who may know them (`core.tables.memories`, consolidation's scope clause). Every M4 render memory is holder-less and public. Quarantine marks text that was implicated in guardrail violations, so copying it into the catalog would launder it.
+  **Issue:** #498
+- **Decision (Rule 2, seed shape):** Each seed goes into `starting_state.seeded_memories` as `{text, holder: npc, audience: [self], disclosure: open}`. Seeds are added in the order requested, and the server assigns their ids. `valid_time` and `kind` are omitted. Provenance `seed` is applied at genesis, as for every scenario seed.
+  **Why:** FR-SCN-8 says that a seed with no stated valid-time is before the story began. The Seed model has no provenance field, because genesis records seeds with `seed` provenance.
+  **Issue:** #498
+- **Decision (Rule 2, companion draft write):** The seeded companion draft stays at draft revision 1. It goes through `scenarios.stored_document(companion=True)` and the scenario size check, and it is re-indexed in the subject index (catalog scope).
+  **Why:** The companion is created in the same transaction, so no reader ever saw an unseeded revision 1. The save rules and indexing match every other scenario-draft write.
+  **Issue:** #498
+- **Decision (Rule 2, erasure, write paths):** `epistrel.core.catalog.promote` is registered as a `scenario_catalog` writer in `SUBJECT_WRITERS`, and as a `DIRECT` path in `CONTENT_WRITE_PATHS`. It calls `check_content` on the copied texts and their holder/actor ids against the story's erasures. The memory rows are read `FOR SHARE`, so a concurrent erasure's rewrite cannot slip between the read and the commit.
+  **Why:** Story text now flows into a catalog record, so the existing enumeration tests should cover the path the way they cover every other content path.
+  **Issue:** #498
+- **Decision (Rule 2, idempotency):** The key's fingerprint includes `seed_memories` when the list is non-empty. When it is empty, the field is dropped from the fingerprint, so an M3-shaped body hashes as it did before the field existed.
+  **Why:** FR-CONC-6. Without this, a retry of an M3 promotion keyed before the deploy would get a fingerprint mismatch.
+  **Issue:** #498
+- **Decision (M3 refusal test):** In `test_promotion_refusals_and_options`, the case `{"seed_memories": []}` → 422 `validation_error` is replaced by two cases: `{"seed_memories": [<unknown id>]}` → 422 `seed_memory_invalid`, and `{"seed_facts": []}` → 422 `validation_error`. The second keeps the refusal of fields the request does not have.
+  **Why:** The contract changed. The other refusals are kept.
+  **Issue:** #498
+- **Decision (filed, out of scope):** #504 (needs-triage). No erasure reaches a story-only character named in text that a promotion copied into the catalog. The gap existed for the M3 definition copy, and #498 widens it.
+  **Why:** Closing it changes the erasure boundary (FR-ADMIN-2, FR-STORE-14), which is a Rule 4 design question.
+  **Issue:** #498
+
+- **Decision (Rule 1, test harness):** The #472 lock-timeout tests' holder now keeps the story row until the hooked commit's own transaction has ended (its pid and transaction start are recorded in the hook and checked in `pg_stat_activity`). Before, it let go when the first statement it blocked stopped waiting.
+  **Why:** Root cause of #505, reproduced by injection. Another session that waited on the held row first and gave up first (100 ms `lock_timeout`) ended the hold early. The commit under test then got the row: `DID NOT RAISE StoryBusy` at line 204. Waiting for the commit's transaction to end is immune to other waiters and to the poll interval, and it cannot deadlock: that transaction ends only after its lock wait does. The holder is also now awaited when the block exits with an error. Before, a StoryBusy exit leaked it.
+  **Issue:** #505
+- **Decision (Rule 1, test harness):** `_hook` is armed per call through a `ContextVar`. Only the arming task and the tasks it starts can take it. The fix also applies to `test_lost_connection_is_still_database_unavailable`.
+  **Why:** With `asyncio_default_test_loop_scope = "session"`, any leftover commit from another task (any story) could take the module-wide hook. In the lost-connection test that kills the foreign backend, and the respond under test answers 200 (reproduced by injection).
+  **Issue:** #505
+- **Decision (Rule 1, test strength):** The library test also asserts that the `OperationalError` cause carries SQLSTATE 55P03 (`LOCK_NOT_AVAILABLE`). This replaces the old holder's implicit "the commit was seen waiting" evidence.
+  **Why:** It keeps the proof that the refusal came from a lock wait, without the old polling dependency.
+  **Issue:** #505
+- **Decision (Rule 1, CI):** #500's first fix (a bounded, retried apt install) failed three shards on PR #506's first CI run, in about 7 minutes rather than 25. The Azure mirror was slow, not dead: about 60 KB/s for 63 MB of `.deb` files. CI now copies `ffmpeg` and `ffprobe` out of `mwader/static-ffmpeg:9.0.2-1`, pinned by digest (`sha256:f5d10018…c822`, resolved 2026-10-22). The image comes from Docker Hub, which the integration tests already depend on (pgvector, MinIO). The pull has a hard `timeout`, three attempts and the step's own `timeout-minutes`. `test_workflows.py` guards both forms and asserts that the ffmpeg step uses a digest-pinned image and no apt.
+  **Rejected:** caching the `.deb` files (the first run after a cache miss still meets the slow mirror) and installing only in the shards that need ffmpeg (fragile; any shard may reach a video test).
+  **Trade-off:** the runner's ffmpeg is 9.0.2 and the image's is Debian trixie's 7.1. The runner never matched the image (it ran Ubuntu's 6.1). Dependabot does not track an image named in a workflow `env`, so the digest is bumped by hand. This is a CI-only tool; invariant 2 is unchanged (a separate GPL program, never linked or shipped by this step).
+  **Issue:** #500

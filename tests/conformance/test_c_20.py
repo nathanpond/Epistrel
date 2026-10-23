@@ -1,4 +1,4 @@
-"""C-20: input guardrails (FR-GUARD-8,10,11) [M2, M3].
+"""C-20: input guardrails (FR-GUARD-8,10,11) [M2, M3, M4].
 
 Text a consumer sends into a story is checked against every policy that applies to input
 before anything is recorded. The truth-changing paths are #56's fixture caller
@@ -11,6 +11,11 @@ scenario's content that breaks an input policy publishes with a warning and writ
 #119's story-creation half joins it: creating a story from that scenario is refused, and so is
 one whose persona description, ad-hoc definition or cast catalog character's definition breaks
 the policy.
+
+The C-20 (M4) part is ``test_c_20__structured`` (#498). A story on the seeded
+``Structured (M4)`` profile gates input exactly as a Lite story does, through the real respond,
+ingest, pinned-memories, custom-instructions and add-character routes, and when it is created
+from a scenario.
 """
 
 from __future__ import annotations
@@ -26,17 +31,21 @@ from epistrel.config import Settings
 from epistrel.core.ids import new_ulid
 from epistrel.core.ratings import RatingFields, RatingReplacement, create_rating, update_rating
 from epistrel.orchestrator.policies.seeds.policies import MINORS_POLICY_ID
+from epistrel.testing.profiles import structured_m4
 from tests import genesis_support as g
 from tests.auth_support import auth_settings
-from tests.event_support import rows
+from tests.event_support import rows, scalar
 from tests.gate_support import ENTRY_POINTS, audit_rows, gated, input_policies
 from tests.minors_support import MINOR_AGE, MINOR_NAME, explicit_story, guarded_client, recognise
 from tests.policy_support import library, unique
+from tests.respond_support import body as respond_body
+from tests.respond_support import respond_client
 from tests.scenario_support import publish as publish_scenario
 from tests.scenario_support import scenario as catalog_scenario
 from tests.scenario_support import seed
 from tests.story_support import WRITE, count, create, rest, story_body
 from tests.structured_support import story_state
+from tests.structured_turn_support import beat, render, structured_story
 from tests.validation_support import entries, link_rating_policy, validate
 
 CREATE_ROWS = "SELECT count(*) FROM audit_log WHERE details->>'entry_point' = 'story_create'"
@@ -382,5 +391,179 @@ async def test_c_20__catalog_input_policy(settings: Settings, engine: AsyncEngin
                 found = (await validate(client, drafted["id"])).json()["report"]["warnings"]
                 rules = [(w["code"], w["location"]["field"], w["rule"]) for w in found]
                 assert rules == ([("input_policy", "world.description", guard)] if warned else [])
+        finally:
+            await _retire(client, made["id"])
+
+
+PROFILE_OF = "SELECT engine_profile_id FROM stories WHERE id = :s"
+
+
+def _story_inputs(
+    story: str, player: str, text: str, n: int
+) -> list[tuple[str, str, str, dict[str, Any]]]:
+    """``(entry point, method, path, body)`` of every route that brings text into a running
+    story, each carrying ``text``; ``n`` keeps client event ids and names unique."""
+    return [
+        ("respond", "POST", f"/stories/{story}/respond", respond_body(player, text)),
+        (
+            "ingest",
+            "POST",
+            f"/stories/{story}/ingest",
+            {"events": [{"client_event_id": f"c20-{n}", "kind": "narration", "text": text}]},
+        ),
+        (
+            "pinned_memories",
+            "PUT",
+            f"/stories/{story}/pinned-memories",
+            {"items": [{"text": text}]},
+        ),
+        ("custom_instructions", "PUT", f"/stories/{story}/custom-instructions", {"text": text}),
+        (
+            "story_character",
+            "POST",
+            f"/stories/{story}/characters",
+            {"name": f"Dale {n}", "definition": text, "true_age": 52},
+        ),
+    ]
+
+
+def _shown(error: dict[str, Any]) -> dict[str, Any]:
+    """A refusal's code, message and violations (not its spend, which varies)."""
+    return {
+        "code": error["code"],
+        "message": error["message"],
+        "violations": error["details"]["violations"],
+    }
+
+
+@pytest.mark.integration
+@pytest.mark.part("M4", "FR-GUARD-10")
+async def test_c_20__structured(
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """A story on the ``Structured (M4)`` profile gates input exactly as a Lite story does.
+    Respond, ingest, a pinned memory, custom instructions and an added character's definition
+    that break a global policy are each refused 422 ``guardrail_violation``. The error names the
+    policy's id, name and message, no event or operation is written, the revision does not
+    move, and the audit row for that entry point holds the policy id only. Creating a
+    structured story from a scenario whose seed breaks the policy is refused. So is creating
+    one whose persona description, ad-hoc definition or cast catalog character's definition
+    breaks it. Nothing is written but the ``story_create`` audit row.
+
+    Complements asserted: a Lite story refuses the same inputs with the same error; clean text
+    on every route commits on the structured story (a structured turn plays, with its beat
+    events); and a structured story from the clean scenario with a clean cast is created on the
+    structured profile."""
+    settings = auth_settings(pg_url, model_adapter="stub")
+    word = f"zarquon{new_ulid().lower()}"
+    async with respond_client(settings, engine) as (client, epistrel):
+        made = await _global_wordlist(client, word)
+        try:
+            story, ids = await structured_story(client, "Wren", "Ada")
+            assert str(await scalar(engine, PROFILE_OF, s=story)) == structured_m4()
+            lite_story = await create(client, story_body("Wren", "Ada"))
+            lite, lite_player = lite_story["story_id"], lite_story["characters"][0]["id"]
+            assert str(await scalar(engine, PROFILE_OF, s=lite)) != structured_m4()
+
+            refusals: dict[str, dict[str, Any]] = {}
+            for entry_point, method, path, body in _story_inputs(
+                story, ids["Wren"], f"say {word} now", 0
+            ):
+                before = await story_state(engine, story)
+                refused = await client.request(method, path, json=body, headers=WRITE)
+                assert refused.status_code == 422, (entry_point, refused.text)
+                error = refused.json()["error"]
+                assert error["code"] == "guardrail_violation", entry_point
+                [violation] = error["details"]["violations"]
+                assert (violation["policy_id"], violation["name"], violation["message"]) == (
+                    made["id"],
+                    made["name"],
+                    made["message"],
+                ), entry_point
+                assert await story_state(engine, story) == before, entry_point
+                last = (await audit_rows(engine, story_id=story))[-1]
+                assert (last.kind, list(last.policy_ids), last.details["entry_point"]) == (
+                    "guardrail_input_rejected",
+                    [made["id"]],
+                    entry_point,
+                )
+                refusals[entry_point] = _shown(error)
+
+            # Complement: a Lite story refuses the same inputs with the same error.
+            for entry_point, method, path, body in _story_inputs(
+                lite, lite_player, f"say {word} now", 1
+            ):
+                refused = await client.request(method, path, json=body, headers=WRITE)
+                assert refused.status_code == 422, (entry_point, refused.text)
+                assert _shown(refused.json()["error"]) == refusals[entry_point], entry_point
+
+            # Complement: clean text on every route commits on the structured story.
+            epistrel.models.stub.script("generation", [render(beat("say", "Ada smiles."))])
+            for entry_point, method, path, body in _story_inputs(
+                story, ids["Wren"], "all good here", 2
+            ):
+                before = await story_state(engine, story)
+                passed = await client.request(method, path, json=body, headers=WRITE)
+                assert passed.is_success, (entry_point, passed.text)
+                assert await story_state(engine, story) != before, entry_point
+            kinds = {
+                k for found in (await story_state(engine, story)).events.values() for k in found
+            }
+            assert "beat_say" in kinds, kinds
+
+            # Creation: a structured story from a scenario gates its seed, a persona's
+            # description, an ad-hoc definition and a cast catalog character's definition.
+            policed = catalog_scenario(
+                "Policed",
+                starting_state={
+                    "seeded_memories": [seed(f"The cellar hides a {word} under the hay.")],
+                    "opening": {"narration": "Night falls on the farm."},
+                },
+            )
+            tainted_id, _ = await g.published_scenario(client, policed)
+            clean_body = catalog_scenario(
+                "Clean", starting_state={"opening": {"narration": "Dusk."}}
+            )
+            clean_id, _ = await g.published_scenario(client, clean_body)
+            fine = await g.catalog_character_id(client, f"Mara {new_ulid()}")
+            tainted = await g.catalog_character_id(
+                client,
+                f"Ilse {new_ulid()}",
+                definition={"personality": f"Hums about the {word} all day."},
+            )
+            structured: dict[str, Any] = {
+                "engine_profile_id": structured_m4(),
+                "ignore_warnings": True,
+            }
+            requests = [
+                g.from_scenario(tainted_id, slots={"mother": g.catalog_slot(fine)}, **structured),
+                g.from_scenario(
+                    clean_id,
+                    slots={"mother": g.catalog_slot(fine)},
+                    players={"player": g.player(description=f"Fond of the {word}.")},
+                    **structured,
+                ),
+                g.from_scenario(
+                    clean_id,
+                    slots={"mother": g.ad_hoc_slot("Dale", 40, f"Sells {word}.")},
+                    **structured,
+                ),
+                g.from_scenario(clean_id, slots={"mother": g.catalog_slot(tainted)}, **structured),
+            ]
+            for request in requests:
+                counted = await g.counts(engine)
+                audited = await count(engine, CREATE_ROWS)
+                status, code, details = await g.refused(client, request)
+                assert (status, code) == (422, "guardrail_violation"), details
+                assert [v["policy_id"] for v in details["violations"]] == [made["id"]]
+                assert await g.counts(engine) == counted
+                assert await count(engine, CREATE_ROWS) == audited + 1
+            made_story = await g.create_from(
+                client,
+                g.from_scenario(clean_id, slots={"mother": g.catalog_slot(fine)}, **structured),
+            )
+            assert made_story["applied"] is True
+            created = made_story["story_id"]
+            assert str(await scalar(engine, PROFILE_OF, s=created)) == structured_m4()
         finally:
             await _retire(client, made["id"])

@@ -9242,6 +9242,12 @@
             "description": "A structured turn's beat (#150): each proposition it asserts (the normalized proposition) with its verdict (`supported`, `contradicted`, `novel`, `uncertain`, `denied`; `null` with verification off). Absent from a Lite item.",
             "title": "Propositions"
           },
+          "quarantined": {
+            "default": false,
+            "description": "Omniscient reads only: present (`true`) when the item's event is a source of a quarantined memory (#145). A quarantine keeps the item in history; it only keeps the memory out of retrieval and every generation context.",
+            "title": "Quarantined",
+            "type": "boolean"
+          },
           "redacted": {
             "default": false,
             "description": "Present (`true`) when an erasure rewrote the item in place: each span that named the erased subject reads `[erased]` (#124).",
@@ -13696,6 +13702,12 @@
             ],
             "description": "A structured turn's beat (#150): each proposition it asserts (the normalized proposition) with its verdict (`supported`, `contradicted`, `novel`, `uncertain`, `denied`; `null` with verification off). Absent from a Lite item.",
             "title": "Propositions"
+          },
+          "quarantined": {
+            "default": false,
+            "description": "Omniscient reads only: present (`true`) when the item's event is a source of a quarantined memory (#145). A quarantine keeps the item in history; it only keeps the memory out of retrieval and every generation context.",
+            "title": "Quarantined",
+            "type": "boolean"
           },
           "redacted": {
             "default": false,
@@ -20568,12 +20580,17 @@
       },
       "PromoteRequest": {
         "additionalProperties": false,
-        "description": "``POST /stories/{id}/characters/{cid}/promote``: optionally the new entry's ``name``\n(default: the character's), its ``owner`` (default: the requesting principal; never\n``system``) and its ``content_rating_id`` (default: the story's rating).",
+        "description": "``POST /stories/{id}/characters/{cid}/promote``: optionally the new entry's ``name``\n(default: the character's), its ``owner`` (default: the requesting principal; never\n``system``), its ``content_rating_id`` (default: the story's rating) and the\n``seed_memories`` to seed into its companion scenario (default: none).",
         "examples": [
           {},
           {
             "name": "Dale the courier",
             "owner": "p-7f3a9c"
+          },
+          {
+            "seed_memories": [
+              "01J9Z3X4M8Q2V6R1T5Y7W0K3N9"
+            ]
           }
         ],
         "properties": {
@@ -20616,6 +20633,16 @@
             ],
             "description": "The entry's owner principal (default: the requesting principal; never `system`). Recorded, never interpreted.",
             "title": "Owner"
+          },
+          "seed_memories": {
+            "description": "Memories of the story to seed into the new character's companion scenario draft (never into the character), in this order: each an active, unquarantined memory the character holds or can know. Each is seeded as `starting_state.seeded_memories` held by the `npc` role, audience `self`, disclosure `open`. Any other id is 422 `seed_memory_invalid` and nothing is written.",
+            "items": {
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Seed Memories",
+            "type": "array"
           }
         },
         "title": "PromoteRequest",
@@ -51973,7 +52000,7 @@
     },
     "/stories/{story_id}/characters/{character_id}/promote": {
       "post": {
-        "description": "Make a new **draft** catalog character from one of the story's characters (FR-CAT-8), owned by `owner` (default: the requesting principal) and rated `content_rating_id` (default: the story's rating). Only definition fields are copied: the name (or the request's), the true age as of the story's time, the free-text definition (as `definition.background_flavor`, cut at 4,000 characters with the warning `definition_truncated`), the safe fallback line, and the images by reference (the first as the primary image, the rest as the gallery; one no longer live is left out with the warning `media_retired`). No story event, pinned memory, summary or fact is copied. The story character keeps a link to the entry (`promoted_to`, in an omniscient `GET /stories/{id}`) and nothing else of the story changes; its revision does not move, so a promotion is allowed on an archived story and while a turn is in flight. Promoting again makes another draft. A player character plays a persona and is 422 (`reason: player_character`). Answers 201 with `Location: /catalog/characters/{id}`.",
+        "description": "Make a new **draft** catalog character from one of the story's characters (FR-CAT-8), owned by `owner` (default: the requesting principal) and rated `content_rating_id` (default: the story's rating). Only definition fields are copied: the name (or the request's), the true age as of the story's time, the free-text definition (as `definition.background_flavor`, cut at 4,000 characters with the warning `definition_truncated`), the safe fallback line, and the images by reference (the first as the primary image, the rest as the gallery; one no longer live is left out with the warning `media_retired`). No story event, pinned memory, summary or fact is copied into the character. `seed_memories` names memories of the story to seed into the new character's companion scenario draft instead (`starting_state.seeded_memories`, held by the `npc` role, audience `self`, disclosure `open`), each an active, unquarantined memory the character holds or can know; any other is 422 `seed_memory_invalid` (`details.reason`: `not_in_story`, `inactive`, `quarantined` or `not_known`) and nothing is written. The story character keeps a link to the entry (`promoted_to`, in an omniscient `GET /stories/{id}`) and nothing else of the story changes; its revision does not move, so a promotion is allowed on an archived story and while a turn is in flight. Promoting again makes another draft. A player character plays a persona and is 422 (`reason: player_character`). Answers 201 with `Location: /catalog/characters/{id}`.",
         "operationId": "promote_character",
         "parameters": [
           {
@@ -52133,7 +52160,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`."
           },
           "422": {
             "content": {
@@ -52143,7 +52170,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `rating_retired`, `validation_error`."
+            "description": "Invalid request; nothing was written: `rating_retired`, `seed_memory_invalid`, `validation_error`."
           },
           "423": {
             "content": {

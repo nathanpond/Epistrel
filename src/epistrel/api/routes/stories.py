@@ -12,7 +12,8 @@
 - ``POST /stories/{id}/characters``: add an ad-hoc character to a running story (FR-CAT-7;
   #114): story-scoped, never a catalog entry; 201.
 - ``POST /stories/{id}/characters/{cid}/promote``: a new **draft** catalog entry from one of the
-  story's characters, copying only its definition fields (FR-CAT-8; #114); 201 with
+  story's characters, copying only its definition fields (FR-CAT-8; #114), and seeding the
+  memories ``seed_memories`` names into its companion scenario draft (#498); 201 with
   ``Location: /catalog/characters/{id}``. Tagged ``catalog``.
 - ``POST /stories/{id}/archive`` and ``…/unarchive``: control operations, idempotent (200).
 - ``DELETE /stories/{id}``: removes every row of the story and nothing else (204).
@@ -953,7 +954,13 @@ async def add_story_character(
         "`definition_truncated`), the safe fallback line, and the images by reference (the "
         "first as the primary image, the rest as the gallery; one no longer live is left out "
         "with the warning `media_retired`). No story event, pinned memory, summary or fact is "
-        "copied. The story character keeps a link to the entry (`promoted_to`, in an "
+        "copied into the character. `seed_memories` names memories of the story to seed into "
+        "the new character's companion scenario draft instead (`starting_state.seeded_memories`, "
+        "held by the `npc` role, audience `self`, disclosure `open`), each an active, "
+        "unquarantined memory the character holds or can know; any other is 422 "
+        "`seed_memory_invalid` (`details.reason`: `not_in_story`, `inactive`, `quarantined` or "
+        "`not_known`) and nothing is written. The story character keeps a link to the entry "
+        "(`promoted_to`, in an "
         "omniscient `GET /stories/{id}`) and nothing else of the story changes; its revision "
         "does not move, so a promotion is allowed on an archived story and while a turn is in "
         "flight. Promoting again makes another draft. A player character plays a persona and "

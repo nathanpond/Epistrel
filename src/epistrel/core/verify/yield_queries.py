@@ -376,7 +376,7 @@ async def yield_report(
 ) -> YieldReport:
     """The yield report over the window (see the module docstring)."""
     to = window_to or clock.now()
-    start = window_from or (to - DEFAULT_WINDOW)
+    start = window_from or clock.window_start(to, DEFAULT_WINDOW)
     if start > to:
         raise InvalidRequest(
             "the window's from is not after its to", {"field": "from", "reason": "after_to"}

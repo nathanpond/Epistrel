@@ -530,3 +530,44 @@ def test_coverage_is_gated_once_on_the_combined_shards() -> None:
     )
     assert "coverage" in wf["jobs"]["gate"]["needs"]
     assert "$COVERAGE" in wf["jobs"]["gate"]["steps"][0]["run"]
+
+
+def _all_steps(node: Any) -> list[dict[str, Any]]:
+    if isinstance(node, dict):
+        found = [s for s in node.get("steps", ()) if isinstance(s, dict)]
+        return found + [s for v in node.values() for s in _all_steps(v)]
+    if isinstance(node, list):
+        return [s for v in node for s in _all_steps(v)]
+    return []
+
+
+@pytest.mark.parametrize("path", WORKFLOWS, ids=lambda p: p.name)
+def test_apt_steps_cannot_eat_the_job_budget(path: Path) -> None:
+    """#500: a stalled mirror held the ffmpeg install for about 21 minutes and the shards hit
+    their 25. A step that runs apt-get or pulls an image has its own ``timeout-minutes``, bounds
+    every such call with ``timeout`` (apt-get also with apt's stall timeout), and retries."""
+    for step in _all_steps(_load(path)):
+        run = str(step.get("run", ""))
+        apt = re.findall(r"^.*\bapt-get\b.*$", run, flags=re.MULTILINE)
+        pulls = re.findall(r"^.*\bdocker pull\b.*$", run, flags=re.MULTILINE)
+        if not apt and not pulls:
+            continue
+        assert isinstance(step.get("timeout-minutes"), int), step
+        assert all(re.search(r"\btimeout\b[^|;&]*(apt-get|docker pull)", c) for c in apt + pulls), (
+            step
+        )
+        if apt:
+            assert "Acquire::http::Timeout=" in run, step
+            assert "Acquire::Retries=" in run, step
+        assert re.search(r"\bfor attempt in\b", run), step
+
+
+def test_ci_installs_ffmpeg_from_a_pinned_image_not_apt() -> None:
+    """#500: the shards' ffmpeg is a static build pinned by digest, not the Ubuntu mirror's."""
+    (step,) = [
+        s
+        for s in _all_steps(_load(REPO_ROOT / ".github" / "workflows" / "ci.yml"))
+        if s.get("name") == "install ffmpeg"
+    ]
+    assert "apt-get" not in str(step["run"]), step
+    assert re.fullmatch(r"[\w./-]+:[\w.-]+@sha256:[0-9a-f]{64}", step["env"]["FFMPEG_IMAGE"]), step

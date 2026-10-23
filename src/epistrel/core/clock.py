@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 Clock = Callable[[], datetime]
 
@@ -44,4 +44,10 @@ def frozen_at(moment: datetime) -> Iterator[None]:
         set_clock(previous)
 
 
-__all__ = ["Clock", "frozen_at", "now", "set_clock", "system_clock"]
+def window_start(end: datetime, span: timedelta) -> datetime:
+    """``end - span``, or the earliest representable instant when that is before it (#503)."""
+    earliest = datetime.min.replace(tzinfo=end.tzinfo)
+    return earliest if end - earliest < span else end - span
+
+
+__all__ = ["Clock", "frozen_at", "now", "set_clock", "system_clock", "window_start"]

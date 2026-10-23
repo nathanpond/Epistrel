@@ -51,7 +51,7 @@ epistrel = "epistrel.cli:main"
 
 [tool.epistrel.gates]
 # highest verified milestone; bumped in the PR that closes each milestone
-current_milestone = 3
+current_milestone = 4
 
 [tool.epistrel.gates.deny]
 # Checked by `python -m tools.gates check-deps` over the runtime closure of uv.lock (dev groups exempt).
@@ -242,6 +242,7 @@ markers = [
     "perf_long: long performance tests (P-03 on the 20,000-event reference story; #76); deselected unless -m names the marker, run nightly by perf.yml. P-04's reference workload itself is `python -m perf.lite_smoke`, not a test",
     "smoke: the deployment smoke (C-10, #77): every test under tests/smoke/ (auto-marked), run against a live compose stack at EPISTREL_SMOKE_BASE_URL; deselected unless -m names it, and fails when that is unset. publish-edge.yml and release.yml run it before publishing",
     "perf_weekly: the weekly performance suite on the scale fixture (P-01, P-02, P-06 on 50k memories / 100k events; #153); deselected unless -m names the marker, run by perf.yml's weekly job on the GitHub-hosted runner. The only tests that assert wall-clock budgets of NFR-PERF-1,2 and NFR-SCALE-1",
+    "perf_capacity: P-10's capacity exploration (250k, 1M, 5M memories; NFR-SCALE-1, informational and never a gate; #498); deselected unless -m names the marker, run by hand only (no workflow names it), its results committed under perf/results/",
     "perf_smoke: the scale suite's plumbing on the 1k fixture (#153), run by PR CI with everything else; asserts no wall-clock bound (#430, #432)",
     "soak: long-horizon soak tests (docs/04 §12, X-01's 20,000 turns; #147); deselected unless -m names the marker, run weekly by soak.yml",
     "part(milestone, requirements, interim_until=None): milestone part (docs/04 §13) — gates from <milestone>, covers <requirements>; see tests/README.md",

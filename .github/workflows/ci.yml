@@ -169,8 +169,33 @@ jobs:
           enable-cache: true
       - run: uv sync --frozen
       # The video poster and probe tests run ffmpeg and ffprobe (#107), and fail without them: the
-      # image installs Debian's ffmpeg, the runner Ubuntu's. A separate GPL program, never linked.
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      # image installs Debian's ffmpeg. A separate GPL program, never linked.
+      # #500: the Azure Ubuntu mirror served ffmpeg's 63 MB of .debs at about 60 KB/s (2026-10-22:
+      # three PR runs and the M4 edge publish lost shards to it), so CI no longer installs it with
+      # apt. It copies ffmpeg and ffprobe out of a static build pulled from Docker Hub, which the
+      # integration tests already depend on for pgvector and MinIO. The image is pinned by digest
+      # (resolved 2026-10-22); each pull has a hard `timeout`, three attempts, and the step its own
+      # budget. The runner's ffmpeg was never the image's version (Ubuntu's, then Debian's).
+      - name: install ffmpeg
+        timeout-minutes: 10
+        env:
+          FFMPEG_IMAGE: mwader/static-ffmpeg:9.0.2-1@sha256:f5d100184884eb3e82b0eb14bb5ebf98da99826ac824989720297fb9ef21c822
+        run: |
+          for attempt in 1 2 3; do
+            if timeout --kill-after=10 180 docker pull -q "$FFMPEG_IMAGE"; then
+              id=$(docker create "$FFMPEG_IMAGE" /ffmpeg)
+              docker cp "$id:/ffmpeg" "$RUNNER_TEMP/ffmpeg"
+              docker cp "$id:/ffprobe" "$RUNNER_TEMP/ffprobe"
+              docker rm -v "$id"
+              docker rmi "$FFMPEG_IMAGE"
+              sudo install -m 0755 "$RUNNER_TEMP/ffmpeg" "$RUNNER_TEMP/ffprobe" /usr/local/bin/
+              ffmpeg -hide_banner -version | head -1
+              exit 0
+            fi
+            echo "::warning::ffmpeg pull attempt $attempt failed or timed out"
+            sleep 10
+          done
+          exit 1
       # Integration tests start pgvector/pgvector:pg16 through testcontainers on the runner's Docker.
       # The S3 adapter's tests start MinIO the same way (tests/conftest.py MINIO_IMAGE).
       # Coverage is measured on epistrel.core only (the deterministic layer) and gated once, on the

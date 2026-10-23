@@ -62,9 +62,11 @@ names, ``canon_requests``: only a canonized claim creates one) and every ``laten
 propositions with its declared visibility (FR-TURN-4); the utterances; the episodic
 memories of the observable beats (``write_episodic``, with each beat's occasion from
 ``beat_occasion``); the salient references (``record_salience``), the dependences
-(``apply_dependences`` → ``lifecycle.depend``) and the turn's close (``close_turn``, its
-``follow_up`` seam); and ``operations.turn_report`` (#69's report plus ``render``,
-``detection``, ``verify``, ``uncertain_claims``, ``commit`` and ``composition``).
+(``apply_dependences`` → ``lifecycle.depend``), the incidental details (FR-COMMIT-9:
+``detail_claims`` → ``boundary.depend_on_detail``, a novel ``think``/``do`` claim about an
+attribute a ``consequential`` fact leaves open, never canonized itself) and the turn's close
+(``close_turn``, its ``follow_up`` seam); and ``operations.turn_report`` (#69's report plus
+``render``, ``detection``, ``verify``, ``uncertain_claims``, ``commit`` and ``composition``).
 
 **Compose** (#152, ``orchestrator.compose``, after the repair ladder and before the commit
 transaction: an ordinary turn commits its beats and its response together, docs/02 §7): the
@@ -175,7 +177,7 @@ from epistrel.core.profiles.fingerprint import Stamp
 from epistrel.core.profiles.reservation import extraction_on
 from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Polarity, Proposition
-from epistrel.core.propositions.registry import Registry
+from epistrel.core.propositions.registry import Registry, consider_proposals
 from epistrel.core.propositions.registry import load as load_registry
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.resolution.context import load_context
@@ -1614,6 +1616,60 @@ async def settle_follow_up(
     return settled
 
 
+async def detail_claims(
+    conn: AsyncConnection, story_id: str, claims: Sequence[CheckedClaim]
+) -> list[tuple[CheckedClaim, str]]:
+    """The turn's claims that are a consequential fact's incidental detail (FR-COMMIT-9,
+    ``core.commit.boundary.detail_parent``), each with that fact's id: a novel, permitted
+    ``think``/``do`` claim no open thunk matches and no repair takes. A ``say`` mentions; a claim
+    the verifier contradicted stays its contradiction."""
+    found: list[tuple[CheckedClaim, str]] = []
+    for c in claims:
+        proposition, result = c.claim.proposition, c.result
+        if (
+            proposition is None
+            or result is None
+            or c.claim.matched_thunk_id is not None
+            or result.needs_repair
+            or result.kind is not VerdictKind.NOVEL
+            or result.denied is not None
+        ):
+            continue
+        parent = await boundary.detail_parent(conn, story_id, proposition, channel=c.claim.channel)
+        if parent is not None:
+            found.append((c, parent))
+    return found
+
+
+async def resolve_details(
+    conn: AsyncConnection,
+    op: Operation,
+    details: Sequence[tuple[CheckedClaim, str]],
+    *,
+    registry: Registry,
+) -> list[lifecycle.Dependence]:
+    """At the commit, each detail claim (``detail_claims``) resolves its detail once, through
+    ``boundary.depend_on_detail`` (reconciled, at ``incidental``); answers the dependences."""
+    found: list[lifecycle.Dependence] = []
+    for c, parent in details:
+        if c.claim.proposition is None:  # pragma: no cover - detail_claims keeps normalized
+            continue
+        detail = await boundary.depend_on_detail(
+            conn,
+            op,
+            parent,
+            c.claim.proposition,
+            beat=c.claim.beat,
+            channel=c.claim.channel,
+            registry=registry,
+        )
+        if isinstance(detail.dependence, lifecycle.Dependence):
+            found.append(detail.dependence)
+    if found:
+        log.debug("details: %d resolved in story %s", len(found), op.story_id)
+    return found
+
+
 def _close_path(follow: Mapping[str, Any], minimal: int) -> str:
     """Which way the turn's salient references were settled: ``none`` owed, ``follow_up``,
     ``follow_up_and_minimal``, or ``minimal`` (budget exhaustion or a failed follow-up)."""
@@ -2559,10 +2615,19 @@ async def play(
             for beat, claim in checked.latent
             if claim.proposition is not None
         ]
+        # FR-COMMIT-9: a claim about a consequential fact's open detail resolves it through
+        # its dependence (reconciled, ``incidental``), never as a plain canon write.
+        details = (
+            await detail_claims(conn, story_id, checked.checked)
+            if lifecycle.commitment_enabled(settings)
+            else []
+        )
+        routed = {c.claim_id for c, _ in details if c.claim_id is not None}
+        kept = [r for r in checked.requests if r.claim_id is None or r.claim_id not in routed]
         canonized = await canonize_all(
             conn,
             story_id,
-            canon_requests(checked, [*checked.requests, *latent_requests]),
+            canon_requests(checked, [*kept, *latent_requests]),
             operation=op,
             registry=registry,
         )
@@ -2617,6 +2682,7 @@ async def play(
             depended = await extraction.apply_dependences(
                 conn, op, checked.checked, read_set=read_set, registry=registry
             )
+            depended += await resolve_details(conn, op, details, registry=registry)
             await settle_follow_up(conn, op, checked, read_set=read_set, registry=registry)
             # What the follow-up render did not settle is discharged by the minimal commit.
             closed = await lifecycle.close_turn(conn, op, follow_up=None, on=True)
@@ -2642,6 +2708,22 @@ async def play(
         else:
             commit_report = {"canonized": len(canonized)}
         fixed["commit"] = commit_report
+        # FR-PROP-4: the auto predicates this turn's propositions used may now earn a
+        # strengthening proposal (inert until the author approves it; #131, #491).
+        await consider_proposals(
+            conn,
+            story_id,
+            [
+                *(r.claim.predicate_id for r in checked.requests),
+                *(r.claim.predicate_id for r in latent_requests),
+                *(
+                    c.proposition.predicate_id
+                    for c in (*checked.input_claims, *(c for b in checked.beats for c in b.claims))
+                    if c.proposition is not None
+                ),
+            ],
+            registry,
+        )
         # #155: the turn's escalation records, in its commit.
         await yields.write(
             conn,

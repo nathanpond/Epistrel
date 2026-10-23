@@ -290,3 +290,18 @@ async def test_live_needs_confirmation_and_the_yield_report(
             )
         finally:
             await clear_gates(engine, [TEST_SHAPE])
+
+
+async def test_a_window_ending_in_year_one_reads_empty(
+    stub_settings: Settings, engine: AsyncEngine
+) -> None:
+    """#503: a ``to`` less than the default 30-day window after year 1 starts the window at the
+    earliest representable time instead of overflowing (it answered 500). Both reports that
+    default their window this way read empty."""
+    async with respond_client(stub_settings, engine) as (client, _):
+        report = await yield_report(client, to="0001-01-01T00:00Z")
+        assert (report["by_shape"], report["claims"]) == ([], 0)
+        shadow = await client.get(
+            "/admin/evals/extraction-shadow", params={"to": "0001-01-01T00:00Z"}, headers=READ
+        )
+        assert shadow.status_code == 200, shadow.text

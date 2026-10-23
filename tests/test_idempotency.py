@@ -4,7 +4,7 @@ codec, the reference body, and the injectable clock."""
 from __future__ import annotations
 
 import dataclasses
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -104,3 +104,11 @@ def test_faults_entry_point_usage() -> None:
     assert faults.main([]) == 2
     assert faults.main(["other"]) == 2
     assert 1024 < faults.free_port() < 65536
+
+
+def test_window_start_clamps_at_the_earliest_instant() -> None:
+    """#503: ``window_start`` subtracts the span, or stops at ``datetime.min`` in the same zone."""
+    end = datetime(2026, 10, 22, tzinfo=UTC)
+    assert clock.window_start(end, timedelta(days=30)) == datetime(2026, 9, 22, tzinfo=UTC)
+    early = datetime(1, 1, 5, tzinfo=UTC)
+    assert clock.window_start(early, timedelta(days=30)) == datetime.min.replace(tzinfo=UTC)

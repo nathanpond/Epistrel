@@ -134,9 +134,14 @@ jobs:
     # #157/#158: the eval suites' tests (tests/eval about 12 min, tests/evals about 4 min on the
     # runner) took `rest` past its 25 minutes, so they run in an `eval` shard, and the stub eval
     # run is a job of its own (`evals` below).
+    # #179 (M5's PR): `rest` reached 25 minutes on a slow runner (scenario ~8 min, perf ~7 min,
+    # top-level ~7 min) and `eval` 25 with E-08's real-suite run in it, so tests/scenario and
+    # tests/perf move together (P-05's census) to `scenario-perf`, and tests/eval, E-08 and the
+    # rest of tests/evals run as `eval`, `eval-e08` and `eval-harness`.
     name: test (${{ matrix.shard.name }})
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # 35, not 25 (#179): E-08's 300-case real-suite run is one file that took 21 minutes on a slow runner.
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -161,8 +166,10 @@ jobs:
             paths: tests/evals/test_e_08.py
           - name: eval-harness
             paths: tests/evals --ignore=tests/evals/test_e_08.py
+          - name: scenario-perf
+            paths: tests/scenario tests/perf --ignore=tests/perf/test_p_01.py --ignore=tests/perf/test_p_02.py --ignore=tests/perf/test_p_06.py
           - name: rest
-            paths: tests --ignore=tests/conformance --ignore=tests/integration --ignore=tests/property --ignore=tests/chaos --ignore=tests/perf/test_p_01.py --ignore=tests/perf/test_p_02.py --ignore=tests/perf/test_p_06.py --ignore=tests/eval --ignore=tests/evals
+            paths: tests --ignore=tests/conformance --ignore=tests/integration --ignore=tests/property --ignore=tests/chaos --ignore=tests/scenario --ignore=tests/perf --ignore=tests/eval --ignore=tests/evals
     steps:
       - uses: actions/checkout@v7
         with:

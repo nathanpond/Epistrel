@@ -7,7 +7,10 @@ conflict-avoidant", 22), and an optional neighbour: the stranger to Sam (the doc
 stranger's). Renders are the stub's; a render's context is the captured ``CharacterRender`` call.
 
 Not here: "only child" losing to the role's "has a sister" needs a closed set no detector reads
-from prose; the merge rule is U-27 M4's (``tests/test_u_27.py``)."""
+from prose; the merge rule is U-27 M4's (``tests/test_u_27.py``). The Brother's revision by
+observation is a direct ``observation`` transition, not a played turn: no turn can make it yet
+(Sam is the player, so a render's claim about him is denied ``player_character``, and the
+player's own ``do`` is routed without claims; #523)."""
 
 from __future__ import annotations
 
@@ -20,15 +23,21 @@ from epistrel.config import Settings
 from epistrel.core.enums import BeliefConfidenceLevel
 from epistrel.core.epistemic import transitions
 from epistrel.core.propositions.model import Interval, LiteralKind, Proposition, TypedLiteral
-from epistrel.core.readset import StructuredReadSet
-from epistrel.orchestrator.verify.verifier import BeliefSource
 from tests import genesis_support as g
 from tests import partition_support as parts
 from tests import seeded_partitions_support as sp
 from tests.auth_support import auth_settings
 from tests.event_support import scalar
 from tests.respond_support import body, respond, respond_client
-from tests.structured_turn_support import beat, render, schema_calls, text_of
+from tests.structured_turn_support import (
+    beat,
+    claim,
+    render,
+    schema_calls,
+    text_of,
+    turn_report,
+    utterances,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -71,6 +80,30 @@ async def _context(client: Any, stub: Any, story: str, sam: str, who: str, name:
     return text_of(call)
 
 
+async def _turn(client: Any, stub: Any, story: str, sam: str, who: str, *beats: Any) -> None:
+    """A turn Sam plays in which ``who`` renders ``beats``."""
+    stub.calls.clear()
+    stub.script("generation", [render(*beats)])
+    answer = await respond(client, story, body(sam, "Is dinner ready?", render_character_ids=[who]))
+    assert answer.status_code == 200, answer.text
+
+
+async def _said(engine: AsyncEngine, story: str, speaker: str) -> Any:
+    """``speaker``'s latest utterance."""
+    return [u for u in await utterances(engine, story) if str(u.speaker_character_id) == speaker][
+        -1
+    ]
+
+
+async def _speech(engine: AsyncEngine, story: str) -> dict[str, Any]:
+    """The latest turn's one verdict with a speech act."""
+    (verdict,) = [
+        v for v in (await turn_report(engine, story))["verify"]["verdicts"] if "speech" in v
+    ]
+    found: dict[str, Any] = verdict["speech"]
+    return found
+
+
 @pytest.mark.part("M5", "FR-SCN-2,3,6,7,8,9; FR-CAT-2,6; FR-EPI-2; FR-BELIEF-15")
 async def test_s_family(
     stub_settings: Settings,
@@ -84,8 +117,10 @@ async def test_s_family(
       into her render context; nothing of the other's.
     - **The affair** is in the Mother's partition only and her context marks it ``(secret)``;
       how she keeps it follows her own honesty disposition (in her definition block), never
-      the role. Her secret makes a later denial a lie: the verifier reads the belief as kept
-      ``secret``; the Brother's open belief is not.
+      the role. Her secret makes a later denial a lie: when she sincerely denies keeping the
+      letters, the turn labels the line ``lie`` (intent inferred ``deceptive``), unrepaired;
+      when the Brother sincerely denies the sale, his open false belief makes it a
+      ``sincere_error``, not a lie.
     - **Relationships** seed canon and beliefs: the Brother knows Sam is his sibling.
     - **The Father's secret** (the house is being sold) is in his partition, not the
       Brother's or the Sister's; the Brother's seeded false belief survives unchanged, and the
@@ -93,7 +128,8 @@ async def test_s_family(
     - **The persona.** The family's partitions hold Sam's name, exact age and both traits, each
       a belief citing the persona's seed act; the neighbour's holds none and his context sees
       only "Sam (early twenties)". When Sam loses his temper in front of the Brother, the
-      Brother's belief that Sam is conflict-avoidant is revised by observation.
+      Brother's belief that Sam is conflict-avoidant is revised by observation (written
+      directly; see the module docstring).
     - **The opening** is turn 1, with exposures for the roles present.
 
     Complements: the Father's and the Brother's contexts never say who has the letters; with
@@ -120,12 +156,53 @@ async def test_s_family(
         for other, name in (("father", "Frank"), ("brother", "Tom")):
             seen = await _context(client, stub, story, sam, by_role[other], name)
             assert "holds The love letters" not in seen, other  # the item is named, not who has it
-        (affair,) = [r for r in rows if str(r.object_id) == ents["The love letters"]]
         (denied,) = sp.held(rows, by_role["brother"], by_role["father"], ents["The sale contract"])
-        async with engine.connect() as conn:
-            source = BeliefSource(conn, StructuredReadSet(), story, settings=None)
-            assert await source.secret([str(affair.id)]) is True
-            assert await source.secret([str(denied.id)]) is False
+
+        # -- the affair denied: a lie (her belief is kept secret); the Brother's denial of the
+        #    sale is a sincere error (his false belief is open)
+        await _turn(
+            client,
+            stub,
+            story,
+            sam,
+            by_role["mother"],
+            beat(
+                "say",
+                "Love letters? I have never kept any love letters.",
+                intent="sincere",
+                propositions=[claim("Linda", "holds", "The love letters", negated=True)],
+            ),
+        )
+        lie = await _said(engine, story, by_role["mother"])
+        assert (lie.objective_relation, lie.belief_relation, lie.classification) == (
+            "false",
+            "inconsistent",
+            "lie",
+        )
+        speech = await _speech(engine, story)
+        assert (speech["declared_intent"], speech["intent_inferred"]) == ("sincere", True)
+        assert "repairs" not in await turn_report(engine, story)  # a lie stands, unrepaired
+        await _turn(
+            client,
+            stub,
+            story,
+            sam,
+            by_role["brother"],
+            beat(
+                "say",
+                "Dad would never sell the farm.",
+                intent="sincere",
+                propositions=[claim("Frank", "holds", "The sale contract", negated=True)],
+            ),
+        )
+        error = await _said(engine, story, by_role["brother"])
+        assert (error.objective_relation, error.belief_relation, error.classification) == (
+            "false",
+            "consistent",
+            "sincere_error",
+        )
+        assert (await _speech(engine, story))["intent_inferred"] is False
+        assert "repairs" not in await turn_report(engine, story)
 
         # -- the same role, another character: her own personality and disposition
         june = await sp.cast(client, {"mother": JUNE})
@@ -187,17 +264,18 @@ async def test_s_family(
             cause=transitions.Kind.OBSERVATION,
             confidence=transitions.Confidence(level=BeliefConfidenceLevel.BELIEVED),
         )
-        revised = await sp.rows_of(
-            engine,
-            "SELECT b.polarity, b.held_to_turn FROM beliefs b JOIN propositions p "
-            "ON p.id = b.proposition_id WHERE b.story_id = :s AND b.holder_character_id = :h "
-            "AND p.literal->>'value' = 'conflict-avoidant'",
-            s=story,
-            h=by_role["brother"],
+        temper = (
+            "SELECT b.polarity, b.held_to_turn, t.kind, e.type AS act FROM beliefs b "
+            "JOIN propositions p ON p.id = b.proposition_id "
+            "JOIN belief_transitions t ON t.id = b.provenance "
+            "LEFT JOIN events e ON e.id::text = t.antecedent_ref->>'id' "
+            "WHERE b.story_id = :s AND b.holder_character_id = :h "
+            "AND p.literal->>'value' = 'conflict-avoidant' ORDER BY b.held_from_step"
         )
-        assert sorted((r.polarity, r.held_to_turn is None) for r in revised) == [
-            ("affirmed", False),
-            ("negated", True),
+        revised = await sp.rows_of(engine, temper, s=story, h=by_role["brother"])
+        assert sorted((r.polarity, r.held_to_turn is None, r.kind) for r in revised) == [
+            ("affirmed", False, "author"),
+            ("negated", True, "observation"),
         ]
 
         # -- the opening: turn 1, exposures for the roles present

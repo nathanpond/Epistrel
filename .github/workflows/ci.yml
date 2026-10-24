@@ -153,8 +153,14 @@ jobs:
             paths: tests/property tests/chaos
           - name: perf-scale
             paths: tests/perf/test_p_01.py tests/perf/test_p_02.py tests/perf/test_p_06.py
+          # tests/eval (the labeled-set suites, ~14 min), E-08's 300-case real-suite run (#179, over
+          # 11 min alone) and the rest of the harness split: together they outran the job's 25 minutes.
           - name: eval
-            paths: tests/eval tests/evals
+            paths: tests/eval
+          - name: eval-e08
+            paths: tests/evals/test_e_08.py
+          - name: eval-harness
+            paths: tests/evals --ignore=tests/evals/test_e_08.py
           - name: rest
             paths: tests --ignore=tests/conformance --ignore=tests/integration --ignore=tests/property --ignore=tests/chaos --ignore=tests/perf/test_p_01.py --ignore=tests/perf/test_p_02.py --ignore=tests/perf/test_p_06.py --ignore=tests/eval --ignore=tests/evals
     steps:

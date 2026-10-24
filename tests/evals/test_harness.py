@@ -18,6 +18,7 @@ from epistrel.core.profiles.fingerprint import FINGERPRINT_PATTERN
 from epistrel.core.stories import CharacterSpec, StorySpec
 from epistrel.evals import (
     SUITES,
+    ZERO_MIN_CASES,
     AdapterConfig,
     Direction,
     Metric,
@@ -275,7 +276,14 @@ async def test_harness_stub_run(pg_url: str, engine: AsyncEngine, tmp_path: Path
             # On a small sample E-10's gated recall depends on how many of its measured gap
             # (identity claims no detector flags, #157) the sample drew; its full set passes.
             failing = {m.id for m in suite.metrics if m.verdict is Verdict.failed}
-            assert failing <= {"nfr_qual_10.recall_gated"}, suite
+            # #179's zero-tolerance metrics: clean, but a 12-case sample is below NFR-QUAL-8's
+            # 300 cases, which fails by the observed-zero rule (their full sets pass).
+            short = {
+                m.id
+                for m in suite.metrics
+                if m.rule is Rule.zero and m.violations == 0 and m.sample_size < ZERO_MIN_CASES
+            }
+            assert failing - short <= {"nfr_qual_10.recall_gated"}, suite
             # E-12's stub set is far below NFR-QUAL-14's 300 pairs a type (#158).
             proven = Verdict.insufficient_evidence if suite.name == "e12" else Verdict.passed
             assert suite.verdict is proven or failing, suite

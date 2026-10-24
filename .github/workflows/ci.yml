@@ -247,8 +247,10 @@ jobs:
       # job of its own, outside the test matrix (#157/#158 grew it past a shard's budget).
       # E-10 runs its full set (`--full e10`, about 30 s): its measured gap is 8 of 300 cases, and
       # a sample of 100 can draw 5 of them and sit exactly on the 95 % floor.
+      # #179's zero-leak suites (q04, priv_think_leak) need their full sets (NFR-QUAL-8's 300 cases a
+      # metric) and run as the `evals-zero-leak` job below.
       - name: evals (stub)
-        run: uv run python -m epistrel.evals run --adapter stub --all --seeds 2 --sample 100 --full e10 --fail-on-gate
+        run: uv run python -m epistrel.evals run --adapter stub --all --skip q04 --skip priv_think_leak --seeds 2 --sample 100 --full e10 --fail-on-gate
       - name: upload the stub eval report
         if: always()
         uses: actions/upload-artifact@v7
@@ -302,6 +304,39 @@ jobs:
           cache-from: type=gha,scope=ci
           cache-to: type=gha,mode=max,scope=ci
 
+  evals-zero-leak:
+    # #179 (NFR-QUAL-1, E-08 M5): the knowledge-asymmetry and private-thought suites on the stub,
+    # their full sets on two seeds (each case one or two structured turns, four at a time): the
+    # observed-zero rule passes only with no violation over at least 300 cases a seed. The stub
+    # answers every case with its authored clean render, so this proves the plumbing; the
+    # local-model run is the exit evidence (docs/evals/README.md).
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || '' }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v10.2.0  # exact: setup-uv publishes no floating major tag past v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.14"
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: evals zero-leak (stub)
+        run: uv run python -m epistrel.evals run --adapter stub --suite q04 --suite priv_think_leak --new-run --seeds 2 --concurrency 4 --fail-on-gate --markdown build/evals/stub-zero-leak.md
+      - name: upload the zero-leak stub report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: evals-zero-leak-stub-report
+          path: |
+            build/evals/stub-zero-leak.md
+            build/evals/*.json
+            build/evals/*.jsonl
+          if-no-files-found: warn
+          retention-days: 14
+
   gate:
     # One context for the ruleset to require: red if any job above did not succeed (for the
     # sharded `test`, any shard).
@@ -309,7 +344,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     if: always()
-    needs: [lint, types, test, evals, coverage, docker]
+    needs: [lint, types, test, evals, evals-zero-leak, coverage, docker]
     steps:
       - name: Summarise
         env:
@@ -317,14 +352,15 @@ jobs:
           TYPES: ${{ needs.types.result }}
           TEST: ${{ needs.test.result }}
           EVALS: ${{ needs.evals.result }}
+          ZERO_LEAK: ${{ needs.evals-zero-leak.result }}
           COVERAGE: ${{ needs.coverage.result }}
           DOCKER: ${{ needs.docker.result }}
         run: |
           printf '%s\n' '| job | result |' '|---|---|' \
             "| lint | $LINT |" "| types | $TYPES |" "| test | $TEST |" "| evals | $EVALS |" \
-            "| coverage | $COVERAGE |" \
+            "| evals-zero-leak | $ZERO_LEAK |" "| coverage | $COVERAGE |" \
             "| docker | $DOCKER |" >> "$GITHUB_STEP_SUMMARY"
-          for r in "$LINT" "$TYPES" "$TEST" "$EVALS" "$COVERAGE" "$DOCKER"; do
-            [ "$r" = "success" ] || { echo "gate: a job did not succeed ($LINT/$TYPES/$TEST/$EVALS/$COVERAGE/$DOCKER)"; exit 1; }
+          for r in "$LINT" "$TYPES" "$TEST" "$EVALS" "$ZERO_LEAK" "$COVERAGE" "$DOCKER"; do
+            [ "$r" = "success" ] || { echo "gate: a job did not succeed ($LINT/$TYPES/$TEST/$EVALS/$ZERO_LEAK/$COVERAGE/$DOCKER)"; exit 1; }
           done
           echo "gate: all jobs succeeded"

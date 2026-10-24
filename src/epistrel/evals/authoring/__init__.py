@@ -1,4 +1,5 @@
-"""#157's set authoring (and #158's judge calibration pairs and intervention scenarios): the
+"""#157's set authoring (and #158's judge calibration pairs and intervention scenarios, and
+#179's zero-leak and viewpoint sets): the
 labeled sets of the NFR-QUAL suites, generated deterministically
 from hand-written templates (no model), one module per set.
 
@@ -17,16 +18,19 @@ from types import MappingProxyType
 from typing import Any
 
 from epistrel.evals.authoring import (
+    asymmetry,
     claim_detection,
     conformance,
     consolidation,
     entailment,
+    entailment_viewpoint,
     importance,
     judge_calibration,
     retrieval,
     salience,
     scenarios,
     structured_output,
+    think_leak,
 )
 
 GENERATORS: Mapping[str, Callable[[], list[dict[str, Any]]]] = MappingProxyType(
@@ -43,6 +47,9 @@ GENERATORS: Mapping[str, Callable[[], list[dict[str, Any]]]] = MappingProxyType(
         "retrieval/abstract.jsonl": retrieval.abstract_cases,
         "judge_calibration/cases.jsonl": judge_calibration.cases,
         "scenarios/cases.jsonl": scenarios.cases,
+        "asymmetry/cases.jsonl": asymmetry.cases,
+        "think_leak/cases.jsonl": think_leak.cases,
+        "entailment_viewpoint/cases.jsonl": entailment_viewpoint.cases,
     }
 )
 """Each generated set's path under ``evals/sets`` and the function that authors it."""

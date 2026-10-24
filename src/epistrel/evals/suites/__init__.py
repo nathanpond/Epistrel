@@ -113,6 +113,11 @@ class Suite:
     """``pairwise``: the suite's judge rows are pairwise judgements, which the stored pairwise
     calibration covers (a run fails fast without one for its judge model); ``none``: its judge
     rows (single-message scores, E-13) have no calibration set in M4 and are ``uncalibrated``."""
+    dials: ClassVar[Mapping[str, Any] | None] = None
+    """The settings merge patch the suite's stories run over the seeded profile (#179's M5
+    modules), named by ``profile_label``; its result reports that configuration's fingerprint.
+    ``None``: the seeded profile as it is."""
+    profile_label: ClassVar[str | None] = None
     judge_purposes: ClassVar[tuple[str, ...]] = ()
     """The purposes the suite's harness-side judge calls use (#475): E-03's ``entailment``,
     E-12/E-13's ``quality_judge``. A suite that names any is a **judged suite**. Its judge calls
@@ -202,6 +207,7 @@ def get_suites(names: Sequence[str] | None = None) -> list[Suite]:
 
 # The suites shipped with the engine register on import.
 from epistrel.evals.suites import e01_entailment as _e01  # noqa: E402, F401
+from epistrel.evals.suites import e01_viewpoint as _e01v  # noqa: E402, F401
 from epistrel.evals.suites import e02_escalation as _e02  # noqa: E402, F401
 from epistrel.evals.suites import e03_consolidation as _e03  # noqa: E402, F401
 from epistrel.evals.suites import e04_importance as _e04  # noqa: E402, F401
@@ -211,9 +217,11 @@ from epistrel.evals.suites import e07_structured_output as _e07  # noqa: E402, F
 from epistrel.evals.suites import e10_claim_detection as _e10  # noqa: E402, F401
 from epistrel.evals.suites import e12_interventions as _e12  # noqa: E402, F401
 from epistrel.evals.suites import e13_signals as _e13  # noqa: E402, F401
+from epistrel.evals.suites import priv_think_leak as _think  # noqa: E402, F401
 from epistrel.evals.suites import q01_recall as _q01  # noqa: E402, F401
 from epistrel.evals.suites import q02_resolution as _q02  # noqa: E402, F401
 from epistrel.evals.suites import q03_abstract as _q03  # noqa: E402, F401
+from epistrel.evals.suites import q04_asymmetry as _q04  # noqa: E402, F401
 from epistrel.evals.suites import smoke as _smoke  # noqa: E402, F401
 
 __all__ = [

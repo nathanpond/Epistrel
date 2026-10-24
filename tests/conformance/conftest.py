@@ -129,6 +129,37 @@ class Surface:
 
         return await _library(call, 200)
 
+    async def inspect(
+        self, kind: str, story_id: str, *, principal: str | None = None, **params: Any
+    ) -> Outcome:
+        """``GET /stories/{id}/inspect/<kind>`` (``ledger``, ``beliefs``, ``divergences``,
+        ``exposures``; #178) or ``Engine.inspect_<kind>``: ``params`` are the query parameters
+        or the library's keywords (``viewpoint`` among them; omitted when ``None``)."""
+        if self.name == "rest":
+            query = {k: _query(v) for k, v in params.items() if v is not None}
+            headers = bearer() | ({"X-Epistrel-Principal": principal} if principal else {})
+            return _rest(
+                await self.client.get(
+                    f"/stories/{story_id}/inspect/{kind}", params=query, headers=headers
+                )
+            )
+        from epistrel.api.routes import inspect as routes
+
+        bodies: dict[str, Any] = {
+            "ledger": routes.LedgerBody,
+            "beliefs": routes.BeliefsBody,
+            "divergences": routes.DivergencesBody,
+            "exposures": routes.ExposuresBody,
+        }
+
+        async def call() -> dict[str, Any]:
+            method = getattr(self.engine, f"inspect_{kind}")
+            keywords = {"viewpoint": None, **params}
+            found = await method(RequestContext(principal=principal), story_id, **keywords)
+            return _dump(bodies[kind].of(found))
+
+        return await _library(call, 200)
+
     async def get_story(self, story_id: str, viewpoint: str | None = None) -> Outcome:
         if self.name == "rest":
             params = {"viewpoint": viewpoint} if viewpoint else {}

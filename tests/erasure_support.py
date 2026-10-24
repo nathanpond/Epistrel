@@ -425,3 +425,144 @@ __all__ = [
     "story_values",
     "summary_chunk",
 ]
+
+
+# -- other characters' knowledge of the subject (#178; I-09 M5, S-ERASURE-BOUNDARY M5) -----------
+
+
+@dataclass(frozen=True)
+class Knowing:
+    """#133's world (Cal the player, Bobby, Ann), keeping partitions, where the knowledge
+    tables name Bobby every way they can, and hold records about Cal that do not."""
+
+    story_id: str
+    bobby: str
+    ann: str
+    cal: str
+    kept_belief: str
+    """Ann's belief that Cal knows her: about neither Bobby nor told by him."""
+    told_belief: str
+    """Ann's belief that Cal is at school, Bobby's testimony (the belief stays, its source
+    goes)."""
+    kept_exposure: str
+    shared_memory: str
+    """A memory Ann holds, visible to Ann and Bobby."""
+    bobby_entity: str
+
+
+async def knowing_story(engine: AsyncEngine) -> Knowing:
+    """See ``Knowing``: Ann believes Bobby is in the garden (a belief about him), Bobby believes
+    Cal is in the kitchen (his own), Ann was told by Bobby that Cal is at school (a transition
+    whose source is Bobby), Ann was exposed to Bobby's claim and to Cal's, Bobby lied (a
+    divergence), Ann thinks Bobby believes Cal is in the kitchen (a nested belief attributed to
+    him), and Ann holds a memory visible to her and Bobby. Needs ``perception_delivered``."""
+    from epistrel.core.enums import OperationKind, Provenance
+    from epistrel.core.epistemic import divergences, nested, transitions
+    from epistrel.core.events import Operation
+    from epistrel.core.ids import new_ulid
+    from epistrel.core.membership import Position
+    from epistrel.core.propositions.model import Interval, Proposition
+    from tests import canon_support as c
+    from tests import consolidation_support as cs
+    from tests import exposure_support as xs
+    from tests import nested_support as ns
+    from tests import partition_support as ps
+    from tests import perception_support
+    from tests.memory_support import use_structured
+
+    w = await c.world(engine)
+    story = w.story_id
+    await use_structured(engine, story)
+    await perception_support.perceive(engine, story, "co_location")
+    ann, bobby, cal = (w.characters[n] for n in ("Ann", "Bobby", "Cal"))
+    people, places = w.people, w.places
+    knows = Proposition(
+        subject_id=people["Cal"],
+        predicate_id=c.KNOWS,
+        object_id=people["Ann"],
+        valid_time=Interval.of(0, None),
+    )
+    kept = await ps.believe(engine, story, ann, knows)
+    await ps.believe(engine, story, ann, c.at(people["Bobby"], places["garden"], 0, None))
+    his = await ps.believe(engine, story, bobby, c.at(people["Cal"], places["kitchen"], 0, None))
+    school = c.at(people["Cal"], places["school"], 0, None)
+    fact = await c.commit(engine, story, school)
+    told = await ps.transit(
+        engine,
+        story,
+        ann,
+        school,
+        cause=transitions.Kind.DISCOVERY,
+        antecedent=transitions.Antecedent.record("facts", fact.id),
+        source=bobby,
+    )
+    await xs.expose(engine, story, ann, school, source=bobby)
+    kept_exposure, _ = await xs.expose(
+        engine, story, ann, c.at(people["Cal"], places["garden"], 0, None), source=cal
+    )
+    async with Operation(
+        engine, story_id=story, kind=OperationKind.TURN, principal=c.PRINCIPAL
+    ) as op:
+        op.append("player_input", {"text": "lie"}, provenance=Provenance.PLAYER)
+        op.append("message_rendered", {"text": "A lie."})
+
+        async def lie(conn: AsyncConnection) -> None:
+            await divergences.record_divergences(
+                conn,
+                op,
+                [
+                    divergences.Divergence(
+                        utterance_id=new_ulid(),
+                        speaker=bobby,
+                        asserted_proposition_id=his.proposition_id,
+                        position=Position(op.narrative_turn or 0, op.turn_variant or 0, 0, 2, 0),
+                        believed_belief_id=his.id,
+                        believed_proposition_id=his.proposition_id,
+                    )
+                ],
+            )
+
+        op.add_commit_step(lie)
+        await op.commit()
+    with ns.delivered():
+        nested_on = await ns.nested_settings(engine, story)
+
+        async def attribute(conn: AsyncConnection, op: Operation, event_id: str) -> object:
+            return await nested.write_nested(
+                conn,
+                op,
+                holder=ann,
+                attributed_holder=bobby,
+                proposition=his.proposition,
+                cause=nested.Cause(
+                    transitions.Kind.AUTHOR, transitions.Antecedent.record("events", event_id)
+                ),
+                position=Position(op.narrative_turn or 0, op.turn_variant or 0, 0, 3, 0),
+                settings=nested_on,
+            )
+
+        await ns.in_operation(engine, story, attribute, kind=OperationKind.CONTROL)
+    shared = await cs.private_memory(engine, story, ann, [ann, bobby], "The clock struck nine.")
+    return Knowing(
+        story, bobby, ann, cal, kept.id, told.belief.id, kept_exposure, shared, people["Bobby"]
+    )
+
+
+KNOWLEDGE_TABLES = ("beliefs", "belief_transitions", "belief_state", "exposures", "divergences")
+
+
+async def naming_ids(
+    engine: AsyncEngine, story_id: str, ids: Iterable[str], tables: Iterable[str]
+) -> dict[str, int]:
+    """Rows of each of ``tables`` whose any column's text holds one of ``ids`` (an id scan, the
+    test's own)."""
+    found: dict[str, int] = {}
+    wanted = list(ids)
+    async with engine.connect() as conn:
+        for table in tables:
+            rows = await conn.execute(
+                text(f"SELECT row_to_json(t)::text AS j FROM {table} t WHERE story_id = :s"),  # noqa: S608 - the test's own table names
+                {"s": story_id},
+            )
+            found[table] = sum(1 for r in rows if any(i in r.j for i in wanted))
+    return found

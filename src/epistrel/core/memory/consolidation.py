@@ -48,10 +48,13 @@ rests on, whatever the model proposed: it may be ``objective`` only when every s
 is objective canon (or, at level 2, an objective output); a ``say`` beat (or an attributed
 claim) makes it an ``attributed_claim`` of that speaker, one statement per speaker, its text
 "<speaker> said …" ("Bobby said the bridge is out", never "the bridge is out"); anything else
-(a deed, narration, a mix) is an ``observation``. A statement that names no valid support is
-dropped (``Derived.unsupported``), and so is one worded as a guess its supports do not make
-(``speculative``: "suggests that", "may have", "seems", "appears to"…; ``Derived.speculative``,
-#462), which states no input's epistemic type. Its visibility is the intersection of its supports'.
+(a deed, narration, a mix) is an ``observation``, except that a statement resting on a holder's
+own memory (``holder_character_id`` set: what it perceived privately) is that holder's
+``belief`` (#178, S-CONSOLIDATION-SCOPE M5; ``objective`` proposed over it is downgraded). A
+statement that names no valid support is dropped (``Derived.unsupported``), and so is one worded
+as a guess its supports do not make (``speculative``: "suggests that", "may have", "seems",
+"appears to"…; ``Derived.speculative``, #462), which states no input's epistemic type. Its
+visibility is the intersection of its supports'.
 
 **The cascade** (FR-STORE-13,26). An output's ``source_event_ids`` are every input's source
 events, so ``records.memories_through(N)`` includes it exactly when every source is active at or
@@ -109,7 +112,7 @@ TARGET_FACTS = 10
 TARGET_REFLECTIONS = 5
 """What one call keeps at most (the template asks for no more)."""
 
-Epistemic = Literal["objective", "claim", "observation"]
+Epistemic = Literal["objective", "claim", "observation", "belief"]
 
 
 # -- scopes -----------------------------------------------------------------------------------
@@ -494,6 +497,8 @@ def _output_epistemic(modality: str | None) -> Epistemic:
         return "objective"
     if modality == "attributed_claim":
         return "claim"
+    if modality == "belief":
+        return "belief"
     return "observation"
 
 
@@ -509,6 +514,10 @@ def _memory_input(row: Any, names: Mapping[str, str], level: int) -> Input:
     character_id = None if row.character_id is None else str(row.character_id)
     if level == 1:
         epistemic = _beat_epistemic(row.text, character_id, names)
+        if epistemic == "observation" and row.holder_character_id is not None:
+            # #178: what a holder perceived privately is its belief, never an observation
+            # anyone may share (S-CONSOLIDATION-SCOPE M5).
+            epistemic = "belief"
     else:
         epistemic = _output_epistemic(row.modality)
     return Input(
@@ -697,7 +706,7 @@ class Output:
 
     kind: MemoryKind
     text: str
-    modality: Literal["objective", "attributed_claim", "observation"]
+    modality: Literal["objective", "attributed_claim", "observation", "belief"]
     speaker: str | None
     supports: tuple[Input, ...]
     visibility: Visibility
@@ -827,6 +836,12 @@ def derive(
         elif all(s.epistemic == "objective" for s in supports):
             modality = "objective" if statement.modality == "objective" else "observation"
             made.append((text[:TEXT_MAX], modality, None, supports))
+        elif any(s.epistemic == "belief" for s in supports):
+            # #178: a statement over a holder's belief stays the holder's belief (its holder is
+            # the output's single-character visibility, ``output_row``).
+            if statement.modality == "objective":
+                derived.downgraded += 1
+            made.append((text[:TEXT_MAX], "belief", None, supports))
         else:
             if statement.modality == "objective":
                 derived.downgraded += 1

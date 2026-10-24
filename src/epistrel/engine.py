@@ -65,9 +65,9 @@ from epistrel.core.catalog.report import ValidationResult
 from epistrel.core.commit import lifecycle as commitment
 from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.context import SYSTEM_PRINCIPAL, RequestContext, requesting_principal
-from epistrel.core.enums import EntryStatus, StoryStatus, ThunkState
+from epistrel.core.enums import EntryStatus, ExposureState, StoryStatus, ThunkState
 from epistrel.core.epistemic import author as belief_author
-from epistrel.core.epistemic import partitions
+from epistrel.core.epistemic import inspection, partitions
 from epistrel.core.erasure import boundary as erasure_boundary
 from epistrel.core.erasure import catalog_block
 from epistrel.core.erasure import erase as erasure
@@ -1855,19 +1855,20 @@ class Engine:
         ctx: RequestContext,
         story_id: str,
         *,
-        viewpoint: str | None = None,
+        viewpoint: str | None,
         state: ThunkState | None = None,
         discharged: bool | None = None,
         limit: int = commitment.INSPECT_LIMIT_DEFAULT,
         after_id: str | None = None,
     ) -> commitment.LedgerPage:
-        """The story's thunks and promissory ledger (docs/02 §9's ``inspect/ledger``; FR-ADMIN-5
-        is M5's), ``omniscient`` only (403 ``omniscient_required`` otherwise): a page of
-        ``limit`` thunks by id after ``after_id`` (only those in effective ``state`` when
-        given), with their ledger entries (``discharged`` filters them). 409 ``module_off`` when
-        the story does not run commitment."""
+        """The story's thunks and promissory ledger (docs/02 §9's ``inspect/ledger``;
+        FR-ADMIN-5), an omniscient read (``inspection.omniscient_read``: 422
+        ``viewpoint_unresolved`` when none is named, 403 ``omniscient_required`` for a
+        character): a page of ``limit`` thunks by id after ``after_id`` (only those in effective
+        ``state`` when given), with their ledger entries (``discharged`` filters them). 409
+        ``module_off`` when the story does not run commitment."""
         ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
-        require_omniscient(ctx.viewpoint or "", field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
         return await commitment.inspect_ledger(
             self.db,
             story_id,
@@ -1884,19 +1885,22 @@ class Engine:
         story_id: str,
         *,
         character: str,
-        viewpoint: str | None = None,
+        viewpoint: str | None,
         proposition_id: str | None = None,
+        as_of: int | None = None,
         limit: int = partitions.INSPECT_LIMIT_DEFAULT,
         after: str | None = None,
     ) -> partitions.BeliefInspection:
         """``character``'s belief projection (FR-EPI-6, FR-ADMIN-5; docs/02 §9's
-        ``inspect/beliefs``; #159), ``omniscient`` only (403 ``omniscient_required`` otherwise:
-        it shows a partition no other character may read): a page of ``limit`` ``belief_state``
-        rows by proposition id after ``after`` (only ``proposition_id`` when given), each with its
-        current belief. 404 for an unknown story; 422 for a character outside the cast. #178
-        adds the inspection's own authorization rules."""
+        ``inspect/beliefs``; #159, #178), an omniscient read (422 ``viewpoint_unresolved``
+        when none is named, 403 ``omniscient_required`` for a character: it shows a partition
+        no other character may read): a page of ``limit`` ``belief_state`` rows by proposition
+        id after ``after`` (only ``proposition_id`` when given), each with its current belief;
+        ``as_of`` reads it as the corrected record stood through that turn. 404 for an unknown
+        story; 409 ``module_off`` when the story keeps no partitions; 422 for a character
+        outside the cast; the player's character (no partition) answers an empty page."""
         ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
-        require_omniscient(ctx.viewpoint or "", field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
         return await partitions.inspect(
             self.db,
             story_id,
@@ -1904,6 +1908,70 @@ class Engine:
             proposition_id=proposition_id,
             limit=limit,
             after=after,
+            as_of=as_of,
+        )
+
+    @refuses_nul()
+    async def inspect_divergences(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        viewpoint: str | None,
+        speaker: str | None = None,
+        subject: str | None = None,
+        as_of: int | None = None,
+        limit: int = inspection.INSPECT_LIMIT_DEFAULT,
+        after_id: str | None = None,
+    ) -> inspection.DivergencePage:
+        """The story's divergences (FR-TURN-7, FR-ADMIN-5; docs/02 §9's ``inspect/divergences``;
+        #166, #178): what each lying speaker asserted against what it believes, an omniscient
+        read (422 ``viewpoint_unresolved`` / 403 ``omniscient_required``). A page by id
+        (``limit``, ``after_id``); ``speaker`` keeps one speaker's, ``subject`` those about an
+        entity, ``as_of`` those positioned through a turn. 409 ``module_off`` when the story
+        keeps no partitions."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
+        return await inspection.inspect_divergences(
+            self.db,
+            story_id,
+            speaker=speaker,
+            subject=subject,
+            as_of=as_of,
+            limit=limit,
+            after_id=after_id,
+        )
+
+    @refuses_nul()
+    async def inspect_exposures(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        viewpoint: str | None,
+        character: str | None = None,
+        state: ExposureState | None = None,
+        as_of: int | None = None,
+        limit: int = inspection.INSPECT_LIMIT_DEFAULT,
+        after_id: str | None = None,
+    ) -> inspection.ExposurePage:
+        """The story's exposures (FR-BELIEF-5,14, FR-ADMIN-5; ``inspect/exposures``; #164,
+        #178): what each witness heard and has (``resolved``) or has not yet (``unresolved``)
+        decided, an omniscient read (422 ``viewpoint_unresolved`` / 403
+        ``omniscient_required``) that never resolves anything. A page by id (``limit``,
+        ``after_id``); ``character`` keeps one witness's, ``state`` one effective state as the
+        record stood through ``as_of``. 409 ``module_off`` when the story keeps no
+        partitions."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
+        return await inspection.inspect_exposures(
+            self.db,
+            story_id,
+            character=character,
+            state=state,
+            as_of=as_of,
+            limit=limit,
+            after_id=after_id,
         )
 
     # -- the structured projections (FR-STORE-3, FR-RET-6; #137) ---------------------------------

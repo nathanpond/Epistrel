@@ -35,11 +35,11 @@ One row is one memory record:
   it.
 - **what consolidation made of it** (#143, migration 0058): on a ``semantic`` or ``reflection``
   row, ``level`` (1: compressed from episodic memories and canon; 2: from level-1 outputs),
-  ``modality`` (``objective``, ``attributed_claim`` or ``observation``: the epistemic type
-  FR-MEM-9 preserves; an attributed claim's speaker is its ``character_id``), ``inputs_hash``
-  (the replay key: a digest of its inputs' content, the same in a fork) and the provenance
-  FR-MEM-10 stores, ``model``, ``model_version`` (``NULL`` when the adapter reports none) and
-  ``prompt_hash``; on any row, ``covered_by`` (the consolidation outputs that cover it,
+  ``modality`` (``objective``, ``attributed_claim``, ``observation`` or, #178, ``belief``: the
+  epistemic type FR-MEM-9 preserves; an attributed claim's speaker is its ``character_id``),
+  ``inputs_hash`` (the replay key: a digest of its inputs' content, the same in a fork) and the
+  provenance FR-MEM-10 stores, ``model``, ``model_version`` (``NULL`` when the adapter reports
+  none) and ``prompt_hash``; on any row, ``covered_by`` (the consolidation outputs that cover it,
   rewritten as outputs are made; an output that is no longer active covers nothing, so readers
   join on its membership; #147's retirement prefers covered records).
 - **quarantine** (#145, migration 0059; FR-GUARD-4,5): ``quarantined_at`` (``NULL``: not
@@ -66,7 +66,8 @@ One row is one memory record:
   (``ix_memories_pinned``). ``core.memory.retirement`` and ``core.memory.pins`` write these.
 
 Guarded (``epistrel_memories_guard``): an UPDATE may change only ``MUTABLE_MEMORY_COLUMNS``; an
-erasure (``epistrel.erasure = on``) may also rewrite ``text`` and ``quarantine_reason``, and a
+erasure (``epistrel.erasure = on``) may also rewrite ``text``, ``quarantine_reason`` and (#178,
+migration 0079: an erased character leaves ``visibility.characters``) ``visibility``, and a
 sanitize (``epistrel.sanitize`` = the memory's id, #145) that one row's ``text`` and
 ``inputs_hash``. A DELETE passes only under an
 erasure or the story's deletion (``epistrel.allow_story_delete``); TRUNCATE is refused. The
@@ -129,8 +130,9 @@ HOT_UNPINNED_WHERE = f"retrieval_tier = 'hot' AND NOT pinned AND {active_only_pr
 HOT_VECTORS_WHERE = f"{HOT_UNPINNED_WHERE} AND embedding IS NOT NULL"
 """The rows the story's vector budget counts (``ix_memories_hot_vectors``)."""
 
-MODALITIES: tuple[str, ...] = ("objective", "attributed_claim", "observation")
-"""The epistemic types a consolidation output carries (``modality``, CHECK; FR-MEM-9)."""
+MODALITIES: tuple[str, ...] = ("objective", "attributed_claim", "observation", "belief")
+"""The epistemic types a consolidation output carries (``modality``, CHECK; FR-MEM-9): #178
+adds ``belief``, a statement resting on a holder's own memory (``holder_character_id``)."""
 
 FIDELITIES: tuple[str, ...] = ("content", "envelope")
 """How much of its beat a routed memory's holder perceived (``fidelity``, CHECK; #161)."""

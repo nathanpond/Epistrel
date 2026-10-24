@@ -77,7 +77,7 @@ from epistrel.api.routes.engine_profiles import (
     ProfileVersionsBody,
 )
 from epistrel.api.routes.history import HistoryResponse
-from epistrel.api.routes.inspect import BeliefsBody, LedgerBody
+from epistrel.api.routes.inspect import BeliefsBody, DivergencesBody, ExposuresBody, LedgerBody
 from epistrel.api.routes.media import (
     MediaListBody,
     MediaUploadedBody,
@@ -427,6 +427,18 @@ async def _beliefs(engine: Engine, story_id: str, character: str) -> dict[str, A
         BeliefsBody.of(
             await engine.inspect_beliefs(CTX, story_id, character=character, viewpoint="omniscient")
         )
+    )
+
+
+async def _divergences(engine: Engine, story_id: str) -> dict[str, Any]:
+    return dump(
+        DivergencesBody.of(await engine.inspect_divergences(CTX, story_id, viewpoint="omniscient"))
+    )
+
+
+async def _exposures(engine: Engine, story_id: str) -> dict[str, Any]:
+    return dump(
+        ExposuresBody.of(await engine.inspect_exposures(CTX, story_id, viewpoint="omniscient"))
     )
 
 
@@ -1273,6 +1285,18 @@ def _steps() -> list[Step]:
                 params={"character": ids["dale"], "viewpoint": "omniscient"},
             ),
             lambda e, ids: _beliefs(e, ids["story"], ids["dale"]),
+        ),
+        # #178's knowledge inspections: the story keeps no partitions (#181 delivers the
+        # module), so both surfaces answer 409 module_off.
+        Step(
+            "inspect_divergences",
+            lambda ids: Rest("GET", f"{s}/inspect/divergences", params={"viewpoint": "omniscient"}),
+            lambda e, ids: _divergences(e, ids["story"]),
+        ),
+        Step(
+            "inspect_exposures",
+            lambda ids: Rest("GET", f"{s}/inspect/exposures", params={"viewpoint": "omniscient"}),
+            lambda e, ids: _exposures(e, ids["story"]),
         ),
         Step(
             "promote_character",

@@ -887,6 +887,12 @@
             ],
             "title": "Next After"
           },
+          "output_viewpoint": {
+            "const": "omniscient",
+            "default": "omniscient",
+            "title": "Output Viewpoint",
+            "type": "string"
+          },
           "revision": {
             "title": "Revision",
             "type": "integer"
@@ -4393,6 +4399,135 @@
         "title": "DispositionsPatch",
         "type": "object"
       },
+      "DivergenceItemBody": {
+        "description": "One divergence (FR-TURN-7): the utterance and its speaker, the proposition asserted and\nthe contrary belief it deviates from (``null`` for a lie no record settles), the say beat's\nposition, the event of a reveal that settled it (#169) and the writing operation.",
+        "properties": {
+          "asserted": {
+            "$ref": "#/components/schemas/Proposition"
+          },
+          "asserted_proposition_id": {
+            "title": "Asserted Proposition Id",
+            "type": "string"
+          },
+          "believed": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Proposition"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "believed_belief_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Believed Belief Id"
+          },
+          "believed_proposition_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Believed Proposition Id"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "operation_id": {
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "position": {
+            "$ref": "#/components/schemas/NarrativePositionBody"
+          },
+          "revealed_by_event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revealed By Event Id"
+          },
+          "speaker": {
+            "title": "Speaker",
+            "type": "string"
+          },
+          "utterance_id": {
+            "title": "Utterance Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "utterance_id",
+          "speaker",
+          "asserted_proposition_id",
+          "asserted",
+          "believed_belief_id",
+          "believed_proposition_id",
+          "believed",
+          "position",
+          "revealed_by_event_id",
+          "operation_id"
+        ],
+        "title": "DivergenceItemBody",
+        "type": "object"
+      },
+      "DivergencesBody": {
+        "description": "A page of the story's divergences by id, the story's revision and ``next_after_id``\n(``null`` on the last page), labelled omniscient.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DivergenceItemBody"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_after_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next After Id"
+          },
+          "output_viewpoint": {
+            "const": "omniscient",
+            "default": "omniscient",
+            "title": "Output Viewpoint",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "revision",
+          "next_after_id"
+        ],
+        "title": "DivergencesBody",
+        "type": "object"
+      },
       "Dominance": {
         "description": "How dominant or submissive the character is.",
         "enum": [
@@ -7497,6 +7632,148 @@
           "rating_version"
         ],
         "title": "EvaluatedRating",
+        "type": "object"
+      },
+      "ExposureItemBody": {
+        "description": "One exposure (FR-BELIEF-5): the witness, the proposition it heard and from whom, the\nbeat's event, how much it caught (``fidelity``), the exposure position, its effective\n``state`` and, once resolved, the transition and the operation that resolved it.",
+        "properties": {
+          "fidelity": {
+            "title": "Fidelity",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "operation_id": {
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "position": {
+            "$ref": "#/components/schemas/NarrativePositionBody"
+          },
+          "proposition": {
+            "$ref": "#/components/schemas/Proposition"
+          },
+          "proposition_id": {
+            "title": "Proposition Id",
+            "type": "string"
+          },
+          "resolution_operation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution Operation Id"
+          },
+          "resolved_by_transition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved By Transition"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "source_event_id": {
+            "title": "Source Event Id",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "witness": {
+            "title": "Witness",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "witness",
+          "proposition_id",
+          "proposition",
+          "source",
+          "source_event_id",
+          "kind",
+          "fidelity",
+          "position",
+          "state",
+          "resolved_by_transition",
+          "resolution_operation_id",
+          "operation_id"
+        ],
+        "title": "ExposureItemBody",
+        "type": "object"
+      },
+      "ExposureState": {
+        "description": "An exposure's stored state: ``unresolved`` until a narrative turn needing the witness's\nbelief resolves it (``resolved``). The effective state is read through the resolving\noperation's membership (``core.epistemic.exposure``). Postgres enum ``exposure_state``.",
+        "enum": [
+          "unresolved",
+          "resolved"
+        ],
+        "title": "ExposureState",
+        "type": "string"
+      },
+      "ExposuresBody": {
+        "description": "A page of the story's exposures by id, the story's revision and ``next_after_id``\n(``null`` on the last page), labelled omniscient.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ExposureItemBody"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_after_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next After Id"
+          },
+          "output_viewpoint": {
+            "const": "omniscient",
+            "default": "omniscient",
+            "title": "Output Viewpoint",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "revision",
+          "next_after_id"
+        ],
+        "title": "ExposuresBody",
         "type": "object"
       },
       "ExtractionShadowBody": {
@@ -12190,6 +12467,12 @@
               }
             ],
             "title": "Next After Id"
+          },
+          "output_viewpoint": {
+            "const": "omniscient",
+            "default": "omniscient",
+            "title": "Output Viewpoint",
+            "type": "string"
           },
           "revision": {
             "title": "Revision",
@@ -57309,7 +57592,7 @@
     },
     "/stories/{story_id}/inspect/beliefs": {
       "get": {
-        "description": "What `character` believes now (FR-EPI-6): its `belief_state` rows, each joined with the belief record it rests on and the proposition held, `omniscient` only (403 `omniscient_required`). A page by proposition id (`limit`, at most 500; `after` continues); `proposition_id` keeps one. A belief is its holder's truth, whether or not canon agrees (FR-EPI-3). `identities` lists who the character holds to be one referent (FR-PROP-7): the canon `same_as` facts it may read and its own `same_as` beliefs. 422 for a character outside the story's cast.",
+        "description": "What `character` believes now (FR-EPI-6): its `belief_state` rows, each joined with the belief record it rests on and the proposition held, `omniscient` only (403 `omniscient_required`). A page by proposition id (`limit`, at most 500; `after` continues); `proposition_id` keeps one. A belief is its holder's truth, whether or not canon agrees (FR-EPI-3). `identities` lists who the character holds to be one referent (FR-PROP-7): the canon `same_as` facts it may read and its own `same_as` beliefs. `as_of` reads the projection as the corrected record stood through that turn. 422 `viewpoint_unresolved` when no viewpoint is named; 409 `module_off` when the story keeps no character partitions; 422 for a character outside the story's cast; the player's character has no partition (an empty page).",
         "operationId": "inspect_beliefs",
         "parameters": [
           {
@@ -57368,6 +57651,24 @@
                 }
               ],
               "title": "Proposition Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "as_of",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 2147483647,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "As Of"
             }
           },
           {
@@ -57449,6 +57750,16 @@
             },
             "description": "Not found: `not_found`."
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `module_off`."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -57489,9 +57800,442 @@
         ]
       }
     },
+    "/stories/{story_id}/inspect/divergences": {
+      "get": {
+        "description": "What each lying speaker asserted against what it believes (FR-TURN-7, FR-ADMIN-5), `omniscient` only (422 `viewpoint_unresolved` when no viewpoint is named, 403 `omniscient_required` for a character). A page by id (`limit`, at most 500; `after_id` continues); `speaker` keeps one speaker's, `subject` those whose asserted proposition is about an entity, `as_of` those positioned through a turn. 409 `module_off` when the story keeps no character partitions.",
+        "operationId": "inspect_divergences",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "viewpoint",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Viewpoint"
+            }
+          },
+          {
+            "in": "query",
+            "name": "speaker",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Speaker"
+            }
+          },
+          {
+            "in": "query",
+            "name": "subject",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Subject"
+            }
+          },
+          {
+            "in": "query",
+            "name": "as_of",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 2147483647,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "As Of"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DivergencesBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden: `omniscient_required`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `module_off`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`, `viewpoint_unresolved`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Inspect the story's divergences",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
+    "/stories/{story_id}/inspect/exposures": {
+      "get": {
+        "description": "What each witness heard and has (`resolved`) or has not yet (`unresolved`) decided (FR-BELIEF-5,14, FR-ADMIN-5), `omniscient` only (422 `viewpoint_unresolved` when no viewpoint is named, 403 `omniscient_required` for a character). A raw read: it never resolves an exposure. A page by id (`limit`, at most 500; `after_id` continues); `character` keeps one witness's, `state` one effective state as the record stood through `as_of`. 409 `module_off` when the story keeps no character partitions.",
+        "operationId": "inspect_exposures",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "viewpoint",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Viewpoint"
+            }
+          },
+          {
+            "in": "query",
+            "name": "character",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Character"
+            }
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ExposureState"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
+            "in": "query",
+            "name": "as_of",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 2147483647,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "As Of"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExposuresBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden: `omniscient_required`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `module_off`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`, `viewpoint_unresolved`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Inspect the story's exposures",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
     "/stories/{story_id}/inspect/ledger": {
       "get": {
-        "description": "The introduced-but-undetermined references (thunks) and the salient references awaiting commitment (FR-COMMIT-7,13), `omniscient` only (403 `omniscient_required`). A page of thunks by id (`limit`, at most 500; `after_id` continues), optionally only those `open`, `resolved` or `expired`, with the ledger entries on them (`discharged` keeps the discharged or the undischarged ones); the first page also lists the entries on hidden facts' propositions and the hidden facts themselves (`hidden_facts`: current canon scoped to characters or to the engine, #169). 409 `module_off` for a story that does not run commitment.",
+        "description": "The introduced-but-undetermined references (thunks) and the salient references awaiting commitment (FR-COMMIT-7,13), `omniscient` only (403 `omniscient_required`). A page of thunks by id (`limit`, at most 500; `after_id` continues), optionally only those `open`, `resolved` or `expired`, with the ledger entries on them (`discharged` keeps the discharged or the undischarged ones); the first page also lists the entries on hidden facts' propositions and the hidden facts themselves (`hidden_facts`: current canon scoped to characters or to the engine, #169). 422 `viewpoint_unresolved` when no viewpoint is named; 409 `module_off` for a story that does not run commitment.",
         "operationId": "inspect_ledger",
         "parameters": [
           {

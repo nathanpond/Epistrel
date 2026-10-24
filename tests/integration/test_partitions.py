@@ -44,6 +44,7 @@ from epistrel.core.visibility import Visibility, private_to
 from tests import canon_support as c
 from tests import nested_support as ns
 from tests import partition_support as ps
+from tests import perception_support
 from tests.auth_support import auth_settings, bearer
 from tests.event_support import rows
 from tests.memory_support import use_structured
@@ -53,7 +54,9 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.mark.part("M5", "FR-EPI-1,3,5,6")
-async def test_u_03__partitions(engine: AsyncEngine, settings: Settings) -> None:
+async def test_u_03__partitions(
+    engine: AsyncEngine, settings: Settings, perception_delivered: None
+) -> None:
     """Canon says Bobby is in the kitchen. Ann believes he is in the garden (a false belief,
     self-world: what she holds of the world), Bobby believes he is in the kitchen (the canon
     fact's own proposition, FR-PROP-2) and that Ann knows Cal (social-world: about other
@@ -66,6 +69,7 @@ async def test_u_03__partitions(engine: AsyncEngine, settings: Settings) -> None
     w = await c.world(engine)
     story = w.story_id
     await use_structured(engine, story)
+    await perception_support.perceive(engine, story, "co_location")  # #178: partitions kept
     ann, bobby, cal = (w.characters[n] for n in ("Ann", "Bobby", "Cal"))
     people, places = w.people, w.places
     fact = await c.commit(engine, story, c.at(people["Bobby"], places["kitchen"], 0, None))
@@ -179,7 +183,8 @@ async def test_u_03__partitions(engine: AsyncEngine, settings: Settings) -> None
     with pytest.raises(DBAPIError, match="append-only"):
         await ps.execute(engine, "DELETE FROM beliefs WHERE id = :id", id=false.id)
 
-    # The projection over REST: omniscient only, with the belief and the proposition it holds.
+    # The projection over REST: omniscient only, with the belief and the proposition it holds
+    # (#178: the story keeps partitions; 409 module_off otherwise, C-28).
     path = f"/stories/{story}/inspect/beliefs"
     async with respond_client(settings, engine) as (client, _):
         page = await client.get(

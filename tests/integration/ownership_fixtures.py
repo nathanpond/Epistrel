@@ -655,8 +655,11 @@ CALLS: dict[tuple[str, str], Call] = {
     ),
     # Commitments (#146): the thunks and the promissory ledger, omniscient.
     ("GET", f"{S}/inspect/ledger"): Call(200, queries=(OMNISCIENT,), prepare=_committing),
-    # Belief partitions (#159): a character's belief projection, omniscient.
-    ("GET", f"{S}/inspect/beliefs"): Call(200, queries=(OMNISCIENT,), prepare=_believing),
+    # Belief partitions (#159) and #178's knowledge inspections, omniscient: the story keeps no
+    # partitions (#181 delivers the module), so every requester gets the same 409 module_off.
+    ("GET", f"{S}/inspect/beliefs"): Call(409, queries=(OMNISCIENT,), prepare=_believing),
+    ("GET", f"{S}/inspect/divergences"): Call(409, queries=(OMNISCIENT,)),
+    ("GET", f"{S}/inspect/exposures"): Call(409, queries=(OMNISCIENT,)),
     # Author pins (#147): a fresh memory pinned, a fresh pinned memory unpinned.
     ("POST", f"{S}/memories/{{memory_id}}/pin"): Call(200, prepare=_memory),
     ("DELETE", f"{S}/memories/{{memory_id}}/pin"): Call(200, prepare=_pinned_memory),

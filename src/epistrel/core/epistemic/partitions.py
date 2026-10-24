@@ -674,6 +674,54 @@ class BeliefInspection:
     canon facts its viewpoint reads and its own ``same_as`` beliefs (also among ``items``)."""
 
 
+async def _states_as_of(
+    conn: AsyncConnection,
+    story_id: str,
+    *,
+    holder: str,
+    as_of: int,
+    proposition_id: str | None,
+    limit: int,
+    after: str | None,
+) -> StatePage:
+    """``holder``'s projection as the corrected record stood through turn ``as_of``
+    (FR-BELIEF-14; #178): the beliefs held then (``partition(through=…)``, discarded rows
+    excluded), one per proposition (the latest), at ``suspected`` or above, by proposition id."""
+    from epistrel.core.membership import POSITION_MAX
+
+    through = Position(as_of, 0, POSITION_MAX, POSITION_MAX, POSITION_MAX)
+    held = await partition(
+        conn,
+        story_id,
+        holder,
+        through=through,
+        proposition_ids=None if proposition_id is None else [proposition_id],
+        levels=HELD_LEVELS,
+    )
+    latest: dict[str, Belief] = {}
+    for b in sorted(held, key=lambda r: (r.held_from.key(), r.id)):
+        latest[b.proposition_id] = b
+    keys = sorted(k for k in latest if after is None or k > after)
+    page = keys[:limit]
+    items = tuple(
+        (
+            BeliefState(
+                story_id=story_id,
+                holder_character_id=holder,
+                proposition_id=k,
+                belief_id=latest[k].id,
+                polarity=latest[k].polarity,
+                current_level=latest[k].confidence_level,
+                current_scalar=latest[k].confidence_scalar,
+                since=latest[k].held_from,
+            ),
+            latest[k],
+        )
+        for k in page
+    )
+    return StatePage(items, page[-1] if len(keys) > limit and page else None)
+
+
 async def inspect(
     db: AsyncEngine,
     story_id: str,
@@ -682,33 +730,42 @@ async def inspect(
     proposition_id: str | None = None,
     limit: int = INSPECT_LIMIT_DEFAULT,
     after: str | None = None,
+    as_of: int | None = None,
 ) -> BeliefInspection:
     """One holder's belief projection (FR-EPI-6; docs/02 §9's ``inspect/beliefs``) in one
-    consistent read: 404 for an unknown story, 422 ``validation_error`` (``query.character``)
-    for a character outside the cast."""
+    consistent read: 404 for an unknown story, 409 ``module_off`` when the story keeps no
+    partitions (#178), 422 ``validation_error`` (``query.character``) for a character outside
+    the cast. The player's character has no partition (FR-EPI-12): an empty page. ``as_of``
+    reads the projection as the corrected record stood through that turn (#178)."""
     from epistrel.core.concurrency import check_expected_revision
+    from epistrel.core.epistemic.inspection import check_character, require_partitions
 
     limit = max(1, min(INSPECT_LIMIT_MAX, limit))
     async with db.connect() as conn:
         revision = await check_expected_revision(conn, story_id, None)
-        known = await conn.scalar(
-            select(characters.c.id).where(
-                characters.c.story_id == story_id, characters.c.id == character
+        await require_partitions(conn, story_id)
+        await check_character(conn, story_id, character, field="query.character")
+        if await is_player(conn, story_id, character):
+            return BeliefInspection(story_id, character, revision, (), None, ())
+        if as_of is None:
+            page = await belief_states(
+                conn,
+                story_id,
+                holder=character,
+                proposition_id=proposition_id,
+                limit=limit,
+                after=after,
             )
-        )
-        if known is None:
-            raise InvalidRequest(
-                "character is one of the story's characters",
-                {"field": "query.character", "reason": "unknown_character"},
+        else:
+            page = await _states_as_of(
+                conn,
+                story_id,
+                holder=character,
+                as_of=as_of,
+                proposition_id=proposition_id,
+                limit=limit,
+                after=after,
             )
-        page = await belief_states(
-            conn,
-            story_id,
-            holder=character,
-            proposition_id=proposition_id,
-            limit=limit,
-            after=after,
-        )
         # #171: who the holder holds to be one (canon it reads, and its own beliefs).
         from epistrel.core.readset import KeyedLookup, StructuredReadSet
         from epistrel.core.resolution.identity import identities_for
@@ -717,7 +774,7 @@ async def inspect(
             KeyedLookup(conn, StructuredReadSet()),
             story_id,
             character,
-            beliefs=not await is_player(conn, story_id, character),
+            beliefs=True,
             characters=(),
         )
     return BeliefInspection(story_id, character, revision, page.items, page.next_after, held.held)

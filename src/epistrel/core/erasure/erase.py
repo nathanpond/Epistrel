@@ -114,6 +114,7 @@ from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StringConstraints
 from sqlalchemy import Text, and_, cast, delete, func, insert, or_, select, text, update
+from sqlalchemy.dialects.postgresql import array
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import (
@@ -1636,6 +1637,55 @@ async def _erase_thunks(
             )
 
 
+async def _prune_memory_visibility(
+    conn: AsyncConnection,
+    story_id: str,
+    removed: set[str],
+    owned: set[Any],
+    tally: _Tally,
+    run: _StoryRun,
+) -> list[str]:
+    """Memories scoped to characters among whom is an erased one (#178, S-ERASURE-BOUNDARY M5):
+    the name leaves ``visibility.characters``; a memory no character is left to see is deleted
+    with a marker (as ``_erase_facts`` does a fact's). Answers the deleted ids."""
+    if not removed:
+        return []
+    m = memories.c
+    rows = await conn.execute(
+        select(m.id, m.visibility)
+        .where(
+            m.story_id == story_id,
+            m.visibility["scope"].astext == "characters",
+            m.visibility["characters"].has_any(array(sorted(removed), type_=Text)),
+        )
+        .order_by(m.id)
+    )
+    deleted: list[str] = []
+    for row in rows:
+        if row.id in owned:
+            continue
+        named = [c for c in row.visibility.get("characters") or () if c not in removed]
+        if not named:
+            await _delete(
+                conn,
+                run,
+                tally,
+                memories.name,
+                str(row.id),
+                delete(memories).where(m.id == row.id),
+            )
+            deleted.append(str(row.id))
+            continue
+        tally.record(memories.name, 1)
+        if run.write:
+            await conn.execute(
+                update(memories)
+                .where(m.id == row.id)
+                .values(visibility={**row.visibility, "characters": named})
+            )
+    return deleted
+
+
 async def _erase_memories(
     conn: AsyncConnection,
     story_id: str,
@@ -1677,6 +1727,10 @@ async def _erase_memories(
             str(memory_id),
             delete(memories).where(m.id == memory_id),
         )
+    # #178: a memory another character holds that the subject could also see loses the
+    # subject's name from its visibility; one no character is left to see is deleted.
+    pruned = await _prune_memory_visibility(conn, story_id, removed, set(owned), tally, run)
+    owned = [*owned, *pruned]
     if owned and run.write:
         # The hot set's counters lost rows: the next reader recounts them (#147).
         await retirement.invalidate(conn, story_id)

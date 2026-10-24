@@ -1011,3 +1011,55 @@ async def test_a_turn_key_replayed_after_an_erasure_answers_the_reference(
         )
         assert other.status_code == 409, other.text
         assert other.json()["error"]["code"] == "idempotency_conflict"
+
+
+@pytest.mark.part("M5", "FR-ADMIN-2")
+async def test_i_09__beliefs(
+    erasure_settings: Settings, engine: AsyncEngine, perception_delivered: None
+) -> None:
+    """I-09 M5 (#178): erase Bobby from a story whose knowledge tables name him every way they
+    can (``e.knowing_story``: a belief about him, his own belief, a testimony he gave, an
+    exposure to his claim, his lie, a nested belief attributed to him, a memory he may see).
+    Zero residue across other characters' beliefs: the erasure reports ``residue`` 0 and no
+    candidates left, no row of ``beliefs``, ``belief_transitions``, ``belief_state``,
+    ``exposures`` or ``divergences`` holds his character or entity id, the subject index holds
+    no reference to him, and the shared memory no longer names him in its visibility.
+    Complement: Ann's belief about Cal, her belief Bobby told her (its source gone) and her
+    exposure to Cal's claim are kept."""
+    k = await e.knowing_story(engine)
+    subject = (k.bobby, k.bobby_entity)
+    assert sum((await e.naming_ids(engine, k.story_id, subject, e.KNOWLEDGE_TABLES)).values())
+    async with respond_client(erasure_settings, engine) as (client, _):
+        done = await e.erase(client, "character", k.bobby, k.story_id, confirm_all=True)
+    assert (done["residue"], done["candidates_remaining"]) == (0, 0)
+    assert done["records"]["beliefs"] >= 3
+    assert done["records"]["exposures"] == 1
+    assert done["records"]["divergences"] == 1
+    left = await e.naming_ids(engine, k.story_id, subject, e.KNOWLEDGE_TABLES)
+    assert left == dict.fromkeys(e.KNOWLEDGE_TABLES, 0)
+    assert (
+        await scalar(
+            engine,
+            "SELECT count(*) FROM subject_references WHERE story_id = :s AND subject_id = :c",
+            s=k.story_id,
+            c=k.bobby,
+        )
+        == 0
+    )
+    (shared,) = await rows(
+        engine, "SELECT visibility FROM memories WHERE id = :m", m=k.shared_memory
+    )
+    assert shared.visibility == {"scope": "characters", "characters": [k.ann]}
+    kept = {
+        str(r.id)
+        for r in await rows(engine, "SELECT id FROM beliefs WHERE story_id = :s", s=k.story_id)
+    }
+    assert {k.kept_belief, k.told_belief} <= kept
+    (told,) = await rows(
+        engine,
+        "SELECT source_character_id FROM belief_transitions WHERE belief_id = :b",
+        b=k.told_belief,
+    )
+    assert told.source_character_id is None
+    exposed = await rows(engine, "SELECT id FROM exposures WHERE story_id = :s", s=k.story_id)
+    assert [str(r.id) for r in exposed] == [k.kept_exposure]

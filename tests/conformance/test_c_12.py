@@ -1,6 +1,7 @@
 """C-12: the output viewpoint contract (FR-RESP-12, FR-AUTH-2) [M2] (#59); the structured
 pipeline's part (FR-RESP-8,12) [M4] (#152); the audience filter's output clauses and the
-``player_view`` setting (FR-RESP-12,13) [M5] (#177).
+``player_view`` setting (FR-RESP-12,13) [M5] (#177), and the M5 read rules on the inspection reads
+and history (``test_c_12__m5_reads``, #178).
 
 Every respond and history read is produced for one output viewpoint, resolved the same way
 over REST and in the library: ``test_c_12`` and ``test_c_12__structured`` run every check
@@ -423,3 +424,53 @@ async def test_c_12__player_view(
     seen = (await surface.history(story, viewpoint="omniscient")).json
     assert ("think", THOUGHT) in _channels(seen, "items")
     assert seen["audience_filter"] == "none"
+
+
+@pytest.mark.integration
+@pytest.mark.part("M5", "FR-RESP-12,13")
+async def test_c_12__m5_reads(
+    surface: Surface, engine: AsyncEngine, drained_embedding_jobs: None, perception_delivered: None
+) -> None:
+    """The read rules (#178): reads of a character's partition, its beliefs or the story's
+    divergences (and exposures) that do not name ``omniscient`` are rejected, a character
+    viewpoint with 403 ``omniscient_required`` and no viewpoint with 422
+    ``viewpoint_unresolved``. History reads at perception ``co_location``: Clara, in the hall,
+    is given none of the parlor's beats; Bobby, in the parlor, every one in full, words included.
+    At ``full`` Bobby's history read holds the whisper's envelope only, as S-WHISPER describes,
+    and Wren's (whispered to) the words. Run over REST and the library.
+
+    Complement: the same inspection reads naming ``omniscient`` answer 200, labelled so."""
+    stub = surface.engine.models.stub
+    story, ids, _ = await _rooms(surface, engine, "co_location")
+    stub.script("generation", [_whisper_turn(ids)])
+    played = await surface.respond(story, body(ids["Wren"], "Well?"), viewpoint="omniscient")
+    assert played.status == 200, played.code
+    for kind, params in (
+        ("beliefs", {"character": ids["Bobby"]}),
+        ("divergences", {}),
+        ("exposures", {}),
+    ):
+        refused = await surface.inspect(kind, story, viewpoint=_vp(ids["Bobby"]), **params)
+        assert (refused.status, refused.code) == (403, "omniscient_required"), kind
+        unnamed = await surface.inspect(kind, story, **params)
+        assert (unnamed.status, unnamed.code) == (422, "viewpoint_unresolved"), kind
+        seen = await surface.inspect(kind, story, viewpoint="omniscient", **params)
+        assert seen.status == 200, (kind, seen.code)
+        assert seen.json["output_viewpoint"] == "omniscient"
+    clara = (await surface.history(story, viewpoint=_vp(ids["Clara"]))).json
+    assert _channels(clara, "items") == []
+    assert WHISPER not in str(clara)
+    bobby = (await surface.history(story, viewpoint=_vp(ids["Bobby"]))).json
+    assert ("say", WHISPER) in _channels(bobby, "items")
+    assert ("do", GLANCE) in _channels(bobby, "items")
+    assert THOUGHT not in str(bobby)
+
+    story, ids, _ = await _rooms(surface, engine, "full")
+    stub.script("generation", [_whisper_turn(ids)])
+    played = await surface.respond(story, body(ids["Wren"], "Well?"), viewpoint="omniscient")
+    assert played.status == 200, played.code
+    bobby = (await surface.history(story, viewpoint=_vp(ids["Bobby"]))).json
+    assert ("say", WHISPERED) in _channels(bobby, "items")
+    assert WHISPER not in str(bobby)
+    wren = (await surface.history(story, viewpoint=_vp(ids["Wren"]))).json
+    assert ("say", WHISPER) in _channels(wren, "items")

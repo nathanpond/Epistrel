@@ -14,9 +14,19 @@
 Both are omniscient reads only (403 ``omniscient_required`` for any other viewpoint): the ledger
 shows what no character's partition holds, a partition what no other character may read. 409
 ``module_off`` for a ledger read of a story that does not run commitment (a Lite story).
-FR-ADMIN-5's other inspection reads (divergences, external facts) are later; #178 adds the
-inspection reads' own authorization rules. Thin handlers over ``Engine.inspect_ledger`` and
-``Engine.inspect_beliefs``.
+- ``GET /stories/{id}/inspect/divergences?viewpoint=omniscient`` → the story's divergences (#166:
+  what a lying speaker asserted against what it believes; ``speaker``, ``subject``, ``as_of``).
+
+- ``GET /stories/{id}/inspect/exposures?viewpoint=omniscient`` → the story's exposures (#164:
+  what a witness heard and has or has not decided; ``character``, ``state``, ``as_of``).
+
+#178: every inspection is an omniscient read and the viewpoint is its only gate
+(``core.epistemic.inspection.omniscient_read``): no viewpoint is 422 ``viewpoint_unresolved``, a
+character viewpoint 403 ``omniscient_required``; each answer carries ``output_viewpoint:
+"omniscient"``. Service authentication is the only other check (C-28, S-TRUST-BOUNDARY). The
+belief, divergence and exposure reads are 409 ``module_off`` for a story that keeps no character
+partitions. FR-ADMIN-5's snapshotted external facts are M6's. Thin handlers over
+``Engine.inspect_*``.
 """
 
 from __future__ import annotations
@@ -35,7 +45,15 @@ from epistrel.core.commit.lifecycle import (
     LedgerPage,
     Thunk,
 )
-from epistrel.core.enums import ThunkState
+from epistrel.core.enums import ExposureState, ThunkState
+from epistrel.core.epistemic.exposure import Exposure
+from epistrel.core.epistemic.inspection import (
+    INSPECT_LIMIT_DEFAULT as KNOWLEDGE_LIMIT_DEFAULT,
+)
+from epistrel.core.epistemic.inspection import (
+    INSPECT_LIMIT_MAX as KNOWLEDGE_LIMIT_MAX,
+)
+from epistrel.core.epistemic.inspection import DivergenceItem, DivergencePage, ExposurePage
 from epistrel.core.epistemic.partitions import (
     INSPECT_LIMIT_DEFAULT as BELIEFS_LIMIT_DEFAULT,
 )
@@ -198,6 +216,8 @@ class LedgerBody(BaseModel):
     hidden_facts: list[HiddenFactBody] = []
     revision: int
     next_after_id: str | None
+    output_viewpoint: Literal["omniscient"] = "omniscient"
+    """An inspection is an omniscient read, labelled so (C-28; #178)."""
 
     @classmethod
     def of(cls, page: LedgerPage) -> LedgerBody:
@@ -208,6 +228,7 @@ class LedgerBody(BaseModel):
             hidden_facts=[HiddenFactBody.of(f) for f in page.hidden],
             revision=page.revision,
             next_after_id=page.inspection.next_after_id,
+            output_viewpoint="omniscient",
         )
 
 
@@ -223,8 +244,8 @@ class LedgerBody(BaseModel):
         "those `open`, `resolved` or `expired`, with the ledger entries on them (`discharged` "
         "keeps the discharged or the undischarged ones); the first page also lists the entries "
         "on hidden facts' propositions and the hidden facts themselves (`hidden_facts`: current "
-        "canon scoped to characters or to the engine, #169). 409 `module_off` for a story that "
-        "does not run commitment."
+        "canon scoped to characters or to the engine, #169). 422 `viewpoint_unresolved` when "
+        "no viewpoint is named; 409 `module_off` for a story that does not run commitment."
     ),
 )
 async def inspect_ledger(
@@ -330,6 +351,8 @@ class BeliefsBody(BaseModel):
     revision: int
     next_after: str | None
     identities: list[IdentityItemBody] = []
+    output_viewpoint: Literal["omniscient"] = "omniscient"
+    """An inspection is an omniscient read, labelled so (C-28; #178)."""
 
     @classmethod
     def of(cls, page: BeliefInspection) -> BeliefsBody:
@@ -342,6 +365,7 @@ class BeliefsBody(BaseModel):
                 IdentityItemBody(entities=list(i.entities), source=i.source, record_id=i.record_id)
                 for i in sorted(page.identities, key=lambda i: (i.entities, i.record_id))
             ],
+            output_viewpoint="omniscient",
         )
 
 
@@ -357,7 +381,10 @@ class BeliefsBody(BaseModel):
         "continues); `proposition_id` keeps one. A belief is its holder's truth, whether or "
         "not canon agrees (FR-EPI-3). `identities` lists who the character holds to be one "
         "referent (FR-PROP-7): the canon `same_as` facts it may read and its own `same_as` "
-        "beliefs. 422 for a character outside the story's cast."
+        "beliefs. `as_of` reads the projection as the corrected record stood through that "
+        "turn. 422 `viewpoint_unresolved` when no viewpoint is named; 409 `module_off` when "
+        "the story keeps no character partitions; 422 for a character outside the story's "
+        "cast; the player's character has no partition (an empty page)."
     ),
 )
 async def inspect_beliefs(
@@ -367,6 +394,7 @@ async def inspect_beliefs(
     character: Annotated[str, Query(pattern=ULID_PATTERN)],
     viewpoint: str | None = None,
     proposition_id: Annotated[str | None, Query(pattern=ULID_PATTERN)] = None,
+    as_of: Annotated[int | None, Query(ge=0, le=2_147_483_647)] = None,
     limit: Annotated[int, Query(ge=1, le=BELIEFS_LIMIT_MAX)] = BELIEFS_LIMIT_DEFAULT,
     after: Annotated[str | None, Query(pattern=ULID_PATTERN)] = None,
 ) -> BeliefsBody:
@@ -377,7 +405,203 @@ async def inspect_beliefs(
             character=character,
             viewpoint=viewpoint,
             proposition_id=proposition_id,
+            as_of=as_of,
             limit=limit,
             after=after,
+        )
+    )
+
+
+# -- divergences (#166, #178) ---------------------------------------------------------------------
+
+
+class DivergenceItemBody(BaseModel):
+    """One divergence (FR-TURN-7): the utterance and its speaker, the proposition asserted and
+    the contrary belief it deviates from (``null`` for a lie no record settles), the say beat's
+    position, the event of a reveal that settled it (#169) and the writing operation."""
+
+    id: str
+    utterance_id: str
+    speaker: str
+    asserted_proposition_id: str
+    asserted: Proposition
+    believed_belief_id: str | None
+    believed_proposition_id: str | None
+    believed: Proposition | None
+    position: NarrativePositionBody
+    revealed_by_event_id: str | None
+    operation_id: str
+
+    @classmethod
+    def of(cls, item: DivergenceItem) -> DivergenceItemBody:
+        r = item.row
+        return cls(
+            id=r.id,
+            utterance_id=r.utterance_id,
+            speaker=r.speaker,
+            asserted_proposition_id=r.asserted_proposition_id,
+            asserted=item.asserted,
+            believed_belief_id=r.believed_belief_id,
+            believed_proposition_id=r.believed_proposition_id,
+            believed=item.believed,
+            position=NarrativePositionBody.of(r.position),
+            revealed_by_event_id=r.revealed_by_event_id,
+            operation_id=r.operation_id,
+        )
+
+
+class DivergencesBody(BaseModel):
+    """A page of the story's divergences by id, the story's revision and ``next_after_id``
+    (``null`` on the last page), labelled omniscient."""
+
+    items: list[DivergenceItemBody]
+    revision: int
+    next_after_id: str | None
+    output_viewpoint: Literal["omniscient"] = "omniscient"
+
+    @classmethod
+    def of(cls, page: DivergencePage) -> DivergencesBody:
+        return cls(
+            items=[DivergenceItemBody.of(i) for i in page.items],
+            revision=page.revision,
+            next_after_id=page.next_after_id,
+            output_viewpoint="omniscient",
+        )
+
+
+@router.get(
+    "/{story_id}/inspect/divergences",
+    response_model=DivergencesBody,
+    operation_id="inspect_divergences",
+    summary="Inspect the story's divergences",
+    description=(
+        "What each lying speaker asserted against what it believes (FR-TURN-7, FR-ADMIN-5), "
+        "`omniscient` only (422 `viewpoint_unresolved` when no viewpoint is named, 403 "
+        "`omniscient_required` for a character). A page by id (`limit`, at most 500; "
+        "`after_id` continues); `speaker` keeps one speaker's, `subject` those whose asserted "
+        "proposition is about an entity, `as_of` those positioned through a turn. 409 "
+        "`module_off` when the story keeps no character partitions."
+    ),
+)
+async def inspect_divergences(
+    story_id: StoryId,
+    ctx: ContextDep,
+    engine: EngineDep,
+    viewpoint: str | None = None,
+    speaker: Annotated[str | None, Query(pattern=ULID_PATTERN)] = None,
+    subject: Annotated[str | None, Query(pattern=ULID_PATTERN)] = None,
+    as_of: Annotated[int | None, Query(ge=0, le=2_147_483_647)] = None,
+    limit: Annotated[int, Query(ge=1, le=KNOWLEDGE_LIMIT_MAX)] = KNOWLEDGE_LIMIT_DEFAULT,
+    after_id: Annotated[str | None, Query(pattern=ULID_PATTERN)] = None,
+) -> DivergencesBody:
+    return DivergencesBody.of(
+        await engine.inspect_divergences(
+            ctx,
+            story_id,
+            viewpoint=viewpoint,
+            speaker=speaker,
+            subject=subject,
+            as_of=as_of,
+            limit=limit,
+            after_id=after_id,
+        )
+    )
+
+
+# -- exposures (#164, #178) -----------------------------------------------------------------------
+
+
+class ExposureItemBody(BaseModel):
+    """One exposure (FR-BELIEF-5): the witness, the proposition it heard and from whom, the
+    beat's event, how much it caught (``fidelity``), the exposure position, its effective
+    ``state`` and, once resolved, the transition and the operation that resolved it."""
+
+    id: str
+    witness: str
+    proposition_id: str
+    proposition: Proposition
+    source: str | None
+    source_event_id: str
+    kind: str
+    fidelity: str
+    position: NarrativePositionBody
+    state: str
+    resolved_by_transition: str | None
+    resolution_operation_id: str | None
+    operation_id: str
+
+    @classmethod
+    def of(cls, found: Exposure) -> ExposureItemBody:
+        return cls(
+            id=found.id,
+            witness=found.witness,
+            proposition_id=found.proposition_id,
+            proposition=found.proposition,
+            source=found.source,
+            source_event_id=found.source_event_id,
+            kind=found.kind.value,
+            fidelity=found.fidelity.value,
+            position=NarrativePositionBody.of(found.position),
+            state=found.state.value,
+            resolved_by_transition=found.resolved_by_transition,
+            resolution_operation_id=found.resolution_operation_id,
+            operation_id=found.operation_id,
+        )
+
+
+class ExposuresBody(BaseModel):
+    """A page of the story's exposures by id, the story's revision and ``next_after_id``
+    (``null`` on the last page), labelled omniscient."""
+
+    items: list[ExposureItemBody]
+    revision: int
+    next_after_id: str | None
+    output_viewpoint: Literal["omniscient"] = "omniscient"
+
+    @classmethod
+    def of(cls, page: ExposurePage) -> ExposuresBody:
+        return cls(
+            items=[ExposureItemBody.of(x) for x in page.items],
+            revision=page.revision,
+            next_after_id=page.next_after_id,
+            output_viewpoint="omniscient",
+        )
+
+
+@router.get(
+    "/{story_id}/inspect/exposures",
+    response_model=ExposuresBody,
+    operation_id="inspect_exposures",
+    summary="Inspect the story's exposures",
+    description=(
+        "What each witness heard and has (`resolved`) or has not yet (`unresolved`) decided "
+        "(FR-BELIEF-5,14, FR-ADMIN-5), `omniscient` only (422 `viewpoint_unresolved` when no "
+        "viewpoint is named, 403 `omniscient_required` for a character). A raw read: it never "
+        "resolves an exposure. A page by id (`limit`, at most 500; `after_id` continues); "
+        "`character` keeps one witness's, `state` one effective state as the record stood "
+        "through `as_of`. 409 `module_off` when the story keeps no character partitions."
+    ),
+)
+async def inspect_exposures(
+    story_id: StoryId,
+    ctx: ContextDep,
+    engine: EngineDep,
+    viewpoint: str | None = None,
+    character: Annotated[str | None, Query(pattern=ULID_PATTERN)] = None,
+    state: ExposureState | None = None,
+    as_of: Annotated[int | None, Query(ge=0, le=2_147_483_647)] = None,
+    limit: Annotated[int, Query(ge=1, le=KNOWLEDGE_LIMIT_MAX)] = KNOWLEDGE_LIMIT_DEFAULT,
+    after_id: Annotated[str | None, Query(pattern=ULID_PATTERN)] = None,
+) -> ExposuresBody:
+    return ExposuresBody.of(
+        await engine.inspect_exposures(
+            ctx,
+            story_id,
+            viewpoint=viewpoint,
+            character=character,
+            state=state,
+            as_of=as_of,
+            limit=limit,
+            after_id=after_id,
         )
     )

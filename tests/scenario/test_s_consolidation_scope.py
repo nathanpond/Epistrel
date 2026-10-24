@@ -1,7 +1,8 @@
-"""S-CONSOLIDATION-SCOPE, M4 part (docs/04 §7; #143): consolidation never widens an input's
-epistemic type or scope (FR-MEM-9). The M5 clause (Jenni's and Bobby's private memories of one
-event under M5's knowledge partitions) is #M5's; here the scope rule is shown on memories
-scoped to characters written by the test, since M4 writes none."""
+"""S-CONSOLIDATION-SCOPE (docs/04 §7): consolidation never widens an input's epistemic type or
+scope (FR-MEM-9). The M4 part (#143) shows the scope rule on memories scoped to characters
+written by the test, since M4 writes none; the M5 part (#178) is the brief's clause: two
+characters' private memories of one event are never combined, and a reflection over one
+character's belief stays that character's belief."""
 
 from __future__ import annotations
 
@@ -184,3 +185,62 @@ async def test_s_consolidation_scope__type(
         assert ann_only is not None
         assert ann_only.visibility.characters == (ann,)
         assert len(ann_only.inputs) == 2
+
+
+@pytest.mark.part("M5", "FR-MEM-9")
+async def test_s_consolidation_scope__m5(
+    engine: AsyncEngine, models: ModelAccessLayer, drained_embedding_jobs: None
+) -> None:
+    """M5 (#178): Ann (the brief's Jenni) and Bobby each hold a private memory of one event
+    (Bobby hiding the key). A consolidation cannot combine them: the pair's window is refused
+    when planned (``scope_mismatch``) and makes no model call, so no reflection visible to
+    either alone is built from both. Ann's own window reads her memory and the one she shares
+    with Bobby, never his: its outputs' visibility is the intersection of its inputs' scopes
+    (``[Ann]``), and a reflection over Ann's belief stays Ann's belief (modality ``belief``,
+    holder Ann) even when the model calls it objective. Complement: Bobby's memory is in no
+    output's sources and no output is visible to him."""
+    w = await cs.story(engine)
+    story, bobby, ann = w.story_id, w.characters["Bobby"], w.characters["Ann"]
+    await cs.private_memory(engine, story, ann, [ann], "Ann saw Bobby hide the key under the mat.")
+    await cs.private_memory(engine, story, bobby, [bobby], "Bobby hid the key under the mat.")
+    await cs.private_memory(
+        engine, story, ann, [ann, bobby], "Ann and Bobby heard the bell ring at nine."
+    )
+    before = cs.calls(models)
+    pair = Scope(characters=(ann, bobby))
+    async with engine.connect() as conn:
+        with pytest.raises(ScopeMismatch):
+            await core.plan(conn, story, Window(1, 2), pair)
+    refused = await consolidate_window(engine, story, Window(1, 2), pair, models=models)
+    assert refused.result["noop"] == "scope_mismatch"
+    assert cs.calls(models) == before
+    assert await cs.outputs(engine, story) == []
+
+    models.stub.script(
+        "consolidation",
+        [
+            cs.answer(
+                facts=[("The key is under the mat.", "objective", [0])],
+                reflections=[("Bobby hides the key at nine.", "objective", [0, 1])],
+            )
+        ],
+    )
+    run = await consolidate_window(
+        engine, story, Window(1, 3), Scope(characters=(ann,)), models=models
+    )
+    assert str(run.outcome) == "committed", run
+    made = {r.text: r for r in await cs.outputs(engine, story)}
+    assert set(made) == {"The key is under the mat.", "Bobby hides the key at nine."}
+    held = await rows(
+        engine,
+        "SELECT id, holder_character_id FROM memories WHERE story_id = :s AND kind = 'episodic'",
+        s=story,
+    )
+    bobbys = {str(r.id) for r in held if str(r.holder_character_id) == bobby}
+    (window,) = await cs.windows(engine, story)
+    assert not any(k.endswith(i) for k in window.source_window["input_versions"] for i in bobbys)
+    for row in made.values():
+        assert (row.modality, str(row.holder_character_id)) == ("belief", ann)
+        assert row.visibility == {"scope": "characters", "characters": [ann]}
+        assert bobby not in row.visibility["characters"]
+    assert run.result["downgraded"] == 2

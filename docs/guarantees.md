@@ -57,6 +57,7 @@ report's `guarantees_lost` names the deterministic rows a change would lose, by 
 - `viewpoint_filtering`: Under every profile, a character viewpoint never receives any character's `think` or `latent` content (FR-RESP-12).
 - `structural_knowledge_separation`: Without partitions, characters' knowledge is separated only by instructions in a shared prompt, so secrets seeded from the catalog or scenario are present in the shared context (FR-LITE-5).
 - `verification`: Only the claims detected in an output are checked; nothing else in its prose is.
+- `audience_filtering`: Provided only under the story setting `player_view = character` (the default): under `story` a character viewpoint receives every beat in full, never a `think` or `latent`, and its partition and memory are routed as under `character` (FR-RESP-13; #177).
 - `clock_pacing`: Under `lite`, the clock may run only in its prompt-only form (FR-LITE-5): pacing is shown in the prompt and nothing is checked.
 - `claim_detectors`: Every detected claim is matched to a declared one or checked as a new claim: zero unchecked detected claims is a guarantee (FR-VERIFY-13). Complete detection is not: it is a measured rate (NFR-QUAL-10).
 - `generation`: Includes a regeneration after an output policy's violation (FR-GUARD).

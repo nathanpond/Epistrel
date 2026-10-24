@@ -73,6 +73,7 @@ from epistrel.core.settings_schema import (
     CAST_LIMIT_MIN,
     DEFAULT_MAX_CHARACTERS_AT_START,
     DeploymentSettings,
+    PlayerView,
     TurnConcurrency,
 )
 
@@ -614,6 +615,10 @@ class StorySettingsDefaults(ScenarioModel):
     """The scenario's arrival policy (FR-VERIFY-11; #144): whether a director pass may introduce
     new arrivals, and a render a new unmodeled person as scene texture. ``null`` leaves the
     story's default (true)."""
+    player_view: Annotated[PlayerView | None, FieldClass.configuration, Use.story_setting] = None
+    """What a character viewpoint's output holds where perception is on (FR-RESP-13; #177):
+    ``character`` (the audience filter) or ``story`` (every beat, whatever the character
+    perceived). ``null`` leaves the story's default (``character``)."""
     policies: list[ScenarioPolicy] = Field(default_factory=list, max_length=POLICIES_MAX)
     required_providers: Annotated[list[ProviderName], FieldClass.configuration, Use.policy] = Field(
         default_factory=list, max_length=NAMES_MAX

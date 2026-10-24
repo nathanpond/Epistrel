@@ -128,6 +128,19 @@ whose reserved extraction cannot start before the deadline is replaced by the sa
 (``undetected_beats``). ``turn_report.budget`` adds ``minimum``, ``reservation``, ``released``,
 ``used_by_kind`` and ``plan``.
 
+**Reconciliation and the audience filter** (#177): after #175's adjudication and the repairs,
+``reconcile_checked`` reconciles the turn's concurrent commitments on one timeline
+(``orchestrator.structured.reconcile``: a contradictory pair's loser rewritten as an attempt or
+its ``latent`` dropped; ``turn_report.reconcile``, the response's ``reconcile``, a
+``turn_reconciled`` audit event). The composition then takes the beats the output viewpoint
+receives (``audience_of``, ``core.epistemic.audience``: routed over the scene at the turn's
+start with the moves its canon writes stage, under the request's or the story's
+``player_view``), the content it withheld held against it (``fidelity_leak``); the message
+records the level and player view it was filtered under, and the response's beats come from the
+same filter over the committed turn (``core.history.filtered_turn_beats``). The player's
+``whisper_to`` qualifies the input's ``say`` like a render's (``target_absent`` repaired
+silently); a ``think`` in the input is dropped (``turn_report.player_think_dropped``).
+
 Logs carry ids and counts only (invariant 3).
 """
 
@@ -159,6 +172,7 @@ from epistrel.core.enums import (
     RecordProvenance,
     StoryStatus,
 )
+from epistrel.core.epistemic import audience as audience_rules
 from epistrel.core.epistemic import context as character_context
 from epistrel.core.epistemic import exposure as exposure_records
 from epistrel.core.epistemic import modeling as char_modeling
@@ -179,10 +193,11 @@ from epistrel.core.events.types import (
     MessageRendered,
     PlayerInput,
     RenderRejected,
+    TurnReconciled,
     VerifyVerdict,
 )
 from epistrel.core.genesis.structured import deferred_items
-from epistrel.core.history import turn_beats
+from epistrel.core.history import filtered_turn_beats
 from epistrel.core.membership import active_operation, beat_steps, excluding
 from epistrel.core.memory import records
 from epistrel.core.policies.evaluate import evaluate
@@ -323,6 +338,7 @@ from epistrel.orchestrator.policies.store import guard_context
 from epistrel.orchestrator.repair.ladder import Recheck, RepairLadder, RepairResult
 from epistrel.orchestrator.structured import multi, planner
 from epistrel.orchestrator.structured import prompt as prompts
+from epistrel.orchestrator.structured import reconcile as reconcile_rules
 from epistrel.orchestrator.structured import roles as roles_rt
 from epistrel.orchestrator.structured import simultaneous as simultaneous_rules
 from epistrel.orchestrator.structured import steps as render_steps
@@ -2643,6 +2659,7 @@ def _routed_beats(
     ids: Mapping[int, str],
     moves: scene_loader.Moves,
     participants: Mapping[int, tuple[str, ...]] | None = None,
+    input_qualifiers: perception.Qualifiers | None = None,
 ) -> list[perception.RouteBeat]:
     """The turn's beats as routing takes them (#161): the player's ``say`` and ``do`` (beat 1)
     and every rendered beat, each with the episodic writer's beat as its ``source`` (a ``latent``
@@ -2660,6 +2677,10 @@ def _routed_beats(
                     kind=cast(perception.RouteKind, kind),
                     beat=1,
                     actor=read.actor.id,
+                    # #177: the player's whisper qualifies the input's ``say``.
+                    qualifiers=input_qualifiers
+                    if kind == SAY and input_qualifiers is not None
+                    else perception.Qualifiers(),
                     sound=perception.sound_of(text) if kind == DO else None,
                     source=records.Beat(
                         cast(records.BeatKind, kind),
@@ -2782,6 +2803,7 @@ async def route_committed(
     joined: Sequence[tuple[str, str]] = (),
     participants: Mapping[int, tuple[str, ...]] | None = None,
     mode: str = perception.SEQUENTIAL,
+    input_qualifiers: perception.Qualifiers | None = None,
 ) -> dict[str, Any]:
     """Route the committed turn (#161), in its commit step after canon (so the moves the turn
     committed are in #137's placement projection): every beat through
@@ -2800,7 +2822,14 @@ async def route_committed(
         state = replace(state.moved(joined), characters=state.characters | {c for c, _ in joined})
     results = perception.route_turn(
         _routed_beats(
-            checked, read, say=say, do=do, ids=ids, moves=moves, participants=participants or {}
+            checked,
+            read,
+            say=say,
+            do=do,
+            ids=ids,
+            moves=moves,
+            participants=participants or {},
+            input_qualifiers=input_qualifiers,
         ),
         state,
         level,
@@ -3143,10 +3172,12 @@ async def compose_turn(
     render_ids: Sequence[str],
     fallback: FallbackLines,
     reserved: bool,
+    heard: Heard | None = None,
 ) -> composing.Composition:
     """The turn's message for ``viewpoint`` (``orchestrator.compose.compose``) from its
     post-repair beats: the polish under #68's output gate and the final check, or the
-    deterministic assembly (see the module docstring)."""
+    deterministic assembly (see the module docstring). ``heard`` (#177): the beats the
+    viewpoint receives and those the audience filter withheld (``audience_of``)."""
     settings = configuration.settings
     routes = routes_of(settings)
     policies = output_policies(context, render_ids)
@@ -3181,6 +3212,10 @@ async def compose_turn(
             env = replace(env, introductions=checked.introductions).with_private(
                 _turn_thoughts(checked.beats)
             )
+            if speaker == NARRATOR:
+                # #484 (owner's option (a)): the turn's render characters are not the narrator's
+                # "other character" on the composition path.
+                env = replace(env, context_for=_composing(env.context_for, render_ids))
             detector = ClaimDetector(
                 config,
                 env,
@@ -3205,8 +3240,9 @@ async def compose_turn(
     safe = next(
         (t for _, t in fallback.candidates() if deterministic_ok(t)), fallback.candidates()[-1][1]
     )
-    shown = [b for b in checked.beats if b.beat > 1]
-    hidden = [] if is_omniscient(viewpoint) else [b for b in shown if b.kind in PRIVATE_KINDS]
+    turn_beats_ = [b for b in checked.beats if b.beat > 1]
+    shown = turn_beats_ if heard is None else heard.shown
+    hidden = [] if is_omniscient(viewpoint) else [b for b in turn_beats_ if b.kind in PRIVATE_KINDS]
     composer = composing.Composer(
         models=models,
         inputs=GenerationInputs(
@@ -3225,8 +3261,21 @@ async def compose_turn(
         detection_calls=composition_detection_calls(configuration, base_config),
         hidden=hidden,
         max_chars=length_chars(read.resolved.max_tokens),
+        withheld=[] if heard is None else heard.withheld,
     )
     return await composing.compose(shown, viewpoint, budget, composer=composer, reserved=reserved)
+
+
+def _composing(
+    context_for: Callable[[str], Any], render_ids: Sequence[str]
+) -> Callable[[str], Any]:
+    """``context_for`` with the composed renders' characters on every context (#484)."""
+    composed = frozenset(render_ids)
+
+    def found(speaker: str) -> Any:
+        return replace(context_for(speaker), composing=composed)
+
+    return found
 
 
 def _composition_degradation(composition: composing.Composition) -> list[tuple[str, str]]:
@@ -3312,6 +3361,222 @@ async def _entity_names(conn: AsyncConnection, story_id: str, ids: Sequence[str]
         )
     )
     return {str(r.id): str(r.canonical_name) for r in found}
+
+
+# -- reconciliation and the audience filter (#177) -----------------------------------------------
+
+
+def _render_index(beats: Sequence[TurnBeat], firsts: Sequence[int]) -> dict[int, int]:
+    """Each beat's render (its place in render order), from each render's first beat."""
+    found: dict[int, int] = {}
+    for b in beats:
+        index = 0
+        for k, first in enumerate(firsts):
+            if first <= b.beat:
+                index = k
+        found[b.beat] = index
+    return found
+
+
+async def reconcile_checked(
+    db: AsyncEngine,
+    story_id: str,
+    read: TurnRead,
+    checked: Checked,
+    *,
+    mode: str,
+    order: Sequence[str],
+    firsts: Sequence[int],
+    settled: Sequence[tuple[int, int]] = (),
+) -> reconcile_rules.Reconciliation:
+    """The turn's concurrent commitments reconciled (``orchestrator.structured.reconcile``)
+    and the losers rewritten in ``checked``: a losing ``do`` as an attempt (#151's rung 2, its
+    claims, canon requests and mentions gone, a ``render_rejected`` record), a losing
+    ``latent``'s canon write dropped, any other loser's canon request dropped."""
+    renders = _render_index(checked.beats, firsts)
+    commitments = reconcile_rules.commitments_of(
+        checked.requests, checked.latent, checked.beats, render_of=renders
+    )
+    if len(commitments) < 2:
+        return reconcile_rules.Reconciliation()
+    async with db.connect() as conn:
+        registry = await load_registry(conn, story_id)
+    saw = (
+        {(a, b) for a in renders for b in renders if renders[a] < renders[b]}
+        if mode == multi.SEQUENTIAL
+        else set()
+    )
+    found = reconcile_rules.reconcile_turn(
+        commitments, mode=mode, registry=registry, order=order, saw=saw, settled=settled
+    )
+    if not found.pairs:
+        return found
+    if found.attempts:
+        async with db.connect() as conn:
+            object_names = await _entity_names(conn, story_id, list(found.contested.values()))
+        by_beat = {b.beat: b for b in checked.beats}
+        for number in found.attempts:
+            beat = by_beat.get(number)
+            if beat is None or beat.kind != DO:
+                continue
+            losing = [c for c in checked.checked if c.claim.beat == number and c.claim.proposition]
+            _merge_repair(
+                checked,
+                simultaneous_rules.attempt_repair(
+                    beat,
+                    losing,
+                    actor=read.names.get(beat.character_id or "", "Someone"),
+                    obj=object_names.get(found.contested.get(number, ""), "it"),
+                ),
+            )
+    dropped = found.dropped_latents | found.dropped_requests
+    if dropped:
+        checked.latent = [(b, c) for b, c in checked.latent if (b.beat, c.claim_id) not in dropped]
+        checked.requests = [r for r in checked.requests if (r.beat, r.claim_id) not in dropped]
+    log.debug("reconciled turn: %d pairs", len(found.pairs))
+    return found
+
+
+@dataclass(frozen=True, slots=True)
+class Heard:
+    """What the output viewpoint receives of the turn's beats (#177; ``audience_of``): the
+    beats the composition takes (an envelope as a ``do`` of its envelope text, an eavesdropper's
+    part as that part), the beats it withheld, the ``audience_filter`` and the level."""
+
+    shown: list[TurnBeat]
+    withheld: list[TurnBeat]
+    audience_filter: str
+    level: perception.Level
+
+
+async def _staged_moves(
+    conn: AsyncConnection, story_id: str, checked: Checked
+) -> dict[int, tuple[tuple[str, str | None], ...]]:
+    """The moves the turn's canon writes stage, by beat (#177): each ``located_at`` of a
+    character's entity a canon request or a ``latent`` commits (negated: an exit, unplaced), so
+    the output is routed as the commit will route the memories."""
+    located = CORE_BY_NAME["located_at"].id
+    claims = [(r.beat, r.claim) for r in checked.requests] + [
+        (b.beat, c.proposition) for b, c in checked.latent
+    ]
+    wanted = [(n, p) for n, p in claims if n and p is not None and p.predicate_id == located]
+    if not wanted:
+        return {}
+    found = await conn.execute(
+        select(entities.c.id, entities.c.character_id).where(
+            entities.c.story_id == story_id, entities.c.character_id.is_not(None)
+        )
+    )
+    character_of = {str(r.id): str(r.character_id) for r in found}
+    moves: dict[int, list[tuple[str, str | None]]] = {}
+    for number, p in wanted:
+        who = character_of.get(str(p.subject_id))
+        if who is None:
+            continue
+        affirmed = p.polarity is Polarity.AFFIRMED
+        to = str(p.object_id) if affirmed and p.object_id is not None else None
+        if to is None and any(w == who for w, _ in moves.get(int(number), [])):
+            continue
+        moves.setdefault(int(number), []).append((who, to))
+    return {n: tuple(m) for n, m in moves.items()}
+
+
+async def audience_of(
+    db: AsyncEngine,
+    story_id: str,
+    read: TurnRead,
+    checked: Checked,
+    *,
+    viewpoint: str,
+    player_view: audience_rules.PlayerView,
+    settings: ProfileSettings,
+    say: str | None,
+    do: str | None,
+    input_qualifiers: perception.Qualifiers,
+    mode: str = perception.SEQUENTIAL,
+) -> Heard:
+    """The turn's beats as ``viewpoint`` receives them, before the commit (FR-RESP-13;
+    ``core.epistemic.audience.filter_for_viewpoint``): routed over the scene at the turn's
+    start, the channels and barriers its beats declare and the moves its canon writes stage."""
+    level = scene_loader.level_of(settings)
+    beats = [b for b in checked.beats if b.beat > 1]
+    stated = audience_rules.audience_filter_of(viewpoint, level, player_view)
+    if stated == "none":
+        return Heard(beats, [], stated, level)
+    async with db.connect() as conn:
+        state, _ = await scene_loader.load_scene(conn, story_id, read.turn)
+        moves = await _staged_moves(conn, story_id, checked)
+        names, places = await records.places_and_names(conn, story_id)
+    state = perception.with_declared(
+        state,
+        [c.proposition for b in checked.beats for c in b.declared if c.verdict != "contradicted"],
+    )
+    heard: list[audience_rules.AudienceBeat] = []
+    for kind, text in ((SAY, say), (DO, do)):
+        if text:
+            heard.append(
+                audience_rules.AudienceBeat(
+                    kind=kind,
+                    beat=1,
+                    character_id=read.actor.id,
+                    text=text,
+                    qualifiers=input_qualifiers if kind == SAY else perception.Qualifiers(),
+                )
+            )
+    heard += [
+        audience_rules.AudienceBeat(
+            kind=b.kind,
+            beat=b.beat,
+            character_id=None if b.kind == NARRATION else b.character_id,
+            text=b.text,
+            qualifiers=b.qualifiers,
+            source=b,
+        )
+        for b in sorted(checked.beats, key=lambda b: b.beat)
+    ]
+    for index, item in enumerate(heard):
+        last = index == len(heard) - 1 or heard[index + 1].beat != item.beat
+        if last and moves.get(item.beat):
+            heard[index] = replace(item, moves=moves[item.beat])
+    filtered = audience_rules.filter_for_viewpoint(
+        heard,
+        viewpoint,
+        scene=state,
+        level=level,
+        names=names,
+        places=places,
+        player_view=player_view,
+        mode=mode,
+    )
+    shown: list[TurnBeat] = []
+    for seen in filtered.seen:
+        source = seen.beat.source
+        if not isinstance(source, TurnBeat):
+            continue
+        if seen.envelope:
+            shown.append(
+                replace(
+                    source,
+                    kind="do",
+                    text=seen.text,
+                    claims=(),
+                    mentions=(),
+                    qualifiers=perception.Qualifiers(),
+                )
+            )
+        elif seen.partial:
+            shown.append(replace(source, text=seen.text, claims=()))
+        else:
+            shown.append(source)
+    withheld = [b.source for b in filtered.withheld if isinstance(b.source, TurnBeat)]
+    return Heard(shown, withheld, filtered.audience_filter, level)
+
+
+def _filtered_level(heard: Sequence[Heard]) -> str | None:
+    """The level a message was audience-filtered at (``None``: perception ``none``)."""
+    if not heard or heard[0].level == perception.NONE:
+        return None
+    return heard[0].level
 
 
 def _merge_checked(into: Checked, extra: Checked) -> Checked:
@@ -3427,6 +3692,16 @@ async def play(
     """#174: ``turn_report.multi``."""
     roles_state: list[roles_rt.TurnRoles] = []
     """#176: the turn's participation roles and reactive narration (per-character renders)."""
+    view: audience_rules.PlayerView = request.player_view or story.settings.player_view
+    """#177: the player view the output is produced under (the request's, else the story's)."""
+    input_qualifiers: list[perception.Qualifiers] = [perception.Qualifiers()]
+    """#177: the player's ``say``'s validated ``whisper_to``."""
+    reconciled: list[reconcile_rules.Reconciliation] = []
+    """#177: the turn's reconciliation (``turn_report.reconcile``)."""
+    settled_pairs: list[tuple[int, int]] = []
+    """#175's adjudicated ``(winner, loser)`` beats, which reconciliation skips."""
+    heard_state: list[Heard] = []
+    """#177: what the output viewpoint receives of the turn."""
 
     async def stage_render(
         turn_stage: TurnStage,
@@ -3573,6 +3848,7 @@ async def play(
                     )
         settled = simultaneous_rules.settle(conflicts, winners)
         report_multi.adjudications = [a.report() for a in settled]
+        settled_pairs[:] = [(a.winner_beat, a.loser_beat) for a in settled]
         losing = simultaneous_rules.losing_claims(checked.checked, settled)
         by_beat = {b.beat: b for b in checked.beats}
         for adjudication in sorted(
@@ -4239,6 +4515,25 @@ async def play(
             report_multi.regenerated_beats = [
                 r.original.beat for r in checked.repairs if r.original.beat > 1
             ]
+        # #177 (FR-MULTI-3): the turn's concurrent commitments, reconciled on one timeline
+        # after #175's adjudication (its settled pairs skipped), before the composition.
+        firsts = [f for f in (turn_stage.render_of(p.id) for p in order) if f is not None]
+        reconciliation = await reconcile_checked(
+            db,
+            story_id,
+            read,
+            checked,
+            mode=multi.SIMULTANEOUS if simultaneous else multi.SEQUENTIAL,
+            order=[p.id for p in order],
+            firsts=firsts or [2],
+            settled=settled_pairs,
+        )
+        reconciled[:] = [reconciliation]
+        for number in reconciliation.attempts:
+            staged = turn_stage.get(number)
+            rewritten = next((b for b in checked.beats if b.beat == number), None)
+            if staged is not None and rewritten is not None:
+                turn_stage.replace(number, replace(staged, text=rewritten.text, verified=()))
         # #163: who the turn models (after verify/repair, before routing), their ages found.
         checked.modeling = await plan_modeling(
             db,
@@ -4254,6 +4549,19 @@ async def play(
         )
         scene_loader.remember_level(read_set, scene_loader.level_of(settings))
         checked = await validate_perception(db, story_id, read, checked, settings)
+        input_qualifiers[:] = [perception.Qualifiers()]
+        if say and request.player_input.whisper_to:
+            # #177 (from #161): the player's whisper; a target not in the room is dropped
+            # silently (``qualifiers_repaired``), every target dropped leaves an aside.
+            asked = perception.Qualifiers(whisper_to=tuple(request.player_input.whisper_to))
+            if scene_loader.level_of(settings) == perception.FULL:
+                async with db.connect() as conn:
+                    state = await scene_loader.load_scene_state(conn, story_id, read.turn)
+                asked, repairs = perception.validate_qualifiers(
+                    perception.RouteBeat("say", 1, read.actor.id, asked), state
+                )
+                checked.perception_repairs[:0] = list(repairs)
+            input_qualifiers[:] = [asked]
         # #162: salient witnesses' testimony, adjudicated as optional work before the polish.
         checked.adjudications = await adjudicate.adjudicate_turn(
             db,
@@ -4273,6 +4581,21 @@ async def play(
         checked.degradation += checked.adjudications.degradation
         found[:] = [checked]
         composing_at = time.perf_counter()
+        # #177 (FR-RESP-13): the beats the output viewpoint receives, the rest withheld.
+        heard = await audience_of(
+            db,
+            story_id,
+            read,
+            checked,
+            viewpoint=viewpoint,
+            player_view=view,
+            settings=settings,
+            say=say,
+            do=do,
+            input_qualifiers=input_qualifiers[0],
+            mode=perception.SIMULTANEOUS if simultaneous else perception.SEQUENTIAL,
+        )
+        heard_state[:] = [heard]
         composition = await compose_turn(
             db,
             models,
@@ -4287,6 +4610,7 @@ async def play(
             render_ids=cast_.render_ids,
             fallback=lite._fallback_lines(read.inputs, cast_),
             reserved=reserved,
+            heard=heard,
         )
         clock.add("composition", time.perf_counter() - composing_at)
         composed[:] = [composition]
@@ -4321,6 +4645,7 @@ async def play(
                 labels=input_labels,
                 propositions=tuple(c.payload() for c in checked.input_claims if c.proposition),
                 mentions=tuple(checked.input_mentions),
+                perception=input_qualifiers[0].payload() or None,
             ),
             provenance=Provenance.PLAYER,
             character_id=read.actor.id,
@@ -4344,6 +4669,15 @@ async def play(
         ]:
             op.append(
                 event_type, payload, provenance=Provenance.ENGINE, character_id=None, beat=last + 1
+            )
+        # #177: the reconciled concurrent commitments, audit only.
+        if reconciled and reconciled[0].pairs:
+            op.append(
+                "turn_reconciled",
+                TurnReconciled(pairs=tuple(p.report() for p in reconciled[0].pairs)),
+                provenance=Provenance.ENGINE,
+                character_id=None,
+                beat=last + 1,
             )
         # A rejected polish (#152): audit only, its text never released.
         if composition.rejected_text is not None:
@@ -4382,6 +4716,9 @@ async def play(
                 composed=True,
                 # #175: a simultaneous turn's beats route against the starting placements.
                 interaction_mode=_simultaneous_of(multis),
+                # #177: the audience filtering the message was composed under.
+                perception_level=_filtered_level(heard_state),
+                player_view=view if _filtered_level(heard_state) is not None else None,
             ),
             provenance=Provenance.ENGINE,
             character_id=None,
@@ -4572,6 +4909,7 @@ async def play(
                     joined=joined,
                     participants=participants,
                     mode=_simultaneous_of(multis) or perception.SEQUENTIAL,
+                    input_qualifiers=input_qualifiers[0],
                 )
                 # #162: every witness's speech act, and the testimony its salience calls for;
                 # #164: the other witnesses' exposures, and the lazy resolutions it needs.
@@ -4874,6 +5212,16 @@ async def play(
         report["commit"] = fixed.get("commit", {})
         if "perception" in fixed:
             report["perception"] = fixed["perception"]
+        # #177: the reconciled commitments, and what the output viewpoint received.
+        report["reconcile"] = (
+            reconciled[0] if reconciled else reconcile_rules.Reconciliation()
+        ).report()
+        if heard_state:
+            report["audience"] = {
+                "audience_filter": heard_state[0].audience_filter,
+                "player_view": view,
+                "withheld": sorted(b.beat for b in heard_state[0].withheld),
+            }
         if "epistemic" in fixed:
             report["epistemic"] = fixed["epistemic"]
         if "modeling" in fixed:
@@ -4918,7 +5266,11 @@ async def play(
             await extraction.enqueue_shadow(conn, story_id, op.operation_id)
 
     async def result(conn: AsyncConnection | AsyncEngine, committed: Operation) -> RespondResult:
-        beats = await turn_beats(conn, story_id, committed.operation_id, viewpoint)
+        # #177: the committed turn's beats through the same audience filter.
+        filtered = await filtered_turn_beats(
+            conn, story_id, committed.operation_id, viewpoint, player_view=view
+        )
+        beats = filtered.items
         reply = next(item for item in beats if item.kind == "message_rendered")
         assert committed.narrative_turn is not None  # noqa: S101 - a committed turn's position
         assert committed.turn_variant is not None  # noqa: S101
@@ -4935,6 +5287,9 @@ async def play(
             "variant": committed.turn_variant,
             "timeline_revision": committed.timeline_revision,
             "output_viewpoint": viewpoint,
+            "audience_filter": filtered.audience_filter,
+            "player_view": view,
+            "reconcile": [p.body() for p in reconciled[0].pairs] if reconciled else [],
             "model_calls": list(calls.calls),
             "elapsed_ms": fixed.get("elapsed_ms", budget.elapsed_ms()),
             "call_counts": calls.by_purpose(),

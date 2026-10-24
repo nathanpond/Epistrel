@@ -47,7 +47,7 @@ from tests.auth_support import auth_settings
 from tests.event_support import rows, scalar
 from tests.fixtures.bobby_education import DEGREE_AWARDED, GRADUATION, Education, bobby_education
 from tests.respond_support import body, respond, respond_client
-from tests.structured_turn_support import beat, claim, render, turn_report
+from tests.structured_turn_support import beat, claim, history, render, turn_report
 
 pytestmark = pytest.mark.integration
 
@@ -289,7 +289,11 @@ async def test_s_selfjustify__misinformed(
                 assert licence["cited"] is cited, case
                 report = await turn_report(engine, edu.story_id)
                 assert "repairs" not in report, case
-                assert "Florida" in played["message"]["text"], case
+                # #177: Cal is unplaced (absent at co_location), so his own read perceives none
+                # of Bobby's beats; the omniscient read carries the released line.
+                seen = await history(client, edu.story_id, "omniscient")
+                assert any("Florida" in i["text"] for i in seen if i["channel"] == "say"), case
+                assert played["message"]["text"] == "", case
                 (belief,) = await _florida_beliefs(engine, edu)
                 assert (
                     belief.kind,

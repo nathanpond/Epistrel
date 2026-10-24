@@ -42,10 +42,15 @@ from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX, OMNISCIENT
 PRIVATE_CHANNELS = frozenset({"think", "latent"})
 """Channels no character viewpoint ever receives, under every profile."""
 
-AudienceFilter = Literal["none", "co_location", "full"]
+AudienceFilter = Literal[
+    "none", "co_location", "full", "nothing_perceived", "bypassed_by_player_view"
+]
+"""What a result states about its audience filtering (FR-RESP-13; #177's
+``core.epistemic.audience``): ``none`` (perception ``none``, or ``omniscient``), the perception
+level the filter ran at, ``nothing_perceived`` (the viewpoint perceived none of the turn) or
+``bypassed_by_player_view`` (the story's ``player_view = story``)."""
 AUDIENCE_FILTER: AudienceFilter = "none"
-"""Perception is ``none`` for every M2 story, so no audience filtering applies (FR-RESP-13 is
-M5's); results state it."""
+"""The default: no audience filtering applies (perception ``none``)."""
 
 
 def character_viewpoint(character_id: str) -> str:

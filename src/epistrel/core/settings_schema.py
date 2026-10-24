@@ -214,6 +214,10 @@ ones did (``sequential``), or each against the turn's starting state (``simultan
 conflicting actions settled by the story's tie-break, FR-MULTI-8)."""
 SequenceOrder = Literal["request", "director"]
 """FR-MULTI-6 (#174): who orders a ``sequential`` turn's primaries."""
+PlayerView = Literal["character", "story"]
+"""FR-RESP-13 (#177): what a character viewpoint's output holds, only what the character
+perceived (``character``, the audience filter) or every beat of the story (``story``)."""
+DEFAULT_PLAYER_VIEW: PlayerView = "character"
 DEFAULT_INTERACTION_MODE: InteractionMode = "sequential"
 TIE_BREAK_PATTERN = r"^(request_order|director|state:[a-z][a-z0-9_]{0,63})$"
 """FR-MULTI-8 (#175): a ``simultaneous`` turn's tie-break, ``request_order`` (the earlier-named
@@ -390,6 +394,16 @@ class StorySettings(BaseModel):
     against the reactor's viewpoint like any ``say``. Off by default (the owner's decision): a
     reactive character's narrated speech escalates it to a primary render instead (FR-MULTI-10).
     A request overrides it. Prospective."""
+
+    player_view: Annotated[PlayerView, PROSPECTIVE] = DEFAULT_PLAYER_VIEW
+    """What a character viewpoint's output holds where perception is on (FR-RESP-13; #177, the
+    owner's round-two decision): ``character`` (the default) applies the audience filter, so a
+    response, history read and beat list hold only what the viewing character perceived, and a
+    character that perceived nothing gets an empty narration; ``story`` returns every beat of the
+    turn at full content whatever the character perceived (roleplay that lets a player read scenes
+    their character is not in), still never a ``think`` or ``latent``. The character's own
+    partition and memory are the same under both. A no-op where perception is ``none``. A
+    request (and a history read) overrides it. Prospective."""
 
     @field_validator("default_output_viewpoint")
     @classmethod

@@ -40,6 +40,7 @@ from tests.structured_turn_support import (
     ages,
     beat,
     claim,
+    history,
     labels_of,
     render,
     schema_calls,
@@ -156,7 +157,11 @@ async def test_s_age_assignment__structured(
         assert later.status_code == 200, later.text
         (spoken,) = [b for b in later.json()["beats"] if b["kind"] == "beat_say"]
         assert labels_of(spoken) == ("false", UNKNOWN, "sincere")
-        assert spoken["propositions"][0]["verdict"] == "contradicted"
+        # #177: a character read carries no verdicts; the omniscient read keeps them.
+        assert spoken["propositions"][0]["verdict"] is None
+        seen = await history(client, story, "omniscient")
+        (told,) = [i for i in seen if i["kind"] == "beat_say" and i["text"] == "I'm 70, you know."]
+        assert told["propositions"][0]["verdict"] == "contradicted"
         # No new character, no second age.
         again = await _cast(client, story, "omniscient")
         assert len(again) == len(omniscient)

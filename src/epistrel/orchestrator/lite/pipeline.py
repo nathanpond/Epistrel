@@ -104,7 +104,7 @@ from epistrel.core.errors import (
     TimelineChanged,
 )
 from epistrel.core.events import Operation
-from epistrel.core.history import turn_beats
+from epistrel.core.history import story_player_view, turn_beats
 from epistrel.core.profiles.effective import ProfileVersionRef, StoryProfile
 from epistrel.core.profiles.fingerprint import Stamp
 from epistrel.core.profiles.schema import ProfileSettings
@@ -753,6 +753,8 @@ async def _play(
             **_stamp_fields(stamped[0] if stamped else None),
             "profile": ProfileVersionRef(id=captured.profile_id, version=captured.version),
             "config_revision": configuration.config_revision,
+            # #177: echoed; a no-op under Lite (perception ``none``: nothing is filtered).
+            "player_view": request.player_view or await story_player_view(conn, story_id),
         }
         if regenerating is not None:
             return RegenerateResult(**fields, previous_variant=regenerating.variant)

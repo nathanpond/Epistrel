@@ -386,6 +386,10 @@ class ResolutionContext:
     """The ``same_as`` the speaker's holder holds (#171, ``core.resolution.identity``): each
     resolved mention's ``representative_id``. ``None``: none read (every entity stands for
     itself)."""
+    composing: frozenset[str] = frozenset()
+    """#484 (owner's option (a)): on the composition path, the characters whose beats the
+    message composes. The narrator's "other character" excludes them, so a weak texture claim
+    about a render's own character is surfaced as on that render's beats."""
 
 
 # -- tokens ----------------------------------------------------------------------------------

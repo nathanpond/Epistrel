@@ -14,11 +14,12 @@ one setting that needs ``structured`` (``player_authority``) has no story settin
 
 ``SETTING_CAPABILITIES`` maps every ``story_settings_defaults`` field to the capability it
 needs, ``None`` for the settings every story is created with (the turn concurrency, the default
-output viewpoint, the audit retention, the story-scoped policies, which Lite uses, and the
-arrival policy, a story setting only the structured permission check reads, #144, kept in place
-so a later upgrade finds it). A capability no #106 module covers is named by the setting's own
-area (``history_rewrite``, ``providers``). The build-time check ``unmapped_settings`` keeps the
-dict complete.
+output viewpoint, the audit retention, the story-scoped policies, which Lite uses, the arrival
+policy, a story setting only the structured permission check reads, #144, kept in place so a
+later upgrade finds it, and the player view, #177, always active: a no-op wherever perception is
+``none``, Lite included, so never ``inactive``). A capability no #106 module covers is named
+by the setting's own area (``history_rewrite``, ``providers``). The build-time check
+``unmapped_settings`` keeps the dict complete.
 """
 
 from __future__ import annotations
@@ -41,6 +42,7 @@ SETTING_CAPABILITIES: Final[Mapping[str, str | None]] = {
     "backfill_conflict_policy": "history_rewrite",
     "audit_retention_days": None,
     "allow_new_arrivals": None,
+    "player_view": None,
     "policies": None,
     "required_providers": "providers",
 }

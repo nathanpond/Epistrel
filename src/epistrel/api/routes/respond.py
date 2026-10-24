@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from epistrel.api.deps import ContextDep, EngineDep, RespondAsyncDep, StoryId
 from epistrel.api.idempotency import answered
 from epistrel.api.responses import MutationResponse
-from epistrel.api.routes.history import ItemModel, item_model
+from epistrel.api.routes.history import AudienceFilterValue, ItemModel, item_model
 from epistrel.core.profiles.effective import ProfileVersionRef
 from epistrel.core.profiles.fingerprint import QualityStatus
 from epistrel.orchestrator.lite.schemas import RespondRequest, RespondResult
@@ -26,7 +26,9 @@ RESPOND_DESCRIPTION = (
     "(`render_character_ids`: default every other character, voiced in the order given and "
     "composed into one message), the output "
     "viewpoint (`character:<id>` or `omniscient`; default the actor, then the story's default; "
-    "echoed as `output_viewpoint`, and `beats` are produced for it), prompt parameters "
+    "echoed as `output_viewpoint`, and `beats` are produced for it; where perception is on, "
+    "both the message and `beats` hold only what that character perceived, unless "
+    "`player_view` is `story`: FR-RESP-13), prompt parameters "
     "(`length`, `temperature`, `top_p`) and optional scene context."
     "\n\nThe consumer does no retrieval or memory work: the prompt is assembled from the story's "
     "own records. Scene context is checked against the cast and then ignored: it is never "
@@ -79,13 +81,16 @@ RESPOND_DESCRIPTION = (
 class MessageBody(BaseModel):
     """The finished reply: the id of its transcript row and its text. A structured turn's says
     how it was composed (`mode`): `polished` (the polish passed the composition check) or
-    `deterministic` (the checked beats assembled as they are); absent for a Lite reply."""
+    `deterministic` (the checked beats assembled as they are); absent for a Lite reply. A
+    structured turn's composed narrative is also `narrative` (#177, FR-MULTI-4: the same text,
+    composed from exactly the returned `beats`; empty when the viewpoint perceived nothing)."""
 
     message_id: str
     text: str
     mode: Literal["polished", "deterministic"] | None = Field(
         default=None, exclude_if=lambda v: v is None
     )
+    narrative: str | None = Field(default=None, exclude_if=lambda v: v is None)
 
 
 class GuardrailViolationBody(BaseModel):
@@ -143,6 +148,20 @@ class AdjudicationBody(BaseModel):
     rule: Literal["request_order", "director", "state"]
 
 
+class ReconcileBody(BaseModel):
+    """One contradictory pair of a turn's concurrent commitments (#177, FR-MULTI-3): the
+    proposition key they disagreed on, the beat whose commitment stood, the beat rewritten as an
+    attempt (or whose ``latent`` was dropped) and the rule: ``author`` (a narrator beat or the
+    player's input), ``earlier_beat`` (a ``sequential`` turn's earlier beat) or
+    ``request_order`` (a ``simultaneous`` turn's); ``dedupe`` keeps one of two identical
+    commitments."""
+
+    proposition: str
+    winner_beat: int
+    loser_beat: int
+    rule: Literal["author", "earlier_beat", "request_order", "dedupe"]
+
+
 class RoleBody(BaseModel):
     """A present character's participation role for the turn (#176, FR-MULTI-7) and where it
     came from: its stored ``default`` or ``fixed`` role, the ``request``, an ``escalated``
@@ -185,7 +204,15 @@ class RespondResponse(MutationResponse):
     turn: int
     variant: int
     output_viewpoint: str
-    audience_filter: Literal["none", "co_location", "full"]
+    audience_filter: AudienceFilterValue
+    """``none`` (perception ``none``, or ``omniscient``), the perception level the beats were
+    filtered at (FR-RESP-13), ``nothing_perceived`` (the viewpoint perceived none of the turn:
+    an empty narrative) or ``bypassed_by_player_view`` (``player_view = story``)."""
+    player_view: Literal["character", "story"] | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
+    """#177: the player view the result was produced under; absent only on a replay of a turn
+    stored before #177."""
     model_calls: list[ModelCall]
     elapsed_ms: int = Field(ge=0)
     degradation: list[str]
@@ -228,6 +255,9 @@ class RespondResponse(MutationResponse):
     reduced_characters: list[str] = Field(default_factory=list, exclude_if=lambda r: not r)
     """The named primaries budget planning turned into reactive narration (#176); absent when
     none."""
+    reconcile: list[ReconcileBody] = Field(default_factory=list, exclude_if=lambda r: not r)
+    """A structured turn's reconciled concurrent commitments (#177, FR-MULTI-3); absent when
+    nothing contradicted."""
 
     @classmethod
     def of(cls, result: RespondResult) -> RespondResponse:
@@ -236,6 +266,7 @@ class RespondResponse(MutationResponse):
                 message_id=result.message.message_id,
                 text=result.message.text,
                 mode=result.message.mode,
+                narrative=None if result.message.mode is None else result.message.text,
             ),
             beats=[item_model(b) for b in result.beats],
             turn=result.turn,
@@ -243,6 +274,7 @@ class RespondResponse(MutationResponse):
             timeline_revision=result.timeline_revision,
             output_viewpoint=result.output_viewpoint,
             audience_filter=result.audience_filter,
+            player_view=cast(Any, result.player_view),
             model_calls=result.model_calls,
             elapsed_ms=result.elapsed_ms,
             degradation=result.degradation,
@@ -268,6 +300,7 @@ class RespondResponse(MutationResponse):
             escalation_deferred=[EscalationDeferredBody(**e) for e in result.escalation_deferred],
             deferred_characters=[DeferredCharacterBody(**d) for d in result.deferred_characters],
             reduced_characters=list(result.reduced_characters),
+            reconcile=[ReconcileBody(**r) for r in result.reconcile],
             budget=(
                 None
                 if result.budget is None

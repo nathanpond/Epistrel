@@ -1,5 +1,6 @@
 """C-12: the output viewpoint contract (FR-RESP-12, FR-AUTH-2) [M2] (#59); the structured
-pipeline's part (FR-RESP-8,12) [M4] (#152).
+pipeline's part (FR-RESP-8,12) [M4] (#152); the audience filter's output clauses and the
+``player_view`` setting (FR-RESP-12,13) [M5] (#177).
 
 Every respond and history read is produced for one output viewpoint, resolved the same way
 over REST and in the library: ``test_c_12`` and ``test_c_12__structured`` run every check
@@ -19,9 +20,10 @@ from epistrel.core.errors import InvalidRequest
 from epistrel.core.events import Operation
 from epistrel.core.settings_schema import StorySettings
 from epistrel.core.viewpoint import PRIVATE_CHANNELS, validate_default_viewpoint
+from tests import perception_support as ps
 from tests.conformance.conftest import Surface
 from tests.respond_support import FIRST, PLAYER, SECOND, body
-from tests.story_support import character, count, story_body
+from tests.story_support import WRITE, character, count, story_body
 from tests.structured_turn_support import beat, render, structured_story, turn_report
 
 PRIVATE_TEXT = "C12-PRIVATE-BEAT"
@@ -264,3 +266,160 @@ async def test_c_12__structured(
     rejected = (await turn_report(engine, story))["composition"]["rejected"]
     assert "attribution" in {f["kind"] for f in rejected["failures"]}
     assert jenni in {b["actor_character_id"] for b in fallen["beats"]}
+
+
+WHISPER = "C12-WHISPER the ledger is in the stove."
+WHISPERED = "Jenni whispers something to Wren"
+GLANCE = "She glances at the window."
+
+
+async def _rooms(
+    surface: Surface, engine: AsyncEngine, level: str
+) -> tuple[str, dict[str, str], dict[str, str]]:
+    """Wren (the player), Jenni and Bobby in the parlor, Clara in the hall (through a closed
+    door), at perception ``level``."""
+    story, ids = await structured_story(surface.client, "Wren", "Jenni", "Bobby", "Clara")
+    await ps.perceive(engine, story, level)
+    places = {n: await ps.place_entity(engine, story, n) for n in ("parlor", "hall")}
+    await ps.adjoin(engine, story, places["parlor"], places["hall"], "door_closed")
+    for name in ("Wren", "Jenni", "Bobby"):
+        await ps.put(engine, story, ids[name], places["parlor"])
+    await ps.put(engine, story, ids["Clara"], places["hall"])
+    return story, ids, places
+
+
+def _whisper_turn(ids: dict[str, str]) -> str:
+    return render(
+        beat("think", THOUGHT),
+        beat("say", WHISPER, intent="sincere", whisper_to=[ids["Wren"]]),
+        beat("do", GLANCE),
+    )
+
+
+def _channels(found: dict[str, Any], key: str = "beats") -> list[tuple[str, str]]:
+    return [(b["channel"], b["text"]) for b in found[key] if b["channel"] != "message"]
+
+
+@pytest.mark.integration
+@pytest.mark.part("M5", "FR-RESP-12,13")
+async def test_c_12__m5_output(
+    surface: Surface, engine: AsyncEngine, drained_embedding_jobs: None, perception_delivered: None
+) -> None:
+    """With perception at ``co_location`` a beat in another room is omitted for a character's
+    viewpoint and every beat in its room is returned in full, words included; at ``full``
+    envelopes are returned as S-WHISPER describes. The response's beats and narrative and the
+    history read agree. Run over REST and the library.
+
+    Complement: the viewpoint in the room does receive what the one in the hall does not, and
+    ``omniscient`` receives everything."""
+    stub = surface.engine.models.stub
+    story, ids, _ = await _rooms(surface, engine, "co_location")
+    stub.script("generation", [_whisper_turn(ids)])
+    bobby = (
+        await surface.respond(story, body(ids["Wren"], "Well?"), viewpoint=_vp(ids["Bobby"]))
+    ).json
+    assert bobby["audience_filter"] == "co_location"
+    assert ("say", WHISPER) in _channels(bobby)
+    assert ("do", GLANCE) in _channels(bobby)
+    assert WHISPER in bobby["message"]["text"]
+    assert THOUGHT not in str(bobby)
+    clara = (await surface.history(story, viewpoint=_vp(ids["Clara"]))).json
+    assert clara["audience_filter"] == "co_location"
+    assert _channels(clara, "items") == []
+    assert WHISPER not in str(clara)
+    assert GLANCE not in str(clara)
+    for_bobby = (await surface.history(story, viewpoint=_vp(ids["Bobby"]))).json
+    assert ("say", WHISPER) in _channels(for_bobby, "items")
+    everything = (await surface.history(story, viewpoint="omniscient")).json
+    assert everything["audience_filter"] == "none"
+    assert ("think", THOUGHT) in _channels(everything, "items")
+
+    story, ids, _ = await _rooms(surface, engine, "full")
+    stub.script("generation", [_whisper_turn(ids)])
+    bobby = (
+        await surface.respond(story, body(ids["Wren"], "Well?"), viewpoint=_vp(ids["Bobby"]))
+    ).json
+    assert bobby["audience_filter"] == "full"
+    assert ("say", WHISPERED) in _channels(bobby)
+    (enveloped,) = [b for b in bobby["beats"] if b["text"] == WHISPERED]
+    assert enveloped["fidelity"] == "envelope"
+    assert enveloped["propositions"] == []
+    assert WHISPER not in str(bobby)
+    assert WHISPERED in bobby["message"]["text"]
+    read = (await surface.history(story, viewpoint=_vp(ids["Bobby"]))).json
+    assert ("say", WHISPERED) in _channels(read, "items")
+    assert WHISPER not in str(read)
+    wren = (await surface.history(story, viewpoint=_vp(ids["Wren"]))).json
+    assert ("say", WHISPER) in _channels(wren, "items")
+    (message,) = [i["text"] for i in wren["items"] if i["channel"] == "message"]
+    assert WHISPER in message
+    assert THOUGHT not in message
+    # A character read carries no verdicts or detected claims: they could disclose the truth.
+    for item in read["items"]:
+        assert "detected" not in item
+        assert "effects" not in item
+        assert all(p["verdict"] is None for p in item.get("propositions") or [])
+
+
+@pytest.mark.integration
+@pytest.mark.part("M5", "FR-RESP-12,13")
+async def test_c_12__player_view(
+    surface: Surface, engine: AsyncEngine, drained_embedding_jobs: None, perception_delivered: None
+) -> None:
+    """``player_view`` (#177): under ``character`` (the default) the viewpoint in the hall
+    perceives nothing (``nothing_perceived``, an empty narrative); under ``story`` (the story's
+    setting, a request override or a history parameter) every beat of the turn is returned in
+    full whatever the character perceived, each with the fidelity it would have had, still never
+    a ``think`` or ``latent``, and the character's partition is untouched; both echo
+    ``player_view``. The whisper's words reach Bobby's response under ``story`` while his
+    partition still holds only the envelope. Run over REST and the library."""
+    stub = surface.engine.models.stub
+    story, ids, _ = await _rooms(surface, engine, "full")
+    stub.script("generation", [_whisper_turn(ids)])
+    clara = (
+        await surface.respond(story, body(ids["Wren"], "Well?"), viewpoint=_vp(ids["Clara"]))
+    ).json
+    assert (clara["player_view"], clara["audience_filter"]) == ("character", "nothing_perceived")
+    assert clara["message"]["text"] == ""
+    assert _channels(clara) == []
+
+    # The request's override: everything, at the fidelity Clara would have had.
+    stub.script("generation", [_whisper_turn(ids)])
+    asked = body(ids["Wren"], "Well?", player_view="story")
+    open_ = (await surface.respond(story, asked, viewpoint=_vp(ids["Clara"]))).json
+    assert (open_["player_view"], open_["audience_filter"]) == ("story", "bypassed_by_player_view")
+    assert ("say", WHISPER) in _channels(open_)
+    assert ("do", GLANCE) in _channels(open_)
+    assert {b["fidelity"] for b in open_["beats"] if b["channel"] != "message"} == {"none"}
+    assert THOUGHT not in str(open_)
+    assert WHISPER in open_["message"]["text"]
+    assert [m.text for m in await ps.memories_of(engine, story, ids["Clara"])] == []
+
+    # A history read's parameter, over the default.
+    read = (await surface.history(story, viewpoint=_vp(ids["Clara"]), player_view="story")).json
+    assert read["player_view"] == "story"
+    assert ("say", WHISPER) in _channels(read, "items")
+    assert THOUGHT not in str(read)
+    closed = (await surface.history(story, viewpoint=_vp(ids["Clara"]))).json
+    assert closed["player_view"] == "character"
+    assert _channels(closed, "items") == []
+
+    # The story's setting: Bobby reads the words; his partition holds the envelope only.
+    patched = await surface.client.patch(
+        f"/stories/{story}/settings", json={"player_view": "story"}, headers=WRITE
+    )
+    assert patched.status_code == 200, patched.text
+    stub.script("generation", [_whisper_turn(ids)])
+    bobby = (
+        await surface.respond(story, body(ids["Wren"], "Well?"), viewpoint=_vp(ids["Bobby"]))
+    ).json
+    assert bobby["player_view"] == "story"
+    (heard,) = [b for b in bobby["beats"] if b["text"] == WHISPER]
+    assert heard["fidelity"] == "envelope"
+    held = [m.text for m in await ps.memories_of(engine, story, ids["Bobby"])]
+    assert WHISPERED in held
+    assert not [t for t in held if "ledger" in t]
+    # ``omniscient`` still only when named, the thought labelled there.
+    seen = (await surface.history(story, viewpoint="omniscient")).json
+    assert ("think", THOUGHT) in _channels(seen, "items")
+    assert seen["audience_filter"] == "none"

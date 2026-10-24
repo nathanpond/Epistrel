@@ -114,6 +114,7 @@ async def test_a_composition_failure_changes_no_beat(
             "message_id": played["message"]["message_id"],
             "text": DRAFT,
             "mode": "deterministic",
+            "narrative": DRAFT,  # #177: FR-MULTI-4's composed narrative
         }
         assert {"step": "composition_fallback", "cause": "composition"} in played[
             "degradation_details"
@@ -143,6 +144,7 @@ async def test_one_beat_and_polish_off_skip_the_polish(
             "message_id": one.json()["message"]["message_id"],
             "text": f'Ada: "{LINE}"',
             "mode": "deterministic",
+            "narrative": f'Ada: "{LINE}"',
         }
         assert one.json()["degradation"] == []
         assert _polish_calls(stub) == 0
@@ -189,6 +191,7 @@ async def test_a_spent_budget_skips_the_polish_first(
             "message_id": played["message"]["message_id"],
             "text": DRAFT,
             "mode": "deterministic",
+            "narrative": DRAFT,  # #177: FR-MULTI-4's composed narrative
         }
         assert {"step": "polish_skipped_budget", "cause": "budget"} in played["degradation_details"]
         assert played["budget"]["used"] <= spent - 1

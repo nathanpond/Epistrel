@@ -196,6 +196,10 @@ GUARANTEES: tuple[GuaranteeRow, ...] = (
         on="perception_co_location",
         label="audience filtering",
         delivered_in="M5",
+        note="Provided only under the story setting `player_view = character` (the default): "
+        "under `story` a character viewpoint receives every beat in full, never a `think` or "
+        "`latent`, and its partition and memory are routed as under `character` (FR-RESP-13; "
+        "#177).",
     ),
     _row(
         "commitment_mechanics",

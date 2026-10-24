@@ -123,7 +123,7 @@ from epistrel.core.ratings import reactivation
 from epistrel.core.ratings import suggest as rating_suggestion
 from epistrel.core.retrieval import lexical_backend
 from epistrel.core.retrieval import pipeline as retrieval_pipeline
-from epistrel.core.settings_schema import ConfigClass, StorySettings
+from epistrel.core.settings_schema import ConfigClass, PlayerView, StorySettings
 from epistrel.core.tables import events
 from epistrel.core.tables.media import MediaKind, MediaState
 from epistrel.core.tables.ownership import EntityType
@@ -1405,6 +1405,7 @@ class Engine:
         include_audit: bool = False,
         variant: variants.ChainRef | None = None,
         include_summary: bool = False,
+        player_view: PlayerView | None = None,
     ) -> History:
         """The story's corrected history through ``as_of`` (default the head), produced for one
         output viewpoint (FR-RESP-12): ``viewpoint`` (or ``ctx.viewpoint``) when named, else
@@ -1413,7 +1414,8 @@ class Engine:
         (``include_audit``) need ``omniscient`` by name (403 ``omniscient_required``). Pages of
         whole turns, newest first, up to ``limit`` items; ``before_turn`` pages backwards.
         ``variant`` reads along that chain instead of the active one (#66);
-        ``include_summary`` adds the included rolling-summary segments (#72)."""
+        ``include_summary`` adds the included rolling-summary segments (#72). ``player_view``
+        (#177): ``character`` or ``story`` over the story's setting (FR-RESP-13)."""
         ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
         return await read_history(
             self.db,
@@ -1426,6 +1428,7 @@ class Engine:
             include_audit=include_audit,
             variant=variant,
             include_summary=include_summary,
+            player_view=player_view,
         )
 
     @refuses_nul()

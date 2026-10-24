@@ -37,8 +37,10 @@ from epistrel.core.settings_schema import (
     TIE_BREAK_PATTERN,
     GenerationSettings,
     InteractionMode,
+    PlayerView,
     SequenceOrder,
 )
+from epistrel.core.viewpoint import AudienceFilter
 from epistrel.orchestrator.models.metrics import ModelCall
 
 MAX_INPUT_CHARS = 8_000
@@ -52,17 +54,29 @@ ParticipationRole = Literal["primary", "reactive", "silent"]
 
 
 class PlayerInputBody(BaseModel):
-    """The actor's ``say`` and/or ``do``; at least one, and whitespace alone counts as none."""
+    """The actor's ``say`` and/or ``do``; at least one, and whitespace alone counts as none.
+
+    - ``whisper_to`` (#177, from #161): the characters the ``say`` is whispered to. Under
+      ``full`` perception only they hear the words; everyone else in the room gets the envelope
+      ("Wren whispers something to Marcus"). A target who is not in the room is dropped silently
+      (``turn_report.perception.qualifiers_repaired``, reason ``target_absent``); every target
+      dropped leaves an aside. Ignored below ``full`` (FR-TURN-2). Needs a ``say``.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     say: str | None = Field(default=None, max_length=MAX_INPUT_CHARS)
     do: str | None = Field(default=None, max_length=MAX_INPUT_CHARS)
+    whisper_to: list[Ulid] = Field(
+        default_factory=list, max_length=MAX_RENDER_CHARACTERS, exclude_if=lambda v: not v
+    )
 
     @model_validator(mode="after")
     def _something_said_or_done(self) -> Self:
         if not ((self.say or "").strip() or (self.do or "").strip()):
             raise ValueError("player_input needs a non-empty say or do")
+        if self.whisper_to and not (self.say or "").strip():
+            raise ValueError("player_input.whisper_to needs a say to whisper")
         return self
 
     @property
@@ -181,18 +195,29 @@ class RespondRequest(BaseModel):
     """#176 (FR-MULTI-9): whether reactive narration may give a reactive character a brief
     interjection this turn, over the story's setting. Needs per-character renders (422
     otherwise)."""
+    player_view: PlayerView | None = None
+    """#177 (FR-RESP-13): this turn's player view over the story's ``player_view``:
+    ``character`` (the output holds only what the viewing character perceived) or ``story``
+    (every beat, whatever the character perceived; never a ``think`` or ``latent``). Echoed as
+    ``player_view``. A no-op where perception is ``none``."""
 
 
 TURN_OVERRIDES = ("interaction_mode", "sequence_order", "simultaneous_tie_break")
 """#174's per-request overrides of a story's multi-character settings."""
 ROLE_OVERRIDES = ("roles", "reactive_interjections")
 """#176's per-request overrides of the turn's participation roles."""
+VIEW_OVERRIDES = ("player_view",)
+"""#177's per-request override of the story's player view."""
 
 
 def body_of(request: RespondRequest, *exclude: str) -> dict[str, Any]:
     """``request`` as JSON, #174's and #176's overrides left out when unset (a turn that names
     none hashes, and is stored, as it did before them)."""
-    unset = {k for k in (*TURN_OVERRIDES, *ROLE_OVERRIDES) if getattr(request, k) is None}
+    unset = {
+        k
+        for k in (*TURN_OVERRIDES, *ROLE_OVERRIDES, *VIEW_OVERRIDES)
+        if getattr(request, k) is None
+    }
     return request.model_dump(mode="json", exclude={*exclude, *unset})
 
 
@@ -241,7 +266,6 @@ class FinishedMessage:
     ] = None
 
 
-AudienceFilter = Literal["none", "co_location", "full"]
 SAFE_FALLBACK = "safe_fallback"
 """The ``degradation`` entry of a turn whose reply is the safe fallback (#68)."""
 QUARANTINED_CONTEXT = "quarantined_context"
@@ -370,6 +394,12 @@ class RespondResult:
     reduced_characters: list[str] = field(default_factory=list)
     """#176 (NFR-PERF-7 (6)): the named primaries budget planning turned into reactive
     narration."""
+    player_view: str | None = None
+    """#177 (FR-RESP-13): the player view the result was produced under (``character`` or
+    ``story``); ``None`` only in a result stored before #177."""
+    reconcile: list[dict[str, Any]] = field(default_factory=list)
+    """#177 (FR-MULTI-3): a structured turn's reconciled concurrent commitments, ``{proposition,
+    winner_beat, loser_beat, rule}``; empty when nothing contradicted."""
 
 
 @dataclass(frozen=True, slots=True)

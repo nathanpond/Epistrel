@@ -4,8 +4,13 @@ FR-RESP-12, NFR-PERF-6,7; docs/02 §8; #152).
 
 ``compose(beats, viewpoint, budget, composer=…)`` takes the turn's beats **as the output
 viewpoint receives them** (``core.turns.assembly.viewpoint_beats``: a character viewpoint gets
-every beat less ``think`` and ``latent``, ``omniscient`` all of them) and answers a
-``Composition`` ``{text, mode: polished|deterministic, check}``. The structured pipeline calls
+every beat less ``think`` and ``latent``, ``omniscient`` all of them; #177: where perception is
+on, the audience filter's beats, ``core.epistemic.audience``: a beat the viewpoint perceived only
+the envelope of is its envelope, assembled as an action, ``*Jenni whispers something to
+Marcus*``, and an unperceived beat is not given at all) and answers a ``Composition`` ``{text,
+mode: polished|deterministic, check}``. The beats the filter withheld (``Composer.withheld``:
+the content behind an envelope, an eavesdropper's unheard words, every unperceived beat) are
+what the check holds the text to never disclose. The structured pipeline calls
 it after the repair ladder (#151), on the post-repair beats, before the turn's single commit
 (an ordinary turn commits its beats and its response together, docs/02 §7, FR-EXT-16).
 
@@ -45,10 +50,15 @@ call the turn reserved), then ``trace``:
   observable beats share), and no claim traces only to one (``think_leak``); nor does any
   claim detection marked as leaking a private thought (#172: another character's stored or
   turn-local ``think`` repeated, or an inner state narrated, ``core.verify.inner_state``);
+- **no withheld content** (#177): no unit aligns to a withheld beat, no unit shares a 4-word
+  shingle with one (other than those the returned beats share), and no claim traces only to
+  one (``fidelity_leak``): a sentence about what the viewpoint only saw the envelope of, or did
+  not perceive, fails;
 - **completeness**: every viewpoint beat is aligned to a unit, in turn order.
 
 Failures are ``{kind, span, beat}``: ``untraced``, ``attribution``, ``think_leak``,
-``omitted``, ``order`` or ``length`` (spans are offsets into the composed text; no text).
+``fidelity_leak``, ``omitted``, ``order`` or ``length`` (spans are offsets into the composed
+text; no text).
 
 **Any failure** releases the deterministic assembly (``deterministic_assembly``) with
 ``degradation: ["composition_fallback"]``: no second polish attempt. So does a polish the model
@@ -123,7 +133,9 @@ SHINGLE = 4
 MIN_POLISH_TOKENS = 64
 DRAFT_MAX = 40_000
 
-FailureKind = Literal["untraced", "attribution", "think_leak", "omitted", "order", "length"]
+FailureKind = Literal[
+    "untraced", "attribution", "think_leak", "fidelity_leak", "omitted", "order", "length"
+]
 Cause = Literal["check", "model", "output_policy", "length"]
 
 SPEECH_VERBS = frozenset(
@@ -574,10 +586,12 @@ def trace(
     names: Mapping[str, str],
     hidden: Sequence[VerifiedBeat] = (),
     registry: Registry,
+    withheld: Sequence[VerifiedBeat] = (),
 ) -> CompositionCheck:
     """The final check of ``text`` against the viewpoint's ``beats`` and the ``claims``
     detection found in it (see the module docstring). ``hidden``: the turn's ``think`` and
-    ``latent`` beats a character viewpoint does not receive. Pure."""
+    ``latent`` beats a character viewpoint does not receive; ``withheld`` (#177): the beats the
+    audience filter withheld from it. Pure."""
     omniscient = is_omniscient(viewpoint)
     index = NameIndex(names)
     found = units(text, index)
@@ -590,13 +604,21 @@ def trace(
 
     visible_words = [index.content(words_of(b.text)) for b in beats]
     hidden_words = [index.content(words_of(b.text)) for b in hidden]
+    withheld_words = [index.content(words_of(b.text)) for b in withheld]
     aligned: list[int | None] = []
-    last = 0
+    last = -1
     for unit in found:
-        best, score = _best(unit.content, visible_words, last)
+        # A tie goes to the next beat not yet aligned (#177: two beats with the same words, as
+        # two identical envelopes, are two units), else the first.
+        best, score = _best(unit.content, visible_words, last + 1)
         h_best, h_score = _best(unit.content, hidden_words)
         if h_best is not None and h_score >= ALIGN_THRESHOLD and h_score > score:
             fail("think_leak", unit, hidden[h_best].beat)
+            aligned.append(None)
+            continue
+        w_best, w_score = _best(unit.content, withheld_words)
+        if w_best is not None and w_score >= ALIGN_THRESHOLD and w_score > score:
+            fail("fidelity_leak", unit, withheld[w_best].beat)
             aligned.append(None)
             continue
         if best is not None and score >= ALIGN_THRESHOLD:
@@ -649,6 +671,12 @@ def trace(
                 if _leaks(unit, shingles) and unit.label != ("think", thinker):
                     fail("attribution", unit, number)
 
+    # Withheld content (#177): what the viewpoint saw only the envelope of, or did not perceive.
+    for number, shingles in _private_shingles(withheld, beats).items():
+        for unit in found:
+            if _leaks(unit, shingles):
+                fail("fidelity_leak", unit, number)
+
     # Completeness and order.
     present = {at for at in aligned if at is not None}
     for i, beat in enumerate(beats):
@@ -665,6 +693,7 @@ def trace(
     # Traceability.
     visible_props = _props(beats)
     hidden_props = _props(hidden)
+    withheld_props = _props(withheld)
     traced = 0
     for claim in claims:
         start, end = claim.span[1], claim.span[2]
@@ -690,7 +719,15 @@ def trace(
         private = (proposition is not None and _covered(proposition, hidden_props, registry)) or (
             any(_contains(words_of(b.text), said) for b in hidden)
         )
-        fail("think_leak" if private else "untraced", holder, None)
+        unheard = (
+            proposition is not None and _covered(proposition, withheld_props, registry)
+        ) or any(_contains(words_of(b.text), said) for b in withheld)
+        if private:
+            fail("think_leak", holder, None)
+        elif unheard:
+            fail("fidelity_leak", holder, None)
+        else:
+            fail("untraced", holder, None)
     return CompositionCheck(claims=len(claims), traced=traced, failures=tuple(failures))
 
 
@@ -806,6 +843,9 @@ class Composer:
     max_chars: int | None = None
     """The requested response length in characters (FR-RESP-3; #464): a polished text longer
     than it, and longer than the draft, is refused like any over-long polish."""
+    withheld: Sequence[VerifiedBeat] = field(default_factory=tuple)
+    """#177: the beats the audience filter withheld from the viewpoint (an envelope's content,
+    an unperceived beat): a text that discloses one fails with ``fidelity_leak``."""
 
 
 async def check_composition(
@@ -826,6 +866,7 @@ async def check_composition(
         names=composer.names,
         hidden=composer.hidden,
         registry=registry,
+        withheld=composer.withheld,
     )
     return found, outcome
 

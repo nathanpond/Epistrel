@@ -1,6 +1,8 @@
-"""S-WHISPER: presence is not perception (docs/04 §7; FR-TURN-2,9,10,13, NFR-PRIV-3; #161).
+"""S-WHISPER: presence is not perception (docs/04 §7; FR-TURN-2,9,10,13, NFR-PRIV-3; #161;
+the player-output half and the working-memory clause, FR-RESP-4,8,12,13, FR-MULTI-4, FR-MEM-11;
+#177).
 
-The partition and routing half (#177 appends the player-output half): with ``full`` perception
+The partition and routing half: with ``full`` perception
 routing, Jenni (the rendered character) whispers to Marcus with Bobby co-located in the parlor.
 Played end to end through ``respond`` with the stub adapter; the routed memories (one per
 perceiver, ``core.memory.records.write_perceived``) are the partitions' episodic content.
@@ -55,7 +57,16 @@ from tests.auth_support import auth_settings
 from tests.canon_support import auto_predicate
 from tests.event_support import rows
 from tests.respond_support import body, respond, respond_client
-from tests.structured_turn_support import beat, claim, render, structured_story, turn_report
+from tests.structured_turn_support import (
+    beat,
+    claim,
+    history,
+    render,
+    renders_of,
+    structured_story,
+    text_of,
+    turn_report,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -372,3 +383,178 @@ async def test_s_whisper__inference(
         assert found.path.transition_kind == "testimony"
         # ... and only from then: at the whisper, still none.
         assert isinstance(await _knows(engine, story, ids["Bobby"], words, now), replay.NoPath)
+
+
+THOUGHT = "S-WHISPER-THOUGHT he must not find out."
+ENVELOPE = "Jenni whispers something to Marcus"
+RECENT = "S-WHISPER-RECENT Jenni whispered: the key is under the blue mat."
+
+
+def _vp(character_id: str) -> str:
+    return f"character:{character_id}"
+
+
+async def _seen(
+    client: Any, epistrel: Any, story: str, ids: dict[str, str], viewer: str, **kw: Any
+) -> dict[str, Any]:
+    """The whisper (with Jenni's thought) played for ``viewer``'s viewpoint."""
+    epistrel.models.stub.script(
+        "generation",
+        [
+            render(
+                beat("think", THOUGHT),
+                beat("say", WORDS, intent="sincere", whisper_to=[ids["Marcus"]]),
+                beat("do", LEAN),
+            )
+        ],
+    )
+    response = await respond(
+        client, story, body(ids["Wren"], "What's going on?", output_viewpoint=viewer, **kw)
+    )
+    assert response.status_code == 200, response.text
+    played: dict[str, Any] = response.json()
+    return played
+
+
+def _beats(played: dict[str, Any]) -> list[tuple[str, str, str | None]]:
+    return [(b["channel"], b["text"], b.get("fidelity")) for b in played["beats"]]
+
+
+@pytest.mark.part("M5", "FR-RESP-4,8,12,13; FR-MULTI-4; FR-MEM-11")
+async def test_s_whisper__output(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+    perception_delivered: None,
+) -> None:
+    """See the module docstring (the player-output half and the working-memory clause).
+    Complement throughout: the words reach exactly the viewpoints that perceived them."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        # Bobby's viewpoint: the envelope in both the narrative and the beat list.
+        story, ids, places = await _room(client, engine)
+        played = await _seen(client, epistrel, story, ids, _vp(ids["Bobby"]))
+        assert played["audience_filter"] == "full"
+        assert played["player_view"] == "character"
+        assert (_vp(ids["Bobby"])) == played["output_viewpoint"]
+        assert ("say", ENVELOPE, "envelope") in _beats(played)
+        assert ("do", LEAN, "content") in _beats(played)
+        assert ENVELOPE in played["message"]["text"]
+        assert played["message"]["narrative"] == played["message"]["text"]
+        assert "blue mat" not in str(played)
+        assert "S-WHISPER-THOUGHT" not in str(played)
+        (whisper,) = [b for b in played["beats"] if b["text"] == ENVELOPE]
+        assert whisper["propositions"] == []
+        assert "labels" not in whisper
+        report = await turn_report(engine, story)
+        assert report["audience"]["audience_filter"] == "full"
+        assert report["audience"]["withheld"] == [3]
+        # ... and so does Bobby's history read, the message recomposed for nobody else.
+        items = await history(client, story, _vp(ids["Bobby"]))
+        assert ("say", ENVELOPE) in [(i["channel"], i["text"]) for i in items]
+        assert "blue mat" not in str(items)
+        # Marcus's viewpoint: the words.
+        marcus = await history(client, story, _vp(ids["Marcus"]))
+        assert ("say", WORDS, "content") in [
+            (i["channel"], i["text"], i.get("fidelity")) for i in marcus
+        ]
+        (message,) = [i["text"] for i in marcus if i["channel"] == "message"]
+        assert WORDS in message
+        assert "S-WHISPER-THOUGHT" not in str(marcus)
+
+        # ``omniscient``, named: every beat in full, the thought labelled.
+        story, ids, places = await _room(client, engine)
+        seen = await _seen(client, epistrel, story, ids, "omniscient")
+        assert seen["audience_filter"] == "none"
+        assert ("say", WORDS, "content") in _beats(seen)
+        assert ("think", THOUGHT, "content") in _beats(seen)
+        assert f"[Jenni thinks] {THOUGHT}" in seen["message"]["text"]
+        # ... and Bobby's read of the same turn never.
+        bobby = await history(client, story, _vp(ids["Bobby"]))
+        assert "blue mat" not in str(bobby)
+        assert "S-WHISPER-THOUGHT" not in str(bobby)
+        # No resolvable viewpoint is refused.
+        refused = await respond(
+            client, story, body(ids["Wren"], "Hm?", output_viewpoint="character:nobody")
+        )
+        assert refused.status_code == 422, refused.text
+        assert refused.json()["error"]["code"] == "viewpoint_unresolved"
+
+        # The player's character in the hall: the beat is absent (only the own input remains).
+        story, ids, places = await _room(client, engine)
+        await ps.put(engine, story, ids["Wren"], places["hall"])
+        away = await _seen(client, epistrel, story, ids, _vp(ids["Wren"]))
+        assert [b for b in away["beats"] if b["actor_character_id"] == ids["Jenni"]] == []
+        assert "blue mat" not in str(away)
+        assert away["message"]["text"] == ""
+        # A viewpoint that perceived nothing at all: an empty narrative, said so.
+        clara = await history(client, story, _vp(ids["Clara"]))
+        assert [i for i in clara if i["channel"] != "message"] == []
+        played = await _seen(client, epistrel, story, ids, _vp(ids["Clara"]))
+        assert played["audience_filter"] == "nothing_perceived"
+        assert played["message"]["text"] == ""
+        assert [b["channel"] for b in played["beats"]] == ["message"]
+
+        # Co-location only: Bobby's viewpoint shows the words.
+        story, ids, places = await _room(client, engine, "co_location")
+        close = await _seen(client, epistrel, story, ids, _vp(ids["Bobby"]))
+        assert close["audience_filter"] == "co_location"
+        assert ("say", WORDS, "content") in _beats(close)
+        assert WORDS in close["message"]["text"]
+
+        # The player's own whisper (#161's ``whisper_to``): Marcus hears it, Bobby gets the
+        # envelope; Clara, not in the room, is dropped silently.
+        story, ids, places = await _room(client, engine)
+        epistrel.models.stub.script("generation", [render(beat("do", LEAN))])
+        whispered = await respond(
+            client,
+            story,
+            {
+                "actor_character_id": ids["Wren"],
+                "player_input": {
+                    "say": WORDS,
+                    "whisper_to": [ids["Marcus"], ids["Clara"]],
+                },
+                "output_viewpoint": _vp(ids["Bobby"]),
+            },
+        )
+        assert whispered.status_code == 200, whispered.text
+        assert ("say", "Wren whispers something to Marcus", "envelope") in _beats(whispered.json())
+        report = await turn_report(engine, story)
+        assert {"beat": 1, "kind": "whisper_to", "reason": "target_absent"} | {
+            "character_id": ids["Clara"]
+        } in report["perception"]["qualifiers_repaired"]
+        assert (f"Wren says: {WORDS}", "content", "room") in _texts(
+            await ps.memories_of(engine, story, ids["Marcus"])
+        )
+        assert ("Wren whispers something to Marcus", "envelope", "room") in _texts(
+            await ps.memories_of(engine, story, ids["Bobby"])
+        )
+
+        # Working memory: the consumer's recent messages carry the words, yet Bobby's next
+        # context holds only the envelope and none of them; Marcus's holds the words.
+        story, ids, places = await _room(client, engine)
+        await _seen(client, epistrel, story, ids, _vp(ids["Wren"]))
+        recent = {"recent_messages": [{"character_id": ids["Jenni"], "text": RECENT}]}
+        for who in ("Bobby", "Marcus"):
+            stub = epistrel.models.stub
+            before = len(renders_of(stub))
+            stub.script("generation", [render(beat("say", "Hm.", intent="sincere"))])
+            response = await respond(
+                client,
+                story,
+                body(
+                    ids["Wren"],
+                    "Anything to add?",
+                    render_character_ids=[ids[who]],
+                    scene_context=recent,
+                ),
+            )
+            assert response.status_code == 200, response.text
+            (call,) = renders_of(stub)[before:]
+            prompt = text_of(call)
+            assert "S-WHISPER-RECENT" not in prompt
+            if who == "Bobby":
+                assert ENVELOPE in prompt
+                assert "blue mat" not in prompt
+            else:
+                assert WORDS in prompt

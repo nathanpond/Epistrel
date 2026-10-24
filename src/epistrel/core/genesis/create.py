@@ -951,6 +951,8 @@ def _settings(
         values["audit_retention_days"] = defaults.audit_retention_days
     if defaults.allow_new_arrivals is not None:
         values["allow_new_arrivals"] = defaults.allow_new_arrivals
+    if defaults.player_view is not None:
+        values["player_view"] = defaults.player_view
     inactive = materialized.settings()
     if inactive:
         values[INACTIVE_KEY] = inactive

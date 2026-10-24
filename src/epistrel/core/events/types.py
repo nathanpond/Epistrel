@@ -190,6 +190,10 @@ class PlayerInput(EventPayload):
     """A structured turn (#150): the propositions detected in the input, with their verdicts."""
     mentions: tuple[dict[str, JsonValue], ...] = Field(default=(), exclude_if=lambda v: not v)
     """A structured turn (#150): the input's resolved mentions (#139)."""
+    perception: dict[str, JsonValue] | None = Field(default=None, exclude_if=lambda v: not v)
+    """The player's ``say``'s perception qualifiers (#177, from #161): ``whisper_to`` as the
+    request named it, the targets not in the room dropped (``Qualifiers.payload``), so a history
+    read re-routes the input like any beat. Absent when the request named none."""
 
 
 @register("message_rendered", category=EventCategory.NARRATIVE_STATE)
@@ -221,6 +225,14 @@ class MessageRendered(EventPayload):
     """#175: ``simultaneous`` for a structured turn whose primaries rendered against one
     starting state (a history read routes its beats against the starting placements); absent
     otherwise."""
+    perception_level: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    """#177: the perception level (``co_location`` or ``full``) a structured turn's message was
+    audience-filtered at; absent when it was not (perception ``none``, and every turn before
+    #177: its beats are read as perceived by all). A history read recomposes the message when
+    the story's level or player view is no longer the one it was composed under."""
+    player_view: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    """#177: the player view (``character`` or ``story``) the message was composed under, beside
+    ``perception_level``; absent with it."""
 
 
 @register("think", category=EventCategory.NARRATIVE_STATE)
@@ -730,6 +742,18 @@ class CompositionRejected(EventPayload):
     text: str
     failures: tuple[dict[str, JsonValue], ...] = ()
     cause: str | None = None
+
+
+@register("turn_reconciled", category=EventCategory.AUDIT)
+class TurnReconciled(EventPayload):
+    """The concurrent commitments a structured turn reconciled on one timeline before its
+    composition (FR-MULTI-3; #177, ``orchestrator.structured.reconcile``): each contradictory
+    pair's proposition key, the beat whose commitment stood, the beat rewritten as an attempt
+    (its ``do``) or whose ``latent`` was dropped, and the rule (``author``, ``earlier_beat``,
+    ``request_order``); each duplicate commitment kept once (``dedupe``). Ids, beat numbers and
+    codes only. Audit only: no story view reads it."""
+
+    pairs: tuple[dict[str, JsonValue], ...] = ()
 
 
 # -- the structured turn (FR-TURN-1,4,5,6; #150) -------------------------------------------------

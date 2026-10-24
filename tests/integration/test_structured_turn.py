@@ -141,14 +141,15 @@ async def test_structured_turn(
         ]
         said = played["beats"][1]
         assert said["actor_character_id"] == ada
-        assert said["effects"] == []
+        # #177: a character read carries no verdicts or effects (they could disclose truth).
+        assert "effects" not in said
         assert said["labels"] == {
             "objective_relation": "false",
             "belief_relation": "unknown",
             "intent": "sincere",
         }
         ((asserted),) = said["propositions"]
-        assert asserted["verdict"] == "contradicted"
+        assert asserted["verdict"] is None
         assert asserted["proposition"]["subject_id"] == ada
         assert asserted["proposition"]["literal"]["value"] == 70
         assert played["beats"][2]["propositions"] == []
@@ -382,7 +383,12 @@ async def test_a_later_beat_sees_what_an_earlier_one_established(
                 )
             ],
         )
-        played = (await respond(client, story, body(ids["Wren"], "Where are you?"))).json()
+        # #177: verdicts are returned on omniscient output only.
+        played = (
+            await respond(
+                client, story, body(ids["Wren"], "Where are you?", output_viewpoint="omniscient")
+            )
+        ).json()
         do_, say_ = played["beats"][1], played["beats"][2]
         assert do_["propositions"][0]["verdict"] == "novel"
         assert say_["propositions"][0]["verdict"] == "supported"

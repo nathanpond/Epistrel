@@ -519,6 +519,7 @@ def _story_settings(cast: list[str]) -> st.SearchStrategy[dict[str, Any]]:
         "sequence_order": st.none() | st.sampled_from(["request", "director"]),
         "simultaneous_tie_break": st.none() | st.sampled_from(["request_order", "director"]),
         "reactive_interjections": st.booleans(),
+        "player_view": st.sampled_from(["character", "story"]),  # #177
     }
     return st.fixed_dictionaries(
         {

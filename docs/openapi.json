@@ -3945,6 +3945,16 @@
             "description": "The story's override of the transcript rows per level-0 summary segment (#72).",
             "title": "Lite Summary Chunk"
           },
+          "player_view": {
+            "default": "character",
+            "description": "What a character viewpoint's output holds where perception is on (FR-RESP-13; #177, the\nowner's round-two decision): ``character`` (the default) applies the audience filter, so a\nresponse, history read and beat list hold only what the viewing character perceived, and a\ncharacter that perceived nothing gets an empty narration; ``story`` returns every beat of the\nturn at full content whatever the character perceived (roleplay that lets a player read scenes\ntheir character is not in), still never a ``think`` or ``latent``. The character's own\npartition and memory are the same under both. A no-op where perception is ``none``. A\nrequest (and a history read) overrides it. Prospective.",
+            "enum": [
+              "character",
+              "story"
+            ],
+            "title": "Player View",
+            "type": "string"
+          },
           "reactive_interjections": {
             "default": false,
             "description": "Whether reactive narration may give a reactive character a brief interjection\n(FR-MULTI-9; #176): at most ``multi_character.interjection_max_words`` words (6), checked\nagainst the reactor's viewpoint like any ``say``. Off by default (the owner's decision): a\nreactive character's narrated speech escalates it to a primary render instead (FR-MULTI-10).\nA request overrides it. Prospective.",
@@ -9992,6 +10002,23 @@
             "description": "A structured turn's beat (#150): its state effects (empty in M4).",
             "title": "Effects"
           },
+          "fidelity": {
+            "anyOf": [
+              {
+                "enum": [
+                  "content",
+                  "envelope",
+                  "none"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A structured turn's beat (#177, FR-RESP-13): the fidelity the viewing character perceived it at: `content`, or `envelope` (the text is then the envelope, with no propositions or labels); under `player_view = story` also `none` (the beat in full, unperceived). Always `content` for `omniscient` and perception `none`.",
+            "title": "Fidelity"
+          },
           "kind": {
             "title": "Kind",
             "type": "string"
@@ -10150,7 +10177,9 @@
             "enum": [
               "none",
               "co_location",
-              "full"
+              "full",
+              "nothing_perceived",
+              "bypassed_by_player_view"
             ],
             "title": "Audience Filter",
             "type": "string"
@@ -10205,6 +10234,14 @@
             "title": "Output Viewpoint",
             "type": "string"
           },
+          "player_view": {
+            "enum": [
+              "character",
+              "story"
+            ],
+            "title": "Player View",
+            "type": "string"
+          },
           "summary": {
             "anyOf": [
               {
@@ -10236,6 +10273,7 @@
           "turns",
           "output_viewpoint",
           "audience_filter",
+          "player_view",
           "as_of",
           "timeline_revision",
           "next_before_turn"
@@ -13379,7 +13417,7 @@
         "type": "object"
       },
       "MessageBody": {
-        "description": "The finished reply: the id of its transcript row and its text. A structured turn's says\nhow it was composed (`mode`): `polished` (the polish passed the composition check) or\n`deterministic` (the checked beats assembled as they are); absent for a Lite reply.",
+        "description": "The finished reply: the id of its transcript row and its text. A structured turn's says\nhow it was composed (`mode`): `polished` (the polish passed the composition check) or\n`deterministic` (the checked beats assembled as they are); absent for a Lite reply. A\nstructured turn's composed narrative is also `narrative` (#177, FR-MULTI-4: the same text,\ncomposed from exactly the returned `beats`; empty when the viewpoint perceived nothing).",
         "properties": {
           "message_id": {
             "title": "Message Id",
@@ -13399,6 +13437,17 @@
               }
             ],
             "title": "Mode"
+          },
+          "narrative": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narrative"
           },
           "text": {
             "title": "Text",
@@ -14715,6 +14764,23 @@
             ],
             "description": "A structured turn's beat (#150): its state effects (empty in M4).",
             "title": "Effects"
+          },
+          "fidelity": {
+            "anyOf": [
+              {
+                "enum": [
+                  "content",
+                  "envelope",
+                  "none"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A structured turn's beat (#177, FR-RESP-13): the fidelity the viewing character perceived it at: `content`, or `envelope` (the text is then the envelope, with no propositions or labels); under `player_view = story` also `none` (the beat in full, unperceived). Always `content` for `omniscient` and perception `none`.",
+            "title": "Fidelity"
           },
           "kind": {
             "title": "Kind",
@@ -16800,7 +16866,7 @@
       },
       "PlayerInputBody": {
         "additionalProperties": false,
-        "description": "The actor's ``say`` and/or ``do``; at least one, and whitespace alone counts as none.",
+        "description": "The actor's ``say`` and/or ``do``; at least one, and whitespace alone counts as none.\n\n- ``whisper_to`` (#177, from #161): the characters the ``say`` is whispered to. Under\n  ``full`` perception only they hear the words; everyone else in the room gets the envelope\n  (\"Wren whispers something to Marcus\"). A target who is not in the room is dropped silently\n  (``turn_report.perception.qualifiers_repaired``, reason ``target_absent``); every target\n  dropped leaves an aside. Ignored below ``full`` (FR-TURN-2). Needs a ``say``.",
         "properties": {
           "do": {
             "anyOf": [
@@ -16825,6 +16891,15 @@
               }
             ],
             "title": "Say"
+          },
+          "whisper_to": {
+            "items": {
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "type": "string"
+            },
+            "maxItems": 64,
+            "title": "Whisper To",
+            "type": "array"
           }
         },
         "title": "PlayerInputBody",
@@ -23019,6 +23094,41 @@
         "title": "RecentMessage",
         "type": "object"
       },
+      "ReconcileBody": {
+        "description": "One contradictory pair of a turn's concurrent commitments (#177, FR-MULTI-3): the\nproposition key they disagreed on, the beat whose commitment stood, the beat rewritten as an\nattempt (or whose ``latent`` was dropped) and the rule: ``author`` (a narrator beat or the\nplayer's input), ``earlier_beat`` (a ``sequential`` turn's earlier beat) or\n``request_order`` (a ``simultaneous`` turn's); ``dedupe`` keeps one of two identical\ncommitments.",
+        "properties": {
+          "loser_beat": {
+            "title": "Loser Beat",
+            "type": "integer"
+          },
+          "proposition": {
+            "title": "Proposition",
+            "type": "string"
+          },
+          "rule": {
+            "enum": [
+              "author",
+              "earlier_beat",
+              "request_order",
+              "dedupe"
+            ],
+            "title": "Rule",
+            "type": "string"
+          },
+          "winner_beat": {
+            "title": "Winner Beat",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "proposition",
+          "winner_beat",
+          "loser_beat",
+          "rule"
+        ],
+        "title": "ReconcileBody",
+        "type": "object"
+      },
       "ReconcileRunBody": {
         "additionalProperties": false,
         "description": "A reconcile run: its id, whether it ran (``false``: another process was running it),\nwhat it settled and failed, and what is still pending.",
@@ -23414,7 +23524,9 @@
             "enum": [
               "none",
               "co_location",
-              "full"
+              "full",
+              "nothing_perceived",
+              "bypassed_by_player_view"
             ],
             "title": "Audience Filter",
             "type": "string"
@@ -23573,6 +23685,21 @@
             "title": "Output Viewpoint",
             "type": "string"
           },
+          "player_view": {
+            "anyOf": [
+              {
+                "enum": [
+                  "character",
+                  "story"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Player View"
+          },
           "previous_variant": {
             "title": "Previous Variant",
             "type": "integer"
@@ -23607,6 +23734,13 @@
               }
             ],
             "title": "Queued Ms"
+          },
+          "reconcile": {
+            "items": {
+              "$ref": "#/components/schemas/ReconcileBody"
+            },
+            "title": "Reconcile",
+            "type": "array"
           },
           "reduced_characters": {
             "items": {
@@ -24241,6 +24375,21 @@
           "player_input": {
             "$ref": "#/components/schemas/PlayerInputBody"
           },
+          "player_view": {
+            "anyOf": [
+              {
+                "enum": [
+                  "character",
+                  "story"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Player View"
+          },
           "prompt_params": {
             "anyOf": [
               {
@@ -24360,7 +24509,9 @@
             "enum": [
               "none",
               "co_location",
-              "full"
+              "full",
+              "nothing_perceived",
+              "bypassed_by_player_view"
             ],
             "title": "Audience Filter",
             "type": "string"
@@ -24519,6 +24670,21 @@
             "title": "Output Viewpoint",
             "type": "string"
           },
+          "player_view": {
+            "anyOf": [
+              {
+                "enum": [
+                  "character",
+                  "story"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Player View"
+          },
           "profile": {
             "anyOf": [
               {
@@ -24549,6 +24715,13 @@
               }
             ],
             "title": "Queued Ms"
+          },
+          "reconcile": {
+            "items": {
+              "$ref": "#/components/schemas/ReconcileBody"
+            },
+            "title": "Reconcile",
+            "type": "array"
           },
           "reduced_characters": {
             "items": {
@@ -31141,6 +31314,21 @@
             ],
             "title": "Player Authority"
           },
+          "player_view": {
+            "anyOf": [
+              {
+                "enum": [
+                  "character",
+                  "story"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Player View"
+          },
           "policies": {
             "items": {
               "$ref": "#/components/schemas/ScenarioPolicy"
@@ -31259,6 +31447,23 @@
             "default": null,
             "description": "The story's override of the transcript rows per level-0 summary segment (#72).",
             "title": "Lite Summary Chunk"
+          },
+          "player_view": {
+            "anyOf": [
+              {
+                "enum": [
+                  "character",
+                  "story"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "What a character viewpoint's output holds where perception is on (FR-RESP-13; #177, the\nowner's round-two decision): ``character`` (the default) applies the audience filter, so a\nresponse, history read and beat list hold only what the viewing character perceived, and a\ncharacter that perceived nothing gets an empty narration; ``story`` returns every beat of the\nturn at full content whatever the character perceived (roleplay that lets a player read scenes\ntheir character is not in), still never a ``think`` or ``latent``. The character's own\npartition and memory are the same under both. A no-op where perception is ``none``. A\nrequest (and a history read) overrides it. Prospective.",
+            "title": "Player View"
           },
           "policies": {
             "anyOf": [
@@ -54633,6 +54838,7 @@
                           "lite_summary_max_tokens",
                           "lite_window_messages",
                           "max_model_calls_per_turn",
+                          "player_view",
                           "profile_overrides",
                           "profile_overrides.budgets",
                           "profile_overrides.budgets.deadline_ms",
@@ -56488,7 +56694,7 @@
     },
     "/stories/{story_id}/history": {
       "get": {
-        "description": "The story's corrected history through `as_of` (default: the latest turn), produced for one **output viewpoint**: `?viewpoint=` (`character:<id>` or `omniscient`), else `?actor_character_id=`, else the story's `default_output_viewpoint`; when none resolves the read is refused (422 `viewpoint_unresolved`). `omniscient` is used only when named.\n\nA character viewpoint never receives `think` or `latent` beats. Under the `lite` profile perception is `none`, so every other beat is returned in full and `audience_filter` is `\"none\"`: Epistrel does not decide which callers may request which viewpoint. Omniscient items carry the true ages of the characters they name.\n\n`include_audit=1` adds the turns' audit records and requires `viewpoint=omniscient` (403 `omniscient_required`). Pages hold whole turns, newest first, up to `limit` items; pass `next_before_turn` as `before_turn` for the previous page.\n\n`variant=turn:variant` reads along another chain of the story (`GET /stories/{id}/variants`), e.g. a dormant continuation or a regenerated reply's earlier variant: the active history up to where it parts, then that chain's turns; `as_of` defaults to its tip. A chain that names no variant, or continues in more than one way, is 409 `unknown_chain`.\n\n`include_summary=1` adds `summary`: the Lite rolling-summary segments the prompt includes now (wholly at or before `as_of`), oldest first, each `{level, covers_from, covers_to, text, operation_id}`; they are never history items.",
+        "description": "The story's corrected history through `as_of` (default: the latest turn), produced for one **output viewpoint**: `?viewpoint=` (`character:<id>` or `omniscient`), else `?actor_character_id=`, else the story's `default_output_viewpoint`; when none resolves the read is refused (422 `viewpoint_unresolved`). `omniscient` is used only when named.\n\nA character viewpoint never receives `think` or `latent` beats. Under the `lite` profile perception is `none`, so every other beat is returned in full and `audience_filter` is `\"none\"`: Epistrel does not decide which callers may request which viewpoint. Omniscient items carry the true ages of the characters they name.\n\nWhere the story's perception is `co_location` or `full` (FR-RESP-13), a character read is filtered beat by beat by the same perception routing as the character's memory, from authoritative positions: a beat the character perceived is returned in full, one it perceived only the envelope of is returned as that envelope (`fidelity: envelope`, \"Jenni whispers something to Marcus\"), and any other is omitted; each turn's message is recomposed over what is returned, and `audience_filter` names the level. A character read's structured beats carry no verdicts, `detected` claims or `effects`. `player_view` (`character` | `story`; default the story's setting) `story` returns every beat in full instead, each with the `fidelity` the character would have perceived it at (`audience_filter: \"bypassed_by_player_view\"`); it is echoed as `player_view`.\n\n`include_audit=1` adds the turns' audit records and requires `viewpoint=omniscient` (403 `omniscient_required`). Pages hold whole turns, newest first, up to `limit` items; pass `next_before_turn` as `before_turn` for the previous page.\n\n`variant=turn:variant` reads along another chain of the story (`GET /stories/{id}/variants`), e.g. a dormant continuation or a regenerated reply's earlier variant: the active history up to where it parts, then that chain's turns; `as_of` defaults to its tip. A chain that names no variant, or continues in more than one way, is 409 `unknown_chain`.\n\n`include_summary=1` adds `summary`: the Lite rolling-summary segments the prompt includes now (wholly at or before `as_of`), oldest first, each `{level, covers_from, covers_to, text, operation_id}`; they are never history items.",
         "operationId": "history",
         "parameters": [
           {
@@ -56598,6 +56804,26 @@
               "default": false,
               "title": "Include Summary",
               "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "player_view",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "character",
+                    "story"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Player View"
             }
           },
           {
@@ -60205,7 +60431,7 @@
     },
     "/stories/{story_id}/respond": {
       "post": {
-        "description": "Play one turn of a story. The request names the acting character (any character of the story; who acts as whom is your decision), what they say and/or do (`player_input`, the turn's first beat and only ever the actor's own words), who answers (`render_character_ids`: default every other character, voiced in the order given and composed into one message), the output viewpoint (`character:<id>` or `omniscient`; default the actor, then the story's default; echoed as `output_viewpoint`, and `beats` are produced for it), prompt parameters (`length`, `temperature`, `top_p`) and optional scene context.\n\nThe consumer does no retrieval or memory work: the prompt is assembled from the story's own records. Scene context is checked against the cast and then ignored: it is never stored and never placed in the model's context.\n\nThe response is the **finished** reply: under the `lite` profile it is generated in one model call (plus one `guardrail_check` per model-assisted output policy) and none of its claims is checked against the story's facts. Before it is released the reply is checked against the story's output policies: a reply that breaks one is generated again with the policy's message as a constraint, up to the story's polish budget (its configuration's `repair.polish.max_regenerations`; none with the polish pass off), and then the character's safe fallback line is returned instead (`guardrail.fallback_used`, `degradation: [\"safe_fallback\"]`). Rejected drafts are audit records only. Several characters are voiced in one generation, and their knowledge is kept apart only by instructions in that shared prompt.\n\nEvery turn runs under a model-call budget and a deadline from the story's effective configuration (`GET /stories/{id}/effective-config`): `budgets.model_calls` (`null`, Lite's: `9 + G`, where G is one call per model-assisted input policy plus one per model-assisted output policy) and `budgets.deadline_ms`, or a smaller `budget: {max_calls, deadline_s}` in the request (above the story's is 422). A budget below one generation plus G is refused with 422 `budget_below_safety_minimum` (`details.minimum_required`) before any model call. The response reports `model_calls` (every attempt, failed ones included), `call_counts` by purpose, `elapsed_ms`, `budget` `{max_calls, reserved, used}` and each `degradation` step with its cause; a 503 carries `model_calls` and `elapsed_ms` in `details`. `queued_ms` is how long the turn waited in the story's turn queue (null when it never queued) and `first_call_offset_ms` the delay from the turn reaching the front (a queued turn starting, else the request arriving) to its first model call; `elapsed_ms` starts at that same moment.\n\nThe turn captures the story's configuration when it starts and runs under it to the end: the deployment's profile defaults, then the story's engine profile at its latest version, then the story's overrides (FR-PROF-5,6). The generation settings come from it, then from the request's prompt parameters (FR-LITE-4). Every response states that configuration (FR-PROF-16): the engine `profile` (`{id, version}`) and the story's `config_revision` then, its `fingerprint` (`sha256:` over the profile version, each purpose's model and every quality-relevant setting, prompt templates included), the `capabilities` it enables, and its `quality_status` (`uncertified` until a certification matches the fingerprint, which no M3 configuration can have).\n\nOptional headers: `Idempotency-Key` (a retry returns the identical response) and `X-Epistrel-Expected-Revision` (a stale revision is refused with 409 and nothing written).\n\nWhile another turn of the story runs, a story with `turn_concurrency: reject` (the default) answers 423 `story_busy` with `Retry-After`, and one with `queue` queues the turn and plays the queued turns in order, each after the previous one finished. The request waits for its queued turn up to the story's turn deadline (`budgets.deadline_ms`), then answers 202 `{operation_id, position}` with `Location: /operations/{id}` while the turn stays queued; `Prefer: respond-async` answers 202 at once. A retry under the same `Idempotency-Key` waits for the same turn. A full queue (`turn_queue_max`) is 423.",
+        "description": "Play one turn of a story. The request names the acting character (any character of the story; who acts as whom is your decision), what they say and/or do (`player_input`, the turn's first beat and only ever the actor's own words), who answers (`render_character_ids`: default every other character, voiced in the order given and composed into one message), the output viewpoint (`character:<id>` or `omniscient`; default the actor, then the story's default; echoed as `output_viewpoint`, and `beats` are produced for it; where perception is on, both the message and `beats` hold only what that character perceived, unless `player_view` is `story`: FR-RESP-13), prompt parameters (`length`, `temperature`, `top_p`) and optional scene context.\n\nThe consumer does no retrieval or memory work: the prompt is assembled from the story's own records. Scene context is checked against the cast and then ignored: it is never stored and never placed in the model's context.\n\nThe response is the **finished** reply: under the `lite` profile it is generated in one model call (plus one `guardrail_check` per model-assisted output policy) and none of its claims is checked against the story's facts. Before it is released the reply is checked against the story's output policies: a reply that breaks one is generated again with the policy's message as a constraint, up to the story's polish budget (its configuration's `repair.polish.max_regenerations`; none with the polish pass off), and then the character's safe fallback line is returned instead (`guardrail.fallback_used`, `degradation: [\"safe_fallback\"]`). Rejected drafts are audit records only. Several characters are voiced in one generation, and their knowledge is kept apart only by instructions in that shared prompt.\n\nEvery turn runs under a model-call budget and a deadline from the story's effective configuration (`GET /stories/{id}/effective-config`): `budgets.model_calls` (`null`, Lite's: `9 + G`, where G is one call per model-assisted input policy plus one per model-assisted output policy) and `budgets.deadline_ms`, or a smaller `budget: {max_calls, deadline_s}` in the request (above the story's is 422). A budget below one generation plus G is refused with 422 `budget_below_safety_minimum` (`details.minimum_required`) before any model call. The response reports `model_calls` (every attempt, failed ones included), `call_counts` by purpose, `elapsed_ms`, `budget` `{max_calls, reserved, used}` and each `degradation` step with its cause; a 503 carries `model_calls` and `elapsed_ms` in `details`. `queued_ms` is how long the turn waited in the story's turn queue (null when it never queued) and `first_call_offset_ms` the delay from the turn reaching the front (a queued turn starting, else the request arriving) to its first model call; `elapsed_ms` starts at that same moment.\n\nThe turn captures the story's configuration when it starts and runs under it to the end: the deployment's profile defaults, then the story's engine profile at its latest version, then the story's overrides (FR-PROF-5,6). The generation settings come from it, then from the request's prompt parameters (FR-LITE-4). Every response states that configuration (FR-PROF-16): the engine `profile` (`{id, version}`) and the story's `config_revision` then, its `fingerprint` (`sha256:` over the profile version, each purpose's model and every quality-relevant setting, prompt templates included), the `capabilities` it enables, and its `quality_status` (`uncertified` until a certification matches the fingerprint, which no M3 configuration can have).\n\nOptional headers: `Idempotency-Key` (a retry returns the identical response) and `X-Epistrel-Expected-Revision` (a stale revision is refused with 409 and nothing written).\n\nWhile another turn of the story runs, a story with `turn_concurrency: reject` (the default) answers 423 `story_busy` with `Retry-After`, and one with `queue` queues the turn and plays the queued turns in order, each after the previous one finished. The request waits for its queued turn up to the story's turn deadline (`budgets.deadline_ms`), then answers 202 `{operation_id, position}` with `Location: /operations/{id}` while the turn stays queued; `Prefer: respond-async` answers 202 at once. A retry under the same `Idempotency-Key` waits for the same turn. A full queue (`turn_queue_max`) is 423.",
         "operationId": "respond",
         "parameters": [
           {
@@ -60862,7 +61088,7 @@
         ]
       },
       "patch": {
-        "description": "Change the story's settings with a JSON merge patch (RFC 7396): a key present sets that setting and `null` resets it to its default. A story's settings describe the story: `turn_concurrency` (`reject` | `queue`), `turn_queue_max` (1-50; `null`: the deployment's default, 5), `default_output_viewpoint` (`character:<id>` of the cast, never `omniscient`), `regenerate_retry_budget` (0-10), `lite_summary_chunk` (2-200 rows per summary segment), `audit_retention_days` (1-3650; `null`: the deployment's) and `allow_new_arrivals` (whether a director pass, or a render as scene texture, may introduce new arrivals; default `true`), `interaction_mode` (`sequential` | `simultaneous`: how a turn with several primaries renders them; `null`: the scenario's, else `sequential`), `sequence_order` (`request` | `director`: who orders a sequential turn's primaries; `null`: `request`) and `simultaneous_tie_break` (`request_order` | `director` | `state:<name>`: how a simultaneous turn settles conflicting actions; `null`: `request_order`; `state:<name>` is 422 `not_yet` until M6) and `reactive_interjections` (whether reactive narration may give a reactive character a brief interjection; default `false`). An unknown key is 422. The engine's dials are the story's engine profile's, overridden per story with `PATCH /stories/{id}/profile-overrides` (FR-PROF-5): a key that moved there (`generation_settings`, `lite_window_messages`, `lite_summary_max_tokens`, `max_model_calls_per_turn`, `turn_deadline`, `guardrail_retry_budget`) is 422 with `details.reason: superseded` and the profile setting that replaced it in `details.replacement`. `policies` (optional) upserts the story's own policies; an item that would relax a policy refuses the whole request with 422 `cannot_relax` before anything is written.\n\nEvery setting but `default_output_viewpoint` and `allow_new_arrivals` is prospective: it applies to requests that arrive after the write, never to a turn already running; those two are interpretive (a turn in flight is checked against them when it commits). A write that changes something moves the story's `config_revision`. The answer carries the budget the story's next turn plans with (`effective_budget`).",
+        "description": "Change the story's settings with a JSON merge patch (RFC 7396): a key present sets that setting and `null` resets it to its default. A story's settings describe the story: `turn_concurrency` (`reject` | `queue`), `turn_queue_max` (1-50; `null`: the deployment's default, 5), `default_output_viewpoint` (`character:<id>` of the cast, never `omniscient`), `regenerate_retry_budget` (0-10), `lite_summary_chunk` (2-200 rows per summary segment), `audit_retention_days` (1-3650; `null`: the deployment's) and `allow_new_arrivals` (whether a director pass, or a render as scene texture, may introduce new arrivals; default `true`), `interaction_mode` (`sequential` | `simultaneous`: how a turn with several primaries renders them; `null`: the scenario's, else `sequential`), `sequence_order` (`request` | `director`: who orders a sequential turn's primaries; `null`: `request`) and `simultaneous_tie_break` (`request_order` | `director` | `state:<name>`: how a simultaneous turn settles conflicting actions; `null`: `request_order`; `state:<name>` is 422 `not_yet` until M6), `reactive_interjections` (whether reactive narration may give a reactive character a brief interjection; default `false`) and `player_view` (`character` | `story`: whether a character viewpoint's output holds only what that character perceived, the audience filter, or every beat; default `character`; a no-op where perception is `none`). An unknown key is 422. The engine's dials are the story's engine profile's, overridden per story with `PATCH /stories/{id}/profile-overrides` (FR-PROF-5): a key that moved there (`generation_settings`, `lite_window_messages`, `lite_summary_max_tokens`, `max_model_calls_per_turn`, `turn_deadline`, `guardrail_retry_budget`) is 422 with `details.reason: superseded` and the profile setting that replaced it in `details.replacement`. `policies` (optional) upserts the story's own policies; an item that would relax a policy refuses the whole request with 422 `cannot_relax` before anything is written.\n\nEvery setting but `default_output_viewpoint` and `allow_new_arrivals` is prospective: it applies to requests that arrive after the write, never to a turn already running; those two are interpretive (a turn in flight is checked against them when it commits). A write that changes something moves the story's `config_revision`. The answer carries the budget the story's next turn plans with (`effective_budget`).",
         "operationId": "update_story_settings",
         "parameters": [
           {

@@ -41,11 +41,27 @@ Reads the ``transcript_messages`` projection (joined to each beat's event for a 
   viewpoint its turn was played for (``operations.viewpoint``). A read for any other viewpoint
   gets the deterministic assembly of the beats it receives instead
   (``core.turns.assembly``), so an omniscient message never reaches a character read and a
-  character's message never stands in for an omniscient one.
+  character's message never stands in for an omniscient one. So does a character read under
+  another perception level or player view than the message was composed under (#177).
+- **The audience filter** (FR-RESP-13; #177, ``core.epistemic.audience``): with the story's
+  perception at ``co_location`` or ``full`` now, a character read re-routes each structured
+  turn's beats (the player's input included) from their stored qualifiers over the scene at the
+  turn's start and its committed moves (``core.epistemic.scene.load_scene``): a beat the
+  character perceived is returned in full, one it perceived only the envelope of as that
+  envelope (``fidelity: envelope``), any other omitted, and the turn's message is recomposed over
+  what is returned. A turn whose message records no perception level (one committed before
+  perception was on) is read as perceived by all, and so is an ingested turn. ``player_view``
+  (the request's, else the story's) ``story`` returns every beat in full instead, each with the
+  fidelity the character would have perceived it at (``audience_filter:
+  "bypassed_by_player_view"``). Every structured beat carries ``fidelity``.
+- **Beat metadata** (#177): a character read's structured beats keep each proposition's text
+  with ``verdict: null`` and carry no ``detected`` or ``effects`` (a ``contradicted`` verdict on a
+  lie discloses the truth); ``omniscient`` reads keep them all.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from collections.abc import AsyncIterator, Collection, Mapping, Sequence
 from contextlib import asynccontextmanager
@@ -57,8 +73,10 @@ from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.enums import EventCategory, Membership, OperationStatus
+from epistrel.core.epistemic import audience as audience_rules
+from epistrel.core.epistemic import perception
 from epistrel.core.errors import InvalidRequest, StoryNotFound
-from epistrel.core.settings_schema import StorySettings
+from epistrel.core.settings_schema import PlayerView, StorySettings
 from epistrel.core.summary import read_included_segments
 from epistrel.core.tables import characters, events, operations, stories, transcript_messages
 from epistrel.core.tables.base import ulid_type
@@ -117,6 +135,10 @@ class HistoryItem:
     """A structured turn's beat (#150): the claims detection found that it did not declare."""
     narrated_by: str | None = None
     """A reactive character's reaction (#176): the character whose render narrated it."""
+    fidelity: str | None = None
+    """A structured turn's beat (#177): the fidelity the viewing character perceived it at,
+    ``content`` or ``envelope`` (its text is then the envelope), and under ``player_view =
+    story`` also ``none``; always ``content`` for ``omniscient`` and perception ``none``."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,6 +178,8 @@ class History:
     next_before_turn: int | None = None
     audience_filter: AudienceFilter = AUDIENCE_FILTER
     summary: list[SummaryItem] | None = None
+    player_view: PlayerView = "character"
+    """The player view the read was produced under (#177): the request's, else the story's."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,8 +202,10 @@ async def read_history(
     include_audit: bool = False,
     variant: ChainRef | None = None,
     include_summary: bool = False,
+    player_view: PlayerView | None = None,
 ) -> History:
-    """The corrected history of ``story_id`` for one viewpoint; see the module docstring."""
+    """The corrected history of ``story_id`` for one viewpoint; see the module docstring.
+    ``player_view``: the read's own over the story's (#177)."""
     async with _connection(db) as conn:
         story = await _story(conn, story_id)
         chain = None if variant is None else await chain_operations(conn, story_id, variant)
@@ -208,12 +234,15 @@ async def read_history(
         upper = through if before_turn is None else min(through, before_turn - 1)
         lower, next_before = await _page(conn, story_id, resolved, upper, limit, chain)
         rows = await _rows(conn, story_id, lower=lower, upper=upper, chain=chain)
+        view = player_view or story.settings.player_view
+        heard = await _audience(conn, story_id, rows, resolved, view)
         items = _items(
             rows,
             resolved,
             story.ages,
-            await _names(conn, story_id, rows, resolved),
+            await _names(conn, story_id, rows, resolved, heard),
             await _quarantined(conn, story_id, rows, resolved),
+            heard,
         )
         audit = (
             await _audit(conn, story_id, lower, upper, story.ages, chain) if include_audit else None
@@ -235,19 +264,62 @@ async def read_history(
         audit=audit,
         next_before_turn=next_before,
         summary=summary,
+        audience_filter=heard.stated,
+        player_view=view,
     )
 
 
+@dataclass(frozen=True, slots=True)
+class TurnBeats:
+    """One operation's beats for a viewpoint and what the result states about its audience
+    filtering (``nothing_perceived`` when the viewpoint perceived none of them)."""
+
+    items: list[HistoryItem]
+    audience_filter: AudienceFilter
+
+
 async def turn_beats(
-    db: AsyncEngine | AsyncConnection, story_id: str, operation_id: str, viewpoint: str
+    db: AsyncEngine | AsyncConnection,
+    story_id: str,
+    operation_id: str,
+    viewpoint: str,
+    *,
+    player_view: PlayerView = "character",
 ) -> list[HistoryItem]:
     """One operation's beats for an already resolved ``viewpoint`` (respond's ``beats``)."""
+    return (
+        await filtered_turn_beats(db, story_id, operation_id, viewpoint, player_view=player_view)
+    ).items
+
+
+async def filtered_turn_beats(
+    db: AsyncEngine | AsyncConnection,
+    story_id: str,
+    operation_id: str,
+    viewpoint: str,
+    *,
+    player_view: PlayerView = "character",
+) -> TurnBeats:
+    """``turn_beats`` with the audience filter's statement (#177)."""
     async with _connection(db) as conn:
         ages = await _ages(conn, story_id) if is_omniscient(viewpoint) else {}
         rows = await _rows(conn, story_id, operation_id=operation_id)
-        names = await _names(conn, story_id, rows, viewpoint)
+        heard = await _audience(conn, story_id, rows, viewpoint, player_view)
+        names = await _names(conn, story_id, rows, viewpoint, heard)
         quarantined = await _quarantined(conn, story_id, rows, viewpoint)
-    return _items(rows, viewpoint, ages, names, quarantined)
+    items = _items(rows, viewpoint, ages, names, quarantined, heard)
+    stated = heard.stated
+    beats = [i for i in items if i.kind != REPLY_KIND]
+    if heard.routed and not beats and stated not in ("none", audience_rules.BYPASSED):
+        stated = audience_rules.NOTHING_PERCEIVED
+    return TurnBeats(items, stated)
+
+
+async def story_player_view(db: AsyncEngine | AsyncConnection, story_id: str) -> PlayerView:
+    """The story's ``player_view`` setting (#177; ``character`` for a story with none)."""
+    async with _connection(db) as conn:
+        found = await conn.scalar(select(stories.c.settings).where(stories.c.id == story_id))
+    return StorySettings.from_row(found).player_view
 
 
 # -- reads ------------------------------------------------------------------------------------
@@ -479,11 +551,17 @@ def _structured(row: Any, channel: str, omniscient: bool = True) -> dict[str, An
         return {}
     found: dict[str, Any] = {
         "propositions": [
-            {"proposition": p.get("proposition"), "verdict": p.get("verdict")}
+            {
+                "proposition": p.get("proposition"),
+                "verdict": p.get("verdict") if omniscient else None,
+            }
             for p in payload.get("propositions") or ()
         ],
-        "effects": [],
     }
+    if omniscient:
+        # #177: a character read gets no effects and no detected claims (a ``latent`` effect, a
+        # ``contradicted`` verdict on a lie, disclose truth the viewer may not know).
+        found["effects"] = []
     labels = payload.get("labels")
     if labels is not None and channel == "say":
         shown = _labels(labels, omniscient)
@@ -491,36 +569,164 @@ def _structured(row: Any, channel: str, omniscient: bool = True) -> dict[str, An
             found["labels"] = shown
     if row.kind == "beat_latent":
         found["visibility"] = dict(payload.get("visibility") or {"scope": "objective"})
-    if payload.get("detected"):
+    if payload.get("detected") and omniscient:
         found["detected"] = [dict(d) for d in payload["detected"]]
     if payload.get("narrated_by"):
         found["narrated_by"] = str(payload["narrated_by"])
     return found
 
 
-def _recomposed(row: Any, viewpoint: str) -> bool:
+def _recomposed(row: Any, viewpoint: str, heard: _Audience | None = None) -> bool:
     """Whether ``row`` is a structured turn's composed message stored for a viewpoint other
-    than ``viewpoint`` (#152): the read recomposes it."""
+    than ``viewpoint`` (#152), or composed under another audience filtering than the read's
+    (#177): the read recomposes it."""
     payload = row.payload or {}
     stored = getattr(row, "op_viewpoint", None)
-    return (
-        row.kind == REPLY_KIND
-        and bool(payload.get("composed"))
-        and stored is not None
-        and stored != viewpoint
-    )
+    if row.kind != REPLY_KIND or not payload.get("composed") or stored is None:
+        return False
+    if stored != viewpoint:
+        return True
+    if heard is None or is_omniscient(viewpoint):
+        return False
+    return _stored_audience(payload) != heard.key(row.operation_id)
+
+
+def _stored_audience(payload: Mapping[str, Any]) -> tuple[str, str]:
+    """The perception level and player view a composed message was filtered under (#177)."""
+    level = payload.get("perception_level")
+    if not level:
+        return (perception.NONE, audience_rules.CHARACTER_VIEW)
+    return (str(level), str(payload.get("player_view") or audience_rules.CHARACTER_VIEW))
 
 
 async def _names(
-    conn: AsyncConnection, story_id: str, rows: Sequence[Any], viewpoint: str
+    conn: AsyncConnection,
+    story_id: str,
+    rows: Sequence[Any],
+    viewpoint: str,
+    heard: _Audience | None = None,
 ) -> dict[str, str]:
     """The cast's names, when a composed message on the page is recomposed (#152)."""
-    if not any(_recomposed(r, viewpoint) for r in rows):
+    if not any(_recomposed(r, viewpoint, heard) for r in rows):
         return {}
     found = await conn.execute(
         select(characters.c.id, characters.c.name).where(characters.c.story_id == story_id)
     )
     return {r.id: r.name for r in found}
+
+
+@dataclass(frozen=True, slots=True)
+class _Audience:
+    """A read's audience filtering (#177): what it states, the level and player view, each
+    routed operation's beats as the viewpoint receives them (by ``(message_id, channel)``), and
+    the operations that were routed (a beat of one that is not in ``seen`` is omitted)."""
+
+    stated: AudienceFilter
+    level: perception.Level
+    player_view: PlayerView
+    seen: Mapping[tuple[str, str], audience_rules.Seen] = field(default_factory=dict)
+    routed: frozenset[str] = frozenset()
+
+    def key(self, operation_id: str) -> tuple[str, str]:
+        if operation_id not in self.routed:
+            return (perception.NONE, audience_rules.CHARACTER_VIEW)
+        return (self.level, self.player_view)
+
+    def of(self, row: Any, channel: str) -> audience_rules.Seen | bool | None:
+        """The beat as the viewpoint receives it; ``False`` when the filter omitted it; ``None``
+        when the row was not filtered."""
+        if row.operation_id not in self.routed or not _is_beat(row):
+            return None
+        return self.seen.get((str(row.message_id), channel), False)
+
+
+def _is_beat(row: Any) -> bool:
+    """A beat the audience filter routes: a structured beat or a turn's player input."""
+    return str(row.kind).startswith(STRUCTURED_PREFIX) or row.kind == INPUT_KIND
+
+
+async def _audience(
+    conn: AsyncConnection,
+    story_id: str,
+    rows: Sequence[Any],
+    viewpoint: str,
+    player_view: PlayerView,
+) -> _Audience:
+    """The read's audience filtering (see the module docstring): every routed operation on the
+    page filtered for ``viewpoint`` (``core.epistemic.audience.filter_for_viewpoint``) over
+    the scene at its turn's start and its committed moves."""
+    if is_omniscient(viewpoint):
+        return _Audience("none", perception.NONE, player_view)
+    from epistrel.core.epistemic import scene as scenes
+    from epistrel.core.memory import records
+
+    level = await scenes.current_level(conn, story_id)
+    stated = audience_rules.audience_filter_of(viewpoint, level, player_view)
+    if level == perception.NONE:
+        return _Audience(stated, level, player_view)
+    messages: dict[str, Mapping[str, Any]] = {}
+    beats: dict[str, list[Any]] = {}
+    for row in rows:
+        if row.kind == REPLY_KIND:
+            messages[str(row.operation_id)] = row.payload or {}
+        elif _is_beat(row) and row.narrative_turn is not None:
+            beats.setdefault(str(row.operation_id), []).append(row)
+    wanted = {
+        op: found for op, found in beats.items() if (messages.get(op) or {}).get("perception_level")
+    }
+    if not wanted:
+        return _Audience(stated, level, player_view)
+    names, places = await records.places_and_names(conn, story_id)
+    seen: dict[tuple[str, str], audience_rules.Seen] = {}
+    for op, found in wanted.items():
+        turn = int(found[0].narrative_turn)
+        scene, moves = await scenes.load_scene(conn, story_id, turn)
+        heard: list[audience_rules.AudienceBeat] = []
+        for row in found:
+            stored = perception.Qualifiers.of((row.payload or {}).get("perception"))
+            for channel, part in _parts(row):
+                heard.append(
+                    audience_rules.AudienceBeat(
+                        kind=channel,
+                        beat=int(row.beat or 0),
+                        character_id=row.actor_character_id,
+                        text=part,
+                        qualifiers=stored
+                        if channel == "say" or row.kind != INPUT_KIND
+                        else (perception.Qualifiers()),
+                        source=(str(row.message_id), channel),
+                    )
+                )
+        heard = _with_moves(heard, moves)
+        mode = str((messages.get(op) or {}).get("interaction_mode") or perception.SEQUENTIAL)
+        filtered = audience_rules.filter_for_viewpoint(
+            heard,
+            viewpoint,
+            scene=scene,
+            level=level,
+            names=names,
+            places=places,
+            player_view=player_view,
+            mode=mode,
+        )
+        for item in filtered.seen:
+            source = item.beat.source
+            assert isinstance(source, tuple)  # noqa: S101 - built above
+            seen[source] = item
+    return _Audience(stated, level, player_view, seen, frozenset(wanted))
+
+
+def _with_moves(
+    beats: Sequence[audience_rules.AudienceBeat],
+    moves: Mapping[int, tuple[tuple[str, str | None], ...]],
+) -> list[audience_rules.AudienceBeat]:
+    """``beats`` with each beat number's committed moves on its last beat."""
+    found = sorted(beats, key=lambda b: b.beat)
+    for index, item in enumerate(found):
+        last = index == len(found) - 1 or found[index + 1].beat != item.beat
+        if last and moves.get(item.beat):
+            found[index] = dataclasses.replace(item, moves=tuple(moves[item.beat]))
+    return found
 
 
 async def _quarantined(
@@ -544,17 +750,36 @@ async def _quarantined(
     return {str(i) for i in found} & set(page)
 
 
-def _assemblies(rows: Sequence[Any], viewpoint: str, names: Mapping[str, str]) -> dict[str, str]:
+def _assemblies(
+    rows: Sequence[Any],
+    viewpoint: str,
+    names: Mapping[str, str],
+    heard: _Audience | None = None,
+) -> dict[str, str]:
     """Each recomposed message's text (``_recomposed``), by its ``message_id``: the
-    deterministic assembly of its operation's beats for ``viewpoint``."""
-    wanted = {r.operation_id: r.message_id for r in rows if _recomposed(r, viewpoint)}
+    deterministic assembly of its operation's beats as ``viewpoint`` receives them (#177: an
+    envelope as itself, an unperceived beat left out)."""
+    wanted = {r.operation_id: r.message_id for r in rows if _recomposed(r, viewpoint, heard)}
     if not wanted:
         return {}
     beats: dict[str, list[AssemblyBeat]] = {}
     for row in rows:
         if row.operation_id in wanted and str(row.kind).startswith(STRUCTURED_PREFIX):
+            seen = None if heard is None else heard.of(row, row.channel)
+            if seen is False:
+                continue
+            text = row.text if not isinstance(seen, audience_rules.Seen) else seen.text
+            fidelity = (
+                audience_rules.CONTENT
+                if not isinstance(seen, audience_rules.Seen)
+                or heard is None
+                or heard.player_view == audience_rules.STORY_VIEW
+                else seen.fidelity
+            )
             beats.setdefault(row.operation_id, []).append(
-                AssemblyBeat(row.channel, row.text, row.actor_character_id, int(row.beat or 0))
+                AssemblyBeat(
+                    row.channel, text, row.actor_character_id, int(row.beat or 0), fidelity
+                )
             )
     return {
         message_id: deterministic_assembly(beats.get(op, []), names, viewpoint)
@@ -568,15 +793,30 @@ def _items(
     ages: Mapping[str, int],
     names: Mapping[str, str] | None = None,
     quarantined: Collection[str] = (),
+    heard: _Audience | None = None,
 ) -> list[HistoryItem]:
     omniscient = is_omniscient(viewpoint)
-    recomposed = _assemblies(rows, viewpoint, names or {})
+    recomposed = _assemblies(rows, viewpoint, names or {}, heard)
     items: list[HistoryItem] = []
     for row in rows:
         if not visible_to(row.channel, viewpoint):
             continue
         for channel, part in _parts(row):
             text = recomposed.get(row.message_id, part)
+            structured = _structured(row, channel, omniscient)
+            seen = None if heard is None else heard.of(row, channel)
+            if seen is False:
+                continue  # #177: the viewpoint did not perceive the beat
+            if structured:
+                structured["fidelity"] = audience_rules.CONTENT
+            if isinstance(seen, audience_rules.Seen):
+                structured["fidelity"] = seen.fidelity
+                if seen.text != part:
+                    text = seen.text
+                if seen.envelope:
+                    # Only that it was said: none of what it asserts or how it was labelled.
+                    structured["propositions"] = []
+                    structured.pop("labels", None)
             items.append(
                 HistoryItem(
                     turn=row.narrative_turn,
@@ -597,7 +837,7 @@ def _items(
                     ),
                     redacted=bool(row.redacted),
                     quarantined=omniscient and row.message_id in quarantined,
-                    **_structured(row, channel, omniscient),
+                    **structured,
                 )
             )
     return items
@@ -630,8 +870,11 @@ __all__ = [
     "MAX_LIMIT",
     "History",
     "HistoryItem",
+    "TurnBeats",
     "TurnMessage",
     "TurnSummary",
+    "filtered_turn_beats",
     "read_history",
+    "story_player_view",
     "turn_beats",
 ]

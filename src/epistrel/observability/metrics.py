@@ -153,6 +153,13 @@ ESCALATIONS = Counter(
     "by outcome: escalated (rendered as a primary) or deferred_fixed_role / deferred_budget.",
     ("outcome",),
 )
+PLAYER_AUTHORITY = Counter(
+    "epistrel_player_authority",
+    "Player input spans about another character (#180, FR-RESP-11), by player_authority mode and "
+    "outcome: a request's complied / refused / unresolved, a co_author span narrated, or the "
+    "code it was dropped with.",
+    ("mode", "outcome"),
+)
 PRIMARIES_REDUCED = Counter(
     "epistrel_primaries_reduced",
     "Named primaries budget planning turned into reactive narration (#176, NFR-PERF-7 (6)).",
@@ -468,6 +475,7 @@ __all__ = [
     "OPERATIONS",
     "PERCEPTION_REPAIRS",
     "PERCEPTION_REPAIR_REASONS",
+    "PLAYER_AUTHORITY",
     "PRIMARIES_REDUCED",
     "QUARANTINES",
     "REPAIRS",

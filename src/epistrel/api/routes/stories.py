@@ -80,7 +80,7 @@ from epistrel.core.ownership import RELATION_FILTER_PATTERN, relation_filter_pro
 from epistrel.core.policies.model import Policy, PolicyKind, Scope, Target, WithheldPolicy
 from epistrel.core.profiles.effective import ProfileVersionRef
 from epistrel.core.profiles.impact import ImpactReport
-from epistrel.core.settings_schema import ConfigClass, StorySettings
+from epistrel.core.settings_schema import DEFAULT_PLAYER_AUTHORITY, ConfigClass, StorySettings
 from epistrel.core.stories import (
     AdHocCharacter,
     CharacterView,
@@ -386,6 +386,8 @@ class StoryBody(StorySummaryBody):
 
     characters: list[OmniscientCharacterBody | CharacterBody]
     settings: dict[str, Any]
+    """The stored settings; ``player_authority`` (#180, FR-RESP-11) always present (a story
+    created before it reads ``own_character``)."""
     engine_profile: ProfileVersionRef
     undo_available: bool
     """Whether ``POST /stories/{id}/untruncate`` has a truncation to revert (by reactivation,
@@ -404,7 +406,7 @@ class StoryBody(StorySummaryBody):
         return cls(
             **StorySummaryBody.fields_of(story),
             characters=[_character(c) for c in story.characters],
-            settings=story.settings,
+            settings={PLAYER_AUTHORITY: DEFAULT_PLAYER_AUTHORITY, **story.settings},
             engine_profile=story.engine_profile,
             undo_available=undo.undo_available,
             dormant_chains=[
@@ -613,6 +615,8 @@ StorySettingsPatch = _settings_patch_model()
 register_body_model("update_story_settings", StorySettingsPatch)
 
 
+PLAYER_AUTHORITY = "player_authority"
+
 SETTINGS_PATCH_DESCRIPTION = (
     "Change the story's settings with a JSON merge patch (RFC 7396): a key present sets that "
     "setting and `null` resets it to its default. A story's settings describe the story: "
@@ -628,9 +632,13 @@ SETTINGS_PATCH_DESCRIPTION = (
     "`state:<name>`: how a simultaneous turn settles conflicting actions; `null`: "
     "`request_order`; `state:<name>` is 422 `not_yet` until M6), `reactive_interjections` "
     "(whether reactive narration may give a reactive character a brief interjection; default "
-    "`false`) and `player_view` (`character` | `story`: whether a character viewpoint's output "
+    "`false`), `player_view` (`character` | `story`: whether a character viewpoint's output "
     "holds only what that character perceived, the audience filter, or every beat; default "
-    "`character`; a no-op where perception is `none`). An "
+    "`character`; a no-op where perception is `none`) and `player_authority` (`own_character` | "
+    "`co_author`: whether player input describing another character is a request that "
+    "character resolves or narration of its observable actions, checked against its viewpoint "
+    "and never its thoughts; default `own_character`; a Lite story gets it as a prompt "
+    "instruction only). An "
     "unknown key is 422. The engine's dials are the story's engine profile's, overridden per "
     "story with `PATCH /stories/{id}/profile-overrides` (FR-PROF-5): a key that moved there "
     "(`generation_settings`, `lite_window_messages`, `lite_summary_max_tokens`, "
@@ -639,9 +647,10 @@ SETTINGS_PATCH_DESCRIPTION = (
     "`details.replacement`. `policies` (optional) upserts the story's own policies; an item "
     "that would relax a policy refuses the whole request with 422 `cannot_relax` before "
     "anything is written."
-    "\n\nEvery setting but `default_output_viewpoint` and `allow_new_arrivals` is prospective: "
+    "\n\nEvery setting but `default_output_viewpoint`, `allow_new_arrivals` and "
+    "`player_authority` is prospective: "
     "it applies to requests that arrive after the write, never to a turn already running; "
-    "those two are interpretive (a turn in flight is checked against them when it commits). A "
+    "those three are interpretive (a turn in flight is checked against them when it commits). A "
     "write that changes something moves the story's `config_revision`. The answer carries the "
     "budget the story's next turn plans with (`effective_budget`)."
 )

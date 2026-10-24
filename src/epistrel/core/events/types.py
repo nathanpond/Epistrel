@@ -194,6 +194,12 @@ class PlayerInput(EventPayload):
     """The player's ``say``'s perception qualifiers (#177, from #161): ``whisper_to`` as the
     request named it, the targets not in the room dropped (``Qualifiers.payload``), so a history
     read re-routes the input like any beat. Absent when the request named none."""
+    requests: tuple[dict[str, JsonValue], ...] = Field(default=(), exclude_if=lambda v: not v)
+    """A structured turn under ``player_authority = own_character`` (#180, FR-RESP-11): the
+    input's spans about other characters, each tagged ``request`` with its ``kind``,
+    ``character_id``, ``text`` and ``span`` (``[channel, start, end]`` in the input as typed).
+    They are not part of ``text``/``say``/``do`` (the player's own), never fact and never in
+    working memory. Absent when the input asked nothing of anyone."""
 
 
 @register("message_rendered", category=EventCategory.NARRATIVE_STATE)

@@ -953,6 +953,8 @@ def _settings(
         values["allow_new_arrivals"] = defaults.allow_new_arrivals
     if defaults.player_view is not None:
         values["player_view"] = defaults.player_view
+    if defaults.player_authority is not None:
+        values["player_authority"] = defaults.player_authority
     inactive = materialized.settings()
     if inactive:
         values[INACTIVE_KEY] = inactive

@@ -51,7 +51,6 @@ NEVER_DEFERRED = (
 
 UNUSED_SETTINGS = {
     "interaction_mode": "multi_character",
-    "player_authority": "structured",
     "ambiguous_retcon_timing": "history_rewrite",
     "backfill_conflict_policy": "history_rewrite",
     "required_providers": "providers",

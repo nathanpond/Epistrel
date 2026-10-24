@@ -1,7 +1,6 @@
-"""Unit checks of ``core.verify.permission`` outside the M4 parts (#144): the exception stubs
-for capabilities later milestones deliver, #176's reactive exception, and the reason
-precedence. S-NOVELTY-PERMISSION's M4 matrix is in
-``tests/scenario/test_s_novelty_permission.py``."""
+"""Unit checks of ``core.verify.permission`` outside the M4 parts (#144): #180's co-author
+exception (which replaced M4's stub), #176's reactive exception, and the reason precedence.
+S-NOVELTY-PERMISSION's M4 matrix is in ``tests/scenario/test_s_novelty_permission.py``."""
 
 from __future__ import annotations
 
@@ -12,15 +11,30 @@ from epistrel.core.verify.permission import Asserter, Basis, Denied, Permitted, 
 from tests.scenario.test_s_novelty_permission import BOBBY, CAL, CAMP, JENNI, KITCHEN, decide
 
 
-def test_exception_stubs_deny() -> None:
-    """``co_author`` player input (FR-RESP-11) is judged without its exception until it is
-    delivered, so what it would admit is denied. Attributed reactive narration (FR-MULTI-9) is
-    delivered (#176): its rule is ``test_reactive_exception``."""
-    assert decide(BOBBY, "located_at", KITCHEN, Asserter("co_author", CAL)) == Denied(
+def test_co_author_exception() -> None:
+    """#180 (FR-RESP-11) replaces M4's stub: ``co_author`` player input narrating another
+    character's observable action (where he is, what he holds, that he spoke) is permitted with
+    basis ``co_author`` and canonized with provenance ``player``; his backstory is still
+    ``player_authority`` (the player text stands, never canon, never repaired), and so is
+    anything about another human's character. Plain player input keeps M4's denial."""
+    co_author = Asserter("co_author", CAL)
+    assert decide(BOBBY, "located_at", KITCHEN, co_author) == Permitted(Basis.CO_AUTHOR)
+    assert decide(BOBBY, "spoke_to", JENNI, co_author) == Permitted(Basis.CO_AUTHOR)
+    backstory = decide(BOBBY, "attended_program", CAMP, co_author)
+    assert backstory == Denied(Reason.PLAYER_AUTHORITY)
+    assert isinstance(backstory, Denied)
+    assert not backstory.repaired
+    assert decide(BOBBY, "located_at", KITCHEN, Asserter("player", CAL)) == Denied(
         Reason.PLAYER_AUTHORITY
     )
+    assert decide(BOBBY, "located_at", KITCHEN, co_author, protected=True) == Denied(
+        Reason.PROTECTED_CONTENT
+    )
+    assert decide(BOBBY, "located_at", KITCHEN, co_author, locked=True) == Denied(
+        Reason.LOCKED_CANON
+    )
+    assert co_author.provenance.value == "player"
     assert Asserter("reactive", JENNI, reactor=BOBBY).provenance.value == "render"
-    assert Asserter("co_author", CAL).provenance.value == "player"
 
 
 def test_reactive_exception() -> None:

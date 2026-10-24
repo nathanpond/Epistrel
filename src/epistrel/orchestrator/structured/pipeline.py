@@ -273,6 +273,7 @@ from epistrel.core.verify import attribution
 from epistrel.core.verify.detect import DeclaredClaim, DetectBeat, DetectedClaim
 from epistrel.core.verify.introduce import Introductions
 from epistrel.core.verify.normalize import ClaimSketch, Unnormalizable, normalize_declared
+from epistrel.core.verify.permission import Asserter
 from epistrel.core.verify.protected import PrivateRecord
 from epistrel.core.verify.rules import CANON, Record, VerdictKind, check
 from epistrel.core.viewpoint import (
@@ -337,6 +338,7 @@ from epistrel.orchestrator.policies.rebase import output_passes, output_recheck
 from epistrel.orchestrator.policies.store import guard_context
 from epistrel.orchestrator.repair.ladder import Recheck, RepairLadder, RepairResult
 from epistrel.orchestrator.structured import multi, planner
+from epistrel.orchestrator.structured import player_authority as authority_rules
 from epistrel.orchestrator.structured import prompt as prompts
 from epistrel.orchestrator.structured import reconcile as reconcile_rules
 from epistrel.orchestrator.structured import roles as roles_rt
@@ -413,7 +415,10 @@ def resolve_structured_cast(
     more named are 422 ``validation_error``, ``one_render_character``), or one, the first
     non-player, non-``minor`` character after the actor by ``ordinal`` (#163; else the first
     non-player one, else the first other one, else the actor). ``settings``: the story's
-    effective profile settings (``None``: one primary, as M4)."""
+    effective profile settings (``None``: one primary, as M4). #180: under ``player_authority =
+    own_character`` a character the input asks something of renders (``player_authority``'s
+    ``requested_renders``): after the named primaries under ``per_character`` renders, else as
+    the default render character."""
     resolved = resolve_cast(story, request)
     if settings is None or not multi.per_character(settings):
         # #176: a stored role is inert here; a request's role override is refused.
@@ -430,14 +435,32 @@ def resolve_structured_cast(
         resolved = ResolvedCast(actor=resolved.actor, render=render)
         multi.check(settings or _COMBINED, story_id, story.settings, request, resolved.render)
         return resolved
+    # #180 (FR-RESP-11): the characters an ``own_character`` input asks something of.
+    asked = authority_rules.requested_renders(
+        story.cast,
+        request.player_input.say_text,
+        request.player_input.do_text,
+        story=story.settings,
+        actor_id=resolved.actor.id,
+        rendering=[c.id for c in resolved.render] if request.render_character_ids else [],
+    )
+    per_character = settings is not None and multi.per_character(settings)
     if request.render_character_ids is not None:
         if settings is None:
             multi.check(_COMBINED, story_id, story.settings, request, resolved.render)
         else:
             multi.check(settings, story_id, story.settings, request, resolved.render)
+        if asked and per_character and multi.mode_of(story.settings, request) == multi.SEQUENTIAL:
+            # Appended after the named primaries, in mention order.
+            resolved = ResolvedCast(actor=resolved.actor, render=(*resolved.render, *asked))
         return resolved
-    if settings is None or not multi.per_character(settings):
+    if not per_character:
         multi.refuse_override(story_id, request)
+    if asked:
+        # The requested characters render (one under ``combined``).
+        return ResolvedCast(
+            actor=resolved.actor, render=tuple(asked) if per_character else (asked[0],)
+        )
     others = [c for c in story.cast if c.id != resolved.actor.id]
     # #163: a minor (lazily modeled) character is never the default render character.
     chosen = next(
@@ -1737,11 +1760,20 @@ async def _check_turn(
         for channel, text in ((SAY, say), (DO, do))
         if text
     ]
+    # #180: the ``co_author`` player's narrated beats are detected with the input, by layers
+    # (a) and (b) only, each in its character's own view.
+    input_beats += [
+        DetectBeat(b.beat, b.kind, b.text, _speaker(b), declared.get(b.beat, ()))
+        for b in rendered.beats
+        if authority_rules.is_narrated(b)
+    ]
     groups: list[list[DetectBeat]] = []
     if input_beats:
         groups.append(input_beats)
     narrator_beats = [b for b in rendered.beats if b.narrator]
-    character_beats = [b for b in rendered.beats if not b.narrator]
+    character_beats = [
+        b for b in rendered.beats if not b.narrator and not authority_rules.is_narrated(b)
+    ]
     for render_group in (narrator_beats, character_beats):
         if render_group:
             groups.append(
@@ -1827,6 +1859,10 @@ async def _check_turn(
         reactive_asserter = roles_rt.asserter_of(scopes)
 
         def asserter_of(claim: DetectedClaim) -> Any:
+            beat = scopes.get(claim.beat or -1)
+            if beat is not None and authority_rules.is_narrated(beat):
+                # #180 (FR-RESP-11): the co_author player's narration of another character.
+                return Asserter("co_author", read.actor.id)
             # #176 (FR-MULTI-9): a narrated reaction's claims are the reactive exception's.
             found = reactive_asserter(claim)
             return found or extraction.asserter_for(claim, read.player_id)
@@ -2389,6 +2425,8 @@ async def repair_turn(
         for b in checked.beats
         if b.beat > 1
         and (only is None or b.beat in only)
+        # #180: the co_author player's narration is checked by its own rules, never repaired.
+        and not authority_rules.is_narrated(b)
         and not (b.kind == SAY and b.intent in UNREPAIRED_INTENTS and not _hallucinated(checked, b))
         and (found := _violations(checked, b))
     ]
@@ -3345,8 +3383,9 @@ def _simultaneous_of(multis: Sequence[multi.MultiReport]) -> str | None:
 def _starting_overlay(rendered: Rendered, checked: Checked) -> list[Record]:
     """#175: the same-turn overlay of a ``simultaneous`` turn's starting state, from its first
     primary's check: the player's input's and the narration's permitted claims, never the
-    primary's own (a later primary is verified alone)."""
-    own = {b.beat for b in rendered.beats if not b.narrator}
+    primary's own (a later primary is verified alone); #180: the ``co_author`` player's narrated
+    beats are part of it."""
+    own = {b.beat for b in rendered.beats if not b.narrator and not authority_rules.is_narrated(b)}
     mine = {f"staged:{r.claim_id or r.beat}" for r in checked.requests if r.beat in own}
     return [r for r in checked.staged if r.proposition_id not in mine]
 
@@ -3702,6 +3741,10 @@ async def play(
     """#175's adjudicated ``(winner, loser)`` beats, which reconciliation skips."""
     heard_state: list[Heard] = []
     """#177: what the output viewpoint receives of the turn."""
+    authority: list[authority_rules.Split] = []
+    """#180 (FR-RESP-11): what the story's ``player_authority`` made of the input (its requests,
+    narrated beats and dropped spans); ``say``/``do`` become the player's own remainder."""
+    typed_say, typed_do = say, do
 
     async def stage_render(
         turn_stage: TurnStage,
@@ -3935,6 +3978,13 @@ async def play(
         pending = [
             *([character_context.PendingBeat("say", read.actor.id, say)] if say else []),
             *([character_context.PendingBeat("do", read.actor.id, do)] if do else []),
+            # #180: the co_author player's narrated beats, as they happened.
+            *(
+                character_context.PendingBeat(
+                    "say" if n.kind == "say" else "do", n.character_id, n.text
+                )
+                for n in (authority[0].narrated if authority else ())
+            ),
             *(
                 character_context.PendingBeat("narration", None, b.text, b.qualifiers)
                 for b in narration
@@ -3965,6 +4015,20 @@ async def play(
         return found
 
     async def generate(op: Operation, read: TurnRead) -> None:
+        nonlocal say, do
+        # #180 (FR-RESP-11): the input's spans about other characters, per the story's
+        # ``player_authority``, out of the player's own text before anything renders.
+        split = authority_rules.split(
+            typed_say,
+            typed_do,
+            mode=authority_rules.mode_of(story.settings),
+            cast_=story.cast,
+            actor_id=read.actor.id,
+            present=authority_rules.present_of(story.cast, read.present),
+            roles=roles_rt.stored_of(story.cast) if multi.per_character(settings) else None,
+        )
+        authority[:] = [split]
+        say, do = split.say, split.do
         context = await guard_context(db, story_id)
         policies = output_policies(context, cast_.render_ids)
         rounds.append(1)
@@ -4198,6 +4262,7 @@ async def play(
                     budget=budget_tokens,
                     others_present=() if turn_roles is None else turn_roles.others_present(),
                     interjections=turn_roles is not None and turn_roles.interjections,
+                    player_requests=split.requests_for(read_k.character.id),
                 )
                 char_render, n = await render_beats(
                     models,
@@ -4315,7 +4380,8 @@ async def play(
         starting: list[Record] = []
         """#175: the same-turn overlay a simultaneous primary is verified against: the input's
         and the narration's claims only, never another primary's."""
-        next_beat = 2
+        # #180: the co_author player's narrated beats are beats 2..k, before every render's.
+        next_beat = 2 + len(split.narrated)
         read_k = read
         try:
             for k, primary in enumerate(order):
@@ -4359,6 +4425,12 @@ async def play(
                     # and first output checks stay held through this one's optional work (#176:
                     # an escalation's own were held when it was afforded).
                     budget.hold((len(order) - k - 1 - fresh) * (1 + output_checks))
+                if k == 0 and split.narrated:
+                    # #180: the narrated beats join the first primary's, checked with it.
+                    rendered_k.beats = sorted(
+                        [*authority_rules.narrated_beats(split), *rendered_k.beats],
+                        key=lambda b: b.beat,
+                    )
                 if k == 0:
                     released[:] = [rendered_k]
                 checked_k = await check_turn(
@@ -4384,6 +4456,19 @@ async def play(
                     settle_salience=last,
                     staged_beliefs=turn_stage.accepted(primary.id),
                 )
+                if k == 0 and split.narrated:
+                    # #180: each narrated beat checked against its character's viewpoint.
+                    await authority_rules.verify(
+                        db,
+                        story_id,
+                        turn=read.turn,
+                        checked=checked_k,
+                        found=split,
+                        settings=settings,
+                        actor_id=read.actor.id,
+                        player_id=read.player_id,
+                        read_set=read_set,
+                    )
                 if turn_roles is not None:
                     # #176: each reaction checked against its reactor's viewpoint.
                     await roles_rt.verify(
@@ -4534,6 +4619,8 @@ async def play(
             rewritten = next((b for b in checked.beats if b.beat == number), None)
             if staged is not None and rewritten is not None:
                 turn_stage.replace(number, replace(staged, text=rewritten.text, verified=()))
+        # #180: whether each requested character complied, from its verified beats.
+        authority_rules.outcomes(split, checked.beats, list(read.names.values()))
         # #163: who the turn models (after verify/repair, before routing), their ages found.
         checked.modeling = await plan_modeling(
             db,
@@ -4646,6 +4733,7 @@ async def play(
                 propositions=tuple(c.payload() for c in checked.input_claims if c.proposition),
                 mentions=tuple(checked.input_mentions),
                 perception=input_qualifiers[0].payload() or None,
+                requests=authority[0].payloads() if authority else (),
             ),
             provenance=Provenance.PLAYER,
             character_id=read.actor.id,
@@ -4666,6 +4754,7 @@ async def play(
             *_repair_events(checked),
             *_qualifier_events(checked),
             *roles_rt.rejected_events(roles_state[0] if roles_state else None),
+            *authority_rules.rejected_events(authority[0] if authority else None),
         ]:
             op.append(
                 event_type, payload, provenance=Provenance.ENGINE, character_id=None, beat=last + 1
@@ -5179,6 +5268,10 @@ async def play(
         if roles_state:
             # #176: the turn's roles and what reactive narration made of them.
             report["roles"] = roles_state[0].report()
+        if authority and authority[0].active:
+            # #180: the player's input about other characters.
+            report["player_authority"] = authority[0].report()
+            authority[0].count()
         if multis and multi.per_character(settings):
             # #174: the sequential turn's mode, order and staging.
             report["multi"] = multis[0].report()

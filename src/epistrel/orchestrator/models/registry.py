@@ -270,6 +270,17 @@ class GenerationInputs(InputSchema):
     ``steps_contract.j2``): the fixed ``## How to change your mind`` section, present when the
     rendering character keeps its own beliefs (per-character partitions)."""
     player_input: PlayerInput
+    player_authority: Annotated[Literal["", "own_character", "co_author"], C.CONSTRAINT] = ""
+    """A Lite prompt's ``## Player authority`` (FR-RESP-11; #180): the story's setting, rendered
+    as one fixed instruction per value, its only Lite effect; empty in a structured prompt (whose
+    pipeline applies the setting itself)."""
+    player_requests: Annotated[list[str], C.PLAYER_INPUT] = Field(
+        default_factory=list, max_length=16
+    )
+    """A structured character render's ``## The player asks of you`` (FR-RESP-11; #180): under
+    ``player_authority = own_character``, what the player's input described this character
+    doing, saying or (never written) thinking, as requests the render complies with or refuses
+    in character; never canon."""
     # -- the structured pipeline's sections (#150; empty, and so absent, in a Lite prompt) ------
     scene: Annotated[str, C.SCENE] = ""
     """A structured render's ``## Scene``: the place and who is present."""

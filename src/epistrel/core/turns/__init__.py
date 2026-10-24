@@ -52,6 +52,7 @@ from epistrel.core.profiles.effective import StoryProfile, effective_configurati
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.ratings import story_guidance
 from epistrel.core.settings_schema import (
+    DEFAULT_PLAYER_AUTHORITY,
     DEFAULT_SAFE_FALLBACK,
     GenerationSettings,
     StorySettings,
@@ -150,6 +151,9 @@ class TurnInputs:
     shared_scenario_text: str = ""
     """The ``## Scenario`` block without the seeds and player notes a partition holds (#173):
     what a character render of a partitioned story gets."""
+    player_authority: str = DEFAULT_PLAYER_AUTHORITY
+    """The story's ``player_authority`` (FR-RESP-11; #180): a Lite prompt's ``## Player
+    authority`` instruction, its only Lite effect."""
 
 
 def _cast_query(story_id: str) -> Any:
@@ -381,6 +385,7 @@ async def read_turn_inputs(
     )
     cast = _cast((await conn.execute(_cast_query(story_id))).all())
     scenario = await read_rendered(conn, story_id)
+    stored = await conn.scalar(select(stories.c.settings).where(stories.c.id == story_id))
     return TurnInputs(
         guidance=guidance.prompt_guidance or "",
         instructions=texts.custom_instructions if texts is not None else "",
@@ -401,6 +406,7 @@ async def read_turn_inputs(
         scenario_text=scenario.scenario_text,
         director_notes=scenario.director_notes,
         shared_scenario_text=scenario.shared_text,
+        player_authority=StorySettings.from_row(stored).player_authority,
     )
 
 

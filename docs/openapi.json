@@ -3951,6 +3951,16 @@
             "description": "The story's override of the transcript rows per level-0 summary segment (#72).",
             "title": "Lite Summary Chunk"
           },
+          "player_authority": {
+            "default": "own_character",
+            "description": "The player's authority over the other characters (FR-RESP-11; #180; the owner's default\n``own_character``): under ``own_character`` player input describing another character's\nactions, speech or thoughts is a request that character's render resolves (it may comply or\nrefuse), and nothing of theirs is recorded from the input; under ``co_author`` the player\nmay narrate their observable actions, recorded as theirs and checked against their\nviewpoint where partitions are on, and never their ``think``. Lite: an instruction in the\nprompt only. Genesis copies the scenario's ``story_settings_defaults.player_authority``.\nInterpretive: a structured turn's handling of its input depends on it (#64).",
+            "enum": [
+              "own_character",
+              "co_author"
+            ],
+            "title": "Player Authority",
+            "type": "string"
+          },
           "player_view": {
             "default": "character",
             "description": "What a character viewpoint's output holds where perception is on (FR-RESP-13; #177, the\nowner's round-two decision): ``character`` (the default) applies the audience filter, so a\nresponse, history read and beat list hold only what the viewing character perceived, and a\ncharacter that perceived nothing gets an empty narration; ``story`` returns every beat of the\nturn at full content whatever the character perceived (roleplay that lets a player read scenes\ntheir character is not in), still never a ``think`` or ``latent``. The character's own\npartition and memory are the same under both. A no-op where perception is ``none``. A\nrequest (and a history read) overrides it. Prospective.",
@@ -31731,6 +31741,23 @@
             "description": "The story's override of the transcript rows per level-0 summary segment (#72).",
             "title": "Lite Summary Chunk"
           },
+          "player_authority": {
+            "anyOf": [
+              {
+                "enum": [
+                  "own_character",
+                  "co_author"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The player's authority over the other characters (FR-RESP-11; #180; the owner's default\n``own_character``): under ``own_character`` player input describing another character's\nactions, speech or thoughts is a request that character's render resolves (it may comply or\nrefuse), and nothing of theirs is recorded from the input; under ``co_author`` the player\nmay narrate their observable actions, recorded as theirs and checked against their\nviewpoint where partitions are on, and never their ``think``. Lite: an instruction in the\nprompt only. Genesis copies the scenario's ``story_settings_defaults.player_authority``.\nInterpretive: a structured turn's handling of its input depends on it (#64).",
+            "title": "Player Authority"
+          },
           "player_view": {
             "anyOf": [
               {
@@ -55121,6 +55148,7 @@
                           "lite_summary_max_tokens",
                           "lite_window_messages",
                           "max_model_calls_per_turn",
+                          "player_authority",
                           "player_view",
                           "profile_overrides",
                           "profile_overrides.budgets",
@@ -61832,7 +61860,7 @@
         ]
       },
       "patch": {
-        "description": "Change the story's settings with a JSON merge patch (RFC 7396): a key present sets that setting and `null` resets it to its default. A story's settings describe the story: `turn_concurrency` (`reject` | `queue`), `turn_queue_max` (1-50; `null`: the deployment's default, 5), `default_output_viewpoint` (`character:<id>` of the cast, never `omniscient`), `regenerate_retry_budget` (0-10), `lite_summary_chunk` (2-200 rows per summary segment), `audit_retention_days` (1-3650; `null`: the deployment's) and `allow_new_arrivals` (whether a director pass, or a render as scene texture, may introduce new arrivals; default `true`), `interaction_mode` (`sequential` | `simultaneous`: how a turn with several primaries renders them; `null`: the scenario's, else `sequential`), `sequence_order` (`request` | `director`: who orders a sequential turn's primaries; `null`: `request`) and `simultaneous_tie_break` (`request_order` | `director` | `state:<name>`: how a simultaneous turn settles conflicting actions; `null`: `request_order`; `state:<name>` is 422 `not_yet` until M6), `reactive_interjections` (whether reactive narration may give a reactive character a brief interjection; default `false`) and `player_view` (`character` | `story`: whether a character viewpoint's output holds only what that character perceived, the audience filter, or every beat; default `character`; a no-op where perception is `none`). An unknown key is 422. The engine's dials are the story's engine profile's, overridden per story with `PATCH /stories/{id}/profile-overrides` (FR-PROF-5): a key that moved there (`generation_settings`, `lite_window_messages`, `lite_summary_max_tokens`, `max_model_calls_per_turn`, `turn_deadline`, `guardrail_retry_budget`) is 422 with `details.reason: superseded` and the profile setting that replaced it in `details.replacement`. `policies` (optional) upserts the story's own policies; an item that would relax a policy refuses the whole request with 422 `cannot_relax` before anything is written.\n\nEvery setting but `default_output_viewpoint` and `allow_new_arrivals` is prospective: it applies to requests that arrive after the write, never to a turn already running; those two are interpretive (a turn in flight is checked against them when it commits). A write that changes something moves the story's `config_revision`. The answer carries the budget the story's next turn plans with (`effective_budget`).",
+        "description": "Change the story's settings with a JSON merge patch (RFC 7396): a key present sets that setting and `null` resets it to its default. A story's settings describe the story: `turn_concurrency` (`reject` | `queue`), `turn_queue_max` (1-50; `null`: the deployment's default, 5), `default_output_viewpoint` (`character:<id>` of the cast, never `omniscient`), `regenerate_retry_budget` (0-10), `lite_summary_chunk` (2-200 rows per summary segment), `audit_retention_days` (1-3650; `null`: the deployment's) and `allow_new_arrivals` (whether a director pass, or a render as scene texture, may introduce new arrivals; default `true`), `interaction_mode` (`sequential` | `simultaneous`: how a turn with several primaries renders them; `null`: the scenario's, else `sequential`), `sequence_order` (`request` | `director`: who orders a sequential turn's primaries; `null`: `request`) and `simultaneous_tie_break` (`request_order` | `director` | `state:<name>`: how a simultaneous turn settles conflicting actions; `null`: `request_order`; `state:<name>` is 422 `not_yet` until M6), `reactive_interjections` (whether reactive narration may give a reactive character a brief interjection; default `false`), `player_view` (`character` | `story`: whether a character viewpoint's output holds only what that character perceived, the audience filter, or every beat; default `character`; a no-op where perception is `none`) and `player_authority` (`own_character` | `co_author`: whether player input describing another character is a request that character resolves or narration of its observable actions, checked against its viewpoint and never its thoughts; default `own_character`; a Lite story gets it as a prompt instruction only). An unknown key is 422. The engine's dials are the story's engine profile's, overridden per story with `PATCH /stories/{id}/profile-overrides` (FR-PROF-5): a key that moved there (`generation_settings`, `lite_window_messages`, `lite_summary_max_tokens`, `max_model_calls_per_turn`, `turn_deadline`, `guardrail_retry_budget`) is 422 with `details.reason: superseded` and the profile setting that replaced it in `details.replacement`. `policies` (optional) upserts the story's own policies; an item that would relax a policy refuses the whole request with 422 `cannot_relax` before anything is written.\n\nEvery setting but `default_output_viewpoint`, `allow_new_arrivals` and `player_authority` is prospective: it applies to requests that arrive after the write, never to a turn already running; those three are interpretive (a turn in flight is checked against them when it commits). A write that changes something moves the story's `config_revision`. The answer carries the budget the story's next turn plans with (`effective_budget`).",
         "operationId": "update_story_settings",
         "parameters": [
           {

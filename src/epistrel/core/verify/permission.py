@@ -12,8 +12,19 @@ model or imports the Orchestrator.
 a character the platform plays is that character's render, FR-AUTH-3) and the author
 (``author``). Attributed reactive narration (``reactive``, FR-MULTI-9; #176) names the narrating
 render's character and the ``reactor`` it narrates: see "The reactive exception" below.
-``co_author`` player input (FR-RESP-11) is not delivered yet and is judged as plain player input,
-so a claim that exception would admit is ``Denied``.
+``co_author`` player input (FR-RESP-11; #180) is the player narrating another character's
+action under ``player_authority = co_author``: see "The co-author exception" below.
+
+**The co-author exception** (FR-RESP-11, FR-VERIFY-11; #180, replacing M4's stub). A claim of a
+beat the player narrated for another modeled character (``Asserter("co_author", player)``) about
+that character's observable action, a predicate of ``CO_AUTHOR_PREDICATES`` (that it spoke, to
+someone; what it holds, handed over or took; where it is), is permitted with basis
+``co_author`` (canonized with provenance ``player``); anything else about a modeled character
+(its backstory, a relationship, a state) stays ``player_authority``: the player text stands,
+never canon. Another human's character is never narrated (``player_authority``). The thoughts
+never reach this rule: a narrated thought is dropped before verification
+(``orchestrator.structured.player_authority``, ``player_cannot_write_think``), and the
+orchestrator checks the narrated beat against the character's own viewpoint.
 
 **The reactive exception** (FR-MULTI-9, FR-VERIFY-11; #176). A claim of a reaction another render
 narrated (``Asserter("reactive", narrator, reactor=…)``) is the reactor's observable reaction:
@@ -50,7 +61,8 @@ sibling introduces Jenni's backstory too.
   non-player modeled character to an unmodeled entity, "the stranger is Bobby", is permitted
   with basis ``identity``);
 - ``player_authority``: player input about another character (``player_authority =
-  own_character``): the player's text stands and is not repaired, but it is never canonized;
+  own_character``, or anything but an observable action under ``co_author``): the player's text
+  stands and is not repaired, but it is never canonized;
 - ``policy``: an arrival while the story's ``allow_new_arrivals`` is off (a director pass's
   arrival, or a render bringing in a new unmodeled person);
 - ``protected_content``: the claim's text matched protected content (#148's detector, passed
@@ -65,9 +77,9 @@ character is reconciled by #154 (FR-COMMIT-11,14), not refused here. External va
 author-locked canon still win.
 
 A permitted claim carries its basis: ``own`` (the asserter's own actions, thoughts and minor
-backstory within its constraints), ``texture`` (incidental scene texture, an unmodeled person
-included), ``arrival``, ``world`` (a director's world fact), ``identity`` (#171), ``author`` or
-``resolution``. An
+backstory within its constraints), ``co_author`` (#180), ``texture`` (incidental scene texture,
+an unmodeled person included), ``arrival``, ``world`` (a director's world fact), ``identity``
+(#171), ``author`` or ``resolution``. An
 **arrival** is a ``located_at``/``present_at`` claim on a person with no prior placement (no
 current fact of either predicate).
 
@@ -151,10 +163,19 @@ class Basis(StrEnum):
     IDENTITY = "identity"
     REACTIVE = "reactive"
     """#176 (FR-MULTI-9): a reactor's observable reaction another render narrated."""
+    CO_AUTHOR = "co_author"
+    """#180 (FR-RESP-11): another character's observable action the ``co_author`` player
+    narrated."""
 
 
 REACTIVE_PREDICATES: frozenset[str] = frozenset({"spoke", "spoke_to"})
 """What reactive narration may establish about its reactor (#176): that it spoke (to someone)."""
+
+CO_AUTHOR_PREDICATES: frozenset[str] = frozenset(
+    {*REACTIVE_PREDICATES, "holds", "located_at", "present_at"}
+)
+"""What ``co_author`` narration may establish about another character (#180): its observable
+actions, that it spoke (to someone), what it holds (a transfer) and where it is."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -328,6 +349,13 @@ def permission(
         # Player input for the player's own character (FR-AUTH-3: input for a character the
         # platform plays is that character's render, below).
         if others:
+            if (
+                asserter.kind == "co_author"
+                and name in CO_AUTHOR_PREDICATES
+                and not any(e.is_player for e in others)
+            ):
+                # #180: the co-author exception (see the module docstring).
+                return _texture(facts, Basis.CO_AUTHOR)
             return Denied(Reason.PLAYER_AUTHORITY)
     elif any(e.is_player for e in others):
         return Denied(Reason.PLAYER_CHARACTER)
@@ -604,6 +632,7 @@ register_rebase_check(recheck)
 
 
 __all__ = [
+    "CO_AUTHOR_PREDICATES",
     "LOCKED_FIELDS",
     "PLACEMENT_PREDICATES",
     "PRECEDENCE",

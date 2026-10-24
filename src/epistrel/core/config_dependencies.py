@@ -30,6 +30,8 @@ predicate)``: an author locking or unlocking canon, #145, changes it). #161 adds
 ``core.epistemic.scene.level_of``: ``none``, ``co_location`` or ``full``): a change re-checks the
 turn, whose commit then routes under the new level, and ``core.epistemic.scene.recheck`` (a
 ``REBASE_CHECKS`` entry) regenerates a turn begun with partitions that no longer has them.
+#180 adds ``player_authority`` (FR-RESP-11, a story setting): how the turn treated the player's
+input about other characters (M6's rebase case needs it).
 
 The set values are hashes (``hash_member``), so detection at commit is a compare. At commit,
 under the story lock, ``changed`` names the dependencies whose value moved since the capture:
@@ -75,8 +77,10 @@ STRUCTURED_DEPENDENCIES = (
     "allow_new_arrivals",
     "author_locks",
     "perception_level",
+    "player_authority",
 )
-"""What a structured turn's commit is re-checked against when it changes (#136, #144, #161)."""
+"""What a structured turn's commit is re-checked against when it changes (#136, #144, #161,
+#180)."""
 
 VERIFICATION_PREFIX = "verification."
 
@@ -212,6 +216,8 @@ async def capture(
         captured["perception_level"] = await _perception_level(conn, story_id)
     if "allow_new_arrivals" in members:
         captured["allow_new_arrivals"] = StorySettings.from_row(story.settings).allow_new_arrivals
+    if "player_authority" in members:
+        captured["player_authority"] = StorySettings.from_row(story.settings).player_authority
     if "author_locks" in members:
         from epistrel.core.canon.facts import locked_keys  # here: canon imports the read set
 

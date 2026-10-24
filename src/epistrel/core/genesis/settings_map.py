@@ -8,16 +8,18 @@ usable capabilities (``genesis_capabilities``) are those the deployment has deli
 ``DELIVERED``, as ``catalog.checks.base.delivered_capabilities`` names them) that need no
 ``structured`` pipeline (FR-PROF-4): the settings and the creation's checks are decided before
 the profile is, so they are the Lite view for every story. A structured story's own
-materialization (#149, ``core.genesis.structured``) runs the seed checks against its cast; the
-one setting that needs ``structured`` (``player_authority``) has no story setting yet and stays
-``inactive``.
+materialization (#149, ``core.genesis.structured``) runs the seed checks against its cast.
+``player_authority`` (#180) is applied to every story: its structured effects need ``pipeline =
+structured`` and under Lite it reaches the model only as a prompt instruction (``prompt_only``),
+so it is never ``inactive``.
 
 ``SETTING_CAPABILITIES`` maps every ``story_settings_defaults`` field to the capability it
 needs, ``None`` for the settings every story is created with (the turn concurrency, the default
 output viewpoint, the audit retention, the story-scoped policies, which Lite uses, the arrival
 policy, a story setting only the structured permission check reads, #144, kept in place so a
-later upgrade finds it, and the player view, #177, always active: a no-op wherever perception is
-``none``, Lite included, so never ``inactive``). A capability no #106 module covers is named
+later upgrade finds it, the player view, #177, always active: a no-op wherever perception is
+``none``, Lite included, so never ``inactive``, and the player authority, #180, prompt-only under
+Lite). A capability no #106 module covers is named
 by the setting's own area (``history_rewrite``, ``providers``). The build-time check
 ``unmapped_settings`` keeps the dict complete.
 """
@@ -36,7 +38,7 @@ MULTI_CHARACTER: Final = "multi_character"
 SETTING_CAPABILITIES: Final[Mapping[str, str | None]] = {
     "interaction_mode": MULTI_CHARACTER,
     "turn_concurrency": None,
-    "player_authority": "structured",
+    "player_authority": None,
     "default_output_viewpoint": None,
     "ambiguous_retcon_timing": "history_rewrite",
     "backfill_conflict_policy": "history_rewrite",
@@ -48,6 +50,10 @@ SETTING_CAPABILITIES: Final[Mapping[str, str | None]] = {
 }
 """Each ``story_settings_defaults`` field and the capability it needs (``None``: applied at
 genesis)."""
+
+PROMPT_ONLY: Final[frozenset[str]] = frozenset({"player_authority"})
+"""The applied settings whose only Lite effect is a prompt instruction (#180, FR-RESP-11): the
+capability map's ``prompt_only`` (#181 lists them)."""
 
 PARTICIPATION: Final = "participation"
 """A role's default participation (``cast.roles[].participation``) is stored as the inactive
@@ -88,6 +94,7 @@ def is_used(capability: str | None) -> bool:
 __all__ = [
     "MULTI_CHARACTER",
     "PARTICIPATION",
+    "PROMPT_ONLY",
     "SETTING_CAPABILITIES",
     "genesis_capabilities",
     "is_used",

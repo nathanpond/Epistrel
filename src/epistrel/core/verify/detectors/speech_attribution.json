@@ -1,0 +1,43 @@
+{
+  "category": "speech_attribution",
+  "language": "en",
+  "description": "Other-agent claims in player input (#180, FR-RESP-11): what the player's input says another character does, says or thinks. A do sentence whose subject is another modeled character (its name first, after an optional lead word, or a subject pronoun resolved to the last-mentioned character) is that character's action; with one of these verbs, or a quotation, it is that character's speech; with an inner-state cue (inner_state.json) it is a thought. In the player's say only quoted speech attributed to another character counts: a quotation next to '<name> <verb>' or '<verb> <name>'. A subject joined with the player ('Jenni and I') stays the player's own action. The first-person words of a narrated span are rewritten to the player character's name. Every inflection is listed (no stemmer). A detector side-channel: it makes no claim.",
+  "verbs": [
+    "say", "says", "said",
+    "ask", "asks", "asked",
+    "reply", "replies", "replied",
+    "answer", "answers", "answered",
+    "tell", "tells", "told",
+    "whisper", "whispers", "whispered",
+    "shout", "shouts", "shouted",
+    "yell", "yells", "yelled",
+    "call", "calls", "called",
+    "mutter", "mutters", "muttered",
+    "murmur", "murmurs", "murmured",
+    "add", "adds", "added",
+    "snap", "snaps", "snapped",
+    "admit", "admits", "admitted",
+    "insist", "insists", "insisted",
+    "promise", "promises", "promised",
+    "agree", "agrees", "agreed",
+    "explain", "explains", "explained",
+    "confess", "confesses", "confessed"
+  ],
+  "quotes": ["\"", "“", "”"],
+  "lead_words": ["then", "and", "but", "so", "now", "finally", "suddenly", "meanwhile"],
+  "subject_pronouns": ["he", "she", "they"],
+  "joint_subjects": ["and i", "and me"],
+  "first_person": {
+    "i am": "{name} is",
+    "i was": "{name} was",
+    "i": "{name}",
+    "me": "{name}",
+    "myself": "{name}",
+    "my": "{name}'s",
+    "mine": "{name}'s",
+    "i'm": "{name} is",
+    "i've": "{name} has",
+    "i'll": "{name} will",
+    "i'd": "{name} would"
+  }
+}

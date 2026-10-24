@@ -5,15 +5,16 @@ actor may be any character of the story (who acts as whom is the consumer's deci
 render characters are the cast members who answer, and the requesting principal is recorded for
 attribution and changes nothing else. Every check runs over REST and the library (``surface``).
 
-``test_c_13__m5`` (FR-RESP-11, NFR-PRIV-4; #170; #180 adds the authority clauses: Jenni's speech
-as actor verified against her viewpoint, a narrated hand-over as a request or as co-author
-narration): with per-character partitions at perception ``full``, Jenni renders a private
-``think`` and whispers to Wren (the player's character) with Bobby in the room. The response for
-the player character's viewpoint carries no NPC private content (no ``think`` beat, not the
-thought's words). Bobby's next context (``core.epistemic.context.build_context``) holds neither
-the thought nor the whispered words, only the whisper's envelope, and none of the consumer's
-``scene_context.recent_messages`` (a planted sentinel). Complement: Jenni's own next context
-holds her thought, and neither context the consumer's message.
+``test_c_13__m5`` (FR-RESP-11, NFR-PRIV-4; #170; #180 adds the authority clauses in
+``test_c_13__m5_authority``: Jenni's speech as actor verified against her viewpoint, a narrated
+hand-over as a request or as co-author narration): with per-character partitions at perception
+``full``, Jenni renders a private ``think`` and whispers to Wren (the player's character) with Bobby
+in the room. The response for the player character's viewpoint carries no NPC private content (no
+``think`` beat, not the thought's words). Bobby's next context
+(``core.epistemic.context.build_context``) holds neither the thought nor the whispered words, only
+the whisper's envelope, and none of the consumer's ``scene_context.recent_messages`` (a planted
+sentinel). Complement: Jenni's own next context holds her thought, and neither context the
+consumer's message.
 """
 
 from __future__ import annotations
@@ -24,13 +25,14 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core.propositions import store
 from epistrel.orchestrator.models.stub import StubAdapter
 from tests import perception_support as ps
 from tests.auth_support import auth_settings
 from tests.conformance.conftest import Surface
 from tests.event_support import rows
 from tests.respond_support import body, generation_calls, respond, respond_client, system_of
-from tests.story_support import count, story_body
+from tests.story_support import WRITE, count, story_body
 from tests.structured_turn_support import beat, render, schema_calls, structured_story, text_of
 
 PLAYER, JENNI, BOBBY = "Wren", "Jenni", "Bobby"
@@ -247,3 +249,99 @@ async def test_c_13__m5(
         jenni = await context_of(JENNI)
         assert f"(You think) {THOUGHT}" in jenni
         assert "RECENTSENTINEL" not in jenni
+
+
+# -- the M5 authority clauses (#180) ---------------------------------------------------------------
+
+HANDS = "Jenni smiles and hands me the key."
+
+
+@pytest.mark.integration
+@pytest.mark.part("M5", "FR-RESP-11")
+async def test_c_13__m5_authority(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+    perception_delivered: None,
+) -> None:
+    """C-13 M5's authority clauses (FR-RESP-11, FR-AUTH-3; #180), with per-character partitions
+    at perception ``full`` and everyone in the parlor. Jenni as actor: her input is her own
+    speech and action, checked in her view like her render (#57's actor rule): her ``do`` naming
+    Bobby's hand-over is not player authority (no ``player_authority`` report) but her render's
+    rule, denied ``other_character_secret`` to her (asserter ``character:<Jenni>``). The player's
+    input narrating Jenni handing over the key: under ``own_character`` a request in Jenni's
+    render, never fact (nothing about the key canonized); under ``co_author`` accepted narration,
+    Jenni's ``beat_do`` asserted ``co_author`` and checked in her own view (permitted
+    ``co_author``, canonized with provenance ``player``). The player character's viewpoint
+    receives no NPC private content (no ``think`` beat, not the thought's words)."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        story, ids = await structured_story(client, PLAYER, JENNI, BOBBY)
+        await ps.perceive(engine, story, "full")
+        parlor = await ps.place_entity(engine, story, "parlor")
+        for name in ids:
+            await ps.put(engine, story, ids[name], parlor)
+        async with engine.begin() as conn:
+            key = await store.add_entity(conn, story, "item", "the key")
+        stub = epistrel.models.stub
+        wren, jenni, bobby = ids[PLAYER], ids[JENNI], ids[BOBBY]
+        key_facts = (
+            "SELECT f.provenance::text AS provenance FROM facts f JOIN propositions p "
+            "ON p.id = f.proposition_id WHERE f.story_id = :s "
+            "AND (p.subject_id = :k OR p.object_id = :k)"
+        )
+
+        async def report() -> dict[str, Any]:
+            found = await rows(
+                engine,
+                "SELECT turn_report FROM operations WHERE story_id = :s AND kind = 'turn' "
+                "AND status = 'committed' ORDER BY narrative_turn DESC LIMIT 1",
+                s=story,
+            )
+            value: dict[str, Any] = found[0].turn_report
+            return value
+
+        # Jenni as actor: her own speech and action, checked like her render.
+        stub.script("generation", [render(beat("say", "Thanks, Jenni.", intent="sincere"))])
+        answer = await respond(
+            client,
+            story,
+            body(jenni, "Here.", do="Bobby hands me the key.", render_character_ids=[bobby]),
+        )
+        assert answer.status_code == 200, answer.text
+        found = await report()
+        assert "player_authority" not in found
+        assert {(d["asserter"], d["reason"]) for d in found["verify"]["denied"]} == {
+            (f"character:{jenni}", "other_character_secret")
+        }
+
+        # own_character: a request in Jenni's render, never fact.
+        stub.reset()
+        stub.script("generation", [render(beat("say", "Maybe later."))])
+        answer = await respond(client, story, body(wren, None, do=HANDS))
+        assert answer.status_code == 200, answer.text
+        assert [b for b in answer.json()["beats"] if "think" in b["kind"]] == []
+        (call,) = schema_calls(stub, "CharacterRender")
+        assert "Jenni smiles and hands Wren the key." in text_of(call)
+        found = await report()
+        assert found["player_authority"]["requests"][0]["outcome"] == "refused"
+        assert await rows(engine, key_facts, s=story, k=key) == []
+
+        # co_author: accepted narration, checked in Jenni's own view.
+        patched = await client.patch(
+            f"/stories/{story}/settings",
+            json={"player_authority": "co_author"},
+            headers=WRITE,
+        )
+        assert patched.status_code == 200, patched.text
+        stub.reset()
+        stub.script("generation", [render(beat("think", THOUGHT), beat("say", "There."))])
+        answer = await respond(client, story, body(wren, None, do=HANDS))
+        assert answer.status_code == 200, answer.text
+        assert [b for b in answer.json()["beats"] if "think" in b["kind"]] == []
+        assert "PRIVATESENTINEL" not in answer.text
+        found = await report()
+        assert found["player_authority"]["narrated"] == [
+            {"beat": 2, "character_id": jenni, "kind": "do"}
+        ]
+        assert "permitted:co_author" in {v["permission"] for v in found["verify"]["verdicts"]}
+        assert {r.provenance for r in await rows(engine, key_facts, s=story, k=key)} == {"player"}

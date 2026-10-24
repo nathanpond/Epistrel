@@ -139,10 +139,12 @@ def character_inputs(
     budget: int,
     others_present: Sequence[str] = (),
     interjections: bool = False,
+    player_requests: Sequence[str] = (),
 ) -> GenerationInputs:
     """The ``generation`` inputs of ``character``'s render (``structured_generation.j2``): the
     shared ``sections`` and ``context``'s knowledge sections (see the module docstring);
-    #176: ``others_present``, the reactive characters it may narrate reactions for."""
+    #176: ``others_present``, the reactive characters it may narrate reactions for; #180:
+    ``player_requests``, what an ``own_character`` player's input asked of it."""
     if context.character_id != character.id:
         raise ValueError("a character's render takes that character's own context")
     s = capped(
@@ -183,6 +185,7 @@ def character_inputs(
         just_now=list(s.just_now),
         others_present=list(others_present),
         interjections=interjections,
+        player_requests=list(player_requests),
         retrieved_memories=list(s.retrieved),
         canon_facts=list(s.canon),
     )

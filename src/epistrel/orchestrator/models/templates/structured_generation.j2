@@ -11,6 +11,8 @@ who is present, #137), ``## What you remember`` (its working memory, FR-MEM-5), 
 (#174: a ``sequential`` turn's earlier primaries' verified beats as it perceived them), ``## Retrieved``
 (#141's assembled context) and ``## Canon`` (the facts retrieval found that it may know), then
 ``## Others present`` (#176: the reactive characters whose reactions it may narrate), then
+``## The player asks of you`` (#180, FR-RESP-11: under ``own_character``, what the player's input
+described this character doing, as requests to comply with or refuse), then
 ``## How to change your mind`` (the step contract and the ``think`` cite instruction, when the
 character keeps its own beliefs; #168, ``steps_contract.j2``), the beat contract, the requested length as a target in words (#464) and, on a guardrail
 regeneration, one constraint line per violated output
@@ -113,6 +115,14 @@ When {{ character.name }} refuses or changes the subject: {{ character.deflectio
 - {{ other }}
 {% endfor %}
 You may narrate their brief, visible reactions in `reactions` (`character_id`, `text`): a glance, a flinch, a shrug. Never their thoughts, their decisions or what they hand, take or move{% if interjections %}; at most a brief interjection of a few words (`kind`: `interjection`){% else %}, and never their words{% endif %}.
+
+{% endif %}
+{% if player_requests %}
+## The player asks of you
+{% for request in player_requests %}
+- {{ request }}
+{% endfor %}
+{{ player_input.name }}'s player described you doing this. It has not happened: comply or refuse, in character; what you do is up to you.
 
 {% endif %}
 {% include "steps_contract.j2" %}

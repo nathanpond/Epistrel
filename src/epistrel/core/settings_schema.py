@@ -218,6 +218,11 @@ PlayerView = Literal["character", "story"]
 """FR-RESP-13 (#177): what a character viewpoint's output holds, only what the character
 perceived (``character``, the audience filter) or every beat of the story (``story``)."""
 DEFAULT_PLAYER_VIEW: PlayerView = "character"
+PlayerAuthority = Literal["own_character", "co_author"]
+"""FR-RESP-11 (#180): the player's authority over the other characters, none beyond its own
+character (``own_character``: input about another character is a request) or narration of their
+observable actions (``co_author``), never their thoughts."""
+DEFAULT_PLAYER_AUTHORITY: PlayerAuthority = "own_character"
 DEFAULT_INTERACTION_MODE: InteractionMode = "sequential"
 TIE_BREAK_PATTERN = r"^(request_order|director|state:[a-z][a-z0-9_]{0,63})$"
 """FR-MULTI-8 (#175): a ``simultaneous`` turn's tie-break, ``request_order`` (the earlier-named
@@ -404,6 +409,16 @@ class StorySettings(BaseModel):
     their character is not in), still never a ``think`` or ``latent``. The character's own
     partition and memory are the same under both. A no-op where perception is ``none``. A
     request (and a history read) overrides it. Prospective."""
+
+    player_authority: Annotated[PlayerAuthority, INTERPRETIVE] = DEFAULT_PLAYER_AUTHORITY
+    """The player's authority over the other characters (FR-RESP-11; #180; the owner's default
+    ``own_character``): under ``own_character`` player input describing another character's
+    actions, speech or thoughts is a request that character's render resolves (it may comply or
+    refuse), and nothing of theirs is recorded from the input; under ``co_author`` the player
+    may narrate their observable actions, recorded as theirs and checked against their
+    viewpoint where partitions are on, and never their ``think``. Lite: an instruction in the
+    prompt only. Genesis copies the scenario's ``story_settings_defaults.player_authority``.
+    Interpretive: a structured turn's handling of its input depends on it (#64)."""
 
     @field_validator("default_output_viewpoint")
     @classmethod

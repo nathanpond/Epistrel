@@ -69,6 +69,7 @@ from epistrel.core.readset import StructuredReadSet
 from epistrel.core.settings_schema import StorySettings
 from epistrel.core.turns import CastEntry
 from epistrel.core.turns.beats import TurnBeat
+from epistrel.core.verify.other_agent import PLAYER_NARRATOR
 from epistrel.core.verify.permission import Asserter
 from epistrel.observability.metrics import ESCALATIONS, PRIMARIES_REDUCED
 
@@ -412,11 +413,16 @@ def apply(
 
 def asserter_of(beats: Mapping[int, TurnBeat]) -> Callable[[Any], Asserter | None]:
     """A narrated reaction's claims' asserter (#144's reactive exception); ``None`` for every
-    other beat's (its default asserter)."""
+    other beat's (its default asserter), the ``co_author`` player's narration included (#180)."""
 
     def of(claim: Any) -> Asserter | None:
         beat = beats.get(claim.beat or -1)
-        if beat is None or beat.narrated_by is None or beat.character_id is None:
+        if (
+            beat is None
+            or beat.narrated_by is None
+            or beat.character_id is None
+            or beat.narrated_by == PLAYER_NARRATOR
+        ):
             return None
         return Asserter("reactive", beat.narrated_by, reactor=beat.character_id)
 
@@ -451,7 +457,9 @@ async def verify(
 ) -> None:
     """Check each narrated reaction of ``checked`` against its reactor's viewpoint and drop the
     failing ones (see the module docstring): ``checked`` is the pipeline's ``Checked``."""
-    reacted = [b for b in checked.beats if b.narrated_by is not None]
+    reacted = [
+        b for b in checked.beats if b.narrated_by is not None and b.narrated_by != PLAYER_NARRATOR
+    ]
     if not reacted:
         return
     level = scene_loader.level_of(settings)

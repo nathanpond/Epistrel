@@ -277,14 +277,18 @@ def profile_label(target: Target, records: list[dict[str, Any]]) -> str | None:
 def delete_stories(target: Target, stories: list[StoryRef]) -> list[str]:
     """Delete the seeded stories after the report is written; answers the ones that could not
     be deleted. A story still busy with a turn the drain did not wait out answers 423 (or any
-    HTTP error): it is logged and left (the compose stack's volume goes with it), so the run's
-    report and exit status stand."""
+    HTTP error), and a delete can time out (#182): it is logged and left (the compose stack's
+    volume goes with it), so the run's report and exit status stand."""
     left: list[str] = []
     for story in stories:
         try:
             request(target, "DELETE", f"/stories/{story.story_id}")
         except urllib.error.HTTPError as exc:
             log(f"story {story.story_id} not deleted: HTTP {exc.code}")
+            left.append(story.story_id)
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            # #182: deleting a 10,000-memory multi-character story can outlast the timeout.
+            log(f"story {story.story_id} not deleted: {type(exc).__name__}")
             left.append(story.story_id)
     return left
 

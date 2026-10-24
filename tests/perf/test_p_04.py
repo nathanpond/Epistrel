@@ -499,7 +499,8 @@ async def test_p_04__structured_measurements(
 def test_p_04__cleanup_tolerates_a_busy_story(monkeypatch: pytest.MonkeyPatch) -> None:
     """Found by #153's structured run: a story whose queue the drain did not wait out answers
     the cleanup's ``DELETE`` with 423, which used to abort the run after its report was written
-    (exit 1 on a host class that is never gated). The story is now logged and left.
+    (exit 1 on a host class that is never gated). The story is now logged and left, and so is
+    one whose delete times out (#182's multi-character run: a 10,000-memory story).
 
     Complement asserted: the other stories are still deleted."""
     deleted: list[str] = []
@@ -507,12 +508,14 @@ def test_p_04__cleanup_tolerates_a_busy_story(monkeypatch: pytest.MonkeyPatch) -
     def request(target: Target, method: str, path: str, **query: Any) -> None:
         if path.endswith("/busy"):
             raise urllib.error.HTTPError(path, 423, "Locked", Message(), None)
+        if path.endswith("/slow"):
+            raise TimeoutError("timed out")
         deleted.append(path)
 
     monkeypatch.setattr(smoke, "request", request)
-    stories = [StoryRef(sid, "p", "o", 10, i) for i, sid in enumerate(("a", "busy", "b"))]
+    stories = [StoryRef(sid, "p", "o", 10, i) for i, sid in enumerate(("a", "busy", "slow", "b"))]
     left = smoke.delete_stories(Target.from_env(), stories)
-    assert left == ["busy"]
+    assert left == ["busy", "slow"]
     assert deleted == ["/stories/a", "/stories/b"]
 
 

@@ -177,6 +177,10 @@ class SuiteResult(BaseModel):
     judge: SuiteJudge | None = None
     """For a judged suite (#475): the judge its calls went to; ``None`` for any other suite, and
     in a report written before #475."""
+    profile: str | None = None
+    """The configuration the suite's stories ran under, when it is not the run's (#179)."""
+    fingerprint: str | None = None
+    """That configuration's fingerprint (#179); ``None``: the run's."""
 
     @classmethod
     def errored(cls, suite: Suite, errors: list[str], seeds: list[int]) -> SuiteResult:
@@ -207,6 +211,8 @@ class Report(BaseModel):
     host: Host
     judge: JudgeModel | None = None
     """The run's second judge model (#475); ``None``: the run model judged (self-judged)."""
+    real_purposes: list[str] | None = None
+    """The purposes a real-model run sent to its endpoint (#179); ``None``: every purpose."""
     seed_base: int
     seeds: list[int]
     suites: list[SuiteResult] = Field(default_factory=list)
@@ -474,6 +480,15 @@ def render_markdown(report: Report) -> str:
         "as every story purpose's"
         + (" and the judge as `quality_judge`'s" if report.judge is not None else "")
         + ")",
+        *(
+            [
+                "- **Routed purposes:** "
+                + ", ".join(f"`{p}`" for p in report.real_purposes)
+                + " on the model; every other purpose on the stub's default answers"
+            ]
+            if report.real_purposes is not None
+            else []
+        ),
         f"- **Host:** {'; '.join(host_bits)}",
         f"- **Seeds:** {seed_text}",
         f"- **Sample size:** {report.sample_size} cases per seed",
@@ -495,6 +510,13 @@ def render_markdown(report: Report) -> str:
             f"{len(suite.seeds)} seeds{timing}; {gated}. Guarantee rows measured: "
             f"{', '.join(f'`{g}`' for g in suite.guarantees) or EM_DASH}."
         )
+        if suite.profile is not None:
+            lines += [
+                "",
+                f"Configuration: {suite.profile}"
+                + (f" (fingerprint `{suite.fingerprint}`)" if suite.fingerprint else "")
+                + ".",
+            ]
         if suite.judge is not None:
             lines += ["", judge_text(suite.judge)]
         if suite.calibration is not None:

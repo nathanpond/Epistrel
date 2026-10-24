@@ -307,15 +307,22 @@ async def test_verify_cost_is_bounded(engine: AsyncEngine) -> None:
     assert small[2] is VerdictKind.SUPPORTED
 
 
-def test_other_holders_wait_for_their_stores() -> None:
-    """A character's own records arrive in M5: a claim checked against such a holder is
-    ``uncertain(unresolved_predicate)``, never a verdict. ``check_with`` reads canon only and
-    refuses an utterance holder, whose records #150 passes to ``check``."""
+async def test_a_belief_holder_is_checked_like_canon() -> None:
+    """#159 retired M4's stub: a claim checked against a character's beliefs is a verdict like
+    canon's, over the records given (the belief's own id cited), never
+    ``uncertain(unresolved_predicate)``. ``check_with`` still refuses an utterance holder, whose
+    records #150 passes to ``check``."""
     from tests import verify_support as vs
 
     said = vs.prop(vs.BOBBY, vs.LOCATED_AT, vs.OHIO, vs.years(2010, 2014))
-    found = rules.check(said, vs.records(said), registry=vs.REGISTRY, holder=Holder.belief(vs.ANN))
-    assert (found.kind, found.reason) == (
-        VerdictKind.UNCERTAIN,
-        rules.VerdictReason.UNRESOLVED_PREDICATE,
-    )
+    belief = "01JQ00000000000000000000B1"
+    held = [rules.Record(said, "01JQ0000000000000000000001", belief_id=belief)]
+    found = rules.check(said, held, registry=vs.REGISTRY, holder=Holder.belief(vs.ANN))
+    assert found.kind is VerdictKind.SUPPORTED
+    assert [(e.table, e.record_id) for e in found.evidence] == [("beliefs", belief)]
+    assert found.as_payload()["holder"] == f"belief:{vs.ANN}"
+    assert found.as_payload()["evidence"][0]["belief_id"] == belief
+    with pytest.raises(ValueError, match="utterance"):
+        await rules.check_with(
+            cast(KeyedLookup, None), vs.STORY, said, holder=Holder.utterance(vs.ANN)
+        )

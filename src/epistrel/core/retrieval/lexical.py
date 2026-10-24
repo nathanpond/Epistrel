@@ -20,7 +20,8 @@ proves the swap (C-07 M4).
 memory positioned after it, #141's "nothing after the query's position") and by retrieval tier
 (``tiers``: hot by default; #141's rehydration searches ``retired`` records, FR-MEM-8). A
 quarantined memory (#145, FR-GUARD-4) is never found unless ``include_quarantined`` (the
-omniscient debugging read's flag).
+omniscient debugging read's flag). ``scope`` is the viewpoint filter (#159,
+``core.retrieval.viewpoint``): a memory whose visibility excludes the requester is never found.
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.enums import MemoryKind, RetrievalTier
 from epistrel.core.membership import active_only_sql
+from epistrel.core.retrieval.viewpoint import scope_params, scope_sql
 from epistrel.core.tables.memories import SEARCH_CONFIGURATION
 
 TEXT_SEARCH_CONFIGURATION = SEARCH_CONFIGURATION
@@ -49,6 +51,9 @@ class LexicalFilters:
     through: tuple[int, int] | None = None
     tiers: tuple[RetrievalTier, ...] = (RetrievalTier.HOT,)
     include_quarantined: bool = False
+    scope: str | None = None
+    """The viewpoint filter (``core.retrieval.viewpoint.scope_for``; ``None``: none): only
+    memories whose visibility admits it (#159)."""
 
 
 def quarantine_clause(alias: str) -> str:
@@ -132,6 +137,7 @@ class TsvectorLexicalSearch:
                 "OR m.kind = ANY(CAST(:kinds AS memory_kind[]))) "
                 f"AND {position_clause('m')} "
                 f"AND {quarantine_clause('m')} "
+                f"AND {scope_sql('m')} "
                 "AND m.search @@ q "
                 # Ties by position, newest first, then text, then id (#154, #476: ids are
                 # random within a millisecond, so an id tie-break is not deterministic across
@@ -147,6 +153,7 @@ class TsvectorLexicalSearch:
                 "tiers": tiers,
                 "include_quarantined": filters.include_quarantined,
                 **position_params(filters.through),
+                **scope_params(filters.scope),
             },
         )
         return [(str(r.id), float(r.rank)) for r in found]

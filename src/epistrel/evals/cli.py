@@ -15,6 +15,9 @@
     uv run python -m epistrel.evals calibrate-judge --adapter stub
     uv run python -m epistrel.evals run --all … --judge-model <second model> \\
         [--judge-base-url …] [--judge-api-key …]          # #475: a second judge model
+    uv run python -m epistrel.evals run --suite q04 --suite priv_think_leak \\
+        --suite e01_viewpoint --run-id <id> --base-url … --model … \\
+        --real-purpose generation --concurrency 2       # #179: NFR-QUAL-1's exit evidence
 
 ``run`` needs PostgreSQL: ``--database-url`` (a scratch database; the run writes the endpoint
 into its model configuration and plays its turns there), else a throwaway one started through
@@ -75,6 +78,7 @@ from epistrel.evals.runner import (
     EndpointUnavailable,
     calibration_path,
     default_run_id,
+    routed_purposes,
     run_calibration,
     run_fingerprint,
     run_suites,
@@ -148,6 +152,14 @@ def parser() -> argparse.ArgumentParser:
         "--embedding-model",
         help="an embedding model at --base-url: the retrieval suites embed their stories with it",
     )
+    run.add_argument(
+        "--real-purpose",
+        action="append",
+        dest="real_purposes",
+        metavar="PURPOSE",
+        help="a purpose the endpoint serves (repeatable; default every purpose): every other "
+        "purpose gets the stub's default answers (#179: generation alone on a local model)",
+    )
     run.add_argument("--seeds", type=_positive, default=DEFAULT_SEEDS, help="seeds (default 2)")
     run.add_argument("--seed-base", type=int, default=DEFAULT_SEED_BASE, help="the first seed")
     run.add_argument("--sample", type=_positive, help="a seeded subset of each set's cases")
@@ -157,6 +169,14 @@ def parser() -> argparse.ArgumentParser:
         default=[],
         choices=sorted(SUITES),
         help="a suite that runs its full set despite --sample (repeatable)",
+    )
+    run.add_argument(
+        "--skip",
+        action="append",
+        default=[],
+        choices=sorted(SUITES),
+        help="a suite --all leaves out (repeatable; CI runs the zero-leak suites as a job of "
+        "their own)",
     )
     run.add_argument("--concurrency", type=_positive, default=1, help="cases at once (1)")
     run.add_argument("--run-id", help="the run to write or merge into")
@@ -227,6 +247,7 @@ def _config(args: argparse.Namespace, adapter: AdapterName) -> AdapterConfig:
         judge_model=args.judge_model or None,
         judge_base_url=args.judge_base_url.rstrip("/") if args.judge_base_url else None,
         judge_api_key=args.judge_api_key,
+        real_purposes=tuple(getattr(args, "real_purposes", None) or ()) or None,
     )
 
 
@@ -263,7 +284,9 @@ async def _run(args: argparse.Namespace) -> int:
         return EX_USAGE
     config = _config(args, adapter)
     now = datetime.now(UTC)
-    fingerprint_value = run_fingerprint(config.model_name, judge=config.judge_model)
+    fingerprint_value = run_fingerprint(
+        config.model_name, judge=config.judge_model, real_purposes=routed_purposes(config)
+    )
     run_id, merge_from = _run_id(args, default_run_id(fingerprint_value, now))
     prior = reports.Report.from_json(_load(merge_from)) if merge_from is not None else None
     json_path = args.json_dir / f"{run_id}.json"
@@ -287,7 +310,7 @@ async def _run(args: argparse.Namespace) -> int:
 
     try:
         report = await run_suites(
-            get_suites(None if args.all else args.suite),
+            [s for s in get_suites(None if args.all else args.suite) if s.name not in args.skip],
             config,
             seeds_from(args.seeds, args.seed_base),
             sets_dir=args.sets_dir,

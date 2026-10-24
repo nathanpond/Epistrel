@@ -12,7 +12,8 @@ and #150's utterance writes call ``core.readset.record_change`` the same way.
   with the current one, so it is never "since" a base it did not move.
 - ``subject_id``, ``predicate_id``, ``object_id`` (an entity object), ``literal_hash`` (a
   literal object's canonical hash), ``object_set`` (a set object's sorted members), ``holder``
-  (``canon`` | ``utterance``, with ``speaker_id`` for an utterance), ``visibility`` (the fact's
+  (``canon`` | ``utterance`` | ``belief``, with ``speaker_id`` the speaker of an utterance or
+  the holder of a belief, #159), ``visibility`` (the fact's
   ``{"scope", "characters"}``) and ``valid_window`` (the outer valid-time bounds, ``[)``) are
   what a query key matches on.
 - ``operation_id`` and ``tx_time`` say who wrote it and when (the retention sweep prunes by
@@ -40,7 +41,11 @@ from sqlalchemy.dialects.postgresql import ARRAY, INT8RANGE, JSONB
 from epistrel.core.tables.base import metadata, ulid_type
 
 CHANGE_KINDS: tuple[str, ...] = ("add", "supersede", "close")
-HOLDERS: tuple[str, ...] = ("canon", "utterance")
+HOLDERS: tuple[str, ...] = ("canon", "utterance", "belief")
+"""Whose proposition changed: canon, a speaker's utterance, or a holder's belief (#159)."""
+SPOKEN_HOLDERS: tuple[str, ...] = ("utterance", "belief")
+"""The holders a change names a character for (``speaker_id``: the speaker, or the belief's
+holder)."""
 
 proposition_changes = Table(
     "proposition_changes",
@@ -75,7 +80,12 @@ proposition_changes = Table(
         "change IN (" + ", ".join(f"'{c}'" for c in CHANGE_KINDS) + ")", name="change_kind"
     ),
     CheckConstraint("holder IN (" + ", ".join(f"'{h}'" for h in HOLDERS) + ")", name="holder"),
-    CheckConstraint("(holder = 'utterance') = (speaker_id IS NOT NULL)", name="speaker"),
+    CheckConstraint(
+        "(holder IN ("
+        + ", ".join(f"'{h}'" for h in SPOKEN_HOLDERS)
+        + ")) = (speaker_id IS NOT NULL)",
+        name="speaker",
+    ),
 )
 Index(
     "ix_proposition_changes_story_revision",
@@ -90,4 +100,4 @@ Index(
 )
 Index("ix_proposition_changes_tx_time", proposition_changes.c.tx_time)
 
-__all__ = ["CHANGE_KINDS", "HOLDERS", "proposition_changes"]
+__all__ = ["CHANGE_KINDS", "HOLDERS", "SPOKEN_HOLDERS", "proposition_changes"]

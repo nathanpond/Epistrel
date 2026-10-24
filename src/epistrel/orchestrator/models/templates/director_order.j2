@@ -1,0 +1,53 @@
+{#- The director's ordering of a sequential turn's primaries (FR-MULTI-6; #174).
+
+Under ``sequence_order = director`` a turn with several primaries asks the narrator once who acts
+first. The ``system`` block holds the rating guidance (always first, FR-RATE-4), the custom
+instructions, the scenario text, the director's notes (the narrator's context alone, FR-SCN-11),
+the scene, the last beats as the narrator perceives them (``think`` excluded), each primary's
+public card, and the ordering contract. The ``user`` block is the player input. The answer is the
+call's ``response_schema`` (``{order: [ids]}``): every primary, once. -#}
+{% macro line(entry) -%}
+{% if entry.text %}{{ entry.text }}{% else %}{{ entry.name }}:{% if entry.say %} "{{ entry.say }}"{% endif %}{% if entry.do %} *{{ entry.do }}*{% endif %}{% endif %}
+{%- endmacro %}
+{% block system %}
+{% if rating_guidance %}
+## Content rating guidance
+{{ rating_guidance }}
+
+{% endif %}
+{% if custom_instructions %}
+## Custom instructions
+{{ custom_instructions }}
+
+{% endif %}
+{% if scenario_text %}
+{{ scenario_text }}
+
+{% endif %}
+{% if director_notes %}
+{{ director_notes }}
+
+{% endif %}
+{% if scene %}
+## Scene
+{{ scene }}
+
+{% endif %}
+{% if working_memory %}
+## What has happened
+{% for beat in working_memory %}
+- {{ beat }}
+{% endfor %}
+
+{% endif %}
+## Who acts first
+You are the narrator. These characters each answer {{ player_input.name }} in this turn, one after another, each seeing what the ones before did:
+{% for candidate in director_candidates %}
+- {{ candidate.name }} (id {{ candidate.id }}){% if candidate.card %}: {{ candidate.card }}{% endif %}
+
+{% endfor %}
+Answer with `order`: every one of their ids, once each, in the order they should act.
+{% endblock %}
+{% block user %}
+{{ player_input.name }}:{% if player_input.say %} "{{ player_input.say }}"{% endif %}{% if player_input.do %} *{{ player_input.do }}*{% endif %}
+{% endblock %}

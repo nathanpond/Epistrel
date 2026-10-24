@@ -25,7 +25,13 @@ either re-checks the turn: its policy checks and its ``REBASE_CHECKS`` (#140's v
 permission checks) run under the new configuration. #144 adds what its permission checks
 interpret: ``allow_new_arrivals`` (the story's arrival policy, a story setting) and
 ``author_locks`` (a hash of the current ``author_locked`` fact versions' ``(id, subject,
-predicate)``: an author locking or unlocking canon, #145, changes it).
+predicate)``: an author locking or unlocking canon, #145, changes it). #161 adds
+``perception_level`` (the level routing runs at under the effective profile,
+``core.epistemic.scene.level_of``: ``none``, ``co_location`` or ``full``): a change re-checks the
+turn, whose commit then routes under the new level, and ``core.epistemic.scene.recheck`` (a
+``REBASE_CHECKS`` entry) regenerates a turn begun with partitions that no longer has them.
+#180 adds ``player_authority`` (FR-RESP-11, a story setting): how the turn treated the player's
+input about other characters (M6's rebase case needs it).
 
 The set values are hashes (``hash_member``), so detection at commit is a compare. At commit,
 under the story lock, ``changed`` names the dependencies whose value moved since the capture:
@@ -70,8 +76,11 @@ STRUCTURED_DEPENDENCIES = (
     "verification_settings",
     "allow_new_arrivals",
     "author_locks",
+    "perception_level",
+    "player_authority",
 )
-"""What a structured turn's commit is re-checked against when it changes (#136, #144)."""
+"""What a structured turn's commit is re-checked against when it changes (#136, #144, #161,
+#180)."""
 
 VERIFICATION_PREFIX = "verification."
 
@@ -121,6 +130,13 @@ async def _verification_settings(conn: AsyncConnection, story_id: str) -> str:
         if path.startswith(VERIFICATION_PREFIX) and tags.change_class is ConfigClass.interpretive
     )
     return hash_member([[path, schema.value_at(profile.settings, path)] for path in paths])
+
+
+async def _perception_level(conn: AsyncConnection, story_id: str) -> str:
+    """The perception level routing runs at under the story's effective profile (#161)."""
+    from epistrel.core.epistemic.scene import current_level  # here: it imports the read set
+
+    return await current_level(conn, story_id)
 
 
 async def _policy_set(
@@ -196,8 +212,12 @@ async def capture(
         captured["predicate_registry"] = await _predicate_registry(conn, story_id, own_predicates)
     if "verification_settings" in members:
         captured["verification_settings"] = await _verification_settings(conn, story_id)
+    if "perception_level" in members:
+        captured["perception_level"] = await _perception_level(conn, story_id)
     if "allow_new_arrivals" in members:
         captured["allow_new_arrivals"] = StorySettings.from_row(story.settings).allow_new_arrivals
+    if "player_authority" in members:
+        captured["player_authority"] = StorySettings.from_row(story.settings).player_authority
     if "author_locks" in members:
         from epistrel.core.canon.facts import locked_keys  # here: canon imports the read set
 

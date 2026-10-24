@@ -62,7 +62,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 from sqlalchemy import (
     Column,
     Table,
@@ -149,14 +149,15 @@ STORY_TABLES_REBUILT: frozenset[str] = frozenset(
     {
         story_heads.name,
         lite_summary_segments.name,
-        *(p.name for p in projections.STRUCTURED),
+        *(p.name for p in projections.STORED_STATE),
     }
 )
 """Story tables the fork rebuilds from the copied rows instead of copying: ``story_heads`` from
 the copied turns, ``lite_summary_segments`` (#72) by folding the copied events, so a copied
 segment's ``superseded`` state is the fork's own (a merged parent past the fork point is not
-copied, and its children are active in the fork), and the structured projections
-(``relationships``, ``placement``, ``scene_state``; #137) by folding the copied canon."""
+copied, and its children are active in the fork), the structured projections
+(``relationships``, ``placement``, ``scene_state``; #137) by folding the copied canon, and
+``belief_state`` (#159) and ``nested_belief_state`` (#167) by folding the copied beliefs."""
 
 FORK_SUFFIX = " (fork)"
 
@@ -232,6 +233,15 @@ class ForkRequest(BaseModel):
     at_turn: StrictInt | None = Field(
         default=None, ge=0, description="The last turn to copy (0: only the story's setup)."
     )
+    slot: StrictInt | None = Field(
+        default=None,
+        ge=0,
+        description="The boundary `N⁺k`: copy `at_turn`'s inter-turn slots 1..k too (default: "
+        "none, the boundary `N`). A beat or a step is never a boundary (422 "
+        "`turn_boundary_required`).",
+    )
+
+    _boundary = model_validator(mode="before")(timeline.turn_boundary)
     variant_chain: ChainSelector | None = Field(
         default=None,
         description='The chain to copy, `{turn, variant}` or `"turn:variant"` (default the '
@@ -378,7 +388,7 @@ async def _copy(
         await conn.exec_driver_sql(statement)
     await _map(conn, [(source, fork_id)], "story")
 
-    copied = await _select_operations(conn, source, selection, through)
+    copied = await _select_operations(conn, source, selection, through, request.slot)
     for operation_id, membership in copied:
         moved.setdefault(membership, []).append(operation_id)
     await _map(conn, _remapped([op for op, _ in copied]), "operation")
@@ -500,13 +510,21 @@ async def _map(conn: AsyncConnection, pairs: Sequence[tuple[str, str]], kind: st
         )
 
 
-def _through(turn: Any, slot: Any, through: int) -> Any:
-    """Positioned at or before ``through``, without its inter-turn slots (#65's view)."""
-    return or_(turn < through, and_(turn == through, slot.is_(None)))
+def _through(turn: Any, slot: Any, through: int, at_slot: int | None = None) -> Any:
+    """Positioned at or before the boundary ``through`` (``N``: without its inter-turn slots,
+    #65's view) or ``through⁺at_slot`` (its slots 1..k too; #168)."""
+    kept = slot.is_(None)
+    if at_slot:
+        kept = or_(kept, slot <= at_slot)
+    return or_(turn < through, and_(turn == through, kept))
 
 
 async def _select_operations(
-    conn: AsyncConnection, source: str, selection: ChainSelection | None, through: int
+    conn: AsyncConnection,
+    source: str,
+    selection: ChainSelection | None,
+    through: int,
+    slot: int | None = None,
 ) -> list[tuple[str, Membership]]:
     """The operations the fork copies, with their membership in the source."""
     o = operations.alias("o")
@@ -533,7 +551,7 @@ async def _select_operations(
                     o.c.narrative_turn.is_(None),
                     o.c.membership == Membership.ACTIVE.value,
                 ),
-                and_(_through(o.c.narrative_turn, o.c.slot_k, through), visible),
+                and_(_through(o.c.narrative_turn, o.c.slot_k, through, slot), visible),
             ),
             copyable,
             not_(skipped),
@@ -675,6 +693,40 @@ OVERRIDES: dict[str, dict[str, str]] = {
         ),
         "participants": (
             f"CAST(ARRAY(SELECT {_ID}(s.id::text) FROM unnest(t.participants) "  # noqa: S608
+            "WITH ORDINALITY AS s(id, n) ORDER BY s.n) AS char(26)[])"
+        ),
+    },
+    # Belief transitions (#160): a belief's producing transition and its corrector, and the
+    # beliefs a transition closed, are the fork's copies (a corrector after N is not copied:
+    # the settle after the copy reopens what it closed).
+    "beliefs": {
+        "provenance": f'{_ID}(t."provenance"::text)',
+        "corrected_by": f'{_ID}(t."corrected_by"::text)',
+        "resolution_operation_id": _mapped_or_null("resolution_operation_id"),
+    },
+    # Exposures (#164): a resolution made after N is not copied, so the exposure is unresolved
+    # there (its state is read through the resolving operation, as a thunk's is).
+    "exposures": {
+        "resolved_by_transition": (
+            f"CASE WHEN {_mapped_or_null('resolution_operation_id')} IS NULL THEN NULL "
+            f'ELSE {_ID}(t."resolved_by_transition"::text) END'
+        ),
+        "resolution_operation_id": _mapped_or_null("resolution_operation_id"),
+        "state": (
+            "CASE WHEN t.state = 'resolved' AND "
+            f"{_mapped_or_null('resolution_operation_id')} IS NULL THEN 'unresolved' "
+            "ELSE t.state END"
+        ),
+    },
+    # Divergences (#166): the contrary belief is the fork's copy (held before the lie, so
+    # copied with it); a reveal after N is not copied, so the divergence is open there.
+    "divergences": {
+        "believed_belief_id": _mapped_or_null("believed_belief_id"),
+        "revealed_by_event_id": _mapped_or_null("revealed_by_event_id"),
+    },
+    "belief_transitions": {
+        "prior_belief_ids": (
+            f"CAST(ARRAY(SELECT {_ID}(s.id::text) FROM unnest(t.prior_belief_ids) "  # noqa: S608
             "WITH ORDINALITY AS s(id, n) ORDER BY s.n) AS char(26)[])"
         ),
     },
@@ -825,10 +877,15 @@ async def _rebuild_segments(conn: AsyncConnection, fork_id: str) -> int:
 
 
 async def _rebuild_structured(conn: AsyncConnection, fork_id: str) -> dict[str, int]:
-    """The fork's structured projection rows, folded from its copied canon (#137)."""
-    folded = await projections.fold(conn, fork_id, only=projections.STRUCTURED)
+    """The fork's structured projection rows, folded from its copied canon (#137) and its
+    copied beliefs (#159), once each copied belief is settled on the transitions the fork
+    copied (#160: a later change in place, or a later correction, is not the fork's)."""
+    from epistrel.core.epistemic.transitions import settle
+
+    await settle(conn, fork_id, None, project=False)
+    folded = await projections.fold(conn, fork_id, only=projections.STORED_STATE)
     counts: dict[str, int] = {}
-    for projection in projections.STRUCTURED:
+    for projection in projections.STORED_STATE:
         rows = folded[projection.name]
         if len(rows):
             await conn.execute(insert(projection.table), list(rows))

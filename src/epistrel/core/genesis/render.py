@@ -125,6 +125,10 @@ class RenderedScenario:
 
     scenario_text: str
     director_notes: str
+    shared_text: str = ""
+    """The ``## Scenario`` block without what a character's partition holds: no seed held by a
+    role or the world and no player note (#173). A character render of a story that keeps
+    per-character partitions gets this; its seeds are in the partitions."""
 
 
 # -- helpers --------------------------------------------------------------------------------
@@ -399,9 +403,12 @@ def _starts(draft: ScenarioDraft, roles: _Roles) -> list[str]:
     return found
 
 
-def scenario_text(document: Mapping[str, Any], cast: Sequence[StoryMember]) -> str:
+def scenario_text(
+    document: Mapping[str, Any], cast: Sequence[StoryMember], *, shared: bool = False
+) -> str:
     """The ``## Scenario`` block of a story created from ``document`` (see the module
-    docstring); ``""`` when it has nothing to say."""
+    docstring); ``""`` when it has nothing to say. ``shared``: without the seeds and the player
+    notes (``RenderedScenario.shared_text``, #173)."""
     draft = ScenarioDraft.model_validate(document)
     roles = _roles(draft, cast)
     sections: list[list[str]] = []
@@ -410,10 +417,10 @@ def scenario_text(document: Mapping[str, Any], cast: Sequence[StoryMember]) -> s
         sections.append([world])
     for section in (
         _places(draft),
-        _held_seeds(draft, roles),
+        [] if shared else _held_seeds(draft, roles),
         _relationships(draft, roles),
         _other_names(draft, roles),
-        _player_notes(draft, roles, cast),
+        [] if shared else _player_notes(draft, roles, cast),
         _starts(draft, roles),
     ):
         if section:
@@ -466,7 +473,9 @@ def render(document: Mapping[str, Any] | None, cast: Sequence[StoryMember]) -> R
     if document is None:
         return RenderedScenario(scenario_text="", director_notes="")
     return RenderedScenario(
-        scenario_text=scenario_text(document, cast), director_notes=director_notes(document, cast)
+        scenario_text=scenario_text(document, cast),
+        director_notes=director_notes(document, cast),
+        shared_text=scenario_text(document, cast, shared=True),
     )
 
 

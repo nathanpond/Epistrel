@@ -25,17 +25,18 @@ per model tier are in [model-matrix.md](model-matrix.md).
 | `quality_judge` | no | `default` | `parse_validate_retry` | 8,192 tokens |
 | `importance_scoring` | no | `default` | `parse_validate_retry` | 8,192 tokens |
 | `entailment` | yes | `default` | `parse_validate_retry` | 8,192 tokens |
+| `belief_adjudication` | yes | `entailment` | `parse_validate_retry` | 8,192 tokens |
 | `salience_detection` | yes | `default` | `parse_validate_retry` | 8,192 tokens |
 | `extraction_backstop` | yes | `default` | `parse_validate_retry` | 8,192 tokens |
 | `regeneration` | yes | `generation` | `parse_validate_retry` | 8,192 tokens |
 
 ### `generation`
 
-Writes the reply of a Lite turn from the story's prompt sections; in a structured story (#150) the typed beats of one character's or the narrator's render (a `response_schema`: constrained decoding or parse-validate-retry), the age repair and the composition of the turn's verified beats into its message (#152).
+Writes the reply of a Lite turn from the story's prompt sections; in a structured story (#150) the typed beats of one character's or the narrator's render (a `response_schema`: constrained decoding or parse-validate-retry), the age repair, the composition of the turn's verified beats into its message (#152), the director's ordering of a sequential turn's primaries (#174) and its judgment of a simultaneous turn's conflicting actions (#175).
 
 - **Hot path:** yes
 - **Default model:** the `default` row of `model_config`, unless the purpose has its own
-- **Template:** `lite_generation.j2`; variants: structured `structured_generation.j2`, narrator `narrator_generation.j2`, age_repair `age_repair.j2`, composition `composition.j2`
+- **Template:** `lite_generation.j2`; variants: structured `structured_generation.j2`, narrator `narrator_generation.j2`, age_repair `age_repair.j2`, composition `composition.j2`, director_order `director_order.j2`, director_tiebreak `director_tiebreak.j2`
 - **Capability floor:** structured output: not required; minimum context 8,192 tokens
 - **Returns:** free text
 
@@ -49,6 +50,9 @@ Writes the reply of a Lite turn from the story's prompt sections; in a structure
 | `character_definitions.name` | `character_definition` |
 | `character_definitions.definition` | `character_definition` |
 | `character_definitions.deflection_style` | `character_definition` |
+| `own_age` | `character_definition` |
+| `beliefs` | `belief_state` |
+| `private_memories` | `working_memory` |
 | `director_notes` | `director_notes` |
 | `pinned_memories` | `pinned_memory` |
 | `summary_segments` | `rolling_summary` |
@@ -61,14 +65,29 @@ Writes the reply of a Lite turn from the story's prompt sections; in a structure
 | `policy_constraints` | `policy_text` |
 | `resolution_steering` | `constraint` |
 | `length_target` | `constraint` |
+| `belief_steps` | `constraint` |
 | `player_input.name` | `player_input` |
 | `player_input.say` | `player_input` |
 | `player_input.do` | `player_input` |
+| `player_authority` | `constraint` |
+| `player_requests` | `player_input` |
 | `scene` | `scene` |
 | `working_memory` | `working_memory` |
+| `just_now` | `working_memory` |
+| `others_present` | `scene` |
+| `interjections` | `constraint` |
 | `retrieved_memories` | `retrieved_memories` |
 | `canon_facts` | `canon_facts` |
 | `open_references` | `scene` |
+| `director_candidates.id` | `character_definition` |
+| `director_candidates.name` | `character_definition` |
+| `director_candidates.card` | `character_definition` |
+| `tiebreak_conflicts.object` | `verified_beat` |
+| `tiebreak_conflicts.name` | `verified_beat` |
+| `tiebreak_conflicts.actions.character_id` | `verified_beat` |
+| `tiebreak_conflicts.actions.name` | `verified_beat` |
+| `tiebreak_conflicts.actions.kind` | `verified_beat` |
+| `tiebreak_conflicts.actions.text` | `verified_beat` |
 | `introductions.name` | `scene` |
 | `introductions.clue` | `scene` |
 | `composition_beats.index` | `verified_beat` |
@@ -98,8 +117,9 @@ Checks one text against one model-assisted policy (FR-GUARD-9).
 | `policy_prompt` | `policy_text` |
 | `subjects.label` | `policy_text` |
 | `subjects.age` | `subject_true_age` |
+| `subjects.present` | `subject_true_age` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`
 
 ### `consolidation`
 
@@ -126,7 +146,7 @@ Compresses one window of episodic memories (and the canon in it) into standing f
 | `level` | `scope_meta` |
 | `covers` | `scope_meta` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`
 
 ### `lite_summary`
 
@@ -181,11 +201,12 @@ Reviews one catalog entry against one rating's content policy: its description, 
 | `deterministic_hits.location` | `catalog_text` |
 | `subjects.label` | `policy_text` |
 | `subjects.age` | `subject_true_age` |
+| `subjects.present` | `subject_true_age` |
 | `elements.kind` | `catalog_text` |
 | `elements.location` | `catalog_text` |
 | `elements.text` | `catalog_text` |
 
-**Never receives:** `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `checked_text`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`
+**Never receives:** `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `checked_text`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`
 
 ### `quality_judge`
 
@@ -207,7 +228,7 @@ Pairwise prose comparisons and single-message scores for the eval harness (NFR-Q
 | `reference` | `eval_text` |
 | `criteria` | `eval_text` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`
 
 ### `importance_scoring`
 
@@ -226,7 +247,7 @@ Scores one memory's importance, 0 (trivia) to 1 (pivotal) (FR-MEM-7).
 | `text` | `memory_text` |
 | `kind` | `memory_text` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`
 
 ### `entailment`
 
@@ -247,7 +268,37 @@ Judges the fuzzy residual of verify: one claim the deterministic check left unce
 | `records.holder` | `canon_record` |
 | `records.valid_time` | `canon_record` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`
+
+### `belief_adjudication`
+
+Decides what one salient witness makes of a say it heard: accept, reject, suspend or only note that it was said, from its own records, its trust in the speaker and the intent it reads; optional work within the turn budget, defaulted by the rules otherwise (FR-BELIEF-3).
+
+- **Hot path:** yes
+- **Default model:** the `entailment` row of `model_config`, then the `default` row, per field, unless the purpose has its own
+- **Template:** `belief_adjudication.j2`
+- **Capability floor:** structured output: constrained `json_schema` decoding, or output reliable enough to parse, validate and retry; minimum context 8,192 tokens
+- **Returns:** `BeliefAdjudicationResult` (`decision`, `confidence`, `reasons`), validated strictly; its free text is author-facing
+
+**Receives**
+
+| Field | Content category |
+|---|---|
+| `witness` | `belief_record` |
+| `witness_beliefs.statement` | `belief_record` |
+| `witness_beliefs.source` | `belief_record` |
+| `witness_beliefs.confidence` | `belief_record` |
+| `trust` | `belief_record` |
+| `priors.outcomes` | `belief_record` |
+| `priors.existing_confidence` | `belief_record` |
+| `priors.rule_default` | `belief_record` |
+| `utterance.speaker` | `utterance_text` |
+| `utterance.text` | `utterance_text` |
+| `utterance.manner` | `utterance_text` |
+| `utterance.claims` | `utterance_text` |
+| `perceived_intent` | `utterance_text` |
+
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_state`
 
 ### `salience_detection`
 
@@ -257,7 +308,7 @@ Tells content placed to be noticed from background texture in one render's beats
 - **Default model:** the `default` row of `model_config`, unless the purpose has its own
 - **Template:** `salience.j2`
 - **Capability floor:** structured output: constrained `json_schema` decoding, or output reliable enough to parse, validate and retry; minimum context 8,192 tokens
-- **Returns:** `SalienceResult` (`salient`, `texture`), validated strictly; its free text is author-facing
+- **Returns:** `SalienceResult` (`salient`, `texture`, `characters`), validated strictly; its free text is author-facing
 
 **Receives**
 
@@ -270,7 +321,7 @@ Tells content placed to be noticed from background texture in one render's beats
 | `scene_context.present_entities` | `scene` |
 | `scene_context.last_beats` | `scene` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`
 
 ### `extraction_backstop`
 
@@ -293,7 +344,7 @@ The model layer of claim detection: lists every factual claim one render's beats
 | `scene_context.present_entities` | `scene` |
 | `scene_context.last_beats` | `scene` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`
 
 ### `regeneration`
 
@@ -315,6 +366,9 @@ Rewrites one beat of a structured render that contradicted canon or asserted wha
 | `character_definitions.name` | `character_definition` |
 | `character_definitions.definition` | `character_definition` |
 | `character_definitions.deflection_style` | `character_definition` |
+| `own_age` | `character_definition` |
+| `beliefs` | `belief_state` |
+| `private_memories` | `working_memory` |
 | `director_notes` | `director_notes` |
 | `pinned_memories` | `pinned_memory` |
 | `summary_segments` | `rolling_summary` |
@@ -327,14 +381,29 @@ Rewrites one beat of a structured render that contradicted canon or asserted wha
 | `policy_constraints` | `policy_text` |
 | `resolution_steering` | `constraint` |
 | `length_target` | `constraint` |
+| `belief_steps` | `constraint` |
 | `player_input.name` | `player_input` |
 | `player_input.say` | `player_input` |
 | `player_input.do` | `player_input` |
+| `player_authority` | `constraint` |
+| `player_requests` | `player_input` |
 | `scene` | `scene` |
 | `working_memory` | `working_memory` |
+| `just_now` | `working_memory` |
+| `others_present` | `scene` |
+| `interjections` | `constraint` |
 | `retrieved_memories` | `retrieved_memories` |
 | `canon_facts` | `canon_facts` |
 | `open_references` | `scene` |
+| `director_candidates.id` | `character_definition` |
+| `director_candidates.name` | `character_definition` |
+| `director_candidates.card` | `character_definition` |
+| `tiebreak_conflicts.object` | `verified_beat` |
+| `tiebreak_conflicts.name` | `verified_beat` |
+| `tiebreak_conflicts.actions.character_id` | `verified_beat` |
+| `tiebreak_conflicts.actions.name` | `verified_beat` |
+| `tiebreak_conflicts.actions.kind` | `verified_beat` |
+| `tiebreak_conflicts.actions.text` | `verified_beat` |
 | `introductions.name` | `scene` |
 | `introductions.clue` | `scene` |
 | `composition_beats.index` | `verified_beat` |
@@ -375,7 +444,7 @@ Embeds memory texts and retrieval queries over the OpenAI-compatible `/embedding
 |---|---|
 | `text` | `memory_text` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`
 
 ## Reserved purposes
 
@@ -384,7 +453,6 @@ its floor and data-flow row, in the milestone that delivers it.
 
 | Purpose | Kind | Milestone | Defaults to | Description |
 |---|---|---|---|---|
-| `belief_adjudication` | purpose | M5 | `entailment` | Adjudicated belief transitions. |
 | `time_estimation` | purpose | M6 | `extraction_backstop` | Best-guess duration of a narrated skip. |
 | `image_prompt` | purpose | M8 | `generation` | Writes image prompts. |
 | `image_check` | purpose | M8 | — | Vision checks of image outputs; no default. |
@@ -421,6 +489,9 @@ its floor and data-flow row, in the milestone that delivers it.
 | `canon_facts` | The canon facts retrieval found for a structured render (#150), filtered for the rendering character's viewpoint, without its own true age. |
 | `constraint` | A repair's constraint on the beat it regenerates (#151): its kind (`do_not_assert`, `avoid_binding`, `policy`), its text and the ids of the records it cites. |
 | `verified_beat` | A structured turn's composition (#152): its verified beats as the output viewpoint receives them (index, kind, actor's name, text; never a `think` or `latent` beat for a character viewpoint) and their deterministic assembly, which the polish may only order and join. |
+| `belief_record` | One salient witness's view for testimony adjudication (#162): its name, the records the deterministic consistency check read for the claim (its own beliefs and the canon it may read, rendered like claims), its trust in the speaker, its earlier outcomes with that speaker and the rules' default decision. Never another character's private record or canon the witness cannot know. |
+| `belief_state` | A structured character render's own belief state (#170, FR-TURN-8): its beliefs as "you suspect / believe / know ..." lines, its nested beliefs ("you think Bobby believes ...") and the speech acts it heard ("you heard Bobby say ..."). Its own partition only; never another character's, a scalar, a provenance or a divergence. |
+| `utterance_text` | The say a witness heard (#162): the speaker's name, the words as the witness perceived them, the visible manner, the claims they carry and the intent the witness reads. |
 
 ## Hosted providers and retention
 

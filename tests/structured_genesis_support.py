@@ -64,14 +64,15 @@ def structured_dinner(locked: str, default: str) -> dict[str, Any]:
 
 
 def structured_request(scenario_id: str, mother: str, **fields: Any) -> dict[str, Any]:
-    """The creation of a story from ``scenario_id`` under the seeded ``Structured (M4)`` profile,
-    ``mother`` cast in the open role, with the full report."""
+    """The creation of a story from ``scenario_id`` pinned to the seeded profile's version 1
+    (``Structured (M4)``), ``mother`` cast in the open role, with the full report."""
     from tests import genesis_support as g
 
     return g.from_scenario(
         scenario_id,
         slots={"mother": g.catalog_slot(mother)},
         engine_profile_id=structured_m4(),
+        engine_profile_version=1,
         ignore_warnings=True,
         projection="full",
         **fields,

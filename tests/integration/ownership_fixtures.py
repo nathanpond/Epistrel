@@ -343,6 +343,12 @@ async def _story_character(client: httpx.AsyncClient, kind: Kind, entity: Entity
     return {"character_id": entity.ids["ada"]}
 
 
+async def _believing(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """The query naming the story's non-player character, Ada, whose belief projection the
+    read answers (#159): a ``query.``-prefixed value is a query parameter, not a path value."""
+    return {"query.character": entity.ids["ada"]}
+
+
 async def _edited_persona(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
     await _send(client, kind, entity, "PATCH", "", {"age": 24, "gender": None}, 200)
     return {}
@@ -485,6 +491,17 @@ async def _profiled(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> di
     return {"entity_id": str(found)}
 
 
+async def _unmodeled(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """A ``person`` entity of the story that no character is yet (#163's modeling directive),
+    created as #139's resolver would, on the app's own database."""
+    from epistrel.core.propositions import store
+
+    db = client._transport.app.state.epistrel.db  # type: ignore[attr-defined]
+    async with db.begin() as conn:
+        found = await store.add_entity(conn, entity.id, "person", "The neighbor")
+    return {"entity_id": str(found)}
+
+
 async def _a_memory(entity: Entity, client: httpx.AsyncClient, *, pinned: bool) -> str:
     """A fresh memory of the story (#147's pin calls), written straight into ``memories`` on the
     app's own database against the story's first operation."""
@@ -600,6 +617,15 @@ CALLS: dict[tuple[str, str], Call] = {
         201, {"name": "Dale", "definition": "A delivery driver in a hurry.", "true_age": 52}
     ),
     ("POST", f"{S}/characters/{{character_id}}/promote"): Call(201, {}, prepare=_story_character),
+    # -- stories: a character's narrative weight, and an entity modeled as a minor (#163)
+    ("POST", f"{S}/characters/{{character_id}}/weight"): Call(
+        200, {"weight": "minor"}, prepare=_story_character
+    ),
+    ("POST", f"{S}/entities/{{entity_id}}/model"): Call(201, {"true_age": 40}, prepare=_unmodeled),
+    # -- stories: a character's participation role (#176)
+    ("PATCH", f"{S}/characters/{{character_id}}/participation"): Call(
+        200, {"role": "primary", "fixed": True}, prepare=_story_character
+    ),
     # -- stories: the configuration preview (#109), which writes nothing, and the story's
     # profile and overrides (#113): the story's own profile again (a no-op), and an override no
     # capability hangs on (applied at once)
@@ -629,6 +655,11 @@ CALLS: dict[tuple[str, str], Call] = {
     ),
     # Commitments (#146): the thunks and the promissory ledger, omniscient.
     ("GET", f"{S}/inspect/ledger"): Call(200, queries=(OMNISCIENT,), prepare=_committing),
+    # Belief partitions (#159) and #178's knowledge inspections, omniscient: the story keeps no
+    # partitions (#181 delivers the module), so every requester gets the same 409 module_off.
+    ("GET", f"{S}/inspect/beliefs"): Call(409, queries=(OMNISCIENT,), prepare=_believing),
+    ("GET", f"{S}/inspect/divergences"): Call(409, queries=(OMNISCIENT,)),
+    ("GET", f"{S}/inspect/exposures"): Call(409, queries=(OMNISCIENT,)),
     # Author pins (#147): a fresh memory pinned, a fresh pinned memory unpinned.
     ("POST", f"{S}/memories/{{memory_id}}/pin"): Call(200, prepare=_memory),
     ("DELETE", f"{S}/memories/{{memory_id}}/pin"): Call(200, prepare=_pinned_memory),
@@ -733,6 +764,19 @@ def served_entity_routes(app: FastAPI, kind: Kind) -> set[tuple[str, str]]:
     return found
 
 
+QUERY_PREFIX = "query."
+"""A ``prepare`` value under this prefix is a query parameter of the request (``request_query``),
+not a path value."""
+
+
+def request_query(query: dict[str, str], extra: dict[str, Any]) -> dict[str, Any]:
+    """``query`` with ``extra``'s ``query.``-prefixed values added."""
+    return {
+        **query,
+        **{k.removeprefix(QUERY_PREFIX): v for k, v in extra.items() if k.startswith(QUERY_PREFIX)},
+    }
+
+
 def request_path(kind: Kind, route: str, entity: Entity, extra: dict[str, Any]) -> str:
     """``route`` (as served) for ``entity``, with ``extra`` path values."""
     path = route.replace(kind.item, kind.path(entity.id), 1).replace(
@@ -764,6 +808,7 @@ __all__ = [
     "owner_of",
     "persona_body",
     "request_path",
+    "request_query",
     "respond_body",
     "served_entity_routes",
 ]

@@ -15,6 +15,10 @@ from epistrel.core.variants import ChainRef
 router = APIRouter(tags=["stories"])
 
 Channel = Literal["say", "do", "think", "latent", "narration", "message", "audit"]
+AudienceFilterValue = Literal[
+    "none", "co_location", "full", "nothing_perceived", "bypassed_by_player_view"
+]
+"""What a result states about its audience filtering (FR-RESP-13; #177)."""
 
 HISTORY_DESCRIPTION = (
     "The story's corrected history through `as_of` (default: the latest turn), produced for one "
@@ -24,7 +28,18 @@ HISTORY_DESCRIPTION = (
     "\n\nA character viewpoint never receives `think` or `latent` beats. Under the `lite` "
     "profile perception is `none`, so every other beat is returned in full and "
     '`audience_filter` is `"none"`: Epistrel does not decide which callers may request which '
-    "viewpoint. Omniscient items carry the true ages of the characters they name.\n\n"
+    "viewpoint. Omniscient items carry the true ages of the characters they name."
+    "\n\nWhere the story's perception is `co_location` or `full` (FR-RESP-13), a character "
+    "read is filtered beat by beat by the same perception routing as the character's memory, "
+    "from authoritative positions: a beat the character perceived is returned in full, one it "
+    "perceived only the envelope of is returned as that envelope (`fidelity: envelope`, "
+    '"Jenni whispers something to Marcus"), and any other is omitted; each turn\'s message '
+    "is "
+    "recomposed over what is returned, and `audience_filter` names the level. A character "
+    "read's structured beats carry no verdicts, `detected` claims or `effects`. `player_view` "
+    "(`character` | `story`; default the story's setting) `story` returns every beat in full "
+    "instead, each with the `fidelity` the character would have perceived it at "
+    '(`audience_filter: "bypassed_by_player_view"`); it is echoed as `player_view`.\n\n'
     "`include_audit=1` adds the turns' audit records and requires `viewpoint=omniscient` "
     "(403 `omniscient_required`). Pages hold whole turns, newest first, up to `limit` items; "
     "pass `next_before_turn` as `before_turn` for the previous page."
@@ -46,11 +61,27 @@ class BeatPropositionModel(BaseModel):
 
 
 class UtteranceLabelsModel(BaseModel):
-    """An utterance's three independent labels (FR-TURN-6; #150)."""
+    """An utterance's three independent labels (FR-TURN-6; #150) and, once the verifier
+    classified it under per-character partitions (#166), its classification."""
 
     objective_relation: Literal["true", "false", "unresolved"]
     belief_relation: Literal["consistent", "inconsistent", "unknown"]
     intent: Literal["sincere", "deceptive", "joking", "unspecified"]
+    classification: (
+        Literal["sincere", "sincere_error", "lie", "joke", "hallucination_repaired"] | None
+    ) = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="#166: the verifier's classification of the utterance (FR-VERIFY-5), its "
+        "worst claim's. A classified utterance's labels are returned on `omniscient` reads "
+        "only: its belief relation is the speaker's private state.",
+    )
+    intent_corrected: bool = Field(
+        default=False,
+        exclude_if=lambda v: not v,
+        description="#166: a declared `deceptive` the speaker's beliefs support, relabelled "
+        "`sincere` (`intent` is then `sincere`).",
+    )
 
 
 class BeatVisibilityModel(BaseModel):
@@ -126,6 +157,20 @@ class HistoryItemModel(BaseModel):
         description="A structured turn's beat (#150): claims detection found in it that it "
         "did not declare, as spans, categories and verdicts.",
     )
+    narrated_by: str | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="A reactive character's reaction (#176, FR-MULTI-9): the id of the "
+        "character whose render narrated it (the item's actor is the reactor).",
+    )
+    fidelity: Literal["content", "envelope", "none"] | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="A structured turn's beat (#177, FR-RESP-13): the fidelity the viewing "
+        "character perceived it at: `content`, or `envelope` (the text is then the envelope, "
+        "with no propositions or labels); under `player_view = story` also `none` (the beat "
+        "in full, unperceived). Always `content` for `omniscient` and perception `none`.",
+    )
 
 
 class OmniscientHistoryItemModel(HistoryItemModel):
@@ -185,7 +230,8 @@ class HistoryResponse(BaseModel):
     summary: list[SummarySegmentModel] | None = None
     turns: list[TurnSummaryModel]
     output_viewpoint: str
-    audience_filter: Literal["none", "co_location", "full"]
+    audience_filter: AudienceFilterValue
+    player_view: Literal["character", "story"]
     as_of: int
     timeline_revision: int
     next_before_turn: int | None
@@ -203,6 +249,7 @@ class HistoryResponse(BaseModel):
             turns=[TurnSummaryModel.of(t) for t in found.turns],
             output_viewpoint=found.output_viewpoint,
             audience_filter=found.audience_filter,
+            player_view=found.player_view,
             as_of=found.as_of,
             timeline_revision=found.timeline_revision,
             next_before_turn=found.next_before_turn,
@@ -228,6 +275,7 @@ async def history(
     include_audit: bool = False,
     variant: str | None = None,
     include_summary: bool = False,
+    player_view: Literal["character", "story"] | None = None,
 ) -> HistoryResponse:
     found = await engine.history(
         ctx,
@@ -239,5 +287,6 @@ async def history(
         include_audit=include_audit,
         variant=None if variant is None else ChainRef.parse(variant),
         include_summary=include_summary,
+        player_view=player_view,
     )
     return HistoryResponse.of(found)

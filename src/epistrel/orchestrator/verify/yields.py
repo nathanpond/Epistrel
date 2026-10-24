@@ -5,7 +5,9 @@ named this module ``yield.py``; ``yield`` is a Python keyword, so it is ``yields
 **Which records.** Every record of a turn's verifiers whose claim the gate could escalate under
 the profile's ``entailment`` level: the gate said ``escalate`` (an entailment call, or an
 attempt the budget or an unavailable model cut short) or ``below_gate`` (a tightened gate
-skipped the call: ``skipped_by_gate``, no model verdict). Each verification pass writes its
+skipped the call: ``skipped_by_gate``, no model verdict), and, at every level, an unbacked recall
+(#172: gate reason and outcome ``confabulation``, tentative and final ``novel``, no call; the
+audit record of a confabulation, FR-VERIFY-9). Each verification pass writes its
 own rows (``pass``): the turn's renders and the follow-up render are ``render``, a repair's
 re-verification of its candidate is ``repair_<rung>``, the composed message's ``composed``.
 
@@ -58,7 +60,9 @@ COMPOSED = "composed"
 REPAIR_KEPT = "repair_kept"
 REPAIR_DISCARDED = "repair_discarded"
 NONE = "none"
-RECORDED_OUTCOMES = frozenset({"escalate", "below_gate"})
+CONFABULATION = "confabulation"
+"""#172: an unbacked recall's audit row (gate reason and outcome ``confabulation``; no call)."""
+RECORDED_OUTCOMES = frozenset({"escalate", "below_gate", CONFABULATION})
 
 
 def repair_pass(rung: int) -> str:

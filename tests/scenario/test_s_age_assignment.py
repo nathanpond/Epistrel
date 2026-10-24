@@ -9,6 +9,13 @@ age-repair call answers each one integer inside its clue's range, recorded on th
 (``true_age_source = repaired``) and as a canon ``age`` fact from the turn's story-time. An
 omniscient read returns the exact age; a character's read does not. When the old man later
 says "I'm 70", the claim is checked against canon (64) and labelled on the three dimensions.
+
+``test_s_age_assignment__m5`` (FR-CAT-12, FR-RESP-12; #170): with per-character partitions, each
+rendered character's own context (``core.epistemic.context.build_context``) holds its true age
+("You are 34."), and every other present character appears on its ``## Scene`` line with only
+an apparent band (``age_band``: "mid thirties", "teens", "elderly"), never the integer, which is
+also left out of the canon lines. Once Bobby believes Marcus is 17, Bobby's card shows the age
+he believes. Complement: in shared mode (partitions off) no context carries an age line.
 """
 
 from __future__ import annotations
@@ -19,19 +26,26 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core.epistemic.context import age_band
+from epistrel.core.propositions.model import Interval, LiteralKind, Proposition, TypedLiteral
+from tests import partition_support as parts
+from tests import perception_support as ps
 from tests.auth_support import auth_settings
 from tests.event_support import rows
 from tests.respond_support import body, respond, respond_client
-from tests.story_support import READ, override
+from tests.story_support import READ, character, override
 from tests.structured_turn_support import (
+    AGE,
     UNKNOWN,
     ages,
     beat,
     claim,
+    history,
     labels_of,
     render,
     schema_calls,
     structured_story,
+    text_of,
 )
 
 PEOPLE: list[dict[str, Any]] = [
@@ -143,8 +157,90 @@ async def test_s_age_assignment__structured(
         assert later.status_code == 200, later.text
         (spoken,) = [b for b in later.json()["beats"] if b["kind"] == "beat_say"]
         assert labels_of(spoken) == ("false", UNKNOWN, "sincere")
-        assert spoken["propositions"][0]["verdict"] == "contradicted"
+        # #177: a character read carries no verdicts; the omniscient read keeps them.
+        assert spoken["propositions"][0]["verdict"] is None
+        seen = await history(client, story, "omniscient")
+        (told,) = [i for i in seen if i["kind"] == "beat_say" and i["text"] == "I'm 70, you know."]
+        assert told["propositions"][0]["verdict"] == "contradicted"
         # No new character, no second age.
         again = await _cast(client, story, "omniscient")
         assert len(again) == len(omniscient)
         assert again["the old man"]["true_age"] == 64
+
+
+TRUE_AGES = {"Wren": 25, "Jenni": 34, "Marcus": 17, "Bobby": 71}
+BANDS = {"Wren": "mid twenties", "Jenni": "mid thirties", "Marcus": "teens", "Bobby": "elderly"}
+
+
+@pytest.mark.part("M5", "FR-CAT-12; FR-RESP-12")
+async def test_s_age_assignment__m5(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """See the module docstring."""
+    assert [age_band(a) for a in (None, 8, 15, 20, 24, 29, 34, 47, 69, 70)] == [
+        None,
+        "child",
+        "teens",
+        "early twenties",
+        "mid twenties",
+        "late twenties",
+        "mid thirties",
+        "late forties",
+        "late sixties",
+        "elderly",
+    ]
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        cast = [character(name, age, is_player=(name == "Wren")) for name, age in TRUE_AGES.items()]
+        story, ids = await structured_story(client, characters=cast)
+        await ps.perceive(engine, story, "full")
+        parlor = await ps.place_entity(engine, story, "parlor")
+        for name in TRUE_AGES:
+            await ps.put(engine, story, ids[name], parlor)
+        stub = epistrel.models.stub
+
+        async def context_of(name: str) -> str:
+            stub.calls.clear()
+            stub.script("generation", [render(beat("do", f"{name} nods."))])
+            answer = await respond(
+                client,
+                story,
+                body(ids["Wren"], "How old is everyone here?", render_character_ids=[ids[name]]),
+            )
+            assert answer.status_code == 200, answer.text
+            (call,) = schema_calls(stub, "CharacterRender")
+            return text_of(call)
+
+        for name in ("Jenni", "Marcus", "Bobby"):
+            own = await context_of(name)
+            assert f"You are {TRUE_AGES[name]}." in own, name
+            for other, age in TRUE_AGES.items():
+                if other == name:
+                    continue
+                assert f"{other} ({BANDS[other]})" in own, (name, other)
+                assert f"You are {age}." not in own, (name, other)
+                assert f"({age})" not in own, (name, other)
+                assert f"age {age}" not in own, (name, other)
+
+        # Bobby comes to believe Marcus is 17: his card shows the age he believes.
+        await parts.believe(
+            engine,
+            story,
+            ids["Bobby"],
+            Proposition(
+                subject_id=ids["Marcus"],
+                predicate_id=AGE,
+                literal=TypedLiteral(kind=LiteralKind.INT, value=17),
+                valid_time=Interval.of(None, None),
+            ),
+        )
+        bobby = await context_of("Bobby")
+        assert "Marcus (17)" in bobby
+        assert f"Jenni ({BANDS['Jenni']})" in bobby
+
+        # Complement: shared knowledge (partitions off) carries no age line.
+        await ps.perceive(engine, story, "none")
+        shared = await context_of("Jenni")
+        assert "You are 34." not in shared
+        assert "(mid thirties)" not in shared

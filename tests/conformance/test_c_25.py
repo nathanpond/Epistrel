@@ -18,6 +18,12 @@ inputs are delivered structurally, and E-13 measures the outputs as signals.
 Complement: in M4's shared-knowledge mode, the planned reveal, the hooks, the objectives and the
 guidance appear only inside the narrator's labelled block, never in the character's prompt. Full
 exclusion by visibility is M5's part (FR-EPI-5).
+
+``test_c_25__m5`` (FR-EPI-5; #170): with per-character partitions, a planned reveal committed as
+canon only Marcus may read (``commit_fact`` with ``characters: [Marcus]`` visibility: that Jenni
+forged the letter for Wren) is in no other character's context. Asked about Jenni and the
+letter, Bobby's and Jenni's renders do not carry the fact's line, and Marcus's does (the
+complement: the fact is retrievable, and visibility alone keeps it from the others).
 """
 
 from __future__ import annotations
@@ -26,14 +32,19 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core.canon.facts import Visibility
+from epistrel.core.enums import OperationKind
 from epistrel.core.genesis.render import DIRECTOR_HEADING, DISPOSITION_PHRASES
+from epistrel.core.propositions.model import Interval, Proposition
 from tests import genesis_support as g
+from tests import perception_support as ps
 from tests import scenario_support as scenarios
 from tests import structured_genesis_support as sg
 from tests.auth_support import auth_settings
+from tests.canon_support import auto_predicate, commit
 from tests.character_support import DISPOSITIONS
 from tests.respond_support import body, respond, respond_client
-from tests.structured_turn_support import beat, render, schema_calls, text_of
+from tests.structured_turn_support import beat, render, schema_calls, structured_story, text_of
 
 pytestmark = pytest.mark.integration
 
@@ -114,3 +125,54 @@ async def test_c_25__m4(
     assert DIRECTOR_HEADING not in own
     for driver in DRIVERS:
         assert driver not in own, driver
+
+
+@pytest.mark.part("M5", "FR-EPI-5")
+async def test_c_25__m5(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """See the module docstring."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        story, ids = await structured_story(client, "Wren", "Jenni", "Marcus", "Bobby")
+        await ps.perceive(engine, story, "full")
+        parlor = await ps.place_entity(engine, story, "parlor")
+        for name in ids:
+            await ps.put(engine, story, ids[name], parlor)
+        forged = await auto_predicate(engine, story, "forged the letter for")
+        await commit(
+            engine,
+            story,
+            Proposition(
+                subject_id=ids["Jenni"],
+                predicate_id=forged,
+                object_id=ids["Wren"],
+                valid_time=Interval.of(None, None),
+            ),
+            kind=OperationKind.CONTROL,
+            provenance="author",
+            visibility=Visibility(scope="characters", characters=(ids["Marcus"],)),
+        )
+        stub = epistrel.models.stub
+
+        async def context_of(name: str) -> str:
+            stub.calls.clear()
+            stub.script("generation", [render(beat("do", f"{name} shrugs."))])
+            answer = await respond(
+                client,
+                story,
+                body(
+                    ids["Wren"],
+                    "Jenni, Marcus, Bobby: who wrote the letter for Wren?",
+                    render_character_ids=[ids[name]],
+                ),
+            )
+            assert answer.status_code == 200, answer.text
+            (call,) = schema_calls(stub, "CharacterRender")
+            return text_of(call)
+
+        # The canon line names the auto-registered relation.
+        assert "Jenni forged_the_letter_for Wren" in await context_of("Marcus")
+        for name in ("Bobby", "Jenni"):
+            assert "forged_the_letter_for" not in await context_of(name), name

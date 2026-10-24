@@ -59,9 +59,9 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from types import SimpleNamespace
-from typing import Any, Literal, Protocol, Self
+from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import (
     BigInteger,
     ColumnElement,
@@ -73,6 +73,7 @@ from sqlalchemy import (
     literal,
     or_,
     select,
+    tuple_,
     update,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, INT8RANGE, Range, array
@@ -100,12 +101,17 @@ from epistrel.core.enums import (
 from epistrel.core.erasure import guard
 from epistrel.core.erasure.index import index_records
 from epistrel.core.erasure.records import event_record, fact_record
-from epistrel.core.errors import InvalidRequest, ViewpointUnresolved
+from epistrel.core.errors import (
+    IdentityMergeNotYet,
+    InvalidRequest,
+    ViewpointCannotAssignTruth,
+    ViewpointUnresolved,
+)
 from epistrel.core.events.registry import validate
 from epistrel.core.events.types import FactCommitted
 from epistrel.core.events.types import FactSuperseded as FactSupersededEvent
 from epistrel.core.ids import new_ulid
-from epistrel.core.membership import active_as_of, active_only, insert_derived
+from epistrel.core.membership import Through, active_as_of, active_only, bound_of, insert_derived
 from epistrel.core.projections import structured
 from epistrel.core.propositions import store
 from epistrel.core.propositions.codec import proposition_from_row
@@ -117,10 +123,25 @@ from epistrel.core.propositions.model import (
     Proposition,
     TemporalKind,
 )
-from epistrel.core.propositions.registry import Registry, canonical, load
+from epistrel.core.propositions.registry import (
+    Registry,
+    canonical,
+    file_identity_proposal,
+    load,
+)
+from epistrel.core.resolution.identity import pair_of
 from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX, OMNISCIENT
 from epistrel.core.tables import characters, entities, events, predicates, propositions
 from epistrel.core.tables.facts import facts
+from epistrel.core.visibility import (
+    OBJECTIVE,
+    READER_VIEWPOINTS,
+    SHARED_SCOPES,
+    Visibility,
+    VisibilityScope,
+    visible_clause,
+    visible_to,
+)
 
 FACT_COMMITTED = "fact_committed"
 FACT_SUPERSEDED = "fact_superseded"
@@ -129,46 +150,7 @@ TICK = timedelta(microseconds=1)
 """The step a second closure in one transaction takes past its version's ``tx_from``, so no
 transaction-time interval is empty."""
 
-VisibilityScope = Literal["objective", "public", "engine", "characters"]
-
-READER_VIEWPOINTS: frozenset[str] = frozenset({"narrator", "director", "player"})
-"""Readers that are no character: they see ``objective`` and ``public`` facts only."""
-
-SHARED_SCOPES: tuple[str, ...] = ("objective", "public")
-"""The scopes every viewpoint sees."""
-
-
 # -- models -----------------------------------------------------------------------------------
-
-
-class Visibility(BaseModel):
-    """Who may read a fact: ``objective`` (canon narration), ``public`` (publicly known),
-    ``engine`` (engine-only, e.g. true ages: ``omniscient`` alone) or ``characters`` (only the
-    characters listed, e.g. a ``latent`` beat's scope, and ``omniscient``)."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    scope: VisibilityScope = "objective"
-    characters: tuple[str, ...] | None = None
-
-    @model_validator(mode="after")
-    def _characters(self) -> Self:
-        if self.scope == "characters":
-            if not self.characters:
-                raise ValueError("a characters scope names at least one character")
-            object.__setattr__(self, "characters", tuple(sorted(set(self.characters))))
-        elif self.characters is not None:
-            raise ValueError(f"a {self.scope} scope names no characters")
-        return self
-
-    def document(self) -> dict[str, Any]:
-        """The stored ``visibility`` document."""
-        if self.scope == "characters":
-            return {"scope": self.scope, "characters": list(self.characters or ())}
-        return {"scope": self.scope}
-
-
-OBJECTIVE = Visibility()
 
 
 class FactOperation(Protocol):
@@ -381,33 +363,6 @@ async def check_viewpoint(conn: AsyncConnection, story_id: str, viewpoint: str) 
     )
 
 
-def visible_clause(table: Any, viewpoint: str) -> ColumnElement[bool] | None:
-    """The visibility predicate on ``table`` (``facts`` or an alias) for ``viewpoint``
-    (``None``: everything, the ``omniscient`` read)."""
-    if viewpoint == OMNISCIENT:
-        return None
-    scope = table.c.visibility["scope"].astext
-    shared: ColumnElement[bool] = scope.in_(SHARED_SCOPES)
-    if not viewpoint.startswith(CHARACTER_VIEWPOINT_PREFIX):
-        return shared
-    member = viewpoint.removeprefix(CHARACTER_VIEWPOINT_PREFIX)
-    return or_(
-        shared,
-        and_(scope == "characters", table.c.visibility.contains({"characters": [member]})),
-    )
-
-
-def visible_to(visibility: Visibility, viewpoint: str) -> bool:
-    """``visible_clause`` for one fact in Python."""
-    if viewpoint == OMNISCIENT:
-        return True
-    if visibility.scope in SHARED_SCOPES:
-        return True
-    if visibility.scope != "characters" or not viewpoint.startswith(CHARACTER_VIEWPOINT_PREFIX):
-        return False
-    return viewpoint.removeprefix(CHARACTER_VIEWPOINT_PREFIX) in (visibility.characters or ())
-
-
 # -- reading versions ---------------------------------------------------------------------------
 
 _P = "p_"
@@ -459,18 +414,26 @@ def _fact_of(row: Any, **extra: Any) -> Fact:
     )
 
 
-Position = tuple[int, int]
-"""A narrative position bound ``(turn, slot_k)``; slot 0 is the turn itself (``N``), slot k
-the k-th inter-turn slot after it (``N⁺k``)."""
+Position = Through
+"""A narrative position bound: ``(turn, slot_k)`` (slot 0 is the turn itself, ``N``; slot k the
+k-th inter-turn slot after it, ``N⁺k``), or a full ``core.membership.Position`` (#164: an
+exposure frame bounds canon at its beat and step, FR-STORE-31)."""
 
 
 def _through(t: Any, position: Position) -> ColumnElement[bool]:
-    """Row ``t`` was written at or before ``position``, or has no position (FR-STORE-26)."""
-    turn, slot = position
+    """Row ``t`` was written at or before ``position`` in ``(turn, slot_k, beat, step)`` order,
+    or has no position (FR-STORE-26). A ``(turn, slot_k)`` bound is the end of that turn or
+    slot, so it admits every beat and step of it."""
+    bound = bound_of(position)
+    key = tuple_(
+        t.c.narrative_turn,
+        func.coalesce(t.c.slot_k, 0),
+        func.coalesce(t.c.beat, 0),
+        t.c.step,
+    )
     return or_(
         t.c.narrative_turn.is_(None),
-        t.c.narrative_turn < turn,
-        and_(t.c.narrative_turn == turn, func.coalesce(t.c.slot_k, 0) <= slot),
+        key <= tuple_(*(literal(v) for v in bound.key())),
     )
 
 
@@ -907,6 +870,18 @@ async def _written(conn: AsyncConnection, story_id: str, ids: Iterable[str]) -> 
     return {str(r.id): _fact_of(r) for r in found}
 
 
+def refuse_holder(holder: str | None, field_name: str = "holder") -> None:
+    """FR-EPI-8 (#169): canon has one holder. A write naming any other (a character's id, a
+    viewpoint) is 422 ``viewpoint_cannot_assign_truth``: a character's divergent view is an owned
+    belief, never a per-character value of the fact."""
+    if holder is None or holder == HolderKind.CANON.value:
+        return
+    raise ViewpointCannotAssignTruth(
+        "a viewpoint cannot assign a canon fact's truth: a character's view is a belief (FR-EPI-8)",
+        {"field": field_name, "holder": holder},
+    )
+
+
 async def commit_fact(
     conn: AsyncConnection,
     story_id: str,
@@ -926,6 +901,7 @@ async def commit_fact(
     registry: Registry | None = None,
     thunk_id: str | None = None,
     resolution_level: str | None = None,
+    holder: str = HolderKind.CANON.value,
 ) -> Fact:
     """Write ``proposition`` as a new fact version in ``operation``'s commit transaction (see
     the module docstring); answers the version, with the versions it closed in
@@ -936,8 +912,18 @@ async def commit_fact(
     caused the fact (its own ``fact_committed`` event when none); ``beat`` and ``slot_k``
     refine its narrative position, which is the operation's; ``thunk_id`` names the thunk a
     dependence resolved with it (#146's ``core.commit.lifecycle.depend``); ``resolution_level`` is
-    FR-COMMIT-9's level (#154; ``None`` reads as ``consequential``)."""
-    return await _write(
+    FR-COMMIT-9's level (#154; ``None`` reads as ``consequential``). ``holder`` is always
+    ``canon``: any other is 422 ``viewpoint_cannot_assign_truth`` (``refuse_holder``, #169).
+
+    An affirmed ``same_as`` between two entities (FR-PROP-7, #171) files an identity proposal
+    for the pair in the same transaction (``registry.file_identity_proposal``: the engine never
+    merges them itself); one between two of the story's characters is 422
+    ``identity_merge_not_yet`` (merging two modeled characters is M7's amendment)."""
+    refuse_holder(holder)
+    pair = pair_of(proposition)
+    if pair is not None:
+        await refuse_character_merge(conn, story_id, pair)
+    fact = await _write(
         conn,
         _Write(
             story_id=story_id,
@@ -960,6 +946,37 @@ async def commit_fact(
         ),
         registry,
     )
+    if pair is not None:
+        await file_identity_proposal(
+            conn, story_id, pair, reason="canon_same_as", fact_ids=[fact.id]
+        )
+    return fact
+
+
+async def characters_among(
+    conn: AsyncConnection, story_id: str, entity_ids: Iterable[str]
+) -> frozenset[str]:
+    """Which of ``entity_ids`` are the story's characters (#171)."""
+    wanted = sorted(set(entity_ids))
+    if not wanted:
+        return frozenset()
+    rows = await conn.scalars(
+        select(characters.c.id).where(
+            characters.c.story_id == story_id, characters.c.id.in_(wanted)
+        )
+    )
+    return frozenset(str(r) for r in rows)
+
+
+async def refuse_character_merge(
+    conn: AsyncConnection, story_id: str, pair: tuple[str, str]
+) -> None:
+    """422 ``identity_merge_not_yet`` when both of ``pair`` are the story's characters (#171)."""
+    if len(await characters_among(conn, story_id, pair)) == 2:
+        raise IdentityMergeNotYet(
+            "two characters are one referent only through a merge, which is not served yet",
+            {"entities": list(pair)},
+        )
 
 
 async def supersede(
@@ -978,6 +995,7 @@ async def supersede(
     slot_k: int | None = None,
     registry: Registry | None = None,
     author_locked: bool | None = None,
+    holder: str = HolderKind.CANON.value,
 ) -> Fact:
     """Close version ``fact_id`` in transaction-time and write ``new_proposition`` as its
     successor in the same lineage (never a delete, FR-BITEMP-2). Provenance, visibility,
@@ -985,7 +1003,9 @@ async def supersede(
     unless given; ``authority`` defaults to the given provenance's, else the old version's.
     404 ``fact_not_found``; 409 ``fact_inactive`` for a discarded or dormant version; 409
     ``fact_superseded`` for a closed one (supersede the lineage's current version); 422
-    ``key_mismatch`` when the uniqueness key changes."""
+    ``key_mismatch`` when the uniqueness key changes; 422 ``viewpoint_cannot_assign_truth`` for
+    a ``holder`` other than ``canon`` (#169)."""
+    refuse_holder(holder)
     old, current = await _load(conn, story_id, fact_id)
     if old.membership is not Membership.ACTIVE:
         raise FactInactive(
@@ -1037,7 +1057,7 @@ def _canon_where(
     *,
     story_time: int | None = None,
     record_time: datetime | None = None,
-    through_position: tuple[int, int] | None = None,
+    through_position: Position | None = None,
     viewpoint: str = OMNISCIENT,
     subject: str | None = None,
     predicate: str | None = None,
@@ -1086,7 +1106,7 @@ async def canon(
     *,
     story_time: int | None = None,
     record_time: datetime | None = None,
-    through_position: tuple[int, int] | None = None,
+    through_position: Position | None = None,
     viewpoint: str = OMNISCIENT,
     subject: str | None = None,
     predicate: str | None = None,
@@ -1155,7 +1175,7 @@ _ABSENT = object()
 
 
 async def canon_refs(
-    conn: AsyncConnection, story_id: str, *, through_position: tuple[int, int] | None = None
+    conn: AsyncConnection, story_id: str, *, through_position: Position | None = None
 ) -> list[FactRef]:
     """``canon``'s omniscient read through ``through_position`` (the corrected record now), as
     ``FactRef``s in the same order. The cost per version is a few columns, not a ``Fact``: a
@@ -1215,7 +1235,7 @@ async def canon_links(
     conn: AsyncConnection,
     story_id: str,
     *,
-    through_position: tuple[int, int] | None = None,
+    through_position: Position | None = None,
     viewpoint: str = OMNISCIENT,
     subject: str | None = None,
     object: str | None = None,
@@ -1268,7 +1288,7 @@ async def canon_at(
     story_id: str,
     *,
     story_time: int,
-    through_position: tuple[int, int] | None = None,
+    through_position: Position | None = None,
     viewpoint: str = OMNISCIENT,
     reading: Reading = "every",
     subject: str | None = None,
@@ -1375,6 +1395,7 @@ __all__ = [
     "FACT_SUPERSEDED",
     "OBJECTIVE",
     "READER_VIEWPOINTS",
+    "SHARED_SCOPES",
     "Fact",
     "FactChange",
     "FactHook",
@@ -1383,6 +1404,7 @@ __all__ = [
     "FactRef",
     "Reading",
     "Visibility",
+    "VisibilityScope",
     "canon",
     "canon_as_recorded",
     "canon_at",
@@ -1394,6 +1416,7 @@ __all__ = [
     "hidden_from",
     "locked_keys",
     "read_version",
+    "refuse_holder",
     "register_fact_hook",
     "remove_fact_hook",
     "supersede",

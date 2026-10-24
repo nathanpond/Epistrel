@@ -68,6 +68,7 @@ from epistrel.core.profiles.validate import (
 from epistrel.core.seeds.profiles import (
     LITE_PRESET_ID,
     STRUCTURED_M4_NAME,
+    STRUCTURED_NAME,
     lite_settings,
     profile_defaults,
     structured_m4_settings,
@@ -79,6 +80,7 @@ from tests.auth_support import auth_settings, bearer
 from tests.conformance.conftest import migrated_database
 from tests.event_support import rows, scalar
 from tests.profile_support import (
+    M4_MODULES,
     PROFILES,
     REDERIVATION,
     STRUCTURED_DOCUMENT,
@@ -137,9 +139,11 @@ async def scratch(pg_url: str) -> AsyncIterator[Space]:
             await db.dispose()
 
 
-async def _story(client: httpx.AsyncClient, profile: str | None = None) -> tuple[str, str]:
-    """A new two-character story (assigned ``profile``, confirmed, when named): its id and its
-    player character's id."""
+async def _story(
+    client: httpx.AsyncClient, profile: str | None = None, version: int | None = None
+) -> tuple[str, str]:
+    """A new two-character story (assigned ``profile``, pinned to ``version`` when named,
+    confirmed, when named): its id and its player character's id."""
     created = await ok(
         await client.post("/stories", json=story_body("Wren", "Ada"), headers=headers()), 201
     )
@@ -148,7 +152,7 @@ async def _story(client: httpx.AsyncClient, profile: str | None = None) -> tuple
         assigned = await ok(
             await client.put(
                 f"/stories/{story}/engine-profile",
-                json={"profile_id": profile, "ignore_warnings": True},
+                json={"profile_id": profile, "version": version, "ignore_warnings": True},
                 headers=headers(),
             )
         )
@@ -190,7 +194,7 @@ async def test_u_28__m4_dependencies(stub_settings: Settings, engine: AsyncEngin
     fixture with the dependency present validates (complement). The three docs/04 names:
     consolidation without episodic memory; contradiction checking with verification off;
     verification on a ``lite`` profile, which names the ``structured`` pipeline."""
-    rules = delivered_rules()
+    rules = delivered_rules(M4_MODULES)
     named = {(rule.module, tuple(r.module for r in rule.requires)) for rule in rules}
     assert {
         ("consolidation", ("episodic",)),
@@ -410,11 +414,12 @@ async def test_c_16__capabilities(scratch: Space) -> None:
         "CROSS JOIN deployment_state d WHERE p.id = :p",
         p=structured_m4(),
     )
+    # #181 renamed the row in place and added version 2; version 1 is M4's, unchanged.
     assert tuple(stored)[:6] == (
-        STRUCTURED_M4_NAME,
+        STRUCTURED_NAME,
         "system",
         False,
-        1,
+        2,
         structured_m4_settings(),
         LITE_PRESET_ID,
     )
@@ -426,12 +431,12 @@ async def test_c_16__capabilities(scratch: Space) -> None:
     expected = list(capability_names(structured))
     assert "verification:entailment" in expected
     async with respond_client(scratch.settings, scratch.db) as (client, _):
-        story, actor = await _story(client, structured_m4())
+        story, actor = await _story(client, structured_m4(), 1)
         found = await _effective(client, story)
         assert found["profile"] == {
             "id": structured_m4(),
             "version": 1,
-            "pinned": False,
+            "pinned": True,
             "deleted": False,
         }
         assert found["capabilities"] == expected
@@ -495,10 +500,6 @@ LITE_MISSING = (
     "audience filtering, commitment."
 )
 NONE_APPLIES = "**no audience filtering applies**"
-SEPARATION_LINE = (
-    "| structural knowledge separation (per-character partitions) "
-    "| `structural_knowledge_separation` | deterministic | not provided (M5) |"
-)
 
 
 @pytest.mark.part("M4", "FR-PROF-12,13")
@@ -514,14 +515,18 @@ def test_c_16__guarantee_table() -> None:
     NFR-QUAL ids (``metric_ids``, which #134's report check reads)."""
     rendered = guarantee_tool.render()
     assert rendered == guarantee_tool.TABLE_PATH.read_text(encoding="utf-8")
-    lite, structured = guarantee_tool.SEEDED
-    assert (lite.profile_id, structured.profile_id) == (LITE_PRESET_ID, structured_m4())
+    lite, latest = guarantee_tool.SEEDED
+    assert (lite.profile_id, latest.profile_id) == (LITE_PRESET_ID, structured_m4())
+    # The table publishes the latest version (#181); M4's part reads its version 1.
+    structured = guarantee_tool.SeededProfile(
+        STRUCTURED_M4_NAME, structured_m4(), structured_m4_settings()
+    )
     for row in GUARANTEES:
         if row.capability is None:
             continue
         entry = CAPABILITY[row.capability]
         assert set(entry.requires) <= set(row.requires), row.id
-        for seeded in guarantee_tool.SEEDED:
+        for seeded in (*guarantee_tool.SEEDED, structured):
             if row.provided(seeded.effective()):
                 assert entry.holds(seeded.effective()), (row.id, seeded.name)
 
@@ -533,14 +538,15 @@ def test_c_16__guarantee_table() -> None:
     assert on_structured["verification"].provided is True
     assert on_structured["commitment_mechanics"].provided is True
     separation = on_structured[SEPARATION]
-    assert (separation.provided, separation.delivered_in) == (False, "M5")
+    assert (separation.provided, separation.delivered_in) == (False, None)
 
     lite_part = rendered.split("### Lite\n", 1)[1].split("\n### ", 1)[0]
-    structured_part = rendered.split(f"### {STRUCTURED_M4_NAME}\n", 1)[1]
+    structured_part = rendered.split(f"### {latest.name}\n", 1)[1]
     assert LITE_MISSING in lite_part
     assert NONE_APPLIES in lite_part
-    assert f"**Provided under {STRUCTURED_M4_NAME}:** verification, commitment." in structured_part
-    assert SEPARATION_LINE in structured_part
+    assert f"**Provided under {latest.name}:** " in structured_part
+    for name in ("verification", "commitment"):
+        assert name in structured_part.split("**Provided under", 1)[1].split("\n", 1)[0]
 
     lost = guarantees_lost(structured.effective(), lite.effective())
     assert set(lost) <= set(GUARANTEE)
@@ -570,9 +576,18 @@ async def test_c_16__guarantee_routes(scratch: Space) -> None:
             ]
             path = f"/engine-profiles/{seeded.profile_id}/guarantees"
             found = await ok(await client.get(path, headers=READ))
-            assert found == {"profile_id": seeded.profile_id, "version": 1, "rows": expected}
-            pinned = await ok(await client.get(path, params={"version": 1}, headers=READ))
-            assert pinned == found
+            assert found == {
+                "profile_id": seeded.profile_id,
+                "version": seeded.version,
+                "rows": expected,
+            }
+            first = await ok(await client.get(path, params={"version": 1}, headers=READ))
+            if seeded.version == 1:
+                assert first == found
+            else:  # #181: version 1 is Structured (M4)'s
+                v1 = effective_of(structured_m4_settings())
+                rows_v1 = [row.model_dump(mode="json") for row in evaluate_guarantees(v1)]
+                assert first == {"profile_id": seeded.profile_id, "version": 1, "rows": rows_v1}
         profile_path = f"/engine-profiles/{structured_m4()}/guarantees"
         profile_table = await ok(await client.get(profile_path, headers=READ))
         story, _ = await _story(client, structured_m4())

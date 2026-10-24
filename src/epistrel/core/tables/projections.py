@@ -30,7 +30,9 @@ event log, folded by ``core.projections.structured``:
   closed, never deleted, while its fact is active) and its visibility.
 - ``placement``: the same for ``placement`` predicates, keyed by ``(story_id, source_fact_id)``:
   the placed ``entity_id`` and exactly one of ``location_id`` (``located_at``) and
-  ``container_id`` (``holds``: the holder contains the item).
+  ``container_id`` (``holds``: the holder contains the item), and ``since_beat`` (the beat of
+  the turn its fact was committed at, #161, so perception routing applies a move from the next
+  beat on).
 - ``scene_state``: one row per active turn whose scene is not empty, keyed by
   ``(story_id, turn, variant)``: the player character's location at the turn's end, the
   entities present there (omniscient) and the turn's operation.
@@ -166,6 +168,8 @@ placement = Table(
     Column("location_id", ulid_type(), nullable=True),
     Column("container_id", ulid_type(), nullable=True),
     *_structured_columns(),
+    # The beat of the turn the fact was committed at (#161): a move takes effect after it.
+    Column("since_beat", SmallInteger, nullable=True),
     CheckConstraint("num_nonnulls(location_id, container_id) = 1", name="one_target"),
     Index("ix_placement_story_entity", "story_id", "entity_id"),
     Index("ix_placement_story_location", "story_id", "location_id"),

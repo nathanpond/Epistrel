@@ -52,6 +52,7 @@ from epistrel.core.profiles.effective import StoryProfile, effective_configurati
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.ratings import story_guidance
 from epistrel.core.settings_schema import (
+    DEFAULT_PLAYER_AUTHORITY,
     DEFAULT_SAFE_FALLBACK,
     GenerationSettings,
     StorySettings,
@@ -85,6 +86,16 @@ class CastEntry:
     deflection_style: str | None = None
     """How the character refuses or changes the subject (FR-GUARD-7; #115): rendered with its
     author notes, so a reply regenerated after a guardrail violation stays in character."""
+    minor: bool = False
+    """``weight = minor`` (#163): a lazily modeled character, never rendered by default."""
+    participation_role: str = "reactive"
+    """#176 (FR-MULTI-7): the character's participation role, ``primary``, ``reactive`` or
+    ``silent`` (ignored for the player's character)."""
+    participation_fixed: bool = False
+    """#176: whether the role is a bound the engine never crosses on its own."""
+    role_id: str | None = None
+    """The scenario role the character fills (#119), for the role's participation genesis kept
+    inactive (#181)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +151,12 @@ class TurnInputs:
     on every turn (``core.genesis.render``; #122). ``""`` for a blank story."""
     director_notes: str = ""
     """A story created from a scenario: its ``## Author notes (not facts)`` block (#122)."""
+    shared_scenario_text: str = ""
+    """The ``## Scenario`` block without the seeds and player notes a partition holds (#173):
+    what a character render of a partitioned story gets."""
+    player_authority: str = DEFAULT_PLAYER_AUTHORITY
+    """The story's ``player_authority`` (FR-RESP-11; #180): a Lite prompt's ``## Player
+    authority`` instruction, its only Lite effect."""
 
 
 def _cast_query(story_id: str) -> Any:
@@ -151,6 +168,10 @@ def _cast_query(story_id: str) -> Any:
             characters.c.is_player,
             characters.c.safe_fallback_text,
             characters.c.deflection_style,
+            characters.c.weight,
+            characters.c.participation_role,
+            characters.c.participation_fixed,
+            characters.c.role_id,
         )
         .where(characters.c.story_id == story_id)
         .order_by(characters.c.ordinal)
@@ -166,6 +187,10 @@ def _cast(rows: Any) -> tuple[CastEntry, ...]:
             is_player=bool(r.is_player),
             safe_fallback_text=r.safe_fallback_text,
             deflection_style=r.deflection_style,
+            minor=getattr(r, "weight", None) == "minor",
+            participation_role=str(getattr(r, "participation_role", None) or "reactive"),
+            participation_fixed=bool(getattr(r, "participation_fixed", False)),
+            role_id=getattr(r, "role_id", None),
         )
         for r in rows
     )
@@ -365,6 +390,7 @@ async def read_turn_inputs(
     )
     cast = _cast((await conn.execute(_cast_query(story_id))).all())
     scenario = await read_rendered(conn, story_id)
+    stored = await conn.scalar(select(stories.c.settings).where(stories.c.id == story_id))
     return TurnInputs(
         guidance=guidance.prompt_guidance or "",
         instructions=texts.custom_instructions if texts is not None else "",
@@ -384,6 +410,8 @@ async def read_turn_inputs(
         default_safe_fallback=guardrails.default_safe_fallback,
         scenario_text=scenario.scenario_text,
         director_notes=scenario.director_notes,
+        shared_scenario_text=scenario.shared_text,
+        player_authority=StorySettings.from_row(stored).player_authority,
     )
 
 

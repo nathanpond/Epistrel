@@ -1,5 +1,6 @@
-"""Helpers for the structured-turn tests (#150): a story on the seeded ``Structured (M4)``
-profile, scripted beat renders for the stub, and reads of what a structured turn stored."""
+"""Helpers for the structured-turn tests (#150): a story pinned to the seeded profile's version 1
+(``Structured (M4)``, #181), scripted beat renders for the stub, and reads of what a structured
+turn stored."""
 
 from __future__ import annotations
 
@@ -33,7 +34,7 @@ async def structured_story(
     story = created["story_id"]
     response = await client.put(
         f"/stories/{story}/engine-profile",
-        json={"profile_id": structured_m4(), "ignore_warnings": True},
+        json={"profile_id": structured_m4(), "version": 1, "ignore_warnings": True},
         headers=WRITE,
     )
     assert response.status_code == 200, response.text

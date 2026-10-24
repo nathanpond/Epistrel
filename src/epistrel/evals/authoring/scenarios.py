@@ -2,7 +2,7 @@
 
 Each case is one scratch story: Wren (the player) and Bobby (who renders), in a house whose
 canon puts Bobby's coat on the hallway hook (the author's facts, as S-COAT plants them), played
-for ``TURNS`` turns through ``Engine.respond`` on ``Structured (M4)`` (``config: structured``)
+for ``TURNS`` turns through ``Engine.respond`` on ``Structured`` (``config: structured``)
 or its ``gated`` variant (``verification.extraction_mode = gated``). The story's custom
 instructions carry its drivers (hooks, objectives, planned reveals: E-13's story-driver
 adherence), and some scenarios request a response length (E-13's length accuracy).

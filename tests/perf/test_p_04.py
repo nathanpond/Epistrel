@@ -26,13 +26,35 @@ The M4 part, the structured variant (#153; ``python -m perf.lite_smoke --scenari
   verify p95 budgets pass and fail on their own, and one story falling behind fails the run;
 - ``test_p_04__structured_measurements``: a structured turn observes the ``retrieve`` stage
   once per retrieval and ``verify`` once per claim checked, and a Lite turn neither.
+
+The M5 part, the multi-character variant (#182; ``python -m perf.lite_smoke --scenario multi``):
+
+- ``test_p_04__multi``: a full-length multi report (30 minutes, ten 10,000-memory stories with
+  per-character knowledge) newer than 30 days is committed, with its host class, verdict,
+  sidecar, profile and perception level; the stack's stub claims are ``multi``'s;
+- ``test_p_04__multi_gate``: the multi gate over a synthetic run: a reduced, deferred or
+  escalation-deferred character fails it with every latency budget met, so does a turn missing
+  a primary's beats or an unobserved per-character stage, one story falling behind fails it
+  although every aggregate criterion passes, and other degradation fails it on the reference
+  host only; the report's per-character columns are the stage registry's ``MULTI_STAGES``;
+- ``test_p_04__multi_measurements``: a two-character turn observes ``context`` once per render
+  and ``compose`` once per turn, and a Lite turn neither;
+- ``test_p_04__multi_smoke`` (``perf_smoke``): the whole runner, 2 stories for 2 minutes
+  against an in-process engine (``--no-compose --smoke``), with the gate evaluated and no timing
+  bound asserted (#430, #432).
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import secrets
+import socket
+import threading
+import time
 import urllib.error
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from email.message import Message
@@ -41,7 +63,7 @@ from typing import Any
 
 import pytest
 import yaml
-from perf.lite_smoke import RESULTS_DIR, Target, freshness, report, structured
+from perf.lite_smoke import RESULTS_DIR, Target, freshness, multi, report, structured
 from perf.lite_smoke import __main__ as smoke
 from perf.lite_smoke.seed import StoryRef
 from prometheus_client import REGISTRY
@@ -49,10 +71,13 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
 from epistrel.core.context import RequestContext
+from epistrel.core.db import make_sync_engine
 from epistrel.observability import metrics
-from epistrel.observability.stages import STAGES, STRUCTURED_STAGES
+from epistrel.observability.stages import MULTI_STAGES, STAGES, STRUCTURED_STAGES
 from epistrel.testing import structured_load
-from tests.auth_support import auth_settings
+from tests.auth_support import CREDENTIAL_A, auth_settings, forget_ledger
+from tests.conftest import alembic_config
+from tests.fixtures.key_room import key_room
 from tests.respond_support import FIRST, PLAYER, body, new_story, respond, respond_client
 from tests.story_support import READ, WRITE
 from tests.structured_turn_support import structured_story
@@ -474,7 +499,8 @@ async def test_p_04__structured_measurements(
 def test_p_04__cleanup_tolerates_a_busy_story(monkeypatch: pytest.MonkeyPatch) -> None:
     """Found by #153's structured run: a story whose queue the drain did not wait out answers
     the cleanup's ``DELETE`` with 423, which used to abort the run after its report was written
-    (exit 1 on a host class that is never gated). The story is now logged and left.
+    (exit 1 on a host class that is never gated). The story is now logged and left, and so is
+    one whose delete times out (#182's multi-character run: a 10,000-memory story).
 
     Complement asserted: the other stories are still deleted."""
     deleted: list[str] = []
@@ -482,10 +508,323 @@ def test_p_04__cleanup_tolerates_a_busy_story(monkeypatch: pytest.MonkeyPatch) -
     def request(target: Target, method: str, path: str, **query: Any) -> None:
         if path.endswith("/busy"):
             raise urllib.error.HTTPError(path, 423, "Locked", Message(), None)
+        if path.endswith("/slow"):
+            raise TimeoutError("timed out")
         deleted.append(path)
 
     monkeypatch.setattr(smoke, "request", request)
-    stories = [StoryRef(sid, "p", "o", 10, i) for i, sid in enumerate(("a", "busy", "b"))]
+    stories = [StoryRef(sid, "p", "o", 10, i) for i, sid in enumerate(("a", "busy", "slow", "b"))]
     left = smoke.delete_stories(Target.from_env(), stories)
-    assert left == ["busy"]
+    assert left == ["busy", "slow"]
     assert deleted == ["/stories/a", "/stories/b"]
+
+
+# -- M5: the multi-character variant (#182) ---------------------------------------------------
+
+
+@pytest.mark.part("M5", "NFR-PERF-4")
+def test_p_04__multi() -> None:
+    """A committed full-length multi-character report newer than 30 days (#182), with its host
+    class, verdict and sidecar, the profile and version its turns ran under and the perception
+    level of their beats, run with ``multi``'s claim mix (the compose file's JSON is the same
+    list).
+
+    Complement asserted: the structured reports are not multi ones (each scenario's freshness
+    reads its own files), and a multi report with fewer seeded turns is not full-length."""
+    rerun = (
+        "no full-length multi-character P-04 report from the last 30 days in perf/results/: run "
+        "`uv run python -m perf.lite_smoke --scenario multi --minutes 30 --host-class <class>` "
+        "and commit it"
+    )
+    current = freshness.status(datetime.now(UTC), scenario="multi")
+    assert current.report is not None, rerun
+    assert not current.expired, rerun
+    text = current.report.read_text()
+    newest = report.header(text)
+    assert newest.scenario == "multi"
+    assert newest.host_class in ("mac", "reference", "ci")
+    sidecar = json.loads(current.report.with_suffix(".json").read_text())
+    info = sidecar["info"]
+    assert info["scenario"] == "multi"
+    assert info["host_class"] == newest.host_class
+    assert str(info["profile"]).startswith("Structured v"), info["profile"]
+    assert info["perception"] == "full"
+    assert sidecar["passed"] == (newest.verdict == report.PASS)
+    names = {c["name"] for c in sidecar["aggregate"]}
+    assert {
+        "retrieval p95 (server retrieve stage)",
+        "deterministic verify p95 (server verify stage)",
+        "both primaries' beats in every committed turn",
+        "reduced, deferred or escalation-deferred characters",
+        "per-character stages observed (context_ms, compose_ms)",
+    } <= names
+    for column in report.MULTI_COLUMNS:
+        assert f"`{column}`" in text
+    compose = yaml.safe_load(multi.COMPOSE_FILE.read_text())
+    claims = json.loads(compose["services"]["engine"]["environment"]["EPISTREL_STUB_RENDER_CLAIMS"])
+    assert claims == multi.RENDER_CLAIMS == multi.render_claims(multi.CAST[1])
+
+    structured_now = freshness.status(datetime.now(UTC), scenario="structured")
+    assert structured_now.report != current.report
+    smaller = text.replace(f"- Stories: {newest.turns:,} turns", "- Stories: 500 turns", 1)
+    assert not freshness.is_full(report.header(smaller))
+
+
+def _multi_info(**changes: Any) -> report.RunInfo:
+    return replace(
+        _structured_info(minutes=20, scenario="multi", profile="Structured v2", perception="full"),
+        **changes,
+    )
+
+
+def _multi_run(
+    info: report.RunInfo, *, late_story: str | None = None, **finish: Any
+) -> list[dict[str, Any]]:
+    """``_run``'s records as two-character turns: each finish names both primaries' beats and
+    the stub's composition fallback (``finish`` overrides any field of every finish);
+    ``late_story`` falls behind from minute 6 on (100 s a turn)."""
+    records = _run(info, late_story=late_story, slow_s=100.0)
+    for record in records:
+        if record["event"] == "finish":
+            record.update(
+                {
+                    "primary_beats": {"p1": 2, "p2": 2},
+                    "degradation": ["composition_fallback"],
+                    "profile": "00000000000000000000PRF002 v2",
+                    "audience_filter": "full",
+                    **finish,
+                }
+            )
+    return records
+
+
+@pytest.mark.part("M5", "NFR-PERF-4")
+def test_p_04__multi_gate() -> None:
+    """The multi gate (#182): a run that keeps up, with both primaries' beats in every turn and
+    the per-character stages observed, passes; the report names the profile and the perception
+    level and has the ``context_ms``/``compose_ms`` columns, which are the stage registry's
+    ``MULTI_STAGES``.
+
+    Complement asserted: a turn reporting a reduced, deferred or escalation-deferred character
+    fails the run with every latency budget met; so does a turn missing a primary's beats (in
+    its result or in history) and an unobserved ``context`` stage; one story falling behind
+    fails it although every aggregate criterion passes; a degradation other than the stub's
+    composition fallback fails it on the reference host only."""
+    assert set(report.MULTI_COLUMNS.values()) == set(MULTI_STAGES)
+    assert list(report.MULTI_COLUMNS) == [f"{stage}_ms" for stage in MULTI_STAGES]
+    info = _multi_info()
+    stories = [("s1", 0), ("s2", 1)]
+    fast = {"0.05": 97.0, "0.15": 100.0, "+Inf": 100.0}
+    stage = {
+        "commit": {"0.1": 20.0, "0.25": 20.0, "+Inf": 20.0},
+        "retrieve": fast,
+        "verify": fast,
+        "context": {"0.25": 40.0, "+Inf": 40.0},
+        "compose": {"0.05": 20.0, "+Inf": 20.0},
+    }
+    samples = [{"t": float(t), "queue": {}, "db_connections": 4} for t in range(0, 1200, 5)]
+
+    def run(
+        records: list[dict[str, Any]] | None = None,
+        reconciled: dict[str, dict[str, Any]] | None = None,
+        **buckets: dict[str, float],
+    ) -> report.Evaluation:
+        found = records if records is not None else _multi_run(info)
+        return report.evaluate(
+            info, stories, found, samples, {**stage, **buckets}, reconciled or {}
+        )
+
+    clean = run()
+    assert clean.passed, [c for c in clean.aggregate if not c.passed]
+    page = report.markdown(clean)
+    assert page.startswith("# P-04 Multi-character reference workload: 2026-10-19 00:00")
+    assert report.header(page).scenario == "multi"
+    assert "profile `Structured v2`, perception `full`" in page
+    assert "| `context_ms` | context | 40 |" in page
+    assert "| `compose_ms` | compose | 20 |" in page
+    assert "`composition_fallback`" in page
+
+    def failed(evaluation: report.Evaluation) -> list[str]:
+        return [c.name for c in evaluation.aggregate if not c.passed]
+
+    planning = "reduced, deferred or escalation-deferred characters"
+    for entry in report.PLANNING_ENTRIES:
+        reduced = run(_multi_run(info, planning={entry: 1}))
+        assert failed(reduced) == [planning], entry
+        assert all(s.passed for s in reduced.stories)
+    beats = "both primaries' beats in every committed turn"
+    assert failed(run(_multi_run(info, primary_beats={"p1": 2, "p2": 0}))) == [beats]
+    assert failed(run(reconciled={"s1": {"incomplete": [3]}})) == [beats]
+    assert failed(run(context={})) == ["per-character stages observed (context_ms, compose_ms)"]
+
+    late = run(_multi_run(info, late_story="s2"))
+    assert not late.passed
+    assert all(c.passed for c in late.aggregate)
+    assert late.stories[0].passed
+    assert not late.stories[1].passed
+
+    degraded = _multi_run(info, degradation=["composition_fallback", "retrieval_skipped"])
+    assert run(degraded).passed
+    reference = replace(info, host_class="reference")
+    gated = report.evaluate(reference, stories, degraded, samples, stage, {})
+    assert failed(gated) == ["degradation steps beyond the stub's composition fallback"]
+    assert report.exit_code(gated) == 1
+
+
+@pytest.mark.part("M5", "NFR-PERF-4")
+async def test_p_04__multi_measurements(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """A two-character ``sequential`` turn (#182, the key room of S-SEQUENTIAL) observes the
+    per-character stages the multi report reads: ``context`` once per render and ``compose``
+    once per turn.
+
+    Complement asserted: a Lite turn observes neither."""
+    async with respond_client(stub_settings, engine) as (client, _):
+        room = await key_room(client, engine)
+        before = _observed(MULTI_STAGES)
+        played = await respond(
+            client,
+            room.story_id,
+            body(room.cal, "What now?", render_character_ids=[room.bobby, room.jenni]),
+        )
+        assert played.status_code == 200, played.text
+        assert played.json()["order"] == [room.bobby, room.jenni]
+        assert {k: _stage_count(k) - before[k] for k in MULTI_STAGES} == {
+            "context": 2.0,
+            "compose": 1.0,
+        }
+
+        lite, lite_ids = await new_story(client, PLAYER, FIRST)
+        before = _observed(MULTI_STAGES)
+        played = await respond(client, lite, body(lite_ids[PLAYER], "Hello."))
+        assert played.status_code == 200, played.text
+        assert {k: _stage_count(k) - before[k] for k in MULTI_STAGES} == {
+            "context": 0.0,
+            "compose": 0.0,
+        }
+
+
+@contextmanager
+def _scratch_database(pg_url: str) -> Iterator[str]:
+    """A database of its own on the session's server, migrated to head (the runner drops and
+    rebuilds the HNSW index, which the shared database must never see)."""
+    from alembic import command
+    from sqlalchemy import text
+
+    name = f"epistrel_p04_{secrets.token_hex(4)}"
+    admin = make_sync_engine(pg_url, isolation_level="AUTOCOMMIT")
+    url = pg_url.rsplit("/", 1)[0] + f"/{name}"
+    try:
+        with admin.connect() as conn:
+            conn.execute(text(f'CREATE DATABASE "{name}"'))
+        forget_ledger(url)
+        command.upgrade(alembic_config(url), "head")
+        yield url
+    finally:
+        with admin.connect() as conn:
+            conn.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+        admin.dispose()
+        forget_ledger(url)
+
+
+@contextmanager
+def _serving(settings: Settings) -> Iterator[str]:
+    """The REST app on ``settings`` under uvicorn in a thread, on a free local port."""
+    import uvicorn
+
+    from epistrel.api.app import create_app
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = int(probe.getsockname()[1])
+    server = uvicorn.Server(
+        uvicorn.Config(create_app(settings), host="127.0.0.1", port=port, log_level="warning")
+    )
+    thread = threading.Thread(target=server.run, name="p04-smoke-engine", daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 60
+    while not server.started:
+        assert thread.is_alive(), "the engine did not start"
+        assert time.monotonic() < deadline, "the engine did not start in time"
+        time.sleep(0.1)
+    try:
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        server.should_exit = True
+        thread.join(timeout=60)
+
+
+SMOKE_STORIES = 2
+SMOKE_MINUTES = 2
+SMOKE_MEMORIES = 200
+
+
+@pytest.mark.perf_smoke
+@pytest.mark.part("M5", "NFR-PERF-4")
+def test_p_04__multi_smoke(
+    pg_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, drained_embedding_jobs: None
+) -> None:
+    """PR CI's run of the whole multi-character runner (#182): ``SMOKE_STORIES`` stories of
+    ``SMOKE_MEMORIES`` memories with a tenth of the knowledge, for ``SMOKE_MINUTES`` minutes
+    (``--smoke``: warm-up and end margin 30 s) against an in-process engine on the stub at 2 s
+    per call (``--no-compose``), Locust driving it. The gate is evaluated and its report and
+    sidecar written; no timing bound is asserted (#430, #432).
+
+    Complement asserted: every submitted turn completed with both primaries' beats, none was
+    lost, duplicated, reduced or deferred, the per-character stages were observed, and the
+    report names the profile, its version and the perception level."""
+    with _scratch_database(pg_url) as url:
+        settings = auth_settings(
+            url,
+            model_adapter="stub",
+            embedding_adapter="stub",
+            stub_latency_s=2.0,
+            stub_embedding_dimension=multi.SPEC.dimension,
+            stub_render_claims=multi.RENDER_CLAIMS,
+            mode="all",
+        )
+        with _serving(settings) as base_url:
+            monkeypatch.setenv("EPISTREL_PERF_BASE_URL", base_url)
+            monkeypatch.setenv("EPISTREL_PERF_DSN", url)
+            monkeypatch.setenv("EPISTREL_PERF_CREDENTIAL", CREDENTIAL_A)
+            code = smoke.main(
+                [
+                    "--scenario",
+                    "multi",
+                    "--host-class",
+                    "ci",
+                    "--minutes",
+                    str(SMOKE_MINUTES),
+                    "--stories",
+                    str(SMOKE_STORIES),
+                    "--memories",
+                    str(SMOKE_MEMORIES),
+                    "--no-compose",
+                    "--smoke",
+                    "--out",
+                    str(tmp_path),
+                ]
+            )
+    assert code == 0
+    (page,) = tmp_path.glob("*-multi.md")
+    sidecar = json.loads(page.with_suffix(".json").read_text())
+    info = sidecar["info"]
+    assert (info["scenario"], info["smoke"], info["stories"]) == ("multi", True, SMOKE_STORIES)
+    assert info["profile"].startswith("Structured v"), info["profile"]
+    assert info["perception"] == "full"
+    by_name = {c["name"]: c for c in sidecar["aggregate"]}
+    for name in (
+        "failed requests",
+        "lost or duplicated turns",
+        "both primaries' beats in every committed turn",
+        "reduced, deferred or escalation-deferred characters",
+        "per-character stages observed (context_ms, compose_ms)",
+    ):
+        assert by_name[name]["passed"], by_name[name]
+    for story in sidecar["stories"]:
+        assert story["offered"] >= 1, story
+        assert story["completed"] == story["offered"], story
+    text = page.read_text()
+    assert "a smoke run: warm-up and end margin 30 s" in text
+    assert "## Multi-character" in text

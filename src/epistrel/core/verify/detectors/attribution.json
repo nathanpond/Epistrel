@@ -1,0 +1,30 @@
+{
+  "category": "attribution",
+  "language": "en",
+  "description": "Attribution cues (#167): a say beat that reports what someone believes or said ('Bobby thinks it was Marcus', 'I figured it was the delivery guy', 'Bobby said it was Marcus') attributes the clause after the verb to that holder; the clause is not the speaker's own first-person assertion. Each verb names its mode (believes, said) and whether it is factive (the speaker also asserts the clause: 'knows').",
+  "verbs": {
+    "thinks": {"mode": "believes", "factive": false},
+    "think": {"mode": "believes", "factive": false},
+    "thought": {"mode": "believes", "factive": false},
+    "believes": {"mode": "believes", "factive": false},
+    "believe": {"mode": "believes", "factive": false},
+    "believed": {"mode": "believes", "factive": false},
+    "figures": {"mode": "believes", "factive": false},
+    "figure": {"mode": "believes", "factive": false},
+    "figured": {"mode": "believes", "factive": false},
+    "reckons": {"mode": "believes", "factive": false},
+    "reckon": {"mode": "believes", "factive": false},
+    "reckoned": {"mode": "believes", "factive": false},
+    "suspects": {"mode": "believes", "factive": false},
+    "suspected": {"mode": "believes", "factive": false},
+    "knows": {"mode": "believes", "factive": true},
+    "know": {"mode": "believes", "factive": true},
+    "knew": {"mode": "believes", "factive": true},
+    "says": {"mode": "said", "factive": false},
+    "said": {"mode": "said", "factive": false},
+    "claims": {"mode": "said", "factive": false},
+    "claimed": {"mode": "said", "factive": false}
+  },
+  "self": ["i"],
+  "complementizers": ["that"]
+}

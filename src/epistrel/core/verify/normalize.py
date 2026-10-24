@@ -265,6 +265,8 @@ def _other_character(found: str, speaker: str, context: ResolutionContext) -> bo
     entry = context.index.get(found)
     if entry is None or entry.character_id is None or found == speaker:
         return False
+    if speaker == "narrator" and entry.character_id in context.composing:
+        return False  # #484: a composed render's own character is not "another" here
     return not (speaker == "player" and found == context.player_id)
 
 

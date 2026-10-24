@@ -15,8 +15,11 @@ noticed, leave "salient" empty. For each salient span give the beat index, the e
 that beat that draw the attention (copied verbatim from the beat, as "span"; never character
 positions), and the proposition it raises as subject, relation and object (write "someone" or
 "something" for what the passage leaves unknown). List texture beats the same way, quoting a
-few of their words. Answer only with a JSON object
-{"salient": [{"beat": n, "span": "", "proposition_sketch": {"subject": "", "relation": "", "object": ""}}], "texture": [{"beat": n, "span": ""}]}.
+few of their words. Under "characters", list each figure the passage singles out as a person
+who will matter as a character (someone named or described who is not among those present),
+by the exact words of the beat that name them; leave it empty when there is none, and never list
+someone merely glimpsed in the background. Answer only with a JSON object
+{"salient": [{"beat": n, "span": "", "proposition_sketch": {"subject": "", "relation": "", "object": ""}}], "texture": [{"beat": n, "span": ""}], "characters": []}.
 
 ## Scene
 Present: {{ scene_context.present_entities|join(", ") if scene_context.present_entities else "(unknown)" }}

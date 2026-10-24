@@ -249,7 +249,12 @@ async def test_an_addition_bumps_the_revision_and_joins_the_cast(
             start + 1,
         )
         plain = (await client.get(f"/stories/{sid}", headers=READ)).json()["characters"]
-        assert plain[2] == {"id": dale["id"], "name": "Dale", "is_player": False}
+        assert plain[2] == {
+            "id": dale["id"],
+            "name": "Dale",
+            "is_player": False,
+            "participation": {"role": "reactive", "fixed": False},  # #176
+        }
         omniscient = await client.get(
             f"/stories/{sid}", params={"viewpoint": "omniscient"}, headers=READ
         )

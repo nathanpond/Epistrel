@@ -152,8 +152,9 @@ def _ci() -> dict[str, Any]:
 def test_c_11__ci_wires_every_gate_into_the_required_check() -> None:
     """Each of the six gates is a step of ``lint`` that runs even after an earlier step failed;
     every ``test`` shard measures core coverage and the ``coverage`` job gates the combined data
-    at 90 % (#331); the stub eval run is the ``evals`` job, gated on its floors (#157); the
-    required ``gate`` job needs every job, ``coverage`` and ``evals`` included, and fails unless
+    at 90 % (#331); the stub eval run is the ``evals`` job, gated on its floors (#157), and the
+    stub zero-leak suites run as ``evals-zero-leak``, gated alike (#179); the required ``gate``
+    job needs every job, ``coverage``, ``evals`` and ``evals-zero-leak`` included, and fails unless
     each succeeded. Complement: no gate step is allowed to fail (``continue-on-error``),
     and no shard applies a threshold of its own (a shard's partial coverage is not the gate)."""
     ci = _ci()
@@ -181,9 +182,22 @@ def test_c_11__ci_wires_every_gate_into_the_required_check() -> None:
     (stub_run,) = [s for s in jobs["evals"]["steps"] if "epistrel.evals run" in s.get("run", "")]
     assert {"--adapter", "stub", "--all", "--fail-on-gate"} <= set(stub_run["run"].split())
     assert stub_run.get("if") is None
+    (zero_leak,) = [
+        s for s in jobs["evals-zero-leak"]["steps"] if "epistrel.evals run" in s.get("run", "")
+    ]
+    assert {"--adapter", "stub", "--fail-on-gate"} <= set(zero_leak["run"].split())
+    assert zero_leak.get("if") is None
     gate = jobs["gate"]
     assert gate["if"] == "always()"
-    assert set(gate["needs"]) == {"lint", "types", "test", "evals", "coverage", "docker"}
+    assert set(gate["needs"]) == {
+        "lint",
+        "types",
+        "test",
+        "evals",
+        "evals-zero-leak",
+        "coverage",
+        "docker",
+    }
     summary = gate["steps"][-1]
     assert '[ "$r" = "success" ] ||' in summary["run"]
     for need in gate["needs"]:

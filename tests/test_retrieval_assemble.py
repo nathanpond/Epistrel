@@ -8,11 +8,18 @@ import pytest
 
 from epistrel.core.retrieval.assemble import (
     PIN_SHARE,
+    Context,
     ContextItem,
     Tier,
-    assemble,
     tokens_of,
 )
+from epistrel.core.retrieval.assemble import assemble as assemble_filtered
+from epistrel.core.retrieval.filtered import _seal
+
+
+def assemble(items: list[ContextItem], budget: int, **kw: float) -> Context:
+    """The assembler over ``items`` sealed as already filtered (#170: it takes nothing else)."""
+    return assemble_filtered(_seal(items, "omniscient"), budget, **kw)
 
 
 def _item(tier: Tier, kind: str, item_id: str, tokens: int) -> ContextItem:

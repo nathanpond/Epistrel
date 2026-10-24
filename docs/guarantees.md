@@ -30,7 +30,8 @@ report's `guarantees_lost` names the deterministic rows a change would lose, by 
 | verification of the claims detected in an output against the record | `verification` | deterministic | — (tested, not measured) | `verification` at `declared` or above | — |
 | contradiction rules on normalized propositions | `contradiction_rules` | deterministic | — (tested, not measured) | `verification` at `declared` or above; `contradiction_checking` | — |
 | State effect validation and permission checks | `state_effect_validation` | deterministic | — (tested, not measured) | `states` at `on` | — |
-| perception routing and audience filtering | `audience_filtering` | deterministic | — (tested, not measured) | `perception` at `co_location` or above | — |
+| perception routing and audience filtering | `audience_filtering` | deterministic | — (tested, not measured) | `perception` at `co_location` or above; story setting `player_view = character` | — |
+| per-character render isolation | `multi_character_isolation` | deterministic | — (tested, not measured) | `multi_character` at `per_character` | — |
 | commitment and ledger mechanics | `commitment_mechanics` | deterministic | — (tested, not measured) | `commitment` | — |
 | clock pacing and stops | `clock_pacing` | deterministic | — (tested, not measured) | `clock` at `on` | — |
 | timeline and concurrency operations | `timeline_concurrency` | deterministic | — (tested, not measured) | none (every profile) | — |
@@ -42,7 +43,7 @@ report's `guarantees_lost` names the deterministic rows a change would lose, by 
 | entailment fallback | `entailment_fallback` | model-dependent | NFR-QUAL-2 | `verification` at `entailment` | `entailment` |
 | testimony acceptance and other belief adjudication | `belief_adjudication` | model-dependent | unmeasured | `partitions`; `testimony` at `model` | `belief_adjudication` |
 | repair rendering | `repair_rendering` | model-dependent | NFR-QUAL-14 | `verification` at `declared` or above; `repair` | `regeneration` |
-| paraphrase/indirect-disclosure detection | `paraphrase_detection` | model-dependent | unmeasured | `partitions` | — |
+| paraphrase/indirect-disclosure detection | `paraphrase_detection` | model-dependent | NFR-QUAL-1 | `partitions` | — |
 | the rolling summary | `rolling_summary` | model-dependent | unmeasured | `rolling_summary` | `lite_summary` |
 | consolidation (summaries and reflections) | `consolidation` | model-dependent | NFR-QUAL-3 | `consolidation` | `consolidation` |
 | importance scoring | `importance_scoring` | model-dependent | unmeasured | `episodic` | `importance_scoring` |
@@ -57,12 +58,15 @@ report's `guarantees_lost` names the deterministic rows a change would lose, by 
 - `viewpoint_filtering`: Under every profile, a character viewpoint never receives any character's `think` or `latent` content (FR-RESP-12).
 - `structural_knowledge_separation`: Without partitions, characters' knowledge is separated only by instructions in a shared prompt, so secrets seeded from the catalog or scenario are present in the shared context (FR-LITE-5).
 - `verification`: Only the claims detected in an output are checked; nothing else in its prose is.
+- `audience_filtering`: Provided only under the story setting `player_view = character` (the default): under `story` a character viewpoint receives every beat in full, never a `think` or `latent`, and its partition and memory are routed as under `character` (FR-RESP-13; #177). A profile's table cannot know a story's `player_view`, so it says what the default gives; a story's table (`GET /stories/{id}/guarantees`) reads it.
+- `multi_character_isolation`: Each character renders from its own partition and what it perceived of the turn so far: no character's output is derived from another character's private partition, `think` or `latent` (FR-MULTI-1). Under `combined`, one render speaks for every named character from the shared context.
 - `clock_pacing`: Under `lite`, the clock may run only in its prompt-only form (FR-LITE-5): pacing is shown in the prompt and nothing is checked.
 - `claim_detectors`: Every detected claim is matched to a declared one or checked as a new claim: zero unchecked detected claims is a guarantee (FR-VERIFY-13). Complete detection is not: it is a measured rate (NFR-QUAL-10).
 - `generation`: Includes a regeneration after an output policy's violation (FR-GUARD).
 - `claim_extraction`: Complete detection is a measured rate, reported per layer and per `extraction_mode` (E-10). Under `gated`, the default, it runs only on the beats a detector flagged, and a shadow sample records what gating missed (FR-OBS-4).
 - `salience`: At `commitment.salience = rules`, salience is detected by rules only.
-- `paraphrase_detection`: No purpose of its own is defined yet.
+- `belief_adjudication`: At `testimony = defaulted`, every acceptance follows the deterministic default of trust, priors and consistency, and no model is called.
+- `paraphrase_detection`: No purpose of its own is defined: the viewpoint checks of the render's claims (verification, could-have-known) catch what detection finds, and NFR-QUAL-1's zero-leak evals (Q-04's asymmetry, the private-thought suite) measure what reaches the output.
 - `rolling_summary`: NFR-QUAL-3 measures consolidation's reflections, not the rolling summary.
 - `importance_scoring`: Its eval (E-04) is a calibration with no floor.
 - `embedding`: The embedding port (FR-EMBED), measured by resolution retrieval.
@@ -92,12 +96,13 @@ Profile `00000000000000000000PRF001`, version 1 as seeded.
 |---|---|---|---|
 | context assembly | `context_assembly` | deterministic | provided |
 | viewpoint filtering | `viewpoint_filtering` | deterministic | provided |
-| structural knowledge separation (per-character partitions) | `structural_knowledge_separation` | deterministic | not provided (M5) |
+| structural knowledge separation (per-character partitions) | `structural_knowledge_separation` | deterministic | not provided |
 | proposition normalization of declared structure | `proposition_normalization` | deterministic | not provided |
 | verification of the claims detected in an output against the record | `verification` | deterministic | not provided |
 | contradiction rules on normalized propositions | `contradiction_rules` | deterministic | not provided |
 | State effect validation and permission checks | `state_effect_validation` | deterministic | not provided (M6) |
-| perception routing and audience filtering | `audience_filtering` | deterministic | not provided (M5) |
+| perception routing and audience filtering | `audience_filtering` | deterministic | not provided |
+| per-character render isolation | `multi_character_isolation` | deterministic | not provided |
 | commitment and ledger mechanics | `commitment_mechanics` | deterministic | not provided |
 | clock pacing and stops | `clock_pacing` | deterministic | not provided (M6) |
 | timeline and concurrency operations | `timeline_concurrency` | deterministic | provided |
@@ -107,9 +112,9 @@ Profile `00000000000000000000PRF001`, version 1 as seeded.
 | salience | `salience` | model-dependent | not provided |
 | time estimation | `time_estimation` | model-dependent | not provided (M6) |
 | entailment fallback | `entailment_fallback` | model-dependent | not provided |
-| testimony acceptance and other belief adjudication | `belief_adjudication` | model-dependent | not provided (M5) |
+| testimony acceptance and other belief adjudication | `belief_adjudication` | model-dependent | not provided |
 | repair rendering | `repair_rendering` | model-dependent | not provided |
-| paraphrase/indirect-disclosure detection | `paraphrase_detection` | model-dependent | not provided (M5) |
+| paraphrase/indirect-disclosure detection | `paraphrase_detection` | model-dependent | not provided |
 | the rolling summary | `rolling_summary` | model-dependent | provided |
 | consolidation (summaries and reflections) | `consolidation` | model-dependent | not provided |
 | importance scoring | `importance_scoring` | model-dependent | not provided |
@@ -122,22 +127,25 @@ Profile `00000000000000000000PRF001`, version 1 as seeded.
 
 Without partitions, characters' knowledge is separated only by instructions in a shared prompt, so secrets seeded from the catalog or scenario are present in the shared context (FR-LITE-5).
 
+Story settings whose only effect under this profile is a prompt instruction: `player_authority`. Under `lite`, `player_authority` (FR-RESP-11) only tells the model whose actions the player may narrate: nothing checks that the reply honours it.
+
 Perception is `none` under this profile, so **no audience filtering applies**: a character viewpoint still never receives any character's `think` or `latent` content, and every other beat is returned in full (FR-RESP-12).
 
-### Structured (M4)
+### Structured
 
-Profile `00000000000000000000PRF002`, version 1 as seeded.
+Profile `00000000000000000000PRF002`, version 2 as seeded.
 
 | Step | Id | Kind | Under this profile |
 |---|---|---|---|
 | context assembly | `context_assembly` | deterministic | provided |
 | viewpoint filtering | `viewpoint_filtering` | deterministic | provided |
-| structural knowledge separation (per-character partitions) | `structural_knowledge_separation` | deterministic | not provided (M5) |
+| structural knowledge separation (per-character partitions) | `structural_knowledge_separation` | deterministic | provided |
 | proposition normalization of declared structure | `proposition_normalization` | deterministic | provided |
 | verification of the claims detected in an output against the record | `verification` | deterministic | provided |
 | contradiction rules on normalized propositions | `contradiction_rules` | deterministic | provided |
 | State effect validation and permission checks | `state_effect_validation` | deterministic | not provided (M6) |
-| perception routing and audience filtering | `audience_filtering` | deterministic | not provided (M5) |
+| perception routing and audience filtering | `audience_filtering` | deterministic | provided |
+| per-character render isolation | `multi_character_isolation` | deterministic | provided |
 | commitment and ledger mechanics | `commitment_mechanics` | deterministic | provided |
 | clock pacing and stops | `clock_pacing` | deterministic | not provided (M6) |
 | timeline and concurrency operations | `timeline_concurrency` | deterministic | provided |
@@ -147,9 +155,9 @@ Profile `00000000000000000000PRF002`, version 1 as seeded.
 | salience | `salience` | model-dependent | provided |
 | time estimation | `time_estimation` | model-dependent | not provided (M6) |
 | entailment fallback | `entailment_fallback` | model-dependent | provided |
-| testimony acceptance and other belief adjudication | `belief_adjudication` | model-dependent | not provided (M5) |
+| testimony acceptance and other belief adjudication | `belief_adjudication` | model-dependent | provided |
 | repair rendering | `repair_rendering` | model-dependent | provided |
-| paraphrase/indirect-disclosure detection | `paraphrase_detection` | model-dependent | not provided (M5) |
+| paraphrase/indirect-disclosure detection | `paraphrase_detection` | model-dependent | provided |
 | the rolling summary | `rolling_summary` | model-dependent | not provided |
 | consolidation (summaries and reflections) | `consolidation` | model-dependent | provided |
 | importance scoring | `importance_scoring` | model-dependent | provided |
@@ -158,10 +166,6 @@ Profile `00000000000000000000PRF002`, version 1 as seeded.
 | rating suggestion | `rating_suggestion` | model-dependent | outside stories |
 | quality judge | `quality_judge` | model-dependent | outside stories |
 
-**Not provided under Structured (M4):** structural knowledge separation, audience filtering.
+**Provided under Structured:** structural knowledge separation, verification, audience filtering, commitment.
 
-**Provided under Structured (M4):** verification, commitment.
-
-Without partitions, characters' knowledge is separated only by instructions in a shared prompt, so secrets seeded from the catalog or scenario are present in the shared context (FR-LITE-5).
-
-Perception is `none` under this profile, so **no audience filtering applies**: a character viewpoint still never receives any character's `think` or `latent` content, and every other beat is returned in full (FR-RESP-12).
+Audience filtering is provided under the default `player_view = character`; a story set to `player_view = story` gets **no audience filtering** (every beat in full, never a `think` or `latent`).

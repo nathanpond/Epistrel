@@ -1,6 +1,6 @@
 """E-03: consolidation faithfulness (docs/04 §8; FR-MEM-3,6, NFR-QUAL-3; #157).
 
-Each case is one source window on its own scratch story (``Structured (M4)``, automatic
+Each case is one source window on its own scratch story (``Structured``, automatic
 consolidation pushed out of reach): the window's episodes are written as their characters' ``do``
 turns through the turn commit's episodic writer, then #143's ``consolidate_window`` runs the
 consolidation job on it in process — the ``consolidation`` purpose, ``derive``'s support and

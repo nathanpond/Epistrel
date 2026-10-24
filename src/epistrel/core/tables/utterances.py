@@ -12,7 +12,25 @@ true (FR-TURN-5): the row records what the speaker asserted and three **independ
 - ``belief_relation`` ∈ ``consistent|inconsistent|unknown``: ``unknown`` in M4 (there are no
   belief partitions before M5, which may update it);
 - ``intent`` ∈ ``sincere|deceptive|joking|unspecified``: as the render declared it on the
-  ``say`` beat (``unspecified`` when nothing was declared, as for the player's input).
+  ``say`` beat (``unspecified`` when nothing was declared, as for the player's input), checked
+  under M5's partitions (a declared lie the speaker's beliefs support is ``sincere``, #166).
+
+``belief_relation`` is the speaker's belief relation once M5's partitions run (#166:
+``core.verify.speech_acts``), and ``classification`` ∈ ``sincere|sincere_error|lie|joke|
+hallucination_repaired`` the verifier's classification of the utterance (its worst claim's),
+written at insert (migration 0073); ``NULL`` when the belief dimension did not run (verification
+or partitions off, the player's own ``say``, FR-EPI-12).
+
+``attribution_objective_relation`` ∈ ``true|false|unresolved`` (#167, migration 0074): for an
+utterance that attributes a belief to someone ("Bobby thinks it was Marcus"), whether the
+attributed holder actually believes it, computed by the Engine Core against that holder's
+partition (FR-BELIEF-15): any ``false`` → ``false``, else any ``unresolved`` → ``unresolved``,
+else ``true``; ``NULL`` when the utterance attributes nothing. A label only, written at insert:
+it never enters the speaker's context (``core.epistemic.nested``).
+
+``step`` (#168, migration 0075) is the say beat's declared causal step (FR-STORE-31: the
+``act`` step that owns it, 0 outside declared steps), so an utterance sits at ``(turn, beat,
+step)`` like the records beside it.
 
 ``event_id`` is the ``beat_say`` (or ``player_input``) event, a soft reference: events are
 never deleted while their story lives. ``proposition_ids`` are the utterance's normalized
@@ -24,7 +42,7 @@ erased. Append-only by trigger (``belief_relation`` and the membership columns m
 
 from __future__ import annotations
 
-from sqlalchemy import TIMESTAMP, CheckConstraint, Column, Index, Table, Text, text
+from sqlalchemy import TIMESTAMP, CheckConstraint, Column, Index, SmallInteger, Table, Text, text
 from sqlalchemy.dialects.postgresql import ARRAY
 
 from epistrel.core.membership import (
@@ -38,6 +56,13 @@ from epistrel.core.tables.base import metadata, ulid_type
 OBJECTIVE_RELATIONS: tuple[str, ...] = ("true", "false", "unresolved")
 BELIEF_RELATIONS: tuple[str, ...] = ("consistent", "inconsistent", "unknown")
 INTENTS: tuple[str, ...] = ("sincere", "deceptive", "joking", "unspecified")
+CLASSIFICATIONS: tuple[str, ...] = (
+    "sincere",
+    "sincere_error",
+    "lie",
+    "joke",
+    "hallucination_repaired",
+)
 
 
 def _in(column: str, values: tuple[str, ...]) -> str:
@@ -51,15 +76,23 @@ utterances = Table(
     Column("story_id", ulid_type(), nullable=False),
     *derived_columns(),
     Column("event_id", ulid_type(), nullable=False),
+    Column("step", SmallInteger, nullable=False, server_default=text("0")),
     Column("speaker_character_id", ulid_type(), nullable=False),
     Column("proposition_ids", ARRAY(ulid_type()), nullable=False, server_default=text("'{}'")),
     Column("objective_relation", Text, nullable=False),
     Column("belief_relation", Text, nullable=False, server_default=text("'unknown'")),
     Column("intent", Text, nullable=False, server_default=text("'unspecified'")),
+    Column("classification", Text, nullable=True),
+    Column("attribution_objective_relation", Text, nullable=True),
     Column("created_at", TIMESTAMP(timezone=True), nullable=False, server_default=text("now()")),
     CheckConstraint(_in("objective_relation", OBJECTIVE_RELATIONS), name="objective_relation"),
     CheckConstraint(_in("belief_relation", BELIEF_RELATIONS), name="belief_relation"),
     CheckConstraint(_in("intent", INTENTS), name="intent"),
+    CheckConstraint(_in("classification", CLASSIFICATIONS), name="classification"),
+    CheckConstraint(
+        _in("attribution_objective_relation", OBJECTIVE_RELATIONS),
+        name="attribution_objective_relation",
+    ),
     *derived_indexes("utterances"),
 )
 Index("ix_utterances_story_event", utterances.c.story_id, utterances.c.event_id)
@@ -68,4 +101,11 @@ Index("ix_utterances_story_speaker", utterances.c.story_id, utterances.c.speaker
 UTTERANCES = register_derived(DerivedTable(utterances))
 """``utterances`` in ``core.membership.DERIVED_TABLES``: an utterance follows its turn."""
 
-__all__ = ["BELIEF_RELATIONS", "INTENTS", "OBJECTIVE_RELATIONS", "UTTERANCES", "utterances"]
+__all__ = [
+    "BELIEF_RELATIONS",
+    "CLASSIFICATIONS",
+    "INTENTS",
+    "OBJECTIVE_RELATIONS",
+    "UTTERANCES",
+    "utterances",
+]

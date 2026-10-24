@@ -51,6 +51,7 @@ from tests import erasure_support as e
 from tests import genesis_support as g
 from tests import ledger_support as ledger
 from tests import media_support as media
+from tests import partition_support as ps
 from tests import scenario_support as scenarios
 from tests.auth_support import MEDIA_ROOT, auth_settings
 from tests.conformance.conftest import migrated_database
@@ -846,3 +847,70 @@ async def test_s_erasure_boundary__consolidation(
         latest = [r for r in await cs.outputs(engine, story) if r.narrative_turn == 4]
         assert [r.text for r in latest] == ["Ty said the gate creaks."]
         assert not any("linda" in r.text.casefold() for r in await cs.outputs(engine, story))
+
+
+@pytest.mark.part("M5", "FR-ADMIN-6")
+async def test_s_erasure_boundary__beliefs(erasure_settings: Settings, engine: AsyncEngine) -> None:
+    """M5 (#178): other characters' beliefs about the subject are deleted. Erasing Bobby from
+    ``e.knowing_story`` deletes Ann's belief about him, his own belief, Ann's exposure to his
+    claim, his divergence and Ann's nested belief attributed to him (its whole chain: the outer
+    row goes with the inner one), each with an erasure marker naming the record (identifiers
+    only); the dry run counts what the run then deletes and writes nothing; ``belief_state`` is
+    refolded (it equals the fold of the remaining beliefs) and holds no row of his; the memory
+    Ann shares with him keeps Ann. Complement: Ann's belief about Cal, the belief Bobby told her
+    and her exposure to Cal's claim stay, with their projection rows."""
+    k = await e.knowing_story(engine)
+    story = k.story_id
+    bobby_rows = await rows(
+        engine,
+        "SELECT b.id FROM beliefs b JOIN propositions p ON p.id = b.proposition_id "
+        "WHERE b.story_id = :s AND (b.holder_character_id = :c OR b.attributed_holder_id = :c "
+        "OR p.subject_id = :x OR p.object_id = :x)",
+        s=story,
+        c=k.bobby,
+        x=k.bobby_entity,
+    )
+    doomed = {str(r.id) for r in bobby_rows}
+    outer = await rows(
+        engine,
+        "SELECT id FROM beliefs WHERE story_id = :s AND inner_belief_id = ANY(:i)",
+        s=story,
+        i=sorted(doomed),
+    )
+    doomed |= {str(r.id) for r in outer}
+    assert len(doomed) >= 3
+    async with respond_client(erasure_settings, engine) as (client, _):
+        preview = await e.erase(client, "character", k.bobby, story, dry_run=True)
+        assert preview["records"]["beliefs"] == len(doomed)
+        assert {
+            str(r.id)
+            for r in await rows(engine, "SELECT id FROM beliefs WHERE story_id = :s", s=story)
+        } >= doomed
+        done = await e.erase(client, "character", k.bobby, story, confirm_all=True)
+    assert done["records"]["beliefs"] == len(doomed)
+    left = {
+        str(r.id) for r in await rows(engine, "SELECT id FROM beliefs WHERE story_id = :s", s=story)
+    }
+    assert not left & doomed
+    assert {k.kept_belief, k.told_belief} <= left
+    marked = await rows(
+        engine,
+        "SELECT payload->>'record_table' AS record_table, payload->>'record_id' AS record_id, "
+        "payload::text AS body FROM events WHERE story_id = :s AND type = 'erasure_marker'",
+        s=story,
+    )
+    tables = {m.record_table for m in marked}
+    assert {"beliefs", "exposures", "divergences"} <= tables
+    assert doomed <= {m.record_id for m in marked if m.record_table == "beliefs"}
+    assert all(not e.naming(m.body, ["Bobby"]) for m in marked)
+    assert await ps.state_rows(engine, story) == await ps.folded_rows(engine, story)
+    holders = {r["holder_character_id"] for r in await ps.state_rows(engine, story)}
+    assert holders == {k.ann}
+    assert k.kept_belief in {r["belief_id"] for r in await ps.state_rows(engine, story)}
+    exposed = await rows(engine, "SELECT id FROM exposures WHERE story_id = :s", s=story)
+    assert [str(r.id) for r in exposed] == [k.kept_exposure]
+    assert await rows(engine, "SELECT id FROM divergences WHERE story_id = :s", s=story) == []
+    (shared,) = await rows(
+        engine, "SELECT visibility FROM memories WHERE id = :m", m=k.shared_memory
+    )
+    assert shared.visibility["characters"] == [k.ann]

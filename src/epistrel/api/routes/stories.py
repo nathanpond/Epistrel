@@ -15,6 +15,8 @@
   story's characters, copying only its definition fields (FR-CAT-8; #114), and seeding the
   memories ``seed_memories`` names into its companion scenario draft (#498); 201 with
   ``Location: /catalog/characters/{id}``. Tagged ``catalog``.
+- ``POST /stories/{id}/characters/{cid}/weight`` and ``POST /stories/{id}/entities/{eid}/model``:
+  an author's weight change and modeling directive (FR-EPI-9,10; #163), control operations.
 - ``POST /stories/{id}/archive`` and ``…/unarchive``: control operations, idempotent (200).
 - ``DELETE /stories/{id}``: removes every row of the story and nothing else (204).
 - ``POST /stories/{id}/ingest``: record consumer events (a player-only turn, narration) without
@@ -34,9 +36,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Any, Self
+from typing import Annotated, Any, Literal, Self
 
-from fastapi import APIRouter, Body, Query, Response
+from fastapi import APIRouter, Body, Path, Query, Response
 from fastapi import status as http_status
 from pydantic import (
     AfterValidator,
@@ -72,16 +74,22 @@ from epistrel.core.enums import StoryStatus
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.genesis.create import CreationHeld
 from epistrel.core.genesis.models import CreationReport, StoryFromScenario, is_scenario_body
+from epistrel.core.ids import ULID_PATTERN
 from epistrel.core.ingest import IngestRequest, IngestResult
 from epistrel.core.ownership import RELATION_FILTER_PATTERN, relation_filter_problem
 from epistrel.core.policies.model import Policy, PolicyKind, Scope, Target, WithheldPolicy
 from epistrel.core.profiles.effective import ProfileVersionRef
 from epistrel.core.profiles.impact import ImpactReport
-from epistrel.core.settings_schema import ConfigClass, StorySettings
+from epistrel.core.settings_schema import DEFAULT_PLAYER_AUTHORITY, ConfigClass, StorySettings
 from epistrel.core.stories import (
     AdHocCharacter,
     CharacterView,
+    CharacterWeighted,
+    CharacterWeightRequest,
     CreatedStory,
+    ModelEntityRequest,
+    ParticipationSet,
+    ParticipationSpec,
     RatingRef,
     StatusChange,
     StoryCharacterAdded,
@@ -98,6 +106,16 @@ from epistrel.orchestrator.policies.schemas import StoryPolicyItem
 from epistrel.orchestrator.policies.store import StoryGuardrails
 
 router = APIRouter(prefix="/stories", tags=["stories"])
+
+StoryEntityId = Annotated[
+    str,
+    Path(
+        pattern=ULID_PATTERN,
+        description="The id of one of the story's entities (a ULID), as "
+        "`GET /stories/{id}/scene` and the inspect reads list them.",
+        examples=["01J9Z8Q4N5V6W7X8Y9Z0A1B2C9"],
+    ),
+]
 
 
 class StoryRatingBody(BaseModel):
@@ -133,22 +151,78 @@ class ScenarioOriginBody(BaseModel):
     version: int
 
 
+class ParticipationBody(BaseModel):
+    """A character's participation role (FR-MULTI-7; #176): ``primary``, ``reactive`` or
+    ``silent``, and whether it is ``fixed`` (a bound the engine never crosses on its own)."""
+
+    role: Literal["primary", "reactive", "silent"]
+    fixed: bool
+
+
 class CharacterBody(CharacterRefBody):
     """A character as a read returns it; ``is_player`` marks a player character. A story created
     from a scenario (#119) names each character's ``role_id`` and, for a catalog character, its
-    ``source``; a blank story's characters carry neither."""
+    ``source``; a blank story's characters carry neither. ``participation`` (#176) is every
+    non-player character's role; the player's character has none."""
 
     is_player: bool
     role_id: str | None = Field(default=None, exclude_if=lambda v: v is None)
     source: CatalogSourceBody | None = Field(default=None, exclude_if=lambda v: v is None)
+    participation: ParticipationBody | None = Field(default=None, exclude_if=lambda v: v is None)
+
+
+class ModeledAtBody(BaseModel):
+    """A narrative position (#163's ``modeled_at``): the turn and its variant, the inter-turn
+    slot (0: the turn itself), the beat and the step. The genesis cast is at 0."""
+
+    turn: int
+    variant: int
+    slot_k: int
+    beat: int
+    step: int
 
 
 class OmniscientCharacterBody(CharacterBody):
-    """A character as an omniscient read returns it: with its true age (FR-CAT-12) and the
-    catalog entries promoted from it (``promoted_to``, FR-CAT-8; oldest first)."""
+    """A character as an omniscient read returns it: with its true age (FR-CAT-12), the
+    catalog entries promoted from it (``promoted_to``, FR-CAT-8; oldest first), its narrative
+    ``weight`` (``minor``: modeled lazily by interaction or salience; ``major``: the cast, the
+    player, an author-created or promoted character; FR-EPI-10) and the position it was
+    modeled at (``modeled_at``, #163)."""
 
     true_age: int
     promoted_to: list[str]
+    weight: Literal["minor", "major"] = "major"
+    modeled_at: ModeledAtBody | None = None
+
+
+class CharacterWeightedBody(MutationResponse):
+    """A character after a weight change or a modeling directive (#163): the character as an
+    omniscient read lists it, and the story's revision after."""
+
+    character: OmniscientCharacterBody
+
+    @classmethod
+    def of(cls, done: CharacterWeighted) -> CharacterWeightedBody:
+        body = _character(done.character)
+        assert isinstance(body, OmniscientCharacterBody)  # noqa: S101 - an omniscient item
+        return cls(character=body, timeline_revision=done.timeline_revision)
+
+
+class ParticipationSetBody(MutationResponse):
+    """A character after a participation change (#176): the character as a read lists it, with
+    the story's ``config_revision`` (moved by a change) and its unchanged
+    ``timeline_revision``."""
+
+    character: CharacterBody
+    config_revision: int
+
+    @classmethod
+    def of(cls, done: ParticipationSet) -> ParticipationSetBody:
+        return cls(
+            character=_character(done.character),
+            config_revision=done.config_revision,
+            timeline_revision=done.timeline_revision,
+        )
 
 
 class StoryCharacterBody(MutationResponse):
@@ -312,6 +386,8 @@ class StoryBody(StorySummaryBody):
 
     characters: list[OmniscientCharacterBody | CharacterBody]
     settings: dict[str, Any]
+    """The stored settings; ``player_authority`` (#180, FR-RESP-11) always present (a story
+    created before it reads ``own_character``)."""
     engine_profile: ProfileVersionRef
     undo_available: bool
     """Whether ``POST /stories/{id}/untruncate`` has a truncation to revert (by reactivation,
@@ -330,7 +406,7 @@ class StoryBody(StorySummaryBody):
         return cls(
             **StorySummaryBody.fields_of(story),
             characters=[_character(c) for c in story.characters],
-            settings=story.settings,
+            settings={PLAYER_AUTHORITY: DEFAULT_PLAYER_AUTHORITY, **story.settings},
             engine_profile=story.engine_profile,
             undo_available=undo.undo_available,
             dormant_chains=[
@@ -539,6 +615,8 @@ StorySettingsPatch = _settings_patch_model()
 register_body_model("update_story_settings", StorySettingsPatch)
 
 
+PLAYER_AUTHORITY = "player_authority"
+
 SETTINGS_PATCH_DESCRIPTION = (
     "Change the story's settings with a JSON merge patch (RFC 7396): a key present sets that "
     "setting and `null` resets it to its default. A story's settings describe the story: "
@@ -547,7 +625,20 @@ SETTINGS_PATCH_DESCRIPTION = (
     "`omniscient`), `regenerate_retry_budget` (0-10), `lite_summary_chunk` (2-200 rows per "
     "summary segment), `audit_retention_days` (1-3650; `null`: the deployment's) and "
     "`allow_new_arrivals` (whether a director pass, or a render as scene texture, may introduce "
-    "new arrivals; default `true`). An "
+    "new arrivals; default `true`), `interaction_mode` (`sequential` | `simultaneous`: how a "
+    "turn with several primaries renders them; `null`: the scenario's, else `sequential`), "
+    "`sequence_order` (`request` | `director`: who orders a sequential turn's primaries; "
+    "`null`: `request`) and `simultaneous_tie_break` (`request_order` | `director` | "
+    "`state:<name>`: how a simultaneous turn settles conflicting actions; `null`: "
+    "`request_order`; `state:<name>` is 422 `not_yet` until M6), `reactive_interjections` "
+    "(whether reactive narration may give a reactive character a brief interjection; default "
+    "`false`), `player_view` (`character` | `story`: whether a character viewpoint's output "
+    "holds only what that character perceived, the audience filter, or every beat; default "
+    "`character`; a no-op where perception is `none`) and `player_authority` (`own_character` | "
+    "`co_author`: whether player input describing another character is a request that "
+    "character resolves or narration of its observable actions, checked against its viewpoint "
+    "and never its thoughts; default `own_character`; a Lite story gets it as a prompt "
+    "instruction only). An "
     "unknown key is 422. The engine's dials are the story's engine profile's, overridden per "
     "story with `PATCH /stories/{id}/profile-overrides` (FR-PROF-5): a key that moved there "
     "(`generation_settings`, `lite_window_messages`, `lite_summary_max_tokens`, "
@@ -556,9 +647,10 @@ SETTINGS_PATCH_DESCRIPTION = (
     "`details.replacement`. `policies` (optional) upserts the story's own policies; an item "
     "that would relax a policy refuses the whole request with 422 `cannot_relax` before "
     "anything is written."
-    "\n\nEvery setting but `default_output_viewpoint` and `allow_new_arrivals` is prospective: "
+    "\n\nEvery setting but `default_output_viewpoint`, `allow_new_arrivals` and "
+    "`player_authority` is prospective: "
     "it applies to requests that arrive after the write, never to a turn already running; "
-    "those two are interpretive (a turn in flight is checked against them when it commits). A "
+    "those three are interpretive (a turn in flight is checked against them when it commits). A "
     "write that changes something moves the story's `config_revision`. The answer carries the "
     "budget the story's next turn plans with (`effective_budget`)."
 )
@@ -638,6 +730,17 @@ def _character(character: CharacterView) -> OmniscientCharacterBody | CharacterB
             source=source,
             true_age=character.true_age,
             promoted_to=list(character.promoted_to or ()),
+            weight="minor" if character.weight == "minor" else "major",
+            participation=_participation(character),
+            modeled_at=None
+            if character.modeled_at is None
+            else ModeledAtBody(
+                turn=character.modeled_at.turn,
+                variant=character.modeled_at.variant,
+                slot_k=character.modeled_at.slot_k,
+                beat=character.modeled_at.beat,
+                step=character.modeled_at.step,
+            ),
         )
     return CharacterBody(
         id=character.id,
@@ -645,7 +748,15 @@ def _character(character: CharacterView) -> OmniscientCharacterBody | CharacterB
         is_player=character.is_player,
         role_id=character.role_id,
         source=source,
+        participation=_participation(character),
     )
+
+
+def _participation(character: CharacterView) -> ParticipationBody | None:
+    found = character.participation
+    if found is None:
+        return None
+    return ParticipationBody(role=found["role"], fixed=bool(found["fixed"]))
 
 
 def _create_body_model(document: Any) -> type[BaseModel]:
@@ -979,6 +1090,99 @@ async def promote_character(
     promotion = await engine.promote_character(ctx, story_id, character_id, body)
     response.headers["Location"] = f"/catalog/characters/{promotion.catalog_id}"
     return answered(PromotionBody.of(promotion), ctx, response, replayed=promotion.replayed)
+
+
+@router.post(
+    "/{story_id}/characters/{character_id}/weight",
+    response_model=CharacterWeightedBody,
+    operation_id="set_character_weight",
+    summary="Set a story character's narrative weight",
+    description=(
+        "Set a character's narrative `weight` (FR-EPI-10): `minor` (a character modeled lazily "
+        "by interaction or salience: a sparse partition that accrues only from the "
+        "interactions it takes part in, a smaller consolidation window and hot budget, never "
+        "rendered unless a request names it) or `major`. Prospective: what the character "
+        "already holds stays as it is, and nothing promotes automatically. The player's "
+        "character is always `major` (422 `is_player`). A control operation: it bumps the "
+        "story's revision and records `character_weight_set`; 409 `story_archived`, 423 "
+        "`story_busy` while a turn is in flight. Answers the character as an omniscient read "
+        "lists it."
+    ),
+)
+async def set_character_weight(
+    story_id: StoryId,
+    character_id: StoryCharacterId,
+    body: CharacterWeightRequest,
+    response: Response,
+    ctx: ContextDep,
+    engine: EngineDep,
+) -> CharacterWeightedBody:
+    done = await engine.set_character_weight(ctx, story_id, character_id, body)
+    return answered(CharacterWeightedBody.of(done), ctx, response, replayed=done.replayed)
+
+
+@router.patch(
+    "/{story_id}/characters/{character_id}/participation",
+    response_model=ParticipationSetBody,
+    operation_id="set_participation",
+    summary="Set a story character's participation role",
+    description=(
+        "Set a character's participation role (FR-MULTI-7): `role` is `primary` (it renders "
+        "when a turn names it), `reactive` (another render may narrate its brief observable "
+        "reaction, FR-MULTI-9; the default) or `silent` (nothing is narrated for it), and "
+        "`fixed` makes the role a bound the engine never crosses on its own: escalation never "
+        "raises a fixed `reactive` or `silent` character to a primary render (FR-MULTI-10), and "
+        "budget planning never lowers a fixed `primary` one to reactive narration (it defers "
+        "it instead). Only a request changes a fixed role, for that request, by naming the "
+        "character or overriding its role (`roles`). A cast lead may be set `primary`. A "
+        "prospective story configuration write: it moves the story's `config_revision` and "
+        "records a `config_changes` row (`participation:<character id>`); a turn already "
+        "running keeps its roles. The player's character has no role (422 `is_player`); 404 "
+        "for a character the story does not have; 409 `story_archived`. Setting the role it has "
+        "changes nothing. Answers the character as a read lists it."
+    ),
+)
+async def set_participation(
+    story_id: StoryId,
+    character_id: StoryCharacterId,
+    body: ParticipationSpec,
+    response: Response,
+    ctx: ContextDep,
+    engine: EngineDep,
+) -> ParticipationSetBody:
+    done = await engine.set_participation(ctx, story_id, character_id, body)
+    return answered(ParticipationSetBody.of(done), ctx, response, replayed=done.replayed)
+
+
+@router.post(
+    "/{story_id}/entities/{entity_id}/model",
+    status_code=http_status.HTTP_201_CREATED,
+    response_model=CharacterWeightedBody,
+    operation_id="model_entity",
+    summary="Model a story entity as a character",
+    description=(
+        "The author's directive to model one of the story's entities (a `person`, or an "
+        "`other` entity) as a character (FR-EPI-9's explicit salience): a `minor` character "
+        "with the entity's name, the request's required `true_age` (FR-CAT-12) and its "
+        "`definition` (default: the entity's name). The entity's id becomes the character's, so "
+        "what canon says of the entity is said of the character. Story-scoped (FR-CAT-7) and "
+        "exempt from the cast cap. 404 for an entity the story does not have; 422 "
+        "`already_modeled`, `not_a_person` or `allow_new_arrivals` (`details.reason`); 409 "
+        "`story_archived`; 423 `story_busy` while a turn is in flight. A control operation: it "
+        "bumps the revision and records `character_defined` and `character_modeled`. Answers "
+        "201 with the new character as an omniscient read lists it."
+    ),
+)
+async def model_entity(
+    story_id: StoryId,
+    entity_id: StoryEntityId,
+    body: ModelEntityRequest,
+    response: Response,
+    ctx: ContextDep,
+    engine: EngineDep,
+) -> CharacterWeightedBody:
+    done = await engine.model_entity(ctx, story_id, entity_id, body)
+    return answered(CharacterWeightedBody.of(done), ctx, response, replayed=done.replayed)
 
 
 @router.post(

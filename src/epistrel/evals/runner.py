@@ -48,6 +48,20 @@ reported version. The run's fingerprint then also names the judge as ``quality_j
 judged itself (``SuiteResult.judge``). On the stub the judge is a stub of its own, scripted like
 the run's.
 
+**Per-purpose routing** (#179). ``AdapterConfig.real_purposes`` names the purposes a real-model
+run sends to the endpoint (``--real-purpose``, repeatable; ``None``: every purpose): every other
+purpose is answered by a stub of the run's own, with its default answers, so a run can put
+only ``generation`` on the local model. A suite's **scripted** calls (``CaseContext.scripted``:
+a prelude a case plays before what it measures, #179's planted thought) go to that stub on
+every run, scripted by the suite (``CaseContext.scripted_stub``). The fingerprint names the
+stub as the model of every purpose the endpoint does not serve, and the report lists the routed
+purposes (``Report.real_purposes``).
+
+**Per-suite configuration** (#179). A suite whose stories run a configuration other than the
+seeded profile's (``Suite.dials``, a settings merge patch over it; ``Suite.profile_label`` names
+it) reports its own fingerprint of that configuration in its result (``SuiteResult.fingerprint``
+and ``profile``).
+
 **Failures.** A ``ModelError`` during a case is a failed case — every metric of the suite
 observes it as bad — never an exclusion. Any other exception, or a malformed labeled set, is a
 **harness error**: the suite's verdict is ``error``. Each failed case's inputs and output go to
@@ -58,13 +72,22 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import json
 import os
 import random
 import secrets
 import time
 from collections import defaultdict
-from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping, Sequence
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Collection,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -99,7 +122,13 @@ from epistrel.evals.suites import CaseModel, Counts, MalformedCase, Outcome, Sui
 from epistrel.orchestrator.embeddings.adapter import EMBEDDING
 from epistrel.orchestrator.models import config as model_config
 from epistrel.orchestrator.models.access import EVAL_SCOPE, ModelAccessLayer, eval_scope
-from epistrel.orchestrator.models.adapter import ModelParams
+from epistrel.orchestrator.models.adapter import (
+    Message,
+    ModelAdapter,
+    ModelParams,
+    ModelResult,
+    ProbeResult,
+)
 from epistrel.orchestrator.models.errors import ModelError
 from epistrel.orchestrator.models.facts import TEMPLATE_HASHES
 from epistrel.orchestrator.models.registry import (
@@ -109,7 +138,7 @@ from epistrel.orchestrator.models.registry import (
     STORY_PURPOSES,
     JudgeCriteria,
 )
-from epistrel.orchestrator.models.stub import STUB_MODEL
+from epistrel.orchestrator.models.stub import STUB_MODEL, StubAdapter
 from epistrel.tools import model_matrix
 from epistrel.tools.generated import REPO_ROOT
 
@@ -122,9 +151,11 @@ DEFAULT_SEED_BASE = 20261008
 DEFAULT_SEEDS = 2
 DEFAULT_SETS_DIR = REPO_ROOT / "evals" / "sets"
 BUILD_DIR = REPO_ROOT / "build" / "evals"
-FINGERPRINT_PROFILE = seeded_profiles.STRUCTURED_M4_NAME
-FINGERPRINT_VERSION = 1
-"""The fingerprint is the seeded ``Structured (M4)`` profile's, at its seeded version, with the
+FINGERPRINT_PROFILE = seeded_profiles.STRUCTURED_NAME
+FINGERPRINT_VERSION = seeded_profiles.STRUCTURED_VERSION
+"""The fingerprint is the seeded ``Structured`` profile's, at its current version (the owner's
+decision of 2026-10-23: every eval follows it; the committed M4 baselines keep their
+``Structured (M4) v1`` label), with the
 run's model as every story purpose's (#109's ``fingerprint()``; the stub run's model is
 ``stub``), and, for a run with a second judge model (#475), the judge as ``quality_judge``'s."""
 
@@ -177,6 +208,9 @@ class AdapterConfig:
     """The judge model's endpoint; ``None``: ``base_url``."""
     judge_api_key: str | None = None
     """The judge endpoint's key; ``None``: ``api_key``."""
+    real_purposes: tuple[str, ...] | None = None
+    """The purposes a real-model run sends to the endpoint (#179); ``None``: every purpose.
+    Every other purpose is answered by the run's stub (module docstring)."""
 
     @property
     def model_name(self) -> str:
@@ -199,23 +233,33 @@ class AdapterConfig:
 
 
 def run_fingerprint(
-    model: str, dials: Mapping[str, Any] | None = None, *, judge: str | None = None
+    model: str,
+    dials: Mapping[str, Any] | None = None,
+    *,
+    judge: str | None = None,
+    real_purposes: Collection[str] | None = None,
 ) -> str:
     """The fingerprint the run reports (``FINGERPRINT_VERSION``'s docstring): the seeded
     profile over the deployment's seeded defaults, as a fresh deployment runs it; with
     ``dials`` (a settings merge patch) the variant they make (#158's ``gated`` configuration).
     With ``judge`` (#475: a second judge model) it also names the judge as ``quality_judge``'s
     model. FR-PROF-16 lists every model purpose's identifier, and ``quality_judge`` is one.
-    Without a judge, the fingerprint is unchanged."""
+    Without a judge, the fingerprint is unchanged. With ``real_purposes`` (#179) every other
+    story purpose's model is the stub."""
     settings = merged_settings(
-        seeded_profiles.profile_defaults(), seeded_profiles.STRUCTURED_M4_SETTINGS, dials
+        seeded_profiles.profile_defaults(), seeded_profiles.STRUCTURED_SETTINGS, dials
     )
-    models = {purpose: ModelIdentity(id=model) for purpose in STORY_PURPOSES}
+    models = {
+        purpose: ModelIdentity(
+            id=model if real_purposes is None or purpose in real_purposes else STUB_MODEL
+        )
+        for purpose in STORY_PURPOSES
+    }
     if judge is not None:
         models[QUALITY_JUDGE.name] = ModelIdentity(id=judge)
     facts = RuntimeFacts(models=models, templates=TEMPLATE_HASHES)
     return fingerprint(
-        profile_id=seeded_profiles.STRUCTURED_M4_PROFILE_ID,
+        profile_id=seeded_profiles.STRUCTURED_PROFILE_ID,
         version=FINGERPRINT_VERSION,
         settings=settings,
         facts=facts,
@@ -226,6 +270,76 @@ def default_run_id(fingerprint_value: str, when: datetime) -> str:
     """``<fingerprint[:12]>-<YYYY-MM-DD>`` (UTC); the report writer adds ``-2``… on a clash."""
     digest = fingerprint_value.split(":", 1)[-1]
     return f"{digest[:12]}-{when.astimezone(UTC).strftime('%Y-%m-%d')}"
+
+
+# -- per-purpose routing (#179) ---------------------------------------------------------------
+
+SCRIPTED: contextvars.ContextVar[bool] = contextvars.ContextVar("evals_scripted", default=False)
+"""Set inside ``CaseContext.scripted``: the block's model calls go to the run's stub."""
+
+
+class RoutedAdapter:
+    """A real-model run's adapter (module docstring): the purposes in ``real_purposes`` (every
+    purpose for ``None``) go to ``real`` unless a scripted block is open; everything else to
+    ``stub``, which answers with its defaults or what a suite scripted."""
+
+    name = "routed"
+
+    def __init__(
+        self,
+        real: ModelAdapter,
+        stub: StubAdapter,
+        real_purposes: Collection[str] | None = None,
+    ) -> None:
+        self.real = real
+        self.stub = stub
+        self.real_purposes = None if real_purposes is None else frozenset(real_purposes)
+
+    def routes_real(self, purpose: str) -> bool:
+        if SCRIPTED.get():
+            return False
+        return self.real_purposes is None or purpose in self.real_purposes
+
+    async def complete(
+        self,
+        purpose: str,
+        messages: Sequence[Message],
+        params: ModelParams,
+        response_schema: type[Any] | None = None,
+    ) -> ModelResult:
+        target: ModelAdapter = self.real if self.routes_real(purpose) else self.stub
+        return await target.complete(purpose, messages, params, response_schema)
+
+    async def probe(self, purpose: str) -> ProbeResult:
+        return await self.real.probe(purpose)
+
+    async def aclose(self) -> None:
+        await self.real.aclose()
+
+
+@contextlib.contextmanager
+def routed(engine: Engine, config: AdapterConfig) -> Iterator[None]:
+    """A real-model run's engine on a ``RoutedAdapter`` for the run (restored afterwards); a
+    stub run's untouched."""
+    if config.adapter == "stub":
+        yield
+        return
+    layer = engine.models
+    before = layer.adapter
+    layer.adapter = RoutedAdapter(before, StubAdapter(), config.real_purposes)
+    try:
+        yield
+    finally:
+        layer.adapter = before
+
+
+def scripted_stub(engine: Engine) -> StubAdapter:
+    """The stub a scripted block's calls reach: the engine's own on a stub run, the routed
+    adapter's on a real one."""
+    adapter = engine.models.adapter
+    if isinstance(adapter, RoutedAdapter):
+        return adapter.stub
+    return engine.models.stub
 
 
 # -- scratch stories --------------------------------------------------------------------------
@@ -348,6 +462,21 @@ class CaseContext:
         return await judges.score(
             self.judge_models, message, reference, criteria, case_id=self.scope_id(key)
         )
+
+    @contextlib.contextmanager
+    def scripted(self) -> Iterator[None]:
+        """A block whose model calls go to the run's stub on every run (module docstring):
+        a case's scripted prelude."""
+        token = SCRIPTED.set(True)
+        try:
+            yield
+        finally:
+            SCRIPTED.reset(token)
+
+    @property
+    def scripted_stub(self) -> StubAdapter:
+        """The stub ``scripted`` blocks reach (``runner.scripted_stub``)."""
+        return scripted_stub(self.engine)
 
     def scope_id(self, key: str) -> str:
         """``<case>.<key>``: the eval scope of one judge call of this case (a stub run scripts
@@ -726,6 +855,21 @@ async def run_suite(suite: Suite, job: SuiteRun) -> SuiteResult:
         notes=[*suite.reading_notes, *summary.notes],
         calibration=calibration,
         judge=suite_judge(suite, job),
+        profile=suite.profile_label,
+        fingerprint=suite_fingerprint(suite, job.config),
+    )
+
+
+def suite_fingerprint(suite: Suite, config: AdapterConfig) -> str | None:
+    """The fingerprint of the configuration ``suite``'s stories ran under, when it is not the
+    seeded profile's (``Suite.dials``, #179); ``None`` otherwise (the run's fingerprint)."""
+    if suite.dials is None:
+        return None
+    return run_fingerprint(
+        config.model_name,
+        suite.dials,
+        judge=config.judge_model,
+        real_purposes=routed_purposes(config),
     )
 
 
@@ -805,7 +949,9 @@ async def run_suites(
                 f"no judge calibration for {config.judge_name!r} in {store}: run "
                 "`calibrate-judge` (or `run --all`) first"
             )
-    fingerprint_value = run_fingerprint(config.model_name, judge=config.judge_model)
+    fingerprint_value = run_fingerprint(
+        config.model_name, judge=config.judge_model, real_purposes=routed_purposes(config)
+    )
     report = Report(
         run_id=run_id or default_run_id(fingerprint_value, started),
         started_at=started.isoformat(timespec="seconds"),
@@ -817,61 +963,74 @@ async def run_suites(
         host=host_of(config),
         seed_base=seed_base,
         seeds=list(seeds),
+        real_purposes=routed_purposes(config),
     )
-    async with engine_for(config, engine) as live, judge_layer_for(config, live) as judging:
-        report.model_version = await preflight(live, config)
-        judge_version = report.model_version
-        if config.judge_model is not None:
-            judge_version = await judge_preflight(judging, config)
-            report.judge = JudgeModel(
-                model=config.judge_model,
-                model_version=judge_version,
-                endpoint=(config.judge_base_url or config.base_url)
-                if config.adapter == "openai"
-                else None,
-            )
-        if calibrate:
-            stored = await calibrate_judge(
-                live,
-                config,
-                sets_dir=sets_dir,
-                model_version=judge_version,
-                flip=calibration_flip,
-                seed=seed_base,
-                judge_layer=judging,
-            )
-            judges.save(store, stored)
-        await sweep(live)
-        before = await story_rows(live.db)
-        job = SuiteRun(
-            engine=live,
-            config=config,
-            seeds=seeds,
-            run_id=report.run_id,
-            sets_dir=sets_dir,
-            sample=sample,
-            full=frozenset(full),
-            seed_base=report.seed_base,
-            concurrency=concurrency,
-            failures=failures,
-            cases=cases or {},
-            calibration=stored,
-            judge_layer=None if config.self_judged else judging,
-            judge_version=judge_version,
-        )
-        try:
-            for suite in suites:
-                report.merge(await run_suite(suite, job))
-                if on_suite is not None:
-                    pending = on_suite(report)
-                    if pending is not None:
-                        await pending
-        finally:
+    async with (
+        engine_for(config, engine) as live,
+        judge_layer_for(config, live) as judging,
+    ):
+        with routed(live, config):
+            report.model_version = await preflight(live, config)
+            judge_version = report.model_version
+            if config.judge_model is not None:
+                judge_version = await judge_preflight(judging, config)
+                report.judge = JudgeModel(
+                    model=config.judge_model,
+                    model_version=judge_version,
+                    endpoint=(config.judge_base_url or config.base_url)
+                    if config.adapter == "openai"
+                    else None,
+                )
+            if calibrate:
+                stored = await calibrate_judge(
+                    live,
+                    config,
+                    sets_dir=sets_dir,
+                    model_version=judge_version,
+                    flip=calibration_flip,
+                    seed=seed_base,
+                    judge_layer=judging,
+                )
+                judges.save(store, stored)
             await sweep(live)
-        problems = isolation_problems(before, await story_rows(live.db))
+            before = await story_rows(live.db)
+            job = SuiteRun(
+                engine=live,
+                config=config,
+                seeds=seeds,
+                run_id=report.run_id,
+                sets_dir=sets_dir,
+                sample=sample,
+                full=frozenset(full),
+                seed_base=report.seed_base,
+                concurrency=concurrency,
+                failures=failures,
+                cases=cases or {},
+                calibration=stored,
+                judge_layer=None if config.self_judged else judging,
+                judge_version=judge_version,
+            )
+            try:
+                for suite in suites:
+                    report.merge(await run_suite(suite, job))
+                    if on_suite is not None:
+                        pending = on_suite(report)
+                        if pending is not None:
+                            await pending
+            finally:
+                await sweep(live)
+            problems = isolation_problems(before, await story_rows(live.db))
     report.errors.extend(f"isolation: {p}" for p in problems)
     report.finish(datetime.now(UTC))
     return report
+
+
+def routed_purposes(config: AdapterConfig) -> list[str] | None:
+    """The purposes a real-model run routes to its endpoint (``None``: every one; a stub run
+    names none)."""
+    if config.adapter == "stub" or config.real_purposes is None:
+        return None
+    return sorted(config.real_purposes)
 
 
 async def calibrate_judge(

@@ -14,11 +14,12 @@ from epistrel.config import Settings
 from epistrel.core.config_changes import lite_defaults, read_settings
 from epistrel.core.context import RequestContext
 from epistrel.core.deployment import update_profile_defaults
+from epistrel.core.seeds.profiles import LITE_PRESET_ID, STRUCTURED_M4_PROFILE_ID
 from epistrel.core.settings_schema import LiteDefaults
 from epistrel.orchestrator.lite.schemas import PlayerInputBody, RespondRequest
 from tests.auth_support import auth_settings
 from tests.concurrency_support import set_pins
-from tests.event_support import rows
+from tests.event_support import execute_in_tx, rows
 from tests.gate_support import audit_rows, input_policies
 from tests.respond_support import (
     FIRST,
@@ -314,11 +315,50 @@ async def test_openapi_calls_the_message_finished_never_verified(
     assert "finished" in operation["description"]
 
 
+# A defaults write validates every profile version in use and every story's overrides on the
+# shared database. M5's tests leave both naming modules that only their own ``DELIVERED`` patch
+# delivers (per-character partitions, perception, nested beliefs, multiple renders), so the
+# outcome used to depend on which tests ran first (#517). #181 delivers those modules for real.
+async def _forget_m5_modules(engine: AsyncEngine) -> None:
+    """Take the M5 modules out of what earlier tests left behind: their stories' overrides, and
+    the stories and profiles that ran with them on."""
+    ids = {"lite": LITE_PRESET_ID, "structured": STRUCTURED_M4_PROFILE_ID}
+    await execute_in_tx(
+        engine,
+        (
+            "UPDATE story_profile_overrides SET settings = settings - 'perception' "
+            "- 'character_knowledge' - 'multi_character' WHERE settings ?| "
+            "array['perception', 'character_knowledge', 'multi_character']",
+            {},
+        ),
+        (
+            "CREATE TEMP TABLE m5_profiles ON COMMIT DROP AS "
+            "SELECT DISTINCT profile_id AS id FROM engine_profile_versions "
+            "WHERE profile_id NOT IN (:lite, :structured) "
+            "AND (settings->'character_knowledge'->>'partitions' = 'true' "
+            "OR coalesce(settings->'perception'->>'level', 'none') <> 'none' "
+            "OR settings->'multi_character'->>'renders' = 'per_character')",
+            ids,
+        ),
+        (
+            "UPDATE stories SET engine_profile_id = :structured, engine_profile_version_pin = NULL "
+            "WHERE engine_profile_id IN (SELECT id FROM m5_profiles)",
+            ids,
+        ),
+        (
+            "UPDATE engine_profiles SET deleted_at = now() "
+            "WHERE id IN (SELECT id FROM m5_profiles) AND deleted_at IS NULL",
+            {},
+        ),
+    )
+
+
 async def test_lite_defaults_write_is_recorded(engine: AsyncEngine) -> None:
     """The deployment's Lite defaults (since #113 the engine profiles' ``profile_defaults``)
     are a recorded configuration write: one revision and one prospective ``config_changes`` row
     per changed leaf; the same values again write nothing; a corrupt stored document reads as
     the defaults."""
+    await _forget_m5_modules(engine)
     before = (await read_settings(engine)).profile_defaults
     start = (await read_settings(engine)).config_revision
     lowered = {

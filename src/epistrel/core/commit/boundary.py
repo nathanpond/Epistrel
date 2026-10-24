@@ -59,7 +59,9 @@ INCIDENTAL = "incidental"
 RESOLUTION_LEVELS: tuple[str, ...] = (CONSEQUENTIAL, INCIDENTAL)
 """``facts.resolution_level``'s values; ``NULL`` reads as ``consequential``."""
 
-Position = tuple[int, int | None]
+TurnVariant = tuple[int, int | None]
+"""An operation's ``(narrative_turn, turn_variant)``: which turn variant a revert names (not a
+narrative position bound, so not ``core.membership.Position``; #164 renamed the M4 alias)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,7 +75,7 @@ class BoundaryChange:
 
 async def _positions(
     conn: AsyncConnection, story_id: str | None, operation_ids: Sequence[str]
-) -> tuple[str | None, list[Position]]:
+) -> tuple[str | None, list[TurnVariant]]:
     rows = (
         await conn.execute(
             select(
@@ -89,7 +91,7 @@ async def _positions(
     return story, found
 
 
-def _at(positions: Sequence[Position]) -> Any:
+def _at(positions: Sequence[TurnVariant]) -> Any:
     turn = cast(facts.c.committed_at_position["turn"].astext, Integer)
     variant = cast(facts.c.committed_at_position["variant"].astext, Integer)
     return or_(

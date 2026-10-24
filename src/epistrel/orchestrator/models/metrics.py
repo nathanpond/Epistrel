@@ -120,6 +120,21 @@ def recording() -> Iterator[CallLog]:
         CALL_LOG.reset(token)
 
 
+def calls_so_far() -> int:
+    """How many calls the current operation's log holds (0 outside ``recording()``)."""
+    log = CALL_LOG.get()
+    return 0 if log is None else len(log.calls)
+
+
+def model_seconds_since(mark: int) -> float:
+    """The summed latency of the calls the operation's log gained after ``calls_so_far()``
+    answered ``mark`` (#182: a stage's time with its model calls left out)."""
+    log = CALL_LOG.get()
+    if log is None:
+        return 0.0
+    return sum(call.latency_ms for call in log.calls[mark:]) / 1000
+
+
 def call_started() -> None:
     """A model call is starting: the operation's log keeps the first such moment (#76's
     ``first_call_offset_ms``)."""
@@ -184,7 +199,9 @@ __all__ = [
     "ModelCall",
     "Outcome",
     "call_started",
+    "calls_so_far",
     "model_label",
+    "model_seconds_since",
     "outcome_of",
     "record",
     "recording",

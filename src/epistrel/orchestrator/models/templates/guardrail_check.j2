@@ -1,5 +1,6 @@
 {#- Model-assisted guardrail check (FR-GUARD-9). The policy's own prompt says what to look for;
-    an age-conditioned policy (FR-GUARD-11, #55) also lists the cast as opaque labels with true ages. -#}
+    an age-conditioned policy (FR-GUARD-11, #55) also lists the cast as opaque labels with true ages,
+    marking a character placed elsewhere "not present" (#161). -#}
 {% block system %}
 You check text against one content policy. Answer only with a JSON object
 {"violation": true|false, "confidence": 0.0-1.0}.
@@ -10,7 +11,7 @@ You check text against one content policy. Answer only with a JSON object
 
 ## Subjects (label: true age)
 {% for subject in subjects %}
-- {{ subject.label }}: age {{ subject.age }}
+- {{ subject.label }}: age {{ subject.age }}{% if not subject.present %}, not present{% endif %}
 {% endfor %}
 {% endif %}
 {% endblock %}

@@ -35,6 +35,7 @@ does not name its only institution. An author declares such rules where they hol
 | `located_at`<br>`01JPRED0000000000000000002` | any → place | functional per (subject) | fluent | — | containment by `located_in` | — | placement | Where the subject is: one place at a time. A place that contains the other (through `located_in`) is no conflict: Columbus and Ohio agree. |
 | `present_at`<br>`01JPRED0000000000000000003` | any → any | multi per (subject) | fluent | — | — | — | scene | The subject takes part in a scene or an occasion; several at once are allowed. |
 | `located_in`<br>`01JPRED0000000000000000004` | any → any | multi per (subject) | permanent | — | — | — | — | Containment of places and organizations (Columbus `located_in` Ohio): the hierarchy `located_at` and the contradiction rules read. |
+| `adjacent_to`<br>`01JPRED0000000000000000030` | place → place | multi per (subject) | fluent | symmetric | — | `barrier` (str) | — | The two places adjoin (symmetric), with what stands between them as the optional `barrier`: `none`, `door_open` (the default), `door_closed`, `window`, `thin_wall` or `wall`. Perception routing (#161) reads it: an eavesdrop is plausible through anything but a `wall`, and a sound crosses anything but a `wall`. A later declaration of the pair ("she closes the door") is the barrier from then on. |
 
 ## Possession
 
@@ -58,18 +59,18 @@ does not name its only institution. An author declares such rules where they hol
 
 | Predicate | Subject → object | Cardinality | Temporal | Direction | Exclusions, containment | Qualifiers | Projection | Semantics |
 |---|---|---|---|---|---|---|---|---|
-| `parent_of`<br>`01JPRED0000000000000000011` | person → person | multi per (subject) | permanent | — | — | — | relationships | The subject is a parent of the object. |
-| `child_of`<br>`01JPRED0000000000000000012` | person → person | multi per (subject) | permanent | inverse of `parent_of` | — | — | relationships | The inverse of `parent_of`, stored as `parent_of`. |
-| `sibling_of`<br>`01JPRED0000000000000000013` | person → person | multi per (subject) | permanent | symmetric | — | — | relationships | The two people are siblings (symmetric). |
-| `married_to`<br>`01JPRED0000000000000000014` | person → person | multi per (subject) | fluent | symmetric | — | — | relationships | The two people are married (symmetric, over an interval). |
+| `parent_of`<br>`01JPRED0000000000000000011` | person → person | multi per (subject) | permanent | — | — | `trust` (float) | relationships | The subject is a parent of the object. |
+| `child_of`<br>`01JPRED0000000000000000012` | person → person | multi per (subject) | permanent | inverse of `parent_of` | — | `trust` (float) | relationships | The inverse of `parent_of`, stored as `parent_of`. |
+| `sibling_of`<br>`01JPRED0000000000000000013` | person → person | multi per (subject) | permanent | symmetric | — | `trust` (float) | relationships | The two people are siblings (symmetric). |
+| `married_to`<br>`01JPRED0000000000000000014` | person → person | multi per (subject) | fluent | symmetric | — | `trust` (float) | relationships | The two people are married (symmetric, over an interval). |
 
 ## Relationships
 
 | Predicate | Subject → object | Cardinality | Temporal | Direction | Exclusions, containment | Qualifiers | Projection | Semantics |
 |---|---|---|---|---|---|---|---|---|
-| `knows`<br>`01JPRED0000000000000000015` | person → any | multi per (subject) | fluent | — | — | — | relationships | The subject is acquainted with the object (not symmetric: being known is not knowing). |
-| `friend_of`<br>`01JPRED0000000000000000016` | person → person | multi per (subject) | fluent | symmetric | — | — | relationships | The two are friends (symmetric). |
-| `enemy_of`<br>`01JPRED0000000000000000017` | any → any | multi per (subject) | fluent | — | — | — | relationships | The subject is hostile to the object (not symmetric). |
+| `knows`<br>`01JPRED0000000000000000015` | person → any | multi per (subject) | fluent | — | — | `trust` (float) | relationships | The subject is acquainted with the object (not symmetric: being known is not knowing). |
+| `friend_of`<br>`01JPRED0000000000000000016` | person → person | multi per (subject) | fluent | symmetric | — | `trust` (float) | relationships | The two are friends (symmetric). |
+| `enemy_of`<br>`01JPRED0000000000000000017` | any → any | multi per (subject) | fluent | — | — | `trust` (float) | relationships | The subject is hostile to the object (not symmetric). |
 
 ## Membership and roles
 
@@ -110,3 +111,11 @@ does not name its only institution. An author declares such rules where they hol
 | Predicate | Subject → object | Cardinality | Temporal | Direction | Exclusions, containment | Qualifiers | Projection | Semantics |
 |---|---|---|---|---|---|---|---|---|
 | `time_is`<br>`01JPRED0000000000000000029` | any → str | functional per (subject) | fluent | — | — | — | — | What time a scene says it is (a `str` literal as said: "nearly midnight"), about the scene's place: one value at a time, so a later time supersedes it. Claim detection (#148) writes it for a time expression no other claim takes. |
+
+## Perception and communication
+
+| Predicate | Subject → object | Cardinality | Temporal | Direction | Exclusions, containment | Qualifiers | Projection | Semantics |
+|---|---|---|---|---|---|---|---|---|
+| `on_channel`<br>`01JPRED0000000000000000031` | person → str | multi per (subject) | fluent | — | — | — | — | The subject is on a remote channel (a call in progress, a radio link), named by a free-text token (a `str` literal, no entity). Perception routing (#161) lets a `remote_channel` qualifier reach exactly the channel's participants, wherever they are. |
+| `spoke_to`<br>`01JPRED0000000000000000032` | person → person | multi per (subject) | event | — | — | — | — | The subject said something to the object at the instant: the observable envelope of an utterance (FR-TURN-2), which a character perceives without its words. |
+| `spoke`<br>`01JPRED0000000000000000033` | person → none | multi per (subject) | event | — | — | — | — | The subject said something (no object, no addressee) at the instant: the envelope of an utterance addressed to no one in particular. |

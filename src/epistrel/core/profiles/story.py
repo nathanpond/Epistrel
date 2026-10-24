@@ -1,10 +1,11 @@
 """A story's engine profile and its overrides (FR-PROF-1,5,7; FR-API-6; #113).
 
-- **Assign** (``PUT /stories/{id}/engine-profile {profile_id}``): the story runs under another
-  profile, at its latest version, from its next turn. The story's overrides are kept and the
-  new combination is validated as a whole (422 ``invalid_profile`` naming them, ``details
-  .overrides``, when it cannot run). Naming the story's own profile changes nothing (200): the
-  story keeps the version it runs on. A profile that is deleted or unknown is 422
+- **Assign** (``PUT /stories/{id}/engine-profile {profile_id, version?}``): the story runs under
+  another profile, at its latest version (or pinned to ``version``, #181), from its next turn.
+  The story's overrides are kept and the new combination is validated as a whole (422
+  ``invalid_profile`` naming them, ``details.overrides``, when it cannot run). Naming the
+  story's own profile (and no other version) changes nothing (200): the story keeps the version
+  it runs on. A profile that is deleted or unknown is 422
   ``profile_deleted`` at ``body.profile_id``, as the impact preview says.
 - **Override** (``PATCH /stories/{id}/profile-overrides {settings, expected_revision?}``):
   ``settings`` is a JSON merge patch (RFC 7396) over the story's overrides
@@ -31,7 +32,10 @@ lock it moves the story's ``config_revision`` by one, records one ``config_chang
 changed setting (``engine_profile_id`` for an assignment; ``profile_overrides.<path>`` for each
 override set, changed or removed, with that setting's class), the write's ``control`` operation
 and a ``config_changed`` event per row (``core.config_changes``). An assignment clears the
-story's pin (it follows its new profile's latest version). A turn already running finishes under
+story's pin (it follows its new profile's latest version) unless it names a ``version``, which
+pins the story to it; ``version: latest`` on the story's own profile moves a pinned story to the
+latest version (#181), recording ``engine_profile_version_pin`` (as a pin does). A turn
+already running finishes under
 the configuration it captured at its start; the next turn runs under the new one. An archived
 story's configuration is read-only (409 ``story_archived``), as its settings are (#63), when the
 call would change something: a call that changes nothing (the story's own profile, a patch that
@@ -52,7 +56,7 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Awaitable, Callable, Mapping
-from typing import Any
+from typing import Annotated, Any, Final, Literal
 
 from pydantic import ConfigDict, Field, StrictInt
 from sqlalchemy import select, update
@@ -77,6 +81,9 @@ OVERRIDES_SETTING = "profile_overrides"
 """The prefix of the ``config_changes`` settings an overrides write records, one per setting:
 ``profile_overrides.<dotted path>``."""
 REVISION_REASON = "overrides_revision"
+VERSION_SETTING = "engine_profile_version_pin"
+"""The ``config_changes`` setting an assignment that pins or unpins the story records (#181):
+the pinned version before and after (``null``: following the latest)."""
 
 OverridesPatchDocument = SettingsPatch
 """A JSON merge patch over a story's overrides (``schema.SettingsPatch``): the delivered
@@ -89,10 +96,14 @@ EXAMPLE_PATCH: dict[str, Any] = {
 }
 
 
+LATEST: Final = "latest"
+"""``ProfileAssignment.version``: follow the profile's latest version (no pin)."""
+
+
 class ProfileAssignment(TwoStageRequest):
     """``PUT /stories/{id}/engine-profile``: the profile the story runs under from its next turn
-    (its latest version). ``ignore_warnings`` (``ignoreWarnings``) confirms a change the impact
-    report warns of (FR-PROF-7)."""
+    (its latest version, or ``version``). ``ignore_warnings`` (``ignoreWarnings``) confirms a
+    change the impact report warns of (FR-PROF-7)."""
 
     model_config = ConfigDict(
         extra="forbid",
@@ -100,6 +111,19 @@ class ProfileAssignment(TwoStageRequest):
     )
 
     profile_id: Ulid
+    version: Annotated[StrictInt, Field(ge=1, le=2**31 - 1)] | Literal["latest"] | None = Field(
+        default=None,
+        description="The profile version the story runs on (#181): a number pins the story to "
+        "that version (it no longer follows the profile's edits); `latest` (or leaving it out) "
+        "follows the latest version and clears a pin, which on the story's own profile moves a "
+        "pinned story to the latest version through the impact report. A version the profile "
+        "does not have is 422 `validation_error`.",
+    )
+
+    @property
+    def pin(self) -> int | None:
+        """The version the story is pinned to (``None``: it follows the latest)."""
+        return self.version if isinstance(self.version, int) else None
 
 
 class ProfileOverridesPatch(TwoStageRequest):
@@ -254,7 +278,13 @@ async def assign_profile(
     async with db.begin() as conn:
         row = await _lock(conn, story_id, also=request.profile_id)
         current = await effective.effective_configuration(conn, story_id, validate=False)
-        if request.profile_id == current.profile_id:  # nothing to change: nothing is written
+        pin = request.pin
+        same_version = (
+            current.pinned and current.version == pin
+            if pin is not None
+            else not (current.pinned and request.version == LATEST)
+        )
+        if request.profile_id == current.profile_id and same_version:  # nothing is written
             return await _staged(
                 conn,
                 story_id,
@@ -264,7 +294,7 @@ async def assign_profile(
                 ignore_warnings=request.ignore_warnings,
                 kept=current,
             )
-        target = await effective.assignable(conn, request.profile_id)
+        target = await effective.assignable(conn, request.profile_id, version=pin)
         try:
             settings = effective.resolve_layers(
                 current.defaults,
@@ -278,6 +308,7 @@ async def assign_profile(
             raise
         _refuse_archived(row, story_id)
         moved = current.with_profile(target.profile_id, target.version, target.document, settings)
+        moved = dataclasses.replace(moved, pinned=pin is not None)
 
         async def write() -> EffectiveConfig:
             revision = int(row.config_revision) + 1
@@ -286,19 +317,32 @@ async def assign_profile(
                 story_id,
                 revision,
                 engine_profile_id=target.profile_id,
-                engine_profile_version_pin=None,
+                engine_profile_version_pin=pin,
             )
-            await record_config_change(
-                conn,
-                config_revision=revision,
-                setting=ASSIGNMENT_SETTING,
-                old=current.profile_id,
-                new=target.profile_id,
-                actor=principal,
-                change_class=ConfigClass.prospective,
-                scope=ConfigScope.STORY,
-                scope_id=story_id,
-            )
+            if current.profile_id != target.profile_id:
+                await record_config_change(
+                    conn,
+                    config_revision=revision,
+                    setting=ASSIGNMENT_SETTING,
+                    old=current.profile_id,
+                    new=target.profile_id,
+                    actor=principal,
+                    change_class=ConfigClass.prospective,
+                    scope=ConfigScope.STORY,
+                    scope_id=story_id,
+                )
+            if pin is not None or current.profile_id == target.profile_id:
+                await record_config_change(
+                    conn,
+                    config_revision=revision,
+                    setting=VERSION_SETTING,
+                    old=current.version if current.pinned else None,
+                    new=pin,
+                    actor=principal,
+                    change_class=ConfigClass.prospective,
+                    scope=ConfigScope.STORY,
+                    scope_id=story_id,
+                )
             return effective.view(await effective.effective_configuration(conn, story_id), facts)
 
         return await _staged(
@@ -413,8 +457,10 @@ async def set_overrides(
 
 __all__ = [
     "ASSIGNMENT_SETTING",
+    "LATEST",
     "OVERRIDES_SETTING",
     "PATCH_SCHEMA",
+    "VERSION_SETTING",
     "OverridesPatchDocument",
     "ProfileAssignment",
     "ProfileOverridesPatch",

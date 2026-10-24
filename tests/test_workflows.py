@@ -268,7 +268,7 @@ def test_perf_runs_the_scale_suite_weekly_and_opens_a_docs_pr() -> None:
         assert f"tests/perf/{name}" in run["run"]
     report = next(s for s in steps if s.get("name") == "Report a red run")
     assert "Weekly perf run failed" in report["run"]
-    assert docs["needs"] == ["weekly", "weekly-structured"]
+    assert docs["needs"] == ["weekly", "weekly-structured", "weekly-multi"]
     assert "failure" in docs["if"]
     assert docs["permissions"] == {"contents": "write", "pull-requests": "write"}
     others = {n: j.get("permissions", {}) for n, j in wf["jobs"].items() if n != "weekly-docs"}
@@ -284,6 +284,8 @@ def test_perf_runs_the_scale_suite_weekly_and_opens_a_docs_pr() -> None:
         "docs/capacity.md",
         "perf/results/*-structured.md",
         "perf/results/*-structured.json",
+        "perf/results/*-multi.md",
+        "perf/results/*-multi.json",
     }
     (pytest_step,) = [
         s for s in _steps(_workflow("ci.yml"), "test") if "pytest" in s.get("run", "")
@@ -330,6 +332,48 @@ def test_perf_runs_the_structured_workload_weekly() -> None:
     assert any("perf/results/" in s.get("run", "") for s in docs_steps)
 
 
+def test_perf_runs_the_multi_character_workload_weekly() -> None:
+    """#182 (P-04 M5): the multi-character variant runs on the weekly schedule and on dispatch,
+    after the structured one, on the GitHub-hosted runner as host class ``ci`` for 30 minutes,
+    with Locust from the ``perf`` group and its own seed cached by its key; it fails on failed,
+    lost or duplicated turns and on a reduced, deferred or escalation-deferred character (the
+    gate itself is reported there, not enforced), uploads the report, its sidecar and Locust's
+    HTML report, and files or comments on the weekly issue when red; the docs job downloads it
+    and commits the report. PR CI's test job syncs the ``perf`` group for the multi smoke run.
+
+    Complement asserted: it does not run on the nightly schedule, and it may not write
+    contents."""
+    wf = _workflow("perf.yml")
+    job = wf["jobs"]["weekly-multi"]
+    assert job["needs"] == ["weekly-structured"]
+    assert job["if"].startswith("always() && (")
+    assert "'0 3 * * 0'" in job["if"]
+    assert "inputs.suite == 'weekly'" in job["if"]
+    assert "'0 3 * * *'" not in job["if"]
+    assert job["permissions"] == {"contents": "read", "issues": "write"}
+    assert job["timeout-minutes"] == 180
+    steps = _steps(wf, "weekly-multi")
+    assert any(s.get("run") == "uv sync --frozen --group perf" for s in steps)
+    (cache,) = [s for s in steps if str(s.get("uses", "")).startswith("actions/cache@")]
+    assert cache["with"]["path"] == "build/perf/cache"
+    assert cache["with"]["key"] == "p04-multi-${{ steps.seed.outputs.key }}"
+    run = next(s for s in steps if s.get("id") == "multi")
+    assert "python -m perf.lite_smoke --scenario multi --minutes 30 --host-class ci" in run["run"]
+    check = next(s for s in steps if s.get("id") == "turns")
+    for field in ('f["failed"]', 'f["lost"]', 'f["duplicated"]', "reduced, deferred", "sys.exit(1"):
+        assert field in check["run"]
+    (upload,) = [s for s in steps if str(s.get("uses", "")).startswith("actions/upload-artifact@")]
+    assert upload["with"]["name"] == "perf-multi"
+    assert any("locust.html" in s.get("run", "") for s in steps)
+    report = next(s for s in steps if s.get("name") == "Report a red run")
+    assert "Weekly perf run failed" in report["run"]
+    docs_steps = _steps(wf, "weekly-docs")
+    assert any(s.get("with", {}).get("name") == "perf-multi" for s in docs_steps)
+    assert any("build/perf/multi/*-multi.md" in s.get("run", "") for s in docs_steps)
+    ci_steps = _steps(_workflow("ci.yml"), "test")
+    assert any(s.get("run") == "uv sync --frozen --group perf" for s in ci_steps)
+
+
 def test_redteam_runs_nightly_and_on_dispatch_and_reports_a_red_run() -> None:
     """#145: R-01's full corpus (`redteam_long`) and the PR subset every night (03:30 UTC) and
     on dispatch, with the log uploaded; a red run files or comments on an issue. PR CI names
@@ -345,6 +389,11 @@ def test_redteam_runs_nightly_and_on_dispatch_and_reports_a_red_run() -> None:
     assert '-m "redteam or redteam_long"' in run["run"]
     report = next(s for s in _steps(wf, "redteam") if s.get("name") == "Report a red run")
     assert "Nightly red-team run failed" in report["run"]
+    # #170: PRIV's extended run (5,000 examples), reported like the corpus.
+    priv = next(s for s in _steps(wf, "redteam") if s.get("id") == "priv")
+    assert priv["env"] == {"EPISTREL_HYPOTHESIS_PROFILE": "nightly"}
+    assert "tests/property/test_priv.py" in priv["run"]
+    assert "steps.priv.outcome == 'failure'" in report["if"]
     (pytest_step,) = [
         s for s in _steps(_workflow("ci.yml"), "test") if "pytest" in s.get("run", "")
     ]

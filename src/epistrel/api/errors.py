@@ -24,8 +24,15 @@ from sqlalchemy.exc import InterfaceError, OperationalError
 from starlette.exceptions import HTTPException
 
 from epistrel.api.idempotency import accepted_handler, reference_handler
-from epistrel.core.errors import DatabaseUnavailable, EpistrelError, InvalidRequest, field_path
+from epistrel.core.errors import (
+    DatabaseUnavailable,
+    EpistrelError,
+    InvalidRequest,
+    TurnBoundaryRequired,
+    field_path,
+)
 from epistrel.core.idempotency import ReferenceReplay
+from epistrel.core.timeline import TURN_BOUNDARY_REQUIRED
 from epistrel.core.turn_gate import TurnAccepted
 
 
@@ -54,7 +61,16 @@ async def validation_error_handler(request: Request, exc: Exception) -> JSONResp
     ``validation_error`` with ``details.field`` (the first failure's dotted path) and
     ``details.errors`` (every failure), before the handler or the Engine runs (FR-API-4)."""
     assert isinstance(exc, RequestValidationError)  # noqa: S101 - registered for it only
-    error = InvalidRequest.from_errors([_documented_loc(dict(e)) for e in exc.errors()])
+    found = [_documented_loc(dict(e)) for e in exc.errors()]
+    inside = next((e for e in found if e.get("type") == TURN_BOUNDARY_REQUIRED), None)
+    if inside is not None:
+        # #168 (FR-STORE-31): a truncation or fork at a beat or a step.
+        boundary = TurnBoundaryRequired(
+            str(inside.get("msg", "a checkpoint is a turn boundary")),
+            {"field": "body", "boundary": ["turn", "slot"]},
+        )
+        return JSONResponse(boundary.envelope(), status_code=boundary.http_status)
+    error = InvalidRequest.from_errors(found)
     return JSONResponse(error.envelope(), status_code=error.http_status)
 
 

@@ -66,7 +66,7 @@ from types import SimpleNamespace
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from sqlalchemy import func, insert, literal_column, select, update
+from sqlalchemy import and_, func, insert, literal_column, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -100,7 +100,7 @@ from epistrel.core.propositions.model import (
     TemporalKind,
     overlaps,
 )
-from epistrel.core.propositions.vocabulary import CORE_BY_ID, CORE_BY_NAME, CORE_PREDICATES
+from epistrel.core.propositions.vocabulary import CORE_BY_ID, CORE_BY_NAME, CORE_PREDICATES, SAME_AS
 from epistrel.core.settings_schema import ConfigClass
 from epistrel.core.tables import (
     genesis_deferred,
@@ -122,7 +122,14 @@ _PREDICATE_SCOPE_NAME = (
     func.coalesce(predicates.c.story_id, literal_column(f"'{CORE_SCOPE}'")),
     predicates.c.name,
 )
-_PROPOSAL_PENDING = predicate_proposals.c.status == literal_column("'pending'")
+_PROPOSAL_PENDING = and_(
+    predicate_proposals.c.status == literal_column("'pending'"),
+    predicate_proposals.c.kind == literal_column("'predicate'"),
+)
+_IDENTITY_PENDING = and_(
+    predicate_proposals.c.status == literal_column("'pending'"),
+    predicate_proposals.c.kind == literal_column("'identity'"),
+)
 
 IMPLICATION_MAX_DEPTH = 3
 """The default depth of the implication closure (FR-PROP-11)."""
@@ -986,6 +993,104 @@ async def file_proposal(
     return proposal_id
 
 
+IDENTITY = "identity"
+"""``predicate_proposals.kind`` of an identity proposal (#171)."""
+IdentityReason = Literal["canon_same_as", "uncertain_match", "characters"]
+"""Why an identity proposal was filed: a canon ``same_as`` made two entities one; #163's
+modeling minted a character for a description that uncertainly matched an existing one; or a
+canon ``same_as`` between two modeled characters was refused (merging them is M7's)."""
+
+
+async def file_identity_proposal(
+    conn: AsyncConnection,
+    story_id: str,
+    pair: tuple[str, str],
+    *,
+    reason: IdentityReason,
+    fact_ids: Sequence[str] = (),
+    evidence: Mapping[str, Any] | None = None,
+    filed_by: str = ENGINE_PRINCIPAL,
+) -> str:
+    """File an identity proposal (FR-PROP-7, #171) for ``pair`` in the caller's transaction, or
+    answer the pending one's id (one per pair): a record that two entities may be one referent,
+    never a merge (M7's amendments merge and split). ``fact_ids`` are the canon ``same_as``
+    facts it rests on."""
+    a, b = sorted(pair)
+    proposal_id = new_ulid()
+    proposed = {
+        "entities": [a, b],
+        "reason": reason,
+        "evidence": {"fact_ids": list(fact_ids), **dict(evidence or {})},
+    }
+    inserted = await conn.execute(
+        pg_insert(predicate_proposals)
+        .values(
+            id=proposal_id,
+            story_id=story_id,
+            predicate_id=SAME_AS,
+            proposed=proposed,
+            filed_by=filed_by,
+            kind=IDENTITY,
+            subject_entity_id=a,
+            object_entity_id=b,
+        )
+        .on_conflict_do_nothing(
+            index_elements=[
+                predicate_proposals.c.story_id,
+                predicate_proposals.c.subject_entity_id,
+                predicate_proposals.c.object_entity_id,
+            ],
+            index_where=_IDENTITY_PENDING,
+        )
+        .returning(predicate_proposals.c.id)
+    )
+    if inserted.scalar_one_or_none() is None:
+        pending = await conn.scalar(
+            select(predicate_proposals.c.id).where(
+                predicate_proposals.c.story_id == story_id,
+                predicate_proposals.c.kind == IDENTITY,
+                predicate_proposals.c.subject_entity_id == a,
+                predicate_proposals.c.object_entity_id == b,
+                predicate_proposals.c.status == "pending",
+            )
+        )
+        return str(pending)
+    await index_records(
+        conn,
+        [
+            proposal_record(
+                SimpleNamespace(id=proposal_id, story_id=story_id, proposed=proposed, decision=None)
+            )
+        ],
+    )
+    log.debug("identity proposal %s filed (%s)", proposal_id, reason)
+    return proposal_id
+
+
+async def identity_proposals(conn: AsyncConnection, story_id: str) -> list[dict[str, Any]]:
+    """The story's identity proposals (#171), oldest first: id, pair, status, reason,
+    evidence and filer."""
+    rows = await conn.execute(
+        select(predicate_proposals)
+        .where(
+            predicate_proposals.c.story_id == story_id,
+            predicate_proposals.c.kind == IDENTITY,
+        )
+        .order_by(predicate_proposals.c.id)
+    )
+    return [
+        {
+            "id": str(r.id),
+            "entities": [str(r.subject_entity_id), str(r.object_entity_id)],
+            "status": r.status,
+            "reason": dict(r.proposed or {}).get("reason"),
+            "evidence": dict(r.proposed or {}).get("evidence") or {},
+            "filed_by": r.filed_by,
+        }
+        for r in rows
+    ]
+
+
 async def single_valued_observations(
     conn: AsyncConnection, story_id: str, predicate_id: str
 ) -> int | None:
@@ -1299,6 +1404,7 @@ async def list_predicates(db: AsyncEngine, story_id: str) -> PredicateList:
 
 __all__ = [
     "ENGINE_PRINCIPAL",
+    "IDENTITY",
     "IMPLICATION_MAX_DEPTH",
     "PROPOSABLE",
     "PROPOSAL_OBSERVATIONS",
@@ -1307,6 +1413,7 @@ __all__ = [
     "ClosedSetDecl",
     "Closure",
     "Decision",
+    "IdentityReason",
     "ImplicationRule",
     "PredicateDecl",
     "PredicateList",
@@ -1327,7 +1434,9 @@ __all__ = [
     "consider_proposals",
     "core_registry",
     "direct_polarity_conflict",
+    "file_identity_proposal",
     "file_proposal",
+    "identity_proposals",
     "imply",
     "intersection",
     "list_predicates",

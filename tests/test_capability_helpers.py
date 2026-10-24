@@ -92,7 +92,9 @@ def test_level_at_least() -> None:
     with pytest.raises(ValueError, match="not a profile module"):
         level_at_least(STRUCTURED, "nonesuch", "on")
     full = parse_settings({"perception": {"level": "full"}})
-    assert not level_at_least(full, "perception", "co_location")  # not delivered
+    assert level_at_least(full, "perception", "co_location")  # delivered (#181)
+    clocked = parse_settings({"clock": {"level": "on"}})
+    assert not level_at_least(clocked, "clock", "on")  # not delivered (M6)
 
 
 def test_capability_names() -> None:
@@ -151,17 +153,7 @@ def test_the_map_entries() -> None:
         "required_field_repair",
         "floor",
     )
-    assert {e.slug for e in CAPABILITY_MAP if not e.delivered} == {
-        "partitions",
-        "partitions_nested",
-        "partitions_lazy",
-        "partitions_testimony",
-        "perception_co_location",
-        "perception_full",
-        "clock",
-        "states_external",
-        "per_character_renders",
-    }
+    assert {e.slug for e in CAPABILITY_MAP if not e.delivered} == {"clock", "states_external"}
     alternatives = Needs("testimony", "model", only=True)
     assert alternatives.describe() == "`testimony` at `model`"
     assert Needs("verification", "declared").describe() == "`verification` at `declared` or above"

@@ -16,7 +16,9 @@ FR-MODEL-2 names. A row has
   ``unmeasured`` where none is defined; ``None`` for a deterministic step, which tests prove
   rather than evals measure;
 - ``requires``: the modules (and levels) it needs, read from the ``CAPABILITY_MAP`` entry it is
-  held under (``capability``) plus any module of its own, and optionally one ``setting`` value;
+  held under (``capability``) plus any module of its own, and optionally one ``setting`` value
+  and one ``story_setting`` value (a story setting, #181: audience filtering needs
+  ``player_view = character``), which only a story's table evaluates;
 - ``purposes``: the model purposes (FR-MODEL-2) a model-dependent step calls;
 - ``label``: for the four guarantees FR-VERIFY-15 names as not holding under Lite, its words
   (structural knowledge separation, audience filtering, verification, commitment);
@@ -26,11 +28,13 @@ FR-MODEL-2 names. A row has
   the eval harness's quality judge), which no profile provides or withholds.
 
 A row is **provided** under a configuration when every module it needs is on at its level (an
-undelivered one never is) and its setting, if any, has one of its values: ``evaluate_guarantees``
-gives every row with that verdict, and the API (``GET /engine-profiles/{id}/guarantees``,
-``GET /stories/{id}/guarantees``) and ``docs/guarantees.md`` (``epistrel.tools.guarantees``)
-both render it. Core holds the table; the check that every delivered model purpose has a
-model-dependent row lives in the tool, which may read the Orchestrator's purpose registry.
+undelivered one never is) and its setting, if any, has one of its values; for a story, its story
+setting too (a profile's table, which has no story, does not read it and says so in its note):
+``evaluate_guarantees`` gives every row with that verdict, and the API
+(``GET /engine-profiles/{id}/guarantees``, ``GET /stories/{id}/guarantees``) and
+``docs/guarantees.md`` (``epistrel.tools.guarantees``) both render it. Core holds the table; the
+check that every delivered model purpose has a model-dependent row lives in the tool, which may
+read the Orchestrator's purpose registry.
 """
 
 from __future__ import annotations
@@ -72,6 +76,10 @@ class Setting:
         found = flatten(ProfileSettings, effective.model_dump(mode="json")).get(self.path)
         return found in self.values
 
+    def met_by(self, story: Mapping[str, Any]) -> bool:
+        """Whether a story's settings (``StorySettings`` as JSON) hold one of ``values``."""
+        return story.get(self.path) in self.values
+
     def describe(self) -> str:
         return " or ".join(f"`{self.path} = {value}`" for value in self.values)
 
@@ -87,6 +95,7 @@ class GuaranteeRow:
     requires: tuple[Needs, ...]
     capability: str | None = None
     setting: Setting | None = None
+    story_setting: Setting | None = None
     purposes: tuple[str, ...] = ()
     label: str | None = None
     delivered_in: str | None = None
@@ -98,13 +107,18 @@ class GuaranteeRow:
         """Whether every module (and level) the step needs is delivered."""
         return all(_delivered(need) for need in self.requires)
 
-    def provided(self, effective: ProfileSettings) -> bool | None:
-        """Whether the step applies under ``effective``; ``None`` for a step outside stories."""
+    def provided(
+        self, effective: ProfileSettings, story: Mapping[str, Any] | None = None
+    ) -> bool | None:
+        """Whether the step applies under ``effective`` (and, for a story, its settings
+        ``story``); ``None`` for a step outside stories."""
         if not self.in_story:
             return None
         if not all(need.met(effective) for need in self.requires):
             return False
-        return self.setting is None or self.setting.met(effective)
+        if self.setting is not None and not self.setting.met(effective):
+            return False
+        return self.story_setting is None or story is None or self.story_setting.met_by(story)
 
     @property
     def name(self) -> str:
@@ -156,7 +170,6 @@ GUARANTEES: tuple[GuaranteeRow, ...] = (
         D,
         on="partitions",
         label="structural knowledge separation",
-        delivered_in="M5",
         note="Without partitions, characters' knowledge is separated only by instructions in a "
         "shared prompt, so secrets seeded from the catalog or scenario are present in the "
         "shared context (FR-LITE-5).",
@@ -194,8 +207,23 @@ GUARANTEES: tuple[GuaranteeRow, ...] = (
         "perception routing and audience filtering",
         D,
         on="perception_co_location",
+        story_setting=Setting("player_view", ("character",)),
         label="audience filtering",
-        delivered_in="M5",
+        note="Provided only under the story setting `player_view = character` (the default): "
+        "under `story` a character viewpoint receives every beat in full, never a `think` or "
+        "`latent`, and its partition and memory are routed as under `character` (FR-RESP-13; "
+        "#177). A profile's table cannot know a story's `player_view`, so it says what the "
+        "default gives; a story's table (`GET /stories/{id}/guarantees`) reads it.",
+    ),
+    _row(
+        "multi_character_isolation",
+        "per-character render isolation",
+        D,
+        on="per_character_renders",
+        note="Each character renders from its own partition and what it perceived of the turn so "
+        "far: no character's output is derived from another character's private partition, "
+        "`think` or `latent` (FR-MULTI-1). Under `combined`, one render speaks for every named "
+        "character from the shared context.",
     ),
     _row(
         "commitment_mechanics",
@@ -281,7 +309,8 @@ GUARANTEES: tuple[GuaranteeRow, ...] = (
         UNMEASURED,
         on="partitions_testimony",
         purposes=("belief_adjudication",),
-        delivered_in="M5",
+        note="At `testimony = defaulted`, every acceptance follows the deterministic default of "
+        "trust, priors and consistency, and no model is called.",
     ),
     _row(
         "repair_rendering",
@@ -296,10 +325,11 @@ GUARANTEES: tuple[GuaranteeRow, ...] = (
         "paraphrase_detection",
         "paraphrase/indirect-disclosure detection",
         M,
-        UNMEASURED,
+        "NFR-QUAL-1",
         on="partitions",
-        delivered_in="M5",
-        note="No purpose of its own is defined yet.",
+        note="No purpose of its own is defined: the viewpoint checks of the render's claims "
+        "(verification, could-have-known) catch what detection finds, and NFR-QUAL-1's zero-leak "
+        "evals (Q-04's asymmetry, the private-thought suite) measure what reaches the output.",
     ),
     # -- the other model purposes FR-MODEL-2 names
     _row(
@@ -404,6 +434,7 @@ class GuaranteeStatus(BaseModel):
     metric: str | None
     requires: list[RequiredModule]
     setting: RequiredSetting | None
+    story_setting: RequiredSetting | None = None
     purposes: list[str]
     provided: bool | None
     delivered_in: str | None
@@ -420,8 +451,16 @@ class GuaranteeTable(BaseModel):
     rows: list[GuaranteeStatus]
 
 
-def status(row: GuaranteeRow, effective: ProfileSettings) -> GuaranteeStatus:
-    """``row`` under ``effective``."""
+def _required(setting: Setting | None) -> RequiredSetting | None:
+    return (
+        None if setting is None else RequiredSetting(path=setting.path, values=list(setting.values))
+    )
+
+
+def status(
+    row: GuaranteeRow, effective: ProfileSettings, story: Mapping[str, Any] | None = None
+) -> GuaranteeStatus:
+    """``row`` under ``effective`` (and a story's settings ``story``)."""
     return GuaranteeStatus(
         id=row.id,
         step=row.step,
@@ -431,24 +470,31 @@ def status(row: GuaranteeRow, effective: ProfileSettings) -> GuaranteeStatus:
             RequiredModule(module=need.module, level=need.level, exact=need.only)
             for need in row.requires
         ],
-        setting=None
-        if row.setting is None
-        else RequiredSetting(path=row.setting.path, values=list(row.setting.values)),
+        setting=_required(row.setting),
+        story_setting=_required(row.story_setting),
         purposes=list(row.purposes),
-        provided=row.provided(effective),
+        provided=row.provided(effective, story),
         delivered_in=None if row.delivered else row.delivered_in,
     )
 
 
-def evaluate_guarantees(effective: ProfileSettings) -> list[GuaranteeStatus]:
-    """Every row of ``GUARANTEES`` under ``effective``, in order."""
-    return [status(row, effective) for row in GUARANTEES]
+def evaluate_guarantees(
+    effective: ProfileSettings, story: Mapping[str, Any] | None = None
+) -> list[GuaranteeStatus]:
+    """Every row of ``GUARANTEES`` under ``effective`` (and a story's settings), in order."""
+    return [status(row, effective, story) for row in GUARANTEES]
 
 
-def table(profile_id: str, version: int, effective: ProfileSettings) -> GuaranteeTable:
-    """The guarantee table of ``profile_id`` at ``version`` under ``effective``."""
+def table(
+    profile_id: str,
+    version: int,
+    effective: ProfileSettings,
+    story: Mapping[str, Any] | None = None,
+) -> GuaranteeTable:
+    """The guarantee table of ``profile_id`` at ``version`` under ``effective`` (a story's, with
+    its settings ``story``)."""
     return GuaranteeTable(
-        profile_id=profile_id, version=version, rows=evaluate_guarantees(effective)
+        profile_id=profile_id, version=version, rows=evaluate_guarantees(effective, story)
     )
 
 
@@ -468,6 +514,13 @@ def guarantees_lost(before: ProfileSettings, after: ProfileSettings) -> tuple[st
         for found in guarantees(before)
         if found not in after_holds and GUARANTEE[found].kind is Kind.deterministic
     )
+
+
+def guarantees_gained(before: ProfileSettings, after: ProfileSettings) -> tuple[str, ...]:
+    """The ids of the deterministic rows ``after`` provides and ``before`` does not, in
+    ``GUARANTEES`` order: the impact report's ``guarantees_gained`` (#181), ``guarantees_lost``
+    the other way round."""
+    return guarantees_lost(after, before)
 
 
 def ordered(ids: set[str] | frozenset[str]) -> list[str]:
@@ -497,6 +550,7 @@ __all__ = [
     "Setting",
     "evaluate_guarantees",
     "guarantees",
+    "guarantees_gained",
     "guarantees_lost",
     "metric_ids",
     "ordered",

@@ -36,6 +36,16 @@ violation (#68) stays in character. It is set when the character is created: fro
 character a structured render introduces is ``declared`` when the render gave its age and
 ``repaired`` when the turn's age-repair call supplied it (FR-CAT-12).
 
+#163 adds ``weight`` (``character_weight``: ``minor`` for a character modeled lazily by
+interaction or salience, ``major`` for the cast, the player and an author-created or promoted
+character; FR-EPI-10) and the position it was modeled at (``modeled_turn`` … ``modeled_step``,
+``core.membership.Position``'s columns; 0 for the genesis cast). The player is always ``major``
+(``ck_characters_player_major``).
+
+#176 adds ``participation_role`` (``primary``, ``reactive`` or ``silent``; default ``reactive``,
+FR-MULTI-7) and ``participation_fixed`` (a bound the engine never crosses on its own); the
+player's character has no role (ignored for it).
+
 #119 adds ``role_id`` (the scenario role a character of a story created from a scenario fills;
 ``NULL`` otherwise) and ``character_snapshots``: one row per catalog character a story was
 created with (FR-SCN-9, FR-CAT-3,9), keyed ``(story_id, character_id)``, holding the catalog id
@@ -63,9 +73,10 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 
-from epistrel.core.tables.base import metadata, ulid_type
+from epistrel.core.enums import CharacterWeight
+from epistrel.core.tables.base import metadata, pg_enum, ulid_type
 
 TRUE_AGE_SOURCES: tuple[str, ...] = ("catalog", "genesis", "declared", "repaired")
 """Where a character's one true age came from (#150, FR-CAT-12): its catalog entry, the
@@ -102,6 +113,23 @@ characters = Table(
     Column("deflection_style", Text, nullable=True),
     Column("role_id", Text, nullable=True),
     Column("true_age_source", Text, nullable=False, server_default=text("'declared'")),
+    # The language codes the character understands (#161); ``NULL``: every language.
+    Column("languages", ARRAY(Text), nullable=True),
+    # #163 (FR-EPI-10): narrative weight and the position the character was modeled at.
+    Column(
+        "weight",
+        pg_enum(CharacterWeight, "character_weight"),
+        nullable=False,
+        server_default=text("'major'"),
+    ),
+    Column("modeled_turn", Integer, nullable=False, server_default=text("0")),
+    Column("modeled_variant", SmallInteger, nullable=False, server_default=text("0")),
+    Column("modeled_slot_k", SmallInteger, nullable=False, server_default=text("0")),
+    Column("modeled_beat", SmallInteger, nullable=False, server_default=text("0")),
+    Column("modeled_step", SmallInteger, nullable=False, server_default=text("0")),
+    # #176 (FR-MULTI-7): the character's participation role, a default or a fixed bound.
+    Column("participation_role", Text, nullable=False, server_default=text("'reactive'")),
+    Column("participation_fixed", Boolean, nullable=False, server_default=text("false")),
     CheckConstraint(f"true_age BETWEEN {TRUE_AGE_MIN} AND {TRUE_AGE_MAX}", name="true_age"),
     CheckConstraint(
         "true_age_source IN ('catalog', 'genesis', 'declared', 'repaired')",
@@ -109,6 +137,10 @@ characters = Table(
     ),
     CheckConstraint(
         "(persona_id IS NULL AND persona_snapshot IS NULL) OR is_player", name="persona_player"
+    ),
+    CheckConstraint("NOT is_player OR weight = 'major'", name="player_major"),
+    CheckConstraint(
+        "participation_role IN ('primary', 'reactive', 'silent')", name="participation_role"
     ),
 )
 

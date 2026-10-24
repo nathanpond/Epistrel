@@ -65,6 +65,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import clock, timeline
 from epistrel.core.enums import Membership, MemoryKind, OperationKind, Provenance
+from epistrel.core.epistemic import transitions
 from epistrel.core.errors import ScopeMismatch
 from epistrel.core.events.operation import Operation
 from epistrel.core.events.types import (
@@ -586,6 +587,16 @@ def _output(
             if replaced:
                 await core.supersede_outputs(conn, story_id, replaced)
             await records.write_consolidated(conn, op, rows, covered)
+            if level == 1 and scope.characters is not None:
+                # FR-BELIEF-10: the scope's beliefs from the window decay (#160's forgetting
+                # transition; nothing when the story keeps no partitions).
+                await transitions.forget_covered(
+                    conn,
+                    op,
+                    holders=scope.characters,
+                    from_turn=window.from_turn,
+                    to_turn=window.to_turn,
+                )
             if level == 1:
                 folded = await core.next_level2(conn, story_id, scope, extra=window)
                 if folded is not None:

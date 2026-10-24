@@ -30,7 +30,11 @@
   the subject ("Bobby's only undergraduate degree is ``bobby_ba``": ``degree_id``) rather than
   the objects of one key; its ``members`` are then those values. ``NULL``: an object set.
 - ``predicate_proposals``: the engine's proposals to strengthen an auto predicate, inert until
-  approved (FR-PROP-4); one pending proposal per predicate.
+  approved (FR-PROP-4); one pending proposal per predicate. #171 (migration 0076) adds
+  **identity proposals** (``kind = identity``, FR-PROP-7): two entities a canon ``same_as`` (or
+  an uncertain recurring match, #163) makes one, the pair in ``subject_entity_id`` /
+  ``object_entity_id`` (id order), one pending per pair; never merged automatically (M7's
+  amendments merge). ``entities.merged_into`` is the merge's target, unset in M5.
 
 All are story tables without foreign keys (``core.stories.STORY_TABLES``): story deletion
 empties them and a fork copies them under new ids.
@@ -83,6 +87,8 @@ entities = Table(
     Column("gender", Text, nullable=True),
     Column("descriptors", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
     Column("created_by_operation_id", ulid_type(), nullable=True),
+    # FR-PROP-7 (#171, migration 0076): the entity a merge folds this one into (M7; unset).
+    Column("merged_into", ulid_type(), nullable=True),
     CheckConstraint("gender IS NULL OR gender IN ('masculine', 'feminine')", name="gender"),
 )
 Index("ix_entities_story_id", entities.c.story_id)
@@ -234,14 +240,31 @@ predicate_proposals = Table(
     Column("decided_at", TIMESTAMP(timezone=True), nullable=True),
     Column("decided_by", Text, nullable=True),
     Column("decision", JSONB(none_as_null=True), nullable=True),
+    # FR-PROP-7 (#171, migration 0076): an identity proposal, its pair in id order.
+    Column("kind", Text, nullable=False, server_default=text("'predicate'")),
+    Column("subject_entity_id", ulid_type(), nullable=True),
+    Column("object_entity_id", ulid_type(), nullable=True),
     CheckConstraint("status IN ('pending', 'approved', 'rejected')", name="status"),
+    CheckConstraint("kind IN ('predicate', 'identity')", name="kind"),
+    CheckConstraint(
+        "(kind = 'identity') = (subject_entity_id IS NOT NULL AND object_entity_id IS NOT NULL)",
+        name="identity_pair",
+    ),
 )
 Index("ix_predicate_proposals_story_id", predicate_proposals.c.story_id)
 Index(
     "uq_predicate_proposals_pending",
     predicate_proposals.c.predicate_id,
     unique=True,
-    postgresql_where=text("status = 'pending'"),
+    postgresql_where=text("status = 'pending' AND kind = 'predicate'"),
+)
+Index(
+    "uq_predicate_proposals_identity_pending",
+    predicate_proposals.c.story_id,
+    predicate_proposals.c.subject_entity_id,
+    predicate_proposals.c.object_entity_id,
+    unique=True,
+    postgresql_where=text("status = 'pending' AND kind = 'identity'"),
 )
 
 __all__ = [

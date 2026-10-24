@@ -1,7 +1,7 @@
 """Scratch scenes #157's suites build through the engine's own paths.
 
 - ``structured(engine, ctx, story_id, dials)``: put a scratch story on the seeded
-  ``Structured (M4)`` profile (``Engine.assign_engine_profile``) with dial overrides
+  ``Structured`` profile's latest version (``Engine.assign_engine_profile``) with dial overrides
   (``Engine.set_profile_overrides``), as an author would.
 - ``add_entities``: the story's entities (#131's store), the cast's own with their character.
 - ``episodes``: turns whose commit writes their episodic memories through
@@ -30,7 +30,7 @@ from epistrel.core.events import Operation
 from epistrel.core.memory import records
 from epistrel.core.profiles.story import ProfileAssignment, ProfileOverridesPatch
 from epistrel.core.propositions import store
-from epistrel.core.seeds.profiles import STRUCTURED_M4_PROFILE_ID
+from epistrel.core.seeds.profiles import STRUCTURED_PROFILE_ID
 from epistrel.core.stories import CreatedStory
 from epistrel.core.tables.jobs import jobs
 from epistrel.core.tables.model_config import model_config
@@ -50,11 +50,12 @@ async def structured(
     story_id: str,
     dials: Mapping[str, Any] | None = None,
 ) -> None:
-    """Run ``story_id`` on ``Structured (M4)`` with ``dials`` (a settings merge patch)."""
+    """Run ``story_id`` on the seeded ``Structured`` profile's latest version with ``dials`` (a
+    settings merge patch)."""
     await engine.assign_engine_profile(
         ctx,
         story_id,
-        ProfileAssignment(profile_id=STRUCTURED_M4_PROFILE_ID, ignore_warnings=True),
+        ProfileAssignment(profile_id=STRUCTURED_PROFILE_ID, ignore_warnings=True),
     )
     if dials:
         await engine.set_profile_overrides(

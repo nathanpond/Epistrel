@@ -38,6 +38,10 @@ SIZES = {
     # #158's intervention scenarios, shared by E-12 and E-13.
     "e12": 21,
     "e13": 21,
+    # #179's zero-leak sets (NFR-QUAL-8's 300 cases a metric) and E-01 M5's viewpoint cases.
+    "q04": 300,
+    "priv_think_leak": 300,
+    "e01_viewpoint": 300,
 }
 
 

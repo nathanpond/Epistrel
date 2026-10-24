@@ -41,6 +41,7 @@ from epistrel.core.retrieval.lexical import (
     position_params,
     quarantine_clause,
 )
+from epistrel.core.retrieval.viewpoint import scope_params, scope_sql
 from epistrel.core.tables.memories import Vector
 
 log = logging.getLogger(__name__)
@@ -83,10 +84,12 @@ async def vector_search(
     k: int,
     through: tuple[int, int] | None = None,
     include_quarantined: bool = False,
+    scope: str | None = None,
 ) -> list[Hit]:
     """Up to ``k`` of the story's active hot memories nearest ``vector``, among those stamped
-    ``version`` only, none positioned after ``through`` (``(turn, beat)``, when given) and none
-    quarantined (#145) unless ``include_quarantined``.
+    ``version`` only, none positioned after ``through`` (``(turn, beat)``, when given), none
+    quarantined (#145) unless ``include_quarantined``, and only those ``scope`` admits (#159's
+    viewpoint filter, in the indexed query: the iterative scan keeps reading until ``k`` pass).
     Ordered by the HNSW index (cosine distance) in a materialized step, then re-sorted
     exactly: with pgvector's iterative scan in ``relaxed_order`` (#141 sets it) the index may
     answer slightly out of order."""
@@ -102,6 +105,7 @@ async def vector_search(
             "AND m.embedding IS NOT NULL AND m.embedding_model_version = :version "
             f"AND {position_clause('m')} "
             f"AND {quarantine_clause('m')} "
+            f"AND {scope_sql('m')} "
             "ORDER BY distance LIMIT :k) "
             # Ties by position, newest first, then text, then id (#154, #476: deterministic
             # across runs).
@@ -115,6 +119,7 @@ async def vector_search(
             "k": k,
             "include_quarantined": include_quarantined,
             **position_params(through),
+            **scope_params(scope),
         },
     )
     return [Hit(str(r.id), 1.0 - float(r.distance)) for r in found]

@@ -1,7 +1,7 @@
 """Q-01: recall@10 and MRR over the S-THOSEGUYS-style fixture (docs/04 §9; NFR-QUAL-6; #157).
 
 ``setup`` builds the fixture once per run (``build_fixture``; content and labels:
-``authoring.retrieval``, version ``FIXTURE_VERSION``): a scratch story on ``Structured (M4)``
+``authoring.retrieval``, version ``FIXTURE_VERSION``): a scratch story on ``Structured``
 with its cast and people, one real turn, then 5,000 filler episodes and the 100 planted
 occasions' beats written in bulk through #153's memory row builder
 (``testing.fixtures.scale.memory_row``/``insert_memories``: building 5,000 turns through the

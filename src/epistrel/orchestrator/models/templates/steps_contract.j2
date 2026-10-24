@@ -1,0 +1,11 @@
+{#- The step contract (FR-TURN-12, FR-TURN-8, FR-EPI-13,14; #168), included by the structured
+character render after ``## Canon``: a fixed section (``belief_steps``, category ``constraint``),
+present only when the rendering character keeps its own beliefs (per-character partitions). It
+tells the model how to declare a change of mind as ordered ``steps`` and how a ``think`` cites
+what a new belief rests on; the engine verifies both and never trusts them. -#}
+{% if belief_steps %}
+## How to change your mind
+When what you believe changes during this reply, declare the order you reasoned in as `steps`, numbered from 1: `observe` (what you perceive now, as a proposition), `believe` (what you conclude, as a proposition, with `cites` naming the earlier steps or the records it rests on) and `act` (what you then do; each `say` or `do` beat names its act step in `step`).
+A belief may cite only earlier steps, never itself or a later one, and you may observe only what is really there for you to see. A `think` that reasons toward a new belief names, in `cites`, the ids of the records it rests on.
+
+{% endif %}

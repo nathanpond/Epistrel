@@ -8,9 +8,15 @@ current age is below the threshold (default 18, so 17 and under).
 - **Current age** is ``true_age`` plus the full years elapsed on the world clock since the age
   was recorded. M2 has no clock, so it is ``true_age``.
 - **Present** under Lite is every character of the story's cast: Lite tracks no location, so
-  nobody is ever elsewhere. ``involved`` is not narrower under Lite either (no entity
-  tracking), so the one accepted condition, ``minor_involved_or_present``, holds exactly when
-  the cast has a minor.
+  nobody is ever elsewhere. Under per-character partitions with perception on (#161) a
+  character authoritatively placed somewhere other than the scene's location is **not
+  present** (``CastMember.present``, read by ``store.guard_context`` from
+  ``core.epistemic.scene.placed_elsewhere``: authoritative co-location, never the consumer's
+  roster). ``involved`` stays the whole cast (the engine tracks no involvement; recognizing
+  who the content is about is the model's), so the one accepted condition,
+  ``minor_involved_or_present``, holds exactly when the cast has a minor, and the check's
+  subjects say who is present: content involving the minor is blocked wherever they are, and
+  content merely near a minor only while the minor is in the room.
 - An age-conditioned policy whose condition is false **does not apply**: it is left out of the
   checks (no ``guardrail_check`` call), so adult-only stories pay nothing for it.
 - When it applies, the model receives **subjects**: every cast member as an opaque positional
@@ -39,6 +45,8 @@ class CastMember:
     ordinal: int
     true_age: int
     age_recorded_at: datetime | None = None
+    present: bool = True
+    """Authoritatively co-located with the content (#161); always under Lite and M4."""
 
 
 def current_age(member: CastMember) -> int:
@@ -53,12 +61,19 @@ def in_order(cast: Iterable[CastMember]) -> tuple[CastMember, ...]:
 
 
 def present(cast: Iterable[CastMember]) -> tuple[CastMember, ...]:
-    """Who is present for the content: under Lite, the whole cast."""
+    """Who is present for the content: under Lite, the whole cast; under perception routing,
+    the members not authoritatively elsewhere."""
+    return tuple(m for m in in_order(cast) if m.present)
+
+
+def involved(cast: Iterable[CastMember]) -> tuple[CastMember, ...]:
+    """Who may be involved in the content: the whole cast (no involvement tracking)."""
     return in_order(cast)
 
 
 def has_minor(cast: Iterable[CastMember], threshold: int) -> bool:
-    return any(current_age(member) < threshold for member in present(cast))
+    """Whether a minor is involved in or present for the content (the whole cast, in order)."""
+    return any(current_age(member) < threshold for member in involved(cast))
 
 
 def applies(policy: Policy, cast: Sequence[CastMember], threshold: int) -> bool:
@@ -87,10 +102,10 @@ def label(position: int) -> str:
 
 
 def subjects(cast: Sequence[CastMember]) -> list[Subject]:
-    """Every present cast member as ``{label, age}`` in creation order; never a name."""
+    """Every cast member as ``{label, age, present}`` in creation order; never a name."""
     return [
-        Subject(label=label(position), age=current_age(member))
-        for position, member in enumerate(present(cast), start=1)
+        Subject(label=label(position), age=current_age(member), present=member.present)
+        for position, member in enumerate(involved(cast), start=1)
     ]
 
 
@@ -124,6 +139,7 @@ __all__ = [
     "current_age",
     "has_minor",
     "in_order",
+    "involved",
     "label",
     "partition",
     "policy_prompt",

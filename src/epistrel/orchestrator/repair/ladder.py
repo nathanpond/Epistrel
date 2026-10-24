@@ -13,7 +13,8 @@ enrollment is OSU" brings his enrollment at OSU) and their dependency cluster, t
 speaker may read them (the narrator's: omniscient), through the claim's position; a claim that
 cites no fact seeds it at its subject. An undecided or unpermitted claim has no neighborhood:
 its constraint is "do not assert …" ("do not introduce facts about …", with the reason, for an
-unpermitted one).
+unpermitted one; #172: "do not assert what another character privately thinks or feels" for a
+``think_leak``, naming none of it, and "do not claim to remember …" for a confabulation).
 The neighborhood's size (its facts, memories excluded) classifies the repair.
 
 **The rungs**, strictly in order, an inapplicable one skipped (the pure parts are
@@ -26,10 +27,12 @@ The neighborhood's size (its facts, memories excluded) classifies the repair.
 3. *regeneration*: the ``regeneration`` purpose rewrites the beat in place (the generation
    inputs of the render it came from, the rejected text, the typed constraints, the
    contradicted facts and the neighborhood) through the Model Access Layer's
-   ``structured_call`` (``RegeneratedBeat``). It starts only when the turn's budget can
-   reserve, at once, the re-render, its extraction and one re-check per model-assisted output
-   policy (``can_afford_unreserved`` + ``hold``), and while the turn has ``repair.max_attempts``
-   left (each regeneration is one attempt; #53's retries are inside it). Otherwise the ladder
+   ``structured_call`` (``RegeneratedBeat``; #172: a span leaking another character's private
+   thought is cut from the rejected text it reads, ``redact``). It starts only when the turn's
+   budget can reserve, at once, the re-render, its extraction and one re-check per
+   model-assisted output policy (``can_afford_unreserved`` + ``hold``), and while the turn has
+   ``repair.max_attempts`` left (each regeneration is one attempt; #53's retries are inside
+   it). Otherwise the ladder
    stays deterministic: ``repair_deterministic`` (cause ``budget`` or ``max_attempts``);
 4. *the safe fallback*: a ``say``, ``do`` or narration beat becomes the stored safe fallback
    line (the character's own, else the deployment's, else the last resort; the first that
@@ -119,7 +122,9 @@ from epistrel.orchestrator.structured.render import (
 )
 from epistrel.orchestrator.verify.extraction import EXTRACTION_DEGRADED, CheckedClaim
 from epistrel.orchestrator.verify.verifier import (
+    CONFABULATION,
     RESOLUTION_CONFLICT,
+    THINK_LEAK,
     UNANCHORED,
     UNPERMITTED,
     TimeFrame,
@@ -242,6 +247,9 @@ class Context:
     constraints: tuple[Constraint, ...] = ()
     frame: TimeFrame = UNANCHORED
     """How the facts' valid-times read in the regeneration prompt (#460)."""
+    redactions: tuple[tuple[int, int], ...] = ()
+    """#172: the beat's spans that leak another character's private thought, cut from the
+    rejected text a regeneration reads (``REDACTED``)."""
 
     @property
     def size(self) -> int:
@@ -383,6 +391,25 @@ def _declared_index(claim: CheckedClaim) -> int | None:
         return None
 
 
+REDACTED = "[private content removed]"
+"""What replaces a span leaking another character's thought in a regeneration's rejected text
+(#172): the private content is never echoed into a prompt."""
+
+
+def redact(text: str, spans: Sequence[tuple[int, int]]) -> str:
+    """``text`` with each of ``spans`` replaced by ``REDACTED`` (overlaps merged)."""
+    merged: list[list[int]] = []
+    for start, end in sorted(s for s in spans if 0 <= s[0] < s[1] <= len(text)):
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    out = text
+    for start, end in reversed(merged):
+        out = out[:start] + REDACTED + out[end:]
+    return out
+
+
 class RepairLadder:
     """One turn's repair ladder (see the module docstring). Built per turn: its
     ``repair.max_attempts`` counts the turn's regenerations across every beat."""
@@ -478,6 +505,11 @@ class RepairLadder:
             props += [v.claim.proposition for v in violations if v.claim.proposition is not None]
             names = await _names(conn, self.story_id, props)
             constraints = tuple([await self._constraint(v, registry, names) for v in violations])
+            redactions = tuple(
+                (v.claim.span[1], v.claim.span[2])
+                for v in violations
+                if v.result is not None and v.result.repair_tag == THINK_LEAK
+            )
             frame = TimeFrame.of(await load_time_basis(conn, self.story_id))
         return Context(
             contradicted=tuple(contradicted.values()),
@@ -487,6 +519,7 @@ class RepairLadder:
             registry=registry,
             constraints=constraints,
             frame=frame,
+            redactions=redactions,
         )
 
     def _viewpoint(self, beat: TurnBeat) -> str:
@@ -499,6 +532,16 @@ class RepairLadder:
     ) -> Constraint:
         claim = v.claim.proposition
         cites = tuple(v.result.evidence_ids()) if v.result is not None else ()
+        if v.result is not None and v.result.repair_tag == THINK_LEAK:
+            # #172: the constraint names no private content (it is in the speaker's prompt).
+            return Constraint(
+                "do_not_assert",
+                "Do not assert what another character privately thinks or feels; show only "
+                "what can be seen or heard.",
+            )
+        if v.result is not None and v.result.repair_tag == CONFABULATION:
+            recalled = (v.claim.recalled or "that").strip()[:200]
+            return Constraint("do_not_assert", f"Do not claim to remember {recalled}.")
         if claim is None:
             return Constraint("do_not_assert", "Do not assert what this beat could not support.")
         if v.result is not None and v.result.repair_tag == RESOLUTION_CONFLICT:
@@ -513,6 +556,14 @@ class RepairLadder:
                 f"avoid_binding: {target}. Recorded history rules out that {rendered}: settle "
                 "it as something else, insignificant and with no history here, or leave it "
                 "open.",
+                cites,
+            )
+        if v.result is not None and v.result.hidden_conflict:
+            # #169: hidden canon settles it; the constraint names nothing of the hidden value.
+            rendered = render_proposition(claim, registry, names)
+            return Constraint(
+                "do_not_assert",
+                f"Do not settle that {rendered}: this speaker does not know it; leave it open.",
                 cites,
             )
         if v.result is not None and v.result.repair_tag == UNPERMITTED:
@@ -773,7 +824,7 @@ class RepairLadder:
         inputs = RegenerationInputs.model_validate(
             {
                 **base.model_dump(mode="json"),
-                "rejected_text": beat.text,
+                "rejected_text": redact(beat.text, context.redactions),
                 "beat_kind": beat.kind,
                 "constraints": [
                     RepairConstraint(kind=c.kind, text=c.text[:1_000], cites=list(c.cites)[:50])

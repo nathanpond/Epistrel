@@ -88,4 +88,12 @@ events = Table(
     Index("ix_events_story_position", "story_id", "narrative_turn", "turn_variant"),
     Index("ix_events_story_category", "story_id", "category"),
     Index("ix_events_operation_id", "operation_id"),
+    # #182 (migration 0081): an exposure's state is read through its resolutions'
+    # ``belief_resolved`` events, matched on the payload's ``exposure_id``.
+    Index(
+        "ix_events_belief_resolved",
+        "story_id",
+        text("(payload ->> 'exposure_id')"),
+        postgresql_where=text("type = 'belief_resolved'"),
+    ),
 )

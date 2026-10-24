@@ -380,6 +380,36 @@ class NothingToUndo(EpistrelError):
     http_status = 409
 
 
+class TurnBoundaryRequired(InvalidRequest):
+    """A truncation or fork named a position inside a turn (a beat or a step): checkpoints,
+    truncation and fork operate at turn boundaries only, ``N`` or an inter-turn slot boundary
+    ``N⁺k`` (FR-STORE-31; #168). Nothing is written. ``details``: ``field`` (the offending
+    field) and ``boundary`` (``to_turn``/``at_turn`` and ``slot``, the accepted shape)."""
+
+    code = "turn_boundary_required"
+    http_status = 422
+
+
+class ViewpointCannotAssignTruth(EpistrelError):
+    """A write named a character (or any holder but ``canon``) as the holder of a canon fact:
+    a determined proposition has one truth value for everyone, and a character's divergent
+    view is an owned belief, never a per-character value (FR-EPI-8; #169). Nothing is written.
+    ``details``: ``field`` and ``holder``."""
+
+    code = "viewpoint_cannot_assign_truth"
+    http_status = 422
+
+
+class IdentityMergeNotYet(EpistrelError):
+    """A canon ``same_as`` would make two modeled characters one referent, or a caller asked to
+    merge entities (FR-PROP-7; #171): merges and splits are amendments, M7's
+    (``entities/merge``, ``entities/split``). Nothing is written; a turn's render files an
+    identity proposal instead. ``details``: ``entities`` (the pair)."""
+
+    code = "identity_merge_not_yet"
+    http_status = 422
+
+
 class UnknownChain(EpistrelError):
     """A ``{turn, variant}`` chain selector names no variant of the story, or names a chain
     that continues in more than one way (#66). Nothing is written. ``details``:

@@ -283,7 +283,11 @@ async def test_i_27__lite(stub_settings: Settings, engine: AsyncEngine) -> None:
         assert story["settings"]["turn_concurrency"] == "queue"
         assert story["settings"]["audit_retention_days"] == 30
         assert story["settings"]["default_output_viewpoint"] == f"character:{by_role['mother']}"
-        assert not set(lg.UNUSED_SETTINGS) & set(story["settings"])
+        # Kept inactive, not applied: a setting M5 made real (``interaction_mode``, #174) reads
+        # None, its value only under ``inactive``.
+        assert {name: story["settings"].get(name) for name in lg.UNUSED_SETTINGS} == dict.fromkeys(
+            lg.UNUSED_SETTINGS
+        )
 
         # The card report: counts only, the cast as cards, no private field.
         card = await g.create_from(client, {**request, "projection": "card"})

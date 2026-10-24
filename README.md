@@ -147,6 +147,8 @@ Epistrel ships a seeded global policy, `minors_no_sexual_content`: **no sexual c
 
 Epistrel runs behind the consumer and must never be exposed to end users. It authenticates only the calling service, which sends one of the deployment's service credentials as `Authorization: Bearer <credential>`, and it holds no user roles, grants, or permissions: which end user may call which operation, act as which character, or request which output viewpoint is the consumer's decision, made before it calls. Its privacy guarantee is relative to the request: output is produced for the output viewpoint the request names, and Epistrel does not verify that the consumer was entitled to request that viewpoint, so Epistrel by itself does not stop a player from reaching another character's secrets. Every mutating call carries an opaque requesting principal in `X-Epistrel-Principal`, which Epistrel records for attribution and never interprets; use opaque IDs rather than names or email addresses, so recorded attribution identifies no one without your own records. Ownership and relations are labels the consumer defines; the engine never grants or withholds an action because of them. Ownership exists for listing, attribution and offboarding only.
 
+Epistrel sits behind the consumer, which decides who may inspect a story. Its privacy guarantee is stated per viewpoint, not per user: a character viewpoint is given only what that character could perceive, whoever asks for it. Story inspection (a character's beliefs, the divergences, the exposures and the promissory ledger) is an omniscient read only: a request that does not name `omniscient` is refused.
+
 ## Test and check
 
 ```bash

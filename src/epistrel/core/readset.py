@@ -65,13 +65,16 @@ from epistrel.core.tables.readset import proposition_changes
 
 if TYPE_CHECKING:
     from epistrel.core.canon.facts import Fact, FactChange, FactLink, Reading
+    from epistrel.core.epistemic.partitions import Belief
     from epistrel.core.events.operation import Operation
+    from epistrel.core.membership import Position, Through
     from epistrel.core.projections.structured import ProfileView, RelationshipView, SceneView
 
 logger = logging.getLogger(__name__)
 
 KEYED_READERS: tuple[str, ...] = (
     "epistrel.core.resolution.context",
+    "epistrel.core.resolution.identity",
     "epistrel.core.retrieval.pipeline",
     "epistrel.core.verify.rules",
     "epistrel.core.verify.normalize",
@@ -104,6 +107,10 @@ transaction has (set by ``Operation`` in its lock statement); change rows are st
 
 CANON = "canon"
 UTTERANCE_PREFIX = "utterance:"
+BELIEF = "belief"
+BELIEF_PREFIX = "belief:"
+"""A belief holder's query key holder is ``belief:<holder_character_id>`` (#159): its change
+rows are ``holder = 'belief'`` with the holder as ``speaker_id``."""
 
 ChangeKind = Literal["add", "supersede", "close"]
 
@@ -152,8 +159,9 @@ class QueryKey(_Model):
 
     ``subjects`` is the ``same_as``-expanded subject set, sorted (``None``: any subject, ``*``);
     exactly one of ``object_id`` and ``literal`` or neither (``*``); ``valid_window`` the outer
-    bounds ``[lo, hi)`` of the fetch window (``None`` open); ``holder`` ``canon`` or
-    ``utterance:<speaker_id>``; ``viewpoint`` the read's visibility filter."""
+    bounds ``[lo, hi)`` of the fetch window (``None`` open); ``holder`` ``canon``,
+    ``utterance:<speaker_id>`` or ``belief:<holder_id>`` (#159); ``viewpoint`` the read's
+    visibility filter."""
 
     subjects: tuple[str, ...] | None
     predicate_id: str
@@ -166,6 +174,10 @@ class QueryKey(_Model):
     """How the window was read: ``every``/``any`` (true at one story-time, #133's readings) or
     ``overlap`` (any fact whose window may meet it); part of what the key asked."""
     symmetric: bool = False
+    through: tuple[int, int, int, int] | None = None
+    """The narrative bound the read was made through, as ``core.membership.Position.key()``
+    (``(turn, slot_k, beat, step)``; ``None``: the corrected record now). #164's exposure frames
+    read through the exposure position, and the read set is their proof (EXPOSURE-FRAME)."""
     result_hash: str = EMPTY_RESULT
 
     @model_validator(mode="after")
@@ -174,8 +186,10 @@ class QueryKey(_Model):
             raise ValueError("a query key has one object: an entity, a literal or *")
         if self.subjects is not None:
             object.__setattr__(self, "subjects", tuple(sorted(set(self.subjects))))
-        if self.holder != CANON and not self.holder.startswith(UTTERANCE_PREFIX):
-            raise ValueError("a query key's holder is canon or utterance:<speaker_id>")
+        if self.holder != CANON and not self.holder.startswith((UTTERANCE_PREFIX, BELIEF_PREFIX)):
+            raise ValueError(
+                "a query key's holder is canon, utterance:<speaker_id> or belief:<holder_id>"
+            )
         lo, hi = self.valid_window
         if lo is not None and hi is not None and lo >= hi:
             raise ValueError("a query key's window is [lo, hi) with lo < hi")
@@ -193,6 +207,7 @@ class QueryKey(_Model):
             self.valid_window,
             self.reading,
             self.symmetric,
+            self.through,
         )
 
     def view(self) -> dict[str, Any]:
@@ -344,6 +359,12 @@ def _bounds(
     return (None, None)
 
 
+def _through_key(through: Through | None) -> tuple[int, int, int, int] | None:
+    from epistrel.core.membership import bound_of
+
+    return None if through is None else bound_of(through).key()
+
+
 def _meets(a: tuple[int | None, int | None], b: tuple[int | None, int | None]) -> bool:
     """``[lo, hi)`` ranges that may share a minute (``None`` open)."""
     lo = [x for x in (a[0], b[0]) if x is not None]
@@ -372,6 +393,8 @@ class KeyedLookup:
     def __init__(self, conn: AsyncConnection, read_set: StructuredReadSet) -> None:
         self.conn = conn
         self.read_set = read_set
+        self.memo: dict[Any, Any] = {}
+        """Derived reads computed once per lookup (#171's ``identities_for`` per holder)."""
 
     async def canon_at(
         self,
@@ -384,7 +407,7 @@ class KeyedLookup:
         window: tuple[int | None, int | None] | None = None,
         viewpoint: str = OMNISCIENT,
         reading: Reading = "every",
-        through_position: tuple[int, int] | None = None,
+        through_position: Through | None = None,
     ) -> list[Fact]:
         """The current canon facts of ``predicate`` for ``subjects`` (one id, a ``same_as``-
         expanded set, or ``None`` for any), with ``object`` (an entity id, a literal, or
@@ -473,7 +496,86 @@ class KeyedLookup:
                 valid_window=bounds,
                 reading=reading if story_time is not None else "overlap",
                 symmetric=symmetric,
+                through=_through_key(through_position),
                 result_hash=result_hash((f.id, f.tx_from) for f in result),
+            )
+        )
+        return result
+
+    async def beliefs(
+        self,
+        story_id: str,
+        *,
+        holder: str,
+        predicate: str,
+        subjects: str | Sequence[str] | None,
+        object: str | None = None,
+        window: tuple[int | None, int | None] | None = None,
+        through: Position | None = None,
+        levels: Sequence[Any] | None = None,
+        viewpoint: str = OMNISCIENT,
+    ) -> list[Belief]:
+        """``holder``'s first-order beliefs (#159's ``partition``) of ``predicate`` for
+        ``subjects`` (one id, a ``same_as``-expanded set, or ``None`` for any) with ``object``
+        (an entity id, or ``None`` for any), whose valid-time may meet ``window``, held at
+        ``through`` (``None``: now) at one of ``levels``; the key (holder
+        ``belief:<holder>``) and its result hash are recorded, so a belief change of the holder
+        that matches it touches the turn's read set. Canonicalized like ``canon_at``."""
+        from epistrel.core.epistemic import partitions
+        from epistrel.core.propositions.registry import load
+
+        subject_set = (
+            None
+            if subjects is None
+            else (subjects,)
+            if isinstance(subjects, str)
+            else tuple(sorted(set(subjects)))
+        )
+        object_id = object
+        found = (await load(self.conn, story_id)).get(predicate)
+        symmetric = bool(found is not None and found.symmetric)
+        inverse_objects: tuple[str, ...] | None = None
+        if found is not None and found.inverse_of is not None:
+            predicate = found.inverse_of
+            inverse_objects = subject_set
+            subject_set = None if object_id is None else (object_id,)
+            object_id = (
+                inverse_objects[0] if inverse_objects and len(inverse_objects) == 1 else None
+            )
+        bounds = _bounds(None, window)
+        rows = await partitions.partition(
+            self.conn, story_id, holder, through=through, predicate=predicate, levels=levels
+        )
+
+        def kept(belief: Belief) -> bool:
+            p = belief.proposition
+            if inverse_objects is not None and p.object_id not in inverse_objects:
+                return False
+            direct = (subject_set is None or p.subject_id in subject_set) and _object_matches(
+                p, object_id, None
+            )
+            reverse = (
+                symmetric
+                and subject_set is not None
+                and p.object_id in subject_set
+                and (object_id is None or p.subject_id == object_id)
+            )
+            if not (direct or reverse):
+                return False
+            return _meets((belief.valid_from, belief.valid_to), bounds)
+
+        result = sorted((b for b in rows if kept(b)), key=lambda b: b.id)
+        self.read_set.record(
+            QueryKey(
+                subjects=subject_set,
+                predicate_id=predicate,
+                object_id=object_id,
+                holder=f"{BELIEF_PREFIX}{holder}",
+                viewpoint=viewpoint,
+                valid_window=bounds,
+                symmetric=symmetric,
+                through=_through_key(through),
+                result_hash=result_hash((b.id, b.tx_from) for b in result),
             )
         )
         return result
@@ -487,7 +589,7 @@ class KeyedLookup:
         predicate: str | None = None,
         ids: Sequence[str] | None = None,
         viewpoint: str = OMNISCIENT,
-        through_position: tuple[int, int] | None = None,
+        through_position: Through | None = None,
         limit: int | None = None,
     ) -> list[Fact]:
         """The current canon facts (at any valid-time) with ``subject``, ``object``,
@@ -521,7 +623,7 @@ class KeyedLookup:
         subject: str | None = None,
         object: str | None = None,
         viewpoint: str = OMNISCIENT,
-        through_position: tuple[int, int] | None = None,
+        through_position: Through | None = None,
     ) -> list[FactLink]:
         """``canon_rows``' read with ``subject`` or ``object`` (the same selection, order and
         retrieved rows), as lean ``FactLink``s: a neighborhood ranks every neighbor this way
@@ -552,7 +654,7 @@ class KeyedLookup:
         subjects: Sequence[str],
         story_time: int,
         viewpoint: str = OMNISCIENT,
-        through_position: tuple[int, int] | None = None,
+        through_position: Through | None = None,
         limit: int | None = None,
     ) -> list[Fact]:
         """The current canon facts about each of ``subjects`` true at ``story_time`` as
@@ -697,6 +799,14 @@ class Change:
     valid_window: tuple[int | None, int | None]
     visibility: dict[str, Any]
     speaker_id: str | None = None
+    holder: str | None = None
+    """``canon``, ``utterance`` or ``belief`` (#159); ``None``: canon, or ``utterance`` when
+    ``speaker_id`` is given."""
+
+    def holder_kind(self) -> str:
+        if self.holder is not None:
+            return self.holder
+        return CANON if self.speaker_id is None else "utterance"
 
 
 async def record_change(
@@ -737,7 +847,7 @@ async def record_change(
                 "object_set": None
                 if c.proposition.object_set is None
                 else list(c.proposition.object_set),
-                "holder": CANON if c.speaker_id is None else "utterance",
+                "holder": c.holder_kind(),
                 "speaker_id": c.speaker_id,
                 "visibility": c.visibility,
                 "valid_window": Range(c.valid_window[0], c.valid_window[1], bounds="[)"),
@@ -810,11 +920,11 @@ ORDER BY k.i
 def _key_rows(keys: Sequence[QueryKey]) -> list[dict[str, Any]]:
     rows = []
     for i, key in enumerate(keys):
-        speaker = (
-            key.holder.removeprefix(UTTERANCE_PREFIX)
-            if key.holder.startswith(UTTERANCE_PREFIX)
-            else None
-        )
+        holder = CANON
+        speaker = None
+        for prefix, kind in ((UTTERANCE_PREFIX, "utterance"), (BELIEF_PREFIX, BELIEF)):
+            if key.holder.startswith(prefix):
+                holder, speaker = kind, key.holder.removeprefix(prefix)
         rows.append(
             {
                 "i": i,
@@ -824,7 +934,7 @@ def _key_rows(keys: Sequence[QueryKey]) -> list[dict[str, Any]]:
                 "literal_hash": None
                 if key.literal is None
                 else literal_hash(TypedLiteral.model_validate(key.literal)),
-                "holder": CANON if speaker is None else "utterance",
+                "holder": holder,
                 "speaker_id": speaker,
                 "viewpoint": key.viewpoint,
                 "lo": key.valid_window[0],
@@ -852,6 +962,8 @@ async def touched_keys(
 
 
 __all__ = [
+    "BELIEF",
+    "BELIEF_PREFIX",
     "CANON",
     "CANON_TABLE",
     "COMMIT_REVISION_SETTING",

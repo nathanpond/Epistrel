@@ -1,6 +1,6 @@
-"""U-04 (M4): verification set-logic over normalized propositions, deterministic first (docs/04
-§3; #142, #144). Every U-04 (M4) part lives in this file (traceability counts a test ID per
-milestone in one file).
+"""U-04: verification set-logic over normalized propositions, deterministic first (docs/04
+§3; #142, #144), and (M5, #166) viewpoint selection. Every U-04 part, M4's and M5's, lives in
+this file (traceability counts a test ID per milestone in one file).
 
 The verifier runs over records passed in (``RecordsSource``: #140's pure ``check``) and a stub
 Model Access Layer with no database, so the model calls are counted exactly:
@@ -26,13 +26,15 @@ Model Access Layer with no database, so the model calls are counted exactly:
   ``commit_fact`` in a turn's commit step: provenance, visibility and the anchor are recorded,
   identical claims are written once, and a place first named in the claim becomes a ``place``
   entity then.
+- ``test_u_04__viewpoint`` (M5, #166): a character's first-person claim gets two checks, one
+  against the speaker's own records and one against canon; a narrator's, canon's alone.
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from sqlalchemy import select
@@ -42,6 +44,7 @@ from epistrel.core.canon.canonize import CanonRequest, NewEntity, canonize_all
 from epistrel.core.canon.facts import Fact, Visibility
 from epistrel.core.enums import RecordProvenance
 from epistrel.core.events import Operation
+from epistrel.core.membership import Position
 from epistrel.core.propositions.model import (
     DEFAULT_EPOCH,
     Granularity,
@@ -49,10 +52,20 @@ from epistrel.core.propositions.model import (
     Interval,
     Proposition,
 )
+from epistrel.core.settings_schema import OMNISCIENT
 from epistrel.core.tables import entities
 from epistrel.core.verify.normalize import Unnormalizable
 from epistrel.core.verify.permission import Asserter, Basis, Denied, EntityInfo, Permitted, Reason
-from epistrel.core.verify.rules import Options, Rule, VerdictKind, VerdictReason
+from epistrel.core.verify.rules import (
+    CANON,
+    Holder,
+    Options,
+    Record,
+    Rule,
+    VerdictKind,
+    VerdictReason,
+    check,
+)
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models.access import ModelAccessLayer
 from epistrel.orchestrator.verify.gate import (
@@ -581,3 +594,80 @@ async def test_u_04__canonize(engine: AsyncEngine) -> None:
     async with engine.connect() as conn:
         kind = await conn.scalar(select(entities.c.kind).where(entities.c.id == shed))
     assert kind == "place"
+
+
+class _Beliefs:
+    """A speaker's belief set passed in (the shape of ``verifier.BeliefSource``): its records
+    are checked as a ``belief(speaker)`` holder's by #140's pure ``check``; every check is
+    recorded with the position it was asked at."""
+
+    def __init__(self, *held: Proposition) -> None:
+        self.records = [
+            Record(p, f"belief-proposition-{n}", belief_id=f"belief-{n}")
+            for n, p in enumerate(held)
+        ]
+        self.asked: list[tuple[str, Position]] = []
+
+    def position(self, position: tuple[int, int] | None) -> Position | None:
+        return None if position is None else Position(position[0], 0, 0, position[1], 0)
+
+    async def check(self, claim: Proposition, believer: str, at: Position) -> Any:
+        self.asked.append((believer, at))
+        return check(
+            claim, self.records, registry=vs.REGISTRY, holder=Holder.belief(believer), position=at
+        )
+
+    async def hidden(self, claim: Proposition, believer: str, at: Position) -> VerdictKind | None:
+        del claim, believer, at
+        return None
+
+    async def strongest(self, belief_ids: Sequence[str]) -> tuple[str, ...]:
+        return tuple(belief_ids)
+
+    async def licence(self, *args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+
+
+@pytest.mark.part("M5", "FR-VERIFY-2")
+async def test_u_04__viewpoint() -> None:
+    """Viewpoint selection (#166): a first-person character claim is checked against the
+    speaker's belief set (holder ``belief(speaker)``, at the claim's position) **and** against
+    canon, one dimension each; a narrator claim against canon only. Canon puts Bobby in the
+    kitchen; Bobby believes he is in the garden. "I am in the garden", said by Bobby: canon
+    ``contradicted`` (objective relation ``false``) and his belief ``supported`` (``consistent``),
+    neither overriding the other, so the claim is a sincere error that stands (not repaired).
+    The same claim as narration is checked against canon alone: contradicted, repaired, no
+    belief read. Complement: with verification off nothing is checked at all."""
+    garden = vs.prop(vs.BOBBY, vs.LOCATED_AT, vs.GARDEN, vs.span(0, 100))
+    claim = vs.prop(vs.BOBBY, vs.LOCATED_AT, vs.GARDEN, vs.span(10, 20))
+    beliefs = _Beliefs(garden)
+    v = verifier(None, [*HOUSE, KITCHEN], level="declared")
+    v.beliefs = cast(Any, beliefs)
+
+    said = await v.verify(
+        claim, f"character:{vs.BOBBY}", (1, 2), believer=vs.BOBBY, intent="sincere"
+    )
+    assert said is not None
+    assert said.speech is not None
+    assert (said.kind, said.verdict.holder) == (VerdictKind.CONTRADICTED, CANON)
+    assert said.objective_relation == "false"
+    assert said.speech.belief.holder == Holder.belief(vs.BOBBY)
+    assert said.speech.belief.kind is VerdictKind.SUPPORTED
+    assert [e.belief_id for e in said.speech.belief.evidence] == ["belief-0"]
+    assert (said.speech.decision.belief_relation, said.speech.classification) == (
+        "consistent",
+        "sincere_error",
+    )
+    assert not said.needs_repair
+    assert beliefs.asked == [(vs.BOBBY, Position(1, 0, 0, 2, 0))]
+
+    narrated = await v.verify(claim, OMNISCIENT, (1, 3))
+    assert narrated is not None
+    assert (narrated.kind, narrated.speech) == (VerdictKind.CONTRADICTED, None)
+    assert narrated.needs_repair
+    assert len(beliefs.asked) == 1
+
+    off = verifier(None, [*HOUSE, KITCHEN], level="off")
+    off.beliefs = cast(Any, beliefs)
+    assert await off.verify(claim, f"character:{vs.BOBBY}", (1, 2), believer=vs.BOBBY) is None
+    assert len(beliefs.asked) == 1

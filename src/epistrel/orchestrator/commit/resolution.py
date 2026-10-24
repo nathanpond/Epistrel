@@ -12,8 +12,13 @@ on the bound entity (``orchestrator.repair.ladder``), and its ``render_rejected`
 carry the verdict's ``cause = resolution_conflict``. The ladder is the steering loop: rung 1
 narrows the beat (the claim goes, the thunk stays open with no obligation), rung 3 regenerates it
 under the constraint, at most ``repair.max_attempts`` times; whatever it accepts is checked
-again by this screen. The could-have-known soft flag (FR-COMMIT-11, FR-EPI-4) is M5's
-(``core.commit.epistemic``): never a rejection.
+again by this screen. With per-character partitions (M5, #165) the reconciliation also
+derives the bound character's knowledge and rejects a binding its later sincere lines
+contradict (``RejectedBinding.conflicting_lines``: "who was at your door?"), steered the same
+way. The could-have-known soft flag (FR-COMMIT-11, FR-EPI-4; ``core.commit.epistemic``) is never
+a rejection: the commit's ``depend`` raises it with the resolving position, and the turn reports
+it (``turn_report.commit.could_have_known_flags``, the ``could_have_known_flag`` degradation) and
+steers the next render.
 
 The screen only reads. Each rejection is reported (``RejectedBinding``: ids only, invariant 3)
 in ``turn_report.commit.rejected_bindings`` and in the turn's degradation.
@@ -30,7 +35,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from epistrel.core.commit import lifecycle
+from epistrel.core.commit import hidden, lifecycle
 from epistrel.core.commit.reconcile import Conflict, reconcile
 from epistrel.core.commit.sketch import fills
 from epistrel.core.propositions.registry import Registry
@@ -56,6 +61,7 @@ class RejectedBinding:
     thunk_id: str
     bound_entity: str | None
     conflicting_records: tuple[str, ...]
+    conflicting_lines: tuple[str, ...] = ()
 
     def as_payload(self) -> dict[str, Any]:
         return {
@@ -64,6 +70,7 @@ class RejectedBinding:
             "thunk_id": self.thunk_id,
             "bound_entity": self.bound_entity,
             "conflicting_records": list(self.conflicting_records),
+            "conflicting_lines": list(self.conflicting_lines),
         }
 
 
@@ -146,6 +153,7 @@ async def screen(
                 thunk_id=thunk.id,
                 bound_entity=found.bound_entity,
                 conflicting_records=found.conflicting_records,
+                conflicting_lines=found.conflicting_lines,
             )
         )
     if rejected:
@@ -153,10 +161,46 @@ async def screen(
     return out, rejected
 
 
+async def determined(
+    conn: AsyncConnection, story_id: str, checked: Sequence[CheckedClaim]
+) -> list[CheckedClaim]:
+    """#169 (FR-COMMIT-6, FR-EPI-8): a novel claim that would canonize (not a ``say``, never a
+    ``think``) and fills a resolved thunk with another value than the one the world fixed is a
+    second value: ``contradicted``, citing nothing (``VerifyResult.hidden_conflict``: the value
+    may be hidden from the speaker), so #151's ladder repairs it under a generic constraint and
+    canon keeps one value."""
+    out: list[CheckedClaim] = []
+    for c in checked:
+        proposition = c.claim.proposition
+        if (
+            proposition is None
+            or c.result is None
+            or c.result.kind is not VerdictKind.NOVEL
+            or c.claim.channel in ("say", "think")
+            or await hidden.determined_otherwise(conn, story_id, proposition) is None
+        ):
+            out.append(c)
+            continue
+        out.append(
+            replace(
+                c,
+                result=replace(
+                    c.result,
+                    verdict=Verdict(VerdictKind.CONTRADICTED),
+                    kind=VerdictKind.CONTRADICTED,
+                    disposition=None,
+                    hidden_conflict=True,
+                ),
+            )
+        )
+    return out
+
+
 __all__ = [
     "BINDING_REJECTED",
     "RejectedBinding",
     "candidates",
+    "determined",
     "rejected_result",
     "screen",
 ]

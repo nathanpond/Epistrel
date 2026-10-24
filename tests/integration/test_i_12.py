@@ -1,4 +1,4 @@
-"""I-12 (M4): repair primitives (docs/04 §4). Every I-12 (M4) part lives in this file
+"""I-12: repair primitives (docs/04 §4). Every I-12 part, M4's and M5's, lives in this file
 (traceability counts a test ID per milestone in one file).
 
 ``test_i_12__neighborhood`` (#142, FR-VERIFY-6): a contradicted claim returns the contradicted
@@ -12,6 +12,9 @@ unconnected facts, and it is bounded.
 with the stub adapter; the repair ladder corrects a contradicted say at rungs 1, 2 and 3 and
 falls back at rung 4, the report exposes the contradicted fact and its neighborhood, and both
 renders are recorded (the rejected one as audit, the correction as narrative state).
+
+``test_i_12__classification`` (M5, #166, FR-VERIFY-5): the speech-act classification over the
+verdict, the checked intent and the provenance, and its record on a repair.
 """
 
 from __future__ import annotations
@@ -32,24 +35,35 @@ from epistrel.core.enums import OperationKind, Provenance, RecordProvenance
 from epistrel.core.erasure.index import index_records
 from epistrel.core.erasure.records import memory_record
 from epistrel.core.events import Operation
+from epistrel.core.events.types import RenderRejected
 from epistrel.core.ids import new_ulid
 from epistrel.core.membership import insert_derived
 from epistrel.core.memory import records
 from epistrel.core.propositions import registry, store
-from epistrel.core.propositions.model import Implication, Interval, Proposition
+from epistrel.core.propositions.model import (
+    Granularity,
+    Implication,
+    Instant,
+    Interval,
+    Proposition,
+)
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.resolution.context import load_time_basis
 from epistrel.core.resolution.time import story_time_at
 from epistrel.core.tables.memories import memories
+from epistrel.core.verify import speech_acts
 from epistrel.core.verify.neighborhood import Edge, Neighborhood, Seed, fact_neighborhood
 from epistrel.core.verify.rules import Rule, VerdictKind
 from epistrel.core.views import audit_view
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.verify.verifier import story_verifier
+from tests import partition_support as parts
+from tests import testimony_support as ts
 from tests.auth_support import auth_settings
 from tests.canon_support import KNOWS, LOCATED_AT, PRINCIPAL, World, at, commit, supersede, world
 from tests.event_support import rows
+from tests.fixtures.bobby_education import DEGREE_AWARDED, GRADUATION, bobby_education
 from tests.memory_support import use_structured
 from tests.projection_support import truncate
 from tests.respond_support import body, respond, respond_client
@@ -489,3 +503,118 @@ async def _ages(engine: AsyncEngine, story_id: str, character_id: str) -> list[i
         a=character_id,
     )
     return sorted(int(r.literal["value"]) for r in found)
+
+
+_S, _X, _N = VerdictKind.SUPPORTED, VerdictKind.CONTRADICTED, VerdictKind.NOVEL
+CLASSIFICATIONS = (
+    # (intent, canon, belief, contrary, hidden, licensed) → (classification, intent, write)
+    (("sincere", _X, _S, False, None, False), ("sincere_error", "sincere", None)),
+    (("sincere", _X, _X, False, None, False), ("hallucination_repaired", "sincere", None)),
+    (("sincere", _X, _X, False, None, True), ("sincere_error", "sincere", "acquire")),
+    (("sincere", _X, _X, True, None, True), ("sincere_error", "sincere", "correct")),
+    (("sincere", _S, _X, True, None, True), ("sincere", "sincere", "correct")),
+    (("unspecified", _S, _S, False, None, False), ("sincere", "unspecified", None)),
+    (("deceptive", _X, _X, True, None, False), ("lie", "deceptive", None)),
+    (("deceptive", _S, _X, True, None, False), ("lie", "deceptive", None)),
+    (("deceptive", _N, _N, False, None, False), ("lie", "deceptive", None)),
+    (("deceptive", _X, _X, False, None, False), ("hallucination_repaired", "deceptive", None)),
+    (("deceptive", _N, _N, False, _X, False), ("hallucination_repaired", "deceptive", None)),
+    (("deceptive", _S, _S, False, None, False), ("sincere", "sincere", None)),
+    (("joking", _X, _X, False, None, False), ("joke", "joking", None)),
+    (("sincere", _N, _N, False, None, False), ("sincere", "sincere", None)),
+    (("sincere", _N, _N, False, _X, False), ("hallucination_repaired", "sincere", None)),
+    (("sincere", _N, _N, False, _X, True), ("sincere_error", "sincere", "acquire")),
+    (("sincere", _N, _N, False, _S, True), ("sincere", "sincere", "acquire")),
+)
+
+
+@pytest.mark.part("M5", "FR-VERIFY-5")
+async def test_i_12__classification(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """The lie / false-belief / hallucination classification combines the verdict, the checked
+    ``think`` intent and the provenance (#166, ``core.verify.speech_acts``): the decision table
+    above (canon and belief verdicts, a contrary belief, canon beyond the speaker's view, a
+    licensing antecedent), the intent checked (a declared lie the beliefs support is relabelled
+    ``sincere``; ``unspecified`` stays), and an utterance's worst claim wins. End to end, a
+    hallucination is repaired: ``hallucination_repaired`` lives on the ``render_rejected``
+    audit record, and the accepted correction carries its re-verified classification."""
+    for (intent, canon_kind, belief_kind, contrary, hidden, licensed), want in CLASSIFICATIONS:
+        inputs = speech_acts.Inputs(intent, canon_kind, belief_kind, contrary, hidden)
+        decision = speech_acts.classify(inputs, licensed=licensed)
+        case = (intent, canon_kind.value, belief_kind.value, contrary, hidden, licensed)
+        assert (decision.classification, decision.intent, decision.write) == want, case
+        assert decision.intent_corrected is (intent == "deceptive" and want[1] == "sincere")
+        if licensed:
+            assert speech_acts.needs_licence(inputs), case
+    assert not speech_acts.needs_licence(speech_acts.Inputs("joking", _X, _X))
+    assert speech_acts.worst(["sincere", "joke", "lie", None]) == "lie"
+    assert speech_acts.worst([None]) is None
+    assert speech_acts.aggregate_relation(["consistent", "unknown"]) == "unknown"
+    assert speech_acts.aggregate_relation(["unknown", "inconsistent"]) == "inconsistent"
+    assert speech_acts.aggregate_relation([]) == "unknown"
+
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        edu = await bobby_education(client, engine)
+        await ts.enable_testimony(engine, edu.story_id, "defaulted", level="co_location")
+        osu = Proposition(
+            subject_id=edu.bobby,
+            predicate_id=DEGREE_AWARDED,
+            object_id=edu.osu,
+            qualifiers={"degree_id": "bobby_ba"},
+            valid_time=Instant.of(GRADUATION, Granularity.MINUTE),
+        )
+        await parts.believe(engine, edu.story_id, edu.bobby, osu, kind=OperationKind.CONTROL)
+        stub.script(
+            "generation",
+            [
+                render(
+                    beat(
+                        "say",
+                        "My degree is from Florida.",
+                        intent="sincere",
+                        propositions=[
+                            claim(
+                                "I",
+                                "degree_awarded",
+                                "Florida",
+                                qualifiers={"degree_id": "bobby_ba"},
+                            )
+                        ],
+                    )
+                )
+            ],
+        )
+        response = await respond(client, edu.story_id, body(edu.cal, "Where did you study?"))
+        assert response.status_code == 200, response.text
+        (repaired,) = (await turn_report(engine, edu.story_id))["repairs"]
+        assert repaired["rung"] == 2
+        async with engine.connect() as conn:
+            audit = await audit_view(conn, edu.story_id)
+        (rejected,) = [
+            e.payload
+            for e in audit
+            if isinstance(e.payload, RenderRejected) and e.payload.attempt == 0
+        ]
+        (verdict,) = rejected.verdicts
+        assert isinstance(verdict, dict)
+        assert isinstance(verdict["speech"], dict)
+        assert verdict["speech"]["classification"] == "hallucination_repaired"
+        (said,) = await rows(
+            engine,
+            "SELECT payload FROM events WHERE story_id = :s AND type = 'beat_say'",
+            s=edu.story_id,
+        )
+        assert said.payload["text"] == "My degree is from OSU."
+        assert said.payload["labels"]["classification"] == "sincere"
+        (spoken,) = await rows(
+            engine,
+            "SELECT classification, belief_relation FROM utterances WHERE story_id = :s "
+            "AND speaker_character_id = :b",
+            s=edu.story_id,
+            b=edu.bobby,
+        )
+        assert (spoken.classification, spoken.belief_relation) == ("sincere", "consistent")

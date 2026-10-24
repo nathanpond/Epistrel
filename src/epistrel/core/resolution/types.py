@@ -103,6 +103,15 @@ class Mention:
     rule: str = ""
     """Which rule resolved it (``alias``, ``implicit_token``, ``pronoun``, ``speaker``,
     ``addressee``, ``descriptor``, ``relation``): audit and Q-02 detail."""
+    representative_id: str | None = None
+    """The representative of ``entity_id``'s ``same_as`` class for the speaker's holder (#171,
+    ``core.resolution.identity``): Bobby for "the stranger" once the speaker holds that they are
+    one; ``None`` when the holder links it to nothing (the entity stands for itself)."""
+
+    @property
+    def referent(self) -> str | None:
+        """What the mention refers to for its holder: the representative, else the entity."""
+        return self.representative_id or self.entity_id
 
     @property
     def resolved(self) -> bool:
@@ -125,6 +134,12 @@ class Mention:
             "confidence": self.confidence,
             "reason": None if self.reason is None else self.reason.as_payload(),
             "rule": self.rule,
+            # #171: only when the holder links the entity to another (M4's payloads unchanged).
+            **(
+                {"representative_id": self.representative_id}
+                if self.representative_id is not None
+                else {}
+            ),
         }
 
 

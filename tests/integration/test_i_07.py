@@ -52,6 +52,7 @@ RESPONSE_FIELDS = {
     "timeline_revision",
     "output_viewpoint",
     "audience_filter",
+    "player_view",  # #177
     "model_calls",
     "elapsed_ms",
     "degradation",

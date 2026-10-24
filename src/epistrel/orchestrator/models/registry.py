@@ -21,10 +21,10 @@ from __future__ import annotations
 
 import types
 import typing
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
@@ -94,6 +94,21 @@ class ContentCategory(StrEnum):
     beats as the output viewpoint receives them (each beat's index, kind, actor's name and
     text; never a ``think`` or ``latent`` beat for a character viewpoint) and their
     deterministic assembly, which the polish may only order and join."""
+    BELIEF_RECORD = "belief_record"
+    """What ``belief_adjudication`` (#162) is told about one witness: its name, the records the
+    deterministic consistency check read for the claim (the witness's own beliefs and the canon
+    the witness may read, each rendered like a claim), its trust in the speaker, its prior
+    outcomes with that speaker and the rules' default decision. Never another character's
+    private record, never canon the witness cannot know."""
+    BELIEF_STATE = "belief_state"
+    """A structured character render's own belief state (FR-TURN-8; #170,
+    ``core.epistemic.context``): its first-order beliefs as "you suspect / believe / know …"
+    lines, its nested beliefs ("you think Bobby believes …") and the speech acts it heard ("you
+    heard Bobby say …"). The rendering character's partition only, never another's, never a
+    scalar, a provenance or a divergence."""
+    UTTERANCE_TEXT = "utterance_text"
+    """The say a witness heard (#162): the speaker's name, the words as the witness perceived
+    them, the visible manner, the claims they carry and the intent as the witness reads it."""
 
 
 class StructuredOutput(StrEnum):
@@ -169,6 +184,34 @@ class AgeClue(InputSchema):
     clue: Annotated[str, C.SCENE] = ""
 
 
+class DirectorCandidate(InputSchema):
+    """A primary the director orders (#174, FR-MULTI-6): its id, its name and its public card
+    (its definition; never a private record)."""
+
+    id: Annotated[str, C.CHARACTER_DEFINITION]
+    name: Annotated[str, C.CHARACTER_DEFINITION]
+    card: Annotated[str, C.CHARACTER_DEFINITION] = Field(default="", max_length=2_000)
+
+
+class TiebreakBeat(InputSchema):
+    """One conflicting action the director judges (#175, FR-MULTI-8): the acting primary's id
+    and name, and its checked ``say``/``do`` text (never a ``think`` or ``latent``'s)."""
+
+    character_id: Annotated[str, C.VERIFIED_BEAT]
+    name: Annotated[str, C.VERIFIED_BEAT]
+    kind: Annotated[Literal["say", "do"], C.VERIFIED_BEAT] = "do"
+    text: Annotated[str, C.VERIFIED_BEAT] = Field(default="", max_length=2_000)
+
+
+class TiebreakConflict(InputSchema):
+    """One object two or more primaries of a simultaneous turn acted on (#175): its id, its
+    name and the conflicting actions, in request order."""
+
+    object: Annotated[str, C.VERIFIED_BEAT]
+    name: Annotated[str, C.VERIFIED_BEAT] = ""
+    actions: list[TiebreakBeat] = Field(default_factory=list, max_length=6)
+
+
 class ComposeBeat(InputSchema):
     """One verified beat a composition (#152) is given: its position, kind, actor's name
     (empty for narration) and text."""
@@ -194,6 +237,18 @@ class GenerationInputs(InputSchema):
     story's snapshot (the world, the seeds as text, the relationships, the starting places, the
     player's persona), closed by the instruction that scenario facts prevail."""
     character_definitions: list[CharacterDefinition] = Field(default_factory=list)
+    own_age: Annotated[str, C.CHARACTER_DEFINITION] = Field(default="", max_length=100)
+    """A structured character render under per-character partitions (#170, FR-CAT-12): the
+    rendering character's own true age ("You are 34."), part of its own definition; empty in
+    every other prompt. Another character's age reaches it only as an apparent band (``scene``)."""
+    beliefs: Annotated[list[str], C.BELIEF_STATE] = Field(default_factory=list, max_length=200)
+    """A structured character render's ``## What you believe`` (FR-TURN-8; #170): its own belief
+    state (``core.epistemic.context.CharacterContext.belief_lines``)."""
+    private_memories: Annotated[list[str], C.WORKING_MEMORY] = Field(
+        default_factory=list, max_length=20
+    )
+    """A structured character render's ``## Your private memories`` (#172, FR-VERIFY-9): its
+    own ``think`` memories ("you thought: …", ``CharacterContext.private_memories``)."""
     director_notes: Annotated[str, C.DIRECTOR_NOTES] = ""
     """A story created from a scenario (#122): its ``## Author notes (not facts)`` block (the
     plot hooks, objectives, guidance, planned reveals, milestones and endings)."""
@@ -210,12 +265,36 @@ class GenerationInputs(InputSchema):
     length_target: Annotated[str, C.CONSTRAINT] = Field(default="", max_length=300)
     """A structured character render's length target (FR-RESP-3; #464): one fixed line naming
     the requested response length in words; empty in every other prompt."""
+    belief_steps: Annotated[bool, C.CONSTRAINT] = False
+    """A structured character render's step contract (FR-TURN-12, FR-TURN-8; #168,
+    ``steps_contract.j2``): the fixed ``## How to change your mind`` section, present when the
+    rendering character keeps its own beliefs (per-character partitions)."""
     player_input: PlayerInput
+    player_authority: Annotated[Literal["", "own_character", "co_author"], C.CONSTRAINT] = ""
+    """A Lite prompt's ``## Player authority`` (FR-RESP-11; #180): the story's setting, rendered
+    as one fixed instruction per value, its only Lite effect; empty in a structured prompt (whose
+    pipeline applies the setting itself)."""
+    player_requests: Annotated[list[str], C.PLAYER_INPUT] = Field(
+        default_factory=list, max_length=16
+    )
+    """A structured character render's ``## The player asks of you`` (FR-RESP-11; #180): under
+    ``player_authority = own_character``, what the player's input described this character
+    doing, saying or (never written) thinking, as requests the render complies with or refuses
+    in character; never canon."""
     # -- the structured pipeline's sections (#150; empty, and so absent, in a Lite prompt) ------
     scene: Annotated[str, C.SCENE] = ""
     """A structured render's ``## Scene``: the place and who is present."""
     working_memory: Annotated[list[str], C.WORKING_MEMORY] = Field(default_factory=list)
     """A structured render's ``## What you remember``: the latest beats as perceived."""
+    just_now: Annotated[list[str], C.WORKING_MEMORY] = Field(default_factory=list, max_length=64)
+    """A structured character render's ``## Just now`` (#174): in a ``sequential`` turn, the
+    verified beats the earlier primaries rendered, as the character perceived them."""
+    others_present: Annotated[list[str], C.SCENE] = Field(default_factory=list, max_length=64)
+    """A structured character render's ``## Others present`` (#176, FR-MULTI-9): the reactive
+    characters present, ``<name> (id <id>)``, whose brief visible reactions the render may
+    narrate in ``reactions``."""
+    interjections: Annotated[bool, C.CONSTRAINT] = False
+    """#176: whether the ``## Others present`` rule allows a brief interjection."""
     retrieved_memories: Annotated[list[str], C.RETRIEVED_MEMORIES] = Field(default_factory=list)
     """A structured render's ``## Retrieved``: #141's assembled context."""
     canon_facts: Annotated[list[str], C.CANON_FACTS] = Field(default_factory=list)
@@ -223,6 +302,12 @@ class GenerationInputs(InputSchema):
     open_references: Annotated[list[str], C.SCENE] = Field(default_factory=list)
     """A follow-up narrator render (#146's FR-COMMIT-7, #150): the salient references this turn
     left open, which it must settle."""
+    director_candidates: list[DirectorCandidate] = Field(default_factory=list, max_length=6)
+    """The director's ordering call (#174, FR-MULTI-6; ``director_order.j2``): the primaries of a
+    ``sequential`` turn it orders."""
+    tiebreak_conflicts: list[TiebreakConflict] = Field(default_factory=list, max_length=12)
+    """The director's tie-break (#175, FR-MULTI-8; ``director_tiebreak.j2``): the objects a
+    ``simultaneous`` turn's primaries acted on at once, each with the conflicting actions."""
     introductions: list[AgeClue] = Field(default_factory=list)
     """The age repair (#150): each character a render introduced without an age, with the
     render's clue."""
@@ -289,6 +374,9 @@ class Subject(InputSchema):
         C.POLICY_TEXT,
     ]
     age: Annotated[int, Field(ge=0, le=150), C.SUBJECT_TRUE_AGE]
+    present: Annotated[bool, C.SUBJECT_TRUE_AGE] = True
+    """Authoritatively co-located with the content (#161); ``False`` only under perception
+    routing, for a character placed elsewhere."""
 
 
 class GuardrailCheckInputs(InputSchema):
@@ -513,6 +601,88 @@ class EntailmentVerdict(BaseModel):
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
+ADJUDICATION_MAX_RECORDS = 30
+"""The most witness records one ``belief_adjudication`` request carries."""
+ADJUDICATION_MAX_CLAIMS = 20
+"""The most claims of one say one ``belief_adjudication`` request carries."""
+AdjudicationDecision = Literal["accept", "reject", "suspend", "speech_act_only"]
+
+
+class AdjudicationBelief(InputSchema):
+    """One of the witness's records the consistency check read for the claim (#162): a belief
+    of its own or canon it may read, rendered like a claim, with its level."""
+
+    statement: Annotated[str, Field(max_length=1_000), C.BELIEF_RECORD]
+    source: Annotated[Literal["belief", "canon"], C.BELIEF_RECORD] = "belief"
+    confidence: Annotated[str | None, Field(max_length=32), C.BELIEF_RECORD] = None
+
+
+class AdjudicationPriors(InputSchema):
+    """What the witness brings to the claim besides its records (#162): its earlier outcomes
+    with this speaker, how sure it already is of the claim, and the rules' default decision."""
+
+    outcomes: Annotated[list[AdjudicationDecision], Field(max_length=20), C.BELIEF_RECORD] = Field(
+        default_factory=list
+    )
+    existing_confidence: Annotated[str | None, Field(max_length=32), C.BELIEF_RECORD] = None
+    rule_default: Annotated[AdjudicationDecision, C.BELIEF_RECORD] = "suspend"
+
+
+class AdjudicationUtterance(InputSchema):
+    """The say the witness heard (#162): the speaker, the words, the manner and the claims."""
+
+    speaker: Annotated[str, Field(max_length=200), C.UTTERANCE_TEXT]
+    text: Annotated[str, Field(max_length=4_000), C.UTTERANCE_TEXT]
+    manner: Annotated[str | None, Field(max_length=200), C.UTTERANCE_TEXT] = None
+    claims: Annotated[list[str], Field(max_length=ADJUDICATION_MAX_CLAIMS), C.UTTERANCE_TEXT] = (
+        Field(default_factory=list)
+    )
+
+
+class BeliefAdjudicationInputs(InputSchema):
+    """One salient witness's view of one say (FR-BELIEF-3; #162): what it already holds about
+    the claims, its trust in the speaker, its priors, the utterance and the intent it reads."""
+
+    witness: Annotated[str, Field(max_length=200), C.BELIEF_RECORD]
+    witness_beliefs: Annotated[
+        list[AdjudicationBelief], Field(max_length=ADJUDICATION_MAX_RECORDS)
+    ] = Field(default_factory=list)
+    trust: Annotated[float, Field(ge=0.0, le=1.0), C.BELIEF_RECORD] = 0.5
+    priors: AdjudicationPriors = Field(default_factory=AdjudicationPriors)
+    utterance: AdjudicationUtterance
+    perceived_intent: Annotated[Literal["sincere", "joking"], C.UTTERANCE_TEXT] = "sincere"
+
+
+RULE_DEFAULT_MARKER = "Rule default: "
+"""The line of the ``belief_adjudication`` prompt that names the rules' default decision; the
+stub's default answer echoes it."""
+
+
+class BeliefAdjudicationResult(BaseModel):
+    """The structured result of one ``belief_adjudication`` call: what the witness makes of the
+    say's claims, how sure the model is, and short reasons. The defaults (``suspend`` at
+    confidence 0) are below the engine's threshold, so the rules' default stands."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    decision: AdjudicationDecision = "suspend"
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    reasons: list[str] = Field(default_factory=list, max_length=5)
+
+    @classmethod
+    def stub_example(cls, digest: str, messages: Sequence[Any]) -> dict[str, Any]:
+        """The stub's default answer: the rules' default decision the prompt names, at 0.9."""
+        del digest
+        decision = "suspend"
+        for message in messages:
+            for line in str(getattr(message, "content", "")).splitlines():
+                if line.startswith(RULE_DEFAULT_MARKER):
+                    decision = line[len(RULE_DEFAULT_MARKER) :].strip()
+        if decision not in ("accept", "reject", "suspend", "speech_act_only"):
+            decision = "suspend"
+        return {"decision": decision, "confidence": 0.9, "reasons": ["stub: the rules' default"]}
+
+
 CONSOLIDATION_MAX_RECORDS = 200
 """The most records one ``consolidation`` request carries (a window is cut to it)."""
 CONSOLIDATION_STATEMENTS_MAX = 50
@@ -586,6 +756,8 @@ SALIENCE_LAST_BEATS = 6
 """How many earlier beats ``scene_context.last_beats`` holds."""
 SALIENCE_MAX_SPANS = 50
 """The most salient spans, and texture spans, one answer may hold."""
+SALIENCE_MAX_CHARACTERS = 8
+"""The most characters one answer may mark for modeling (#163)."""
 
 
 class SalienceBeat(InputSchema):
@@ -686,6 +858,11 @@ class SalienceResult(BaseModel):
 
     salient: list[SalientQuote] = Field(default_factory=list, max_length=SALIENCE_MAX_SPANS)
     texture: list[SalienceQuote] = Field(default_factory=list, max_length=SALIENCE_MAX_SPANS)
+    characters: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(
+        default_factory=list, max_length=SALIENCE_MAX_CHARACTERS
+    )
+    """The figures the render singles out as characters to model (FR-EPI-9's explicit salience;
+    #163), each by the words of a beat that name it. Empty (the default) models nobody."""
 
 
 EXTRACTION_MAX_BEATS = 50
@@ -840,8 +1017,10 @@ GENERATION = Purpose(
     description=(
         "Writes the reply of a Lite turn from the story's prompt sections; in a structured "
         "story (#150) the typed beats of one character's or the narrator's render (a "
-        "`response_schema`: constrained decoding or parse-validate-retry), the age repair and "
-        "the composition of the turn's verified beats into its message (#152)."
+        "`response_schema`: constrained decoding or parse-validate-retry), the age repair, "
+        "the composition of the turn's verified beats into its message (#152), the director's "
+        "ordering of a sequential turn's primaries (#174) and its judgment of a simultaneous "
+        "turn's conflicting actions (#175)."
     ),
     default_model_key=DEFAULT_MODEL_KEY,
     capability_floor=CapabilityFloor(structured_output=StructuredOutput.NONE),
@@ -858,13 +1037,18 @@ GENERATION = Purpose(
             "narrator": "narrator_generation.j2",
             "age_repair": "age_repair.j2",
             "composition": "composition.j2",
+            "director_order": "director_order.j2",
+            "director_tiebreak": "director_tiebreak.j2",
         }
     ),
 )
 """``generation``: the Lite reply (``lite_generation.j2``) and, under ``structured`` (#150), the
 character render (``structured_generation.j2``), the narrator render
-(``narrator_generation.j2``), the age repair (``age_repair.j2``) and the composition of the
-turn's verified beats into its message (``composition.j2``, #152). The structured path needs
+(``narrator_generation.j2``), the age repair (``age_repair.j2``), the composition of the
+turn's verified beats into its message (``composition.j2``, #152), the director's ordering of
+a sequential turn's primaries (``director_order.j2``, #174) and its tie-break over a
+simultaneous turn's conflicting actions (``director_tiebreak.j2``, #175). The structured path
+needs
 ``json_schema`` or ``parse_validate_retry`` (its beats are a ``response_schema``)."""
 
 GUARDRAIL_CHECK = Purpose(
@@ -984,6 +1168,28 @@ ENTAILMENT = Purpose(
     response_schema=EntailmentVerdict,
 )
 
+BELIEF_ADJUDICATION = Purpose(
+    name="belief_adjudication",
+    description=(
+        "Decides what one salient witness makes of a say it heard: accept, reject, suspend or "
+        "only note that it was said, from its own records, its trust in the speaker and the "
+        "intent it reads; optional work within the turn budget, defaulted by the rules "
+        "otherwise (FR-BELIEF-3)."
+    ),
+    # FR-MODEL-2: defaults to the entailment model (its own row, then entailment's, then the
+    # default's).
+    default_model_key=ENTAILMENT.name,
+    capability_floor=CapabilityFloor(structured_output=StructuredOutput.PARSE_VALIDATE_RETRY),
+    input_schema=BeliefAdjudicationInputs,
+    template="belief_adjudication.j2",
+    hot_path=True,
+    # The witness's own view and the say it heard only: never another character's private
+    # record, canon the witness cannot know, a definition, a memory, a policy, an age, a
+    # transcript or eval text.
+    never_receives=_EVERYTHING - {C.BELIEF_RECORD, C.UTTERANCE_TEXT},
+    response_schema=BeliefAdjudicationResult,
+)
+
 SALIENCE_DETECTION = Purpose(
     name="salience_detection",
     description=(
@@ -1038,9 +1244,6 @@ REGENERATION = Purpose(
 ``response_schema`` the ladder passes (``orchestrator.repair.ladder.RegeneratedBeat``)."""
 
 RESERVED_PURPOSES: tuple[ReservedPurpose, ...] = (
-    ReservedPurpose(
-        "belief_adjudication", "Adjudicated belief transitions.", "M5", defaults_to="entailment"
-    ),
     ReservedPurpose(
         "time_estimation",
         "Best-guess duration of a narrated skip.",
@@ -1206,6 +1409,7 @@ DELIVERED: Mapping[str, Purpose] = _build(
         QUALITY_JUDGE,
         IMPORTANCE_SCORING,
         ENTAILMENT,
+        BELIEF_ADJUDICATION,
         SALIENCE_DETECTION,
         EXTRACTION_BACKSTOP,
         REGENERATION,
@@ -1232,6 +1436,9 @@ def get_purpose(name: str) -> Purpose:
 
 
 __all__ = [
+    "ADJUDICATION_MAX_CLAIMS",
+    "ADJUDICATION_MAX_RECORDS",
+    "BELIEF_ADJUDICATION",
     "CONSOLIDATION",
     "CONSOLIDATION_MAX_RECORDS",
     "CONSOLIDATION_STATEMENTS_MAX",
@@ -1251,6 +1458,7 @@ __all__ = [
     "REGENERATION",
     "REGENERATION_MAX_RECORDS",
     "RESERVED",
+    "RULE_DEFAULT_MARKER",
     "SALIENCE_DETECTION",
     "SALIENCE_LAST_BEATS",
     "SALIENCE_MAX_BEATS",
@@ -1258,7 +1466,13 @@ __all__ = [
     "SALIENCE_QUOTE_MAX",
     "STORY_PURPOSES",
     "SUBJECT_LABEL_PATTERN",
+    "AdjudicationBelief",
+    "AdjudicationDecision",
+    "AdjudicationPriors",
+    "AdjudicationUtterance",
     "AgeClue",
+    "BeliefAdjudicationInputs",
+    "BeliefAdjudicationResult",
     "CapabilityFloor",
     "CharacterDefinition",
     "ConsolidationInputs",
@@ -1267,6 +1481,7 @@ __all__ = [
     "ConsolidationStatement",
     "ConstraintKind",
     "ContentCategory",
+    "DirectorCandidate",
     "ElementKind",
     "EmbeddingFloor",
     "EmbeddingInputs",
@@ -1318,6 +1533,8 @@ __all__ = [
     "SuggestedLocation",
     "SuggestionElement",
     "SuggestionPolicy",
+    "TiebreakBeat",
+    "TiebreakConflict",
     "TranscriptLine",
     "declared_paths",
     "field_categories",

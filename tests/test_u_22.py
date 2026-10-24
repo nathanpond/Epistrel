@@ -43,7 +43,7 @@ from epistrel.core.verify.detect import (
     unresolved,
 )
 from epistrel.core.verify.permission import EntityInfo
-from epistrel.core.verify.protected import build_index, term
+from epistrel.core.verify.protected import PrivateRecord, build_index, term
 from epistrel.core.verify.rules import VerdictKind, VerdictReason
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models.registry import ExtractionResult
@@ -462,3 +462,81 @@ async def test_u_22__uncovered_mention_flag() -> None:
     assert [c.category for c in unflagged.claims if c.beat == 3 and c.layer == "detector"] == [
         "entity_mention"
     ]
+
+
+# -- U-22 M5 (#172): hidden aliases and private thoughts -----------------------------------------
+
+DANA = "01JD0000000000000000000007"
+SECRET = "01JD0000000000000000000008"
+SKIMMING = "Marcus has been skimming from the till all week, I just know it."
+AFFAIR = Proposition(
+    subject_id=MARCUS,
+    predicate_id=vs.KNOCKED,
+    object_id=DANA,
+    valid_time=Interval.of(None, None),
+)
+"""A record hidden from Linda: only Marcus's own belief names Dana (S-EXTRACT-ADVERSARIAL (b))."""
+
+
+@pytest.mark.part("M5", "FR-VERIFY-13")
+async def test_u_22__m5() -> None:
+    """Protected-content matching fires on the alias of a fact hidden from the speaker ("Dee",
+    Dana's alias, which only Marcus's hidden record names) and on another character's private
+    ``think`` phrase: Linda's thought that Marcus is skimming, repeated by Marcus (two 4-word
+    shingles), and narrated as her inner state ("Linda secretly suspects …", the inner-state
+    lexicon). The alias hit claims the hidden record and its permission is denied; each thought
+    hit is a ``think_leak`` that is always repaired, whatever the safe disposition. Complement:
+    Linda's own words are never matched against her own thought, a sentence sharing one
+    shingle with it is no hit, and a narration with no inner-state cue is no leak. No model is
+    called."""
+    hidden = build_index([], [term("Dee", "belief", SECRET, AFFAIR)], max_terms=10)
+    thought = PrivateRecord.of(LINDA, "memory:m1", "think", f"Linda thinks: {SKIMMING}")
+    beats = [
+        DetectBeat(1, "say", "Dee was with me last night.", LINDA),
+        DetectBeat(2, "say", "Someone has been skimming from the till all week.", MARCUS),
+        DetectBeat(
+            3, "narration", "Linda secretly suspects Marcus is skimming from the till.", NARRATOR
+        ),
+        DetectBeat(4, "say", "Marcus has been skimming from the till all week.", LINDA),
+        DetectBeat(5, "say", "Business at the till has been slow.", MARCUS),
+        DetectBeat(6, "narration", "Linda counts the till again.", NARRATOR),
+    ]
+    found = detect_render(
+        beats,
+        (3, 0),
+        env(protected_for=lambda speaker: hidden if speaker == LINDA else None, private=(thought,)),
+    )
+    by_beat: dict[int | None, list[DetectedClaim]] = {}
+    for claim in found.claims:
+        if claim.category in ("protected_content", "inner_state"):
+            by_beat.setdefault(claim.beat, []).append(claim)
+    assert sorted(k for k in by_beat if k is not None) == [1, 2, 3]
+    (alias,) = by_beat[1]
+    assert (alias.protected_ref, alias.proposition) == (SECRET, AFFAIR)
+    assert not alias.think_leak
+    (repeated,) = by_beat[2]
+    assert (repeated.category, repeated.protected_ref) == ("protected_content", "think:memory:m1")
+    assert repeated.think_leak
+    assert beats[1].text[repeated.span[1] : repeated.span[2]] == (
+        "has been skimming from the till all week"
+    )
+    (narrated,) = by_beat[3]
+    assert (narrated.category, narrated.protected_ref) == ("inner_state", "think:memory:m1")
+
+    surfacing = Verifier(
+        RecordsSource([], vs.REGISTRY, entities=ENTITIES),
+        VerifyConfig(level="extraction", safe_disposition="surface"),
+        models=vs.stub_models(),
+        budget=TurnBudget(),
+    )
+    checked = await verify_detected(
+        surfacing, _outcome(found.with_claims([alias, repeated, narrated])), (3, 0)
+    )
+    results = [c.result for c in checked]
+    assert all(r is not None and r.needs_repair for r in results)
+    assert [r.repair_tag for r in results if r is not None] == [
+        "unpermitted",
+        "think_leak",
+        "think_leak",
+    ]
+    assert not any(r.canonizes for r in results if r is not None and r.think_leak)

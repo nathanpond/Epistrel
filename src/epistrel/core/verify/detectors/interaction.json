@@ -1,0 +1,642 @@
+{
+ "category": "interaction",
+ "language": "en",
+ "description": "Interaction verbs (#163, FR-EPI-9): a do or narration beat whose actor (or the phrase before the verb) and the phrase after the verb (directly, or after one of its prepositions) are a modeled character and an unmodeled person is a direct interaction, which models the person. 'direct': the verb takes its other party as its object ('greets the neighbor', 'hands the driver a tip'); 'preps': the prepositions that introduce it ('waves to the neighbor'). Mere appearance (a mention, a jogger seen) is never an interaction. A detector side-channel: it makes no claim.",
+ "lemmas": [
+  {
+   "lemma": "greet",
+   "forms": [
+    "greet",
+    "greets",
+    "greeted",
+    "greeting"
+   ],
+   "direct": true,
+   "preps": []
+  },
+  {
+   "lemma": "wave",
+   "forms": [
+    "wave",
+    "waves",
+    "waved",
+    "waving"
+   ],
+   "direct": false,
+   "preps": [
+    "to",
+    "at"
+   ]
+  },
+  {
+   "lemma": "nod",
+   "forms": [
+    "nod",
+    "nods",
+    "nodded",
+    "nodding"
+   ],
+   "direct": false,
+   "preps": [
+    "to",
+    "at"
+   ]
+  },
+  {
+   "lemma": "smile",
+   "forms": [
+    "smile",
+    "smiles",
+    "smiled",
+    "smiling"
+   ],
+   "direct": false,
+   "preps": [
+    "at",
+    "to"
+   ]
+  },
+  {
+   "lemma": "wink",
+   "forms": [
+    "wink",
+    "winks",
+    "winked",
+    "winking"
+   ],
+   "direct": false,
+   "preps": [
+    "at",
+    "to"
+   ]
+  },
+  {
+   "lemma": "hand",
+   "forms": [
+    "hand",
+    "hands",
+    "handed",
+    "handing"
+   ],
+   "direct": true,
+   "preps": []
+  },
+  {
+   "lemma": "give",
+   "forms": [
+    "give",
+    "gives",
+    "gave",
+    "given",
+    "giving"
+   ],
+   "direct": true,
+   "preps": []
+  },
+  {
+   "lemma": "pass",
+   "forms": [
+    "pass",
+    "passes",
+    "passed",
+    "passing"
+   ],
+   "direct": true,
+   "preps": []
+  },
+  {
+   "lemma": "offer",
+   "forms": [
+    "offer",
+    "offers",
+    "offered",
+    "offering"
+   ],
+   "direct": true,
+   "preps": []
+  },
+  {
+   "lemma": "pay",
+   "forms": [
+    "pay",
+    "pays",
+    "paid",
+    "paying"
+   ],
+   "direct": true,
+   "preps": []
+  },
+  {
+   "lemma": "tip",
+   "forms": [
+    "tip",
+    "tips",
+    "tipped",
+    "tipping"
+   ],
+   "direct": true,
+   "preps": []
+  },
+  {
+   "lemma": "ask",
+   "forms": [
+    "ask",
+    "asks",
+    "asked",
+    "asking"
+   ],
+   "direct": true,
+   "preps": []
+  },
+  {
+   "lemma": "tell",
+   "forms": [
+    "tell",
+    "tells",
+    "told",
+    "telling"
+   ],
+   "direct": true,
+   "preps": []
+  },
+  {
+   "lemma": "thank",
+   "forms": [
+    "thank",
+    "thanks",
+    "thanked",
+    "thanking"
+   ],
+   "direct": true,
+   "preps": []
+  },
+  {
+   "lemma": "answer",
+   "forms": [
+    "answer",
+    "answers",
+    "answered",
+    "answering"
+   ],
+   "direct": true,
+   "preps": []
+  },
+  {
+   "lemma": "reply",
+   "forms": [
+    "reply",
+    "replies",
+    "replied",
+    "replying"
+   ],
+   "direct": false,
+   "preps": [
+    "to"
+   ]
+  },
+  {
+   "lemma": "talk",
+   "forms": [
+    "talk",
+    "talks",
+    "talked",
+    "talking"
+   ],
+   "direct": false,
+   "preps": [
+    "to",
+    "with"
+   ]
+  },
+  {
+   "lemma": "speak",
+   "forms": [
+    "speak",
+    "speaks",
+    "spoke",
+    "spoken",
+    "speaking"
+   ],
+   "direct": false,
+   "preps": [
+    "to",
+    "with"
+   ]
+  },
+  {
+   "lemma": "chat",
+   "forms": [
+    "chat",
+    "chats",
+    "chatted",
+    "chatting"
+   ],
+   "direct": false,
+   "preps": [
+    "with",
+    "to"
+   ]
+  },
+  {
+   "lemma": "call",
+   "forms": [
+    "call",
+    "calls",
+    "called",
+    "calling"
+   ],
+   "direct": false,
+   "preps": [
+    "to",
+    "out to"
+   ]
+  },
+  {
+   "lemma": "shout",
+   "forms": [
+    "shout",
+    "shouts",
+    "shouted",
+    "shouting"
+   ],
+   "direct": false,
+   "preps": [
+    "to",
+    "at"
+   ]
+  },
+  {
+   "lemma": "whisper",
+   "forms": [
+    "whisper",
+    "whispers",
+    "whispered",
+    "whispering"
+   ],
+   "direct": false,
+   "preps": [
+    "to"
+   ]
+  },
+  {
+   "lemma": "hail",
+   "forms": [
+    "hail",
+    "hails",
+    "hailed",
+    "hailing"
+   ],
+   "direct": true,
+   "preps": []
+  },
+  {
+   "lemma": "beckon",
+   "forms": [
+    "beckon",
+    "beckons",
+    "beckoned",
+    "beckoning"
+   ],
+   "direct": true,
+   "preps": [
+    "to"
+   ]
+  },
+  {
+   "lemma": "gesture",
+   "forms": [
+    "gesture",
+    "gestures",
+    "gestured",
+    "gesturing"
+   ],
+   "direct": false,
+   "preps": [
+    "to",
+    "at"
+   ]
+  },
+  {
+   "lemma": "signal",
+   "forms": [
+    "signal",
+    "signals",
+    "signaled",
+    "signalled",
+    "signaling",
+    "signalling"
+   ],
+   "direct": true,
+   "preps": [
+    "to"
+   ]
+  },
+  {
+   "lemma": "salute",
+   "forms": [
+    "salute",
+    "salutes",
+    "saluted",
+    "saluting"
+   ],
+   "direct": true,
+   "preps": []
+  },
+  {
+   "lemma": "bow",
+   "forms": [
+    "bow",
+    "bows",
+    "bowed",
+    "bowing"
+   ],
+   "direct": false,
+   "preps": [
+    "to"
+   ]
+  },
+  {
+   "lemma": "hug",
+   "forms": [
+    "hug",
+    "hugs",
+    "hugged",
+    "hugging"
+   ],
+   "direct": true,
+   "preps": []
+  },
+  {
+   "lemma": "embrace",
+   "forms": [
+    "embrace",
+    "embraces",
+    "embraced",
+    "embracing"
+   ],
+   "direct": true,
+   "preps": []
+  },
+  {
+   "lemma": "kiss",
+   "forms": [
+    "kiss",
+    "kisses",
+    "kissed",
+    "kissing"
+   ],
+   "direct": true,
+   "preps": []
+  },
+  {
+   "lemma": "shake",
+   "forms": [
+    "shake",
+    "shakes",
+    "shook",
+    "shaken",
+    "shaking"
+   ],
+   "direct": false,
+   "preps": [
+    "hands with"
+   ]
+  },
+  {
+   "lemma": "introduce",
+   "forms": [
+    "introduce",
+    "introduces",
+    "introduced",
+    "introducing"
+   ],
+   "direct": false,
+   "preps": [
+    "herself to",
+    "himself to",
+    "themselves to",
+    "myself to",
+    "yourself to"
+   ]
+  },
+  {
+   "lemma": "approach",
+   "forms": [
+    "approach",
+    "approaches",
+    "approached",
+    "approaching"
+   ],
+   "direct": true,
+   "preps": []
+  },
+  {
+   "lemma": "address",
+   "forms": [
+    "address",
+    "addresses",
+    "addressed",
+    "addressing"
+   ],
+   "direct": true,
+   "preps": []
+  },
+  {
+   "lemma": "question",
+   "forms": [
+    "question",
+    "questions",
+    "questioned",
+    "questioning"
+   ],
+   "direct": true,
+   "preps": []
+  },
+  {
+   "lemma": "help",
+   "forms": [
+    "help",
+    "helps",
+    "helped",
+    "helping"
+   ],
+   "direct": true,
+   "preps": []
+  },
+  {
+   "lemma": "acknowledge",
+   "forms": [
+    "acknowledge",
+    "acknowledges",
+    "acknowledged",
+    "acknowledging"
+   ],
+   "direct": true,
+   "preps": []
+  },
+  {
+   "lemma": "welcome",
+   "forms": [
+    "welcome",
+    "welcomes",
+    "welcomed",
+    "welcoming"
+   ],
+   "direct": true,
+   "preps": []
+  },
+  {
+   "lemma": "push",
+   "forms": [
+    "push",
+    "pushes",
+    "pushed",
+    "pushing"
+   ],
+   "direct": true,
+   "preps": []
+  },
+  {
+   "lemma": "shove",
+   "forms": [
+    "shove",
+    "shoves",
+    "shoved",
+    "shoving"
+   ],
+   "direct": true,
+   "preps": []
+  }
+ ],
+ "particles": [
+  "back",
+  "over",
+  "up",
+  "out",
+  "briefly",
+  "politely",
+  "warmly",
+  "cheerfully",
+  "quickly",
+  "shyly",
+  "silently"
+ ],
+ "vocative_openers": [
+  "hey",
+  "hi",
+  "hello",
+  "thanks",
+  "thank you",
+  "excuse me",
+  "sorry",
+  "good morning",
+  "good afternoon",
+  "good evening",
+  "goodbye",
+  "bye",
+  "cheers",
+  "yo",
+  "oi",
+  "listen"
+ ],
+ "articles": [
+  "the",
+  "a",
+  "an",
+  "that",
+  "this"
+ ],
+ "person_nouns": [
+  "attendant",
+  "barista",
+  "bartender",
+  "beggar",
+  "boss",
+  "boy",
+  "busker",
+  "bystander",
+  "cabbie",
+  "cashier",
+  "chef",
+  "child",
+  "cleaner",
+  "clerk",
+  "colleague",
+  "concierge",
+  "conductor",
+  "cook",
+  "cop",
+  "courier",
+  "coworker",
+  "customer",
+  "cyclist",
+  "doctor",
+  "doorman",
+  "driver",
+  "farmer",
+  "fisherman",
+  "friend",
+  "gentleman",
+  "girl",
+  "guard",
+  "guest",
+  "guy",
+  "hiker",
+  "host",
+  "hostess",
+  "janitor",
+  "jogger",
+  "kid",
+  "lady",
+  "landlady",
+  "landlord",
+  "librarian",
+  "mailman",
+  "man",
+  "manager",
+  "mechanic",
+  "messenger",
+  "monk",
+  "neighbor",
+  "neighbour",
+  "nun",
+  "nurse",
+  "officer",
+  "owner",
+  "passenger",
+  "patron",
+  "pharmacist",
+  "pilot",
+  "plumber",
+  "policeman",
+  "policewoman",
+  "porter",
+  "postman",
+  "postwoman",
+  "priest",
+  "receptionist",
+  "runner",
+  "sailor",
+  "server",
+  "shopkeeper",
+  "soldier",
+  "steward",
+  "stewardess",
+  "stranger",
+  "student",
+  "teacher",
+  "teenager",
+  "tenant",
+  "ticket-taker",
+  "tourist",
+  "traveler",
+  "traveller",
+  "usher",
+  "vendor",
+  "visitor",
+  "waiter",
+  "waitress",
+  "woman",
+  "worker"
+ ]
+}

@@ -11,7 +11,7 @@ orders (``judging.compare``: a disagreement between them is a tie, an ``Uncertai
 excludes the pair). A turn that changed nothing is not a pair. A turn where several
 interventions fired counts for each of them.
 
-**Metrics**, per configuration fingerprint (``structured``: ``Structured (M4)``; ``gated``: its
+**Metrics**, per configuration fingerprint (``structured``: ``Structured``; ``gated``: its
 claim-extraction-gated variant) and intervention type (``scenario_play.INTERVENTION_TYPES``):
 ``nfr_qual_14.<config>.<type>`` is the **first-draft preference rate** over the type's non-tied
 pairs (a pair whose draft the judge preferred is a bad observation, one whose final message it

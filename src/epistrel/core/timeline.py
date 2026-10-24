@@ -50,13 +50,14 @@ their new membership in the same transaction.
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt
-from sqlalchemy import and_, func, or_, select, update
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
+from pydantic_core import PydanticCustomError
+from sqlalchemy import ColumnElement, and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import turn_gate
@@ -104,12 +105,43 @@ fork)."""
 # -- requests and results ---------------------------------------------------------------------
 
 
+INSIDE_TURN_FIELDS = ("beat", "step")
+"""A position inside a turn (FR-STORE-31): never a checkpoint boundary (#168)."""
+
+
+def turn_boundary(data: Any) -> Any:
+    """A truncation's or fork's body names a turn boundary (``N`` or ``N⁺k``), never a beat or
+    a step (FR-STORE-31; #168): such a field is 422 ``turn_boundary_required``."""
+    if isinstance(data, Mapping):
+        for name in INSIDE_TURN_FIELDS:
+            if name in data:
+                raise PydanticCustomError(
+                    TURN_BOUNDARY_REQUIRED,
+                    "a checkpoint is a turn boundary (a turn, or an inter-turn slot), never a "
+                    "beat or a step",
+                )
+    return data
+
+
+TURN_BOUNDARY_REQUIRED = "turn_boundary_required"
+
+
 class TruncateRequest(BaseModel):
-    """``POST /stories/{id}/truncate``: keep turns 1..``to_turn``; ``0`` keeps only genesis."""
+    """``POST /stories/{id}/truncate``: keep turns 1..``to_turn`` (and, with ``slot`` k, turn
+    ``to_turn``'s inter-turn slots 1..k, the boundary ``N⁺k``); ``0`` keeps only genesis. A beat
+    or a step is never a boundary (422 ``turn_boundary_required``, FR-STORE-31; #168)."""
 
     model_config = ConfigDict(extra="forbid", json_schema_extra={"examples": [{"to_turn": 2}]})
 
     to_turn: StrictInt = Field(description="The last turn to keep (0 to the head - 1).")
+    slot: StrictInt | None = Field(
+        default=None,
+        ge=0,
+        description="The boundary `N⁺k`: keep `to_turn`'s inter-turn slots 1..k (default: "
+        "none, the boundary `N`).",
+    )
+
+    _boundary = model_validator(mode="before")(turn_boundary)
 
 
 class UntruncateRequest(BaseModel):
@@ -279,11 +311,15 @@ def _committed(story_id: str) -> Any:
     )
 
 
-def _after(to_turn: int) -> Any:
-    """Positioned after ``to_turn``: later turns, and ``to_turn``'s own inter-turn slots."""
+def _after(to_turn: int, slot: int | None = None) -> Any:
+    """Positioned after the boundary ``to_turn`` (``N``: later turns and ``to_turn``'s own
+    inter-turn slots) or ``to_turn⁺slot`` (its slots after ``slot`` too; #168)."""
+    later_slot: ColumnElement[bool] = operations.c.slot_k.is_not(None)
+    if slot:
+        later_slot = and_(later_slot, operations.c.slot_k > slot)
     return or_(
         operations.c.narrative_turn > to_turn,
-        and_(operations.c.narrative_turn == to_turn, operations.c.slot_k.is_not(None)),
+        and_(operations.c.narrative_turn == to_turn, later_slot),
     )
 
 
@@ -415,7 +451,9 @@ class _UntruncateSwap:
     swap: SwapPlan
 
 
-async def _plan_truncate(conn: AsyncConnection, story_id: str, to_turn: int) -> _TruncatePlan:
+async def _plan_truncate(
+    conn: AsyncConnection, story_id: str, to_turn: int, slot: int | None = None
+) -> _TruncatePlan:
     head = await _next_turn_index(conn, story_id) - 1
     if to_turn < 0 or to_turn >= head:
         raise InvalidRequest(
@@ -427,7 +465,7 @@ async def _plan_truncate(conn: AsyncConnection, story_id: str, to_turn: int) -> 
         .where(
             _committed(story_id),
             operations.c.membership == Membership.ACTIVE.value,
-            _after(to_turn),
+            _after(to_turn, slot),
         )
         .order_by(operations.c.narrative_turn, operations.c.operation_id)
     )
@@ -623,7 +661,7 @@ async def truncate(
     failed_queue: list[str] = []
 
     async def plan(conn: AsyncConnection) -> _TruncatePlan:
-        return await _plan_truncate(conn, story_id, request.to_turn)
+        return await _plan_truncate(conn, story_id, request.to_turn, request.slot)
 
     def stage(op: Operation, planned: _TruncatePlan) -> None:
         op.append("truncate", planned.payload)

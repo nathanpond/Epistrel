@@ -13,6 +13,12 @@ run's working directory (``build/perf/run-<stamp>/locust.html``).
 ``structured-<key>.dump``), layers ``compose.structured.yml`` over the stack, plays one
 single-character turn per story every 60 s and writes ``<stamp>-structured.md``.
 ``--memories N`` scales its stories down for a demo run.
+
+``--scenario multi`` (#182) seeds ``perf.lite_smoke.multi``'s stories (cached as
+``multi-<key>.dump``), layers ``compose.multi.yml`` over the stack, plays one two-character
+``sequential`` turn per story every 60 s and writes ``<stamp>-multi.md``, naming the profile the
+turns ran under (``GET /engine-profiles/{id}``) and the perception level of their beats.
+``--smoke`` scales the warm-up and the end margin to 30 s (PR CI's 2-minute run).
 """
 
 from __future__ import annotations
@@ -34,6 +40,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from epistrel.testing.fixtures.knowledge import KnowledgeSpec
 from perf.lite_smoke import (
     CACHE_DIR,
     COMPOSE_FILES,
@@ -45,6 +52,7 @@ from perf.lite_smoke import (
     RESULTS_DIR,
     SCENARIOS,
     SCRATCH_DIR,
+    SMOKE_MARGIN_S,
     STOP_BEFORE_S,
     STORIES,
     STRUCTURED_INTERVAL_S,
@@ -116,6 +124,7 @@ def prepare_stories(
     use_compose: bool,
     scenario: str = "lite",
     spec: Any = None,
+    known: Any = None,
 ) -> list[StoryRef]:
     """The seeded stories: restored from the cached dump when its key matches, else seeded
     (and, with the compose stack, dumped for the next run). ``spec`` is the structured
@@ -124,6 +133,11 @@ def prepare_stories(
         from perf.lite_smoke import structured
 
         key = structured.cache_key(stories, spec)
+    elif scenario == "multi":
+        from perf.lite_smoke import multi
+
+        known = known or KnowledgeSpec()
+        key = multi.cache_key(stories, spec, known)
     else:
         key = cache_key(stories, turns)
     dump = CACHE_DIR / f"{scenario}-{key}.dump"
@@ -157,6 +171,11 @@ def prepare_stories(
 
         log(f"seeding {stories} structured stories of {spec} (cache key {key})")
         found = asyncio.run(structured.seed(target, stories=stories, spec=spec, log=log))
+    elif scenario == "multi":
+        from perf.lite_smoke import multi
+
+        log(f"seeding {stories} multi-character stories of {spec} (cache key {key})")
+        found = asyncio.run(multi.seed(target, stories=stories, spec=spec, log=log, known=known))
     else:
         log(f"seeding {stories} stories of {turns} turns (cache key {key})")
         found = asyncio.run(seed(target, stories=stories, turns=turns, log=log))
@@ -199,9 +218,12 @@ def drain(target: Target, timeout_s: float = DRAIN_S) -> None:
 
 def reconcile(target: Target, story: StoryRef, submitted: list[int]) -> dict[str, list[int]]:
     """The story's ticks as ``history`` holds them: submitted but absent (lost), or present
-    more than once or never submitted (duplicated)."""
+    more than once or never submitted (duplicated); for the multi variant (#182), also the
+    ticks whose turn lacks a beat of one of its primaries (``incomplete``)."""
     viewpoint = f"character:{story.player_id}"
     seen: Counter[int] = Counter()
+    ticks: dict[int, int] = {}
+    actors: dict[int, set[str]] = {}
     before: int | None = None
     while True:
         query: dict[str, Any] = {"limit": 1000, "viewpoint": viewpoint}
@@ -217,27 +239,56 @@ def reconcile(target: Target, story: StoryRef, submitted: list[int]) -> dict[str
                 found = TICK.search(item.get("text") or "")
                 if found:
                     seen[int(found.group(1))] += 1
+                    if item.get("turn") is not None:
+                        ticks[int(item["turn"])] = int(found.group(1))
+            elif item.get("turn") is not None and item.get("actor_character_id"):
+                actors.setdefault(int(item["turn"]), set()).add(str(item["actor_character_id"]))
         before = page.get("next_before_turn")
         if reached or before is None:
             break
     wanted = set(submitted)
-    return {
+    answer = {
         "lost": sorted(t for t in wanted if seen[t] == 0),
         "duplicated": sorted(t for t, n in seen.items() if n > 1 or t not in wanted),
     }
+    if story.primary_ids:
+        answer["incomplete"] = sorted(
+            tick
+            for turn, tick in ticks.items()
+            if not set(story.primary_ids) <= actors.get(turn, set())
+        )
+    return answer
+
+
+def profile_label(target: Target, records: list[dict[str, Any]]) -> str | None:
+    """The engine profile the committed turns ran under, ``<name> v<version>`` (the name from
+    ``GET /engine-profiles/{id}``; several are joined)."""
+    found: list[str] = []
+    for ref in sorted({str(r["profile"]) for r in records if r.get("profile")}):
+        profile_id, _, version = ref.partition(" ")
+        try:
+            name = request(target, "GET", f"/engine-profiles/{profile_id}")["name"]
+        except urllib.error.URLError, KeyError, TypeError:
+            name = profile_id
+        found.append(f"{name} {version}")
+    return ", ".join(found) or None
 
 
 def delete_stories(target: Target, stories: list[StoryRef]) -> list[str]:
     """Delete the seeded stories after the report is written; answers the ones that could not
     be deleted. A story still busy with a turn the drain did not wait out answers 423 (or any
-    HTTP error): it is logged and left (the compose stack's volume goes with it), so the run's
-    report and exit status stand."""
+    HTTP error), and a delete can time out (#182): it is logged and left (the compose stack's
+    volume goes with it), so the run's report and exit status stand."""
     left: list[str] = []
     for story in stories:
         try:
             request(target, "DELETE", f"/stories/{story.story_id}")
         except urllib.error.HTTPError as exc:
             log(f"story {story.story_id} not deleted: HTTP {exc.code}")
+            left.append(story.story_id)
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            # #182: deleting a 10,000-memory multi-character story can outlast the timeout.
+            log(f"story {story.story_id} not deleted: {type(exc).__name__}")
             left.append(story.story_id)
     return left
 
@@ -271,6 +322,7 @@ def run_locust(
     *,
     interval_s: float = INTERVAL_S,
     scenario: str = "lite",
+    stop_before_s: float = STOP_BEFORE_S,
 ) -> int:
     env = {
         **os.environ,
@@ -279,7 +331,7 @@ def run_locust(
         "EPISTREL_PERF_INTERVAL": str(interval_s),
         "EPISTREL_PERF_SCENARIO": scenario,
         "EPISTREL_PERF_START": str(start),
-        "EPISTREL_PERF_SUBMIT_UNTIL": str(minutes * 60 - STOP_BEFORE_S),
+        "EPISTREL_PERF_SUBMIT_UNTIL": str(minutes * 60 - stop_before_s),
     }
     users = len(json.loads((work / "stories.json").read_text()))
     command = [
@@ -328,13 +380,23 @@ def main(argv: list[str] | None = None) -> int:
         "--no-compose", action="store_true", help="use the running target (EPISTREL_PERF_*)"
     )
     parser.add_argument("--keep", action="store_true", help="keep the stories and the stack")
+    parser.add_argument(
+        "--smoke",
+        action="store_true",
+        help="PR CI's smoke run: the warm-up and the end margin scale to 30 s",
+    )
     args = parser.parse_args(argv)
-    if args.minutes * 60 <= STOP_BEFORE_S:
-        parser.error("--minutes must be more than 2 (submissions stop 2 minutes before the end)")
+    margin = SMOKE_MARGIN_S if args.smoke else STOP_BEFORE_S
+    if args.minutes * 60 <= margin:
+        parser.error(
+            f"--minutes must be more than {margin / 60:g} (submissions stop {margin:g} s "
+            "before the end)"
+        )
     target = Target.from_env()
     use_compose = not args.no_compose
     scenario: str = args.scenario
     spec: Any = None
+    known: Any = None
     interval_s = INTERVAL_S
     if scenario == "structured":
         from perf.lite_smoke import structured
@@ -343,6 +405,15 @@ def main(argv: list[str] | None = None) -> int:
         spec = structured.SPEC
         if args.memories is not None:
             spec = type(spec).scaled(args.memories)
+        interval_s = STRUCTURED_INTERVAL_S
+    elif scenario == "multi":
+        from perf.lite_smoke import multi
+
+        FILES[:] = [*COMPOSE_FILES, multi.COMPOSE_FILE]
+        spec = multi.SPEC
+        if args.memories is not None:
+            spec = type(spec).scaled(args.memories)
+        known = multi.SMOKE_KNOWLEDGE if args.smoke else KnowledgeSpec()
         interval_s = STRUCTURED_INTERVAL_S
     started = datetime.now(UTC)
     stamp = started.strftime("%Y-%m-%d-%H%M")
@@ -381,6 +452,7 @@ def main(argv: list[str] | None = None) -> int:
         use_compose=use_compose,
         scenario=scenario,
         spec=spec,
+        known=known,
     )
     write_stories(work / "stories.json", stories)
     try:
@@ -395,7 +467,13 @@ def main(argv: list[str] | None = None) -> int:
         log(f"driving {len(stories)} stories for {args.minutes:g} minutes")
         try:
             code = run_locust(
-                target, work, args.minutes, start, interval_s=interval_s, scenario=scenario
+                target,
+                work,
+                args.minutes,
+                start,
+                interval_s=interval_s,
+                scenario=scenario,
+                stop_before_s=margin,
             )
         finally:
             sampler.stop()
@@ -432,6 +510,14 @@ def main(argv: list[str] | None = None) -> int:
             scenario=scenario,
             events=spec.events if spec is not None else None,
             memories=spec.memories if spec is not None else 0,
+            smoke=args.smoke,
+            beliefs=known.beliefs if known is not None else 0,
+            exposures=known.exposures if known is not None else 0,
+            profile=profile_label(target, records) if scenario == "multi" else None,
+            perception=", ".join(
+                sorted({str(r["audience_filter"]) for r in records if r.get("audience_filter")})
+            )
+            or None,
         )
         evaluation = reporting.evaluate(
             info,

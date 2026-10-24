@@ -319,7 +319,8 @@ from epistrel.orchestrator.models.adapter import ModelParams
 from epistrel.orchestrator.models.config import routes_of
 from epistrel.orchestrator.models.errors import ModelError, ModelUnavailable
 from epistrel.orchestrator.models.facts import runtime_facts
-from epistrel.orchestrator.models.metrics import CallLog, recording
+from epistrel.orchestrator.models.metrics import CallLog, model_seconds_since, recording
+from epistrel.orchestrator.models.metrics import calls_so_far as model_calls_so_far
 from epistrel.orchestrator.models.registry import GenerationInputs, SceneContext
 from epistrel.orchestrator.models.registry import PlayerInput as PromptPlayer
 from epistrel.orchestrator.policies.check import refuse_withheld
@@ -4007,8 +4008,11 @@ async def play(
             adjudicate=adjudicate_needed if planner.adjudicates(settings) else None,
             stage=staged if staged is not None and staged.beats else None,
         )
+        building = time.perf_counter()
         async with db.begin() as conn:
             found = await character_context.build_context(conn, read.character.id, state)
+        # #182: one render's context, as P-04's multi variant reports it (``context_ms``).
+        stages.observe("context", time.perf_counter() - building)
         if found.retrieval is not None:
             # NFR-PERF-1's span: the pipeline's own total, the query embedding left out (#153).
             stages.observe("retrieve", found.retrieval.timings.get("total", 0.0) / 1000)
@@ -4605,6 +4609,7 @@ async def play(
         # #177 (FR-MULTI-3): the turn's concurrent commitments, reconciled on one timeline
         # after #175's adjudication (its settled pairs skipped), before the composition.
         firsts = [f for f in (turn_stage.render_of(p.id) for p in order) if f is not None]
+        reconciling = time.perf_counter()
         reconciliation = await reconcile_checked(
             db,
             story_id,
@@ -4616,6 +4621,7 @@ async def play(
             settled=settled_pairs,
         )
         reconciled[:] = [reconciliation]
+        reconcile_s = time.perf_counter() - reconciling
         for number in reconciliation.attempts:
             staged = turn_stage.get(number)
             rewritten = next((b for b in checked.beats if b.beat == number), None)
@@ -4670,6 +4676,7 @@ async def play(
         checked.degradation += checked.adjudications.degradation
         found[:] = [checked]
         composing_at = time.perf_counter()
+        calls_before = model_calls_so_far()
         # #177 (FR-RESP-13): the beats the output viewpoint receives, the rest withheld.
         heard = await audience_of(
             db,
@@ -4702,6 +4709,12 @@ async def play(
             heard=heard,
         )
         clock.add("composition", time.perf_counter() - composing_at)
+        # #182: reconcile + audience filter + compose, the polish's model time left out
+        # (P-04's multi variant's ``compose_ms``).
+        stages.observe(
+            "compose",
+            reconcile_s + time.perf_counter() - composing_at - model_seconds_since(calls_before),
+        )
         composed[:] = [composition]
         checked.degradation += _composition_degradation(composition)
         missing = undetected_beats(checked)

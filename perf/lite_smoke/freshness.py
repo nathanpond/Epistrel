@@ -38,9 +38,10 @@ WARN = timedelta(days=14)
 
 
 def full_turns(scenario: str) -> int:
-    """The seeded turns of a full-size story: 10,000 for Lite; for the structured variant, the
-    scale spec of 10,000 memories and 20,000 events (5,000 turns, the rest canon's events)."""
-    if scenario == "structured":
+    """The seeded turns of a full-size story: 10,000 for Lite; for the structured and the
+    multi-character variants, the scale spec of 10,000 memories and 20,000 events (5,000 turns,
+    the rest canon's events)."""
+    if scenario in ("structured", "multi"):
         from epistrel.testing.fixtures import scale
 
         return scale.ScaleSpec.scaled(STRUCTURED_MEMORIES, events=STRUCTURED_EVENTS).turns

@@ -1,0 +1,11 @@
+# P-04's multi-character variant (#182), layered over docker-compose.yml and compose.perf.yml by
+# `python -m perf.lite_smoke --scenario multi`: the stub embedding at the scale fixture's 768
+# dimensions, and the stub's structured renders declaring 10% contradicted and 10% novel claims
+# against the planted canon and, on the rest, testimony about the first primary
+# (`perf.lite_smoke.multi.RENDER_CLAIMS`; tests/perf/test_p_04.py checks this JSON matches it).
+services:
+  engine:
+    environment:
+      EPISTREL_EMBEDDING_ADAPTER: stub
+      EPISTREL_STUB_EMBEDDING_DIMENSION: "768"
+      EPISTREL_STUB_RENDER_CLAIMS: '[{"share": 0.1, "subject": "I", "relation": "owns", "object": "brass lantern", "negated": true}, {"share": 0.1, "subject": "I", "relation": "owns", "object": "music box"}, {"share": 0.8, "subject": "Ada Ashdown", "relation": "owns", "object": "brass lantern"}]'

@@ -38,6 +38,8 @@ class StoryRef:
     other_id: str
     turns: int
     index: int
+    primary_ids: tuple[str, ...] = ()
+    """The multi-character variant's primaries, in render order (#182; empty otherwise)."""
 
 
 def seed_settings(dsn: str) -> Settings:
@@ -123,7 +125,10 @@ def write_stories(path: Path, found: list[StoryRef]) -> None:
 
 
 def read_stories(path: Path) -> list[StoryRef]:
-    return [StoryRef(**item) for item in json.loads(path.read_text())]
+    return [
+        StoryRef(**{**item, "primary_ids": tuple(item.get("primary_ids", ()))})
+        for item in json.loads(path.read_text())
+    ]
 
 
 def main() -> None:

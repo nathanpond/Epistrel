@@ -21,6 +21,20 @@ commit's: retrieval p95 ≤ 150 ms (NFR-PERF-1, the ``retrieve`` stage, one obse
 retrieval) and deterministic verify p95 ≤ 50 ms (NFR-PERF-2, the ``verify`` stage, one per
 claim checked). Both bounds are bucket edges. Its report is titled "P-04 Structured reference
 workload" and saved as ``<date>-<time>-structured.md``.
+
+**The multi-character variant** (#182, ``scenario = "multi"``, one two-character
+``sequential`` turn every 60 s on the ``Structured`` profile's per-character renders) has the
+structured variant's criteria plus, in aggregate: every committed turn carries both primaries'
+beats (the driver counts the beats of each primary in the viewpoint's result), no turn reports
+``reduced_characters``, ``deferred_characters`` or ``escalation_deferred`` (a run with any fails
+however fast it was), and the per-character stages ``MULTI_STAGES`` (``context``: one
+character's context, once per render; ``compose``: the reconciliation, the audience filter and
+the composition, once per turn) were observed, read as the report's ``context_ms`` and
+``compose_ms`` (``MULTI_COLUMNS``). Degradation steps are counted by name; any other than the
+stub's own deterministic composition (``STUB_DEGRADATION``) fails the run on the reference host
+only. The report names the profile and version the turns ran under and the perception level
+their beats were filtered at, both from the respond results. A ``smoke`` run (PR CI's
+``perf_smoke``) scales the warm-up and the end margin to 30 s.
 """
 
 from __future__ import annotations
@@ -33,12 +47,14 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from epistrel.observability.stages import MULTI_STAGES
 from perf.lite_smoke import (
     COMMIT_P95_BUDGET_S,
     ENFORCED_HOST_CLASS,
     FRONT_TO_FIRST_CALL_P95_S,
     MAX_WAITING,
     RETRIEVAL_P95_BUDGET_S,
+    SMOKE_MARGIN_S,
     STOP_BEFORE_S,
     VERIFY_P95_BUDGET_S,
     WARMUP_S,
@@ -46,10 +62,23 @@ from perf.lite_smoke import (
 
 PASS, FAIL = "PASS", "FAIL"
 TITLE = re.compile(
-    r"^# P-04 (?:Lite|Structured) reference workload: (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) UTC$", re.M
+    r"^# P-04 (?:Lite|Structured|Multi-character) reference workload: "
+    r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}) UTC$",
+    re.M,
 )
-SCENARIO = re.compile(r"^# P-04 (Lite|Structured) reference workload: ", re.M)
-SCENARIO_TITLES = {"lite": "Lite", "structured": "Structured"}
+SCENARIO = re.compile(r"^# P-04 (Lite|Structured|Multi-character) reference workload: ", re.M)
+SCENARIO_TITLES = {"lite": "Lite", "structured": "Structured", "multi": "Multi-character"}
+TITLE_SCENARIOS = {title: scenario for scenario, title in SCENARIO_TITLES.items()}
+MULTI_COLUMNS = {f"{stage}_ms": stage for stage in MULTI_STAGES}
+"""The multi report's per-character columns (``context_ms``, ``compose_ms``) and the server
+stage each reads: ``observability.stages.MULTI_STAGES``, the registry the pipeline observes
+(#182; ``test_p_04__multi_gate`` cross-checks the names)."""
+STUB_DEGRADATION = frozenset({"composition_fallback"})
+"""The degradation the stub makes on every structured turn: its polish echoes the draft with
+untraced spans, so the composition check takes the deterministic composition."""
+PLANNING_ENTRIES = ("reduced_characters", "deferred_characters", "escalation_deferred")
+"""The budget-planning entries a multi run must never see (#176): a primary reduced to reactive
+narration or deferred, or a reaction that needed a render it could not get."""
 VERDICT = re.compile(r"^\*\*Result: (PASS|FAIL)\*\* \(host class ([a-z]+): ", re.M)
 LENGTH = re.compile(r"`turn_concurrency = queue`, (\d+(?:\.\d+)?) minutes")
 SIZE = re.compile(r"^- Stories: ([\d,]+) turns ", re.M)
@@ -80,7 +109,7 @@ def header(text: str) -> Header:
         host_class=verdict.group(2),
         verdict=verdict.group(1),
         turns=int(size.group(1).replace(",", "")),
-        scenario=scenario.group(1).lower(),
+        scenario=TITLE_SCENARIOS[scenario.group(1)],
     )
 
 
@@ -106,10 +135,29 @@ class RunInfo:
     ``fact_committed`` event per fact)."""
     memories: int = 0
     """Seeded memories per story (the structured variant)."""
+    smoke: bool = False
+    """PR CI's ``perf_smoke`` run (#182): the warm-up and the end margin are 30 s."""
+    profile: str | None = None
+    """The engine profile the turns ran under, ``<name> v<version>`` (the multi variant)."""
+    perception: str | None = None
+    """The perception level the viewpoint's beats were filtered at (the multi variant)."""
+    beliefs: int = 0
+    exposures: int = 0
+    """The multi variant's knowledge per character (``epistrel.testing.fixtures.knowledge``)."""
 
     @property
     def end_s(self) -> float:
         return self.minutes * 60
+
+    @property
+    def warmup_s(self) -> float:
+        """When the backlog criterion starts applying."""
+        return SMOKE_MARGIN_S if self.smoke else WARMUP_S
+
+    @property
+    def stop_before_s(self) -> float:
+        """How long before the end submissions stop (each turn before it must complete)."""
+        return SMOKE_MARGIN_S if self.smoke else STOP_BEFORE_S
 
     @property
     def enforced(self) -> bool:
@@ -144,6 +192,13 @@ class Turn:
     queued_ms: int | None = None
     first_call_offset_ms: int | None = None
     model_ms: int | None = None
+    primary_beats: dict[str, int] | None = None
+    """The multi variant: each named primary's beats in the viewpoint's result."""
+    planning: dict[str, int] = field(default_factory=dict)
+    """The multi variant: the turn's ``PLANNING_ENTRIES`` counts (only those it had)."""
+    degradation: list[str] = field(default_factory=list)
+    profile: str | None = None
+    audience_filter: str | None = None
 
     @property
     def committed(self) -> bool:
@@ -221,6 +276,11 @@ def merge(records: Iterable[Mapping[str, Any]]) -> list[Turn]:
             turn.queued_ms = record.get("queued_ms")
             turn.first_call_offset_ms = record.get("first_call_offset_ms")
             turn.model_ms = record.get("model_ms")
+            turn.primary_beats = record.get("primary_beats")
+            turn.planning = dict(record.get("planning") or {})
+            turn.degradation = list(record.get("degradation") or [])
+            turn.profile = record.get("profile")
+            turn.audience_filter = record.get("audience_filter")
     return sorted(turns.values(), key=lambda t: (t.story_id, t.tick))
 
 
@@ -289,6 +349,11 @@ def _ms(value: float | None) -> str:
     return "n/a" if value is None else f"{value:.0f} ms"
 
 
+def _span(seconds: float) -> str:
+    """``2 min``, ``5 min`` or ``30 s``."""
+    return f"{seconds / 60:g} min" if seconds % 60 == 0 else f"{seconds:g} s"
+
+
 def _story(
     story_id: str,
     index: int,
@@ -302,7 +367,7 @@ def _story(
     committed = [t for t in turns if t.committed and t.finished is not None]
     figures.completed = len(committed)
     figures.failed = sum(1 for t in turns if t.outcome is not None and not t.committed)
-    cutoff = info.end_s - STOP_BEFORE_S
+    cutoff = info.end_s - info.stop_before_s
     due = [t for t in turns if t.submitted <= cutoff]
     figures.due = len(due)
     figures.due_completed = sum(
@@ -310,7 +375,7 @@ def _story(
     )
     figures.lost = list(reconciled.get("lost", []))
     figures.duplicated = list(reconciled.get("duplicated", []))
-    figures.max_waiting = max_waiting(turns, after=WARMUP_S, end=info.end_s)
+    figures.max_waiting = max_waiting(turns, after=info.warmup_s, end=info.end_s)
     waits = [float(t.queued_ms or 0) for t in committed]
     figures.queue_wait_p95_ms = percentile(waits, 95)
     figures.queue_wait_max_ms = max(waits) if waits else None
@@ -321,20 +386,20 @@ def _story(
     engine = [float(t.engine_ms) for t in committed if t.engine_ms is not None]
     figures.engine_ms = {f"p{q}": percentile(engine, q) for q in (50, 95, 99)}
     figures.max_queue_gauge = max(
-        (float(s.get("queue", {}).get(story_id, 0.0)) for s in samples if s["t"] >= WARMUP_S),
+        (float(s.get("queue", {}).get(story_id, 0.0)) for s in samples if s["t"] >= info.warmup_s),
         default=0.0,
     )
     interval_ms = info.interval_s * 1000
     figures.criteria = [
         Criterion(
-            "every turn submitted ≥ 2 min before the end completed",
+            f"every turn submitted ≥ {_span(info.stop_before_s)} before the end completed",
             "story",
             f"{figures.due_completed}/{figures.due}",
             "all",
             figures.due > 0 and figures.due_completed == figures.due,
         ),
         Criterion(
-            "turns waiting behind the running one, after 5 min",
+            f"turns waiting behind the running one, after {_span(info.warmup_s)}",
             "story",
             str(figures.max_waiting),
             f"≤ {MAX_WAITING}",
@@ -387,6 +452,87 @@ def _per_minute(
             )
         rows.append(row)
     return rows
+
+
+def degradation_counts(turns: Sequence[Turn]) -> dict[str, int]:
+    """Every degradation step of the committed turns, by name."""
+    found: dict[str, int] = defaultdict(int)
+    for turn in turns:
+        for step in turn.degradation:
+            found[step] += 1
+    return dict(sorted(found.items()))
+
+
+def multi_criteria(
+    info: RunInfo,
+    committed: Sequence[Turn],
+    stage_buckets: Mapping[str, Mapping[str, float]],
+    incomplete: int = 0,
+) -> list[Criterion]:
+    """The multi variant's aggregate criteria (see the module docstring). ``incomplete``: the
+    committed turns whose ``history`` lacks a primary's beat (the run's reconciliation)."""
+    short = [
+        t
+        for t in committed
+        if t.primary_beats is None
+        or len(t.primary_beats) < 2
+        or any(n < 1 for n in t.primary_beats.values())
+    ]
+    planning: dict[str, int] = defaultdict(int)
+    for turn in committed:
+        for name, n in turn.planning.items():
+            planning[name] += n
+    steps = degradation_counts(committed)
+    other = {k: v for k, v in steps.items() if k not in STUB_DEGRADATION}
+    unobserved = [
+        column
+        for column, stage in MULTI_COLUMNS.items()
+        if dict(stage_buckets.get(stage, {})).get("+Inf", 0.0) <= 0
+    ]
+    return [
+        Criterion(
+            "both primaries' beats in every committed turn",
+            "aggregate",
+            f"{len(committed) - len(short)}/{len(committed)} in the results, "
+            f"{incomplete} incomplete in history",
+            "all",
+            bool(committed) and not short and not incomplete,
+        ),
+        Criterion(
+            "reduced, deferred or escalation-deferred characters",
+            "aggregate",
+            ", ".join(f"{k} {planning.get(k, 0)}" for k in PLANNING_ENTRIES),
+            "0",
+            not any(planning.values()),
+        ),
+        Criterion(
+            "per-character stages observed (context_ms, compose_ms)",
+            "aggregate",
+            "missing " + ", ".join(unobserved) if unobserved else "both",
+            "both",
+            not unobserved,
+        ),
+        Criterion(
+            "degradation steps beyond the stub's composition fallback",
+            "aggregate",
+            ", ".join(f"{k} {v}" for k, v in other.items()) or "none",
+            "none (gated on the reference host only)",
+            not other or not info.enforced,
+        ),
+    ]
+
+
+def multi_figures(
+    committed: Sequence[Turn], stages: Mapping[str, Mapping[str, float | None]]
+) -> dict[str, Any]:
+    """The multi variant's own figures: the per-character columns, the degradation counts and
+    what the turns ran under."""
+    return {
+        **{column: dict(stages.get(stage, {})) for column, stage in MULTI_COLUMNS.items()},
+        "degradation": degradation_counts(committed),
+        "profiles": sorted({t.profile for t in committed if t.profile}),
+        "audience_filters": sorted({t.audience_filter for t in committed if t.audience_filter}),
+    }
 
 
 def evaluate(
@@ -446,7 +592,7 @@ def evaluate(
             lost == 0 and duplicated == 0,
         ),
     ]
-    if info.scenario == "structured":
+    if info.scenario in ("structured", "multi"):
         aggregate += [
             _budget(
                 stage_buckets,
@@ -463,6 +609,9 @@ def evaluate(
                 "claims checked",
             ),
         ]
+    if info.scenario == "multi":
+        incomplete = sum(len(r.get("incomplete", [])) for r in reconciled.values())
+        aggregate += multi_criteria(info, committed, stage_buckets, incomplete)
     engine = [float(t.engine_ms) for t in committed if t.engine_ms is not None]
     figures = {
         "offered": len(turns),
@@ -484,6 +633,8 @@ def evaluate(
         ),
         "engine_ms": {f"p{q}": percentile(engine, q) for q in (50, 95, 99)},
     }
+    if info.scenario == "multi":
+        figures["multi"] = multi_figures(committed, stages)
     return Evaluation(
         info=info,
         stories=per_story,
@@ -527,7 +678,21 @@ def markdown(evaluation: Evaluation) -> str:
         else f"host class {info.host_class}: reported, not gated"
     )
     title = SCENARIO_TITLES.get(info.scenario, info.scenario)
-    if info.scenario == "structured":
+    if info.scenario == "multi":
+        events = info.events if info.events is not None else info.turns * 2
+        stories_line = (
+            f"- Stories: {info.turns:,} turns ({events:,} events, canon's `fact_committed` "
+            f"included) and {info.memories:,} memories each (the scale fixture's builder), "
+            "with per-character knowledge (`epistrel.testing.fixtures.knowledge`: 30% of each "
+            f"character's memories private, {info.beliefs} beliefs, {info.exposures} unresolved "
+            "exposures); profile "
+            f"`{info.profile or 'unknown'}`, perception `{info.perception or 'unknown'}`; "
+            "two-character `sequential` turns (the player speaks, the two co-located primaries "
+            "render in request order, the other characters elsewhere and fixed `silent`); the "
+            "stub's renders declare 10% contradicted and 10% novel claims, the rest testify "
+            "about the first primary (`perf.lite_smoke.multi`)."
+        )
+    elif info.scenario == "structured":
         events = info.events if info.events is not None else info.turns * 2
         stories_line = (
             f"- Stories: {info.turns:,} turns ({events:,} events, canon's `fact_committed` "
@@ -550,7 +715,8 @@ def markdown(evaluation: Evaluation) -> str:
         f"- Engine: `{info.engine_sha}`",
         f"- Workload: {info.stories} stories, one turn every {info.interval_s:g} s each, "
         f"open loop, `turn_concurrency = queue`, {info.minutes:g} minutes, stub model at "
-        f"{info.stub_latency_s:g} s per call; submissions stop 2 minutes before the end.",
+        f"{info.stub_latency_s:g} s per call; submissions stop {_span(info.stop_before_s)} "
+        "before the end" + (" (a smoke run: warm-up and end margin 30 s)." if info.smoke else "."),
         stories_line,
         "",
         "## Criteria",
@@ -615,6 +781,8 @@ def markdown(evaluation: Evaluation) -> str:
             f"| {stage} | {int(figures['count'] or 0)} | {_seconds(figures['p50'])} "
             f"| {_seconds(figures['p95'])} | {_seconds(figures['p99'])} |"
         )
+    if info.scenario == "multi":
+        lines += multi_lines(evaluation)
     header = " | ".join(f"S{s.index + 1}" for s in evaluation.stories)
     lines += [
         "",
@@ -647,6 +815,43 @@ def markdown(evaluation: Evaluation) -> str:
         )
     lines += ["", f"Raw data: the JSON sidecar beside this file. Verdict: **{verdict}**.", ""]
     return "\n".join(lines)
+
+
+def multi_lines(evaluation: Evaluation) -> list[str]:
+    """The multi report's own section: the per-character columns, the degradation counts and
+    what the turns ran under."""
+    found = evaluation.figures.get("multi", {})
+    lines = [
+        "",
+        "## Multi-character",
+        "",
+        "Per-character stages from `epistrel_turn_stage_seconds` (`observability.stages."
+        "MULTI_STAGES`): `context_ms` is one render's context (`build_context`: the partition "
+        "read and lazy resolutions included), `compose_ms` one turn's reconciliation, audience "
+        "filter and composition, the polish's model time left out.",
+        "",
+        "| Column | Stage | Observations | p50 | p95 | p99 |",
+        "|---|---|---|---|---|---|",
+    ]
+    for column, stage in MULTI_COLUMNS.items():
+        q = found.get(column) or {}
+        lines.append(
+            f"| `{column}` | {stage} | {int(q.get('count') or 0)} | {_seconds(q.get('p50'))} "
+            f"| {_seconds(q.get('p95'))} | {_seconds(q.get('p99'))} |"
+        )
+    steps = found.get("degradation") or {}
+    lines += [
+        "",
+        "- Degradation steps (committed turns): "
+        + (", ".join(f"`{k}` {v}" for k, v in steps.items()) or "none")
+        + ".",
+        "- Profiles: "
+        + (", ".join(f"`{p}`" for p in found.get("profiles") or []) or "n/a")
+        + "; perception (audience filter): "
+        + (", ".join(f"`{a}`" for a in found.get("audience_filters") or []) or "n/a")
+        + ".",
+    ]
+    return lines
 
 
 def sidecar(evaluation: Evaluation, records: Sequence[Mapping[str, Any]], samples: Any) -> Any:

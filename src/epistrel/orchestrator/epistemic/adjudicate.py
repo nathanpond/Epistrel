@@ -689,7 +689,13 @@ async def testify_committed(
     minors = await testimony.minors(conn, story_id) | silent_of(checked)
     marked = salient_beats(checked)
     registry = await load(conn, story_id)
-    lookup = KeyedLookup(conn, read_set)
+    # #182 (Rule 1): this commit step reads after the turn's own canon writes (a primary's
+    # permitted novel claim, canonized earlier in the step), under the story lock. Recorded in
+    # the attempt's read set, a key a sequential turn's staged testimony already read answers
+    # differently and fails the turn (``ReadSetInconsistent``). Nothing changes under the lock,
+    # so the commit's reads need no proof: they go through a read set of their own.
+    del read_set
+    lookup = KeyedLookup(conn, StructuredReadSet())
     lazy = exposure.lazy_on(current)
     budget = exposure.Pass(cap=exposure.max_lazy_resolutions(current))
     stored: dict[tuple[int, Any], str] = {}

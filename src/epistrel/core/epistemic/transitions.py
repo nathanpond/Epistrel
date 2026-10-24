@@ -1048,6 +1048,33 @@ async def _transition(
                 "a belief is closed by a later one only",
                 {"field": "held_from", "reason": "held_already", "belief_id": prior.id},
             )
+    if existing is None and frame is not None and belief_kind is BeliefKind.FIRST_ORDER:
+        # #182 (Rule 1): a frame's partition leaves out a belief held only from after the
+        # frame, which ``_insert_belief`` would find open and refuse (``held_already``). Refuse
+        # it here, before anything is written: a caller that lets the said belief stand (a lazy
+        # resolution) must not leave this transition's row without its belief.
+        later = next(
+            (
+                b
+                for b in await partitions.partition(
+                    conn,
+                    story_id,
+                    holder,
+                    subjects=[stored.subject_id],
+                    predicate=stored.predicate_id,
+                )
+                if b.proposition.normalized_key() == key
+                and b.polarity == stored.polarity.value
+                and b.held_to is None
+                and not b.held_from.before(start)
+            ),
+            None,
+        )
+        if later is not None:
+            raise InvalidRequest(
+                "the holder already holds this proposition from this position or a later one",
+                {"field": "held_from", "reason": "held_already", "belief_id": later.id},
+            )
     transition_id = new_ulid()
     belief_id = existing.id if existing is not None else new_ulid()
     prior_ids = tuple(p.id for p in priors)

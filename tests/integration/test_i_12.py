@@ -533,7 +533,6 @@ async def test_i_12__classification(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    testimony_delivered: None,
 ) -> None:
     """The lie / false-belief / hallucination classification combines the verdict, the checked
     ``think`` intent and the provenance (#166, ``core.verify.speech_acts``): the decision table

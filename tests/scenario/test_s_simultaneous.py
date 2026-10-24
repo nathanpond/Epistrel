@@ -121,7 +121,6 @@ async def test_s_simultaneous(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    multi_delivered: None,
 ) -> None:
     """See the module docstring (isolation, request order, one turn)."""
     async with respond_client(stub_settings, engine) as (client, epistrel):
@@ -191,7 +190,6 @@ async def test_s_simultaneous__director(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    multi_delivered: None,
 ) -> None:
     """``simultaneous_tie_break = director``: one director call picks the winner among the
     conflicting characters; a winner who did not act falls back to request order."""
@@ -253,7 +251,6 @@ async def test_s_simultaneous__no_conflict(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    multi_delivered: None,
 ) -> None:
     """The complement: two non-conflicting actions both stand, nothing is adjudicated or
     repaired; ``state:<name>`` is M6's (422 ``not_yet``)."""

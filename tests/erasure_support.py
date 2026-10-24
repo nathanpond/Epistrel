@@ -455,7 +455,7 @@ async def knowing_story(engine: AsyncEngine) -> Knowing:
     Cal is in the kitchen (his own), Ann was told by Bobby that Cal is at school (a transition
     whose source is Bobby), Ann was exposed to Bobby's claim and to Cal's, Bobby lied (a
     divergence), Ann thinks Bobby believes Cal is in the kitchen (a nested belief attributed to
-    him), and Ann holds a memory visible to her and Bobby. Needs ``perception_delivered``."""
+    him), and Ann holds a memory visible to her and Bobby."""
     from epistrel.core.enums import OperationKind, Provenance
     from epistrel.core.epistemic import divergences, nested, transitions
     from epistrel.core.events import Operation
@@ -524,24 +524,23 @@ async def knowing_story(engine: AsyncEngine) -> Knowing:
 
         op.add_commit_step(lie)
         await op.commit()
-    with ns.delivered():
-        nested_on = await ns.nested_settings(engine, story)
+    nested_on = await ns.nested_settings(engine, story)
 
-        async def attribute(conn: AsyncConnection, op: Operation, event_id: str) -> object:
-            return await nested.write_nested(
-                conn,
-                op,
-                holder=ann,
-                attributed_holder=bobby,
-                proposition=his.proposition,
-                cause=nested.Cause(
-                    transitions.Kind.AUTHOR, transitions.Antecedent.record("events", event_id)
-                ),
-                position=Position(op.narrative_turn or 0, op.turn_variant or 0, 0, 3, 0),
-                settings=nested_on,
-            )
+    async def attribute(conn: AsyncConnection, op: Operation, event_id: str) -> object:
+        return await nested.write_nested(
+            conn,
+            op,
+            holder=ann,
+            attributed_holder=bobby,
+            proposition=his.proposition,
+            cause=nested.Cause(
+                transitions.Kind.AUTHOR, transitions.Antecedent.record("events", event_id)
+            ),
+            position=Position(op.narrative_turn or 0, op.turn_variant or 0, 0, 3, 0),
+            settings=nested_on,
+        )
 
-        await ns.in_operation(engine, story, attribute, kind=OperationKind.CONTROL)
+    await ns.in_operation(engine, story, attribute, kind=OperationKind.CONTROL)
     shared = await cs.private_memory(engine, story, ann, [ann, bobby], "The clock struck nine.")
     return Knowing(
         story, bobby, ann, cal, kept.id, told.belief.id, kept_exposure, shared, people["Bobby"]

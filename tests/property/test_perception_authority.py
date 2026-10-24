@@ -192,7 +192,6 @@ async def test_perception_authority__roster(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    perception_delivered: None,
 ) -> None:
     """A manipulated roster changes nothing: Bobby, co-located but left off it, gets Ada's
     words; Clara, in another room but named on it, gets nothing. Complement: the roster was
@@ -223,7 +222,6 @@ async def test_perception_authority__roster(
 async def test_perception_authority__exit(
     stub_settings: Settings,
     engine: AsyncEngine,
-    perception_delivered: None,
 ) -> None:
     """A mid-turn exit with no destination (#175, carried from #161): the turn's own negated
     ``located_at`` closing Bobby's placement at beat 2 is a move to nowhere at beat 2

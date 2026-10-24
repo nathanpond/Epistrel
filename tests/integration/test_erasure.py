@@ -1014,9 +1014,7 @@ async def test_a_turn_key_replayed_after_an_erasure_answers_the_reference(
 
 
 @pytest.mark.part("M5", "FR-ADMIN-2")
-async def test_i_09__beliefs(
-    erasure_settings: Settings, engine: AsyncEngine, perception_delivered: None
-) -> None:
+async def test_i_09__beliefs(erasure_settings: Settings, engine: AsyncEngine) -> None:
     """I-09 M5 (#178): erase Bobby from a story whose knowledge tables name him every way they
     can (``e.knowing_story``: a belief about him, his own belief, a testimony he gave, an
     exposure to his claim, his lie, a nested belief attributed to him, a memory he may see).

@@ -119,7 +119,6 @@ async def test_u_05__hearer_intent(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    testimony_delivered: None,
 ) -> None:
     """FR-TURN-7's hearer clause (#162), under ``testimony = defaulted``: Jenni tells Bobby (who
     trusts her) that Olivia sent the text.
@@ -198,7 +197,6 @@ async def test_u_05__m5(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    testimony_delivered: None,
 ) -> None:
     """The speaker's belief relation, derived independently of the objective relation and the
     intent (#166): canon says Ada is 64, and Ada's partition holds what she believes of her age
@@ -290,7 +288,6 @@ async def test_u_05__secret(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    testimony_delivered: None,
 ) -> None:
     """#167: a sincere say that contradicts a belief its speaker keeps ``secret`` (its author
     act's ``disclosure``) is inferred ``deceptive``: a lie, with its divergence, the stored intent

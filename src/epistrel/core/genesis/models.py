@@ -349,6 +349,13 @@ class StoryFromScenario(TwoStageRequest):
     )
     content_rating_id: str | None = None
     engine_profile_id: str | None = None
+    engine_profile_version: Annotated[StrictInt, Field(ge=1, le=2**31 - 1)] | None = Field(
+        default=None,
+        description="Pin the story to this version of its engine profile (#181): it no longer "
+        "follows the profile's edits until `PUT /stories/{id}/engine-profile` moves it. Left "
+        "out, the story follows the profile's latest version. A version the profile does not "
+        "have is 422 `validation_error`.",
+    )
     max_characters_at_start: CastLimit | None = None
     strict: StrictBool = False
     ignore_warnings: StrictBool = Field(

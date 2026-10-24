@@ -850,9 +850,7 @@ async def test_s_erasure_boundary__consolidation(
 
 
 @pytest.mark.part("M5", "FR-ADMIN-6")
-async def test_s_erasure_boundary__beliefs(
-    erasure_settings: Settings, engine: AsyncEngine, perception_delivered: None
-) -> None:
+async def test_s_erasure_boundary__beliefs(erasure_settings: Settings, engine: AsyncEngine) -> None:
     """M5 (#178): other characters' beliefs about the subject are deleted. Erasing Bobby from
     ``e.knowing_story`` deletes Ann's belief about him, his own belief, Ann's exposure to his
     claim, his divergence and Ann's nested belief attributed to him (its whole chain: the outer

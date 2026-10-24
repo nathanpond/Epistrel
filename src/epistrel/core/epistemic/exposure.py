@@ -101,14 +101,15 @@ LAZY_RESOLUTION_MODULE = "lazy_resolution"
 LAZY_RESOLUTION_CAPPED = "lazy_resolution_capped"
 
 MAX_LAZY_RESOLUTIONS_PER_TURN = 20
-"""The most exposures one narrative turn resolves (``character_knowledge
-.max_lazy_resolutions_per_turn`` once #181 adds the leaf); the rest wait for a later need."""
+"""The default of the profile dial ``character_knowledge.max_lazy_resolutions_per_turn`` (#181):
+the most exposures one narrative turn resolves; the rest wait for a later need."""
 
 DEFAULTED = "defaulted"
 ADJUDICATED = "adjudicated"
 
 
 def max_lazy_resolutions(settings: Any) -> int:
+    """``character_knowledge.max_lazy_resolutions_per_turn`` under ``settings``."""
     found = getattr(
         getattr(settings, "character_knowledge", None), "max_lazy_resolutions_per_turn", None
     )

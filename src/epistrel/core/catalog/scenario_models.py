@@ -72,8 +72,10 @@ from epistrel.core.settings_schema import (
     CAST_LIMIT_MAX,
     CAST_LIMIT_MIN,
     DEFAULT_MAX_CHARACTERS_AT_START,
+    TIE_BREAK_PATTERN,
     DeploymentSettings,
     PlayerView,
+    SequenceOrder,
     TurnConcurrency,
 )
 
@@ -591,6 +593,24 @@ class StorySettingsDefaults(ScenarioModel):
     interaction_mode: Annotated[
         InteractionMode | None, FieldClass.configuration, Use.story_setting
     ] = None
+    sequence_order: Annotated[SequenceOrder | None, FieldClass.configuration, Use.story_setting] = (
+        None
+    )
+    """Who orders a ``sequential`` turn's primaries (FR-MULTI-6; #174): ``request`` or
+    ``director``. ``null`` leaves the story's default (``request``). Needs per-character renders
+    (#181: kept ``inactive`` until the story runs them)."""
+    simultaneous_tie_break: Annotated[str | None, FieldClass.configuration, Use.story_setting] = (
+        Field(default=None, pattern=TIE_BREAK_PATTERN)
+    )
+    """How a ``simultaneous`` turn settles conflicting actions (FR-MULTI-8; #175):
+    ``request_order``, ``director`` or ``state:<name>`` (M6). ``null`` leaves the story's
+    default (``request_order``). Needs per-character renders (#181)."""
+    reactive_interjections: Annotated[
+        StrictBool | None, FieldClass.configuration, Use.story_setting
+    ] = None
+    """Whether reactive narration may give a reactive character a brief interjection
+    (FR-MULTI-9; #176). ``null`` leaves the story's default (off). Needs per-character renders
+    (#181)."""
     turn_concurrency: Annotated[
         TurnConcurrency | None, FieldClass.configuration, Use.story_setting
     ] = None

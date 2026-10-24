@@ -142,7 +142,6 @@ async def test_r_07__other_room(
     pg_url: str,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    perception_delivered: None,
 ) -> None:
     """The minor in the barn, the adults in the cabin: the adults' intimacy passes on input and
     output, the minors policy still checked with the minor marked not present (the age

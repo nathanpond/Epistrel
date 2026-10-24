@@ -76,7 +76,6 @@ async def test_s_reactive(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    multi_delivered: None,
 ) -> None:
     """See the module docstring (two renders, the narrated reactions, the bounds, caught)."""
     async with respond_client(stub_settings, engine) as (client, epistrel):
@@ -146,7 +145,6 @@ async def test_s_reactive__fixed_roles(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    multi_delivered: None,
 ) -> None:
     """See the module docstring (the bartender, fixed and default; the fixed-silent Dale)."""
     async with respond_client(stub_settings, engine) as (client, epistrel):
@@ -218,7 +216,6 @@ async def test_s_reactive__interjections(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    multi_delivered: None,
 ) -> None:
     """See the module docstring (off by default; on, checked; over the cap)."""
     async with respond_client(stub_settings, engine) as (client, epistrel):
@@ -280,7 +277,6 @@ async def test_s_reactive__overrides(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    multi_delivered: None,
 ) -> None:
     """See the module docstring (per-request roles and their validation; the PATCH route)."""
     async with respond_client(stub_settings, engine) as (client, epistrel):
@@ -351,7 +347,6 @@ async def test_s_reactive__budget(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    multi_delivered: None,
 ) -> None:
     """See the module docstring (an escalation the budget cannot fit is deferred)."""
     async with respond_client(stub_settings, engine) as (client, epistrel):

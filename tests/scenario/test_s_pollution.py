@@ -184,7 +184,6 @@ async def test_s_pollution(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    testimony_delivered: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     made = _spy(monkeypatch)
@@ -243,7 +242,6 @@ async def test_s_pollution__observed(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    testimony_delivered: None,
 ) -> None:
     """Bobby observes the truth at turn 2: belief (turn-1 frame), then correction (turn 2)."""
     async with respond_client(stub_settings, engine) as (client, epistrel):
@@ -285,7 +283,6 @@ async def test_s_intra_turn_frame(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    testimony_delivered: None,
 ) -> None:
     async with respond_client(stub_settings, engine) as (client, epistrel):
         story, ids, things = await _setup(client, engine)

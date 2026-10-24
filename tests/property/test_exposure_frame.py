@@ -188,7 +188,7 @@ async def _world(engine: AsyncEngine) -> tuple[c.World, Proposition]:
 
 @pytest.mark.integration
 @pytest.mark.part("M5", "FR-BELIEF-5,6,7,8; FR-STORE-31")
-async def test_exposure_frame__postgres(engine: AsyncEngine, testimony_delivered: None) -> None:
+async def test_exposure_frame__postgres(engine: AsyncEngine) -> None:
     w, claim = await _world(engine)
     story = w.story_id
     ann, bobby = w.characters["Ann"], w.characters["Bobby"]
@@ -229,7 +229,7 @@ async def test_exposure_frame__postgres(engine: AsyncEngine, testimony_delivered
 
 @pytest.mark.integration
 @pytest.mark.part("M5", "FR-BELIEF-5,6,7,8; FR-STORE-31")
-async def test_exposure_frame__fold_forward(engine: AsyncEngine, testimony_delivered: None) -> None:
+async def test_exposure_frame__fold_forward(engine: AsyncEngine) -> None:
     w, claim = await _world(engine)
     story = w.story_id
     ann, bobby = w.characters["Ann"], w.characters["Bobby"]

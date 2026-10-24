@@ -1,46 +1,20 @@
-"""Helpers for the multi-character tests (#174): the ``multi_character`` module delivered for a
-test (#181 delivers it for real) beside #162's partitions, perception and testimony, a story
-switched to per-character renders, and a scripted character render keyed by the character's
-name in its prompt (``## You are <name>``), so each primary of a sequential turn gets its own
-answer whatever the order."""
+"""Helpers for the multi-character tests (#174): a story switched to per-character renders, and
+a scripted character render keyed by the character's name in its prompt (``## You are
+<name>``), so each primary of a sequential turn gets its own answer whatever the order."""
 
 from __future__ import annotations
 
 import json
-import types
-from collections.abc import Iterator
-from contextlib import contextmanager
 from typing import Any
 
-import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from epistrel.core.profiles import schema
 from epistrel.core.profiles.story import ProfileOverridesPatch, set_overrides
 from epistrel.orchestrator.models.stub import StubAdapter
 from tests import perception_support as ps
 from tests import testimony_support as ts
 
 PER_CHARACTER = frozenset({"per_character"})
-
-
-def _delivered() -> types.MappingProxyType[str, frozenset[str]]:
-    return types.MappingProxyType({**ts._delivered(), "multi_character": PER_CHARACTER})
-
-
-def deliver_multi(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Deliver ``multi_character = per_character`` (and #162's modules) for the test."""
-    monkeypatch.setattr(schema, "DELIVERED", _delivered())
-
-
-@contextmanager
-def delivered() -> Iterator[None]:
-    before = schema.DELIVERED
-    schema.DELIVERED = _delivered()
-    try:
-        yield
-    finally:
-        schema.DELIVERED = before
 
 
 async def per_character(
@@ -116,8 +90,6 @@ async def forget(engine: AsyncEngine) -> None:
 
 __all__ = [
     "call_index",
-    "deliver_multi",
-    "delivered",
     "director",
     "forget",
     "per_character",

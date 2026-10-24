@@ -22,14 +22,14 @@ into it. The tool then:
    ``lite,structured``; P-08 M4, #153).
 
 **Turn kinds** (#153). A structured row plays ``StructuredDriver``'s turns on a two-character
-story on the seeded ``Structured (M4)`` profile, with planted canon (``testing.structured_load``:
-each character owns a brass lantern); the player acts and the other character renders. A
-repair-heavy row plays the same turns while half the stub's renders deny owning the lantern,
-so the repair ladder reaches rung 3 (a ``regeneration`` call). It needs the stub's scripted
-contradictions, so only ``run_matrix(turn_kinds=…)`` on a stub Engine makes it
+story on the seeded ``Structured`` profile's latest version, with planted canon
+(``testing.structured_load``: each character owns a brass lantern); the player acts and the
+other character renders. A repair-heavy row plays the same turns while half the stub's renders deny
+owning the lantern, so the repair ladder reaches rung 3 (a ``regeneration`` call). It needs the
+stub's scripted contradictions, so only ``run_matrix(turn_kinds=…)`` on a stub Engine makes it
 (``tests/perf/test_p_08.py::test_p_08__structured``); a row's key carries its kind unless Lite.
 Structured and repair-heavy rows run under a recorded per-story turn deadline override of
-``TURN_DEADLINE_S`` (#454), so a slow tier is measured rather than cut by the profile's 45 s.
+``TURN_DEADLINE_S`` (#454), so a slow tier is measured rather than cut by the profile's deadline.
 
 **Embedding** (#138, C-07 M4). With ``--embedding-base-url`` and ``--embedding-model`` the run
 also measures that ``/embeddings`` endpoint through the embedding port
@@ -125,8 +125,8 @@ DEFAULT_TURNS = 20
 TURN_DEADLINE_S = 300.0
 MEASUREMENT_DEADLINE_MS = int(TURN_DEADLINE_S * 1000)
 """The per-story ``budgets.deadline_ms`` override a structured row's turns run under (#454):
-the matrix measures how long a structured turn takes, so the ``Structured (M4)`` profile's own
-45 s deadline must not cut it. The row records it (``Row.deadline_override_ms``)."""
+the matrix measures how long a structured turn takes, so the seeded ``Structured`` profile's own
+deadline must not cut it. The row records it (``Row.deadline_override_ms``)."""
 TURN_PATH = "respond (#57)"
 GUARDED_REPLY_PATH = "guarded reply (#53), until respond (#57)"
 EX_UNAVAILABLE = 1
@@ -308,7 +308,7 @@ def _stub_of(engine: Engine) -> StubAdapter | None:
 @dataclass
 class StructuredDriver:
     """A single-character structured turn through ``Engine.respond`` (#150, P-08 M4): the
-    story is on the seeded ``Structured (M4)`` profile with ``structured_load``'s planted canon
+    story is on the seeded ``Structured`` profile with ``structured_load``'s planted canon
     (each character owns the brass lantern), and each turn renders the other character alone.
 
     ``repair`` makes it P-08's repair-heavy row: on the stub adapter half the renders deny

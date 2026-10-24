@@ -5,14 +5,15 @@
 ``MAX_PRIMARIES`` characters in ``render_character_ids`` when the turn's interaction mode is
 ``sequential``: the request's ``interaction_mode``, else the story's setting, else the scenario's
 setting genesis kept inactive (``stories.settings.inactive``, capability ``multi_character``,
-#122), else ``sequential`` (``mode_of``). Omitted, the turn keeps #150's single first-by-ordinal
-primary (the roster never widens a default). Under ``combined`` (every M4 profile) two or more
-named are still 422 ``validation_error`` (``one_render_character``), and a request that
-overrides ``interaction_mode``, ``sequence_order`` or ``simultaneous_tie_break`` is 409
-``module_off``. The player's own character is never a primary of a multi-primary turn (422
-``player_cannot_render``). ``simultaneous`` (#175) renders every primary against the turn's
-starting state (``orchestrator.structured.simultaneous``); its tie-break (``tie_break_of``) is the
-request's ``simultaneous_tie_break``, else the story's, else ``request_order``; a request naming
+#122; #181 reads ``sequence_order``, ``simultaneous_tie_break``, ``reactive_interjections`` and
+each role's participation from there too), else ``sequential`` (``mode_of``). Omitted, the turn
+keeps #150's single first-by-ordinal primary (the roster never widens a default). Under ``combined``
+(every M4 profile) two or more named are still 422 ``validation_error`` (``one_render_character``),
+and a request that overrides ``interaction_mode``, ``sequence_order`` or ``simultaneous_tie_break``
+is 409 ``module_off``. The player's own character is never a primary of a multi-primary turn (422
+``player_cannot_render``). ``simultaneous`` (#175) renders every primary against the turn's starting
+state (``orchestrator.structured.simultaneous``); its tie-break (``tie_break_of``) is the request's
+``simultaneous_tie_break``, else the story's, else ``request_order``; a request naming
 ``state:<name>`` is 422 ``not_yet`` (M6), and a stored one falls back to request order with
 ``tie_break_state_not_yet``.
 
@@ -105,12 +106,19 @@ def per_character(settings: ProfileSettings) -> bool:
     return module_on(settings, MODULE)
 
 
-def _inactive(story: StorySettings, name: str) -> str | None:
+def inactive_value(story: StorySettings, name: str) -> Any:
+    """The value genesis kept for ``name`` under ``stories.settings.inactive`` (#122), waiting
+    for per-character renders; ``None`` when it kept none. A turn that runs them takes it where
+    the story has no value of its own (#181: a story created before M5 delivered the module)."""
     found = (story.model_extra or {}).get(INACTIVE)
     if not isinstance(found, Mapping):
         return None
     entry = found.get(name)
-    value = entry.get("value") if isinstance(entry, Mapping) else None
+    return entry.get("value") if isinstance(entry, Mapping) else None
+
+
+def _inactive(story: StorySettings, name: str) -> str | None:
+    value = inactive_value(story, name)
     return value if isinstance(value, str) else None
 
 
@@ -132,13 +140,20 @@ def order_of(story: StorySettings, request: Any = None) -> str:
     override = getattr(request, "sequence_order", None)
     if override is not None:
         return str(override)
-    return str(story.sequence_order or REQUEST)
+    if story.sequence_order is not None:
+        return str(story.sequence_order)
+    inactive = _inactive(story, "sequence_order")
+    return inactive if inactive in (REQUEST, DIRECTOR) else REQUEST
 
 
 def tie_break_of(story: StorySettings, request: Any = None) -> tuple[str, str | None]:
     """A ``simultaneous`` turn's tie-break (FR-MULTI-8): ``request_order`` or ``director``, and
     the warning when a stored ``state:<name>`` (M6) fell back to request order."""
-    found = getattr(request, "simultaneous_tie_break", None) or story.simultaneous_tie_break
+    found = (
+        getattr(request, "simultaneous_tie_break", None)
+        or story.simultaneous_tie_break
+        or _inactive(story, "simultaneous_tie_break")
+    )
     if found is None:
         return REQUEST_ORDER_TIE_BREAK, None
     if str(found).startswith(STATE_TIE_BREAK_PREFIX):

@@ -120,7 +120,6 @@ async def test_s_whisper__routing(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    perception_delivered: None,
 ) -> None:
     """See the module docstring. Complement throughout: the words never reach a partition
     routing did not grant them to."""
@@ -288,7 +287,6 @@ async def test_s_whisper__inference(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    testimony_delivered: None,
 ) -> None:
     """See the module docstring (the inference clause)."""
     async with respond_client(stub_settings, engine) as (client, epistrel):
@@ -425,7 +423,6 @@ async def test_s_whisper__output(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    perception_delivered: None,
 ) -> None:
     """See the module docstring (the player-output half and the working-memory clause).
     Complement throughout: the words reach exactly the viewpoints that perceived them."""

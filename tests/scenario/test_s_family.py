@@ -4,8 +4,7 @@ The Sunday Dinner of ``tests/seeded_partitions_support``: Mother, Father, Brothe
 (open NPC roles, filled from the catalog), the player's Third Sibling played as Sam ("wry and
 conflict-avoidant", 22), and an optional neighbour: the stranger to Sam (the doc's stranger
 "introduced later"; here a role no relationship links to Sam, so his partition is the
-stranger's). ``partitions`` and ``nested_beliefs`` are delivered for the test (#181 delivers them
-for real). Renders are the stub's; a render's context is the captured ``CharacterRender`` call.
+stranger's). Renders are the stub's; a render's context is the captured ``CharacterRender`` call.
 
 Not here: "only child" losing to the role's "has a sister" needs a closed set no detector reads
 from prose; the merge rule is U-27 M4's (``tests/test_u_27.py``)."""
@@ -24,7 +23,6 @@ from epistrel.core.propositions.model import Interval, LiteralKind, Proposition,
 from epistrel.core.readset import StructuredReadSet
 from epistrel.orchestrator.verify.verifier import BeliefSource
 from tests import genesis_support as g
-from tests import nested_support as ns
 from tests import partition_support as parts
 from tests import seeded_partitions_support as sp
 from tests.auth_support import auth_settings
@@ -78,7 +76,6 @@ async def test_s_family(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Genesis creates the family from the catalog and seeds each head as the author named.
 
@@ -101,7 +98,6 @@ async def test_s_family(
 
     Complements: the Father's and the Brother's contexts never say who has the letters; with
     the neighbour left out the story has five characters."""
-    ns.deliver_nested(monkeypatch)
     async with respond_client(stub_settings, engine) as (client, epistrel):
         stub = epistrel.models.stub
         profile = await sp.partitioned_profile(client, "Sunday partitions")

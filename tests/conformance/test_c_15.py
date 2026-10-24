@@ -726,6 +726,15 @@ CLASSES: dict[str, tuple[FieldClass, Use | None]] = {
     "drivers.milestones": (FieldClass.director, None),
     "drivers.endings": (FieldClass.director, None),
     "story_settings_defaults.interaction_mode": (FieldClass.configuration, Use.story_setting),
+    "story_settings_defaults.sequence_order": (FieldClass.configuration, Use.story_setting),
+    "story_settings_defaults.simultaneous_tie_break": (
+        FieldClass.configuration,
+        Use.story_setting,
+    ),
+    "story_settings_defaults.reactive_interjections": (
+        FieldClass.configuration,
+        Use.story_setting,
+    ),
     "story_settings_defaults.turn_concurrency": (FieldClass.configuration, Use.story_setting),
     "story_settings_defaults.player_authority": (FieldClass.configuration, Use.story_setting),
     "story_settings_defaults.default_output_viewpoint": (
@@ -1239,10 +1248,7 @@ def replay_surfaces(pg_url: str, tmp_path_factory: pytest.TempPathFactory) -> An
         )
 
 
-REPLAY_EXCLUDED: dict[str, str] = {
-    "write_belief": "#160's author belief needs the partitions module, which no profile delivers "
-    "before #181; C-03 reaches it as 409 module_off, and #181's step replays it",
-}
+REPLAY_EXCLUDED: dict[str, str] = {}
 """Mutating routes the replay does not reach, each with the reason
 (``replay_support.REPLACED_NOT_STORED`` names the one replayed without a stored result)."""
 

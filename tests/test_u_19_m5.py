@@ -95,7 +95,7 @@ async def _bind(engine: AsyncEngine, p: r.Porch, thunk: lifecycle.Thunk, who: st
 
 
 @pytest.mark.part("M5", "FR-COMMIT-14")
-async def test_u_19__knowledge(engine: AsyncEngine, testimony_delivered: None) -> None:
+async def test_u_19__knowledge(engine: AsyncEngine) -> None:
     """See the module docstring."""
     p, thunk = await _knock(engine)
     k = p.knock
@@ -142,9 +142,7 @@ async def test_u_19__knowledge(engine: AsyncEngine, testimony_delivered: None) -
 
 
 @pytest.mark.part("M5", "FR-COMMIT-14")
-async def test_u_19__knowledge_positions(
-    engine: AsyncEngine, testimony_delivered: None, drained_embedding_jobs: None
-) -> None:
+async def test_u_19__knowledge_positions(engine: AsyncEngine, drained_embedding_jobs: None) -> None:
     """A later sincere line declaring Jenni at the school at the knock's time contradicts the
     knowledge that she was at the porch then (``located_at`` is functional): a ``Conflict``
     citing the line. Complement: a binding with no such line commits with her knowledge (her

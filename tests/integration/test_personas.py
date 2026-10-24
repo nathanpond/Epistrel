@@ -56,7 +56,6 @@ from epistrel.core.propositions.model import Interval, LiteralKind, Proposition,
 from epistrel.core.tables.memories import memories
 from tests import genesis_support as g
 from tests import memory_support as memory
-from tests import nested_support as ns
 from tests import partition_support as parts
 from tests import scenario_support as scenarios
 from tests import seeded_partitions_support as sp
@@ -321,7 +320,6 @@ async def test_c_19__audience(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """C-19's M5 part: a persona is seeded by audience (#173). Sam (23, "short-tempered, flies
     off the handle") is a coworker of Alice and Bob and a stranger to Carol: the coworkers
@@ -331,7 +329,6 @@ async def test_c_19__audience(
     persona's description. When Sam stays calm in front of Bob, Bob's belief about the temper
     is revised through the ordinary belief operations (an ``observation`` transition closes it),
     and no canon contradiction is raised: the facts are as they were."""
-    ns.deliver_nested(monkeypatch)
     async with respond_client(stub_settings, engine) as (client, epistrel):
         profile = await sp.partitioned_profile(client, "Seeded office")
         scenario_id, _ = await g.published_scenario(client, sp.office())

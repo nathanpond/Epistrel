@@ -61,7 +61,6 @@ async def test_p_09__testimony_defaulted(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    testimony_delivered: None,
 ) -> None:
     """See the module docstring: caps 4 (defaulted, listed after ``skip_polish``), 5 (the
     adjudication fits, the polish does not) and none (adjudicated, nothing listed)."""
@@ -134,7 +133,6 @@ async def test_p_09__three_primaries(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    multi_delivered: None,
 ) -> None:
     """See the module docstring (the three-primary clause)."""
     async with respond_client(stub_settings, engine) as (client, epistrel):
@@ -227,7 +225,6 @@ async def test_p_09__m5(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    multi_delivered: None,
 ) -> None:
     """NFR-PERF-7 step 6 (#176): a request naming Bobby, Ada (her role fixed ``primary``) and
     Dale (a default role) with the single-primary minimum as its budget plans Bobby alone; Dale

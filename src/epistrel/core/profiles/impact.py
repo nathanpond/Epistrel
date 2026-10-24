@@ -75,7 +75,7 @@ from epistrel.core.profiles import effective, estimates, schema
 from epistrel.core.profiles.capabilities import module_names
 from epistrel.core.profiles.effective import Configuration
 from epistrel.core.profiles.fingerprint import QualityStatus, RuntimeFacts, Stamp
-from epistrel.core.profiles.guarantees import guarantees_lost, ordered
+from epistrel.core.profiles.guarantees import guarantees_gained, guarantees_lost, ordered
 from epistrel.core.profiles.schema import ProfileSettings, Purposes, SettingsPatch
 from epistrel.core.tables import operations, stories, transcript_messages
 from epistrel.observability.logging import get_logger
@@ -155,11 +155,11 @@ class ImpactReport(BaseModel):
     """What a change would do before it is applied (FR-PROF-7): the affected stories (ordered by
     story id, at most 1,000; ``affected_count`` counts them all), the scenario recommendations
     left unmet, the guarantees lost (the ids of the guarantee table's rows, FR-VERIFY-15, that
-    held before and do not after), the fingerprints, the capabilities enabled
-    and the quality status after (FR-PROF-16: at the top of a report on one story, or on none,
-    where an edit of a profile no story follows states the profile's own; inside each entry of a
-    report on a profile's following stories, with the top ones null), and the ``warnings`` that
-    hold the change for confirmation (empty: it applies at once)."""
+    held before and do not after) and gained (#181: the other way round), the fingerprints, the
+    capabilities enabled and the quality status after (FR-PROF-16: at the top of a report on one
+    story, or on none, where an edit of a profile no story follows states the profile's own; inside
+    each entry of a report on a profile's following stories, with the top ones null), and the
+    ``warnings`` that hold the change for confirmation (empty: it applies at once)."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -167,6 +167,12 @@ class ImpactReport(BaseModel):
     affected_count: int
     recommendations_unmet: list[UnmetRecommendation]
     guarantees_lost: list[str]
+    guarantees_gained: list[str] = Field(
+        default_factory=list,
+        description="The ids of the guarantee table's deterministic rows that do not hold before "
+        "and do after (#181), as `guarantees_lost` names those lost: what the change makes the "
+        "engine guarantee.",
+    )
     fingerprint_before: str | None = None
     fingerprint_after: str | None = None
     capabilities_after: list[str] | None = None
@@ -188,6 +194,7 @@ class Delta:
     guarantees_lost: tuple[str, ...]
     before: Stamp
     after: Stamp
+    guarantees_gained: tuple[str, ...] = ()
 
 
 def _moved(before: ProfileSettings, after: ProfileSettings, *, up: bool) -> set[str]:
@@ -211,6 +218,7 @@ def delta(before: Configuration, after: Configuration, facts: RuntimeFacts) -> D
         increases=tuple(schema.data_increases(before.settings, after.settings)),
         guarantees_lost=guarantees_lost(before.settings, after.settings),
         before=before.stamp(facts),
+        guarantees_gained=guarantees_gained(before.settings, after.settings),
         after=after.stamp(facts),
     )
 
@@ -292,6 +300,7 @@ def single_report(
         affected_count=1,
         recommendations_unmet=list(recommendations),
         guarantees_lost=list(change.guarantees_lost),
+        guarantees_gained=list(change.guarantees_gained),
         fingerprint_before=entry.fingerprint_before,
         fingerprint_after=entry.fingerprint_after,
         capabilities_after=entry.capabilities_after,
@@ -426,6 +435,7 @@ async def following_report(
         affected_count=count,
         recommendations_unmet=[],
         guarantees_lost=_lost(seen) if count else [],
+        guarantees_gained=_gained(seen) if count else [],
         fingerprint_before=change.before.fingerprint if unlisted else None,
         fingerprint_after=change.after.fingerprint if unlisted else None,
         capabilities_after=list(change.after.capabilities) if unlisted else None,
@@ -438,6 +448,11 @@ async def following_report(
 def _lost(changes: Sequence[Delta]) -> list[str]:
     """The guarantees any of ``changes`` loses, by ``GUARANTEES`` id, in its order."""
     return ordered({name for found in changes for name in found.guarantees_lost})
+
+
+def _gained(changes: Sequence[Delta]) -> list[str]:
+    """The guarantees any of ``changes`` gains, by ``GUARANTEES`` id, in its order."""
+    return ordered({name for found in changes for name in found.guarantees_gained})
 
 
 def _following_warnings(changes: Sequence[Delta], *, unavailable: bool) -> list[str]:

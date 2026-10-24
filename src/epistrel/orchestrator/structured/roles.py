@@ -62,6 +62,7 @@ from epistrel.core.epistemic.roles import (
     RoleOf,
 )
 from epistrel.core.events.types import RenderRejected
+from epistrel.core.genesis.settings_map import PARTICIPATION
 from epistrel.core.membership import Position
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.propositions.registry import load as load_registry
@@ -72,6 +73,7 @@ from epistrel.core.turns.beats import TurnBeat
 from epistrel.core.verify.other_agent import PLAYER_NARRATOR
 from epistrel.core.verify.permission import Asserter
 from epistrel.observability.metrics import ESCALATIONS, PRIMARIES_REDUCED
+from epistrel.orchestrator.structured.multi import inactive_value
 
 log = logging.getLogger(__name__)
 
@@ -82,27 +84,39 @@ OBSERVABLE = frozenset({"say", "do", "narration"})
 
 def interjections_of(story: StorySettings, request: Any = None) -> bool:
     """Whether reactive narration may give a brief interjection this turn: the request's
-    ``reactive_interjections``, else the story's (off by default)."""
+    ``reactive_interjections``, else the story's, else the scenario's that genesis kept inactive
+    (#181), else off."""
     override = getattr(request, "reactive_interjections", None)
     if override is not None:
         return bool(override)
-    return bool(getattr(story, "reactive_interjections", False))
+    if "reactive_interjections" in story.model_fields_set:
+        return bool(story.reactive_interjections)
+    return inactive_value(story, "reactive_interjections") is True
 
 
 def max_words(settings: ProfileSettings) -> int:
-    """``multi_character.interjection_max_words`` once #181 adds the leaf, else 6."""
-    found = getattr(settings.multi_character, "interjection_max_words", None)
-    return int(found) if isinstance(found, int) and found > 0 else rules.INTERJECTION_MAX_WORDS
+    """The profile dial ``multi_character.interjection_max_words`` (#181; default 6)."""
+    return settings.multi_character.interjection_max_words
 
 
-def stored_of(cast: Sequence[CastEntry]) -> dict[str, Participation]:
+def stored_of(
+    cast: Sequence[CastEntry], story: StorySettings | None = None
+) -> dict[str, Participation]:
     """Each non-player cast member's stored role (a minor with no explicit role is
-    ``reactive``, the column's default)."""
-    return {
-        c.id: Participation(c.participation_role, c.participation_fixed)
-        for c in cast
-        if not c.is_player
-    }
+    ``reactive``, the column's default). A character still at that default whose scenario role's
+    participation genesis kept inactive (``participation.<role id>``: a story created before
+    M5 delivered per-character renders) takes the role's (#181), never fixed."""
+    found: dict[str, Participation] = {}
+    for c in cast:
+        if c.is_player:
+            continue
+        role, fixed = c.participation_role, c.participation_fixed
+        if story is not None and c.role_id and role == rules.REACTIVE and not fixed:
+            kept = inactive_value(story, f"{PARTICIPATION}.{c.role_id}")
+            if kept in rules.ROLES:
+                role = str(kept)
+        found[c.id] = Participation(role, fixed)
+    return found
 
 
 def promoted(
@@ -209,7 +223,7 @@ def resolve(
     deferred_fixed: Sequence[str] = (),
 ) -> TurnRoles:
     """The turn's roles (see the module docstring)."""
-    stored = stored_of(cast)
+    stored = stored_of(cast, story)
     player_id = next((c.id for c in cast if c.is_player), None)
     wanted = set(present_names)
     present = [c.id for c in cast if not c.is_player and (not wanted or c.name in wanted)]

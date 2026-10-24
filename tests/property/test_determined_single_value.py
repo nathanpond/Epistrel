@@ -156,9 +156,7 @@ async def _current(engine: AsyncEngine, story_id: str, predicate: str) -> list[K
 
 @pytest.mark.integration
 @pytest.mark.part("M5", "FR-COMMIT-6; FR-EPI-8; FR-PROP-3")
-async def test_determined_single_value__postgres(
-    engine: AsyncEngine, testimony_delivered: None
-) -> None:
+async def test_determined_single_value__postgres(engine: AsyncEngine) -> None:
     """See the module docstring (the Postgres run)."""
     k = await c.knock_story(engine)
     await ts.enable_testimony(engine, k.story_id, "defaulted")

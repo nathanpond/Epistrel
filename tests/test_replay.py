@@ -51,9 +51,7 @@ async def _story(engine: AsyncEngine) -> c.Knock:
     return k
 
 
-async def test_a_held_belief_is_a_path_from_its_transition_on(
-    engine: AsyncEngine, testimony_delivered: None
-) -> None:
+async def test_a_held_belief_is_a_path_from_its_transition_on(engine: AsyncEngine) -> None:
     """Bobby comes to believe the mailman knocked in turn 1 (an author transition): from then
     on that transition is his path; before it there is none, and the answer names it as the
     nearest. Jenni, who acquired nothing, has no path. A belief in the negation licenses no
@@ -86,9 +84,7 @@ async def test_a_held_belief_is_a_path_from_its_transition_on(
     assert await ask(engine, k, k.bobby, p, after, settings=off) == NotApplicable("partitions_off")
 
 
-async def test_closed_beliefs_do_not_count_and_level_matters(
-    engine: AsyncEngine, testimony_delivered: None
-) -> None:
+async def test_closed_beliefs_do_not_count_and_level_matters(engine: AsyncEngine) -> None:
     """A suspected belief licenses a reference at the default level but not at ``believed``
     (#176's); a belief corrected by its negation stops licensing at the correction."""
     k = await _story(engine)
@@ -112,7 +108,7 @@ async def test_closed_beliefs_do_not_count_and_level_matters(
 
 
 async def test_canon_implication_and_exposure_paths(
-    engine: AsyncEngine, testimony_delivered: None, drained_embedding_jobs: None
+    engine: AsyncEngine, drained_embedding_jobs: None
 ) -> None:
     """Canon the character may read is known without a belief row; an implication of what it
     holds under the declared rules is a path; an unresolved exposure the default would accept is
@@ -158,9 +154,7 @@ async def test_canon_implication_and_exposure_paths(
     assert early.nearest.ref_id == exposure_id
 
 
-async def test_a_turns_checks_are_counted_and_memoized(
-    engine: AsyncEngine, testimony_delivered: None
-) -> None:
+async def test_a_turns_checks_are_counted_and_memoized(engine: AsyncEngine) -> None:
     """Within ``checking()`` every answer is counted (``no_path`` apart) and a repeat of the
     same (holder, proposition, position) is answered from the memo."""
     k = await _story(engine)

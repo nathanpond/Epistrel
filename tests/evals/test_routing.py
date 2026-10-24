@@ -49,7 +49,7 @@ async def test_a_routed_run_sends_only_generation_and_never_the_prelude(
     """The private-thought suite on a routed "real-model" run: the endpoint gets the measured
     turns' ``generation`` calls only, never a scripted prelude (its render and the rest of that
     turn reach the run's stub, which answers the prelude it was scripted with); every other
-    purpose goes to the stub too; the suite's fingerprint names the stub for the rest; the
+    purpose goes to the stub too; the run's fingerprint names the stub for the rest; the
     engine's adapter is restored afterwards.
 
     Complement asserted: without a scripted block the same render would have reached the
@@ -81,10 +81,12 @@ async def test_a_routed_run_sends_only_generation_and_never_the_prelude(
         # (``stub_engine`` forgets the endpoint's calls on leaving.)
         turns = [c for c in endpoint.calls if len(c.messages) > 1]
     assert result.errors == []
-    assert result.fingerprint == run_fingerprint(
-        "local-model", suite.dials, real_purposes=["generation"]
+    # #181: the suite runs the seeded profile itself (no dials), so it reports the run's own
+    # fingerprint, which names the stub for every routed-away purpose.
+    assert (suite.dials, result.fingerprint) == (None, None)
+    assert run_fingerprint("local-model", real_purposes=["generation"]) != run_fingerprint(
+        "local-model"
     )
-    assert result.fingerprint != run_fingerprint("local-model", suite.dials)
     (routed_stub,) = made
     assert turns
     assert {c.purpose for c in turns} == {"generation"}

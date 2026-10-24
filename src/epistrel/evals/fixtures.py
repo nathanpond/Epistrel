@@ -1,5 +1,5 @@
 """The story fixtures of NFR-QUAL-1's zero-leak suites (#179): four casts with private facts,
-the scene a case plays in, the M5 modules the scene runs under, and the oracle that reads the
+the scene a case plays in, and the oracle that reads the
 player-facing output.
 
 **The fixtures** (``FIXTURES``) are the docs/04 scenario worlds the asymmetry and think-leak
@@ -16,15 +16,10 @@ the narrated inner-state forms (``feelings``) a disclosure of that thought would
 
 **The scene** (``build_scene``) is made through the engine's own paths, as an author would
 (the ``/admin`` fact and belief calls, ``Engine.commit_fact`` and ``Engine.write_belief``): a
-scratch story of the fixture's cast on the seeded ``Structured (M4)`` profile with the M5
-dials (``M5_DIALS``: per-character partitions, testimony ``defaulted``, perception ``full``),
+scratch story of the fixture's cast on the seeded ``Structured`` profile's latest version (every
+M5 module on: per-character partitions, testimony by the model, perception ``full``; #181),
 everyone placed in the fixture's room, then the case's private facts. ``player_view`` is
 ``character`` (the default; FR-RESP-13), so the output is filtered for the player's character.
-
-**The M5 modules** are #181's to deliver (``core.profiles.schema.DELIVERED``). Until then a
-zero-leak suite delivers them for its own run (``delivered_m5``, from ``Suite.setup`` to
-``Suite.teardown``), exactly as the M5 tests do; #181 removes the patch when the seeded
-``Structured`` profile turns them on.
 
 **The oracle** never asks the pipeline's own detectors whether they let something through: it
 applies the case's own forbidden forms to the player-facing output (``player_text``: the
@@ -36,15 +31,12 @@ detector over the thought's words (``echoes``).
 from __future__ import annotations
 
 import types
-from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from epistrel.core.epistemic.author import BeliefRequest
 from epistrel.core.mutation import FactRequest
-from epistrel.core.profiles import schema
-from epistrel.core.profiles.story import ProfileOverridesPatch
 from epistrel.core.propositions.model import Interval, Proposition
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME
 from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX
@@ -62,70 +54,6 @@ from epistrel.evals.scenes import EntitySpec
 if TYPE_CHECKING:
     from epistrel.evals.runner import CaseContext
     from epistrel.orchestrator.lite.schemas import RespondResult
-
-M5_DIALS: Mapping[str, Any] = types.MappingProxyType(
-    {
-        "character_knowledge": {
-            "partitions": True,
-            "testimony": "defaulted",
-            "lazy_resolution": False,
-        },
-        "perception": {"level": "full"},
-    }
-)
-"""What the zero-leak scenes add to ``Structured (M4)``: per-character partitions (testimony
-by its deterministic default, no lazy resolution) and ``full`` perception routing."""
-
-M5_MODULES: Mapping[str, frozenset[str]] = types.MappingProxyType(
-    {
-        "partitions": frozenset({schema.ON}),
-        "testimony": frozenset({"defaulted", "model"}),
-        "lazy_resolution": frozenset({schema.ON}),
-        "perception": frozenset({"co_location", "full"}),
-    }
-)
-"""The M5 modules ``M5_DIALS`` needs, delivered for a zero-leak run until #181 delivers them."""
-
-PROFILE_LABEL = "Structured (M4) v1 + partitions, testimony defaulted, perception full"
-"""How a zero-leak suite's result names the configuration it ran under."""
-
-
-@contextmanager
-def delivered_m5() -> Iterator[None]:
-    """``M5_MODULES`` delivered for a block (see the module docstring)."""
-    before = schema.DELIVERED
-    schema.DELIVERED = types.MappingProxyType({**before, **M5_MODULES})
-    try:
-        yield
-    finally:
-        schema.DELIVERED = before
-
-
-class Delivery:
-    """``delivered_m5`` held open across a suite's run: ``open`` in ``Suite.setup``, ``close``
-    in ``Suite.teardown`` (nested runs share one patch)."""
-
-    def __init__(self) -> None:
-        self._depth = 0
-        self._before: Mapping[str, frozenset[str]] | None = None
-
-    def open(self) -> None:
-        if self._depth == 0:
-            self._before = schema.DELIVERED
-            schema.DELIVERED = types.MappingProxyType({**schema.DELIVERED, **M5_MODULES})
-        self._depth += 1
-
-    def close(self) -> None:
-        if self._depth == 0:
-            return
-        self._depth -= 1
-        if self._depth == 0 and self._before is not None:
-            schema.DELIVERED = self._before
-            self._before = None
-
-
-DELIVERY = Delivery()
-
 
 # -- the fixtures -----------------------------------------------------------------------------
 
@@ -970,11 +898,6 @@ async def build_scene(
     story = created.story_id
     engine, principal = ctx.engine, ctx.principal
     await scenes.structured(engine, principal, story)
-    await engine.set_profile_overrides(
-        principal,
-        story,
-        ProfileOverridesPatch.model_validate({"settings": dict(M5_DIALS), "ignore_warnings": True}),
-    )
     extra = [EntitySpec(fixture.room, "place"), *(EntitySpec(f.obj, f.obj_kind) for f in facts)]
     entity = await scenes.add_entities(engine, created, extra)
     ids = {c.name: c.id for c in created.characters}
@@ -1025,18 +948,12 @@ async def build_scene(
 
 
 __all__ = [
-    "DELIVERY",
     "FIXTURES",
-    "M5_DIALS",
-    "M5_MODULES",
-    "PROFILE_LABEL",
-    "Delivery",
     "Fixture",
     "Person",
     "PrivateFact",
     "Scene",
     "build_scene",
-    "delivered_m5",
     "disclosures",
     "echoes",
     "player_text",

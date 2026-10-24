@@ -10,7 +10,9 @@ whether those are delivered, and the milestones its requirements are assigned to
 Then each entry's requirements one by one: a family (``FR-TURN``) expands to every id docs/03
 defines in it, and the floor to every defined id no other entry lists. A group naming an id
 docs/03 does not define, or a family with none, cannot be rendered (``MapError``), so the
-generator and the check both fail. CI runs ``--check`` in the ``lint`` job, byte for byte.
+generator and the check both fail. An entry's story settings are listed in its note, and the
+settings a Lite story applies only as a prompt instruction (``settings_map.PROMPT_ONLY``, #180)
+in a section of their own (#181). CI runs ``--check`` in the ``lint`` job, byte for byte.
 
 It reads docs/03 through the milestone gates' parser (``tools.gates.spec``), so it runs from a
 checkout of the repository, as CI does.
@@ -24,6 +26,7 @@ from pathlib import Path
 
 from tools.gates.spec import expand_ids, id_key, load_spec, milestone_label
 
+from epistrel.core.genesis.settings_map import PROMPT_ONLY
 from epistrel.core.profiles.capabilities import CAPABILITY_MAP, CapabilityEntry
 from epistrel.tools.generated import REPO_ROOT
 from epistrel.tools.generated import main as generated_main
@@ -112,8 +115,21 @@ def render(spec_path: Path = SPEC_PATH) -> str:
         )
     lines += ["", "## Notes", ""]
     for entry in CAPABILITY_MAP:
-        if entry.notes:
-            lines.append(f"- `{entry.slug}`: {entry.notes}")
+        note = entry.notes
+        if entry.story_settings:
+            named = ", ".join(f"`{name}`" for name in entry.story_settings)
+            note = f"{note} Story settings: {named}.".strip()
+        if note:
+            lines.append(f"- `{entry.slug}`: {note}")
+    prompt_only = ", ".join(f"`{name}`" for name in sorted(PROMPT_ONLY))
+    lines += [
+        "",
+        "## Prompt-only under `lite`",
+        "",
+        f"Story settings a Lite story applies only as a prompt instruction: {prompt_only}. The",
+        "model is told; nothing checks that the reply honours it (see",
+        "[guarantees.md](guarantees.md)).",
+    ]
     lines += ["", "## Requirements by area", ""]
     for entry in CAPABILITY_MAP:
         lines += [f"### {entry.area} (`{entry.slug}`)", "", ", ".join(ids[entry.slug]), ""]

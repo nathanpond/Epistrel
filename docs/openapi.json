@@ -4763,6 +4763,71 @@
                 "title": "Budgets",
                 "type": "object"
               },
+              "character_knowledge": {
+                "additionalProperties": false,
+                "description": "Shared context, or per-character partitions with their dials (FR-PROF-2).",
+                "properties": {
+                  "lazy_resolution": {
+                    "default": false,
+                    "title": "Lazy Resolution",
+                    "type": "boolean"
+                  },
+                  "max_adjudications_per_turn": {
+                    "default": 2,
+                    "description": "The most ``belief_adjudication`` calls one turn makes (#162): the testimony and\nsimultaneous-conflict adjudications beyond it follow the deterministic default.",
+                    "maximum": 10.0,
+                    "minimum": 0.0,
+                    "title": "Max Adjudications Per Turn",
+                    "type": "integer"
+                  },
+                  "max_lazy_resolutions_per_turn": {
+                    "default": 20,
+                    "description": "The most pending exposures one turn resolves when a need reaches them (#164): the rest\nwait for a later need.",
+                    "maximum": 200.0,
+                    "minimum": 0.0,
+                    "title": "Max Lazy Resolutions Per Turn",
+                    "type": "integer"
+                  },
+                  "nested_beliefs": {
+                    "additionalProperties": false,
+                    "description": "Nested beliefs (FR-EPI-2, FR-BELIEF-15): off, or a depth of at least 2.",
+                    "properties": {
+                      "depth": {
+                        "default": 2,
+                        "maximum": 5.0,
+                        "minimum": 2.0,
+                        "title": "Depth",
+                        "type": "integer"
+                      },
+                      "enabled": {
+                        "default": false,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      }
+                    },
+                    "title": "NestedBeliefs",
+                    "type": "object"
+                  },
+                  "partitions": {
+                    "default": false,
+                    "title": "Partitions",
+                    "type": "boolean"
+                  },
+                  "testimony": {
+                    "default": "off",
+                    "description": "Testimony adjudication (FR-BELIEF-3): ``model`` or ``defaulted``.",
+                    "enum": [
+                      "off",
+                      "model",
+                      "defaulted"
+                    ],
+                    "title": "Testimony",
+                    "type": "string"
+                  }
+                },
+                "title": "CharacterKnowledge",
+                "type": "object"
+              },
               "commitment": {
                 "additionalProperties": false,
                 "description": "Commitment (FR-COMMIT) and its salience detection.",
@@ -5123,6 +5188,49 @@
                   }
                 },
                 "title": "Models",
+                "type": "object"
+              },
+              "multi_character": {
+                "additionalProperties": false,
+                "description": "One combined render, or per-character renders (FR-MULTI).",
+                "properties": {
+                  "interjection_max_words": {
+                    "default": 6,
+                    "description": "The most words a reactive character's brief interjection may have, where the story's\n``reactive_interjections`` allows one (FR-MULTI-9; #176).",
+                    "maximum": 20.0,
+                    "minimum": 1.0,
+                    "title": "Interjection Max Words",
+                    "type": "integer"
+                  },
+                  "renders": {
+                    "default": "combined",
+                    "enum": [
+                      "combined",
+                      "per_character"
+                    ],
+                    "title": "Renders",
+                    "type": "string"
+                  }
+                },
+                "title": "MultiCharacter",
+                "type": "object"
+              },
+              "perception": {
+                "additionalProperties": false,
+                "description": "Perception routing (FR-TURN-2,9,10,13).",
+                "properties": {
+                  "level": {
+                    "default": "none",
+                    "enum": [
+                      "none",
+                      "co_location",
+                      "full"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  }
+                },
+                "title": "Perception",
                 "type": "object"
               },
               "pins": {
@@ -5340,6 +5448,71 @@
                 "title": "Budgets",
                 "type": "object"
               },
+              "character_knowledge": {
+                "additionalProperties": false,
+                "description": "Shared context, or per-character partitions with their dials (FR-PROF-2).",
+                "properties": {
+                  "lazy_resolution": {
+                    "default": false,
+                    "title": "Lazy Resolution",
+                    "type": "boolean"
+                  },
+                  "max_adjudications_per_turn": {
+                    "default": 2,
+                    "description": "The most ``belief_adjudication`` calls one turn makes (#162): the testimony and\nsimultaneous-conflict adjudications beyond it follow the deterministic default.",
+                    "maximum": 10.0,
+                    "minimum": 0.0,
+                    "title": "Max Adjudications Per Turn",
+                    "type": "integer"
+                  },
+                  "max_lazy_resolutions_per_turn": {
+                    "default": 20,
+                    "description": "The most pending exposures one turn resolves when a need reaches them (#164): the rest\nwait for a later need.",
+                    "maximum": 200.0,
+                    "minimum": 0.0,
+                    "title": "Max Lazy Resolutions Per Turn",
+                    "type": "integer"
+                  },
+                  "nested_beliefs": {
+                    "additionalProperties": false,
+                    "description": "Nested beliefs (FR-EPI-2, FR-BELIEF-15): off, or a depth of at least 2.",
+                    "properties": {
+                      "depth": {
+                        "default": 2,
+                        "maximum": 5.0,
+                        "minimum": 2.0,
+                        "title": "Depth",
+                        "type": "integer"
+                      },
+                      "enabled": {
+                        "default": false,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      }
+                    },
+                    "title": "NestedBeliefs",
+                    "type": "object"
+                  },
+                  "partitions": {
+                    "default": false,
+                    "title": "Partitions",
+                    "type": "boolean"
+                  },
+                  "testimony": {
+                    "default": "off",
+                    "description": "Testimony adjudication (FR-BELIEF-3): ``model`` or ``defaulted``.",
+                    "enum": [
+                      "off",
+                      "model",
+                      "defaulted"
+                    ],
+                    "title": "Testimony",
+                    "type": "string"
+                  }
+                },
+                "title": "CharacterKnowledge",
+                "type": "object"
+              },
               "commitment": {
                 "additionalProperties": false,
                 "description": "Commitment (FR-COMMIT) and its salience detection.",
@@ -5700,6 +5873,49 @@
                   }
                 },
                 "title": "Models",
+                "type": "object"
+              },
+              "multi_character": {
+                "additionalProperties": false,
+                "description": "One combined render, or per-character renders (FR-MULTI).",
+                "properties": {
+                  "interjection_max_words": {
+                    "default": 6,
+                    "description": "The most words a reactive character's brief interjection may have, where the story's\n``reactive_interjections`` allows one (FR-MULTI-9; #176).",
+                    "maximum": 20.0,
+                    "minimum": 1.0,
+                    "title": "Interjection Max Words",
+                    "type": "integer"
+                  },
+                  "renders": {
+                    "default": "combined",
+                    "enum": [
+                      "combined",
+                      "per_character"
+                    ],
+                    "title": "Renders",
+                    "type": "string"
+                  }
+                },
+                "title": "MultiCharacter",
+                "type": "object"
+              },
+              "perception": {
+                "additionalProperties": false,
+                "description": "Perception routing (FR-TURN-2,9,10,13).",
+                "properties": {
+                  "level": {
+                    "default": "none",
+                    "enum": [
+                      "none",
+                      "co_location",
+                      "full"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  }
+                },
+                "title": "Perception",
                 "type": "object"
               },
               "pins": {
@@ -6165,6 +6381,71 @@
                 "title": "Budgets",
                 "type": "object"
               },
+              "character_knowledge": {
+                "additionalProperties": false,
+                "description": "Shared context, or per-character partitions with their dials (FR-PROF-2).",
+                "properties": {
+                  "lazy_resolution": {
+                    "default": false,
+                    "title": "Lazy Resolution",
+                    "type": "boolean"
+                  },
+                  "max_adjudications_per_turn": {
+                    "default": 2,
+                    "description": "The most ``belief_adjudication`` calls one turn makes (#162): the testimony and\nsimultaneous-conflict adjudications beyond it follow the deterministic default.",
+                    "maximum": 10.0,
+                    "minimum": 0.0,
+                    "title": "Max Adjudications Per Turn",
+                    "type": "integer"
+                  },
+                  "max_lazy_resolutions_per_turn": {
+                    "default": 20,
+                    "description": "The most pending exposures one turn resolves when a need reaches them (#164): the rest\nwait for a later need.",
+                    "maximum": 200.0,
+                    "minimum": 0.0,
+                    "title": "Max Lazy Resolutions Per Turn",
+                    "type": "integer"
+                  },
+                  "nested_beliefs": {
+                    "additionalProperties": false,
+                    "description": "Nested beliefs (FR-EPI-2, FR-BELIEF-15): off, or a depth of at least 2.",
+                    "properties": {
+                      "depth": {
+                        "default": 2,
+                        "maximum": 5.0,
+                        "minimum": 2.0,
+                        "title": "Depth",
+                        "type": "integer"
+                      },
+                      "enabled": {
+                        "default": false,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      }
+                    },
+                    "title": "NestedBeliefs",
+                    "type": "object"
+                  },
+                  "partitions": {
+                    "default": false,
+                    "title": "Partitions",
+                    "type": "boolean"
+                  },
+                  "testimony": {
+                    "default": "off",
+                    "description": "Testimony adjudication (FR-BELIEF-3): ``model`` or ``defaulted``.",
+                    "enum": [
+                      "off",
+                      "model",
+                      "defaulted"
+                    ],
+                    "title": "Testimony",
+                    "type": "string"
+                  }
+                },
+                "title": "CharacterKnowledge",
+                "type": "object"
+              },
               "commitment": {
                 "additionalProperties": false,
                 "description": "Commitment (FR-COMMIT) and its salience detection.",
@@ -6525,6 +6806,49 @@
                   }
                 },
                 "title": "Models",
+                "type": "object"
+              },
+              "multi_character": {
+                "additionalProperties": false,
+                "description": "One combined render, or per-character renders (FR-MULTI).",
+                "properties": {
+                  "interjection_max_words": {
+                    "default": 6,
+                    "description": "The most words a reactive character's brief interjection may have, where the story's\n``reactive_interjections`` allows one (FR-MULTI-9; #176).",
+                    "maximum": 20.0,
+                    "minimum": 1.0,
+                    "title": "Interjection Max Words",
+                    "type": "integer"
+                  },
+                  "renders": {
+                    "default": "combined",
+                    "enum": [
+                      "combined",
+                      "per_character"
+                    ],
+                    "title": "Renders",
+                    "type": "string"
+                  }
+                },
+                "title": "MultiCharacter",
+                "type": "object"
+              },
+              "perception": {
+                "additionalProperties": false,
+                "description": "Perception routing (FR-TURN-2,9,10,13).",
+                "properties": {
+                  "level": {
+                    "default": "none",
+                    "enum": [
+                      "none",
+                      "co_location",
+                      "full"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  }
+                },
+                "title": "Perception",
                 "type": "object"
               },
               "pins": {
@@ -9938,6 +10262,16 @@
           "step": {
             "title": "Step",
             "type": "string"
+          },
+          "story_setting": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RequiredSetting"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -10907,6 +11241,134 @@
                       }
                     ]
                   },
+                  "character_knowledge": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "description": "Shared context, or per-character partitions with their dials (FR-PROF-2).",
+                        "properties": {
+                          "lazy_resolution": {
+                            "anyOf": [
+                              {
+                                "default": false,
+                                "title": "Lazy Resolution",
+                                "type": "boolean"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "max_adjudications_per_turn": {
+                            "anyOf": [
+                              {
+                                "default": 2,
+                                "description": "The most ``belief_adjudication`` calls one turn makes (#162): the testimony and\nsimultaneous-conflict adjudications beyond it follow the deterministic default.",
+                                "maximum": 10.0,
+                                "minimum": 0.0,
+                                "title": "Max Adjudications Per Turn",
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "max_lazy_resolutions_per_turn": {
+                            "anyOf": [
+                              {
+                                "default": 20,
+                                "description": "The most pending exposures one turn resolves when a need reaches them (#164): the rest\nwait for a later need.",
+                                "maximum": 200.0,
+                                "minimum": 0.0,
+                                "title": "Max Lazy Resolutions Per Turn",
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "nested_beliefs": {
+                            "anyOf": [
+                              {
+                                "additionalProperties": false,
+                                "description": "Nested beliefs (FR-EPI-2, FR-BELIEF-15): off, or a depth of at least 2.",
+                                "properties": {
+                                  "depth": {
+                                    "anyOf": [
+                                      {
+                                        "default": 2,
+                                        "maximum": 5.0,
+                                        "minimum": 2.0,
+                                        "title": "Depth",
+                                        "type": "integer"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "enabled": {
+                                    "anyOf": [
+                                      {
+                                        "default": false,
+                                        "title": "Enabled",
+                                        "type": "boolean"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "title": "NestedBeliefs",
+                                "type": "object"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "partitions": {
+                            "anyOf": [
+                              {
+                                "default": false,
+                                "title": "Partitions",
+                                "type": "boolean"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "testimony": {
+                            "anyOf": [
+                              {
+                                "default": "off",
+                                "description": "Testimony adjudication (FR-BELIEF-3): ``model`` or ``defaulted``.",
+                                "enum": [
+                                  "off",
+                                  "model",
+                                  "defaulted"
+                                ],
+                                "title": "Testimony",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "title": "CharacterKnowledge",
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "commitment": {
                     "anyOf": [
                       {
@@ -11535,6 +11997,84 @@
                       }
                     ]
                   },
+                  "multi_character": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "description": "One combined render, or per-character renders (FR-MULTI).",
+                        "properties": {
+                          "interjection_max_words": {
+                            "anyOf": [
+                              {
+                                "default": 6,
+                                "description": "The most words a reactive character's brief interjection may have, where the story's\n``reactive_interjections`` allows one (FR-MULTI-9; #176).",
+                                "maximum": 20.0,
+                                "minimum": 1.0,
+                                "title": "Interjection Max Words",
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "renders": {
+                            "anyOf": [
+                              {
+                                "default": "combined",
+                                "enum": [
+                                  "combined",
+                                  "per_character"
+                                ],
+                                "title": "Renders",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "title": "MultiCharacter",
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "perception": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "description": "Perception routing (FR-TURN-2,9,10,13).",
+                        "properties": {
+                          "level": {
+                            "anyOf": [
+                              {
+                                "default": "none",
+                                "enum": [
+                                  "none",
+                                  "co_location",
+                                  "full"
+                                ],
+                                "title": "Level",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "title": "Perception",
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "pins": {
                     "anyOf": [
                       {
@@ -11893,7 +12433,7 @@
         "type": "object"
       },
       "ImpactReport": {
-        "description": "What a change would do before it is applied (FR-PROF-7): the affected stories (ordered by\nstory id, at most 1,000; ``affected_count`` counts them all), the scenario recommendations\nleft unmet, the guarantees lost (the ids of the guarantee table's rows, FR-VERIFY-15, that\nheld before and do not after), the fingerprints, the capabilities enabled\nand the quality status after (FR-PROF-16: at the top of a report on one story, or on none,\nwhere an edit of a profile no story follows states the profile's own; inside each entry of a\nreport on a profile's following stories, with the top ones null), and the ``warnings`` that\nhold the change for confirmation (empty: it applies at once).",
+        "description": "What a change would do before it is applied (FR-PROF-7): the affected stories (ordered by\nstory id, at most 1,000; ``affected_count`` counts them all), the scenario recommendations\nleft unmet, the guarantees lost (the ids of the guarantee table's rows, FR-VERIFY-15, that\nheld before and do not after) and gained (#181: the other way round), the fingerprints, the\ncapabilities enabled and the quality status after (FR-PROF-16: at the top of a report on one\nstory, or on none, where an edit of a profile no story follows states the profile's own; inside\neach entry of a report on a profile's following stories, with the top ones null), and the\n``warnings`` that hold the change for confirmation (empty: it applies at once).",
         "properties": {
           "affected_count": {
             "title": "Affected Count",
@@ -11941,6 +12481,14 @@
               }
             ],
             "title": "Fingerprint Before"
+          },
+          "guarantees_gained": {
+            "description": "The ids of the guarantee table's deterministic rows that do not hold before and do after (#181), as `guarantees_lost` names those lost: what the change makes the engine guarantee.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Guarantees Gained",
+            "type": "array"
           },
           "guarantees_lost": {
             "items": {
@@ -15544,6 +16092,71 @@
                 "title": "Budgets",
                 "type": "object"
               },
+              "character_knowledge": {
+                "additionalProperties": false,
+                "description": "Shared context, or per-character partitions with their dials (FR-PROF-2).",
+                "properties": {
+                  "lazy_resolution": {
+                    "default": false,
+                    "title": "Lazy Resolution",
+                    "type": "boolean"
+                  },
+                  "max_adjudications_per_turn": {
+                    "default": 2,
+                    "description": "The most ``belief_adjudication`` calls one turn makes (#162): the testimony and\nsimultaneous-conflict adjudications beyond it follow the deterministic default.",
+                    "maximum": 10.0,
+                    "minimum": 0.0,
+                    "title": "Max Adjudications Per Turn",
+                    "type": "integer"
+                  },
+                  "max_lazy_resolutions_per_turn": {
+                    "default": 20,
+                    "description": "The most pending exposures one turn resolves when a need reaches them (#164): the rest\nwait for a later need.",
+                    "maximum": 200.0,
+                    "minimum": 0.0,
+                    "title": "Max Lazy Resolutions Per Turn",
+                    "type": "integer"
+                  },
+                  "nested_beliefs": {
+                    "additionalProperties": false,
+                    "description": "Nested beliefs (FR-EPI-2, FR-BELIEF-15): off, or a depth of at least 2.",
+                    "properties": {
+                      "depth": {
+                        "default": 2,
+                        "maximum": 5.0,
+                        "minimum": 2.0,
+                        "title": "Depth",
+                        "type": "integer"
+                      },
+                      "enabled": {
+                        "default": false,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      }
+                    },
+                    "title": "NestedBeliefs",
+                    "type": "object"
+                  },
+                  "partitions": {
+                    "default": false,
+                    "title": "Partitions",
+                    "type": "boolean"
+                  },
+                  "testimony": {
+                    "default": "off",
+                    "description": "Testimony adjudication (FR-BELIEF-3): ``model`` or ``defaulted``.",
+                    "enum": [
+                      "off",
+                      "model",
+                      "defaulted"
+                    ],
+                    "title": "Testimony",
+                    "type": "string"
+                  }
+                },
+                "title": "CharacterKnowledge",
+                "type": "object"
+              },
               "commitment": {
                 "additionalProperties": false,
                 "description": "Commitment (FR-COMMIT) and its salience detection.",
@@ -15904,6 +16517,49 @@
                   }
                 },
                 "title": "Models",
+                "type": "object"
+              },
+              "multi_character": {
+                "additionalProperties": false,
+                "description": "One combined render, or per-character renders (FR-MULTI).",
+                "properties": {
+                  "interjection_max_words": {
+                    "default": 6,
+                    "description": "The most words a reactive character's brief interjection may have, where the story's\n``reactive_interjections`` allows one (FR-MULTI-9; #176).",
+                    "maximum": 20.0,
+                    "minimum": 1.0,
+                    "title": "Interjection Max Words",
+                    "type": "integer"
+                  },
+                  "renders": {
+                    "default": "combined",
+                    "enum": [
+                      "combined",
+                      "per_character"
+                    ],
+                    "title": "Renders",
+                    "type": "string"
+                  }
+                },
+                "title": "MultiCharacter",
+                "type": "object"
+              },
+              "perception": {
+                "additionalProperties": false,
+                "description": "Perception routing (FR-TURN-2,9,10,13).",
+                "properties": {
+                  "level": {
+                    "default": "none",
+                    "enum": [
+                      "none",
+                      "co_location",
+                      "full"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  }
+                },
+                "title": "Perception",
                 "type": "object"
               },
               "pins": {
@@ -18019,7 +18675,7 @@
       },
       "ProfileAssignment": {
         "additionalProperties": false,
-        "description": "``PUT /stories/{id}/engine-profile``: the profile the story runs under from its next turn\n(its latest version). ``ignore_warnings`` (``ignoreWarnings``) confirms a change the impact\nreport warns of (FR-PROF-7).",
+        "description": "``PUT /stories/{id}/engine-profile``: the profile the story runs under from its next turn\n(its latest version, or ``version``). ``ignore_warnings`` (``ignoreWarnings``) confirms a\nchange the impact report warns of (FR-PROF-7).",
         "examples": [
           {
             "profile_id": "00000000000000000000PRF001"
@@ -18042,6 +18698,24 @@
             "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
             "title": "Profile Id",
             "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "maximum": 2147483647.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "const": "latest",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The profile version the story runs on (#181): a number pins the story to that version (it no longer follows the profile's edits); `latest` (or leaving it out) follows the latest version and clears a pin, which on the story's own profile moves a pinned story to the latest version through the impact report. A version the profile does not have is 422 `validation_error`.",
+            "title": "Version"
           }
         },
         "required": [
@@ -18137,6 +18811,71 @@
                   }
                 },
                 "title": "Budgets",
+                "type": "object"
+              },
+              "character_knowledge": {
+                "additionalProperties": false,
+                "description": "Shared context, or per-character partitions with their dials (FR-PROF-2).",
+                "properties": {
+                  "lazy_resolution": {
+                    "default": false,
+                    "title": "Lazy Resolution",
+                    "type": "boolean"
+                  },
+                  "max_adjudications_per_turn": {
+                    "default": 2,
+                    "description": "The most ``belief_adjudication`` calls one turn makes (#162): the testimony and\nsimultaneous-conflict adjudications beyond it follow the deterministic default.",
+                    "maximum": 10.0,
+                    "minimum": 0.0,
+                    "title": "Max Adjudications Per Turn",
+                    "type": "integer"
+                  },
+                  "max_lazy_resolutions_per_turn": {
+                    "default": 20,
+                    "description": "The most pending exposures one turn resolves when a need reaches them (#164): the rest\nwait for a later need.",
+                    "maximum": 200.0,
+                    "minimum": 0.0,
+                    "title": "Max Lazy Resolutions Per Turn",
+                    "type": "integer"
+                  },
+                  "nested_beliefs": {
+                    "additionalProperties": false,
+                    "description": "Nested beliefs (FR-EPI-2, FR-BELIEF-15): off, or a depth of at least 2.",
+                    "properties": {
+                      "depth": {
+                        "default": 2,
+                        "maximum": 5.0,
+                        "minimum": 2.0,
+                        "title": "Depth",
+                        "type": "integer"
+                      },
+                      "enabled": {
+                        "default": false,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      }
+                    },
+                    "title": "NestedBeliefs",
+                    "type": "object"
+                  },
+                  "partitions": {
+                    "default": false,
+                    "title": "Partitions",
+                    "type": "boolean"
+                  },
+                  "testimony": {
+                    "default": "off",
+                    "description": "Testimony adjudication (FR-BELIEF-3): ``model`` or ``defaulted``.",
+                    "enum": [
+                      "off",
+                      "model",
+                      "defaulted"
+                    ],
+                    "title": "Testimony",
+                    "type": "string"
+                  }
+                },
+                "title": "CharacterKnowledge",
                 "type": "object"
               },
               "commitment": {
@@ -18499,6 +19238,49 @@
                   }
                 },
                 "title": "Models",
+                "type": "object"
+              },
+              "multi_character": {
+                "additionalProperties": false,
+                "description": "One combined render, or per-character renders (FR-MULTI).",
+                "properties": {
+                  "interjection_max_words": {
+                    "default": 6,
+                    "description": "The most words a reactive character's brief interjection may have, where the story's\n``reactive_interjections`` allows one (FR-MULTI-9; #176).",
+                    "maximum": 20.0,
+                    "minimum": 1.0,
+                    "title": "Interjection Max Words",
+                    "type": "integer"
+                  },
+                  "renders": {
+                    "default": "combined",
+                    "enum": [
+                      "combined",
+                      "per_character"
+                    ],
+                    "title": "Renders",
+                    "type": "string"
+                  }
+                },
+                "title": "MultiCharacter",
+                "type": "object"
+              },
+              "perception": {
+                "additionalProperties": false,
+                "description": "Perception routing (FR-TURN-2,9,10,13).",
+                "properties": {
+                  "level": {
+                    "default": "none",
+                    "enum": [
+                      "none",
+                      "co_location",
+                      "full"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  }
+                },
+                "title": "Perception",
                 "type": "object"
               },
               "pins": {
@@ -18818,6 +19600,71 @@
                 "title": "Budgets",
                 "type": "object"
               },
+              "character_knowledge": {
+                "additionalProperties": false,
+                "description": "Shared context, or per-character partitions with their dials (FR-PROF-2).",
+                "properties": {
+                  "lazy_resolution": {
+                    "default": false,
+                    "title": "Lazy Resolution",
+                    "type": "boolean"
+                  },
+                  "max_adjudications_per_turn": {
+                    "default": 2,
+                    "description": "The most ``belief_adjudication`` calls one turn makes (#162): the testimony and\nsimultaneous-conflict adjudications beyond it follow the deterministic default.",
+                    "maximum": 10.0,
+                    "minimum": 0.0,
+                    "title": "Max Adjudications Per Turn",
+                    "type": "integer"
+                  },
+                  "max_lazy_resolutions_per_turn": {
+                    "default": 20,
+                    "description": "The most pending exposures one turn resolves when a need reaches them (#164): the rest\nwait for a later need.",
+                    "maximum": 200.0,
+                    "minimum": 0.0,
+                    "title": "Max Lazy Resolutions Per Turn",
+                    "type": "integer"
+                  },
+                  "nested_beliefs": {
+                    "additionalProperties": false,
+                    "description": "Nested beliefs (FR-EPI-2, FR-BELIEF-15): off, or a depth of at least 2.",
+                    "properties": {
+                      "depth": {
+                        "default": 2,
+                        "maximum": 5.0,
+                        "minimum": 2.0,
+                        "title": "Depth",
+                        "type": "integer"
+                      },
+                      "enabled": {
+                        "default": false,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      }
+                    },
+                    "title": "NestedBeliefs",
+                    "type": "object"
+                  },
+                  "partitions": {
+                    "default": false,
+                    "title": "Partitions",
+                    "type": "boolean"
+                  },
+                  "testimony": {
+                    "default": "off",
+                    "description": "Testimony adjudication (FR-BELIEF-3): ``model`` or ``defaulted``.",
+                    "enum": [
+                      "off",
+                      "model",
+                      "defaulted"
+                    ],
+                    "title": "Testimony",
+                    "type": "string"
+                  }
+                },
+                "title": "CharacterKnowledge",
+                "type": "object"
+              },
               "commitment": {
                 "additionalProperties": false,
                 "description": "Commitment (FR-COMMIT) and its salience detection.",
@@ -19178,6 +20025,49 @@
                   }
                 },
                 "title": "Models",
+                "type": "object"
+              },
+              "multi_character": {
+                "additionalProperties": false,
+                "description": "One combined render, or per-character renders (FR-MULTI).",
+                "properties": {
+                  "interjection_max_words": {
+                    "default": 6,
+                    "description": "The most words a reactive character's brief interjection may have, where the story's\n``reactive_interjections`` allows one (FR-MULTI-9; #176).",
+                    "maximum": 20.0,
+                    "minimum": 1.0,
+                    "title": "Interjection Max Words",
+                    "type": "integer"
+                  },
+                  "renders": {
+                    "default": "combined",
+                    "enum": [
+                      "combined",
+                      "per_character"
+                    ],
+                    "title": "Renders",
+                    "type": "string"
+                  }
+                },
+                "title": "MultiCharacter",
+                "type": "object"
+              },
+              "perception": {
+                "additionalProperties": false,
+                "description": "Perception routing (FR-TURN-2,9,10,13).",
+                "properties": {
+                  "level": {
+                    "default": "none",
+                    "enum": [
+                      "none",
+                      "co_location",
+                      "full"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  }
+                },
+                "title": "Perception",
                 "type": "object"
               },
               "pins": {
@@ -19589,6 +20479,134 @@
                       }
                     },
                     "title": "Budgets",
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "character_knowledge": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "description": "Shared context, or per-character partitions with their dials (FR-PROF-2).",
+                    "properties": {
+                      "lazy_resolution": {
+                        "anyOf": [
+                          {
+                            "default": false,
+                            "title": "Lazy Resolution",
+                            "type": "boolean"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "max_adjudications_per_turn": {
+                        "anyOf": [
+                          {
+                            "default": 2,
+                            "description": "The most ``belief_adjudication`` calls one turn makes (#162): the testimony and\nsimultaneous-conflict adjudications beyond it follow the deterministic default.",
+                            "maximum": 10.0,
+                            "minimum": 0.0,
+                            "title": "Max Adjudications Per Turn",
+                            "type": "integer"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "max_lazy_resolutions_per_turn": {
+                        "anyOf": [
+                          {
+                            "default": 20,
+                            "description": "The most pending exposures one turn resolves when a need reaches them (#164): the rest\nwait for a later need.",
+                            "maximum": 200.0,
+                            "minimum": 0.0,
+                            "title": "Max Lazy Resolutions Per Turn",
+                            "type": "integer"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "nested_beliefs": {
+                        "anyOf": [
+                          {
+                            "additionalProperties": false,
+                            "description": "Nested beliefs (FR-EPI-2, FR-BELIEF-15): off, or a depth of at least 2.",
+                            "properties": {
+                              "depth": {
+                                "anyOf": [
+                                  {
+                                    "default": 2,
+                                    "maximum": 5.0,
+                                    "minimum": 2.0,
+                                    "title": "Depth",
+                                    "type": "integer"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "enabled": {
+                                "anyOf": [
+                                  {
+                                    "default": false,
+                                    "title": "Enabled",
+                                    "type": "boolean"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "title": "NestedBeliefs",
+                            "type": "object"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "partitions": {
+                        "anyOf": [
+                          {
+                            "default": false,
+                            "title": "Partitions",
+                            "type": "boolean"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "testimony": {
+                        "anyOf": [
+                          {
+                            "default": "off",
+                            "description": "Testimony adjudication (FR-BELIEF-3): ``model`` or ``defaulted``.",
+                            "enum": [
+                              "off",
+                              "model",
+                              "defaulted"
+                            ],
+                            "title": "Testimony",
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "title": "CharacterKnowledge",
                     "type": "object"
                   },
                   {
@@ -20224,6 +21242,84 @@
                   }
                 ]
               },
+              "multi_character": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "description": "One combined render, or per-character renders (FR-MULTI).",
+                    "properties": {
+                      "interjection_max_words": {
+                        "anyOf": [
+                          {
+                            "default": 6,
+                            "description": "The most words a reactive character's brief interjection may have, where the story's\n``reactive_interjections`` allows one (FR-MULTI-9; #176).",
+                            "maximum": 20.0,
+                            "minimum": 1.0,
+                            "title": "Interjection Max Words",
+                            "type": "integer"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "renders": {
+                        "anyOf": [
+                          {
+                            "default": "combined",
+                            "enum": [
+                              "combined",
+                              "per_character"
+                            ],
+                            "title": "Renders",
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "title": "MultiCharacter",
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "perception": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "description": "Perception routing (FR-TURN-2,9,10,13).",
+                    "properties": {
+                      "level": {
+                        "anyOf": [
+                          {
+                            "default": "none",
+                            "enum": [
+                              "none",
+                              "co_location",
+                              "full"
+                            ],
+                            "title": "Level",
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "title": "Perception",
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "pins": {
                 "anyOf": [
                   {
@@ -20713,6 +21809,71 @@
                 "title": "Budgets",
                 "type": "object"
               },
+              "character_knowledge": {
+                "additionalProperties": false,
+                "description": "Shared context, or per-character partitions with their dials (FR-PROF-2).",
+                "properties": {
+                  "lazy_resolution": {
+                    "default": false,
+                    "title": "Lazy Resolution",
+                    "type": "boolean"
+                  },
+                  "max_adjudications_per_turn": {
+                    "default": 2,
+                    "description": "The most ``belief_adjudication`` calls one turn makes (#162): the testimony and\nsimultaneous-conflict adjudications beyond it follow the deterministic default.",
+                    "maximum": 10.0,
+                    "minimum": 0.0,
+                    "title": "Max Adjudications Per Turn",
+                    "type": "integer"
+                  },
+                  "max_lazy_resolutions_per_turn": {
+                    "default": 20,
+                    "description": "The most pending exposures one turn resolves when a need reaches them (#164): the rest\nwait for a later need.",
+                    "maximum": 200.0,
+                    "minimum": 0.0,
+                    "title": "Max Lazy Resolutions Per Turn",
+                    "type": "integer"
+                  },
+                  "nested_beliefs": {
+                    "additionalProperties": false,
+                    "description": "Nested beliefs (FR-EPI-2, FR-BELIEF-15): off, or a depth of at least 2.",
+                    "properties": {
+                      "depth": {
+                        "default": 2,
+                        "maximum": 5.0,
+                        "minimum": 2.0,
+                        "title": "Depth",
+                        "type": "integer"
+                      },
+                      "enabled": {
+                        "default": false,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      }
+                    },
+                    "title": "NestedBeliefs",
+                    "type": "object"
+                  },
+                  "partitions": {
+                    "default": false,
+                    "title": "Partitions",
+                    "type": "boolean"
+                  },
+                  "testimony": {
+                    "default": "off",
+                    "description": "Testimony adjudication (FR-BELIEF-3): ``model`` or ``defaulted``.",
+                    "enum": [
+                      "off",
+                      "model",
+                      "defaulted"
+                    ],
+                    "title": "Testimony",
+                    "type": "string"
+                  }
+                },
+                "title": "CharacterKnowledge",
+                "type": "object"
+              },
               "commitment": {
                 "additionalProperties": false,
                 "description": "Commitment (FR-COMMIT) and its salience detection.",
@@ -21075,6 +22236,49 @@
                 "title": "Models",
                 "type": "object"
               },
+              "multi_character": {
+                "additionalProperties": false,
+                "description": "One combined render, or per-character renders (FR-MULTI).",
+                "properties": {
+                  "interjection_max_words": {
+                    "default": 6,
+                    "description": "The most words a reactive character's brief interjection may have, where the story's\n``reactive_interjections`` allows one (FR-MULTI-9; #176).",
+                    "maximum": 20.0,
+                    "minimum": 1.0,
+                    "title": "Interjection Max Words",
+                    "type": "integer"
+                  },
+                  "renders": {
+                    "default": "combined",
+                    "enum": [
+                      "combined",
+                      "per_character"
+                    ],
+                    "title": "Renders",
+                    "type": "string"
+                  }
+                },
+                "title": "MultiCharacter",
+                "type": "object"
+              },
+              "perception": {
+                "additionalProperties": false,
+                "description": "Perception routing (FR-TURN-2,9,10,13).",
+                "properties": {
+                  "level": {
+                    "default": "none",
+                    "enum": [
+                      "none",
+                      "co_location",
+                      "full"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  }
+                },
+                "title": "Perception",
+                "type": "object"
+              },
               "pins": {
                 "additionalProperties": false,
                 "description": "Pinned memories (FR-LITE-3): the story's author-pinned texts, always in the prompt.",
@@ -21321,6 +22525,71 @@
                       }
                     },
                     "title": "Budgets",
+                    "type": "object"
+                  },
+                  "character_knowledge": {
+                    "additionalProperties": false,
+                    "description": "Shared context, or per-character partitions with their dials (FR-PROF-2).",
+                    "properties": {
+                      "lazy_resolution": {
+                        "default": false,
+                        "title": "Lazy Resolution",
+                        "type": "boolean"
+                      },
+                      "max_adjudications_per_turn": {
+                        "default": 2,
+                        "description": "The most ``belief_adjudication`` calls one turn makes (#162): the testimony and\nsimultaneous-conflict adjudications beyond it follow the deterministic default.",
+                        "maximum": 10.0,
+                        "minimum": 0.0,
+                        "title": "Max Adjudications Per Turn",
+                        "type": "integer"
+                      },
+                      "max_lazy_resolutions_per_turn": {
+                        "default": 20,
+                        "description": "The most pending exposures one turn resolves when a need reaches them (#164): the rest\nwait for a later need.",
+                        "maximum": 200.0,
+                        "minimum": 0.0,
+                        "title": "Max Lazy Resolutions Per Turn",
+                        "type": "integer"
+                      },
+                      "nested_beliefs": {
+                        "additionalProperties": false,
+                        "description": "Nested beliefs (FR-EPI-2, FR-BELIEF-15): off, or a depth of at least 2.",
+                        "properties": {
+                          "depth": {
+                            "default": 2,
+                            "maximum": 5.0,
+                            "minimum": 2.0,
+                            "title": "Depth",
+                            "type": "integer"
+                          },
+                          "enabled": {
+                            "default": false,
+                            "title": "Enabled",
+                            "type": "boolean"
+                          }
+                        },
+                        "title": "NestedBeliefs",
+                        "type": "object"
+                      },
+                      "partitions": {
+                        "default": false,
+                        "title": "Partitions",
+                        "type": "boolean"
+                      },
+                      "testimony": {
+                        "default": "off",
+                        "description": "Testimony adjudication (FR-BELIEF-3): ``model`` or ``defaulted``.",
+                        "enum": [
+                          "off",
+                          "model",
+                          "defaulted"
+                        ],
+                        "title": "Testimony",
+                        "type": "string"
+                      }
+                    },
+                    "title": "CharacterKnowledge",
                     "type": "object"
                   },
                   "commitment": {
@@ -21683,6 +22952,49 @@
                       }
                     },
                     "title": "Models",
+                    "type": "object"
+                  },
+                  "multi_character": {
+                    "additionalProperties": false,
+                    "description": "One combined render, or per-character renders (FR-MULTI).",
+                    "properties": {
+                      "interjection_max_words": {
+                        "default": 6,
+                        "description": "The most words a reactive character's brief interjection may have, where the story's\n``reactive_interjections`` allows one (FR-MULTI-9; #176).",
+                        "maximum": 20.0,
+                        "minimum": 1.0,
+                        "title": "Interjection Max Words",
+                        "type": "integer"
+                      },
+                      "renders": {
+                        "default": "combined",
+                        "enum": [
+                          "combined",
+                          "per_character"
+                        ],
+                        "title": "Renders",
+                        "type": "string"
+                      }
+                    },
+                    "title": "MultiCharacter",
+                    "type": "object"
+                  },
+                  "perception": {
+                    "additionalProperties": false,
+                    "description": "Perception routing (FR-TURN-2,9,10,13).",
+                    "properties": {
+                      "level": {
+                        "default": "none",
+                        "enum": [
+                          "none",
+                          "co_location",
+                          "full"
+                        ],
+                        "title": "Level",
+                        "type": "string"
+                      }
+                    },
+                    "title": "Perception",
                     "type": "object"
                   },
                   "pins": {
@@ -28342,6 +29654,71 @@
                 "title": "Budgets",
                 "type": "object"
               },
+              "character_knowledge": {
+                "additionalProperties": false,
+                "description": "Shared context, or per-character partitions with their dials (FR-PROF-2).",
+                "properties": {
+                  "lazy_resolution": {
+                    "default": false,
+                    "title": "Lazy Resolution",
+                    "type": "boolean"
+                  },
+                  "max_adjudications_per_turn": {
+                    "default": 2,
+                    "description": "The most ``belief_adjudication`` calls one turn makes (#162): the testimony and\nsimultaneous-conflict adjudications beyond it follow the deterministic default.",
+                    "maximum": 10.0,
+                    "minimum": 0.0,
+                    "title": "Max Adjudications Per Turn",
+                    "type": "integer"
+                  },
+                  "max_lazy_resolutions_per_turn": {
+                    "default": 20,
+                    "description": "The most pending exposures one turn resolves when a need reaches them (#164): the rest\nwait for a later need.",
+                    "maximum": 200.0,
+                    "minimum": 0.0,
+                    "title": "Max Lazy Resolutions Per Turn",
+                    "type": "integer"
+                  },
+                  "nested_beliefs": {
+                    "additionalProperties": false,
+                    "description": "Nested beliefs (FR-EPI-2, FR-BELIEF-15): off, or a depth of at least 2.",
+                    "properties": {
+                      "depth": {
+                        "default": 2,
+                        "maximum": 5.0,
+                        "minimum": 2.0,
+                        "title": "Depth",
+                        "type": "integer"
+                      },
+                      "enabled": {
+                        "default": false,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      }
+                    },
+                    "title": "NestedBeliefs",
+                    "type": "object"
+                  },
+                  "partitions": {
+                    "default": false,
+                    "title": "Partitions",
+                    "type": "boolean"
+                  },
+                  "testimony": {
+                    "default": "off",
+                    "description": "Testimony adjudication (FR-BELIEF-3): ``model`` or ``defaulted``.",
+                    "enum": [
+                      "off",
+                      "model",
+                      "defaulted"
+                    ],
+                    "title": "Testimony",
+                    "type": "string"
+                  }
+                },
+                "title": "CharacterKnowledge",
+                "type": "object"
+              },
               "commitment": {
                 "additionalProperties": false,
                 "description": "Commitment (FR-COMMIT) and its salience detection.",
@@ -28702,6 +30079,49 @@
                   }
                 },
                 "title": "Models",
+                "type": "object"
+              },
+              "multi_character": {
+                "additionalProperties": false,
+                "description": "One combined render, or per-character renders (FR-MULTI).",
+                "properties": {
+                  "interjection_max_words": {
+                    "default": 6,
+                    "description": "The most words a reactive character's brief interjection may have, where the story's\n``reactive_interjections`` allows one (FR-MULTI-9; #176).",
+                    "maximum": 20.0,
+                    "minimum": 1.0,
+                    "title": "Interjection Max Words",
+                    "type": "integer"
+                  },
+                  "renders": {
+                    "default": "combined",
+                    "enum": [
+                      "combined",
+                      "per_character"
+                    ],
+                    "title": "Renders",
+                    "type": "string"
+                  }
+                },
+                "title": "MultiCharacter",
+                "type": "object"
+              },
+              "perception": {
+                "additionalProperties": false,
+                "description": "Perception routing (FR-TURN-2,9,10,13).",
+                "properties": {
+                  "level": {
+                    "default": "none",
+                    "enum": [
+                      "none",
+                      "co_location",
+                      "full"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  }
+                },
+                "title": "Perception",
                 "type": "object"
               },
               "pins": {
@@ -29579,6 +30999,71 @@
                     "title": "Budgets",
                     "type": "object"
                   },
+                  "character_knowledge": {
+                    "additionalProperties": false,
+                    "description": "Shared context, or per-character partitions with their dials (FR-PROF-2).",
+                    "properties": {
+                      "lazy_resolution": {
+                        "default": false,
+                        "title": "Lazy Resolution",
+                        "type": "boolean"
+                      },
+                      "max_adjudications_per_turn": {
+                        "default": 2,
+                        "description": "The most ``belief_adjudication`` calls one turn makes (#162): the testimony and\nsimultaneous-conflict adjudications beyond it follow the deterministic default.",
+                        "maximum": 10.0,
+                        "minimum": 0.0,
+                        "title": "Max Adjudications Per Turn",
+                        "type": "integer"
+                      },
+                      "max_lazy_resolutions_per_turn": {
+                        "default": 20,
+                        "description": "The most pending exposures one turn resolves when a need reaches them (#164): the rest\nwait for a later need.",
+                        "maximum": 200.0,
+                        "minimum": 0.0,
+                        "title": "Max Lazy Resolutions Per Turn",
+                        "type": "integer"
+                      },
+                      "nested_beliefs": {
+                        "additionalProperties": false,
+                        "description": "Nested beliefs (FR-EPI-2, FR-BELIEF-15): off, or a depth of at least 2.",
+                        "properties": {
+                          "depth": {
+                            "default": 2,
+                            "maximum": 5.0,
+                            "minimum": 2.0,
+                            "title": "Depth",
+                            "type": "integer"
+                          },
+                          "enabled": {
+                            "default": false,
+                            "title": "Enabled",
+                            "type": "boolean"
+                          }
+                        },
+                        "title": "NestedBeliefs",
+                        "type": "object"
+                      },
+                      "partitions": {
+                        "default": false,
+                        "title": "Partitions",
+                        "type": "boolean"
+                      },
+                      "testimony": {
+                        "default": "off",
+                        "description": "Testimony adjudication (FR-BELIEF-3): ``model`` or ``defaulted``.",
+                        "enum": [
+                          "off",
+                          "model",
+                          "defaulted"
+                        ],
+                        "title": "Testimony",
+                        "type": "string"
+                      }
+                    },
+                    "title": "CharacterKnowledge",
+                    "type": "object"
+                  },
                   "commitment": {
                     "additionalProperties": false,
                     "description": "Commitment (FR-COMMIT) and its salience detection.",
@@ -29939,6 +31424,49 @@
                       }
                     },
                     "title": "Models",
+                    "type": "object"
+                  },
+                  "multi_character": {
+                    "additionalProperties": false,
+                    "description": "One combined render, or per-character renders (FR-MULTI).",
+                    "properties": {
+                      "interjection_max_words": {
+                        "default": 6,
+                        "description": "The most words a reactive character's brief interjection may have, where the story's\n``reactive_interjections`` allows one (FR-MULTI-9; #176).",
+                        "maximum": 20.0,
+                        "minimum": 1.0,
+                        "title": "Interjection Max Words",
+                        "type": "integer"
+                      },
+                      "renders": {
+                        "default": "combined",
+                        "enum": [
+                          "combined",
+                          "per_character"
+                        ],
+                        "title": "Renders",
+                        "type": "string"
+                      }
+                    },
+                    "title": "MultiCharacter",
+                    "type": "object"
+                  },
+                  "perception": {
+                    "additionalProperties": false,
+                    "description": "Perception routing (FR-TURN-2,9,10,13).",
+                    "properties": {
+                      "level": {
+                        "default": "none",
+                        "enum": [
+                          "none",
+                          "co_location",
+                          "full"
+                        ],
+                        "title": "Level",
+                        "type": "string"
+                      }
+                    },
+                    "title": "Perception",
                     "type": "object"
                   },
                   "pins": {
@@ -30928,6 +32456,21 @@
             "default": null,
             "title": "Engine Profile Id"
           },
+          "engine_profile_version": {
+            "anyOf": [
+              {
+                "maximum": 2147483647,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Pin the story to this version of its engine profile (#181): it no longer follows the profile's edits until `PUT /stories/{id}/engine-profile` moves it. Left out, the story follows the profile's latest version. A version the profile does not have is 422 `validation_error`.",
+            "title": "Engine Profile Version"
+          },
           "ignoreWarnings": {
             "default": false,
             "description": "`ignore_warnings`, for camelCase clients (send one of the two).",
@@ -31630,6 +33173,17 @@
             "title": "Policies",
             "type": "array"
           },
+          "reactive_interjections": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reactive Interjections"
+          },
           "required_providers": {
             "items": {
               "pattern": "^[a-z][a-z0-9_.-]{0,63}$",
@@ -31638,6 +33192,33 @@
             "maxItems": 50,
             "title": "Required Providers",
             "type": "array"
+          },
+          "sequence_order": {
+            "anyOf": [
+              {
+                "enum": [
+                  "request",
+                  "director"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence Order"
+          },
+          "simultaneous_tie_break": {
+            "anyOf": [
+              {
+                "pattern": "^(request_order|director|state:[a-z][a-z0-9_]{0,63})$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Simultaneous Tie Break"
           },
           "turn_concurrency": {
             "anyOf": [
@@ -34407,6 +35988,8 @@
                           "profile_defaults.budgets.model_calls",
                           "profile_defaults.character_knowledge",
                           "profile_defaults.character_knowledge.lazy_resolution",
+                          "profile_defaults.character_knowledge.max_adjudications_per_turn",
+                          "profile_defaults.character_knowledge.max_lazy_resolutions_per_turn",
                           "profile_defaults.character_knowledge.nested_beliefs",
                           "profile_defaults.character_knowledge.nested_beliefs.depth",
                           "profile_defaults.character_knowledge.nested_beliefs.enabled",
@@ -34452,6 +36035,7 @@
                           "profile_defaults.models.generation.top_p",
                           "profile_defaults.models.purposes",
                           "profile_defaults.multi_character",
+                          "profile_defaults.multi_character.interjection_max_words",
                           "profile_defaults.multi_character.renders",
                           "profile_defaults.perception",
                           "profile_defaults.perception.level",
@@ -55138,6 +56722,7 @@
                           "content_rating_id",
                           "default_output_viewpoint",
                           "engine_profile_id",
+                          "engine_profile_version_pin",
                           "generation_settings",
                           "generation_settings.length",
                           "generation_settings.temperature",
@@ -55156,6 +56741,8 @@
                           "profile_overrides.budgets.model_calls",
                           "profile_overrides.character_knowledge",
                           "profile_overrides.character_knowledge.lazy_resolution",
+                          "profile_overrides.character_knowledge.max_adjudications_per_turn",
+                          "profile_overrides.character_knowledge.max_lazy_resolutions_per_turn",
                           "profile_overrides.character_knowledge.nested_beliefs",
                           "profile_overrides.character_knowledge.nested_beliefs.depth",
                           "profile_overrides.character_knowledge.nested_beliefs.enabled",
@@ -55201,6 +56788,7 @@
                           "profile_overrides.models.generation.top_p",
                           "profile_overrides.models.purposes",
                           "profile_overrides.multi_character",
+                          "profile_overrides.multi_character.interjection_max_words",
                           "profile_overrides.multi_character.renders",
                           "profile_overrides.perception",
                           "profile_overrides.perception.level",

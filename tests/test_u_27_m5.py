@@ -4,15 +4,13 @@ structured genesis with partitions (``core.genesis.structured.plan`` and its par
 ``core.genesis.epistemic``) and the publish-time seed check.
 
 The M3 and M4 parts live in ``tests/test_u_27.py`` (one file per test ID and milestone). The
-scenario is S-FAMILY's Sunday Dinner of ``tests/seeded_partitions_support``; ``partitions`` and
-``nested_beliefs`` are delivered for the test (#181 delivers them for real). That the seeded
+scenario is S-FAMILY's Sunday Dinner of ``tests/seeded_partitions_support``. That the seeded
 beliefs hold from before the story (story minute -1) is the write's, asserted by I-27 M5.
 """
 
 from __future__ import annotations
 
 import copy
-from collections.abc import Iterator
 from typing import Any, cast
 
 import pytest
@@ -29,19 +27,12 @@ from epistrel.core.resolution.entities import character_spec
 from epistrel.core.seeds.profiles import structured_m4_settings
 from epistrel.core.seeds.ratings import EVERYONE_ID
 from epistrel.core.tables.ownership import EntityType
-from tests import nested_support as ns
 from tests import seeded_partitions_support as sp
 from tests.profile_support import merged
 
 ROLES = (*sp.NPC_ROLES, "neighbour", "player")
 IDS = {role: f"01J9Z8Q4N5V6W7X8Y9Z0A1B{n:03d}" for n, role in enumerate(ROLES)}
 NAMES = {**sp.NAMES, "neighbour": "Mr Pike", "player": "Sam"}
-
-
-@pytest.fixture
-def delivered() -> Iterator[None]:
-    with ns.delivered():
-        yield
 
 
 def _settings() -> ProfileSettings:
@@ -130,7 +121,7 @@ async def _checked(body: dict[str, Any]) -> list[tuple[str, str | None, str]]:
 
 
 @pytest.mark.part("M5", "FR-SCN-8")
-async def test_u_27__beliefs(delivered: None) -> None:
+async def test_u_27__beliefs() -> None:
     """**Beliefs.** The Brother's seeded false belief that the house is not being sold is kept
     with no conflict (a belief, not canon); the world tells the Mother her husband keeps the
     ring while her own seed says he does not → the world's wins and the Mother's is reported

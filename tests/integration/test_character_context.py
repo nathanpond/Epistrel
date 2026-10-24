@@ -87,10 +87,8 @@ async def test_belief_state_in_the_context(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """See the module docstring (belief state)."""
-    ns.deliver_nested(monkeypatch)
     try:
         async with respond_client(stub_settings, engine) as (client, epistrel):
             w = await ns.knock_world(client, engine, "Cal", "Bobby", "Jenni")
@@ -229,7 +227,6 @@ async def test_lazy_resolution_at_the_context(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    testimony_delivered: None,
 ) -> None:
     """See the module docstring (lazy resolution at the need site)."""
     async with respond_client(stub_settings, engine) as (client, epistrel):
@@ -261,7 +258,6 @@ async def test_adjudicated_resolution_at_the_context(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    testimony_delivered: None,
 ) -> None:
     """See the module docstring (adjudicated)."""
     async with respond_client(stub_settings, engine) as (client, epistrel):
@@ -301,7 +297,6 @@ async def test_own_backstory_is_observed(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    testimony_delivered: None,
 ) -> None:
     """See the module docstring (own backstory)."""
     async with respond_client(stub_settings, engine) as (client, epistrel):

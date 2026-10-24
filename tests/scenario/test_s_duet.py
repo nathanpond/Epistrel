@@ -80,7 +80,6 @@ async def test_s_duet(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    multi_delivered: None,
 ) -> None:
     """See the module docstring."""
     async with respond_client(stub_settings, engine) as (client, epistrel):
@@ -166,7 +165,6 @@ async def test_s_duet__simultaneous(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    multi_delivered: None,
 ) -> None:
     """#175 AC5: after a ``simultaneous`` turn's adjudication, the surviving commitments go
     through the same reconciliation. Adjudication settles only two characters' clashing

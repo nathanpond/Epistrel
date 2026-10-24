@@ -58,7 +58,6 @@ async def test_config_revalidation__perception(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    perception_delivered: None,
 ) -> None:
     """See the module docstring."""
     assert schema.setting_tags()["perception.level"].change_class.value == "interpretive"

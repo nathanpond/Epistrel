@@ -542,7 +542,7 @@ async def respond(
         override=request.budget,
         started=started,
         director=multi.order_of(story.settings, request) == multi.DIRECTOR,
-        stored=roles_rt.stored_of(story.cast),
+        stored=roles_rt.stored_of(story.cast, story.settings),
     )
     resolved_cast = _planned_cast(resolved_cast, plan)
     timing = lite.TurnTiming(front=started)
@@ -643,7 +643,7 @@ async def run_queued(
         turn_deadline=planned.get("deadline_s") or concurrency.turn_deadline,
         started=front,
         director=multi.order_of(story.settings, request) == multi.DIRECTOR,
-        stored=roles_rt.stored_of(story.cast),
+        stored=roles_rt.stored_of(story.cast, story.settings),
     )
     resolved_cast = _planned_cast(resolved_cast, plan)
     budget.release_to(planner.held_after_input(plan, budget))
@@ -714,7 +714,7 @@ async def regenerate(
         override=request.budget,
         started=started,
         director=multi.order_of(story.settings, replay) == multi.DIRECTOR,
-        stored=roles_rt.stored_of(story.cast),
+        stored=roles_rt.stored_of(story.cast, story.settings),
     )
     resolved_cast = _planned_cast(resolved_cast, plan)
     timing = lite.TurnTiming(front=started)
@@ -4025,7 +4025,9 @@ async def play(
             cast_=story.cast,
             actor_id=read.actor.id,
             present=authority_rules.present_of(story.cast, read.present),
-            roles=roles_rt.stored_of(story.cast) if multi.per_character(settings) else None,
+            roles=roles_rt.stored_of(story.cast, story.settings)
+            if multi.per_character(settings)
+            else None,
         )
         authority[:] = [split]
         say, do = split.say, split.do

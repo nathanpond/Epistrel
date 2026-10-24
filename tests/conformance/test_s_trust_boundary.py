@@ -41,7 +41,6 @@ async def test_s_trust_boundary__m5(
     both: dict[str, Surface],
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    perception_delivered: None,
 ) -> None:
     """A character-viewpoint respond or history read never returns another character's private
     content: Bobby is given neither Jenni's thought nor her belief about the canary brooch (nor

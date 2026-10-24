@@ -55,9 +55,7 @@ async def _ids(engine: AsyncEngine, story: str) -> set[str]:
 
 
 @pytest.mark.part("M5", "FR-ADMIN-5; FR-RESP-12; FR-AUTH-1")
-async def test_c_28(
-    surface: Surface, engine: AsyncEngine, drained_embedding_jobs: None, perception_delivered: None
-) -> None:
+async def test_c_28(surface: Surface, engine: AsyncEngine, drained_embedding_jobs: None) -> None:
     """Every inspection answers ``omniscient`` alone, labelled so, and refuses the rest; the
     belief read keeps its rules (the player's character: an empty page; ``as_of`` before a
     belief: without it); a Lite story is 409 ``module_off``; two principals read the same
@@ -122,7 +120,7 @@ async def test_c_28(
 
 @pytest.mark.part("M5", "FR-ADMIN-5; FR-RESP-12; FR-AUTH-1")
 async def test_c_28__respond(
-    surface: Surface, engine: AsyncEngine, drained_embedding_jobs: None, perception_delivered: None
+    surface: Surface, engine: AsyncEngine, drained_embedding_jobs: None
 ) -> None:
     """A character-viewpoint respond carries no inspection content: Jenni believes the canary
     locket is in the parlor (a belief about an entity named ``CANARY``); responses produced for

@@ -312,7 +312,6 @@ async def test_output_viewpoint__respond(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    perception_delivered: None,
 ) -> None:
     """The Postgres check (see the module docstring): a stored result is returned only for its
     viewpoint (generation, idempotent replay, history read), each filtered by the audience

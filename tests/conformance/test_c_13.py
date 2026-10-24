@@ -191,7 +191,6 @@ async def test_c_13__m5(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    perception_delivered: None,
 ) -> None:
     """See the module docstring."""
     async with respond_client(stub_settings, engine) as (client, epistrel):
@@ -262,7 +261,6 @@ async def test_c_13__m5_authority(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    perception_delivered: None,
 ) -> None:
     """C-13 M5's authority clauses (FR-RESP-11, FR-AUTH-3; #180), with per-character partitions
     at perception ``full`` and everyone in the parlor. Jenni as actor: her input is her own

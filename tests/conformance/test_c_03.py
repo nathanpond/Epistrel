@@ -325,7 +325,8 @@ WINDOW_ONE = {"from_turn": 1, "to_turn": 1}
 
 
 async def _structured_fork(engine: Engine, ids: Ids) -> None:
-    """The fork on the seeded ``Structured (M4)`` profile, consolidation on (#143)."""
+    """The fork on the seeded ``Structured`` profile's latest version (#181: every M5 module on),
+    consolidation on (#143)."""
     async with engine.db.begin() as conn:
         await conn.execute(
             text(
@@ -1207,8 +1208,8 @@ def _steps() -> list[Step]:
             ),
             group=MUTATION_GROUP,
         ),
-        # An author belief (#160): the fork's profile keeps no partitions (#181 delivers the
-        # module), so both surfaces answer 409 module_off.
+        # An author belief (#160): the fork follows the seeded ``Structured`` profile's latest
+        # version, which keeps partitions (#181), so both surfaces write it (201).
         Step(
             "write_belief",
             lambda ids: Rest(

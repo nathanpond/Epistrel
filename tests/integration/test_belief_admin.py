@@ -1,6 +1,6 @@
 """``POST /admin/stories/{id}/beliefs``: an author-directed belief (FR-EPI-7, FR-BELIEF-4; #160).
 
-With the ``partitions`` module delivered and on for the story (patched until #181 delivers it),
+With the ``partitions`` module on for the story,
 the call writes an ``author`` transition citing its own author act (201), changes a belief the
 holder already holds in place, and closes one it contradicts; its dual confidence is checked
 (422 ``confidence_inconsistent``), the player's character has no partition (422
@@ -53,7 +53,6 @@ async def test_write_belief(
         assert (off.status_code, off.json()["error"]["code"]) == (409, "module_off")
         assert await ps.belief_rows(engine, story) == []
 
-        ps.deliver_partitions(monkeypatch)
         on = await ps.partitioned(engine, story)
 
         async def partitioned(db: Any, story_id: str) -> ProfileSettings:

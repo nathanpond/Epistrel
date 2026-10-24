@@ -187,7 +187,6 @@ async def test_r_03(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    testimony_delivered: None,
 ) -> None:
     """The PR subset (five sequences): with the clean and the leak-attempting stub, no attempt
     leaks Jenni's thought (see the module docstring)."""
@@ -206,7 +205,6 @@ async def test_r_03__corpus(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    testimony_delivered: None,
 ) -> None:
     """All 20 sequences, clean and leak-attempting: zero leaks over the corpus."""
     async with respond_client(stub_settings, engine) as (client, lib):

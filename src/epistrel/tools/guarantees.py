@@ -7,9 +7,11 @@ FR-PROF-12, FR-MODEL-2; #132).
 The document states the boundary (*the model proposes; the engine validates structured claims,
 effects, and permissions*), then one table of every step (its kind, its metric or
 ``unmeasured``, and the modules it needs), then one table per seeded profile (Lite and
-Structured (M4), read from ``core.seeds.profiles`` over the deployment's seeded defaults, with no
-database) saying which steps it provides, with the guarantees it does not provide in prose and,
-where its perception is ``none``, that no audience filtering applies.
+Structured at its latest version, read from ``core.seeds.profiles`` over the deployment's seeded
+defaults, with no database) saying which steps it provides, with the guarantees it does not
+provide in prose, where its perception is ``none`` that no audience filtering applies, and under
+``lite`` the story settings whose only effect is a prompt instruction
+(``core.genesis.settings_map.PROMPT_ONLY``: ``player_authority``).
 
 Rendering refuses a table that does not hold together (``GuaranteeError``), so ``--check`` and
 ``--write`` both fail:
@@ -36,6 +38,7 @@ from typing import Any
 
 from tools.gates.spec import load_spec
 
+from epistrel.core.genesis.settings_map import PROMPT_ONLY
 from epistrel.core.profiles import schema
 from epistrel.core.profiles.effective import merged_settings
 from epistrel.core.profiles.guarantees import (
@@ -78,11 +81,13 @@ class GuaranteeError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class SeededProfile:
-    """A profile the table is published for: its name, id and settings as seeded."""
+    """A profile the table is published for: its name, id, latest version and that version's
+    settings as seeded."""
 
     name: str
     profile_id: str
     settings: Mapping[str, Any]
+    version: int = 1
 
     def effective(self) -> ProfileSettings:
         """Its settings over the deployment's seeded defaults, as a fresh deployment runs it."""
@@ -92,10 +97,14 @@ class SeededProfile:
 SEEDED: tuple[SeededProfile, ...] = (
     SeededProfile(seeds.LITE_NAME, seeds.LITE_PRESET_ID, seeds.LITE_SETTINGS),
     SeededProfile(
-        seeds.STRUCTURED_M4_NAME, seeds.STRUCTURED_M4_PROFILE_ID, seeds.STRUCTURED_M4_SETTINGS
+        seeds.STRUCTURED_NAME,
+        seeds.STRUCTURED_PROFILE_ID,
+        seeds.STRUCTURED_SETTINGS,
+        seeds.STRUCTURED_VERSION,
     ),
 )
-"""The seeded profiles, in seeding order."""
+"""The seeded profiles, in seeding order, each at its latest version (#181: ``Structured``
+version 2; its version 1, ``Structured (M4)``, is not published)."""
 
 
 def problems(
@@ -146,6 +155,8 @@ def _needs(row: GuaranteeRow) -> str:
     parts = [need.describe() for need in row.requires]
     if row.setting is not None:
         parts.append(row.setting.describe())
+    if row.story_setting is not None:
+        parts.append(f"story setting {row.story_setting.describe()}")
     return "; ".join(parts) or "none (every profile)"
 
 
@@ -178,7 +189,7 @@ def _profile(profile: SeededProfile) -> list[str]:
     lines = [
         f"### {profile.name}",
         "",
-        f"Profile `{profile.profile_id}`, version 1 as seeded.",
+        f"Profile `{profile.profile_id}`, version {profile.version} as seeded.",
         "",
         "| Step | Id | Kind | Under this profile |",
         "|---|---|---|---|",
@@ -200,10 +211,23 @@ def _profile(profile: SeededProfile) -> list[str]:
     separation = GUARANTEE["structural_knowledge_separation"]
     if not separation.provided(effective):
         lines += [separation.note, ""]
-    if (
-        not GUARANTEE[AUDIENCE].provided(effective)
-        and schema.level_of(effective, "perception") is None
-    ):
+    audience = GUARANTEE[AUDIENCE]
+    if audience.provided(effective) and audience.story_setting is not None:
+        lines += [
+            f"Audience filtering is provided under the default `{audience.story_setting.path} = "
+            f"{audience.story_setting.values[0]}`; a story set to `player_view = story` gets "
+            "**no audience filtering** (every beat in full, never a `think` or `latent`).",
+            "",
+        ]
+    if schema.level_of(effective, "pipeline") == "lite":
+        prompt_only = ", ".join(f"`{name}`" for name in sorted(PROMPT_ONLY))
+        lines += [
+            f"Story settings whose only effect under this profile is a prompt instruction: "
+            f"{prompt_only}. Under `lite`, `player_authority` (FR-RESP-11) only tells the model "
+            "whose actions the player may narrate: nothing checks that the reply honours it.",
+            "",
+        ]
+    if not audience.provided(effective) and schema.level_of(effective, "perception") is None:
         lines += [
             "Perception is `none` under this profile, so **no audience filtering applies**: a "
             "character viewpoint still never receives any character's `think` or `latent` "

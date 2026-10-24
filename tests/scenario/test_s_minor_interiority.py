@@ -46,7 +46,6 @@ async def test_s_minor_interiority__minor_privacy(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    testimony_delivered: None,
 ) -> None:
     """See the module docstring. Complement: no other partition holds the thought."""
     async with respond_client(stub_settings, engine) as (client, epistrel):
@@ -108,7 +107,6 @@ async def test_s_minor_interiority(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    testimony_delivered: None,
 ) -> None:
     """The delivery driver (a minor, #163) records a private ``think``: Jenni seems sad, and he
     likes the leggings. It never reaches the player-facing message (the secondary control,

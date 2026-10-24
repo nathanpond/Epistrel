@@ -151,9 +151,11 @@ DEFAULT_SEED_BASE = 20261008
 DEFAULT_SEEDS = 2
 DEFAULT_SETS_DIR = REPO_ROOT / "evals" / "sets"
 BUILD_DIR = REPO_ROOT / "build" / "evals"
-FINGERPRINT_PROFILE = seeded_profiles.STRUCTURED_M4_NAME
-FINGERPRINT_VERSION = 1
-"""The fingerprint is the seeded ``Structured (M4)`` profile's, at its seeded version, with the
+FINGERPRINT_PROFILE = seeded_profiles.STRUCTURED_NAME
+FINGERPRINT_VERSION = seeded_profiles.STRUCTURED_VERSION
+"""The fingerprint is the seeded ``Structured`` profile's, at its current version (the owner's
+decision of 2026-10-23: every eval follows it; the committed M4 baselines keep their
+``Structured (M4) v1`` label), with the
 run's model as every story purpose's (#109's ``fingerprint()``; the stub run's model is
 ``stub``), and, for a run with a second judge model (#475), the judge as ``quality_judge``'s."""
 
@@ -245,7 +247,7 @@ def run_fingerprint(
     Without a judge, the fingerprint is unchanged. With ``real_purposes`` (#179) every other
     story purpose's model is the stub."""
     settings = merged_settings(
-        seeded_profiles.profile_defaults(), seeded_profiles.STRUCTURED_M4_SETTINGS, dials
+        seeded_profiles.profile_defaults(), seeded_profiles.STRUCTURED_SETTINGS, dials
     )
     models = {
         purpose: ModelIdentity(
@@ -257,7 +259,7 @@ def run_fingerprint(
         models[QUALITY_JUDGE.name] = ModelIdentity(id=judge)
     facts = RuntimeFacts(models=models, templates=TEMPLATE_HASHES)
     return fingerprint(
-        profile_id=seeded_profiles.STRUCTURED_M4_PROFILE_ID,
+        profile_id=seeded_profiles.STRUCTURED_PROFILE_ID,
         version=FINGERPRINT_VERSION,
         settings=settings,
         facts=facts,

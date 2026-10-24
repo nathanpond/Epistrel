@@ -67,7 +67,10 @@ async def test_e_08__m5_real_suites(pg_url: str, engine: AsyncEngine) -> None:
     markdown = render_markdown(clean)
     assert "0 observed in 300 cases, one-sided 95% upper bound ≈ 0.99%" in markdown
     assert "leak-free" not in markdown.lower()
-    assert clean.suites[0].fingerprint not in (None, clean.fingerprint)
+    # #181: the zero-leak suites run under the seeded profile itself (no dials), so the suite
+    # reports the run's own fingerprint.
+    assert clean.suites[0].fingerprint is None
+    assert clean.suites[0].profile is None
 
     asymmetry = SUITES["q04"]
     assert isinstance(asymmetry, Q04Suite)

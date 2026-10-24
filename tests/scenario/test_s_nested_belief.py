@@ -93,11 +93,9 @@ async def _utterance(engine: AsyncEngine, story_id: str, speaker: str) -> Any:
 async def test_s_nested_belief(
     stub_settings: Settings,
     engine: AsyncEngine,
-    monkeypatch: pytest.MonkeyPatch,
     drained_embedding_jobs: None,
 ) -> None:
     """See the module docstring."""
-    ns.deliver_nested(monkeypatch)
     async with respond_client(stub_settings, engine) as (client, epistrel):
         stub = epistrel.models.stub
         w = await ns.knock_world(client, engine, "Cal", "Bobby", "Jenni")
@@ -114,17 +112,16 @@ async def test_s_nested_belief(
             visibility=Visibility(scope="engine"),
         )
         # Bobby was told, wrongly, that it was the delivery driver, and believes it.
-        with ns.delivered():
-            told = await parts.transit(
-                engine,
-                story,
-                bobby,
-                w.knocked(w.driver),
-                cause=transitions.Kind.TESTIMONY,
-                kind=OperationKind.CONTROL,
-                source=cal,
-                outcome="accept",
-            )
+        told = await parts.transit(
+            engine,
+            story,
+            bobby,
+            w.knocked(w.driver),
+            cause=transitions.Kind.TESTIMONY,
+            kind=OperationKind.CONTROL,
+            source=cal,
+            outcome="accept",
+        )
         assert told.belief.kind is BeliefKind.FIRST_ORDER
 
         # -- Bobby jokes; Jenni overhears (addressed): said row + nested inference

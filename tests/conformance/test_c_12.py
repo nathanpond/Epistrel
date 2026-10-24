@@ -304,7 +304,7 @@ def _channels(found: dict[str, Any], key: str = "beats") -> list[tuple[str, str]
 @pytest.mark.integration
 @pytest.mark.part("M5", "FR-RESP-12,13")
 async def test_c_12__m5_output(
-    surface: Surface, engine: AsyncEngine, drained_embedding_jobs: None, perception_delivered: None
+    surface: Surface, engine: AsyncEngine, drained_embedding_jobs: None
 ) -> None:
     """With perception at ``co_location`` a beat in another room is omitted for a character's
     viewpoint and every beat in its room is returned in full, words included; at ``full``
@@ -365,7 +365,7 @@ async def test_c_12__m5_output(
 @pytest.mark.integration
 @pytest.mark.part("M5", "FR-RESP-12,13")
 async def test_c_12__player_view(
-    surface: Surface, engine: AsyncEngine, drained_embedding_jobs: None, perception_delivered: None
+    surface: Surface, engine: AsyncEngine, drained_embedding_jobs: None
 ) -> None:
     """``player_view`` (#177): under ``character`` (the default) the viewpoint in the hall
     perceives nothing (``nothing_perceived``, an empty narrative); under ``story`` (the story's
@@ -429,7 +429,7 @@ async def test_c_12__player_view(
 @pytest.mark.integration
 @pytest.mark.part("M5", "FR-RESP-12,13")
 async def test_c_12__m5_reads(
-    surface: Surface, engine: AsyncEngine, drained_embedding_jobs: None, perception_delivered: None
+    surface: Surface, engine: AsyncEngine, drained_embedding_jobs: None
 ) -> None:
     """The read rules (#178): reads of a character's partition, its beliefs or the story's
     divergences (and exposures) that do not name ``omniscient`` are rejected, a character

@@ -67,7 +67,6 @@ async def test_s_modeling(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    testimony_delivered: None,
 ) -> None:
     """See the module docstring. Complement: the merely-seen jogger has no ``characters`` row,
     no entity and no partition."""

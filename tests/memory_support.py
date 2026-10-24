@@ -22,7 +22,7 @@ from epistrel.core.events import Operation
 from epistrel.core.ids import new_ulid
 from epistrel.core.membership import insert_derived
 from epistrel.core.memory import records
-from epistrel.core.seeds.profiles import STRUCTURED_M4_PROFILE_ID
+from epistrel.core.seeds.profiles import STRUCTURED_M4_PROFILE_ID, STRUCTURED_M4_VERSION
 from epistrel.core.tables.memories import memories
 from epistrel.orchestrator.jobs.handlers import importance
 from epistrel.orchestrator.jobs.types import ClaimedJob
@@ -38,9 +38,9 @@ async def use_structured(engine: AsyncEngine, story_id: str) -> None:
     await execute_in_tx(
         engine,
         (
-            "UPDATE stories SET engine_profile_id = :p, engine_profile_version_pin = NULL "
+            "UPDATE stories SET engine_profile_id = :p, engine_profile_version_pin = :v "
             "WHERE id = :s",
-            {"s": story_id, "p": STRUCTURED_M4_PROFILE_ID},
+            {"s": story_id, "p": STRUCTURED_M4_PROFILE_ID, "v": STRUCTURED_M4_VERSION},
         ),
     )
 

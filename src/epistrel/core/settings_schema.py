@@ -437,6 +437,30 @@ class StorySettings(BaseModel):
         return cls.model_validate(document)
 
 
+class CharacterParticipation(BaseModel):
+    """A story character's participation role as stored (FR-MULTI-7; #176)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    role: Annotated[Literal["primary", "reactive", "silent"], PROSPECTIVE] = "reactive"
+    fixed: Annotated[StrictBool, PROSPECTIVE] = False
+
+
+class CharacterSettings(BaseModel):
+    """A story character's own story settings (#181 registers them beside ``StorySettings``,
+    #64's table): its participation role (``PATCH /stories/{id}/characters/{cid}/participation``,
+    recorded as ``participation:<character id>``). Prospective: a turn already running keeps the
+    roles it resolved."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, use_attribute_docstrings=True)
+
+    participation: Annotated[CharacterParticipation, PROSPECTIVE] = Field(
+        default_factory=CharacterParticipation
+    )
+    """The role (``primary``, ``reactive`` or ``silent``) and whether it is ``fixed``. Needs
+    per-character renders (``multi_character``): stored and inert otherwise."""
+
+
 # -- structured model results (FR-MODEL-6,7; #53) ------------------------------------------------
 
 DEFAULT_STRUCTURED_RETRY_BUDGET = 2

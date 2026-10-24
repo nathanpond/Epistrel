@@ -76,18 +76,17 @@ async def test_i_01__belief_projection(
         conn: AsyncConnection, op: Operation, proposition: Any, level: BeliefConfidenceLevel
     ) -> partitions.Belief:
         assert op.narrative_turn is not None
-        with ps.delivered():
-            found = await transitions.transition(
-                conn,
-                op,
-                holder=ann,
-                kind=transitions.Kind.DISCOVERY,
-                proposition=proposition,
-                antecedent=transitions.Antecedent.record("facts", clue.id),
-                position=Position(op.narrative_turn, op.turn_variant or 0),
-                confidence=transitions.Confidence(level),
-                settings=settings,
-            )
+        found = await transitions.transition(
+            conn,
+            op,
+            holder=ann,
+            kind=transitions.Kind.DISCOVERY,
+            proposition=proposition,
+            antecedent=transitions.Antecedent.record("facts", clue.id),
+            position=Position(op.narrative_turn, op.turn_variant or 0),
+            confidence=transitions.Confidence(level),
+            settings=settings,
+        )
         return found.belief
 
     async def suspect(conn: AsyncConnection, op: Operation) -> partitions.Belief:

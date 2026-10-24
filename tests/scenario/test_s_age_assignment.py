@@ -177,7 +177,6 @@ async def test_s_age_assignment__m5(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    perception_delivered: None,
 ) -> None:
     """See the module docstring."""
     assert [age_band(a) for a in (None, 8, 15, 20, 24, 29, 34, 47, 69, 70)] == [

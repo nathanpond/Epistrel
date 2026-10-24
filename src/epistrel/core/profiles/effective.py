@@ -87,7 +87,7 @@ from epistrel.core.profiles.validate import (
     require_valid,
     undelivered_settings,
 )
-from epistrel.core.settings_schema import merge_patch
+from epistrel.core.settings_schema import StorySettings, merge_patch
 from epistrel.core.tables import (
     deployment_state,
     engine_profile_versions,
@@ -543,12 +543,21 @@ class AssignableProfile:
 
 
 async def assignable(
-    conn: AsyncConnection, profile_id: str, *, field: str = "body.profile_id", lock: bool = False
+    conn: AsyncConnection,
+    profile_id: str,
+    *,
+    field: str = "body.profile_id",
+    lock: bool = False,
+    version: int | None = None,
+    version_field: str = "body.version",
 ) -> AssignableProfile:
-    """``profile_id`` at its latest version, when it may be newly assigned: 422
-    ``profile_deleted`` (``reason: unknown`` or ``deleted``) at ``field`` otherwise, as
-    ``store.require_assignable`` refuses a default. ``lock``: hold the profile ``FOR SHARE``
-    until the caller commits, so it is not deleted or edited under an assignment."""
+    """``profile_id`` at its latest version (or at ``version``, #181), when it may be newly
+    assigned: 422 ``profile_deleted`` (``reason: unknown`` or ``deleted``) at ``field``
+    otherwise, as ``store.require_assignable`` refuses a default, and 422 ``validation_error``
+    at ``version_field`` for a version the profile does not have. ``lock``: hold the profile
+    ``FOR SHARE`` until the caller commits, so it is not deleted or edited under an
+    assignment."""
+    wanted = engine_profiles.c.current_version if version is None else version
     query = (
         select(
             engine_profiles.c.deleted_at,
@@ -556,11 +565,11 @@ async def assignable(
             engine_profile_versions.c.settings,
         )
         .select_from(
-            engine_profiles.join(
+            engine_profiles.outerjoin(
                 engine_profile_versions,
                 and_(
                     engine_profile_versions.c.profile_id == engine_profiles.c.id,
-                    engine_profile_versions.c.version == engine_profiles.c.current_version,
+                    engine_profile_versions.c.version == wanted,
                 ),
             )
         )
@@ -574,6 +583,16 @@ async def assignable(
         raise ProfileDeleted(
             f"engine profile {profile_id} cannot be assigned ({reason})",
             {"profile_id": profile_id, "field": field, "reason": reason},
+        )
+    if row.version is None:
+        message = f"engine profile {profile_id} has no version {version}"
+        raise InvalidRequest(
+            message,
+            {
+                "field": version_field,
+                "reason": "unknown_version",
+                "errors": [{"field": version_field, "message": message, "type": "value_error"}],
+            },
         )
     return AssignableProfile(profile_id, int(row.version), dict(row.settings))
 
@@ -839,11 +858,14 @@ async def read(db: AsyncEngine, story_id: str, facts: RuntimeFacts) -> Effective
 
 async def read_guarantees(db: AsyncEngine, story_id: str) -> guarantees.GuaranteeTable:
     """``GET /stories/{id}/guarantees`` (FR-VERIFY-15, FR-PROF-12; #132): the guarantee table of
-    the story's effective configuration, overrides included, with the profile and version it
-    runs on; 404 for an unknown story."""
+    the story's effective configuration, overrides included, and its story settings (#181:
+    audience filtering needs ``player_view = character``), with the profile and version it runs
+    on; 404 for an unknown story."""
     async with db.connect() as conn:
         found = await effective_configuration(conn, story_id)
-    return guarantees.table(found.profile_id, found.version, found.settings)
+        document = await conn.scalar(select(stories.c.settings).where(stories.c.id == story_id))
+    story = StorySettings.from_row(document).model_dump(mode="json")
+    return guarantees.table(found.profile_id, found.version, found.settings, story)
 
 
 __all__ = [

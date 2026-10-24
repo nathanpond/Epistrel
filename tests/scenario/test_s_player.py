@@ -53,13 +53,12 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.mark.part("M5", "FR-EPI-12")
-async def test_s_player(engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_s_player(engine: AsyncEngine) -> None:
     """Cal is the player. A belief held by Cal is refused before anything is written; Bobby's
     belief about Cal is stored. Retrieval as Cal returns the shared lantern memories only: not
     Bobby's private one, not the one scoped to Cal's character, no canon fact scoped to Cal, and
     no beliefs. Complements: ``is_player`` is false for Bobby, and Bobby's own retrieval does
     return his private memory and his belief."""
-    ps.deliver_partitions(monkeypatch)
     w = await c.world(engine)
     story = w.story_id
     await use_structured(engine, story)
@@ -161,7 +160,6 @@ async def test_s_player__modeling(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    testimony_delivered: None,
 ) -> None:
     """See the module docstring (#163's slice)."""
     async with respond_client(stub_settings, engine) as (client, epistrel):
@@ -203,7 +201,6 @@ async def test_s_player__verification(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    testimony_delivered: None,
 ) -> None:
     """#166's slice: under per-character partitions, the player's own ``say`` is checked against
     canon only. Its claim gets a verdict but no belief dimension and no classification (the

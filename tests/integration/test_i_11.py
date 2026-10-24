@@ -4,8 +4,7 @@ A retrieval for character A returns only A's partition plus the records A may re
 memory tier and both retrieval channels: the occasion and assessment reads, the vector arm, the
 lexical arm over the hot and the retired tier (a rehydrated row included), the alias arm, canon
 and the ``beliefs`` arm. The story runs on a database of its own (the vector arm needs a pinned
-dimension, as #141's retrieval tests do), with the ``partitions`` module delivered for the test
-(#181 delivers it).
+dimension, as #141's retrieval tests do), with the ``partitions`` module on.
 """
 
 from __future__ import annotations
@@ -100,7 +99,7 @@ def _returned(found: pipeline.RetrievalResult) -> set[str]:
 
 
 @pytest.mark.part("M5", "FR-RET-1")
-async def test_i_11(scratch: Scratch, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_i_11(scratch: Scratch) -> None:
     """Ann asks Bobby about the lantern after the game. Bobby's private ``think`` memories (an
     occasion episode, a hot memory near the query's vector, a retired one only the lexical arm
     can rehydrate), his private assessment of the game, the ``latent`` fact canon tells him
@@ -110,7 +109,6 @@ async def test_i_11(scratch: Scratch, monkeypatch: pytest.MonkeyPatch) -> None:
     the ``partitions`` module off, memories are not filtered (M4's shared knowledge) while the
     ``latent`` fact stays canon's to filter; and the vector arm alone, run as Ann, still leaves
     Bobby's near memory out."""
-    ps.deliver_partitions(monkeypatch)
     db = scratch.db
     found_ids: dict[str, str] = {}
 

@@ -199,7 +199,6 @@ async def test_s_same_turn_belief__render(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    testimony_delivered: None,
 ) -> None:
     """The render part (see the module docstring)."""
     async with respond_client(stub_settings, engine) as (client, epistrel):
@@ -499,7 +498,6 @@ async def test_s_same_turn_belief__beats(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    multi_delivered: None,
 ) -> None:
     """The beat part (see the module docstring)."""
     async with respond_client(stub_settings, engine) as (client, epistrel):
@@ -597,7 +595,6 @@ async def test_s_same_turn_belief__simultaneous(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    multi_delivered: None,
 ) -> None:
     """The same exchange in ``simultaneous`` mode (#175): Jenni renders against the turn's
     starting state, so Bobby's same-turn beat is not in her prompt and she forms no acceptance

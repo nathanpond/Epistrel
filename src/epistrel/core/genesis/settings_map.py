@@ -37,6 +37,9 @@ MULTI_CHARACTER: Final = "multi_character"
 
 SETTING_CAPABILITIES: Final[Mapping[str, str | None]] = {
     "interaction_mode": MULTI_CHARACTER,
+    "sequence_order": MULTI_CHARACTER,
+    "simultaneous_tie_break": MULTI_CHARACTER,
+    "reactive_interjections": MULTI_CHARACTER,
     "turn_concurrency": None,
     "player_authority": None,
     "default_output_viewpoint": None,

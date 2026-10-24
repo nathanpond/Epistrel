@@ -513,7 +513,7 @@ async def _held(engine: AsyncEngine, story_id: str, holder: str) -> list[Any]:
 
 
 @pytest.mark.part("M5", "FR-COMMIT-4,5")
-async def test_u_01__m5(engine: AsyncEngine, testimony_delivered: None) -> None:
+async def test_u_01__m5(engine: AsyncEngine) -> None:
     """Under per-character partitions, committing a salient-but-hidden fact (Jenni alone saw who
     left the parcel: the mailman) records both the truth in canon, scoped away (``characters:
     [Jenni]``), and her observation of it in her partition (``known``, citing the committing

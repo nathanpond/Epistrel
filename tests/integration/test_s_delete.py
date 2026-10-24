@@ -262,24 +262,23 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
         await op.commit()
     # Nested beliefs (#167): what the other character thinks the player believes, and its
     # projection row.
-    with nested_support.delivered():
-        nested_on = await nested_support.nested_settings(engine, story_id)
+    nested_on = await nested_support.nested_settings(engine, story_id)
 
-        async def attribute(conn: AsyncConnection, op: Operation, event_id: str) -> object:
-            return await nested.write_nested(
-                conn,
-                op,
-                holder=character_id,
-                attributed_holder=str(player),
-                proposition=held.proposition,
-                cause=nested.Cause(
-                    transitions.Kind.AUTHOR, transitions.Antecedent.record("events", event_id)
-                ),
-                position=Position(op.narrative_turn or 0, op.turn_variant or 0, 0, 3, 0),
-                settings=nested_on,
-            )
+    async def attribute(conn: AsyncConnection, op: Operation, event_id: str) -> object:
+        return await nested.write_nested(
+            conn,
+            op,
+            holder=character_id,
+            attributed_holder=str(player),
+            proposition=held.proposition,
+            cause=nested.Cause(
+                transitions.Kind.AUTHOR, transitions.Antecedent.record("events", event_id)
+            ),
+            position=Position(op.narrative_turn or 0, op.turn_variant or 0, 0, 3, 0),
+            settings=nested_on,
+        )
 
-        await nested_support.in_operation(engine, story_id, attribute, kind=OperationKind.CONTROL)
+    await nested_support.in_operation(engine, story_id, attribute, kind=OperationKind.CONTROL)
     # Memory records (#135): a memory of the story, written by its own operation.
     await memory_support.derived_memory(engine, story_id, "Ann sails at dawn.", [])
     # The hot set (#147): an overflow episode of the story's vectors, planted (one needs a

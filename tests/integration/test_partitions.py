@@ -54,9 +54,7 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.mark.part("M5", "FR-EPI-1,3,5,6")
-async def test_u_03__partitions(
-    engine: AsyncEngine, settings: Settings, perception_delivered: None
-) -> None:
+async def test_u_03__partitions(engine: AsyncEngine, settings: Settings) -> None:
     """Canon says Bobby is in the kitchen. Ann believes he is in the garden (a false belief,
     self-world: what she holds of the world), Bobby believes he is in the kitchen (the canon
     fact's own proposition, FR-PROP-2) and that Ann knows Cal (social-world: about other
@@ -254,11 +252,9 @@ def _at(op: Operation) -> Position:
 async def test_u_03__nested(
     stub_settings: Settings,
     engine: AsyncEngine,
-    monkeypatch: pytest.MonkeyPatch,
     drained_embedding_jobs: None,
 ) -> None:
     """See the module docstring."""
-    ns.deliver_nested(monkeypatch)
     async with respond_client(stub_settings, engine) as (client, _):
         w = await ns.knock_world(client, engine, "Cal", "Bobby", "Jenni", "Ada")
         story = w.story_id

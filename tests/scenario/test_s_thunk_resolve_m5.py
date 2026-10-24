@@ -163,7 +163,6 @@ async def test_s_thunk_resolve__m5(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    testimony_delivered: None,
 ) -> None:
     """See the module docstring."""
     async with respond_client(stub_settings, engine) as (client, epistrel):
@@ -240,7 +239,6 @@ async def test_s_thunk_resolve__m5_sincere_question(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    testimony_delivered: None,
 ) -> None:
     """Bobby's later sincere question rejects the binding to him, which is steered to the
     mailman; with partitions off the same binding is inert (see the module docstring)."""

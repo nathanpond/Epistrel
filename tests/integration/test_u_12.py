@@ -234,15 +234,14 @@ async def test_u_12__consolidation_forgets(engine: AsyncEngine) -> None:
     settings = await ps.partitioned(engine, story)
 
     async def consolidate(conn: Any, op: Any) -> int:
-        with ps.delivered():
-            return await transitions.forget_covered(
-                conn,
-                op,
-                holders=[ann],
-                from_turn=window[0],
-                to_turn=window[1],
-                settings=settings,
-            )
+        return await transitions.forget_covered(
+            conn,
+            op,
+            holders=[ann],
+            from_turn=window[0],
+            to_turn=window[1],
+            settings=settings,
+        )
 
     _, written = await c.run(engine, story, consolidate)
     assert written == 1

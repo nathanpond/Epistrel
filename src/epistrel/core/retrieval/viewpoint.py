@@ -17,7 +17,7 @@ VISIBILITY property, never one ``retrieve()`` is asked for). The player's own ch
 memory (FR-EPI-12), so ``character:<player>`` sees ``objective`` and ``public`` records only.
 
 **The gate.** The filter applies to memories only when the story's ``partitions`` module is on
-(``module_on(settings, "partitions")``, #129; #181 delivers it). With it off (shared knowledge,
+(``module_on(settings, "partitions")``, #129; delivered by #181). With it off (shared knowledge,
 every Lite story and M4's structured profile) memories are not filtered, as in M4, and canon
 keeps its own visibility filter, so a ``characters``-scoped ``latent`` fact is still read only by
 the characters it names. ``scope_for`` answers the effective filter: ``None`` (no filter) or

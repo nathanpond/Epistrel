@@ -1359,7 +1359,13 @@ async def choose_profile(
                     f"no engine profile has the id {requested}",
                     {"field": "body.engine_profile_id", "reason": "unknown"},
                 )
-            chosen = await effective.assignable(conn, requested, field="body.engine_profile_id")
+            chosen = await effective.assignable(
+                conn,
+                requested,
+                field="body.engine_profile_id",
+                version=found.request.engine_profile_version,
+                version_field="body.engine_profile_version",
+            )
         else:
             recommended = found.draft.recommendation.engine_profile_id
             if recommended is not None:
@@ -1379,6 +1385,14 @@ async def choose_profile(
                     )
             if chosen is None:
                 chosen = await effective.assignable(conn, await profiles.default_profile(conn))
+            pinned = found.request.engine_profile_version
+            if pinned is not None:
+                chosen = await effective.assignable(
+                    conn,
+                    chosen.profile_id,
+                    version=pinned,
+                    version_field="body.engine_profile_version",
+                )
     assert chosen is not None  # noqa: S101 - one of the branches above chose it
     return chosen.profile_id, chosen.version, dict(chosen.document), warnings
 
@@ -1685,6 +1699,7 @@ async def genesis(
                     settings=document,
                     content_rating_id=rating.id,
                     engine_profile_id=profile[0],
+                    engine_profile_version_pin=request.engine_profile_version,
                     scenario_id=found.scenario_id,
                     scenario_version=found.version,
                     scenario_snapshot=found.content,

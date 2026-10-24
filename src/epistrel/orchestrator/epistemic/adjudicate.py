@@ -19,7 +19,7 @@ resolver (``deferred`` in the report).
 **Adjudication** (``adjudicate_turn``, before composition). Only under ``planner.adjudicates``
 (partitions, ``character_knowledge.testimony = model``, model salience): for salient witnesses,
 primaries before reactive and in beat order, at most ``MAX_ADJUDICATIONS_PER_TURN`` calls per
-turn (``character_knowledge.max_adjudications_per_turn`` once #181 adds the leaf), one per
+turn (the profile dial ``character_knowledge.max_adjudications_per_turn``), one per
 (witness, beat) batching the beat's claims. A call is optional work: the pool must afford it
 (``TurnBudget.try_optional("testimony", 1)``, after follow-up and before repair; nothing is
 reserved for it). A witness the cap or the budget leaves out is decided by the default and the
@@ -51,7 +51,7 @@ from epistrel.core.enums import BeliefKind, ExposureFidelity
 from epistrel.core.epistemic import exposure, modeling, partitions, perception, testimony
 from epistrel.core.epistemic import scene as scene_loader
 from epistrel.core.profiles.capabilities import module_on
-from epistrel.core.profiles.schema import ProfileSettings
+from epistrel.core.profiles.schema import DEFAULT_MAX_ADJUDICATIONS_PER_TURN, ProfileSettings
 from epistrel.core.propositions.model import Proposition
 from epistrel.core.propositions.registry import Registry, canonical, load
 from epistrel.core.propositions.store import write_proposition
@@ -79,16 +79,16 @@ from epistrel.orchestrator.verify.verifier import render_proposition
 
 log = logging.getLogger(__name__)
 
-MAX_ADJUDICATIONS_PER_TURN = 2
-"""The most ``belief_adjudication`` calls one turn makes (#181 adds the profile leaf
-``character_knowledge.max_adjudications_per_turn``)."""
+MAX_ADJUDICATIONS_PER_TURN = DEFAULT_MAX_ADJUDICATIONS_PER_TURN
+"""The default of the profile dial ``character_knowledge.max_adjudications_per_turn`` (#181):
+the most ``belief_adjudication`` calls one turn makes."""
 
 TEXT_MAX = 1_000
 
 
 def max_adjudications(settings: ProfileSettings) -> int:
-    found = getattr(settings.character_knowledge, "max_adjudications_per_turn", None)
-    return MAX_ADJUDICATIONS_PER_TURN if not isinstance(found, int) else max(0, found)
+    """``character_knowledge.max_adjudications_per_turn`` under ``settings``."""
+    return max(0, settings.character_knowledge.max_adjudications_per_turn)
 
 
 # -- the says and their witnesses --------------------------------------------------------------

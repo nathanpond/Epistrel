@@ -192,7 +192,7 @@ UNLIKE_MARCUS = "You deserve better, unlike Marcus, who's been seeing Dana behin
 
 @pytest.mark.part("M5", "FR-VERIFY-14; NFR-PRIV-1")
 async def test_s_extract_adversarial__m5(
-    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None, testimony_delivered: None
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None
 ) -> None:
     """(b) Bobby's ``say`` "…unlike Marcus, who's been seeing Dana behind your back…" is
     structurally complete and declares nothing, but the affair exists only in Marcus's private
@@ -258,7 +258,7 @@ FLINCHES = "Dale flinches."
 
 @pytest.mark.part("M5", "FR-VERIFY-14")
 async def test_s_extract_adversarial__f(
-    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None, multi_delivered: None
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None
 ) -> None:
     """(f) Bobby's render is structurally complete and narrates Dale's reaction (#176's
     ``reactions`` channel): "Dale flinches at the mention of Dana." Nobody mentioned Dana: the

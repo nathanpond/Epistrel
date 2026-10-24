@@ -105,7 +105,6 @@ async def test_s_testimony(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    testimony_delivered: None,
 ) -> None:
     """See the module docstring (the ``model`` play)."""
     async with respond_client(stub_settings, engine) as (client, epistrel):
@@ -195,7 +194,6 @@ async def test_s_testimony__rules_and_inert(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    testimony_delivered: None,
 ) -> None:
     """Under ``commitment.salience = rules`` adjudication is never called: Marcus rejects by the
     default (partition touch), Bobby's say is not salient and he forms nothing now. With
@@ -237,7 +235,6 @@ async def test_s_testimony__exposure(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    testimony_delivered: None,
 ) -> None:
     """The background witness (Kid: a minor, neither salient nor addressed) gets exactly one
     exposure record of the sending claim, unresolved, at the say beat's step 1, and no belief
@@ -267,7 +264,6 @@ async def test_s_testimony__exposure_is_not_belief(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    testimony_delivered: None,
 ) -> None:
     """Complement of the exposure: after the assertion turn the ``beliefs`` table has no row for
     the background witness, not even the speech act; only a later turn that needs it resolves

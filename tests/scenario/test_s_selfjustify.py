@@ -117,64 +117,63 @@ async def _misinform(engine: AsyncEngine, edu: Education, *, eager: bool) -> str
     read) or is exposed to it (#164's lazy path). Answers the say event's id."""
     told = _degree_of(edu, edu.florida)
     found: dict[str, Any] = {}
-    with ts.delivered():
-        settings = await parts.partitioned(engine, edu.story_id)
-        async with Operation(
-            engine, story_id=edu.story_id, kind=OperationKind.TURN, principal=c.PRINCIPAL
-        ) as op:
-            op.append("player_input", {"text": MISINFORMED}, provenance=Provenance.PLAYER, beat=1)
-            op.append(
-                "beat_say",
-                {"text": MISINFORMED, "intent": "sincere"},
-                character_id=edu.cal,
-                beat=2,
-            )
-            op.append("message_rendered", {"text": MISINFORMED})
+    settings = await parts.partitioned(engine, edu.story_id)
+    async with Operation(
+        engine, story_id=edu.story_id, kind=OperationKind.TURN, principal=c.PRINCIPAL
+    ) as op:
+        op.append("player_input", {"text": MISINFORMED}, provenance=Provenance.PLAYER, beat=1)
+        op.append(
+            "beat_say",
+            {"text": MISINFORMED, "intent": "sincere"},
+            character_id=edu.cal,
+            beat=2,
+        )
+        op.append("message_rendered", {"text": MISINFORMED})
 
-            async def step(conn: AsyncConnection) -> None:
-                event_id = str(
-                    await conn.scalar(
-                        text("SELECT id FROM events WHERE operation_id = :o AND type = 'beat_say'"),
-                        {"o": op.operation_id},
-                    )
+        async def step(conn: AsyncConnection) -> None:
+            event_id = str(
+                await conn.scalar(
+                    text("SELECT id FROM events WHERE operation_id = :o AND type = 'beat_say'"),
+                    {"o": op.operation_id},
                 )
-                found["event"] = event_id
-                at = testimony.witness_position(op.narrative_turn or 0, op.turn_variant or 0, 2)
-                if eager:
-                    await transitions.transition(
-                        conn,
-                        op,
-                        holder=edu.bobby,
-                        kind=transitions.Kind.TESTIMONY,
-                        proposition=told,
-                        antecedent=transitions.Antecedent.record("events", event_id),
-                        position=at,
-                        confidence=transitions.Confidence(testimony.Level.KNOWN),
-                        source=edu.cal,
-                        outcome=testimony.REJECT,
-                        belief_kind=BeliefKind.SPEECH_ACT,
-                        settings=settings,
-                    )
-                    return
-                registry = await load(conn, edu.story_id)
-                stored = await store.write_proposition(conn, edu.story_id, told, registry)
-                await exposure.record_exposures(
+            )
+            found["event"] = event_id
+            at = testimony.witness_position(op.narrative_turn or 0, op.turn_variant or 0, 2)
+            if eager:
+                await transitions.transition(
                     conn,
                     op,
-                    [
-                        exposure.Exposed(
-                            witness=edu.bobby,
-                            proposition_id=stored,
-                            proposition=told,
-                            source=edu.cal,
-                            source_event_id=event_id,
-                            position=at,
-                        )
-                    ],
+                    holder=edu.bobby,
+                    kind=transitions.Kind.TESTIMONY,
+                    proposition=told,
+                    antecedent=transitions.Antecedent.record("events", event_id),
+                    position=at,
+                    confidence=transitions.Confidence(testimony.Level.KNOWN),
+                    source=edu.cal,
+                    outcome=testimony.REJECT,
+                    belief_kind=BeliefKind.SPEECH_ACT,
+                    settings=settings,
                 )
+                return
+            registry = await load(conn, edu.story_id)
+            stored = await store.write_proposition(conn, edu.story_id, told, registry)
+            await exposure.record_exposures(
+                conn,
+                op,
+                [
+                    exposure.Exposed(
+                        witness=edu.bobby,
+                        proposition_id=stored,
+                        proposition=told,
+                        source=edu.cal,
+                        source_event_id=event_id,
+                        position=at,
+                    )
+                ],
+            )
 
-            op.add_commit_step(step)
-            await op.commit()
+        op.add_commit_step(step)
+        await op.commit()
     return str(found["event"])
 
 
@@ -198,7 +197,6 @@ async def test_s_selfjustify(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    testimony_delivered: None,
 ) -> None:
     """Variants (a) and (b) (see the module docstring)."""
     async with respond_client(stub_settings, engine) as (client, epistrel):
@@ -259,7 +257,6 @@ async def test_s_selfjustify__misinformed(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    testimony_delivered: None,
 ) -> None:
     """Variant (c) (see the module docstring): the salient witness and the lazy exposure, each
     with and without a ``think`` citing the misinforming say."""

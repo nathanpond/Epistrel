@@ -93,6 +93,9 @@ class CastEntry:
     ``silent`` (ignored for the player's character)."""
     participation_fixed: bool = False
     """#176: whether the role is a bound the engine never crosses on its own."""
+    role_id: str | None = None
+    """The scenario role the character fills (#119), for the role's participation genesis kept
+    inactive (#181)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +171,7 @@ def _cast_query(story_id: str) -> Any:
             characters.c.weight,
             characters.c.participation_role,
             characters.c.participation_fixed,
+            characters.c.role_id,
         )
         .where(characters.c.story_id == story_id)
         .order_by(characters.c.ordinal)
@@ -186,6 +190,7 @@ def _cast(rows: Any) -> tuple[CastEntry, ...]:
             minor=getattr(r, "weight", None) == "minor",
             participation_role=str(getattr(r, "participation_role", None) or "reactive"),
             participation_fixed=bool(getattr(r, "participation_fixed", False)),
+            role_id=getattr(r, "role_id", None),
         )
         for r in rows
     )

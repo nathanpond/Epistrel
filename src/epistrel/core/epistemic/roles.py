@@ -60,7 +60,8 @@ SOURCES: tuple[str, ...] = (DEFAULT, FIXED, REQUEST, ESCALATED, REDUCED)
 NONVERBAL, INTERJECTION = "nonverbal", "interjection"
 ReactionKind = Literal["nonverbal", "interjection"]
 INTERJECTION_MAX_WORDS = 6
-"""The longest interjection (``multi_character.interjection_max_words`` once #181 adds the leaf)."""
+"""The longest interjection: the default of the profile dial
+``multi_character.interjection_max_words`` (#181)."""
 MAX_ESCALATIONS_PER_TURN = 2
 """The most reactive characters one turn escalates to a primary render (no recursion)."""
 

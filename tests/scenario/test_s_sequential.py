@@ -88,7 +88,6 @@ async def test_s_sequential(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    multi_delivered: None,
 ) -> None:
     """See the module docstring (the question, the key, one turn, regeneration)."""
     async with respond_client(stub_settings, engine) as (client, epistrel):
@@ -205,7 +204,6 @@ async def test_s_sequential__director(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    multi_delivered: None,
 ) -> None:
     """``sequence_order = director``: the director's order is used (its call attributed by its
     budget kind); a request override does the same; an answer naming someone else falls back to
@@ -253,7 +251,6 @@ async def test_s_sequential__modes(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    multi_delivered: None,
 ) -> None:
     """A pre-M5 story's inactive ``interaction_mode`` is read; under shared knowledge
     (partitions off) a sequential turn still renders, its later context filtered of the other's

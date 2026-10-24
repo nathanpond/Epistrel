@@ -416,7 +416,7 @@ def test_s_novelty_permission__model_free() -> None:
 @pytest.mark.integration
 @pytest.mark.part("M5", "FR-VERIFY-11,12")
 async def test_s_novelty_permission__b(
-    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None, testimony_delivered: None
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None
 ) -> None:
     """(b) Bobby's render introduces a secret about Jenni that exists only in Jenni's partition
     (she believes she works for Vince; no canon names Vince): "Jenni works for Vince, you
@@ -475,7 +475,7 @@ FLINCH = "Bobby flinches at the noise."
 @pytest.mark.integration
 @pytest.mark.part("M5", "FR-MULTI-9; FR-VERIFY-11,12")
 async def test_s_novelty_permission__reactive(
-    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None, multi_delivered: None
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None
 ) -> None:
     """The exception (FR-MULTI-9): Jenni's primary render narrates Bobby (reactive) flinching
     at a noise he perceived ("Jenni drops a pan. Bobby flinches at the noise."): accepted as

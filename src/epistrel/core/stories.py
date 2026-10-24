@@ -1288,7 +1288,7 @@ async def set_participation(
     ``participation:<character id>``, class ``prospective``, ``{role, fixed}`` before and after)
     with its ``config_changed`` event; setting the role it has writes nothing."""
     from epistrel.core.config_changes import ConfigScope, record_config_change
-    from epistrel.core.settings_schema import ConfigClass
+    from epistrel.core.settings_schema import CharacterSettings, ConfigClass, tag_of
 
     async with db.begin() as conn:
         row = (
@@ -1333,7 +1333,8 @@ async def set_participation(
             old=before,
             new=wanted,
             actor=principal,
-            change_class=ConfigClass.prospective,
+            change_class=tag_of(CharacterSettings.model_fields["participation"])
+            or ConfigClass.interpretive,
             scope=ConfigScope.STORY,
             scope_id=story_id,
         )

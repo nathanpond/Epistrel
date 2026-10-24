@@ -8,7 +8,10 @@
   ``nfr_qual_1.think_leak``) are zero-tolerance metrics, and their report rows carry #134's
   zero-rule phrasing: "0 observed in n cases, one-sided 95% upper bound ≈ x%".
 
-#181 owns the guarantee-table rows these metrics feed; their ids are set here.
+- ``test_c_14__guarantee_rows`` (#181): the guarantee-table rows these metrics feed.
+  ``paraphrase_detection`` is model-dependent with metric NFR-QUAL-1, and the two zero-leak
+  suites declare it; structural knowledge separation and audience filtering are deterministic,
+  provided under ``Structured`` and not under Lite, and the published table says so.
 """
 
 from __future__ import annotations
@@ -18,6 +21,8 @@ from datetime import UTC, datetime
 
 import pytest
 
+from epistrel.core.profiles.guarantees import GUARANTEE, Kind
+from epistrel.core.seeds import profiles as seeds
 from epistrel.evals import SUITES, Rule, SeedTally, Verdict, judge
 from epistrel.evals.report import (
     Host,
@@ -26,6 +31,7 @@ from epistrel.evals.report import (
     SuiteResult,
     render_markdown,
 )
+from epistrel.tools import guarantees as guarantee_tool
 from epistrel.tools.generated import REPO_ROOT
 from tests.docs.test_c_14 import user_facing
 
@@ -128,3 +134,36 @@ def test_c_14__m5() -> None:
         for line in text.splitlines():
             if any(line.startswith(f"| `{m}`") for m in METRICS) and "| **fail**" not in line:
                 assert ZERO_PHRASE.search(line), (name, line)
+
+
+@pytest.mark.part("M5", "NFR-PRIV-4; NFR-QUAL-1")
+def test_c_14__guarantee_rows() -> None:
+    """NFR-QUAL-1's metrics feed the ``paraphrase_detection`` row: model-dependent, measured by
+    NFR-QUAL-1, held under partitions, and declared by both zero-leak suites (q04 and the
+    private-thought suite), so their reports name the row. NFR-PRIV-4's structural isolation is
+    ``structural_knowledge_separation``, deterministic. Under the seeded ``Structured`` (version
+    2) both it and audience filtering are provided, and under Lite neither is, which the
+    published table states in prose; no milestone is named for any of them any more."""
+    row = GUARANTEE["paraphrase_detection"]
+    assert (row.kind, row.metric, row.delivered_in) == (Kind.model_dependent, "NFR-QUAL-1", None)
+    for suite_name in METRICS.values():
+        assert "paraphrase_detection" in SUITES[suite_name].guarantees, suite_name
+    for row_id in ("structural_knowledge_separation", "audience_filtering"):
+        assert GUARANTEE[row_id].kind is Kind.deterministic, row_id
+        assert GUARANTEE[row_id].delivered_in is None, row_id
+    lite, structured = guarantee_tool.SEEDED
+    assert structured.version == seeds.STRUCTURED_VERSION
+    for row_id in ("structural_knowledge_separation", "audience_filtering", "paraphrase_detection"):
+        assert GUARANTEE[row_id].provided(structured.effective()), row_id
+        assert not GUARANTEE[row_id].provided(lite.effective()), row_id
+    table = (REPO_ROOT / "docs" / "guarantees.md").read_text(encoding="utf-8")
+    assert table == guarantee_tool.render()
+    lite_part = table.split(f"### {lite.name}\n", 1)[1].split("\n### ", 1)[0]
+    assert "structural knowledge separation" in lite_part.split("**Not provided under", 1)[1]
+    assert "(M5)" not in table
+    (step,) = [
+        line
+        for line in table.split("## Notes", 1)[0].splitlines()
+        if line.startswith("| paraphrase/indirect-disclosure detection |")
+    ]
+    assert "| model-dependent | NFR-QUAL-1 |" in step

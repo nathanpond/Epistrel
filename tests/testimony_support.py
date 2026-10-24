@@ -1,24 +1,17 @@
-"""Helpers for the testimony tests (#162): the ``partitions`` module, the perception levels, the
-``testimony`` dial and ``lazy_resolution`` (#164) delivered for a test (#181 delivers them for
-real), a structured story switched to partitions with testimony at ``model`` or ``defaulted``, a
-room of characters, the claim the says carry, and the witnesses' first-order and speech-act
-beliefs read back."""
+"""Helpers for the testimony tests (#162): a structured story switched to partitions with
+testimony at ``model`` or ``defaulted``, a room of characters, the claim the says carry, and
+the witnesses' first-order and speech-act beliefs read back."""
 
 from __future__ import annotations
 
 import json
-import types
-from collections.abc import Iterator
-from contextlib import contextmanager
 from typing import Any
 
-import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.core.enums import BeliefConfidenceLevel, OperationKind
 from epistrel.core.epistemic import transitions
-from epistrel.core.profiles import schema
 from epistrel.core.profiles.story import ProfileOverridesPatch, set_overrides
 from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Interval, Polarity, Proposition
@@ -30,33 +23,6 @@ from tests.structured_turn_support import structured_story
 
 TESTIMONY_LEVELS = frozenset({"model", "defaulted"})
 CLAIM_LINE = "Olivia sent the text."
-
-
-def _delivered() -> types.MappingProxyType[str, frozenset[str]]:
-    return types.MappingProxyType(
-        {
-            **schema.DELIVERED,
-            "partitions": frozenset({schema.ON}),
-            "perception": ps.LEVELS,
-            "testimony": TESTIMONY_LEVELS,
-            "lazy_resolution": frozenset({schema.ON}),
-        }
-    )
-
-
-def deliver_testimony(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Deliver ``partitions``, perception ``co_location``/``full`` and ``testimony``."""
-    monkeypatch.setattr(schema, "DELIVERED", _delivered())
-
-
-@contextmanager
-def delivered() -> Iterator[None]:
-    before = schema.DELIVERED
-    schema.DELIVERED = _delivered()
-    try:
-        yield
-    finally:
-        schema.DELIVERED = before
 
 
 async def enable_testimony(
@@ -144,16 +110,15 @@ async def observed(
 ) -> transitions.TransitionResult:
     """``holder`` saw for itself that ``proposition`` holds (an observation, ``known``), in an
     author operation before the turn."""
-    with delivered():
-        return await parts.transit(
-            engine,
-            story_id,
-            holder,
-            proposition,
-            cause=transitions.Kind.OBSERVATION,
-            confidence=transitions.Confidence(BeliefConfidenceLevel.KNOWN),
-            kind=OperationKind.CONTROL,
-        )
+    return await parts.transit(
+        engine,
+        story_id,
+        holder,
+        proposition,
+        cause=transitions.Kind.OBSERVATION,
+        confidence=transitions.Confidence(BeliefConfidenceLevel.KNOWN),
+        kind=OperationKind.CONTROL,
+    )
 
 
 async def make_minor(engine: AsyncEngine, character_id: str, age: int = 12) -> None:
@@ -230,8 +195,6 @@ __all__ = [
     "TESTIMONY_LEVELS",
     "adjudicated",
     "beliefs_of",
-    "deliver_testimony",
-    "delivered",
     "enable_testimony",
     "first_order",
     "forget",

@@ -1,23 +1,19 @@
-"""Helpers for the nested-belief tests (#167): the ``nested_beliefs`` module delivered for a
-test with partitions, perception and testimony (#181 delivers them for real), a story switched
-to nested beliefs at a depth, the knock world of S-NESTED-BELIEF (who knocked at the door: the
-functional story predicate ``knocker``), and nested writes in an operation's commit step."""
+"""Helpers for the nested-belief tests (#167): a story switched to nested beliefs (with
+partitions, perception and testimony) at a depth, the knock world of S-NESTED-BELIEF (who
+knocked at the door: the functional story predicate ``knocker``), and nested writes in an
+operation's commit step."""
 
 from __future__ import annotations
 
-import types
-from collections.abc import Awaitable, Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.enums import OperationKind, Provenance
 from epistrel.core.events import Operation
-from epistrel.core.profiles import schema
 from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.profiles.story import ProfileOverridesPatch, set_overrides
@@ -27,34 +23,6 @@ from tests import canon_support as c
 from tests import perception_support as ps
 from tests import testimony_support as ts
 from tests.event_support import rows
-
-
-def _delivered() -> types.MappingProxyType[str, frozenset[str]]:
-    return types.MappingProxyType(
-        {
-            **schema.DELIVERED,
-            "partitions": frozenset({schema.ON}),
-            "nested_beliefs": frozenset({schema.ON}),
-            "perception": ps.LEVELS,
-            "testimony": ts.TESTIMONY_LEVELS,
-            "lazy_resolution": frozenset({schema.ON}),
-        }
-    )
-
-
-def deliver_nested(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Deliver ``partitions``, ``nested_beliefs``, perception and ``testimony`` for the test."""
-    monkeypatch.setattr(schema, "DELIVERED", _delivered())
-
-
-@contextmanager
-def delivered() -> Iterator[None]:
-    before = schema.DELIVERED
-    schema.DELIVERED = _delivered()
-    try:
-        yield
-    finally:
-        schema.DELIVERED = before
 
 
 async def enable_nested(
@@ -186,36 +154,33 @@ async def in_operation(
     2 whose event id the step gets (else the operation's own author act's). Answers the step's
     answer."""
     found: dict[str, Any] = {}
-    with delivered():
-        async with Operation(
-            engine,
-            story_id=story_id,
-            kind=kind,
-            principal=c.PRINCIPAL,
-            bumps_revision=True if kind is not OperationKind.TURN else None,
-        ) as op:
-            if kind is OperationKind.TURN:
-                op.append("player_input", {"text": "go on"}, provenance=Provenance.PLAYER, beat=1)
-            if say is not None:
-                speaker, words, intent = say
-                op.append(
-                    "beat_say", {"text": words, "intent": intent}, character_id=speaker, beat=2
-                )
-            else:
-                op.append("belief_authored", {"holder_character_id": c.PRINCIPAL})
-            if kind is OperationKind.TURN:
-                op.append("message_rendered", {"text": "reply"})
+    async with Operation(
+        engine,
+        story_id=story_id,
+        kind=kind,
+        principal=c.PRINCIPAL,
+        bumps_revision=True if kind is not OperationKind.TURN else None,
+    ) as op:
+        if kind is OperationKind.TURN:
+            op.append("player_input", {"text": "go on"}, provenance=Provenance.PLAYER, beat=1)
+        if say is not None:
+            speaker, words, intent = say
+            op.append("beat_say", {"text": words, "intent": intent}, character_id=speaker, beat=2)
+        else:
+            op.append("belief_authored", {"holder_character_id": c.PRINCIPAL})
+        if kind is OperationKind.TURN:
+            op.append("message_rendered", {"text": "reply"})
 
-            async def run(conn: AsyncConnection) -> None:
-                kind_ = "beat_say" if say is not None else "belief_authored"
-                event_id = await conn.scalar(
-                    text("SELECT id FROM events WHERE operation_id = :o AND type = :t"),
-                    {"o": op.operation_id, "t": kind_},
-                )
-                found["value"] = await step(conn, op, str(event_id))
+        async def run(conn: AsyncConnection) -> None:
+            kind_ = "beat_say" if say is not None else "belief_authored"
+            event_id = await conn.scalar(
+                text("SELECT id FROM events WHERE operation_id = :o AND type = :t"),
+                {"o": op.operation_id, "t": kind_},
+            )
+            found["value"] = await step(conn, op, str(event_id))
 
-            op.add_commit_step(run)
-            await op.commit()
+        op.add_commit_step(run)
+        await op.commit()
     return found.get("value")
 
 
@@ -236,8 +201,6 @@ async def nested_rows(engine: AsyncEngine, story_id: str, holder: str) -> list[A
 
 __all__ = [
     "Knock",
-    "deliver_nested",
-    "delivered",
     "enable_nested",
     "in_operation",
     "knock_world",

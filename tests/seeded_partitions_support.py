@@ -2,9 +2,7 @@
 nested beliefs, the Sunday Dinner family of S-FAMILY with seeds the deterministic detectors
 normalize, and reads of the beliefs, memories and exposures a creation wrote.
 
-``partitions`` and ``nested_beliefs`` are #181's to deliver, so a test patches the delivered set
-(``tests.nested_support.deliver_nested``) before it creates the profile. The M5 parts (I-27,
-U-27, C-19, S-FAMILY) take their bodies from here."""
+The M5 parts (I-27, U-27, C-19, S-FAMILY) take their bodies from here."""
 
 from __future__ import annotations
 

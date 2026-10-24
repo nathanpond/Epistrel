@@ -37,6 +37,7 @@ from tests import canon_support as c
 from tests import exposure_support as xs
 from tests.fork_support import fork
 from tests.memory_support import use_structured
+from tests.profile_support import store_overrides
 from tests.projection_support import truncate, untruncate
 
 pytestmark = pytest.mark.integration
@@ -92,14 +93,23 @@ async def _revision(engine: AsyncEngine, story: str) -> int:
         )
 
 
+PARTITIONED = {
+    "character_knowledge": {"partitions": True, "lazy_resolution": True, "testimony": "defaulted"},
+    "perception": {"level": "co_location"},
+}
+"""The story's overrides: partitions with lazy resolution (#164) and co-located perception."""
+
+
 async def _world(engine: AsyncEngine) -> tuple[c.World, Proposition]:
     w = await c.world(engine)
     await use_structured(engine, w.story_id)
+    # #178's gate reads the story's effective configuration: partitions on, with lazy resolution.
+    await store_overrides(engine, w.story_id, PARTITIONED)
     return w, c.at(w.people["Cal"], w.places["garden"], None, None)
 
 
 @pytest.mark.part("M5", "FR-BELIEF-12,13,14")
-async def test_s_resolution_anchors(engine: AsyncEngine, testimony_delivered: None) -> None:
+async def test_s_resolution_anchors(engine: AsyncEngine) -> None:
     w, claim = await _world(engine)
     story = w.story_id
     ann, bobby = w.characters["Ann"], w.characters["Bobby"]
@@ -186,7 +196,7 @@ async def test_s_resolution_anchors(engine: AsyncEngine, testimony_delivered: No
 
 
 @pytest.mark.part("M5", "FR-STORE-29")
-async def test_s_undo_swap__beliefs(engine: AsyncEngine, testimony_delivered: None) -> None:
+async def test_s_undo_swap__beliefs(engine: AsyncEngine) -> None:
     """A lazy belief from turn 10 resolved during 81'-85' reverts to unresolved after the undo's
     swap; the original chain's own resolution (of a second exposure, in turn 85) returns."""
     w, claim = await _world(engine)

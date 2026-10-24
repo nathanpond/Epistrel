@@ -53,37 +53,34 @@ async def _hear(
     """``witness`` hears ``speaker`` claim ``claim`` (in an author operation citing its own
     event); answers the outcomes written."""
     found: dict[str, Any] = {}
-    with parts.delivered():
-        settings = await parts.partitioned(engine, w.story_id)
-        async with Operation(
-            engine,
-            story_id=w.story_id,
-            kind=OperationKind.CONTROL,
-            principal=c.PRINCIPAL,
-            bumps_revision=True,
-        ) as op:
-            op.append("belief_authored", {"holder_character_id": witness})
+    settings = await parts.partitioned(engine, w.story_id)
+    async with Operation(
+        engine,
+        story_id=w.story_id,
+        kind=OperationKind.CONTROL,
+        principal=c.PRINCIPAL,
+        bumps_revision=True,
+    ) as op:
+        op.append("belief_authored", {"holder_character_id": witness})
 
-            async def step(conn: AsyncConnection) -> None:
-                act = await conn.scalar(
-                    text(
-                        "SELECT id FROM events WHERE operation_id = :o AND type = 'belief_authored'"
-                    ),
-                    {"o": op.operation_id},
-                )
-                lookup = KeyedLookup(conn, StructuredReadSet())
-                said = testimony.SpeechAct(speaker, 0, (claim,), event_id=str(act))
-                consistency = await testimony.consistency_of(lookup, w.story_id, witness, [claim])
-                trust = await testimony.trust(conn, w.story_id, witness, speaker)
-                outcomes = testimony.testimony(
-                    witness, said, "sincere", consistency=consistency, trust=trust
-                )
-                await testimony.commit_testimony(conn, op, said, outcomes, settings=settings)
-                found["outcomes"] = list(outcomes)
-                found["trust"] = trust
+        async def step(conn: AsyncConnection) -> None:
+            act = await conn.scalar(
+                text("SELECT id FROM events WHERE operation_id = :o AND type = 'belief_authored'"),
+                {"o": op.operation_id},
+            )
+            lookup = KeyedLookup(conn, StructuredReadSet())
+            said = testimony.SpeechAct(speaker, 0, (claim,), event_id=str(act))
+            consistency = await testimony.consistency_of(lookup, w.story_id, witness, [claim])
+            trust = await testimony.trust(conn, w.story_id, witness, speaker)
+            outcomes = testimony.testimony(
+                witness, said, "sincere", consistency=consistency, trust=trust
+            )
+            await testimony.commit_testimony(conn, op, said, outcomes, settings=settings)
+            found["outcomes"] = list(outcomes)
+            found["trust"] = trust
 
-            op.add_commit_step(step)
-            await op.commit()
+        op.add_commit_step(step)
+        await op.commit()
     outcomes: list[testimony.TestimonyOutcome] = found["outcomes"]
     return outcomes
 

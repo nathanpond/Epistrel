@@ -95,7 +95,6 @@ async def test_s_minors__m5(
     pg_url: str,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    perception_delivered: None,
 ) -> None:
     """See the module docstring (each numbered case in order)."""
     settings = auth_settings(pg_url, model_adapter="stub")

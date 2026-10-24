@@ -110,9 +110,7 @@ async def test_u_16(engine: AsyncEngine) -> None:
 
 
 @pytest.mark.part("M5", "FR-COMMIT-6,13")
-async def test_u_16__m5(
-    engine: AsyncEngine, testimony_delivered: None, drained_embedding_jobs: None
-) -> None:
+async def test_u_16__m5(engine: AsyncEngine, drained_embedding_jobs: None) -> None:
     """With per-character partitions, the knocker's identity is an obligation committed on the
     knocker's side when a modeled character knocks on a decided intent (FR-COMMIT-13's knocker
     clause, FR-COMMIT-6). Turn 1's salient knock closes with "a knock occurred" and "who" and

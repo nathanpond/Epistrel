@@ -37,8 +37,6 @@ from epistrel.orchestrator.models.adapter import EVAL_CASE_HEADER
 from epistrel.orchestrator.models.registry import GENERATION
 
 if TYPE_CHECKING:
-    from epistrel.core.context import RequestContext
-    from epistrel.engine import Engine
     from epistrel.evals.runner import CaseContext
     from epistrel.orchestrator.models.stub import StubAdapter
 
@@ -94,8 +92,7 @@ class PrivThinkLeakSuite(Suite):
     min_cases = 300
     ci_gate = True
     case_model = ThinkLeakCase
-    dials = fixtures.M5_DIALS
-    profile_label = fixtures.PROFILE_LABEL
+    guarantees = ("paraphrase_detection",)
     metrics = (
         Metric(
             THINK_LEAK,
@@ -128,12 +125,6 @@ class PrivThinkLeakSuite(Suite):
 
     def __init__(self) -> None:
         self._prelude: set[tuple[str, str]] = set()
-
-    async def setup(self, engine: Engine, ctx: RequestContext) -> None:
-        fixtures.DELIVERY.open()
-
-    async def teardown(self, engine: Engine, ctx: RequestContext) -> None:
-        fixtures.DELIVERY.close()
 
     def script_stub(self, case: CaseModel, stub: StubAdapter) -> None:
         """A stub run's two renders. The measured turn's prompt holds the prelude's line too

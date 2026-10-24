@@ -116,7 +116,6 @@ async def test_s_phone(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    testimony_delivered: None,
 ) -> None:
     """See the module docstring."""
     async with respond_client(stub_settings, engine) as (client, epistrel):

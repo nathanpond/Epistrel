@@ -23,6 +23,8 @@ from epistrel.api import create_app
 from epistrel.api.app import include_protected
 from epistrel.config import Settings
 from epistrel.core.policies.model import Policy
+from epistrel.core.profiles import schema as profile_schema
+from epistrel.core.profiles.guarantees import GUARANTEE, Kind
 from epistrel.engine import Engine
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models import metrics, registry
@@ -627,3 +629,32 @@ def test_c_04__adjudication_row() -> None:
     (system, user) = render(purpose, built)
     assert registry.RULE_DEFAULT_MARKER in system.content
     assert "Claims:" in user.content
+
+
+@pytest.mark.part("M5", "FR-MODEL-2,13")
+def test_c_04__belief_adjudication_row() -> None:
+    """#181's slice: with the M5 modules delivered (``testimony = model`` turns the purpose on),
+    the published model guide still equals the guide the purpose registry generates, row for
+    ``belief_adjudication`` included, and the generator's ``--check`` passes. The purpose is
+    delivered, not reserved, routed to its own row, then ``entailment``'s, then the default
+    (``default_model_key``), and the guarantee table holds it as model-dependent under
+    ``testimony = model`` only.
+
+    Complement: a guide missing the row is stale (``--check`` would fail)."""
+    guide = (Path(__file__).resolve().parents[2] / "docs" / "models.md").read_text("utf-8")
+    assert guide == model_guide.render()
+    assert model_guide.main(["--check"]) == 0
+    assert "### `belief_adjudication`" in guide
+    assert "belief_adjudication" in registry.DELIVERED
+    assert "belief_adjudication" not in {r.name for r in registry.RESERVED_PURPOSES}
+    assert registry.DELIVERED["belief_adjudication"].default_model_key == "entailment"
+    assert profile_schema.is_delivered("testimony", "model")
+    row = GUARANTEE["belief_adjudication"]
+    assert (row.kind, row.purposes, row.delivered_in) == (
+        Kind.model_dependent,
+        ("belief_adjudication",),
+        None,
+    )
+    assert [(n.module, n.level, n.only) for n in row.requires][-1] == ("testimony", "model", True)
+    stale = guide.replace("### `belief_adjudication`", "### `withheld`")
+    assert stale != model_guide.render()

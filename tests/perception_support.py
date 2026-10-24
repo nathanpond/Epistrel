@@ -1,22 +1,16 @@
-"""Helpers for the perception-routing tests (#161): the ``partitions`` module and the perception
-levels delivered for a test (#181 delivers them for real), a structured story switched to
+"""Helpers for the perception-routing tests (#161): a structured story switched to
 per-character partitions at a perception level, the authoritative topology written as the
 author's canon (placements, adjacency with barriers, channels, containment), the languages a
 character understands, and the routed memories read back."""
 
 from __future__ import annotations
 
-import types
-from collections.abc import Iterator
-from contextlib import contextmanager
 from typing import Any
 
-import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.core.enums import OperationKind
-from epistrel.core.profiles import schema
 from epistrel.core.profiles.fingerprint import RuntimeFacts
 from epistrel.core.profiles.story import ProfileOverridesPatch, set_overrides
 from epistrel.core.propositions import store
@@ -32,28 +26,6 @@ from tests.event_support import rows
 
 NO_FACTS = RuntimeFacts(models={}, templates={})
 LEVELS = frozenset({"co_location", "full"})
-
-
-def _delivered() -> types.MappingProxyType[str, frozenset[str]]:
-    return types.MappingProxyType(
-        {**schema.DELIVERED, "partitions": frozenset({schema.ON}), "perception": LEVELS}
-    )
-
-
-def deliver_perception(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Deliver ``partitions`` and perception ``co_location``/``full`` for the test."""
-    monkeypatch.setattr(schema, "DELIVERED", _delivered())
-
-
-@contextmanager
-def delivered() -> Iterator[None]:
-    """``deliver_perception`` for a block (a Hypothesis run outside a test's ``monkeypatch``)."""
-    before = schema.DELIVERED
-    schema.DELIVERED = _delivered()
-    try:
-        yield
-    finally:
-        schema.DELIVERED = before
 
 
 async def perceive(engine: AsyncEngine, story_id: str, level: str = "full") -> None:
@@ -192,8 +164,6 @@ __all__ = [
     "LEVELS",
     "NO_FACTS",
     "adjoin",
-    "deliver_perception",
-    "delivered",
     "forget_perception",
     "inside",
     "memories_of",

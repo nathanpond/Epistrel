@@ -104,8 +104,7 @@ async def _house(client: Any, engine: AsyncEngine) -> tuple[str, dict[str, str]]
         ),
         provenance="author",
     )
-    with parts.delivered():
-        await parts.believe(engine, story, ids["Jenni"], _never(ids))
+    await parts.believe(engine, story, ids["Jenni"], _never(ids))
     return story, ids
 
 
@@ -153,7 +152,6 @@ async def test_s_entity_identity__m5(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    testimony_delivered: None,
 ) -> None:
     """See the module docstring."""
     async with respond_client(stub_settings, engine) as (client, epistrel):

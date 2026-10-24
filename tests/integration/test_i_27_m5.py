@@ -3,8 +3,7 @@
 The M3 parts live in ``tests/integration/test_i_27.py`` and the M4 part in
 ``tests/integration/test_i_27_m4.py`` (traceability counts a test ID per milestone in one file).
 The scenario is S-FAMILY's Sunday Dinner of ``tests/seeded_partitions_support``, whose seeds the
-deterministic detectors normalize; ``partitions`` and ``nested_beliefs`` are delivered for the
-test (#181 delivers them for real).
+deterministic detectors normalize.
 """
 
 from __future__ import annotations
@@ -16,7 +15,6 @@ from epistrel.config import Settings
 from epistrel.core.epistemic import testimony
 from epistrel.testing.profiles import structured_m4
 from tests import genesis_support as g
-from tests import nested_support as ns
 from tests import seeded_partitions_support as sp
 from tests.auth_support import auth_settings
 from tests.respond_support import respond_client
@@ -34,7 +32,6 @@ async def test_i_27__partitions(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The Sunday Dinner created with per-character partitions: seeds route by audience.
 
@@ -53,9 +50,8 @@ async def test_i_27__partitions(
       item's ``seed_materialized`` act. The topology and the channel are canon, the Mother's
       relationship carries its ``trust`` and her trust in Sam reads it.
 
-    Complement: the same scenario under ``Structured (M4)`` (no partitions) writes no belief, no
-    exposure and keeps every ``partitions`` row unmaterialized."""
-    ns.deliver_nested(monkeypatch)
+    Complement: the same scenario pinned to ``Structured (M4)``, version 1 (no partitions), writes
+    no belief, no exposure and keeps every ``partitions`` row unmaterialized."""
     async with respond_client(stub_settings, engine) as (client, _lib):
         profile = await sp.partitioned_profile(client)
         characters = await sp.cast(client)
@@ -181,7 +177,10 @@ async def test_i_27__partitions(
 
         # -- complement: without partitions, no belief and nothing of capability partitions
         lite = await g.create_from(
-            client, sp.request(scenario_id, characters, structured_m4(), neighbour=False)
+            client,
+            sp.request(
+                scenario_id, characters, structured_m4(), neighbour=False, engine_profile_version=1
+            ),
         )
         assert await sp.beliefs(engine, lite["story_id"]) == []
         rows_lite = await sp.rows_of(

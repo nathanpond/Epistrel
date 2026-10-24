@@ -41,8 +41,6 @@ from epistrel.orchestrator.lite.schemas import RespondRequest, RespondResult
 from epistrel.orchestrator.models.registry import GENERATION
 
 if TYPE_CHECKING:
-    from epistrel.core.context import RequestContext
-    from epistrel.engine import Engine
     from epistrel.evals.runner import CaseContext
     from epistrel.orchestrator.models.stub import StubAdapter
 
@@ -115,8 +113,7 @@ class Q04Suite(Suite):
     min_cases = 300
     ci_gate = True
     case_model = AsymmetryCase
-    dials = fixtures.M5_DIALS
-    profile_label = fixtures.PROFILE_LABEL
+    guarantees = ("paraphrase_detection",)
     metrics = (
         Metric(
             ASYMMETRY,
@@ -144,12 +141,6 @@ class Q04Suite(Suite):
         "bound, never as proof that no disclosure can happen; a render the pipeline repaired "
         "before the output is reported (`q04.render_repaired`), not counted.",
     )
-
-    async def setup(self, engine: Engine, ctx: RequestContext) -> None:
-        fixtures.DELIVERY.open()
-
-    async def teardown(self, engine: Engine, ctx: RequestContext) -> None:
-        fixtures.DELIVERY.close()
 
     async def evaluate(self, ctx: CaseContext, case: CaseModel) -> Outcome:
         assert isinstance(case, AsymmetryCase)  # noqa: S101 - load() validated it

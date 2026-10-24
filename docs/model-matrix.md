@@ -47,6 +47,20 @@ ladder reaches rung 3 (a `regeneration` call). For these rows the **Designed per
 is the first render and the reserved guardrail calls, so **Extra calls** holds the stages a
 structured turn adds (salience, entailment, composition, regeneration) as well as retries.
 
+**Three-character turns (P-08 M5, #182).** A row marked *three-character sequential turns* plays
+S-SEQUENTIAL's key room with a third primary: the player speaks and three co-located characters
+render one after another (per-character renders) on the seeded `Structured` profile, under a
+story override of `budgets.model_calls` = 16. Its **Designed per turn** is #156's plan for three
+renders: a render and an extraction per primary, the composed message's detection, a salience
+pass per render and the polish (11 calls), plus the reserved guardrail calls. *Director order*
+adds the director's ordering call; *default budget* runs under the profile's own call cap (no
+override). The turn path names the profile and version and the perception level the turns ran
+under, how often budget planning reduced or deferred a primary, and the degradation steps the
+turns took (an optional call the budget could not fit is skipped, never a failed turn).
+
+**Pending.** The three-character rows above are the stub's; a live tier's three-character rows
+are pending until its next run (`--turn-kinds three_character_sequential`).
+
 **Turn deadline override (#454).** A row whose turn path says *turn deadline … s (override)*
 ran its turns under that per-story `budgets.deadline_ms` override, not its profile's own
 deadline (the `Structured (M4)` profile's is 45 s). The matrix measures how long a turn takes,
@@ -61,6 +75,12 @@ from the p50 / p95 against it.
 | local: cydonia-24b-v4.3 (structured turns) | minors policy on | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | not run | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (tokens 32/32, 128/128; temp 0: 10/10 identical) | 20 | 114.18 s | 160.01 s | 9.2 (extraction_backstop 2.05, generation 2, guardrail_check 3.9, regeneration 0.25, salience_detection 1) |
 | local: cydonia-24b-v4.3 | policies off | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | not run | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (tokens 32/32, 128/128; temp 0: 10/10 identical) | 20 | 10.45 s | 13.20 s | 1 (generation 1) |
 | local: cydonia-24b-v4.3 (structured turns) | policies off | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | not run | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (tokens 32/32, 128/128; temp 0: 10/10 identical) | 20 | 126.36 s | 223.41 s | 6.1 (extraction_backstop 2.5, generation 2.15, regeneration 0.45, salience_detection 1) |
+| stub: stub-model (three-character, default budget turns) | minors policy on | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (tokens 17/32, 17/128; temp 0: 10/10 identical) | 20 | 0.96 s | 1.09 s | 16 (extraction_backstop 4, generation 4, guardrail_check 5, salience_detection 3) |
+| stub: stub-model (three-character, director order turns) | minors policy on | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (tokens 17/32, 17/128; temp 0: 10/10 identical) | 20 | 0.93 s | 1.03 s | 14 (extraction_backstop 3, generation 4, guardrail_check 4, salience_detection 3) |
+| stub: stub-model (three-character sequential turns) | minors policy on | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (tokens 17/32, 17/128; temp 0: 10/10 identical) | 20 | 0.95 s | 1.05 s | 16 (extraction_backstop 4, generation 4, guardrail_check 5, salience_detection 3) |
+| stub: stub-model (three-character, default budget turns) | policies off | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (tokens 17/32, 17/128; temp 0: 10/10 identical) | 20 | 0.95 s | 1.09 s | 11 (extraction_backstop 4, generation 4, salience_detection 3) |
+| stub: stub-model (three-character, director order turns) | policies off | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (tokens 17/32, 17/128; temp 0: 10/10 identical) | 20 | 1.03 s | 5.24 s | 12 (extraction_backstop 4, generation 5, salience_detection 3) |
+| stub: stub-model (three-character sequential turns) | policies off | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓; structured_output ✓) | ✓ (tokens 17/32, 17/128; temp 0: 10/10 identical) | 20 | 0.90 s | 0.98 s | 11 (extraction_backstop 4, generation 4, salience_detection 3) |
 
 ## Calls
 
@@ -70,6 +90,12 @@ from the p50 / p95 against it.
 | local: cydonia-24b-v4.3 (structured turns) | minors policy on | 3 (generation 1, guardrail_check 2) | 124 (extraction_backstop 41, generation 20, guardrail_check 38, regeneration 5, salience_detection 20) | 3 (extraction_backstop timeout 2, generation invalid_output 1) | 3 of 20 (turns 14, 16, 18) | 106.68 s / 145.54 s | 5 (repair 5) |
 | local: cydonia-24b-v4.3 | policies off | 1 (generation 1) | 0 | 0 | 0 of 20 | 10.45 s / 13.20 s | 0 |
 | local: cydonia-24b-v4.3 (structured turns) | policies off | 1 (generation 1) | 102 (extraction_backstop 50, generation 23, regeneration 9, salience_detection 20) | 5 (extraction_backstop timeout 5) | 4 of 20 (turns 7, 8, 9, 11) | 117.27 s / 223.41 s | 7 (repair 7) |
+| stub: stub-model (three-character, default budget turns) | minors policy on | 15 (extraction_backstop 4, generation 4, guardrail_check 4, salience_detection 3) | 20 (guardrail_check 20) | 0 | 0 of 20 | 0.96 s / 1.09 s | 0 |
+| stub: stub-model (three-character, director order turns) | minors policy on | 16 (extraction_backstop 4, generation 5, guardrail_check 4, salience_detection 3) | 0 | 0 | 0 of 20 | 0.93 s / 1.03 s | 0 |
+| stub: stub-model (three-character sequential turns) | minors policy on | 15 (extraction_backstop 4, generation 4, guardrail_check 4, salience_detection 3) | 20 (guardrail_check 20) | 0 | 0 of 20 | 0.95 s / 1.05 s | 0 |
+| stub: stub-model (three-character, default budget turns) | policies off | 11 (extraction_backstop 4, generation 4, salience_detection 3) | 0 | 0 | 0 of 20 | 0.95 s / 1.09 s | 0 |
+| stub: stub-model (three-character, director order turns) | policies off | 12 (extraction_backstop 4, generation 5, salience_detection 3) | 0 | 0 | 0 of 20 | 1.03 s / 5.24 s | 0 |
+| stub: stub-model (three-character sequential turns) | policies off | 11 (extraction_backstop 4, generation 4, salience_detection 3) | 0 | 0 | 0 of 20 | 0.90 s / 0.98 s | 0 |
 
 ## Runs
 
@@ -79,6 +105,12 @@ from the p50 / p95 against it.
 | local: cydonia-24b-v4.3 (structured turns) | minors policy on | 2026-10-22 | `debd407` | Apple M3 Max, 128 GB | LM Studio 0.4.26 | structured respond (#150); turn deadline 300 s (override) |
 | local: cydonia-24b-v4.3 | policies off | 2026-10-22 | `e9d6a7f` | Apple M3 Max, 128 GB | LM Studio 0.4.26 | respond (#57) |
 | local: cydonia-24b-v4.3 (structured turns) | policies off | 2026-10-22 | `debd407` | Apple M3 Max, 128 GB | LM Studio 0.4.26 | structured respond (#150); turn deadline 300 s (override) |
+| stub: stub-model (three-character, default budget turns) | minors policy on | 2026-10-24 | `d680e09-dirty` | the stub adapter (no model) | in-process stub | three-character sequential respond (#174); turn deadline 300 s (override); profile Structured v2, perception full; no primary reduced or deferred; degradation composition_fallback 20 |
+| stub: stub-model (three-character, director order turns) | minors policy on | 2026-10-24 | `d680e09-dirty` | the stub adapter (no model) | in-process stub | three-character sequential respond (#174); turn deadline 300 s (override); profile Structured v2, perception full; no primary reduced or deferred; degradation director_order_skipped 20, polish_skipped_budget 20, skip_polish 20 |
+| stub: stub-model (three-character sequential turns) | minors policy on | 2026-10-24 | `d680e09-dirty` | the stub adapter (no model) | in-process stub | three-character sequential respond (#174); turn deadline 300 s (override); profile Structured v2, perception full; no primary reduced or deferred; degradation composition_fallback 20 |
+| stub: stub-model (three-character, default budget turns) | policies off | 2026-10-24 | `d680e09-dirty` | the stub adapter (no model) | in-process stub | three-character sequential respond (#174); turn deadline 300 s (override); profile Structured v2, perception full; no primary reduced or deferred; degradation composition_fallback 20 |
+| stub: stub-model (three-character, director order turns) | policies off | 2026-10-24 | `d680e09-dirty` | the stub adapter (no model) | in-process stub | three-character sequential respond (#174); turn deadline 300 s (override); profile Structured v2, perception full; no primary reduced or deferred; degradation composition_fallback 20, director_order_skipped 20 |
+| stub: stub-model (three-character sequential turns) | policies off | 2026-10-24 | `d680e09-dirty` | the stub adapter (no model) | in-process stub | three-character sequential respond (#174); turn deadline 300 s (override); profile Structured v2, perception full; no primary reduced or deferred; degradation composition_fallback 20 |
 
 ## Embedding
 

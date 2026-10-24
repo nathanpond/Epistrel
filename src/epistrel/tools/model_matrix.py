@@ -31,6 +31,21 @@ stub's scripted contradictions, so only ``run_matrix(turn_kinds=…)`` on a stub
 Structured and repair-heavy rows run under a recorded per-story turn deadline override of
 ``TURN_DEADLINE_S`` (#454), so a slow tier is measured rather than cut by the profile's deadline.
 
+**Three-character turns** (P-08 M5, #182). A ``three_character_sequential`` row plays
+``ThreeCharacterDriver``'s turns: S-SEQUENTIAL's key room (Cal, the player, with Bobby and Jenni)
+plus Marcus, all four placed in the study, on the seeded ``Structured`` profile's latest version
+(per-character renders, perception ``full``); the player speaks and the three primaries render
+``sequential``ly in request order, under a recorded story override of ``budgets.model_calls``
+(``THREE_CHARACTER_CALLS``) and the measurement deadline. Each turn's design is #156's plan for
+three renders (``three_character_design``: a render and an extraction per primary, the composed
+message's detection, the salience pass per render and the polish, plus the reserved guardrail
+calls), so on the stub its calls per turn equal the plan. A ``three_character_director`` row adds
+the director's ordering call (``sequence_order = director``), and a ``three_character_default``
+row runs under the profile's own ``budgets.model_calls`` (no override), reporting how often
+budget planning reduced or deferred a primary (``Row.planning``). Each row records
+the profile and version its turns ran under and the perception level of their beats, from the
+respond results. ``--turn-kinds three_character_sequential`` runs it against a live tier.
+
 **Embedding** (#138, C-07 M4). With ``--embedding-base-url`` and ``--embedding-model`` the run
 also measures that ``/embeddings`` endpoint through the embedding port
 (``ModelAccessLayer.embeddings``): protocol compatibility (``GET /models`` and one embedding),
@@ -111,7 +126,13 @@ from epistrel.orchestrator.models.capability import (
 )
 from epistrel.orchestrator.models.errors import ModelError
 from epistrel.orchestrator.models.metrics import CallLog, ModelCall, recording
-from epistrel.orchestrator.models.registry import GENERATION, GUARDRAIL_CHECK, STORY_PURPOSES
+from epistrel.orchestrator.models.registry import (
+    EXTRACTION_BACKSTOP,
+    GENERATION,
+    GUARDRAIL_CHECK,
+    SALIENCE_DETECTION,
+    STORY_PURPOSES,
+)
 from epistrel.orchestrator.models.stub import StubAdapter
 from epistrel.orchestrator.policies.output_gate import DEADLINE
 from epistrel.tools.generated import REPO_ROOT
@@ -138,14 +159,46 @@ type PolicySet = Literal["off", "minors"]
 POLICY_SETS: tuple[PolicySet, ...] = ("off", "minors")
 POLICY_LABELS: Mapping[PolicySet, str] = {"off": "policies off", "minors": "minors policy on"}
 
-type TurnKind = Literal["lite", "structured", "repair"]
-TURN_KINDS: tuple[TurnKind, ...] = ("lite", "structured", "repair")
+type TurnKind = Literal[
+    "lite",
+    "structured",
+    "repair",
+    "three_character_sequential",
+    "three_character_director",
+    "three_character_default",
+]
+THREE_CHARACTER_KINDS: tuple[TurnKind, ...] = (
+    "three_character_sequential",
+    "three_character_director",
+    "three_character_default",
+)
+TURN_KINDS: tuple[TurnKind, ...] = ("lite", "structured", "repair", *THREE_CHARACTER_KINDS)
 TURN_KIND_LABELS: Mapping[TurnKind, str] = {
     "lite": "Lite",
     "structured": "structured",
     "repair": "repair-heavy",
+    "three_character_sequential": "three-character sequential",
+    "three_character_director": "three-character, director order",
+    "three_character_default": "three-character, default budget",
 }
 STRUCTURED_PATH = "structured respond (#150)"
+THREE_CHARACTER_PATH = "three-character sequential respond (#174)"
+STUB_TIER = "stub"
+"""The tier of the rows the stub adapter measures (P-08's own runs)."""
+THREE_CHARACTER_CAST = ("Cal", "Bobby", "Jenni", "Marcus")
+"""S-SEQUENTIAL's key room (Cal the player, Bobby and Jenni) and Marcus, the third primary."""
+THREE_CHARACTER_PRIMARIES = 3
+THREE_CHARACTER_CALLS = 16
+"""The story override of ``budgets.model_calls`` the three-character rows run under (the planner's
+Discretion on #182; the seeded ``Structured`` v2's own cap, recorded as an override so the row
+does not depend on the profile's default)."""
+PLANNING = ("reduced_characters", "deferred_characters", "escalation_deferred")
+type ThreeCharacterVariant = Literal["sequential", "director", "default"]
+THREE_CHARACTER_VARIANTS: Mapping[TurnKind, ThreeCharacterVariant] = {
+    "three_character_sequential": "sequential",
+    "three_character_director": "director",
+    "three_character_default": "default",
+}
 
 MINORS_PROMPT = (
     "Flag the text if it describes sexual content involving anyone under 18, or sexualises a "
@@ -195,12 +248,18 @@ class TurnCalls(CallLog):
         designed: Mapping[str, int],
         fallback_causes: Iterable[str] = (),
         max_calls: int | None = None,
+        planning: Mapping[str, int] | None = None,
+        steps: Iterable[str] = (),
     ) -> None:
         super().__init__()
         self.calls.extend(calls)
         self.designed = dict(designed)
         self.fallback_causes = list(fallback_causes)
         self.max_calls = max_calls
+        self.planning = dict(planning or {})
+        """A multi-character turn's budget-planning entries (``PLANNING``), by name (#182)."""
+        self.steps = list(steps)
+        """The turn's degradation steps (a three-character row records them, #182)."""
 
     def extra(self) -> dict[str, int]:
         """The calls made beyond the design, by purpose. A designed call that was never made
@@ -228,6 +287,24 @@ def designed_calls(guardrail_calls: int) -> dict[str, int]:
     that its budget reserves (#69). G is one call per model-assisted input policy for the input,
     plus one per model-assisted output policy for the first output check."""
     design = {GENERATION.name: 1}
+    if guardrail_calls:
+        design[GUARDRAIL_CHECK.name] = guardrail_calls
+    return design
+
+
+def three_character_design(
+    guardrail_calls: int, *, renders: int = THREE_CHARACTER_PRIMARIES, director: bool = False
+) -> dict[str, int]:
+    """A three-character sequential turn's design (#182, #156's plan): one ``generation`` and one
+    ``extraction_backstop`` per planned render, the composed message's detection (an
+    ``extraction_backstop``), a ``salience_detection`` per render and the polish (a
+    ``generation``), with the director's ordering call (a ``generation``) when the order is the
+    director's, plus the ``guardrail_calls`` (G) the budget reserves."""
+    design = {
+        GENERATION.name: renders + 1 + (1 if director else 0),
+        EXTRACTION_BACKSTOP.name: renders + 1,
+        SALIENCE_DETECTION.name: renders,
+    }
     if guardrail_calls:
         design[GUARDRAIL_CHECK.name] = guardrail_calls
     return design
@@ -383,10 +460,128 @@ class StructuredDriver:
         )
 
 
+@dataclass
+class ThreeCharacterDriver:
+    """A three-character sequential turn through ``Engine.respond`` (P-08 M5, #182): see the
+    module docstring. ``variant`` is ``sequential`` (request order), ``director`` (the
+    director's order) or ``default`` (the profile's own call cap, no override). The minors row
+    casts Jenni as a
+    twelve-year-old, so the seeded minors policy applies. ``profile`` and ``perception`` are the
+    last turn's: the engine profile and version it ran under and the perception level its
+    beats were filtered at."""
+
+    variant: ThreeCharacterVariant = "sequential"
+    deadline_override_ms: int | None = MEASUREMENT_DEADLINE_MS
+    name: str = THREE_CHARACTER_PATH
+    engine: Engine | None = None
+    story_id: str = ""
+    actor_id: str = ""
+    primaries: list[str] = field(default_factory=list)
+    profile: str | None = None
+    perception: str | None = None
+
+    async def prepare(self, engine: Engine, policies: PolicySet) -> None:
+        from epistrel.core.mutation import FactRequest  # lazy: the tool's own imports
+        from epistrel.core.propositions import store
+        from epistrel.core.propositions.model import Interval, Proposition
+        from epistrel.core.propositions.vocabulary import CORE_BY_NAME
+        from epistrel.testing import structured_load  # lazy: test-only module
+
+        young = policies == "minors"
+        cast_ = [
+            CharacterSpec(
+                name="Cal", definition="A traveller, curious.", true_age=29, is_player=True
+            ),
+            CharacterSpec(name="Bobby", definition="The innkeeper's son, restless.", true_age=31),
+            CharacterSpec(
+                name="Jenni",
+                definition=(
+                    "A cheerful twelve-year-old who lives at the inn."
+                    if young
+                    else "The innkeeper, careful with her keys."
+                ),
+                true_age=12 if young else 44,
+            ),
+            CharacterSpec(name="Marcus", definition="A carter waiting out the rain.", true_age=52),
+        ]
+        spec = StorySpec(name=f"model matrix ({policies}, three characters)", characters=cast_)
+        created = await create_story_from(engine.db, spec, principal=PRINCIPAL)
+        self.engine, self.story_id = engine, created.story_id
+        ids = {c.name: c.id for c in created.characters}
+        self.actor_id = ids["Cal"]
+        self.primaries = [ids[n] for n in THREE_CHARACTER_CAST[1:]]
+        await structured_load.use_structured(engine.db, self.story_id)
+        budgets: dict[str, Any] = (
+            {} if self.variant == "default" else {"model_calls": THREE_CHARACTER_CALLS}
+        )
+        if self.deadline_override_ms is not None:
+            budgets["deadline_ms"] = self.deadline_override_ms
+        ctx = RequestContext(principal=PRINCIPAL)
+        await engine.set_profile_overrides(
+            ctx,
+            self.story_id,
+            ProfileOverridesPatch(settings={"budgets": budgets}, ignore_warnings=True),
+        )
+        async with engine.db.begin() as conn:
+            study = await store.add_entity(conn, self.story_id, "place", "the study")
+        for character in ids.values():
+            await engine.commit_fact(
+                ctx,
+                self.story_id,
+                FactRequest(
+                    proposition=Proposition(
+                        subject_id=character,
+                        predicate_id=CORE_BY_NAME["located_at"].id,
+                        object_id=study,
+                        valid_time=Interval.of(None, None),
+                    )
+                ),
+            )
+
+    async def turn(self, said: str) -> TurnCalls:
+        assert self.engine is not None  # noqa: S101 - prepare() ran
+        request = RespondRequest(
+            actor_character_id=self.actor_id,
+            player_input=PlayerInputBody(say=said),
+            render_character_ids=list(self.primaries),
+            interaction_mode="sequential",
+            sequence_order="director" if self.variant == "director" else None,
+        )
+        ctx = RequestContext(principal=PRINCIPAL)
+        result = await self.engine.respond(ctx, self.story_id, request)
+        assert result.budget is not None  # noqa: S101 - a played turn reports its budget (#69)
+        if result.profile is not None:
+            found = await self.engine.get_profile(ctx, result.profile.id)
+            self.profile = f"{found.name} v{result.profile.version}"
+        self.perception = result.audience_filter
+        planning = {
+            "reduced_characters": len(result.reduced_characters),
+            "deferred_characters": len(result.deferred_characters),
+            "escalation_deferred": len(result.escalation_deferred),
+        }
+        renders = THREE_CHARACTER_PRIMARIES - planning["reduced_characters"]
+        renders -= planning["deferred_characters"]
+        return TurnCalls(
+            result.model_calls,
+            three_character_design(
+                sum(result.budget.reserved.values()),
+                renders=renders,
+                director=self.variant == "director",
+            ),
+            [d.cause for d in result.degradation_details if d.step == SAFE_FALLBACK],
+            result.budget.max_calls,
+            planning={k: v for k, v in planning.items() if v},
+            steps=result.degradation,
+        )
+
+
 def driver_for(kind: TurnKind) -> TurnDriver:
     """The driver of a row's turn kind."""
     if kind == "lite":
         return RespondDriver()
+    variant = THREE_CHARACTER_VARIANTS.get(kind)
+    if variant is not None:
+        return ThreeCharacterDriver(variant=variant)
     return StructuredDriver(repair=kind == "repair")
 
 
@@ -600,6 +795,16 @@ class Row:
     """The per-story ``budgets.deadline_ms`` override the row's turns ran under (#454), or
     ``None`` when they ran under the profile's own deadline. A structured row sets one
     (``MEASUREMENT_DEADLINE_MS``), so a reader knows the profile default was not used."""
+    profile: str | None = None
+    """The engine profile and version the row's turns ran under (``<name> v<version>``, from the
+    respond results; a three-character row records it, #182)."""
+    perception: str | None = None
+    """The perception level the row's beats were filtered at (a three-character row, #182)."""
+    planning: dict[str, int] | None = None
+    """A three-character row's budget-planning entries over its measured turns, by name: the
+    turns that reduced or deferred a primary, or deferred an escalation (#182)."""
+    degradation: dict[str, int] | None = None
+    """A three-character row's degradation steps over its measured turns, by name (#182)."""
 
     @property
     def key(self) -> str:
@@ -870,6 +1075,24 @@ is the first render and the reserved guardrail calls, so **Extra calls** holds t
 structured turn adds (salience, entailment, composition, regeneration) as well as retries.
 """
 
+THREE_CHARACTER_NOTE = """\
+**Three-character turns (P-08 M5, #182).** A row marked *three-character sequential turns* plays
+S-SEQUENTIAL's key room with a third primary: the player speaks and three co-located characters
+render one after another (per-character renders) on the seeded `Structured` profile, under a
+story override of `budgets.model_calls` = 16. Its **Designed per turn** is #156's plan for three
+renders: a render and an extraction per primary, the composed message's detection, a salience
+pass per render and the polish (11 calls), plus the reserved guardrail calls. *Director order*
+adds the director's ordering call; *default budget* runs under the profile's own call cap (no
+override). The turn path names the profile and version and the perception level the turns ran
+under, how often budget planning reduced or deferred a primary, and the degradation steps the
+turns took (an optional call the budget could not fit is skipped, never a failed turn).
+"""
+
+THREE_CHARACTER_PENDING = """\
+**Pending.** The three-character rows above are the stub's; a live tier's three-character rows
+are pending until its next run (`--turn-kinds three_character_sequential`).
+"""
+
 DEADLINE_OVERRIDE_NOTE = """\
 **Turn deadline override (#454).** A row whose turn path says *turn deadline … s (override)*
 ran its turns under that per-story `budgets.deadline_ms` override, not its profile's own
@@ -894,10 +1117,24 @@ model has (the deployment pins it at the first embedding); **Max batch** is the 
 
 
 def _turn_path_text(row: Mapping[str, Any]) -> str:
-    """A row's turn path, with its turn deadline override if it ran under one (#454)."""
+    """A row's turn path, with its turn deadline override if it ran under one (#454), and the
+    profile, perception level and budget-planning entries a three-character row records."""
     override = row.get("deadline_override_ms")
     path = str(row["turn_path"])
-    return path if override is None else f"{path}; turn deadline {override / 1000:g} s (override)"
+    if override is not None:
+        path += f"; turn deadline {override / 1000:g} s (override)"
+    if row.get("profile"):
+        path += f"; profile {row['profile']}, perception {row.get('perception') or '—'}"
+    planning = row.get("planning")
+    if planning is not None:
+        path += "; " + (
+            ", ".join(f"{name} {n}" for name, n in sorted(planning.items()))
+            or "no primary reduced or deferred"
+        )
+    steps = row.get("degradation")
+    if steps:
+        path += "; degradation " + ", ".join(f"{name} {n}" for name, n in sorted(steps.items()))
+    return path
 
 
 def _failed_lines(failed_rows: Sequence[Mapping[str, Any]]) -> list[str]:
@@ -940,6 +1177,11 @@ def render(
         lines.append(TURN_PATH_NOTE)
     if any(row.get("turn_kind", "lite") != "lite" for row in rows):
         lines.append(TURN_KIND_NOTE)
+    three = [r for r in rows if r.get("turn_kind", "lite") in THREE_CHARACTER_KINDS]
+    if three:
+        lines.append(THREE_CHARACTER_NOTE)
+        if all(r["tier"] == STUB_TIER for r in three):
+            lines.append(THREE_CHARACTER_PENDING)
     if any(row.get("deadline_override_ms") is not None for row in [*rows, *failed_rows]):
         lines.append(DEADLINE_OVERRIDE_NOTE)
     lines += ["## Results", ""]
@@ -1252,7 +1494,11 @@ async def run_matrix(
     rows: list[Row] = []
     for kind, policies in [(k, p) for k in turn_kinds for p in POLICY_SETS]:
         driver = driver_factory() if kind == "lite" else driver_for(kind)
-        override = driver.deadline_override_ms if isinstance(driver, StructuredDriver) else None
+        override = (
+            driver.deadline_override_ms
+            if isinstance(driver, StructuredDriver | ThreeCharacterDriver)
+            else None
+        )
         try:
             latencies, logs = await measure_turns(engine, driver, policies, turns)
         except TurnFailed as failed:
@@ -1276,6 +1522,16 @@ async def run_matrix(
             if isinstance(driver, StructuredDriver):
                 driver.restore()
         breakdown = call_breakdown(logs)
+        three = driver if isinstance(driver, ThreeCharacterDriver) else None
+        planning: dict[str, int] | None = None
+        steps: dict[str, int] | None = None
+        if three is not None:
+            planning, steps = {}, {}
+            for log in logs:
+                for name, n in log.planning.items():
+                    planning[name] = planning.get(name, 0) + n
+                for step in log.steps:
+                    steps[step] = steps.get(step, 0) + 1
         rows.append(
             Row(
                 tier=target.tier,
@@ -1302,6 +1558,10 @@ async def run_matrix(
                 fallbacks=breakdown.fallbacks,
                 turn_kind=kind,
                 deadline_override_ms=override,
+                profile=None if three is None else three.profile,
+                perception=None if three is None else three.perception,
+                planning=planning,
+                degradation=None if steps is None else dict(sorted(steps.items())),
             )
         )
     return rows
@@ -1410,18 +1670,20 @@ async def _main(args: argparse.Namespace) -> int:
 
 
 LIVE_TURN_KINDS: tuple[TurnKind, ...] = ("lite", "structured")
+LIVE_CHOICES: tuple[TurnKind, ...] = (*LIVE_TURN_KINDS, *THREE_CHARACTER_KINDS)
+"""What ``--turn-kinds`` accepts: the default kinds and the three-character ones (#182)."""
 """The turn kinds a live run measures: a repair-heavy row needs the stub's scripted
 contradictions (``test_p_08__structured`` generates it)."""
 
 
 def _turn_kinds(value: str) -> list[TurnKind]:
     kinds = [k.strip() for k in value.split(",") if k.strip()]
-    wrong = [k for k in kinds if k not in LIVE_TURN_KINDS]
+    wrong = [k for k in kinds if k not in LIVE_CHOICES]
     if not kinds or wrong:
         raise argparse.ArgumentTypeError(
-            f"expected a comma-separated subset of {', '.join(LIVE_TURN_KINDS)}, got {value!r}"
+            f"expected a comma-separated subset of {', '.join(LIVE_CHOICES)}, got {value!r}"
         )
-    return [k for k in LIVE_TURN_KINDS if k in kinds]
+    return [k for k in LIVE_CHOICES if k in kinds]
 
 
 def _purpose_model(value: str) -> tuple[str, str]:

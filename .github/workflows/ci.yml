@@ -167,7 +167,8 @@ jobs:
           version: ${{ env.UV_VERSION }}
           python-version: "3.14"
           enable-cache: true
-      - run: uv sync --frozen
+      # Locust (the `perf` group) for P-04's multi-character smoke run (#182, `perf_smoke`).
+      - run: uv sync --frozen --group perf
       # The video poster and probe tests run ffmpeg and ffprobe (#107), and fail without them: the
       # image installs Debian's ffmpeg. A separate GPL program, never linked.
       # #500: the Azure Ubuntu mirror served ffmpeg's 63 MB of .debs at about 60 KB/s (2026-10-22:

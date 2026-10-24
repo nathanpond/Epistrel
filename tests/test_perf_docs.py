@@ -198,6 +198,80 @@ def test_the_structured_workload_is_summarised(tmp_path: Path) -> None:
     assert perf_docs.NOT_MEASURED in (docs / "perf.md").read_text().split("## P-04")[1]
 
 
+def test_the_multi_workload_and_could_have_known_are_summarised(tmp_path: Path) -> None:
+    """#182: P-04's multi-character run (its sidecar as ``p_04_multi.json``) is summarised in
+    docs/perf.md with its criteria, its per-character stages, its degradation counts and the
+    profile and perception level it ran under; P-02's ``could_have_known`` span has its budget
+    row and its p95 by path.
+
+    Complement asserted: an over-budget span reads **over budget**, and a run without either
+    file says *not measured in this run* for both."""
+    sidecar = {
+        "info": {
+            "host_class": "mac",
+            "host": "Darwin arm64, 16 CPUs",
+            "engine_sha": "abc123",
+            "started": "2026-10-24 06:00 UTC",
+            "stories": 10,
+            "memories": 10_000,
+            "events": 20_000,
+            "interval_s": 60.0,
+            "minutes": 30,
+            "stub_latency_s": 2.0,
+            "profile": "Structured v2",
+            "perception": "full",
+        },
+        "passed": True,
+        "aggregate": [
+            {
+                "name": "both primaries' beats in every committed turn",
+                "measured": "280/280 in the results, 0 incomplete in history",
+                "bound": "all",
+                "passed": True,
+            }
+        ],
+        "stories": [{"criteria": [{"passed": True}]}],
+        "stages": {
+            "context": {"count": 560, "p50": 0.2, "p95": 0.5, "p99": 1.0},
+            "compose": {"count": 280, "p50": 0.02, "p95": 0.05, "p99": 0.1},
+        },
+        "figures": {"multi": {"degradation": {"composition_fallback": 280}}},
+    }
+    known = {
+        "checks": 400,
+        "facts": 50_000,
+        "knowledge": {"beliefs": 200, "exposures": 50},
+        "check_ms": _q(77.0),
+        "by_kind_ms": {"believed": _q(19.0), "exposed": _q(119.0)},
+        "host": HOST,
+    }
+    results = _results(tmp_path)
+    (results / "p_04_multi.json").write_text(json.dumps(sidecar))
+    (results / "p_02_could_have_known.json").write_text(json.dumps(known))
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    perf_docs.render(results, docs)
+    page = (docs / "perf.md").read_text()
+    assert "## P-04: the multi-character reference workload (NFR-PERF-4, M5)" in page
+    assert "**PASS** on host class `mac` (reported, not gated)" in page
+    assert "| context | 560 | ≤ 200 ms | ≤ 500 ms | ≤ 1000 ms |" in page
+    assert "| compose | 280 | ≤ 20 ms | ≤ 50 ms | ≤ 100 ms |" in page
+    assert "Profile `Structured v2`, perception `full`." in page
+    assert "`composition_fallback` 280" in page
+    assert (
+        "| P-02 could_have_known | NFR-PERF-2 | p95 ≤ 50 ms | 77.0 ms | **over budget** |" in page
+    )
+    assert "| exposed | 59.5 | 119.0 | 142.8 | 178.5 |" in page
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    (empty / "p_02.json").write_text((results / "p_02.json").read_text())
+    perf_docs.render(empty, docs)
+    page = (docs / "perf.md").read_text()
+    assert perf_docs.NOT_MEASURED in page.split("## P-04: the multi-character")[1]
+    assert perf_docs.NOT_MEASURED in page.split("## P-02: the could-have-known")[1].split("##")[0]
+
+
 def test_capacity_reports_the_first_failing_budget(tmp_path: Path) -> None:
     """P-10's steps stay above the fixture's start and at most ``--up-to``; the report names
     the first step whose retrieval or commit budget failed, each step's build memory, and the

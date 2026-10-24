@@ -98,6 +98,9 @@ OPTIONAL_PRIORITY = (
 )
 """Optional work, most important first: the pool is spent in this order (NFR-PERF-7 gives
 polish up first, then repairs, then testimony adjudication, then entailment)."""
+ADAPTER_GATED = frozenset({SALIENCE, ENTAILMENT})
+"""The optional kinds no ``try_optional`` grant precedes: the Model Access Layer's
+``affordable`` check is their only gate, so it keeps them off every reserved slot (#182)."""
 PURPOSE_KINDS = {
     "extraction_backstop": EXTRACTION,
     "entailment": ENTAILMENT,
@@ -234,7 +237,13 @@ class TurnBudget:
             return remaining is None or remaining >= 1
         if kind in OPTIONAL_PRIORITY and (self._denied_ahead(kind) or not self.can_start()):
             return self._deny(kind)
-        if remaining is None or remaining - self.named_unspent - self._ahead_of(kind) >= 1:
+        # #182 (Rule 1): the optional work the adapter gates itself (salience, entailment) never
+        # spends a held slot either. A sequential turn's later renders and their output checks
+        # are still held when an earlier render's salience runs; spending them failed the last
+        # render (``budget_exhausted``) instead of skipping the optional call. Work granted by
+        # ``try_optional`` spends the slot that grant held, so it is not refused here.
+        floor = self.reserved_unspent if kind in ADAPTER_GATED else self.named_unspent
+        if remaining is None or remaining - floor - self._ahead_of(kind) >= 1:
             return True
         return self._deny(kind)
 

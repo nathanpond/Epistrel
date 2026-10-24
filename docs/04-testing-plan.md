@@ -355,7 +355,7 @@ New failures become permanent regression cases.
 Per NFR-PERF (dev/hobby scale), with representative fixtures (~50k memories, ~100k events).
 
 - **[P-01] Retrieval latency (NFR-PERF-1):** p50/p95/p99 excluding model calls; gate p95 ≤ 150 ms.
-- **[P-02] Verify latency (NFR-PERF-2):** deterministic path p95 ≤ 50 ms.
+- **[P-02] Verify latency (NFR-PERF-2):** deterministic path p95 ≤ 50 ms. **[M5: NFR-PERF-2]** The could-have-known replay's per-check span (FR-EPI-4) is part of it: the same p95 over the scale fixture's canon with per-character beliefs and unresolved exposures, every acquisition path measured.
 - **[P-03] Turn-commit latency (NFR-PERF-3):** atomic write p95 ≤ 250 ms (excl. model/embedding time).
 - **[P-04] Concurrency (NFR-PERF-4):** the reference workload of NFR-PERF-4 on the reference host, driven open-loop by **Locust**/**k6** on a fixed schedule with `turn_concurrency = queue`, for 30 minutes, against a stub model with a fixed 2 s per call; every variant reports, per story and in aggregate, offered and completed turns, queue depth and queue wait over time, and per-stage p50/p95/p99, plus database connections and CPU and memory. **[M2: NFR-PERF-4]** Lite variant: 10 stories of 20,000 events and 50 pinned memories, one turn every 15 s each; gate on turn-commit p95, zero failed requests, and zero lost or duplicated turns, and, for **each story separately**: every turn submitted at least 2 minutes before the end completed; after the first 5 minutes, never more than one turn waiting behind the one in progress; no turn waiting longer than one schedule interval to reach the front of its queue; and a queue-front-to-first-model-call delay of p95 ≤ 1 s. A run in which one story falls behind fails even if the aggregate keeps up. **[M4: NFR-PERF-4]** Structured variant: 10 stories of 10,000 memories and 20,000 events, single-character turns every 60 s each; the same gates plus the retrieval and deterministic-verify p95 budgets. **[M5: NFR-PERF-4]** Multi-character variant: the structured stories playing two-character turns with per-character renders, every 60 s each; the same gates.
 - **[P-05] Model-call budget (NFR-PERF-5, NFR-COST-1):** **[M2: NFR-COST-1]** per-purpose per-turn call counts measured and gated. **[M4: NFR-PERF-5]** Escalation rate measured and gated.
@@ -863,7 +863,7 @@ Generated from the explicit requirement references in each test in §§3–12 (r
 | NFR-OPS-1 | M | M2 | C-10 (M2), X-07 (M2) |
 | NFR-OPS-2 | M | M2 | C-10 (M2), X-07 (M2) |
 | NFR-PERF-1 | M | M4 | P-01 (M4) |
-| NFR-PERF-2 | M | M4 | P-02 (M4) |
+| NFR-PERF-2 | M | M4 | P-02 (M4), P-02 (M5) |
 | NFR-PERF-3 | M | M2 | P-03 (M2) |
 | NFR-PERF-4 | M | M2 | P-04 (M2), P-04 (M4), P-04 (M5) |
 | NFR-PERF-5 | M | M4 | E-02 (M4), P-05 (M4) |

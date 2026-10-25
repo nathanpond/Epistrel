@@ -2078,7 +2078,15 @@ async def owed_references(
         for beat_, sketch, span in checked.salient:
             speaker = beat_.speaker_entity or NARRATOR
             context = await load_context(
-                conn, story_id, position=(read.turn, 0), speaker=speaker, lookup=lookup
+                conn,
+                story_id,
+                position=(read.turn, 0),
+                speaker=speaker,
+                lookup=lookup,
+                # #546: holder-aware mentions, as ``record_salience`` resolves them.
+                identities=await identity_rules.speaker_identities(
+                    lookup, story_id, speaker, through_position=(read.turn, 0)
+                ),
             )
             opened = open_sketch(
                 salience._claim_of(sketch),
@@ -3071,17 +3079,25 @@ async def reveals_committed(
 ) -> list[hidden.Reveal]:
     """The turn's reveals (#169): every rendered ``say`` (never a deceptive one) or ``do`` whose
     supported claims assert a hidden fact its actor reads, widened to the beat's content
-    perceivers (``core.commit.hidden.reveal``; at perception ``none`` everyone in the scene)."""
+    perceivers (``core.commit.hidden.reveal``; at perception ``none`` everyone in the scene).
+    #546 (#171 AC4): a narration's supported ``same_as`` claims too, the narrator reading every
+    scope: an identity re-asserted where others perceive it widens like a say or a do reveal."""
     content = _content_perceivers(results)
     everyone: frozenset[str] | None = None
     found: list[hidden.Reveal] = []
     for beat in checked.beats:
-        if beat.kind not in (SAY, DO) or beat.character_id is None or beat.narrator:
+        narrated = beat.kind == NARRATION
+        if not narrated and (
+            beat.kind not in (SAY, DO) or beat.character_id is None or beat.narrator
+        ):
             continue
         claims = [
             c.proposition
             for c in beat.claims
-            if c.proposition is not None and c.verdict == "supported" and not c.attributed
+            if c.proposition is not None
+            and c.verdict == "supported"
+            and not c.attributed
+            and (not narrated or identity_rules.pair_of(c.proposition) is not None)
         ]
         if not claims:
             continue
@@ -3097,7 +3113,7 @@ async def reveals_committed(
             conn,
             op,
             claims,
-            speaker=beat.character_id,
+            speaker=None if narrated else beat.character_id,
             perceivers=perceivers,
             beat=beat.beat,
             event_id=ids.get(beat.beat),

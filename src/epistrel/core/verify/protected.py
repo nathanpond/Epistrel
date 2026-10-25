@@ -23,8 +23,10 @@ single name (Jenni may say "the stranger", and may say "Bobby"): it protects the
 Its leak pattern is a clause (text between ``.``, ``;``, ``!``, ``?`` or a line break) holding a
 name or alias of one side and one of the other ("the stranger is Bobby", "Bobby, the stranger,
 …"); the hit claims the ``same_as``. The speaker's known entities are expanded through the
-``same_as`` facts it may read (depth 1): who knows Bobby and holds that the stranger is Bobby
-knows the stranger.
+``same_as`` it holds (depth 1; ``core.resolution.identity.speaker_identities``, the mention
+resolver's helper too, #546: the facts its viewpoint reads and its own ``same_as`` beliefs): who
+knows Bobby and holds that the stranger is Bobby knows the stranger, and a hidden identity the
+speaker itself believes protects nothing for it.
 
 **Matching** folds the text and the terms with the erasure fold (``core.erasure.matcher``: full
 case-folding then NFC, ``ı`` as ``i``, every dash as ``-``, no soft hyphen; ADR-155/156) and
@@ -87,9 +89,8 @@ from epistrel.core.propositions.model import (
     Proposition,
     TypedLiteral,
 )
-from epistrel.core.propositions.vocabulary import SAME_AS
-from epistrel.core.readset import StructuredReadSet, register_rebase_check
-from epistrel.core.resolution.identity import pair_of
+from epistrel.core.readset import KeyedLookup, StructuredReadSet, register_rebase_check
+from epistrel.core.resolution.identity import pair_of, speaker_identities
 from epistrel.core.settings_schema import (
     CHARACTER_VIEWPOINT_PREFIX,
     DEFAULT_PROTECTED_INDEX_MAX,
@@ -503,17 +504,21 @@ async def load_protected_index(
         if hidden_refs
         else {}
     )
+    held: frozenset[tuple[str, str]] = frozenset()
     if hidden_refs:
-        # #171: who may read that two entities are one knows either through the other (depth 1).
-        seen_same = await canon.canon(
-            conn,
+        # #171: who holds that two entities are one knows either through the other (depth 1).
+        # #546: what the speaker holds is ``speaker_identities``' (the mention resolver's too):
+        # the ``same_as`` facts its viewpoint reads and its own ``same_as`` beliefs.
+        identities = await speaker_identities(
+            KeyedLookup(conn, read_set if read_set is not None else StructuredReadSet()),
             story_id,
-            predicate=SAME_AS,
-            viewpoint=viewpoint,
+            speaker,
+            player_id=None if player is None else str(player),
             through_position=through_position,
+            viewpoint=viewpoint,
         )
-        linked = [pair for f in seen_same if (pair := pair_of(f.proposition)) is not None]
-        known |= {b for a, b in linked if a in known} | {a for a, b in linked if b in known}
+        held = frozenset(identities.pairs())
+        known |= {b for a, b in held if a in known} | {a for a, b in held if b in known}
     hidden_terms: list[ProtectedTerm] = []
     pairs: list[ProtectedPair] = []
     for ref in hidden_refs:
@@ -522,6 +527,8 @@ async def load_protected_index(
             continue
         p = fact.proposition
         identity = pair_of(p)
+        if identity is not None and identity in held:
+            continue  # #546: the speaker holds it (its own belief): nothing to protect
         if identity is not None:
             # A hidden identity protects the pairing of its sides, not either name (#171).
             left, right = (

@@ -99,6 +99,7 @@ from epistrel.core.resolution.context import (
     load_time_basis,
 )
 from epistrel.core.resolution.entities import NARRATOR, PLAYER, ResolutionContext
+from epistrel.core.resolution.identity import speaker_identities
 from epistrel.core.resolution.time import Position, turn_of
 from epistrel.core.settings_schema import OMNISCIENT, VerifySettings
 from epistrel.core.tables import events, operations
@@ -274,6 +275,10 @@ async def load_env(
             index=index,
             lookup=lookup,
             shared=shared,
+            # #546: the speaker's holder's identities, as its protected index reads them.
+            identities=await speaker_identities(
+                lookup, story_id, speaker, through_position=(turn, 0)
+            ),
         )
         protected[speaker] = await load_protected_index(
             conn,

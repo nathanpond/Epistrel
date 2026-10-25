@@ -230,6 +230,44 @@ async def identities_for(
     return made
 
 
+async def speaker_identities(
+    lookup: KeyedLookup,
+    story_id: str,
+    speaker: str,
+    *,
+    player_id: str | None = None,
+    through_position: Through | None = None,
+    viewpoint: str | None = None,
+) -> Identities:
+    """What ``speaker`` (an entity id, ``narrator`` or ``player``) holds of ``same_as``: its
+    holder's ``identities_for`` (``holder_of``; a character's own beliefs included, never the
+    player character's, which holds no partition). The one helper the turn-time mention
+    resolver (``load_context(identities=)``) and the protected-content index read (#546);
+    ``viewpoint`` overrides the canon read as in ``identities_for``. ``player_id`` is read
+    from the story when ``speaker`` is ``player`` and none is given."""
+    from sqlalchemy import select
+
+    from epistrel.core.resolution.entities import PLAYER
+    from epistrel.core.tables import characters
+
+    if player_id is None and speaker == PLAYER:
+        found = await lookup.conn.scalar(
+            select(characters.c.id).where(
+                characters.c.story_id == story_id, characters.c.is_player.is_(True)
+            )
+        )
+        player_id = None if found is None else str(found)
+    holder = holder_of(speaker, player_id)
+    return await identities_for(
+        lookup,
+        story_id,
+        holder,
+        beliefs=holder not in (CANON, player_id),
+        through_position=through_position,
+        viewpoint=viewpoint,
+    )
+
+
 async def _modeled(lookup: KeyedLookup, story_id: str) -> frozenset[str]:
     from sqlalchemy import select
 
@@ -265,4 +303,5 @@ __all__ = [
     "linked_characters",
     "pair_of",
     "representatives",
+    "speaker_identities",
 ]

@@ -35,13 +35,17 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core.commit import epistemic as epistemic_flag
 from epistrel.core.commit.epistemic import STORY_DAY
-from epistrel.core.epistemic import partitions, replay
+from epistrel.core.epistemic import partitions, replay, transitions
 from epistrel.core.membership import Position
 from epistrel.core.propositions import registry, store
 from epistrel.orchestrator.models.registry import SalienceSketch
 from epistrel.orchestrator.structured.prompt import KNOWLEDGE_STEERING
+from tests import exposure_support as xs
+from tests import partition_support as parts
 from tests import perception_support as ps
+from tests import resolution_support as r
 from tests import testimony_support as ts
 from tests.auth_support import auth_settings
 from tests.commit_support import salience_answer
@@ -341,3 +345,79 @@ async def test_s_thunk_resolve__m5_sincere_question(
         assert report["commit"]["rejected_bindings"] == []
         assert "epistemic" not in report or "could_have_known" not in report["epistemic"]
         assert await _knowledge(engine, story, ids["Bobby"]) == []
+
+
+# -- the soft flag's complement (#554) --------------------------------------------------------
+
+
+async def _porch(engine: AsyncEngine, place: str = "maple") -> tuple[r.Porch, Any]:
+    """#154's porch story under per-character partitions, Jenni (modeled at genesis) placed on
+    Maple Street (the porch is inside it) or at the school, and the knock introduced in turn 1;
+    answers the story and the thunk."""
+    p = await r.porch_story(engine)
+    await ts.enable_testimony(engine, p.story_id, "defaulted")
+    await ps.put(engine, p.story_id, p.knock.jenni, p.maple if place == "maple" else p.school)
+    return p, await r.introduce_knock(engine, p)
+
+
+async def _flag(engine: AsyncEngine, p: r.Porch, thunk: Any, now: Position) -> Any:
+    """The soft flag on binding the knock to Jenni, resolved at ``now``."""
+    binding = r.knocked(p, p.knock.jenni, r.KNOCK_AT)
+    async with engine.connect() as conn:
+        return await epistemic_flag.could_have_known(
+            conn, p.story_id, thunk, binding, p.knock.jenni, now=now
+        )
+
+
+def _at(turn: int) -> Position:
+    """A position inside ``turn`` (its beat 2), where a binding render resolves the thunk."""
+    return Position(turn, 0, 0, 2, 0)
+
+
+@pytest.mark.part("M5", "FR-COMMIT-11; FR-EPI-4")
+async def test_s_thunk_resolve__m5_flag_complement(engine: AsyncEngine) -> None:
+    """FR-COMMIT-11's soft flag fires only when all its conditions hold (#554). Baseline: Jenni,
+    modeled at genesis, was on Maple Street (the porch is inside it) when the knock was
+    introduced, the binding comes a turn later and she has no path: flagged ``mild``. Each
+    condition broken alone leaves no flag: the resolution in the thunk's own turn; Jenni already
+    holding that she knocked before the resolution (a path); Jenni at the school instead (not
+    co-located); Jenni modeled only after the knock."""
+    p, thunk = await _porch(engine)
+    await xs.plain_turn(engine, p.story_id)
+    fired = await _flag(engine, p, thunk, _at(2))
+    assert fired is not None
+    assert (fired.entity_id, fired.thunk_id, fired.severity) == (p.knock.jenni, thunk.id, "mild")
+
+    # Resolved in the thunk's own turn: no deferral, no flag.
+    assert thunk.narrative_turn == 1
+    assert await _flag(engine, p, thunk, _at(1)) is None
+
+    # She already holds that she knocked (turn 3), before the resolution in turn 4: a path.
+    await parts.transit(
+        engine,
+        p.story_id,
+        p.knock.jenni,
+        r.knocked(p, p.knock.jenni, r.KNOCK_AT),
+        confidence=transitions.Confidence(transitions.Level.BELIEVED),
+    )
+    await xs.plain_turn(engine, p.story_id)
+    assert await _flag(engine, p, thunk, _at(4)) is None
+
+    # Not co-located: she was at the school when the knock was introduced.
+    p, thunk = await _porch(engine, place="school")
+    await xs.plain_turn(engine, p.story_id)
+    assert await _flag(engine, p, thunk, _at(2)) is None
+
+    # Modeled after the knock: no existing character the thunk could have been hiding.
+    p, thunk = await _porch(engine)
+    await xs.plain_turn(engine, p.story_id)
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "UPDATE characters SET modeled_turn = 1, modeled_beat = 3 "
+                "WHERE story_id = :s AND id = :c"
+            ),
+            {"s": p.story_id, "c": p.knock.jenni},
+        )
+    assert (thunk.narrative_turn, thunk.beat) == (1, 2)
+    assert await _flag(engine, p, thunk, _at(2)) is None

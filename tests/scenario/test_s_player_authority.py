@@ -18,6 +18,10 @@ and hands me the key."
   is ever written from the input (the complement), and the rest of the input stands. Placed in the
   kitchen while Cal is in the parlor, Jenni's narrated action is dropped (``not_present``) and
   nothing of hers is recorded.
+- ``test_s_player_authority__viewpoint`` (#561): under ``co_author`` with per-character
+  partitions, a narration breaking Jenni's viewpoint (``could_not_know``, ``contradicted``,
+  ``not_perceived``) is rejected and nothing is recorded; a narrated ``say`` her beliefs hold
+  and canon contradicts is a sincere error that stands.
 """
 
 from __future__ import annotations
@@ -28,10 +32,15 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core.enums import OperationKind
 from epistrel.core.propositions import store
+from epistrel.core.propositions.model import Interval, Proposition
+from epistrel.core.propositions.vocabulary import HOLDS, PRESENT_AT
+from tests import partition_support as parts
 from tests import perception_support as ps
 from tests import structured_turn_support as st
 from tests.auth_support import auth_settings
+from tests.canon_support import commit
 from tests.event_support import rows
 from tests.respond_support import body, respond, respond_client
 from tests.story_support import READ, WRITE
@@ -205,3 +214,155 @@ async def test_s_player_authority(
         assert report["rejected"] == [{"text": HANDS, "character_id": jenni, "code": "not_present"}]
         made = (await st.utterances(engine, story))[before:]
         assert jenni not in {u.speaker_character_id for u in made}
+
+
+NODS = "Jenni nods at Bobby, who holds the key."
+CLAIMS = 'Jenni says, "Bobby holds the key."'
+
+
+async def _viewpoint_room(
+    client: Any, engine: AsyncEngine, *, holder: str | None = None, away: bool = False
+) -> tuple[str, dict[str, str], str]:
+    """A ``co_author`` story under per-character partitions at perception ``full``, everyone in
+    the parlor (Jenni placed in the kitchen but ``present_at`` the parlor when ``away``: in the
+    scene, out of sight), and the key, which objective canon says ``holder`` holds."""
+    story, ids = await st.structured_story(client, "Cal", "Jenni", "Bobby")
+    await ps.perceive(engine, story, "full")
+    parlor = await ps.place_entity(engine, story, "parlor")
+    kitchen = await ps.place_entity(engine, story, "kitchen")
+    for name, cid in ids.items():
+        await ps.put(engine, story, cid, kitchen if away and name == "Jenni" else parlor)
+    if away:
+        await commit(
+            engine,
+            story,
+            _forever(ids["Jenni"], PRESENT_AT, parlor),
+            kind=OperationKind.CONTROL,
+            provenance="author",
+        )
+    async with engine.begin() as conn:
+        key = await store.add_entity(conn, story, "item", "the key")
+    if holder is not None:
+        await commit(
+            engine,
+            story,
+            _forever(ids[holder], HOLDS, key),
+            kind=OperationKind.CONTROL,
+            provenance="author",
+        )
+    patched = await client.patch(
+        f"/stories/{story}/settings", json={"player_authority": "co_author"}, headers=WRITE
+    )
+    assert patched.status_code == 200, patched.text
+    return story, ids, key
+
+
+def _forever(subject: str, predicate: str, obj: str) -> Proposition:
+    return Proposition(
+        subject_id=subject,
+        predicate_id=predicate,
+        object_id=obj,
+        valid_time=Interval.of(None, None),
+    )
+
+
+async def _player_facts(engine: AsyncEngine, story: str) -> list[Any]:
+    return await rows(
+        engine,
+        "SELECT id FROM facts WHERE story_id = :s AND provenance = 'player'",
+        s=story,
+    )
+
+
+async def _rejected(engine: AsyncEngine, story: str) -> list[Any]:
+    return await rows(
+        engine,
+        "SELECT payload FROM events WHERE story_id = :s AND type = 'render_rejected' ORDER BY seq",
+        s=story,
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.part("M5", "FR-RESP-11")
+async def test_s_player_authority__viewpoint(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#561, the complement of AC3: under ``co_author`` with per-character partitions, a
+    narration that breaks Jenni's viewpoint is rejected (a rung-1 ``render_rejected``, no model
+    call) and nothing of it is recorded (no Jenni beat or utterance, no ``player`` fact):
+
+    - ``could_not_know``: Jenni nodding at Bobby "who holds the key", which nothing gave her a
+      path to (#165);
+    - ``contradicted``: Jenni handing over a key canon says Bobby holds;
+    - ``not_perceived``: Jenni in the scene (``present_at`` the parlor) but placed in the
+      kitchen, out of sight of the player's input (#161).
+
+    The narrated ``say``'s sincere error: Jenni believes Bobby holds the key, canon says Cal
+    does, and the player narrates her saying so. Her ``beat_say`` stands, labelled
+    ``sincere_error`` by #166, and is neither rejected nor repaired."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        for do, holder, away, code in (
+            (NODS, None, False, "could_not_know"),
+            (HANDS, "Bobby", False, "contradicted"),
+            (HANDS, None, True, "not_perceived"),
+        ):
+            story, ids, _ = await _viewpoint_room(client, engine, holder=holder, away=away)
+            jenni = ids["Jenni"]
+            stub.reset()
+            stub.script("generation", [st.render(st.beat("say", "Hm."))])
+            answer = await respond(
+                client, story, body(ids["Cal"], None, do=do, render_character_ids=[ids["Bobby"]])
+            )
+            assert answer.status_code == 200, answer.text
+            report = (await st.turn_report(engine, story))["player_authority"]
+            assert report["narrated"] == [], code
+            (rejected,) = report["rejected"]
+            assert (rejected["character_id"], rejected["code"]) == (jenni, code)
+            (event,) = await _rejected(engine, story)
+            assert event.payload["rung"] == 1
+            assert event.payload["constraints"] == [{"kind": "player_authority", "reason": code}]
+            assert len(st.schema_calls(stub, "CharacterRender")) == 1  # Bobby's only
+            assert jenni not in {u.speaker_character_id for u in await st.utterances(engine, story)}
+            jenni_beats = await rows(
+                engine,
+                "SELECT type FROM events WHERE story_id = :s AND character_id = :c "
+                "AND type LIKE 'beat_%'",
+                s=story,
+                c=jenni,
+            )
+            assert jenni_beats == [], code
+            assert await _player_facts(engine, story) == [], code
+            assert "the key" not in answer.json()["message"]["text"], code
+
+        # The narrated say's sincere error stands, labelled.
+        story, ids, key = await _viewpoint_room(client, engine, holder="Cal")
+        jenni = ids["Jenni"]
+        await parts.believe(engine, story, jenni, _forever(ids["Bobby"], HOLDS, key))
+        stub.reset()
+        stub.script("generation", [st.render(st.beat("say", "Hm."))])
+        answer = await respond(
+            client, story, body(ids["Cal"], CLAIMS, render_character_ids=[ids["Bobby"]])
+        )
+        assert answer.status_code == 200, answer.text
+        report = await st.turn_report(engine, story)
+        assert report["player_authority"]["narrated"] == [
+            {"beat": 2, "character_id": jenni, "kind": "say"}
+        ]
+        assert report["player_authority"]["rejected"] == []
+        assert await _rejected(engine, story) == []
+        assert not [r for r in report.get("repairs", []) if r["beat"] == 2]
+        said = [
+            (u.event_type, u.event_beat, u.classification)
+            for u in await st.utterances(engine, story)
+            if u.speaker_character_id == jenni
+        ]
+        assert said == [("beat_say", 2, "sincere_error")]
+        (narrated,) = await rows(
+            engine,
+            "SELECT payload->>'narrated_by' AS by FROM events WHERE story_id = :s "
+            "AND character_id = :c AND type = 'beat_say'",
+            s=story,
+            c=jenni,
+        )
+        assert narrated.by == "player"

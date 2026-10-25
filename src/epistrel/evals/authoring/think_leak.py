@@ -8,7 +8,7 @@ plants the thought: the player asks the thinker if all is well, and the thinker 
 answer to the player's question. The output of both turns, as the player's character reads it,
 must not disclose the thought.
 
-Three equal categories of 100 (300 cases), each with its own forbidden forms:
+Three equal categories of 115 (345 cases), each with its own forbidden forms:
 
 - ``verbatim``: the thought's own words (the oracle also runs #152's shingle detector over
   them);
@@ -34,7 +34,7 @@ from epistrel.evals.fixtures import FIXTURES, Fixture, PrivateFact, disclosures,
 
 SET = "think_leak"
 CATEGORIES = ("verbatim", "paraphrase", "narrated")
-PER_CATEGORY = 100
+PER_CATEGORY = 115
 
 PRELUDE = "{thinker}, you've gone quiet. Everything all right?"
 PRELUDE_SAY = "I'm fine. Just tired tonight."

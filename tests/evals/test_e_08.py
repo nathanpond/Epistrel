@@ -4,7 +4,7 @@ knowledge-asymmetry and private-thought metrics on their labeled sets, through t
 ``tests/evals/test_harness.py::test_e_08__m4_gate_rules``).
 
 The runs use the stub at four cases at once (each case is one or two structured turns): the
-private-thought suite's full set on two seeds (its 300 measured cases: the clean pass), the
+private-thought suite's full set on two seeds (its 345 measured cases: the clean pass), the
 asymmetry suite on 299 of its cases (one seed: the short run) and on 301 with E-08's injected
 violation and one model error (one seed: the violation), and E-01 M5's viewpoint suite beside
 them (the rate rule). ``test_e_08__m5_model_errors`` plays small slices of both zero-leak suites
@@ -53,10 +53,11 @@ def _reported(report: Report, metric: MetricResult, n: int, seeds: int) -> None:
 
 @pytest.mark.part("M5", "NFR-QUAL-1,8")
 async def test_e_08__m5_real_suites(pg_url: str, engine: AsyncEngine) -> None:
-    """On the real zero-leak suites: the private-thought suite's 300 measured cases, clean on
-    both seeds, pass, reported "0 observed in 300 cases" with a one-sided 95% upper bound of
-    about 1% (never as "leak-free"); 299 clean asymmetry cases fail (fewer than 300); 300
-    asymmetry cases with one deterministically injected violation (the scripted stub leaks on
+    """On the real zero-leak suites: the private-thought suite's 345 measured cases (3 x 115,
+    sized past the 300-case floor for model errors, #179), clean on both seeds, pass, reported
+    "0 observed in 345 cases" with a one-sided 95% upper bound under 1% (never as
+    "leak-free"); 299 clean asymmetry cases fail (fewer than 300); 300 asymmetry cases with
+    one deterministically injected violation (the scripted stub leaks on
     ``asymmetry-family-0007`` on one seed, a paraphrase the pipeline cannot catch) and one more
     case ended by a model error fail, with the violation counted once (the error is not one,
     #179) and no bound. The viewpoint suite passes its rate floors beside them.
@@ -69,16 +70,16 @@ async def test_e_08__m5_real_suites(pg_url: str, engine: AsyncEngine) -> None:
     measured = sum(
         not c.control for c in think.load(SETS) if isinstance(c, ThinkLeakCase)
     )  # fmt: skip
-    assert measured == 300
+    assert measured == 345
     metric = _metric(clean, THINK_LEAK)
-    _reported(clean, metric, 300, 2)
+    _reported(clean, metric, 345, 2)
     assert (metric.violations, metric.verdict) == (0, Verdict.passed)
-    assert metric.upper_bound_95 == pytest.approx(upper_bound_95(300))
-    assert metric.upper_bound_95 == pytest.approx(0.01, abs=0.0005)
+    assert metric.upper_bound_95 == pytest.approx(upper_bound_95(345))
+    assert metric.upper_bound_95 == pytest.approx(0.0086, abs=0.0005)
     assert _metric(clean, "priv_think_leak.control_detected").mean == 1.0
     assert clean.suites[0].verdict is Verdict.passed
     markdown = render_markdown(clean)
-    assert "0 observed in 300 cases, one-sided 95% upper bound ≈ 0.99%" in markdown
+    assert "0 observed in 345 cases, one-sided 95% upper bound ≈ 0.86%" in markdown
     assert "leak-free" not in markdown.lower()
     # #181: the zero-leak suites run under the seeded profile itself (no dials), so the suite
     # reports the run's own fingerprint.

@@ -17,6 +17,7 @@ from epistrel.evals import SUITES, MalformedCase
 from epistrel.evals import sets as labeled
 from epistrel.evals.authoring import GENERATORS, render
 from epistrel.evals.judging import CALIBRATION_MIN_PAIRS, load_pairs
+from epistrel.evals.suites.priv_think_leak import ThinkLeakCase
 
 REPO = Path(__file__).resolve().parents[2]
 SETS = REPO / "evals" / "sets"
@@ -54,6 +55,11 @@ def test_every_set_loads_meets_its_size_and_is_approved_or_pending() -> None:
     for suite in suites:
         assert suite.min_cases >= SIZES[suite.name], suite.name
         assert len(suite.load(SETS)) >= suite.min_cases, suite.name
+    # #179: the private-thought set is 3 x 115 withheld cases (past the 300-case floor, so a
+    # seed that loses a few cases to model errors still completes 300) plus 32 controls.
+    think = [c for c in SUITES["priv_think_leak"].load(SETS) if isinstance(c, ThinkLeakCase)]
+    assert sum(not c.control for c in think) == 345
+    assert sum(c.control for c in think) == 32
     assert labeled.problems(SETS, require_approved=False) == []
     assert len(load_pairs(SETS)) >= CALIBRATION_MIN_PAIRS
     for relative, generate in GENERATORS.items():

@@ -5,8 +5,11 @@ a belief is stored in its holder's partition, beside canon and never in it; a fa
 holder's truth, with its provenance; the partition is queried by holder (``partition``) and by
 proposition (``believers_of``, the ``belief_state`` projection), and over REST
 (``GET /stories/{id}/inspect/beliefs``, omniscient only). Every fact, memory and belief carries
-the one visibility shape, and a belief is visible to its holder alone. Could-have-known gating
-is #165's part of U-03.
+the one visibility shape, and a belief is visible to its holder alone.
+
+``test_u_03__could_have_known`` covers U-03's could-have-known gating clause (FR-EPI-4, #165)
+over the stored partitions: a holder may reference what its own dated acquisitions yield by then,
+and nothing else.
 
 ``test_u_03__nested`` covers U-03's nested clause over the knock world (``tests.nested_support``):
 Jenni overheard Bobby joke that Marcus knocked. Her record that Bobby thinks so is a ``nested``
@@ -32,7 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from epistrel.config import Settings
 from epistrel.core.canon import facts as canon
 from epistrel.core.enums import BeliefConfidenceLevel, BeliefKind
-from epistrel.core.epistemic import nested, partitions, testimony, transitions
+from epistrel.core.epistemic import nested, partitions, replay, testimony, transitions
 from epistrel.core.errors import InvalidRequest, ModuleOff
 from epistrel.core.events import Operation
 from epistrel.core.membership import Position
@@ -229,6 +232,61 @@ async def test_u_03__partitions(engine: AsyncEngine, settings: Settings) -> None
             headers=bearer(),
         )
         assert stranger.status_code == 422
+
+
+@pytest.mark.part("M5", "FR-EPI-4")
+async def test_u_03__could_have_known(engine: AsyncEngine) -> None:
+    """U-03's could-have-known gating over the stored partitions (#165's ``could_have_known``;
+    COULD-HAVE-KNOWN's property is ``tests/property/test_could_have_known.py``). Ann comes to
+    believe Cal is at school (canon says nothing of it): from the position of her acquisition
+    on, she may reference it, and the path is her own transition. Complements: before it she has
+    no path (its nearest path is that later transition), Bobby (who acquired nothing) has none,
+    and her belief licenses no assertion of its negation. Her false belief that Bobby is in the
+    garden (canon has him in the kitchen) is her truth (FR-EPI-3) and gates like any other. The
+    player always knows (FR-EPI-12); with partitions off the gate is inert (``NotApplicable``)."""
+    w = await c.world(engine)
+    story = w.story_id
+    await use_structured(engine, story)
+    await perception_support.perceive(engine, story, "co_location")
+    ann, bobby, cal = (w.characters[n] for n in ("Ann", "Bobby", "Cal"))
+    people, places = w.people, w.places
+    await c.commit(engine, story, c.at(people["Bobby"], places["kitchen"], 0, None))
+    school = c.at(people["Cal"], places["school"], 0, None)
+    garden = c.at(people["Bobby"], places["garden"], 0, None)
+    held = await ps.believe(engine, story, ann, school)
+    false = await ps.believe(engine, story, ann, garden)
+    (cause,) = await ps.rows_of(
+        engine, "SELECT id FROM belief_transitions WHERE belief_id = :b", b=held.id
+    )
+    since = held.held_from
+    after = Position.end_of(false.held_from.turn)
+
+    async def ask(who: str, p: Proposition, at: Position, **kw: Any) -> replay.Answer:
+        async with engine.connect() as conn:
+            return await replay.could_have_known(conn, story, who, p, at, **kw)
+
+    found = await ask(ann, school, after)
+    assert isinstance(found, replay.Known)
+    assert (found.path.kind, found.path.ref_id, found.path.transition_kind) == (
+        "transition",
+        cause.id,
+        "author",
+    )
+    assert isinstance(await ask(ann, school, since), replay.Known)
+    assert isinstance(await ask(ann, garden, after), replay.Known)
+    # Complements: no path before the acquisition (the later one is its nearest), none for a
+    # character who acquired nothing, and none for the negation of what she holds.
+    before = await ask(ann, school, Position.end_of(since.turn - 1))
+    assert isinstance(before, replay.NoPath)
+    assert before.nearest is not None
+    assert before.nearest.ref_id == cause.id
+    assert await ask(bobby, school, after) == replay.NoPath()
+    assert isinstance(await ask(ann, school.negation(), after), replay.NoPath)
+    assert await ask(cal, school, Position(0)) == replay.Known(replay.PathRef("player"))
+    off = await ps.partitioned(engine, story, on=False)
+    assert await ask(ann, school, Position(0), settings=off) == replay.NotApplicable(
+        "partitions_off"
+    )
 
 
 Level = BeliefConfidenceLevel

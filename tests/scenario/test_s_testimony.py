@@ -33,8 +33,11 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core.enums import OperationKind
 from epistrel.core.propositions.model import Interval, Polarity, Proposition
 from epistrel.core.propositions.vocabulary import FRIEND_OF
+from epistrel.core.visibility import Visibility
+from tests import canon_support
 from tests import perception_support as ps
 from tests import testimony_support as ts
 from tests.auth_support import auth_settings
@@ -279,3 +282,53 @@ async def test_s_testimony__exposure_is_not_belief(
             h=ids["Kid"],
         )
         assert held == []
+
+
+@pytest.mark.part("M5", "FR-BELIEF-3")
+async def test_s_testimony__adjudication_sees_the_witness_only(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """#552 (#162 AC2: ``belief_adjudication`` never receives other characters' private records
+    or canon the witness cannot know). Beside Marcus's private observation (Olivia did not send
+    it), the speaker Jenni privately saw that Olivia did, and canon records it scoped to Jenni
+    alone (no witness reads it). Each real adjudication prompt lists only its own witness's
+    records: Bobby's holds nothing, Marcus's holds his own observation, and neither holds
+    Jenni's record, the other witness's or canon beyond the witness."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        story, ids, things = await _setup(client, engine)
+        await ts.observed(engine, story, ids["Jenni"], ts.sent(things))
+        await canon_support.commit(
+            engine,
+            story,
+            ts.sent(things),
+            kind=OperationKind.CONTROL,
+            provenance="author",
+            visibility=Visibility(scope="characters", characters=(ids["Jenni"],)),
+        )
+        await _play(client, epistrel, story, ids)
+        calls = [x for x in epistrel.models.stub.calls if x.purpose == "belief_adjudication"]
+
+        def held(name: str) -> list[list[str]]:
+            """Each of ``name``'s adjudication prompts' "What the witness holds" lines."""
+            found = []
+            for call in calls:
+                prompt = "\n".join(m.content for m in call.messages)
+                if f"{name} (trust in Jenni" not in prompt:
+                    continue
+                section = prompt.split("## What the witness holds", 1)[1].split("Jenni says:")[0]
+                found.append([line for line in section.splitlines()[1:] if line.strip()])
+            return found
+
+        # Bobby holds nothing about the sending: not Jenni's record, Marcus's, or Jenni's canon.
+        bobby = held("Bobby")
+        assert bobby
+        assert all(lines == ["- (nothing relevant)"] for lines in bobby)
+        # Marcus holds his own observation only: never Jenni's record or the canon only she reads.
+        marcus = held("Marcus")
+        assert marcus
+        assert all(lines == ["- [belief, known] Olivia not sent the text"] for lines in marcus)
+        for call in calls:
+            prompt = "\n".join(m.content for m in call.messages)
+            assert "[canon" not in prompt

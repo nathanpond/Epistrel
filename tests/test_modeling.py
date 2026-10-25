@@ -54,6 +54,16 @@ def test_interaction_verbs_find_the_other_party() -> None:
     assert _objects("do", "Jenni waves to the bus.") == []
     assert _objects("do", "Jenni watches a jogger run past.") == []
     assert _objects("think", "I should wave to the neighbor.") == []
+    # #543: "passes X" is motion past (appearance); "passes X the Y" hands something over.
+    assert _objects("do", "Jenni passes the jogger on the path.") == []
+    assert _objects("do", "Jenni passes the old man on the bench.") == []
+    assert _objects("do", "Jenni passes the jogger.") == []
+    assert _objects("do", "Jenni passes the waiter a note.") == [(None, "the waiter")]
+    assert _objects("do", "Jenni passes Mrs. Patel the salt.") == [(PATEL, "Mrs. Patel")]
+    # "calls X over" summons them; "calls to X" addresses them.
+    assert _objects("do", "Jenni calls the waiter over.") == [(None, "the waiter")]
+    assert _objects("do", "Jenni calls out to the waiter.") == [(None, "the waiter")]
+    assert _objects("do", "Jenni calls the waiter rude.") == []
 
 
 def test_a_narration_names_its_subject() -> None:

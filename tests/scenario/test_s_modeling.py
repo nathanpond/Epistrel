@@ -5,8 +5,9 @@ through ``respond`` with the stub adapter under per-character partitions (percep
 model salience):
 
 - turn 1: Jenni waves to the neighbor (an interaction: the neighbor is modeled, a ``minor``
-  with an empty partition that the wave lands in), watches a jogger run past (mere appearance:
-  no ``characters`` row, no entity, no partition) and notices the old man on the bench, whom
+  with an empty partition that the wave lands in), watches a jogger run past and passes the
+  jogger on the path (mere appearance, the motion sense of "passes": no ``characters`` row, no
+  entity, no partition; #543) and notices the old man on the bench, whom
   the salience step marks as a character (modeled, not yet interacted with: his partition stays
   empty). Each modeled character's true age comes from the turn's age repair
   (``true_age_source = repaired``), its ``definition`` is the triggering beat and it is placed
@@ -41,6 +42,7 @@ pytestmark = pytest.mark.integration
 WAVE = "Jenni waves to the neighbor across the street."
 JOGGER = "Jenni watches a jogger run past."
 BENCH = "Jenni notices the old man on the bench."
+PASSES = "Jenni passes the jogger on the path."
 TIP = "Jenni hands the delivery driver a tip."
 COFFEE = "Jenni sips her coffee."
 AGAIN = "Thanks again, see you tomorrow!"
@@ -77,7 +79,7 @@ async def test_s_modeling(
             epistrel,
             story,
             ids,
-            render(beat("do", WAVE), beat("do", JOGGER), beat("do", BENCH)),
+            render(beat("do", WAVE), beat("do", JOGGER), beat("do", BENCH), beat("do", PASSES)),
             ms.salient_characters("the old man on the bench"),
         )
         cast = await ms.characters_of(engine, story)
@@ -114,7 +116,7 @@ async def test_s_modeling(
         assert await ms.memory_texts(engine, story, neighbor.id) == [(1, f"Jenni does: {WAVE}")]
         assert await ms.memory_texts(engine, story, old_man.id) == []
         jenni = [t for _, t in await ms.memory_texts(engine, story, ids["Jenni"])]
-        assert {f"Jenni does: {t}" for t in (WAVE, JOGGER, BENCH)} <= set(jenni)
+        assert {f"Jenni does: {t}" for t in (WAVE, JOGGER, BENCH, PASSES)} <= set(jenni)
         # Complement: appearance models nothing.
         assert not [n for n in cast if "jogger" in n]
         assert (

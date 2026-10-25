@@ -1,7 +1,7 @@
 {
  "category": "interaction",
  "language": "en",
- "description": "Interaction verbs (#163, FR-EPI-9): a do or narration beat whose actor (or the phrase before the verb) and the phrase after the verb (directly, or after one of its prepositions) are a modeled character and an unmodeled person is a direct interaction, which models the person. 'direct': the verb takes its other party as its object ('greets the neighbor', 'hands the driver a tip'); 'preps': the prepositions that introduce it ('waves to the neighbor'). Mere appearance (a mention, a jogger seen) is never an interaction. A detector side-channel: it makes no claim.",
+ "description": "Interaction verbs (#163, FR-EPI-9): a do or narration beat whose actor (or the phrase before the verb) and the phrase after the verb (directly, or after one of its prepositions) are a modeled character and an unmodeled person is a direct interaction, which models the person. 'direct': the verb takes its other party as its object ('greets the neighbor', 'hands the driver a tip'); 'preps': the prepositions that introduce it ('waves to the neighbor'); 'direct_then': when present, the words one of which must follow the direct object for it to count (#543: 'passes the waiter a note' hands something over, 'passes the jogger on the path' is motion past; 'calls the waiter over'). Mere appearance (a mention, a jogger seen) is never an interaction. A detector side-channel: it makes no claim.",
  "lemmas": [
   {
    "lemma": "greet",
@@ -102,6 +102,18 @@
     "passing"
    ],
    "direct": true,
+   "direct_then": [
+    "the",
+    "a",
+    "an",
+    "his",
+    "her",
+    "their",
+    "my",
+    "your",
+    "our",
+    "some"
+   ],
    "preps": []
   },
   {
@@ -245,7 +257,10 @@
     "called",
     "calling"
    ],
-   "direct": false,
+   "direct": true,
+   "direct_then": [
+    "over"
+   ],
    "preps": [
     "to",
     "out to"

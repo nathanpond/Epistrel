@@ -12,7 +12,13 @@ under ``src/epistrel`` for:
 - a model call that renders the character template (``render_beats(...)`` or
   ``models.prepare(...)`` with ``variant=STRUCTURED``) whose inputs are not a name the same
   function assigned from ``character_inputs(...)``;
-- a ``character_inputs`` whose first parameter is not annotated ``CharacterContext``.
+- a ``character_inputs`` whose first parameter is not annotated ``CharacterContext``;
+- every prompt section ``character_inputs`` passes to ``GenerationInputs`` (#544), against the
+  declared map ``SECTIONS``: a section the map does not classify is a finding (a new section
+  is classified before it reaches a character); a ``CONTEXT`` section must come from the
+  context (the first parameter, or a ``replace`` field set from it); an ``UNSCOPED`` one (turn
+  text with no viewpoint scope: the rolling summary, the text pins) must come only from
+  ``replace`` fields that are empty when the context is ``partitioned``.
 
 A repair's regeneration (#151) and a policy regeneration (#68) rebuild their inputs from the
 render's own (``Rendered.character_inputs``), so they carry the same context. The age-repair
@@ -41,6 +47,41 @@ SEALERS = frozenset(
 """The modules that may seal an already viewpoint-filtered set."""
 RENDERERS = frozenset({"render_beats", "prepare"})
 """The calls that render a character template when given ``variant=STRUCTURED``."""
+
+CONTEXT = "context"
+"""A section built by ``build_context``: what the character could know."""
+TURN = "turn"
+"""Turn text every character may see: the guidance, the instructions and the shared scenario
+text, the character's own definition, the player's input, the policy and steering lines, and
+the turn's roles (#176, #180)."""
+UNSCOPED = "unscoped"
+"""Turn text with no viewpoint scope (#544): a partitioned character never gets it."""
+SECTIONS: dict[str, str] = {
+    "own_age": CONTEXT,
+    "beliefs": CONTEXT,
+    "private_memories": CONTEXT,
+    "scene": CONTEXT,
+    "working_memory": CONTEXT,
+    "just_now": CONTEXT,
+    "retrieved_memories": CONTEXT,
+    "canon_facts": CONTEXT,
+    "rating_guidance": TURN,
+    "custom_instructions": TURN,
+    "scenario_text": TURN,
+    "character_definitions": TURN,
+    "voiced_characters": TURN,
+    "policy_constraints": TURN,
+    "resolution_steering": TURN,
+    "length_target": TURN,
+    "belief_steps": TURN,
+    "player_input": TURN,
+    "others_present": TURN,
+    "interjections": TURN,
+    "player_requests": TURN,
+    "pinned_memories": UNSCOPED,
+    "summary_segments": UNSCOPED,
+}
+"""Every section a character's ``GenerationInputs`` may carry, classified (#544)."""
 
 
 def _name(node: ast.AST) -> str | None:
@@ -87,6 +128,67 @@ def _functions(tree: ast.AST) -> Iterator[ast.FunctionDef | ast.AsyncFunctionDef
             yield node
 
 
+def _mentions(node: ast.AST, name: str) -> bool:
+    return any(isinstance(n, ast.Name) and n.id == name for n in ast.walk(node))
+
+
+def _attrs(node: ast.AST) -> set[str]:
+    return {n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute)}
+
+
+def _guarded(value: ast.AST, context: str) -> bool:
+    """``() if <context>.partitioned else ...``: empty for a partitioned context."""
+    return (
+        isinstance(value, ast.IfExp)
+        and any(
+            isinstance(n, ast.Attribute)
+            and n.attr == "partitioned"
+            and isinstance(n.value, ast.Name)
+            and n.value.id == context
+            for n in ast.walk(value.test)
+        )
+        and isinstance(value.body, ast.Tuple)
+        and not value.body.elts
+    )
+
+
+def _section_findings(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> Iterator[tuple[int, str]]:
+    """#544: every section ``character_inputs`` hands the character template, against
+    ``SECTIONS`` (see the module docstring)."""
+    params = function.args.posonlyargs + function.args.args
+    if not params:
+        return
+    context = params[0].arg
+    from_context: set[str] = set()
+    guarded: set[str] = set()
+    for node in ast.walk(function):
+        if isinstance(node, ast.Call) and _name(node.func) == "replace":
+            for k in node.keywords:
+                if k.arg is None:
+                    continue
+                if _guarded(k.value, context):
+                    guarded.add(k.arg)
+                elif _mentions(k.value, context):
+                    from_context.add(k.arg)
+    for node in ast.walk(function):
+        if not (isinstance(node, ast.Call) and _name(node.func) == "GenerationInputs"):
+            continue
+        for k in node.keywords:
+            kind = SECTIONS.get(k.arg or "")
+            used = _attrs(k.value)
+            if kind is None:
+                yield node.lineno, f"passes the unclassified section {k.arg!r} to a character"
+            elif kind == CONTEXT and not (_mentions(k.value, context) or used & from_context):
+                yield node.lineno, f"passes the context section {k.arg!r} from outside the context"
+            elif kind == UNSCOPED and not (used and used <= guarded):
+                yield (
+                    node.lineno,
+                    f"passes the unscoped section {k.arg!r} to a partitioned character",
+                )
+
+
 def _findings(rel: str, tree: ast.AST) -> Iterator[tuple[int, str]]:
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -112,6 +214,7 @@ def _findings(rel: str, tree: ast.AST) -> Iterator[tuple[int, str]]:
             first = params[0].annotation if params else None
             if not (first is not None and _name(first) == "CharacterContext"):
                 yield function.lineno, "character_inputs does not take a CharacterContext first"
+            yield from _section_findings(function)
 
 
 def scan(root: Path = REPO_ROOT) -> list[str]:
@@ -137,4 +240,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 1 if findings else 0
 
 
-__all__ = ["CONTEXT_MODULE", "SEALERS", "main", "scan"]
+__all__ = [
+    "CONTEXT",
+    "CONTEXT_MODULE",
+    "SEALERS",
+    "SECTIONS",
+    "TURN",
+    "UNSCOPED",
+    "main",
+    "scan",
+]

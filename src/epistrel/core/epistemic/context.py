@@ -190,6 +190,9 @@ class CharacterContext:
     """#180's section (empty until it lands)."""
     time_belief: None = None
     """M6's own time belief (FR-CLOCK-11)."""
+    partitioned: bool = False
+    """Built under per-character partitions: the render then takes no turn section that is not
+    viewpoint-scoped (the rolling summary, the text pins; #544, ``prompt.character_inputs``)."""
     needed: tuple[Needed, ...] = field(default=(), compare=False)
     """The exposures this context needed, which the turn's commit resolves."""
     retrieval: RetrievalResult | None = field(default=None, compare=False)
@@ -319,6 +322,7 @@ def compose(
     needed: Sequence[Needed] = (),
     retrieval: RetrievalResult | None = None,
     report: Mapping[str, Any] | None = None,
+    partitioned: bool = False,
 ) -> CharacterContext:
     """The context's sections from already-filtered inputs (see the module docstring). Pure."""
     if working.viewpoint != f"{CHARACTER_VIEWPOINT_PREFIX}{character_id}":
@@ -340,6 +344,7 @@ def compose(
         needed=tuple(needed),
         retrieval=retrieval,
         report=dict(report or {}),
+        partitioned=partitioned,
     )
 
 
@@ -749,6 +754,7 @@ async def build_context(
         needed=needed,
         retrieval=retrieval,
         report=report,
+        partitioned=partitioned,
     )
 
 

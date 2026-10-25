@@ -22,7 +22,9 @@ context (FR-MEM-8, FR-LITE-3; docs/02 §4.2; #147).
   refused whole (``check_text_pins``).
 - **Context** (``pinned_context``): a context source of #141's retrieval
   (``retrieval.pipeline.CONTEXT_SOURCES``, tier 1): each pinned, active memory positioned at or
-  before the query, **quarantined pins left out** (#145: the source is outside retrieval's
+  before the query and visible to the query's viewpoint (#159's filter, ``SourceRequest.scope``;
+  #544: a pin scoped to another character never reaches a character's context),
+  **quarantined pins left out** (#145: the source is outside retrieval's
   quarantine filter), as a ``pin`` item whose ``item_id`` is the memory's id (#145's implication
   hook implicates it as an author pin), by decayed importance (best first), then id. The pins'
   share of the token budget is ``assemble``'s. Retrieval runs only with episodic memory on, so
@@ -56,6 +58,7 @@ from epistrel.core.settings_schema import HotSetSettings
 from epistrel.core.stories import require_writable
 from epistrel.core.tables import stories, story_texts
 from epistrel.core.tables.memories import memories
+from epistrel.core.visibility import visible_clause
 
 if TYPE_CHECKING:
     from epistrel.core.mutation import MemoryWrite
@@ -311,11 +314,13 @@ async def pinned_context(conn: AsyncConnection, request: SourceRequest) -> Seque
     """The story's pinned memories as tier-1 ``pin`` items (see the module docstring)."""
     m = memories.c
     turn = request.position[0]
+    scoped = None if request.scope is None else visible_clause(memories, request.scope)
     rows = (
         await conn.execute(
             select(m.id, m.text, m.importance, m.importance_at)
             .where(
                 m.story_id == request.story_id,
+                *([] if scoped is None else [scoped]),
                 # ``pinned`` itself (NOT NULL), not ``IS TRUE``: the partial index
                 # ``ix_memories_pinned`` (``WHERE pinned``) serves only this form (#451).
                 m.pinned,

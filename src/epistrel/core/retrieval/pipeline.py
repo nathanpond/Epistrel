@@ -405,13 +405,15 @@ class RetrievalResult:
 
 @dataclass(frozen=True, slots=True)
 class SourceRequest:
-    """What a context source is asked: the story, the query's position and viewpoint, and the
-    entities the query resolved."""
+    """What a context source is asked: the story, the query's position and viewpoint, the
+    entities the query resolved, and the viewpoint's memory filter (``scope_for``'s ``scope``:
+    ``None`` reads every row; #544: a source of memory rows applies it, as every arm does)."""
 
     story_id: str
     position: tuple[int, int]
     viewpoint: str
     entities: tuple[str, ...]
+    scope: str | None = None
 
 
 ContextSource = Callable[[AsyncConnection, SourceRequest], Awaitable[Sequence[ContextItem]]]
@@ -1219,7 +1221,7 @@ async def retrieve(
     # 6. assemble
     episodes = tuple(_row(r, (ARM_OCCASION,)) for r in episode_rows)
     assessments = tuple(_row(r, (ARM_ASSESSMENT,)) for r in assessment_rows)
-    request = SourceRequest(story_id, position, viewpoint, resolved.entities)
+    request = SourceRequest(story_id, position, viewpoint, resolved.entities, scope)
     tier_one: list[ContextItem] = []
     for source in list(CONTEXT_SOURCES):
         for item in await source(conn, request):

@@ -475,23 +475,52 @@ def _test_files_under(path: Path) -> set[Path]:
     return {p for p in path.rglob("test_*.py") if fixtures not in p.parents}
 
 
-def _shard_files(spec: str) -> set[Path]:
-    """The test modules one shard's arguments select, with pytest's own semantics: positional
-    paths, minus ``--ignore`` paths, minus files whose absolute path (or a parent's) matches an
-    ``--ignore-glob`` pattern made absolute against the repository root."""
-    selected: set[Path] = set()
+def _module_tests(path: Path) -> set[str]:
+    """A test module's top-level test functions and classes: the nodes a ``path::name`` shard
+    argument can name."""
+    tree = ast.parse(path.read_text())
+    return {
+        node.name
+        for node in tree.body
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name.startswith("test")
+        )
+        or (isinstance(node, ast.ClassDef) and node.name.startswith("Test"))
+    }
+
+
+Node = tuple[Path, str]
+
+
+def _shard_nodes(spec: str) -> set[Node]:
+    """The tests one shard's arguments select, with pytest's own semantics: positional paths or
+    ``path::name`` node ids, minus ``--ignore`` paths, minus files whose absolute path (or a
+    parent's) matches an ``--ignore-glob`` pattern made absolute against the repository root,
+    minus ``--deselect`` node ids. A module is its top-level tests (``_module_tests``)."""
+    selected: set[Node] = set()
     ignored: list[Path] = []
     globs: list[str] = []
+    deselected: set[Node] = set()
     for word in spec.split():
         if word.startswith("--ignore="):
             ignored.append(REPO_ROOT / word.removeprefix("--ignore="))
         elif word.startswith("--ignore-glob="):
             globs.append(str(REPO_ROOT / word.removeprefix("--ignore-glob=")))
+        elif word.startswith("--deselect="):
+            path, _, name = word.removeprefix("--deselect=").partition("::")
+            assert name in _module_tests(REPO_ROOT / path), f"no test to deselect {word!r}"
+            deselected.add((REPO_ROOT / path, name))
         else:
             assert not word.startswith("-"), f"unexpected shard option {word!r}"
-            target = REPO_ROOT / word
+            path, _, name = word.partition("::")
+            target = REPO_ROOT / path
             assert target.exists(), f"shard path {word!r} does not exist"
-            selected |= _test_files_under(target)
+            if name:
+                assert name in _module_tests(target), f"shard node {word!r} does not exist"
+                selected.add((target, name))
+            else:
+                selected |= {(f, t) for f in _test_files_under(target) for t in _module_tests(f)}
 
     def kept(path: Path) -> bool:
         chain = [path, *path.parents]
@@ -499,28 +528,56 @@ def _shard_files(spec: str) -> set[Path]:
             return False
         return not any(fnmatch.fnmatch(str(p), g) for p in chain for g in globs)
 
-    return {p for p in selected if kept(p)}
+    return {n for n in selected if kept(n[0])} - deselected
+
+
+def _shard_files(spec: str) -> set[Path]:
+    """The test modules one shard runs any test of."""
+    return {path for path, _ in _shard_nodes(spec)}
+
+
+def _every_node() -> set[Node]:
+    return {(f, t) for f in _test_files_under(REPO_ROOT / "tests") for t in _module_tests(f)}
 
 
 def test_ci_shards_partition_the_test_files() -> None:
-    """#331: the sharded `test` job runs every test module under tests/ in exactly one shard.
+    """#331: the sharded `test` job runs every test under tests/ in exactly one shard. A module
+    may be split across shards by node id (`path::test`, `--deselect=path::test`; #179's E-08).
 
-    Complement asserted: a module no shard names (or two shards both name) is reported; the
+    Complement asserted: a test no shard names (or two shards both name) is reported; the
     shard names are unique, since each names its coverage data file."""
     shards = _shards()
     names = [s["name"] for s in shards]
     assert len(names) == len(set(names)), names
     assert len(shards) > 1, names
-    owners: dict[Path, list[str]] = {}
+    owners: dict[Node, list[str]] = {}
     for shard in shards:
-        for path in _shard_files(shard["paths"]):
-            owners.setdefault(path, []).append(shard["name"])
-    every = _test_files_under(REPO_ROOT / "tests")
-    missing = sorted(str(p.relative_to(REPO_ROOT)) for p in every - set(owners))
-    twice = {str(p.relative_to(REPO_ROOT)): o for p, o in owners.items() if len(o) > 1}
+        for node in _shard_nodes(shard["paths"]):
+            owners.setdefault(node, []).append(shard["name"])
+    every = _every_node()
+
+    def show(node: Node) -> str:
+        return f"{node[0].relative_to(REPO_ROOT)}::{node[1]}"
+
+    missing = sorted(show(n) for n in every - set(owners))
+    twice = {show(n): o for n, o in owners.items() if len(o) > 1}
     assert missing == [], f"no CI shard runs {missing}"
     assert twice == {}, f"more than one CI shard runs {twice}"
     assert set(owners) == every
+
+
+def test_ci_shard_node_split_is_checked() -> None:
+    """The node-id split is not vacuous: E-08's think-leak test runs in its own shard and the
+    rest of the module in another; without the `--deselect`, both shards would run it."""
+    by_name = {s["name"]: s["paths"] for s in _shards()}
+    e08 = REPO_ROOT / "tests" / "evals" / "test_e_08.py"
+    think = (e08, "test_e_08__m5_think_leak")
+    assert _shard_nodes(by_name["eval-e08-think"]) == {think}
+    rest = _shard_nodes(by_name["eval-e08"])
+    assert think not in rest
+    assert rest | {think} == {(e08, t) for t in _module_tests(e08)}
+    undeselected = by_name["eval-e08"].split(" --deselect=")[0]
+    assert think in _shard_nodes(undeselected)
 
 
 def test_ci_shard_partition_check_sees_a_gap() -> None:

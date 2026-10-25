@@ -137,7 +137,7 @@ jobs:
     # #179 (M5's PR): `rest` reached 25 minutes on a slow runner (scenario ~8 min, perf ~7 min,
     # top-level ~7 min) and `eval` 25 with E-08's real-suite run in it, so tests/scenario and
     # tests/perf move together (P-05's census) to `scenario-perf`, and tests/eval, E-08 and the
-    # rest of tests/evals run as `eval`, `eval-e08` and `eval-harness`.
+    # rest of tests/evals run as `eval`, `eval-e08-think`, `eval-e08` and `eval-harness`.
     name: test (${{ matrix.shard.name }})
     runs-on: ubuntu-latest
     # 35, not 25 (#179): E-08's 300-case real-suite run is one file that took 21 minutes on a slow runner.
@@ -162,8 +162,12 @@ jobs:
           # 11 min alone) and the rest of the harness split: together they outran the job's 25 minutes.
           - name: eval
             paths: tests/eval
+          # E-08's think-leak pass (345 cases on two seeds) outgrew one shard beside the asymmetry
+          # runs once #179 resized the set, so it runs alone.
+          - name: eval-e08-think
+            paths: tests/evals/test_e_08.py::test_e_08__m5_think_leak
           - name: eval-e08
-            paths: tests/evals/test_e_08.py
+            paths: tests/evals/test_e_08.py --deselect=tests/evals/test_e_08.py::test_e_08__m5_think_leak
           - name: eval-harness
             paths: tests/evals --ignore=tests/evals/test_e_08.py
           - name: scenario-perf

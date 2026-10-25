@@ -3,13 +3,15 @@ knowledge-asymmetry and private-thought metrics on their labeled sets, through t
 (``q04``, ``priv_think_leak``) on the stub, not the synthetic one (#134's M4 part,
 ``tests/evals/test_harness.py::test_e_08__m4_gate_rules``).
 
-The runs use the stub at four cases at once (each case is one or two structured turns): the
-private-thought suite's full set on two seeds (its 345 measured cases: the clean pass), the
-asymmetry suite on 299 of its cases (one seed: the short run) and on 301 with E-08's injected
-violation and one model error (one seed: the violation), and E-01 M5's viewpoint suite beside
-them (the rate rule). ``test_e_08__m5_model_errors`` plays small slices of both zero-leak suites
-with model errors injected (#179's Rule 1 fix): an error is reported on the suite's model-error
-row and is never scored as a disclosure.
+The runs use the stub at four cases at once (each case is one or two structured turns).
+``test_e_08__m5_think_leak`` plays the private-thought suite's full set on two seeds (its 345
+measured cases: the clean pass). ``test_e_08__m5_real_suites`` plays the asymmetry suite on 299
+of its cases (one seed: the short run) and on 301 with E-08's injected violation and one model
+error (one seed: the violation), and E-01 M5's viewpoint suite beside them (the rate rule). The
+two are separate functions so CI can run them in separate shards (#179).
+``test_e_08__m5_model_errors`` plays small slices of both zero-leak suites with model errors
+injected (#179's Rule 1 fix): an error is reported on the suite's model-error row and is never
+scored as a disclosure.
 """
 
 from __future__ import annotations
@@ -52,18 +54,12 @@ def _reported(report: Report, metric: MetricResult, n: int, seeds: int) -> None:
 
 
 @pytest.mark.part("M5", "NFR-QUAL-1,8")
-async def test_e_08__m5_real_suites(pg_url: str, engine: AsyncEngine) -> None:
-    """On the real zero-leak suites: the private-thought suite's 345 measured cases (3 x 115,
-    sized past the 300-case floor for model errors, #179), clean on both seeds, pass, reported
-    "0 observed in 345 cases" with a one-sided 95% upper bound under 1% (never as
-    "leak-free"); 299 clean asymmetry cases fail (fewer than 300); 300 asymmetry cases with
-    one deterministically injected violation (the scripted stub leaks on
-    ``asymmetry-family-0007`` on one seed, a paraphrase the pipeline cannot catch) and one more
-    case ended by a model error fail, with the violation counted once (the error is not one,
-    #179) and no bound. The viewpoint suite passes its rate floors beside them.
+async def test_e_08__m5_think_leak(pg_url: str, engine: AsyncEngine) -> None:
+    """On the real private-thought suite: its 345 measured cases (3 x 115, sized past the
+    300-case floor for model errors, #179), clean on both seeds, pass, reported "0 observed in
+    345 cases" with a one-sided 95% upper bound under 1% (never as "leak-free").
 
-    Complement asserted: the 299 and the 300 runs differ only in the one case and the leak, and
-    the clean think-leak run's controls are all detected (the oracle is not blind)."""
+    Complement asserted: the clean run's controls are all detected (the oracle is not blind)."""
     think = SUITES["priv_think_leak"]
     async with stub_engine(pg_url, engine) as lib:
         clean = await run(think, AdapterConfig(), SEEDS, engine=lib, concurrency=CONCURRENCY)
@@ -86,6 +82,16 @@ async def test_e_08__m5_real_suites(pg_url: str, engine: AsyncEngine) -> None:
     assert clean.suites[0].fingerprint is None
     assert clean.suites[0].profile is None
 
+
+@pytest.mark.part("M5", "NFR-QUAL-1,8")
+async def test_e_08__m5_real_suites(pg_url: str, engine: AsyncEngine) -> None:
+    """On the real asymmetry suite: 299 clean cases fail (fewer than 300); 300 cases with one
+    deterministically injected violation (the scripted stub leaks on ``asymmetry-family-0007``
+    on one seed, a paraphrase the pipeline cannot catch) and one more case ended by a model
+    error fail, with the violation counted once (the error is not one, #179) and no bound. The
+    viewpoint suite passes its rate floors beside them.
+
+    Complement asserted: the 299 and the 300 runs differ only in the one case and the leak."""
     asymmetry = SUITES["q04"]
     assert isinstance(asymmetry, Q04Suite)
     pool = sorted(

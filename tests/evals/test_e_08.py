@@ -11,7 +11,10 @@ error (one seed: the violation), and E-01 M5's viewpoint suite beside them (the 
 two are separate functions so CI can run them in separate shards (#179).
 ``test_e_08__m5_model_errors`` plays small slices of both zero-leak suites with model errors
 injected (#179's Rule 1 fix): an error is reported on the suite's model-error row and is never
-scored as a disclosure.
+scored as a disclosure. ``test_e_08__m5_think_leak_every_form`` and ``__injected`` (#562): the
+private-thought oracle checks every case against every category's forms, so a paraphrased or
+narrated disclosure in a case of another category is seen (by the oracle alone, and end to end
+on the stub).
 """
 
 from __future__ import annotations
@@ -22,7 +25,8 @@ from pathlib import Path
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from epistrel.evals import SUITES, AdapterConfig, Rule, Verdict, run, upper_bound_95
+from epistrel.evals import SUITES, AdapterConfig, Rule, Verdict, fixtures, run, upper_bound_95
+from epistrel.evals.authoring.asymmetry import render
 from epistrel.evals.report import MetricResult, Report, render_markdown
 from epistrel.evals.runner import ERROR_DETAILS
 from epistrel.evals.suites import priv_think_leak as think_leak
@@ -258,3 +262,111 @@ async def test_e_08__m5_model_errors(pg_url: str, engine: AsyncEngine, tmp_path:
     assert set(leaked) == {(failing.id, one_seed[0]), (control.id, one_seed[0])}
     for record in leaked.values():
         _assert_model_error(record, think_leak.MODEL_ERROR)
+
+
+# -- #562: every case is checked against every category's forms -----------------------------
+
+KINDS = ("verbatim", "paraphrase", "narrated")
+
+
+def _disclosure(case: ThinkLeakCase, kind: str) -> str:
+    """A ``say`` disclosing ``case``'s thought in ``kind``'s form: the thought's own words, the
+    fact's paraphrased ``leak`` (one of its forms, past the pipeline's own detector) or one of
+    its narrated feelings."""
+    fact = fixtures.FIXTURES[case.inputs.fixture_id].fact(case.inputs.fact)
+    if kind == "verbatim":
+        return fact.think
+    if kind == "paraphrase":
+        assert fixtures.disclosures(fact.leak, fact.forms), fact.key
+        return fact.leak
+    return f"{fact.holder} seems {fact.feelings[0]}, if you ask me."
+
+
+def _injections() -> list[tuple[ThinkLeakCase, str, str]]:
+    """A distinct withheld case per (category, other kind): its measured answer discloses the
+    thought in another category's form, which the case's own forms do not hold."""
+    found: list[tuple[ThinkLeakCase, str, str]] = []
+    pool = [
+        c for c in SUITES["priv_think_leak"].load(SETS) if isinstance(c, ThinkLeakCase)
+    ]  # fmt: skip
+    for category in KINDS:
+        for kind in KINDS:
+            if kind == category:
+                continue
+            case = next(
+                c
+                for c in pool
+                if not c.control
+                and c.inputs.category == category
+                and all(c.id != f[0].id for f in found)
+                and not fixtures.disclosures(_disclosure(c, kind), c.inputs.forbidden)
+            )
+            found.append((case, kind, _disclosure(case, kind)))
+    return found
+
+
+def _said(rendered: str) -> str:
+    """The ``say`` text of a scripted render (what the player reads of it)."""
+    beats = json.loads(rendered)["beats"]
+    return "\n".join(str(b["text"]) for b in beats if b["kind"] == "say")
+
+
+@pytest.mark.part("M5", "NFR-QUAL-1,8")
+def test_e_08__m5_think_leak_every_form() -> None:
+    """#562: the private-thought oracle checks every case against the union of its fact's
+    forms. In each category, an injected disclosure in each other category's form (a paraphrase
+    or a narrated feeling in a ``verbatim`` case, a narrated feeling or the thought's words in a
+    ``paraphrase`` case, a paraphrase or the words in a ``narrated`` one) is seen, although the
+    case's own forms do not hold it. Complement: each case's clean scripted answer and prelude
+    disclose nothing."""
+    for case, kind, said in _injections():
+        hits, echoed = think_leak.oracle(said, case.inputs)
+        assert hits or echoed, (case.id, kind)
+        if kind != "verbatim":
+            assert hits, (case.id, kind)
+            assert not fixtures.disclosures(said, case.inputs.forbidden), (case.id, kind)
+        for clean in (_said(case.stub_answer), _said(case.stub_prelude), case.inputs.prelude):
+            assert think_leak.oracle(clean, case.inputs) == ([], False), (case.id, clean)
+
+
+@pytest.mark.part("M5", "NFR-QUAL-1,8")
+async def test_e_08__m5_think_leak_injected(pg_url: str, engine: AsyncEngine) -> None:
+    """#562 end to end, on the stub: the four cases injected with a paraphrased or narrated
+    disclosure in another category (a paraphrase and a narrated feeling in ``verbatim`` cases, a
+    narrated feeling in a ``paraphrase`` case, a paraphrase in a ``narrated`` one) run through
+    the private-thought suite. Every one is a violation of ``nfr_qual_1.think_leak`` and of its
+    own category's row. (The thought's own words were seen in every category before #562, by
+    the echo detector.) Complement: the same cases with their clean answers observe no
+    disclosure."""
+    suite = SUITES["priv_think_leak"]
+    injected = [i for i in _injections() if i[1] != "verbatim"]
+    leaking = [c.model_copy(update={"stub_answer": render(said)}) for c, _, said in injected]
+    clean_cases = [c for c, _, _ in injected]
+    one_seed = SEEDS[:1]
+    async with stub_engine(pg_url, engine) as lib:
+        leaked = await run(
+            suite,
+            AdapterConfig(),
+            one_seed,
+            engine=lib,
+            cases={suite.name: leaking},
+            concurrency=CONCURRENCY,
+        )
+    async with stub_engine(pg_url, engine) as lib:
+        clean = await run(
+            suite,
+            AdapterConfig(),
+            one_seed,
+            engine=lib,
+            cases={suite.name: clean_cases},
+            concurrency=CONCURRENCY,
+        )
+    assert leaked.harness_errors == clean.harness_errors == []
+    found = _metric(leaked, THINK_LEAK)
+    assert (found.sample_size, found.violations) == (4, 4)
+    assert _metric(clean, THINK_LEAK).violations == 0
+    for category, n in (("verbatim", 2), ("paraphrase", 1), ("narrated", 1)):
+        row = think_leak.CATEGORY_METRICS[category]
+        # A category row's mean is its disclosure rate (``Direction.at_most``).
+        assert (_metric(leaked, row).sample_size, _metric(leaked, row).mean) == (n, 1.0), row
+        assert _metric(clean, row).mean == 0.0, row

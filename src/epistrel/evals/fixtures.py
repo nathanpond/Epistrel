@@ -27,10 +27,11 @@ answer with its own secret and a case measures knowledge crossing between charac
 owner's decision of 2026-10-24). A named render is still the holder's own (``primary``).
 
 **The oracle** never asks the pipeline's own detectors whether they let something through: it
-applies the case's own forbidden forms to the player-facing output (``player_text``: the
+applies the case's forbidden forms to the player-facing output (``player_text``: the
 composed message and the ``say`` beats the player's character received) with #148's
 whole-word folded matcher (``disclosures``), and, for a planted thought, #152's shingle
-detector over the thought's words (``echoes``).
+detector over the thought's words (``echoes``). A planted thought's case is checked against
+every form of its fact, whatever its category (``priv_think_leak.forbidden_forms``; #562).
 """
 
 from __future__ import annotations

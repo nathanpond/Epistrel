@@ -24,6 +24,9 @@ canon only Marcus may read (``commit_fact`` with ``characters: [Marcus]`` visibi
 forged the letter for Wren) is in no other character's context. Asked about Jenni and the
 letter, Bobby's and Jenni's renders do not carry the fact's line, and Marcus's does (the
 complement: the fact is retrievable, and visibility alone keeps it from the others).
+
+``test_c_25__m5_planned_reveal`` (FR-EPI-5; #173): a planned reveal created at genesis under
+partitions stays ``engine``-scoped, in no partition, no memory and no character's context.
 """
 
 from __future__ import annotations
@@ -39,6 +42,7 @@ from epistrel.core.propositions.model import Interval, Proposition
 from tests import genesis_support as g
 from tests import perception_support as ps
 from tests import scenario_support as scenarios
+from tests import seeded_partitions_support as sp
 from tests import structured_genesis_support as sg
 from tests.auth_support import auth_settings
 from tests.canon_support import auto_predicate, commit
@@ -176,3 +180,88 @@ async def test_c_25__m5(
         assert "Jenni forged_the_letter_for Wren" in await context_of("Marcus")
         for name in ("Bobby", "Jenni"):
             assert "forged_the_letter_for" not in await context_of(name), name
+
+
+DEED = "Tom keeps the deed."
+"""The planned reveal's hidden truth: the Brother has the deed (secret, his and his mother's)."""
+
+
+@pytest.mark.part("M5", "FR-EPI-5")
+async def test_c_25__m5_planned_reveal(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """A planned reveal created at genesis under per-character partitions stays with the
+    director (#173: the owner's decision): S-FAMILY's Sunday Dinner with a reveal whose truth
+    (the Brother keeps the deed) names a holder and an audience. Its truth is one canon fact,
+    ``engine``-scoped (omniscient only), provenance ``seed``; no partition holds it (no belief)
+    and no memory carries it; no character's render context has its line. Complement: the
+    Mother's own secret seed, limited the same way by its audience, is in her partition and her
+    context, so the reveal's absence is its scope, not the read."""
+    document = sp.family()
+    document["world"]["entities"].append({"id": "deed", "name": "The deed", "kind": "item"})
+    document["drivers"] = {
+        "planned_reveals": [
+            {
+                "truth": {
+                    "text": DEED,
+                    "holder": "brother",
+                    "audience": ["self", "mother"],
+                    "disclosure": "secret",
+                },
+                "allowed_roles": ["mother"],
+                "conditions": "Only after the will is read.",
+            }
+        ]
+    }
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        profile = await sp.partitioned_profile(client)
+        scenario_id, _ = await g.published_scenario(client, document)
+        cast = await sp.cast(client)
+        made = await g.create_from(client, sp.request(scenario_id, cast, profile))
+        story = made["story_id"]
+        by_role = {c["role_id"]: c["id"] for c in made["characters"]}
+        ents = await sp.entity_ids(engine, story)
+        deed, letters = ents["The deed"], ents["The love letters"]
+
+        (fact,) = await sp.rows_of(
+            engine,
+            "SELECT f.visibility, f.provenance, p.subject_id FROM facts f "
+            "JOIN propositions p ON p.id = f.proposition_id "
+            "WHERE f.story_id = :s AND p.object_id = :o",
+            s=story,
+            o=deed,
+        )
+        assert (fact.visibility, fact.provenance) == ({"scope": "engine"}, "seed")
+        assert str(fact.subject_id) == by_role["brother"]
+        held = await sp.beliefs(engine, story)
+        assert [r for r in held if str(r.object_id) == deed] == []
+        memories = await sp.rows_of(
+            engine, "SELECT id FROM memories WHERE story_id = :s AND text = :t", s=story, t=DEED
+        )
+        assert memories == []
+        # The complement: the Mother's own secret is in her partition.
+        assert [str(r.holder) for r in held if str(r.object_id) == letters] == [by_role["mother"]]
+
+        stub = epistrel.models.stub
+        sam = by_role["player"]
+
+        async def context_of(role: str, name: str) -> str:
+            stub.calls.clear()
+            stub.script("generation", [render(beat("do", f"{name} nods."))])
+            answer = await respond(
+                client,
+                story,
+                body(sam, "Is dinner ready?", render_character_ids=[by_role[role]]),
+            )
+            assert answer.status_code == 200, answer.text
+            (call,) = schema_calls(stub, "CharacterRender")
+            return text_of(call)
+
+        for role in sp.NPC_ROLES:
+            seen = await context_of(role, sp.NAMES[role])
+            assert "holds The deed" not in seen, role
+            assert DEED not in seen, role
+            if role == "mother":
+                assert "holds The love letters" in seen

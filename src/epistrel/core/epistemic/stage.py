@@ -18,7 +18,9 @@ What the stage answers:
 - ``antecedents_for(character_id)``: the staged beats that may be a later render's antecedent
   (FR-EPI-14 (b)): beats rendered before the character's own render, by someone else, whose
   claims verified (``StagedBeat.verified``). A beat whose claims stayed uncertain, or none of
-  whose claims verified, is no antecedent.
+  whose claims verified, is no antecedent. It routes no perception (the stage holds no scene):
+  ``perceived_antecedents(character_id, …)`` keeps only the ones the character perceived in full
+  (#559), and the staging's acceptances are formed from it alone.
 - ``staged_beat(ref)``: #160's ``AntecedentOracle`` for ``antecedent = staged_beat`` (``{
   operation_id, variant, beat}``): a verified staged beat of this turn at ``(turn, variant, 0,
   beat, step)``. ``render_step`` is #168's (``None`` here). ``bind`` names the variant once the
@@ -196,6 +198,28 @@ class TurnStage:
             and b.character_id != character_id
             and (first is None or b.beat < first)
         ]
+
+    def perceived_antecedents(
+        self,
+        character_id: str,
+        *,
+        level: perception.Level,
+        scene: perception.SceneState | None,
+        names: Mapping[str, str],
+        places: Mapping[str, str],
+    ) -> list[StagedBeat]:
+        """#174 AC1 (#559): ``antecedents_for`` restricted to the beats ``character_id``
+        perceived in full (``perceived_for``, content fidelity): a staged beat it did not
+        perceive, or perceived only as an envelope, is never its antecedent. What the turn's
+        staging asks before forming an acceptance."""
+        heard = {
+            b.beat
+            for b in self.perceived_for(
+                character_id, level=level, scene=scene, names=names, places=places
+            )
+            if b.fidelity == "content"
+        }
+        return [b for b in self.antecedents_for(character_id) if b.beat in heard]
 
     def is_antecedent_for(self, character_id: str, beat: int) -> bool:
         return any(b.beat == beat for b in self.antecedents_for(character_id))

@@ -9717,6 +9717,7 @@
           "slot": {
             "anyOf": [
               {
+                "maximum": 32767.0,
                 "minimum": 0.0,
                 "type": "integer"
               },
@@ -34286,6 +34287,7 @@
           "slot": {
             "anyOf": [
               {
+                "maximum": 32767.0,
                 "minimum": 0.0,
                 "type": "integer"
               },

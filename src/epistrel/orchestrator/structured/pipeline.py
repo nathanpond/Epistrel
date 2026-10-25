@@ -2078,7 +2078,15 @@ async def owed_references(
         for beat_, sketch, span in checked.salient:
             speaker = beat_.speaker_entity or NARRATOR
             context = await load_context(
-                conn, story_id, position=(read.turn, 0), speaker=speaker, lookup=lookup
+                conn,
+                story_id,
+                position=(read.turn, 0),
+                speaker=speaker,
+                lookup=lookup,
+                # #546: holder-aware mentions, as ``record_salience`` resolves them.
+                identities=await identity_rules.speaker_identities(
+                    lookup, story_id, speaker, through_position=(read.turn, 0)
+                ),
             )
             opened = open_sketch(
                 salience._claim_of(sketch),
@@ -3071,17 +3079,25 @@ async def reveals_committed(
 ) -> list[hidden.Reveal]:
     """The turn's reveals (#169): every rendered ``say`` (never a deceptive one) or ``do`` whose
     supported claims assert a hidden fact its actor reads, widened to the beat's content
-    perceivers (``core.commit.hidden.reveal``; at perception ``none`` everyone in the scene)."""
+    perceivers (``core.commit.hidden.reveal``; at perception ``none`` everyone in the scene).
+    #546 (#171 AC4): a narration's supported ``same_as`` claims too, the narrator reading every
+    scope: an identity re-asserted where others perceive it widens like a say or a do reveal."""
     content = _content_perceivers(results)
     everyone: frozenset[str] | None = None
     found: list[hidden.Reveal] = []
     for beat in checked.beats:
-        if beat.kind not in (SAY, DO) or beat.character_id is None or beat.narrator:
+        narrated = beat.kind == NARRATION
+        if not narrated and (
+            beat.kind not in (SAY, DO) or beat.character_id is None or beat.narrator
+        ):
             continue
         claims = [
             c.proposition
             for c in beat.claims
-            if c.proposition is not None and c.verdict == "supported" and not c.attributed
+            if c.proposition is not None
+            and c.verdict == "supported"
+            and not c.attributed
+            and (not narrated or identity_rules.pair_of(c.proposition) is not None)
         ]
         if not claims:
             continue
@@ -3097,7 +3113,7 @@ async def reveals_committed(
             conn,
             op,
             claims,
-            speaker=beat.character_id,
+            speaker=None if narrated else beat.character_id,
             perceivers=perceivers,
             beat=beat.beat,
             event_id=ids.get(beat.beat),
@@ -3521,6 +3537,26 @@ async def _staged_moves(
     return {n: tuple(m) for n, m in moves.items()}
 
 
+async def turn_guard(
+    db: AsyncEngine,
+    story_id: str,
+    read: TurnRead,
+    primaries: Sequence[str],
+    checked: Checked | None = None,
+) -> Any:
+    """The guard context of a structured turn's output checks (#541, FR-GUARD-11): an
+    age-conditioned policy's ``present`` set is the union over the turn's beats of routing's
+    co-located set, for the input's actor and ``primaries`` across the moves ``checked``'s
+    canon stages (``_staged_moves``; none before anything is checked)."""
+    moves: scene_loader.Moves | None = None
+    if checked is not None:
+        async with db.connect() as conn:
+            moves = await _staged_moves(conn, story_id, checked)
+    return await guard_context(
+        db, story_id, actors=(read.actor.id, *primaries), moves=moves or None
+    )
+
+
 async def audience_of(
     db: AsyncEngine,
     story_id: str,
@@ -3795,12 +3831,13 @@ async def play(
             registry = await load_registry(conn, story_id)
             lookup = KeyedLookup(conn, read_set)
             for witness in later:
+                # #559: only a verified staged beat the witness perceived in full is its
+                # antecedent (#174 AC1).
                 heard = {
                     b.beat
-                    for b in turn_stage.perceived_for(
+                    for b in turn_stage.perceived_antecedents(
                         witness.id, level=level, scene=scene, names=names, places=places
                     )
-                    if b.fidelity == "content"
                 }
                 for b in checked_k.beats:
                     props = verified.get(b.beat, [])
@@ -3852,12 +3889,14 @@ async def play(
         report_multi.tie_break_warning = warning
         async with db.connect() as conn:
             registry = await load_registry(conn, story_id)
-            conflicts = simultaneous_rules.conflicts_of(
+            conflicts = await simultaneous_rules.conflicts_of(
                 checked.checked,
                 checked.beats,
                 [p.id for p in order],
                 actor_id=read.actor.id,
                 registry=registry,
+                lookup=KeyedLookup(conn, read_set),
+                story_id=story_id,
             )
             object_names = await _entity_names(conn, story_id, [c.object_id for c in conflicts])
         if not conflicts:
@@ -4035,7 +4074,11 @@ async def play(
         )
         authority[:] = [split]
         say, do = split.say, split.do
-        context = await guard_context(db, story_id)
+        # #541: ``present`` for the output gate is the turn's routing audience, the input's
+        # actor and the primaries' co-located sets (``turn_guard``).
+        context = await turn_guard(
+            db, story_id, read, [p.id for p in (read.characters or (read.character,))]
+        )
         policies = output_policies(context, cast_.render_ids)
         rounds.append(1)
         planned.clear()
@@ -4399,6 +4442,17 @@ async def play(
                     # A named primary who is not in the scene renders with nothing perceived.
                     report_multi.not_present.append(primary.id)
                 turn_stage.open_render(primary.id, next_beat)
+                if k > 0:
+                    # #541: a later primary's output gate counts who the earlier primaries'
+                    # beats brought in (an escalated reactor is an actor too); a simultaneous
+                    # turn's primaries render against the starting placements.
+                    context = await turn_guard(
+                        db,
+                        story_id,
+                        read,
+                        [p.id for p in order],
+                        None if simultaneous or merged is None else merged,
+                    )
                 rendered_k, outcome_k, replaced = await render_primary(k, read_k, next_beat)
                 fresh = 0
                 if turn_roles is not None and rendered_k.finish_reason != "fallback":
@@ -4530,6 +4584,8 @@ async def play(
         assert merged is not None  # noqa: S101 - every turn renders a primary
         checked = merged
         sequential = len(order) > 1  # #176: an escalation renders another primary
+        # #541: the follow-up, repair and composition checks see the whole turn's audience.
+        context = await turn_guard(db, story_id, read, [p.id for p in order], checked)
         if turn_roles is not None:
             checked.silent = turn_roles.silent()
         rendered = renders_done[0] if len(renders_done) == 1 else _merged_rendered(renders_done)
@@ -4692,6 +4748,8 @@ async def play(
             mode=perception.SIMULTANEOUS if simultaneous else perception.SEQUENTIAL,
         )
         heard_state[:] = [heard]
+        # #541: the follow-up's beats may have brought someone in.
+        context = await turn_guard(db, story_id, read, [p.id for p in order], checked)
         composition = await compose_turn(
             db,
             models,

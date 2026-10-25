@@ -137,7 +137,7 @@ async def _fetch(db: AsyncEngine | AsyncConnection, query: Select[Any]) -> list[
             narrative_turn=row.narrative_turn,
             turn_variant=row.turn_variant,
             beat=row.beat,
-            step=row.step,
+            step=0 if row.step is None else row.step,  # a row written before 0082 (#548)
             slot_k=row.slot_k,
             character_id=row.character_id,
             principal=row.principal,

@@ -35,7 +35,8 @@ caller hands over claims that match the fact.
 **Identity** (``commit_identity``, #171): a narrated ``same_as`` is held, not shared: its canon
 fact is scoped to the narration's perceivers and the characters it names, so "the stranger is
 Bobby" is canon's and Bobby's, never Jenni's from elsewhere; a reveal widens it like any hidden
-fact.
+fact, and so does a narration re-asserting it where others perceive it (#546, #171 AC4: the
+narrator reads every scope, so ``reveal`` takes ``speaker = None`` for it).
 
 ``hidden_facts`` is ``GET /stories/{id}/inspect/ledger``'s ``hidden_facts`` (omniscient only):
 the current canon facts scoped away from the shared view, the engine's true ages aside. Log
@@ -326,10 +327,11 @@ async def commit_hidden(
 
 
 async def _hidden_matches(
-    conn: AsyncConnection, story_id: str, claim: Proposition, speaker: str
+    conn: AsyncConnection, story_id: str, claim: Proposition, speaker: str | None
 ) -> list[canon.Fact]:
     """The current canon facts ``claim`` asserts (its key and polarity) that are scoped away
-    from the shared view and that ``speaker`` may read."""
+    from the shared view and that ``speaker`` may read (``None``: the narrator, who reads
+    every scope)."""
     found = await canon.canon(
         conn,
         story_id,
@@ -341,7 +343,7 @@ async def _hidden_matches(
         f
         for f in found
         if f.visibility.scope == "characters"
-        and knows(f.visibility, speaker)
+        and (speaker is None or knows(f.visibility, speaker))
         and f.proposition.normalized_key() == claim.normalized_key()
         and f.proposition.polarity is claim.polarity
     ]
@@ -396,7 +398,7 @@ async def reveal(
     operation: canon.FactOperation,
     claims: Sequence[Proposition],
     *,
-    speaker: str,
+    speaker: str | None,
     perceivers: Iterable[str],
     beat: int | None,
     event_id: str | None,
@@ -404,8 +406,9 @@ async def reveal(
     registry: Registry | None = None,
 ) -> list[Reveal]:
     """Widen every hidden fact ``claims`` reveal (see the module docstring): ``speaker``'s beat
-    ``beat`` (its event ``event_id``) whose content reached ``perceivers``. A ``deceptive``
-    beat reveals nothing; a fact everyone it reached already reads is left as it is."""
+    ``beat`` (its event ``event_id``) whose content reached ``perceivers``; ``speaker`` is
+    ``None`` for a narration (#546: the narrator reads every scope). A ``deceptive`` beat
+    reveals nothing; a fact everyone it reached already reads is left as it is."""
     from epistrel.core.commit import lifecycle
 
     if intent == "deceptive":

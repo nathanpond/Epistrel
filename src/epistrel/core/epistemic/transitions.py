@@ -47,7 +47,13 @@ takes the kind's default (``observation`` and ``author``: known; the rest: belie
   polarity: #159's ``normalized_key`` match, because #131's store has no shape upsert): the
   belief changes **in place**. A ``revision`` sets the confidence; any other kind raises it to
   at least the new level (strengthening testimony). A decayed belief is held again with full
-  accessibility. The transition records the state it replaced (``prior``).
+  accessibility. The transition records the state it replaced (``prior``). A ``resolution``
+  held from before that row starts (#165's knowledge obligation, held from the thunk's time;
+  #547) also writes the **backdated hold**: a second ``resolution`` transition citing the same
+  thunk produces a row of its own, held from the obligation's start and closed where the held
+  row starts (``held_from`` is immutable and one row is open per proposition), so the holder
+  holds it from then with no gap. It is skipped when another row of the key, or one
+  contradicting it, is held in that span.
 - Otherwise a new belief row is written, produced by the transition.
 - A held belief the new one contradicts (the same key with the other polarity, or, for a
   functional predicate, the same subject and qualifiers with another object over overlapping
@@ -137,6 +143,7 @@ from epistrel.core.membership import (
     Position,
     active_only,
     position_key,
+    position_literal,
     register_follower,
 )
 from epistrel.core.propositions.model import Cardinality, Polarity, Proposition
@@ -810,12 +817,81 @@ async def transition(
         if tally is not None:
             tally.refused += 1
         raise
-    if not result.replayed:
-        BELIEF_TRANSITIONS.labels(kind=result.transition.kind.value).inc()
+    written = [result]
+    start = held_from or position
+    if (
+        Kind(kind) is Kind.RESOLUTION
+        and not result.replayed
+        and not result.created
+        and BeliefKind(belief_kind) is BeliefKind.FIRST_ORDER
+        and start.before(result.belief.held_from)
+        and await _backdatable(conn, result.belief, start, registry)
+    ):
+        # #165 (FR-COMMIT-14): the binding obliges the holder to have held the act from the
+        # thunk's time, but it already holds it from a later position (raised in place above,
+        # the replay anchor). Its ``held_from`` is immutable and one row is open per
+        # proposition, so the earlier span is a row of its own, held from ``start`` and closed
+        # where the held row starts, by a second ``resolution`` transition citing the same thunk.
+        written.append(
+            await _transition(
+                conn,
+                op,
+                holder=holder,
+                kind=Kind.RESOLUTION,
+                proposition=proposition,
+                antecedent=antecedent,
+                position=position,
+                polarity=polarity,
+                held_from=start,
+                confidence=confidence,
+                story_time=story_time,
+                source=source,
+                outcome=outcome,
+                oracle=oracle,
+                settings=settings,
+                registry=registry,
+                backdate=result.belief,
+            )
+        )
+    for each in written:
+        if each.replayed:
+            continue
+        BELIEF_TRANSITIONS.labels(kind=each.transition.kind.value).inc()
         if tally is not None:
-            kind_name = result.transition.kind.value
+            kind_name = each.transition.kind.value
             tally.by_kind[kind_name] = tally.by_kind.get(kind_name, 0) + 1
     return result
+
+
+async def _backdatable(
+    conn: AsyncConnection, held: Belief, start: Position, registry: Registry | None
+) -> bool:
+    """Whether ``held``'s holder may be shown holding it from ``start`` (before ``held`` starts):
+    no other row of its key, and none contradicting it, is held anywhere in ``[start, held)``."""
+    from epistrel.core.tables.propositions import propositions
+
+    found = registry if registry is not None else await load(conn, held.story_id)
+    b = beliefs.c
+    p = propositions.c
+    rows = await conn.execute(
+        partitions._select().where(
+            b.story_id == held.story_id,
+            b.holder_character_id == held.holder_character_id,
+            b.id != held.id,
+            p.subject_id == held.proposition.subject_id,
+            p.predicate_id == held.proposition.predicate_id,
+            *partitions._held_then(),
+            position_key(beliefs, "held_from") < position_literal(held.held_from),
+        )
+    )
+    for row in rows:
+        other = partitions._belief_of(row)
+        if other.held_to is not None and other.held_to.key() <= start.key():
+            continue
+        same = other.proposition.normalized_key() == held.proposition.normalized_key()
+        if same or _conflicts(held.proposition, other, found):
+            return False
+    return True
 
 
 @dataclass(slots=True)
@@ -873,6 +949,7 @@ async def _transition(
     frame: Position | None = None,
     resolution: bool = False,
     shape: Mapping[str, Any] | None = None,
+    backdate: Belief | None = None,
 ) -> TransitionResult:
     story_id = op.story_id
     if story_id is None:
@@ -965,7 +1042,9 @@ async def _transition(
     when = story_time if story_time is not None else await _story_time(conn, story_id, position)
 
     key = stored.normalized_key()
-    if content:
+    if backdate is not None:
+        held: list[Belief] = []  # #165: the backdated hold, closed where ``backdate`` starts
+    elif content:
         held = []  # an inner content row is immutable: always its own row (#167)
     elif said:
         # A speech act never contradicts a belief: the same claim from the same speaker is the
@@ -1101,6 +1180,7 @@ async def _transition(
         ),
         position.beat or None,
         BELIEF_TRANSITION,
+        step=position.step,
     )
     now = (await conn.execute(select(func.transaction_timestamp()))).scalar_one()
     await conn.execute(
@@ -1168,10 +1248,17 @@ async def _transition(
             provenance=transition_id,
             registry=found,
             belief_id=belief_id,
-            lineage_id=priors[0].lineage_id if priors else None,
+            lineage_id=(
+                backdate.lineage_id
+                if backdate is not None
+                else priors[0].lineage_id
+                if priors
+                else None
+            ),
             kind=belief_kind,
             resolution=resolution,
             shape=columns,
+            held_to=None if backdate is None else backdate.held_from,
         )
         if priors:
             await _close(conn, priors, at=start, by=belief_id)

@@ -3,8 +3,8 @@ FR-MEM-5, FR-RATE-4, FR-LITE-3, FR-SCN-11; #150).
 
 ``character_inputs`` builds the ``generation`` inputs of one character's render: the turn's
 shared sections (the rating guidance first, the custom instructions, a scenario story's scenario
-text, the story's text pins (#60: author-pinned memories in every render's prompt, FR-LITE-3),
-the rolling summary when the profile keeps one), the rendering character's definition and
+text, and, with shared character knowledge only, the story's text pins (#60, FR-LITE-3) and the
+rolling summary when the profile keeps one), the rendering character's definition and
 deflection style, and every knowledge section from its ``core.epistemic.context.CharacterContext``
 and nothing else (#170, NFR-PRIV-4): its own age, belief state and private memories (#172) under
 per-character partitions,
@@ -14,8 +14,14 @@ perceived them), ``## Just now`` (#174: in a ``sequential`` turn, the verified b
 primaries rendered, as it perceived them), #141's retrieved context and the canon retrieval
 found. Nothing from another character's private records is there, and the director's notes are
 the narrator's alone.
+Under per-character partitions (``CharacterContext.partitioned``) a character render takes no
+turn section that is not viewpoint-scoped (#544): the rolling summary (written from the
+requester's composed view, a whisper to the player included) and the text pins (author text
+with no visibility) stay the narrator's. The author's pinned memories still reach the character
+through retrieval's pin source, which applies its viewpoint filter (#147, FR-MEM-8). Per-viewpoint
+summaries are not built.
 ``python -m tools.gates check-character-context`` keeps ``structured_generation.j2`` rendered
-only from inputs this function built.
+only from inputs this function built, and every section it passes classified (``SECTIONS``).
 
 ``narrator_inputs`` builds the narrator's: the same sections for the omniscient narrator, plus
 the scenario's director guidance labelled apart from the facts (``director_notes``, #122; and
@@ -150,6 +156,9 @@ def character_inputs(
     s = capped(
         replace(
             sections,
+            # #544: not viewpoint-scoped, so never in a partitioned character's prompt.
+            pins=() if context.partitioned else sections.pins,
+            segments=() if context.partitioned else sections.segments,
             scene=context.scene,
             working_memory=context.working_memory,
             just_now=context.just_now,

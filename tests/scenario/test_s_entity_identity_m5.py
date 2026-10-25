@@ -45,6 +45,8 @@ from epistrel.core.resolution.entities import NARRATOR, resolve_mentions
 from epistrel.core.retrieval.pipeline import resolve_query
 from epistrel.core.verify.protected import load_protected_index
 from epistrel.core.verify.rules import Holder, VerdictKind, check_with
+from epistrel.core.visibility import Visibility
+from epistrel.orchestrator.verify.extraction import load_env
 from tests import partition_support as parts
 from tests import perception_support as ps
 from tests import testimony_support as ts
@@ -337,3 +339,158 @@ async def test_s_entity_identity__m5(
     assert "entities/merge" in section
     assert "entities/split" in section
     assert "M7" in section
+
+
+# -- #171 AC4: identity widening follows #169's reveal rule and #161's routing (#546) ------------
+
+PAIRING = "He said the stranger is Bobby."
+REASSERT = {
+    "say": beat(
+        "say",
+        "I am the stranger, Jenni.",
+        intent="sincere",
+        propositions=[claim("I", "same_as", "the stranger")],
+    ),
+    "do": beat(
+        "do",
+        "Bobby pulls on the hooded coat: he is the stranger.",
+        propositions=[claim("I", "same_as", "the stranger")],
+    ),
+    "narration": beat(
+        "narration",
+        "In the parlor, all can see it: the stranger is Bobby.",
+        location="parlor",
+        propositions=[claim("the stranger", "same_as", "Bobby")],
+    ),
+}
+
+
+async def _same_as(engine: AsyncEngine, story: str) -> Any:
+    (fact,) = await rows(
+        engine,
+        "SELECT f.id, f.visibility FROM facts f WHERE f.story_id = :s AND f.predicate_id = :p "
+        "AND f.tx_to IS NULL AND f.membership = 'active'",
+        s=story,
+        p=SAME_AS,
+    )
+    return fact
+
+
+async def _protects_pairing(engine: AsyncEngine, story: str, speaker: str) -> bool:
+    async with engine.connect() as conn:
+        index = await load_index(conn, story)
+        protected = await load_protected_index(conn, story, speaker, index=index)
+    return protected is not None and protected.match(PAIRING) != []
+
+
+@pytest.mark.part("M5", "FR-PROP-7")
+@pytest.mark.parametrize("kind", ["say", "do", "narration"])
+async def test_s_entity_identity__m5_widening(
+    kind: str,
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """#171 AC4 (#546): after the porch reveal (``same_as(stranger, Bobby)`` scoped to Bobby),
+    Bobby comes into the parlor and the identity is re-asserted where Jenni perceives it: by
+    Bobby's sincere ``say``, his ``do``, or a narration at the parlor. Each widens the canon
+    fact like #169's reveal (Jenni joins its scope, the turn reports the reveal), so Jenni now
+    resolves "the stranger" to Bobby and her protected index no longer flags the pairing.
+    Complement: before the re-assertion it does, and she resolves the stranger as itself."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids = await _house(client, engine)
+        jenni, bobby, wren, stranger = ids["Jenni"], ids["Bobby"], ids["Wren"], ids["the stranger"]
+        stub.script("generation", [render(beat("narration", EARLY)), render(beat("think", "Odd."))])
+        await played(client, story, body(wren, None, do=WAIT, render_character_ids=[jenni]))
+        stub.reset()
+        stub.script(
+            "generation",
+            [
+                render(
+                    beat(
+                        "narration",
+                        REVEAL,
+                        location="porch",
+                        propositions=[claim("the stranger", "same_as", "Bobby")],
+                    )
+                ),
+                render(beat("think", "Time to go in.")),
+            ],
+        )
+        await played(client, story, body(wren, None, do=WAIT, render_character_ids=[bobby]))
+        hidden = await _same_as(engine, story)
+        assert hidden.visibility == {"scope": "characters", "characters": [bobby]}
+        assert await _protects_pairing(engine, story, jenni)
+        mention, _ = await _resolved(engine, story, jenni, jenni)
+        assert mention.representative_id is None
+
+        await ps.put(engine, story, bobby, ids["parlor"])
+        stub.reset()
+        if kind == "narration":
+            stub.script(
+                "generation", [render(REASSERT[kind]), render(beat("think", "So it is out."))]
+            )
+            request = body(wren, None, do=WAIT, render_character_ids=[bobby])
+        else:
+            stub.script("generation", [render(REASSERT[kind])])
+            request = body(wren, "Bobby, is that you?", render_character_ids=[bobby])
+        await played(client, story, request)
+        report = await turn_report(engine, story)
+        widened = await _same_as(engine, story)
+        assert widened.visibility["scope"] == "characters"
+        assert jenni in widened.visibility["characters"], kind
+        assert bobby in widened.visibility["characters"], kind
+        assert [(r["superseded_id"], r["fact_id"]) for r in report["commit"]["reveals"]] == [
+            (hidden.id, widened.id)
+        ], kind
+        assert not await _protects_pairing(engine, story, jenni), kind
+        mention, _ = await _resolved(engine, story, jenni, jenni)
+        assert (mention.entity_id, mention.representative_id) == (stranger, bobby), kind
+
+
+@pytest.mark.part("M5", "FR-PROP-7")
+async def test_s_entity_identity__m5_held_by_belief(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """#546: one helper (``identity.speaker_identities``) feeds the protected index and the
+    turn-time mention resolver (the detection environment's ``load_context(identities=)``). A
+    hidden ``same_as(stranger, Bobby)`` scoped to Bobby protects the pairing for Jenni and she
+    resolves the stranger as itself; once Jenni holds the identity as her own belief, her
+    protected index no longer flags the pairing and her mentions resolve to Bobby. Complement:
+    the canon fact is still hidden from her (its scope unchanged)."""
+    async with respond_client(stub_settings, engine) as (client, _):
+        story, ids = await _house(client, engine)
+    jenni, bobby, stranger = ids["Jenni"], ids["Bobby"], ids["the stranger"]
+    same = Proposition(
+        subject_id=stranger,
+        predicate_id=SAME_AS,
+        object_id=bobby,
+        valid_time=Interval.of(None, None),
+    )
+    await commit(
+        engine,
+        story,
+        same,
+        provenance="director",
+        visibility=Visibility(scope="characters", characters=(bobby,)),
+    )
+
+    async def env_mention() -> Any:
+        async with engine.connect() as conn:
+            env = await load_env(
+                conn, story, StructuredReadSet(), position=(3, 0), speakers=[jenni]
+            )
+        (mention,) = resolve_mentions("Then the stranger left.", jenni, env.context_for(jenni))
+        return mention
+
+    assert await _protects_pairing(engine, story, jenni)
+    assert (await env_mention()).representative_id is None
+    await parts.believe(engine, story, jenni, same)
+    assert not await _protects_pairing(engine, story, jenni)
+    mention = await env_mention()
+    assert (mention.entity_id, mention.representative_id) == (stranger, bobby)
+    fact = await _same_as(engine, story)
+    assert fact.visibility == {"scope": "characters", "characters": [bobby]}

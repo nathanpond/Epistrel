@@ -646,6 +646,28 @@ def co_located_set(scene: SceneState, character_id: str | None = None) -> frozen
     return scene.co_located(location)
 
 
+def turn_audience(
+    scene: SceneState,
+    actors: Iterable[str] = (),
+    moves: Mapping[int, Iterable[tuple[str, str | None]]] | None = None,
+) -> frozenset[str]:
+    """#55's ``present`` set for a turn's text (FR-GUARD-11; #541): the union over the turn's
+    beats of each beat's co-located set as routing reads it (``co_located_set``), for the
+    scene's location (the narrator's and the player's beats) and every actor's location, at the
+    turn's start and after each beat's ``moves`` in beat order, so a character who arrives
+    mid-turn is in it; the actors themselves always are."""
+    wanted = tuple(dict.fromkeys(actors))
+    states = [scene]
+    for _, step in sorted((moves or {}).items()):
+        states.append(states[-1].moved(step))
+    found: set[str] = set(wanted)
+    for state in states:
+        found |= co_located_set(state)
+        for actor in wanted:
+            found |= co_located_set(state, actor)
+    return frozenset(found)
+
+
 # -- envelopes ---------------------------------------------------------------------------------
 
 
@@ -781,6 +803,7 @@ __all__ = [
     "route_perception",
     "route_turn",
     "sound_of",
+    "turn_audience",
     "validate_qualifiers",
     "with_declared",
 ]

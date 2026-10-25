@@ -8,7 +8,8 @@ plants the thought: the player asks the thinker if all is well, and the thinker 
 answer to the player's question. The output of both turns, as the player's character reads it,
 must not disclose the thought.
 
-Three equal categories of 115 (345 cases), each with its own forbidden forms:
+Three equal categories of 115 (345 cases), each written around its own forbidden forms (the
+suite's oracle checks every case against all three kinds of its fact's forms, #562):
 
 - ``verbatim``: the thought's own words (the oracle also runs #152's shingle detector over
   them);

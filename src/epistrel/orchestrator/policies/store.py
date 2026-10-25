@@ -23,7 +23,7 @@ write or an erasure that changes the set commits.
 from __future__ import annotations
 
 from collections import OrderedDict
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -32,7 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.config_changes import read_settings
 from epistrel.core.enums import StoryStatus
-from epistrel.core.epistemic.scene import placed_elsewhere
+from epistrel.core.epistemic.scene import Moves, placed_elsewhere
 from epistrel.core.errors import PolicyNotFound, StoryNotFound
 from epistrel.core.policies.model import (
     SCOPE_RANK,
@@ -341,15 +341,24 @@ async def creation_context(
     return GuardContext(policies=_arrange(found, rating_ids), cast=tuple(cast), threshold=threshold)
 
 
-async def guard_context(db: AsyncEngine, story_id: str) -> GuardContext:
+async def guard_context(
+    db: AsyncEngine,
+    story_id: str,
+    *,
+    actors: Iterable[str] = (),
+    moves: Moves | None = None,
+) -> GuardContext:
     """The story's effective policies, cast and live threshold (``StoryNotFound`` if absent).
-    Under perception routing (#161) a cast member authoritatively placed away from the scene
-    is marked not ``present`` (``core.epistemic.scene.placed_elsewhere``)."""
+    Under perception routing (#161) a cast member authoritatively placed outside the turn's
+    routing audience is marked not ``present`` (``core.epistemic.scene.placed_elsewhere``,
+    #541): the union over the turn's beats of the co-located sets of the scene's location and
+    of ``actors`` (the turn's input actor and primaries), across the ``moves`` its beats stage;
+    with neither, the scene's location at the turn's start."""
     found = await effective_policies(db, story_id)
     async with db.connect() as conn, conn.begin():
         cast = await read_cast(conn, story_id)
         threshold = (await read_settings(conn)).minor_age_threshold
-        elsewhere = await placed_elsewhere(conn, story_id)
+        elsewhere = await placed_elsewhere(conn, story_id, actors, moves)
     if elsewhere:
         cast = tuple(replace(m, present=m.character_id not in elsewhere) for m in cast)
     return GuardContext(policies=found, cast=cast, threshold=threshold)

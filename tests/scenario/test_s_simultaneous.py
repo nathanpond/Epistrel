@@ -35,9 +35,11 @@ from epistrel.core.epistemic.conflicts import Effect, detect_conflicts
 from epistrel.core.epistemic.perception import CO_LOCATION, RouteBeat, SceneState, route_turn
 from epistrel.core.propositions import registry
 from epistrel.core.propositions.model import Interval, Polarity, Proposition
-from epistrel.core.propositions.vocabulary import HOLDS, LOCATED_AT
+from epistrel.core.propositions.vocabulary import HOLDS, LOCATED_AT, LOCATED_IN
+from epistrel.core.verify.rules import Options, Record
 from epistrel.orchestrator.structured import simultaneous
 from tests import multi_support as ms
+from tests import perception_support as ps
 from tests.auth_support import auth_settings
 from tests.event_support import rows
 from tests.fixtures.key_room import KeyRoom, key_room
@@ -292,6 +294,65 @@ async def test_s_simultaneous__no_conflict(
         assert malformed.status_code == 422, malformed.text
 
 
+SETS = "Bobby sets the brass key on the study mantel."
+HALL_TABLE = "Jenni sets the brass key on the hall table."
+
+
+async def _placements(engine: AsyncEngine, room: KeyRoom) -> set[str]:
+    """The places canon puts the key."""
+    found = await rows(
+        engine,
+        "SELECT p.object_id FROM facts f JOIN propositions p ON p.id = f.proposition_id "
+        "WHERE f.story_id = :s AND p.subject_id = :k AND p.predicate_id = :at "
+        "AND p.polarity = 'affirmed'",
+        s=room.story_id,
+        k=room.key,
+        at=LOCATED_AT,
+    )
+    return {str(r.object_id) for r in found}
+
+
+@pytest.mark.integration
+@pytest.mark.part("M5", "FR-MULTI-5,8")
+async def test_s_simultaneous__two_places(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """#549: Bobby leaves the brass key in the study while Jenni carries it to the hall, and no
+    containment fact relates the two rooms. The placement conflict is detected and settled by
+    request order before #177's reconcile, so exactly one placement (Bobby's) commits and
+    Jenni's beat is the attempt."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        room = await key_room(client, engine)
+        hall = await ps.place_entity(engine, room.story_id, "hall")
+        stub.reset()
+        ms.renders_for(
+            stub,
+            "Bobby",
+            ms.render(
+                beat("do", SETS, propositions=[claim("the brass key", "located_at", "study")])
+            ),
+        )
+        ms.renders_for(
+            stub,
+            "Jenni",
+            ms.render(
+                beat("do", HALL_TABLE, propositions=[claim("the brass key", "located_at", "hall")])
+            ),
+        )
+        played = await _play(client, room)
+        assert played["adjudications"] == [
+            {"object": room.key, "winner": room.bobby, "loser": room.jenni, "rule": "request_order"}
+        ]
+        texts = {(e.character_id, e.type): e.text for e in await _beats(engine, room.story_id)}
+        assert texts == {(room.bobby, "beat_do"): SETS, (room.jenni, "beat_do"): JENNI_ATTEMPT}
+        placed = await _placements(engine, room)
+        assert placed == {room.study}, placed
+        assert hall not in placed
+
+
 # -- the deterministic detection and the routing, in memory -------------------------------------
 
 BOBBY_E, JENNI_E, CAL_E = (
@@ -301,6 +362,7 @@ BOBBY_E, JENNI_E, CAL_E = (
 )
 KEY_E, COIN_E = "01JE00000000000000000000K0", "01JE0000000000000000000CN0"
 STUDY_P, HALL_P = "01JE00000000000000000000S0", "01JE00000000000000000000H0"
+HOUSE_P, DESK_P = "01JE0000000000000000000HS0", "01JE00000000000000000000D0"
 
 
 def _p(subject: str, predicate: str, obj: str, *, negated: bool = False) -> Proposition:
@@ -317,14 +379,21 @@ def _effect(beat: int, who: str, rank: int, p: Proposition, *, player: bool = Fa
     return Effect(beat, who, rank, p, f"d{beat}.0", player=player)
 
 
+def _within(inner: str, outer: str) -> Record:
+    """A containment fact: ``inner`` is ``located_in`` ``outer``."""
+    return Record(_p(inner, LOCATED_IN, outer), f"in:{inner}")
+
+
 @pytest.mark.part("M5", "FR-MULTI-5,8")
 def test_s_simultaneous__detection() -> None:
     """``detect_conflicts`` is deterministic and model-free: two holders of one key (the
-    functional ``held_by``) and the possession/placement pair conflict over the key, whatever
-    order the effects arrive in; two different items, a character's clash with itself, a
-    negation and two places no containment relates (#140's ``uncertain(world_knowledge)``,
-    ADR-160) do not. ``settle`` gives request order the earlier-named primary (the player first)
-    and the director's choice where it judged; a beat that lost once takes no part later."""
+    functional ``held_by``), the possession/placement pair, and one key placed in two places no
+    containment fact relates (#549: the location fluent is single-valued, whatever #140 answers
+    a claim checked against canon) conflict over the key, whatever order the effects arrive in;
+    two different items, a character's clash with itself, a negation, the same place twice and
+    a place inside the other (``located_in``, either way, within the containment depth) do
+    not. ``settle`` gives request order the earlier-named primary (the player first) and the
+    director's choice where it judged; a beat that lost once takes no part later."""
     reg = registry.core_registry()
     bobby = _effect(2, "bobby", 1, _p(BOBBY_E, HOLDS, KEY_E))
     jenni = _effect(3, "jenni", 2, _p(JENNI_E, HOLDS, KEY_E))
@@ -338,17 +407,44 @@ def test_s_simultaneous__detection() -> None:
     placed = _effect(3, "jenni", 2, _p(KEY_E, LOCATED_AT, STUDY_P))
     (found,) = detect_conflicts([placed, bobby], registry=reg)
     assert (found.object_id, found.rules) == (KEY_E, ("possession_placement",))
+    in_study = _effect(2, "bobby", 1, _p(KEY_E, LOCATED_AT, STUDY_P))
+    in_hall = _effect(3, "jenni", 2, _p(KEY_E, LOCATED_AT, HALL_P))
+    for effects in ([in_study, in_hall], [in_hall, in_study]):
+        (found,) = detect_conflicts(effects, registry=reg)
+        assert (found.object_id, found.beats, found.characters, found.rules) == (
+            KEY_E,
+            (2, 3),
+            ("bobby", "jenni"),
+            ("placement",),
+        )
+    # Two places a containment fact does not relate: still two places.
+    (found,) = detect_conflicts(
+        [in_study, in_hall], registry=reg, containment=[_within(STUDY_P, HOUSE_P)]
+    )
+    assert found.rules == ("placement",)
     quiet = [
         [bobby, _effect(3, "jenni", 2, _p(JENNI_E, HOLDS, COIN_E))],  # two items
         [bobby, _effect(3, "bobby", 1, _p(BOBBY_E, HOLDS, COIN_E))],  # himself
         [bobby, _effect(3, "jenni", 2, _p(JENNI_E, HOLDS, KEY_E, negated=True))],
-        [
-            _effect(2, "bobby", 1, _p(KEY_E, LOCATED_AT, STUDY_P)),
-            _effect(3, "jenni", 2, _p(KEY_E, LOCATED_AT, HALL_P)),
-        ],
+        [in_study, _effect(3, "jenni", 2, _p(KEY_E, LOCATED_AT, STUDY_P))],  # the same place
     ]
     for effects in quiet:
         assert detect_conflicts(effects, registry=reg) == [], effects
+    # A place inside the other (the hall is in the house), either way and through two hops
+    # (the desk in the hall in the house), is one placement: no conflict.
+    in_house = _effect(3, "jenni", 2, _p(KEY_E, LOCATED_AT, HOUSE_P))
+    at_desk = _effect(2, "bobby", 1, _p(KEY_E, LOCATED_AT, DESK_P))
+    hierarchy = [_within(HALL_P, HOUSE_P), _within(DESK_P, HALL_P)]
+    for effects in ([in_hall, in_house], [in_house, in_hall], [at_desk, in_house]):
+        assert detect_conflicts(effects, registry=reg, containment=hierarchy) == [], effects
+    # Beyond ``containment_max_depth`` the hops no longer relate the places.
+    (found,) = detect_conflicts(
+        [at_desk, in_house],
+        registry=reg,
+        containment=hierarchy,
+        options=Options(containment_max_depth=1),
+    )
+    assert found.rules == ("placement",)
     # Request order: the earlier-named wins; the player (rank 0) before every primary.
     (conflict,) = detect_conflicts([jenni, bobby], registry=reg)
     (settled,) = simultaneous.settle([conflict])

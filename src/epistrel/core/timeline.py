@@ -78,7 +78,7 @@ from epistrel.core.errors import (
 )
 from epistrel.core.events.operation import Operation
 from epistrel.core.events.types import Head, Swap, Truncate, Untruncate
-from epistrel.core.membership import follow_membership_change
+from epistrel.core.membership import POSITION_MAX, follow_membership_change
 from epistrel.core.projections import structured
 from epistrel.core.stories import require_writable
 from epistrel.core.tables import events, operations, stories
@@ -137,6 +137,7 @@ class TruncateRequest(BaseModel):
     slot: StrictInt | None = Field(
         default=None,
         ge=0,
+        le=POSITION_MAX,
         description="The boundary `N⁺k`: keep `to_turn`'s inter-turn slots 1..k (default: "
         "none, the boundary `N`).",
     )

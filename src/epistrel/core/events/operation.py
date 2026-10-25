@@ -702,7 +702,7 @@ class Operation:
 
         ``beat`` is the event's beat within its turn (FR-RESP-9: the player input is beat 1);
         ``step`` its declared causal step within the render (#168, FR-STORE-31; 0 or ``None``:
-        outside declared steps, stored ``NULL``).
+        outside declared steps, stored 0).
         Raises ``UnregisteredEventType`` or ``InvalidEventPayload`` before anything is staged.
         The category comes from the registry, never from the caller.
         """
@@ -717,7 +717,7 @@ class Operation:
                 authority=authority or self.authority,
                 character_id=character_id,
                 beat=beat,
-                step=step or None,
+                step=step or 0,
             )
         )
         return model

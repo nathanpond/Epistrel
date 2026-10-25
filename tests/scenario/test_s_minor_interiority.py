@@ -19,13 +19,20 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core.enums import MemoryKind, OperationKind, RecordProvenance
+from epistrel.core.events import Operation
+from epistrel.core.ids import new_ulid
+from epistrel.core.membership import insert_derived
+from epistrel.core.memory import records
+from epistrel.core.tables.memories import memories
+from tests import canon_support as c
 from tests import modeling_support as ms
 from tests import perception_support as ps
 from tests.auth_support import auth_settings
-from tests.event_support import rows
+from tests.event_support import rows, scalar
 from tests.respond_support import body, respond, respond_client, system_of
 from tests.structured_turn_support import beat, render, turn_report
 
@@ -229,3 +236,119 @@ async def test_s_minor_interiority(
         assert [(r.gate_reason, r.final_kind, r.called) for r in audited] == [
             ("confabulation", "novel", False)
         ]
+
+
+LEGGINGS = "I remember those leggings looked great."
+PARCEL = "the delivery driver thinks: The parcel was heavy."
+PARCEL_RECALL = "I remember the parcel was heavy."
+
+
+async def _memory_at(engine: AsyncEngine, story_id: str, holder: str, line: str, turn: int) -> str:
+    """A private memory ``holder`` holds, positioned at ``turn`` (test-only: written by a
+    control operation before that turn plays, as no writer can). Answers its id."""
+    memory_id = new_ulid()
+    async with Operation(
+        engine,
+        story_id=story_id,
+        kind=OperationKind.CONTROL,
+        principal=c.PRINCIPAL,
+        bumps_revision=True,
+    ) as op:
+        op.append("belief_authored", {"holder_character_id": holder})
+
+        async def step(conn: AsyncConnection) -> None:
+            await insert_derived(
+                conn,
+                memories,
+                [
+                    {
+                        "id": memory_id,
+                        "story_id": story_id,
+                        "kind": MemoryKind.EPISODIC.value,
+                        "text": line,
+                        "holder_character_id": holder,
+                        "character_id": holder,
+                        "visibility": {"scope": "characters", "characters": [holder]},
+                        "provenance": RecordProvenance.DIRECTOR.value,
+                        "trust_tier": records.trust_tier_of(RecordProvenance.DIRECTOR).value,
+                        "operation_id": op.operation_id,
+                        "source_event_ids": [],
+                        "narrative_turn": turn,
+                        "turn_variant": 0,
+                        "beat": 1,
+                    }
+                ],
+            )
+
+        op.add_commit_step(step)
+        await op.commit()
+    return memory_id
+
+
+@pytest.mark.part("M5", "FR-VERIFY-9; FR-TURN-3")
+async def test_s_minor_interiority__recall_grounding(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """#557 (#172 AC2: a grounded recall is backed only by the speaker's own partition, from an
+    earlier turn). The delivery driver privately thinks the leggings look great. Jenni saying
+    "I remember those leggings looked great" is backed by nothing of hers: the driver's record
+    never grounds her recall (a confabulation), while the driver saying the same is a grounded
+    ``recall``. A record of the driver's positioned at the recall's own turn grounds nothing
+    either: his "I remember the parcel was heavy" is a confabulation."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        story, ids, _ = await ms.street(client, engine, salience=None)
+        stub = epistrel.models.stub
+        stub.reset()
+        stub.script("generation", [render(beat("do", TIP))])
+        played = await respond(client, story, body(ids["Wren"], "Morning!"))
+        assert played.status_code == 200, played.text
+        driver = (await ms.characters_of(engine, story))["the delivery driver"]
+
+        async def turn(character: str, *beats: dict[str, Any]) -> dict[str, Any]:
+            stub.reset()
+            stub.script("generation", [render(*beats)])
+            found = await respond(
+                client, story, body(ids["Wren"], "Hi.", render_character_ids=[character])
+            )
+            assert found.status_code == 200, found.text
+            return await turn_report(engine, story)
+
+        def recall(report: dict[str, Any]) -> tuple[str, str | None, bool]:
+            (verdict,) = [v for v in report["verify"]["verdicts"] if "recall" in v]
+            return verdict["kind"], verdict["rule"], verdict["recall"]["grounded"]
+
+        def tags(report: dict[str, Any]) -> list[str]:
+            return [r["tag"] for r in report.get("repairs", [])]
+
+        await turn(driver.id, beat("think", SAD), beat("say", REPLY, intent="sincere"))
+        assert [m.text for m in await ps.memories_of(engine, story, driver.id)].count(
+            f"the delivery driver thinks: {SAD}"
+        ) == 1
+
+        # Another character's partition never grounds a recall.
+        report = await turn(ids["Jenni"], beat("say", LEGGINGS, intent="sincere"))
+        assert recall(report) == ("novel", None, False)
+        assert "confabulation" in tags(report)
+        # Control: the driver's own record grounds his.
+        report = await turn(driver.id, beat("say", LEGGINGS, intent="sincere"))
+        assert recall(report) == ("supported", "recall", True)
+        assert "confabulation" not in tags(report)
+
+        # A record of the recall's own turn never grounds it.
+        current = await scalar(
+            engine,
+            "SELECT max(narrative_turn) FROM operations WHERE story_id = :s",
+            s=story,
+        )
+        await _memory_at(engine, story, driver.id, PARCEL, int(current or 0) + 1)
+        report = await turn(driver.id, beat("say", PARCEL_RECALL, intent="sincere"))
+        assert recall(report) == ("novel", None, False)
+        assert tags(report) == ["confabulation"]
+        played_turn = await scalar(
+            engine,
+            "SELECT max(narrative_turn) FROM operations WHERE story_id = :s",
+            s=story,
+        )
+        assert played_turn == int(current or 0) + 1  # the record sat at the recall's own turn

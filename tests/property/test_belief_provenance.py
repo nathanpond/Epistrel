@@ -15,7 +15,10 @@ On Postgres: FR-EPI-14's example passes and its reverse fails — Bobby says the
 (beat 1, a verified staged beat), Jenni believes it by testimony at beat 2; the same testimony
 citing beat 2 from beat 1, or from beat 2's own verified step, is refused and writes nothing.
 The provenance trigger refuses a belief with no producing transition, or one whose transition
-produces another belief.
+produces another belief. The guard's refusals, each asserted by its reason and writing nothing:
+``not_committed``, ``not_the_holders_own``, ``other_operation``, ``inactive`` (a truncated
+belief and author act), a committed record after the dependent step (``SelfAttestation``), and
+``not_reconciled`` (a resolution citing an open thunk or another operation's).
 """
 
 from __future__ import annotations
@@ -29,9 +32,11 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core.enums import AntecedentKind
+from epistrel.core import timeline
+from epistrel.core.commit import lifecycle
+from epistrel.core.enums import AntecedentKind, FactCommitState, ThunkState
 from epistrel.core.epistemic.errors import AntecedentInvalid, SelfAttestation
 from epistrel.core.epistemic.transitions import (
     DEFAULT_ORACLE,
@@ -44,6 +49,7 @@ from epistrel.core.epistemic.transitions import (
 from epistrel.core.events import Operation
 from epistrel.core.membership import Position
 from tests import canon_support as c
+from tests import commit_support as cs
 from tests import partition_support as ps
 from tests.memory_support import use_structured
 
@@ -330,3 +336,167 @@ _COPY_TRANSITION = (
     "antecedent_ref, confidence_level, position_turn, tx_from, operation_id, membership_tx "
     "FROM belief_transitions WHERE id = :t"
 )
+
+
+INTRODUCED = FactCommitState.INTRODUCED
+RESOLVED = ThunkState.RESOLVED
+
+
+def _refused(info: pytest.ExceptionInfo[AntecedentInvalid], reason: str) -> None:
+    assert info.value.details["reason"] == reason
+
+
+@pytest.mark.integration
+@pytest.mark.part("M5", "FR-EPI-7,13,14; FR-BELIEF-2")
+async def test_belief_provenance__refusals(engine: AsyncEngine) -> None:
+    """The antecedent guard's refusals on Postgres (#160 AC2), each writing nothing: a fact
+    that is only introduced is ``not_committed``; another holder's belief as an inference
+    premise is ``not_the_holders_own``; a staged beat of another operation is
+    ``other_operation``; a committed fact positioned after the dependent step is
+    ``SelfAttestation`` (a record is no exception to the order rule); a belief, and an author act,
+    whose turn was truncated away are ``inactive``."""
+    w = await c.world(engine)
+    story = w.story_id
+    await use_structured(engine, story)
+    ann, bobby = w.characters["Ann"], w.characters["Bobby"]
+    garden = c.at(w.people["Bobby"], w.places["garden"], 0, None)
+    school = c.at(w.people["Cal"], w.places["school"], 0, None)
+
+    introduced = await c.commit(engine, story, garden, commit_state=INTRODUCED)
+    committed = await c.commit(engine, story, school)
+    bobbys = await ps.believe(engine, story, bobby, garden)
+    before = len(await ps.belief_rows(engine, story))
+
+    with pytest.raises(AntecedentInvalid) as info:
+        await ps.transit(
+            engine,
+            story,
+            ann,
+            garden,
+            cause=Kind.DISCOVERY,
+            antecedent=Antecedent.record("facts", introduced.id),
+        )
+    _refused(info, "not_committed")
+    with pytest.raises(AntecedentInvalid) as info:
+        await ps.transit(
+            engine,
+            story,
+            ann,
+            garden,
+            cause=Kind.INFERENCE,
+            antecedent=Antecedent.record("beliefs", bobbys.id),
+        )
+    _refused(info, "not_the_holders_own")
+    with pytest.raises(AntecedentInvalid) as info:
+        await ps.transit(
+            engine,
+            story,
+            ann,
+            garden,
+            cause=Kind.TESTIMONY,
+            antecedent=Antecedent.staged_beat(bobbys.operation_id, 0, 1),
+            position=lambda op: Position(op.narrative_turn or 0, op.turn_variant or 0, 0, 2, 1),
+            source=bobby,
+            oracle=VerifiedBeatsAnyOperation(),
+        )
+    _refused(info, "other_operation")
+    # A committed record at turn N cited from a step before it: self-attestation.
+    assert committed.narrative_turn is not None
+    with pytest.raises(SelfAttestation) as attested:
+        await ps.transit(
+            engine,
+            story,
+            ann,
+            school,
+            cause=Kind.DISCOVERY,
+            antecedent=Antecedent.record("facts", committed.id),
+            position=Position(committed.narrative_turn - 1),
+        )
+    assert attested.value.details["antecedent"]["ref"]["id"] == committed.id
+    assert len(await ps.belief_rows(engine, story)) == before
+
+    # Ann's belief (and the author act that caused it) in a turn later truncated away.
+    held = await ps.believe(engine, story, ann, school)
+    (act,) = await ps.rows_of(
+        engine,
+        "SELECT id FROM events WHERE operation_id = :o AND type = 'belief_authored'",
+        o=held.operation_id,
+    )
+    await timeline.truncate(
+        engine,
+        story,
+        timeline.TruncateRequest(to_turn=held.held_from.turn - 1),
+        principal=c.PRINCIPAL,
+    )
+    with pytest.raises(AntecedentInvalid) as info:
+        await ps.transit(
+            engine,
+            story,
+            ann,
+            school,
+            cause=Kind.INFERENCE,
+            antecedent=Antecedent.record("beliefs", held.id),
+        )
+    _refused(info, "inactive")
+    with pytest.raises(AntecedentInvalid) as info:
+        await ps.transit(
+            engine, story, ann, school, antecedent=Antecedent.record("events", str(act.id))
+        )
+    _refused(info, "inactive")
+    assert len(await ps.belief_rows(engine, story)) == before + 1  # only the truncated one
+
+
+class VerifiedBeatsAnyOperation:
+    """An oracle that would verify any beat of any operation: the ``other_operation`` refusal
+    precedes it."""
+
+    def staged_beat(self, ref: Mapping[str, Any]) -> StagedRecord | None:
+        return StagedRecord(Position(1, 0, 0, int(ref["beat"]), 1))
+
+    def render_step(self, ref: Mapping[str, Any]) -> StagedRecord | None:
+        return StagedRecord(Position(1, 0, 0, int(ref["beat"]), int(ref["step"])))
+
+
+@pytest.mark.integration
+@pytest.mark.part("M5", "FR-EPI-7,13,14; FR-BELIEF-2")
+async def test_belief_provenance__resolution_refusals(engine: AsyncEngine) -> None:
+    """A ``resolution`` transition needs a thunk this operation resolved (a passed
+    reconciliation, FR-EPI-14 (d)): citing a thunk still open, or one another operation
+    resolved, is ``not_reconciled``, and nothing is written."""
+    k = await cs.knock_story(engine)
+    knocked = cs.knocker(k, k.mailman, 0)
+
+    async def open_knock(conn: AsyncConnection, op: Operation) -> Any:
+        return await lifecycle.introduce(conn, op, cs.knock_sketch(k), valid_time=0, beat=2)
+
+    thunk = await cs.in_turn(engine, k.story_id, open_knock)
+    assert thunk is not None
+    with pytest.raises(AntecedentInvalid) as info:
+        await ps.transit(
+            engine,
+            k.story_id,
+            k.bobby,
+            knocked,
+            cause=Kind.RESOLUTION,
+            antecedent=Antecedent.resolution(thunk.id),
+        )
+    _refused(info, "not_reconciled")
+
+    async def resolve(conn: AsyncConnection, op: Operation) -> Any:
+        return await lifecycle.depend(conn, op, thunk.id, knocked, beat=3, channel="do")
+
+    dependence = await cs.in_turn(engine, k.story_id, resolve)
+    assert dependence.kind == "committed"
+    assert (await cs.thunk(engine, k.story_id, thunk.id)).state == RESOLVED
+    before = len(await ps.belief_rows(engine, k.story_id))
+    with pytest.raises(AntecedentInvalid) as info:
+        await ps.transit(
+            engine,
+            k.story_id,
+            k.bobby,
+            knocked,
+            cause=Kind.RESOLUTION,
+            antecedent=Antecedent.resolution(thunk.id),
+        )
+    _refused(info, "not_reconciled")
+    assert len(await ps.belief_rows(engine, k.story_id)) == before

@@ -53,7 +53,8 @@ from epistrel.core.propositions.registry import Registry, load
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.resolution.context import load_context, load_time_basis
 from epistrel.core.resolution.entities import NARRATOR
-from epistrel.core.resolution.time import Position
+from epistrel.core.resolution.identity import speaker_identities
+from epistrel.core.resolution.time import Position, turn_of
 from epistrel.core.verify.normalize import ClaimSketch
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models.access import ModelAccessLayer, routing
@@ -318,7 +319,15 @@ async def record_salience(
     for beat, proposition, span in references:
         speaker = beat.speaker_entity or NARRATOR
         context = await load_context(
-            conn, story_id, position=position, speaker=speaker, lookup=lookup
+            conn,
+            story_id,
+            position=position,
+            speaker=speaker,
+            lookup=lookup,
+            # #546: holder-aware mentions (the speaker's ``same_as``).
+            identities=await speaker_identities(
+                lookup, story_id, speaker, through_position=(turn_of(position), 0)
+            ),
         )
         claim = _claim_of(proposition)
         found = open_sketch(

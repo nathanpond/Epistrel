@@ -11,7 +11,10 @@ appearance (a mention in narration, a jogger seen running past):
   interaction lexicon's (``detectors/interaction.json``: greet, wave, nod, hand, ask, tell, …, the
   #148 table mechanism) with a modeled character on one side and the entity on the other ("Jenni
   waves to the neighbor", "the neighbor waves at Jenni": one-sided acknowledgment by a cast member
-  suffices), the player's own ``say``/``do`` included. A ``say`` merely *about* the entity, or
+  suffices), the player's own ``say``/``do`` included. A verb whose direct sense needs a word
+  after its object (``direct_then``, #543) has it only then: "passes the waiter a note" hands
+  something over while "passes the jogger on the path" is motion past (appearance), and "calls
+  the waiter over" summons. A ``say`` merely *about* the entity, or
   words inside the speech, are appearance;
 - ``salience``: the salience step (#146) lists the entity among its ``characters`` (stub
   scriptable), a render introduces it (#150's ``introduces``: the character is modeled at
@@ -76,7 +79,7 @@ from epistrel.core.errors import InvalidRequest
 from epistrel.core.events.registry import EventPayload, lookup, validate
 from epistrel.core.events.types import CharacterDefined, CharacterModeled
 from epistrel.core.ids import new_ulid
-from epistrel.core.membership import Position
+from epistrel.core.membership import Position, step_of
 from epistrel.core.profiles.capabilities import module_on
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.resolution.entities import EntitySpec, add_entities, descriptors_of
@@ -146,6 +149,8 @@ class Verb:
     pattern: re.Pattern[str]
     direct: bool
     preps: tuple[str, ...]
+    then: frozenset[str] = frozenset()
+    """The words one of which must follow the direct object (``direct_then``; empty: any)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,6 +176,7 @@ def lexicon() -> Lexicon:
                 re.compile(rf"\b(?:{forms})\b", re.IGNORECASE),
                 bool(entry.get("direct", False)),
                 tuple(sorted((str(p) for p in entry.get("preps", ())), key=lambda p: -len(p))),
+                frozenset(str(w).casefold() for w in entry.get("direct_then", ())),
             )
         )
     return Lexicon(
@@ -350,6 +356,12 @@ def _party_before(
     return None
 
 
+def _followed_by(text: str, target: Party, verb: Verb) -> bool:
+    """Whether the word after ``target`` is one ``verb``'s direct sense needs (``then``)."""
+    word = _WORD.match(text, _skip_space(text, target.span[1]))
+    return word is not None and word.group().casefold() in verb.then
+
+
 def _verb_interactions(
     text: str,
     mentions: Sequence[Mention],
@@ -375,6 +387,9 @@ def _verb_interactions(
             else:
                 if verb.direct:
                     target = _party_at(text, pos, mentions, entities, lex)
+                    if target is not None and verb.then and not _followed_by(text, target, verb):
+                        # #543: "passes the jogger on the path" is motion past, not a hand-over.
+                        target = None
             if target is None:
                 continue
             subject = _party_before(text, hit.start(), mentions, entities, lex)
@@ -707,6 +722,7 @@ async def _append(
             narrative_turn=operation.narrative_turn,
             turn_variant=operation.turn_variant,
             beat=beat,
+            step=step_of(beat, operation.operation_id),
             principal=getattr(operation, "principal", None) or "system",
             type=type_,
             payload=body,

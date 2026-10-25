@@ -25,15 +25,21 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core.profiles.story import ProfileOverridesPatch, set_overrides
 from epistrel.core.propositions import store
+from epistrel.core.summary import read_included_segments
+from epistrel.core.turns import read_turn_inputs
+from epistrel.orchestrator.jobs.handlers import lite_summary
 from epistrel.orchestrator.models.stub import StubAdapter
 from tests import perception_support as ps
 from tests.auth_support import auth_settings
+from tests.concurrency_support import set_pins
 from tests.conformance.conftest import Surface
 from tests.event_support import rows
 from tests.respond_support import body, generation_calls, respond, respond_client, system_of
 from tests.story_support import WRITE, count, story_body
 from tests.structured_turn_support import beat, render, schema_calls, structured_story, text_of
+from tests.summary_support import run_due_jobs
 
 PLAYER, JENNI, BOBBY = "Wren", "Jenni", "Bobby"
 INPUT, REPLY = 1, 2
@@ -248,6 +254,110 @@ async def test_c_13__m5(
         jenni = await context_of(JENNI)
         assert f"(You think) {THOUGHT}" in jenni
         assert "RECENTSENTINEL" not in jenni
+
+
+PINNED = "PINSENTINEL Jenni hid the letter in the clock"
+
+
+@pytest.mark.integration
+@pytest.mark.part("M5", "FR-RESP-11; NFR-PRIV-4")
+async def test_c_13__m5_summary(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """C-13 M5 with the rolling summary on (#544): with per-character partitions at perception
+    ``full`` and ``memory.rolling_summary`` enabled (a one-message window, two-row chunks), Jenni
+    whispers to Wren with Bobby in the room and the story's text pins hold a sentinel. The
+    summary job's segment carries the whispered words (its input is the requester's composed
+    view), but neither the segment nor the text pin reaches Bobby's render: a partitioned
+    character render carries no rolling summary and no text pins (neither is viewpoint-scoped).
+    The author also pins Jenni's private ``think`` memory: retrieval's pin source applies the
+    viewpoint filter, so it is not in Bobby's render either. Complement: the turn's shared
+    inputs, which the narrator render reads, still hold the segment and the text pin, and
+    Jenni's own render holds her pinned thought."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        story, ids = await structured_story(
+            client, PLAYER, JENNI, BOBBY, settings={"lite_summary_chunk": 2}
+        )
+        await set_overrides(
+            engine,
+            story,
+            ProfileOverridesPatch(
+                settings={
+                    "character_knowledge": {"partitions": True},
+                    "perception": {"level": "full"},
+                    "memory": {"rolling_summary": {"enabled": True, "window_messages": 1}},
+                },
+                ignore_warnings=True,
+            ),
+            principal="p-author",
+            facts=ps.NO_FACTS,
+        )
+        await set_pins(engine, story, PINNED)
+        parlor = await ps.place_entity(engine, story, "parlor")
+        for name in ids:
+            await ps.put(engine, story, ids[name], parlor)
+        stub = epistrel.models.stub
+        wren = ids[PLAYER]
+        stub.script(
+            "generation",
+            [
+                render(
+                    beat("think", THOUGHT),
+                    beat("say", WHISPER, intent="sincere", whisper_to=[wren], addressee=wren),
+                )
+            ],
+        )
+        first = await respond(
+            client, story, body(wren, "Jenni, what is it?", render_character_ids=[ids[JENNI]])
+        )
+        assert first.status_code == 200, first.text
+        # The author pins Jenni's private thought: a pin scoped to her (FR-MEM-8).
+        (thought,) = await rows(
+            engine,
+            "SELECT id FROM memories WHERE story_id = :s AND text LIKE '%PRIVATESENTINEL%'",
+            s=story,
+        )
+        pinned = await client.post(f"/stories/{story}/memories/{thought.id}/pin", headers=WRITE)
+        assert pinned.status_code == 200, pinned.text
+        for n in range(3):
+            stub.script("generation", [render(beat("do", f"Jenni waits {n}."))])
+            played = await respond(
+                client, story, body(wren, f"Hm {n}.", render_character_ids=[ids[JENNI]])
+            )
+            assert played.status_code == 200, played.text
+        stub.script("lite_summary", [f"Summary: Jenni told Wren {WHISPER}."] * 10)
+        await lite_summary.schedule(engine, story)
+        await run_due_jobs(engine, epistrel.models, story)
+        async with engine.connect() as conn:
+            segments = await read_included_segments(conn, story)
+            inputs = await read_turn_inputs(conn, story)
+        assert any("WHISPERSENTINEL" in s.label for s in segments)
+        assert inputs.segments
+        assert inputs.pins == (PINNED,)
+
+        stub.calls.clear()
+        stub.script("generation", [render(beat("do", "Bobby waits."))])
+        answer = await respond(
+            client, story, body(wren, "Anything else?", render_character_ids=[ids[BOBBY]])
+        )
+        assert answer.status_code == 200, answer.text
+        (call,) = schema_calls(stub, "CharacterRender")
+        bobby = text_of(call)
+        assert "WHISPERSENTINEL" not in bobby
+        assert "PINSENTINEL" not in bobby
+        assert "PRIVATESENTINEL" not in bobby
+        assert "## Earlier in the story" not in bobby
+        # Complement: Jenni's own render holds her pinned thought.
+        stub.calls.clear()
+        stub.script("generation", [render(beat("do", "Jenni waits."))])
+        answer = await respond(
+            client, story, body(wren, "And you?", render_character_ids=[ids[JENNI]])
+        )
+        assert answer.status_code == 200, answer.text
+        (call,) = schema_calls(stub, "CharacterRender")
+        assert "PRIVATESENTINEL" in text_of(call)
 
 
 # -- the M5 authority clauses (#180) ---------------------------------------------------------------

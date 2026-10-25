@@ -27,12 +27,17 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from epistrel.core import timeline
 from epistrel.core.commit import lifecycle
 from epistrel.core.commit.reconcile import Conflict, Ok, introduced_at, reconcile
+from epistrel.core.enums import BeliefConfidenceLevel as Level
 from epistrel.core.enums import OperationKind, Provenance
+from epistrel.core.epistemic import replay, transitions
 from epistrel.core.events import Operation
+from epistrel.core.membership import Position
 from epistrel.core.propositions.model import Interval, Proposition
 from tests import commit_support as c
+from tests import partition_support as parts
 from tests import resolution_support as r
 from tests.canon_support import PRINCIPAL
 from tests.event_support import rows
@@ -193,3 +198,89 @@ async def test_u_19__knowledge_positions(engine: AsyncEngine, drained_embedding_
     assert memory.visibility == {"scope": "characters", "characters": [k.jenni]}
     assert memory.text == "Jenni knocked at Jenni's porch."
     assert (memory.narrative_turn, memory.beat) == (thunk.narrative_turn, thunk.beat)
+
+
+async def _knocked_rows(engine: AsyncEngine, p: r.Porch, holder: str) -> list[Any]:
+    """``holder``'s first-order beliefs that someone knocked at the porch, active, by
+    ``held_from``."""
+    return await rows(
+        engine,
+        "SELECT b.id, b.polarity, b.confidence_level, b.tx_to, b.held_from_turn, b.held_from_beat, "
+        "b.held_from_step, b.held_to_turn, b.held_to_beat, b.held_to_step, b.lineage_id "
+        "FROM beliefs b JOIN propositions q ON q.id = b.proposition_id "
+        "WHERE b.story_id = :s AND b.holder_character_id = :h AND q.predicate_id = :p "
+        "AND b.kind = 'first_order' AND b.membership = 'active' "
+        "ORDER BY b.held_from_turn, b.held_from_beat, b.held_from_step",
+        s=p.story_id,
+        h=holder,
+        p=p.knock.knocked_at,
+    )
+
+
+@pytest.mark.part("M5", "FR-COMMIT-14")
+async def test_u_19__knowledge_backdated_hold(
+    engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#547: Jenni already believes she knocked, from turn 2 (an author act), when turn 3 binds
+    the knock to her. The obligation still holds the act from the thunk's introduction: the
+    held belief is raised in place to ``known`` and the span from the knock to turn 2 is a
+    backdated row of its own (a second ``resolution`` transition citing the thunk), closed where
+    the held row starts, so she holds it from the knock with no gap and one open row. Truncating
+    the binding turn takes the backdated row away and reverts the raise. Complement: a belief
+    contradicting the act held inside that span (she believed she had not knocked) leaves the
+    raise alone, with no backdated row."""
+    p, thunk = await _knock(engine)
+    k = p.knock
+    act = r.knocked(p, k.jenni, r.KNOCK_AT)
+    await parts.transit(
+        engine, p.story_id, k.jenni, act, confidence=transitions.Confidence(Level.BELIEVED)
+    )
+    (held,) = await _knocked_rows(engine, p, k.jenni)
+    assert (held.held_from_turn, str(held.confidence_level)) == (2, "believed")
+
+    committed = await _bind(engine, p, thunk, k.jenni)
+    assert committed.kind == "committed"
+    early, later = await _knocked_rows(engine, p, k.jenni)
+    assert later.id == held.id
+    assert (str(later.confidence_level), later.held_to_turn, later.tx_to) == ("known", None, None)
+    assert (early.held_from_turn, early.held_from_beat) == (thunk.narrative_turn, thunk.beat)
+    assert (early.held_to_turn, early.held_to_beat, early.held_to_step) == (
+        later.held_from_turn,
+        later.held_from_beat,
+        later.held_from_step,
+    )
+    assert (str(early.polarity), str(early.confidence_level)) == ("affirmed", "known")
+    assert early.tx_to is None
+    assert early.lineage_id == later.lineage_id
+    resolutions = await rows(
+        engine,
+        "SELECT belief_id, antecedent_ref FROM belief_transitions WHERE story_id = :s "
+        "AND kind = 'resolution' AND membership = 'active'",
+        s=p.story_id,
+    )
+    assert {t.antecedent_ref["thunk_id"] for t in resolutions} == {thunk.id}
+    assert {early.id, later.id} <= {t.belief_id for t in resolutions}
+    async with engine.connect() as conn:
+        known = await replay.could_have_known(
+            conn, p.story_id, k.jenni, act, Position.end_of(thunk.narrative_turn or 0)
+        )
+    assert isinstance(known, replay.Known), known
+    assert known.path.transition_kind == "resolution"
+
+    # Truncating the binding turn takes the backdated hold away and reverts the raise.
+    await timeline.truncate(
+        engine, p.story_id, timeline.TruncateRequest(to_turn=2), principal=PRINCIPAL
+    )
+    (back,) = await _knocked_rows(engine, p, k.jenni)
+    assert (back.id, str(back.confidence_level)) == (held.id, "believed")
+
+    # Complement: she believed she had not knocked, from turn 2, until turn 3 told her she had.
+    p, thunk = await _knock(engine)
+    k = p.knock
+    act = r.knocked(p, k.jenni, r.KNOCK_AT)
+    await parts.transit(engine, p.story_id, k.jenni, act.negation())
+    await parts.transit(engine, p.story_id, k.jenni, act, cause=transitions.Kind.CORRECTION)
+    committed = await _bind(engine, p, thunk, k.jenni)
+    assert committed.kind == "committed"
+    affirmed = [b for b in await _knocked_rows(engine, p, k.jenni) if str(b.polarity) == "affirmed"]
+    assert [(b.held_from_turn, b.held_to_turn) for b in affirmed] == [(3, None)]

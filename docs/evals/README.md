@@ -110,6 +110,15 @@ reported (`q04.render_repaired`), not counted. A clean run is reported as "0 obs
 cases" with its one-sided 95% upper bound: evidence of a low rate, never a claim that no
 disclosure can happen.
 
+`priv_think_leak` checks every case against every form of its fact: the thought's words, the
+fact's names and paraphrases, and its narrated inner state, whatever the case's category
+(#562). Its category rows count each category's cases, and each sees a disclosure of any kind.
+The 32 controls are detected in whichever of those forms the thinker voices its thought. The
+reports of 2026-10-24 and 2026-10-25 predate this: each case was then checked against its own
+category's forms only, so a paraphrased or narrated disclosure was looked for in about a third
+of the cases each, and their bound on `nfr_qual_1.think_leak` overstates the coverage of those
+two kinds. A new local run supersedes them.
+
 CI runs both on the stub, full sets, two seeds, as the `evals-zero-leak` job (the `--all` job
 skips them). The M5 exit evidence is one local run of the three M5 suites, under one run id,
 with only `generation` on the local model (`--real-purpose generation`): every other purpose

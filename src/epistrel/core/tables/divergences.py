@@ -9,6 +9,10 @@ utterance's stored proposition) and the contrary belief it deviates from
 ``believed_proposition_id``; both ``NULL`` for a lie about something nobody's record settles),
 at the say beat's position (the five ``position_*`` columns). ``revealed_by_event_id`` is set
 when a later reveal settles the deception (#169; X-02's "divergences resolve").
+``attribution_objective_relation`` (``true``/``false``/``unresolved``; #545, migration 0082):
+for a lie that attributes a belief to someone ("Bobby thinks it was Marcus"), whether that holder
+actually believes it, the verifier's label (FR-BELIEF-15); ``NULL`` for any other lie. A label
+only: it never decides the classification and never reaches a character's context.
 
 A derived record of the turn's operation (#130's registry: truncation, swap, regenerate and fork
 move it), written by ``core.epistemic.divergences``. Append-only
@@ -20,7 +24,7 @@ subjects.
 
 from __future__ import annotations
 
-from sqlalchemy import TIMESTAMP, Column, ForeignKey, Index, Table, text
+from sqlalchemy import TIMESTAMP, CheckConstraint, Column, ForeignKey, Index, Table, Text, text
 
 from epistrel.core.membership import (
     DerivedTable,
@@ -55,9 +59,14 @@ divergences = Table(
     ),
     *position_group("position", nullable=False),
     Column("revealed_by_event_id", ulid_type(), nullable=True),
+    Column("attribution_objective_relation", Text, nullable=True),
     Column("created_at", TIMESTAMP(timezone=True), nullable=False, server_default=text("now()")),
     *derived_columns(),
     *derived_indexes("divergences"),
+    CheckConstraint(
+        "attribution_objective_relation IN ('true', 'false', 'unresolved')",
+        name="attribution_objective_relation",
+    ),
 )
 Index("ix_divergences_story_speaker", divergences.c.story_id, divergences.c.speaker_character_id)
 Index("ix_divergences_story_utterance", divergences.c.story_id, divergences.c.utterance_id)

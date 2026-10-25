@@ -33,7 +33,7 @@ guarantees, and the guarantee table, are derived from the same map.
 ## Notes
 
 - `structured_pipeline`: FR-STORE-3: its projections of beliefs, relationships and placement. FR-CONC: the structured read set and rewrite parts (the Lite read set of FR-CONC-4 is floor). FR-GUARD: its memory parts.
-- `partitions`: NFR-PRIV-4: structural isolation. FR-RESP-11: its viewpoint checks. FR-COMMIT: FR-COMMIT-4's observation, FR-COMMIT-11's could-have-known flag, FR-COMMIT-13's knocker-side commitment for a modeled character, and FR-COMMIT-14's knowledge obligations and epistemic checks (its position obligations hold with shared knowledge too).
+- `partitions`: NFR-PRIV-4: structural isolation; a character's render then carries no rolling summary and no text pins, which are not viewpoint-scoped (the narrator's render keeps them). FR-RESP-11: its viewpoint checks. FR-COMMIT: FR-COMMIT-4's observation, FR-COMMIT-11's could-have-known flag, FR-COMMIT-13's knocker-side commitment for a modeled character, and FR-COMMIT-14's knowledge obligations and epistemic checks (its position obligations hold with shared knowledge too).
 - `partitions_nested`: FR-EPI-2: its nested clause. Off, no nested belief is recorded, and claims about another character's beliefs get no nested-belief check.
 - `partitions_lazy`: Off, every witness's transition is resolved when the exposure is recorded.
 - `partitions_testimony`: At `defaulted`, every acceptance follows the deterministic default of trust, priors, and consistency.

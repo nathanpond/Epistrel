@@ -757,6 +757,92 @@ class KeyedLookup:
             self.retrieved(RELATIONSHIPS_TABLE, entity_id, _version_of(turn, sources))
         return found
 
+    async def relations_between(
+        self,
+        story_id: str,
+        holder: str,
+        other: str,
+        *,
+        projection: str,
+        through_position: Through,
+        story_time: int | None = None,
+        viewpoint: str = OMNISCIENT,
+    ) -> list[tuple[Fact, str]]:
+        """The current canon facts of the ``projection``-projecting predicates between
+        ``holder`` and ``other`` (entity ids) written at or before ``through_position`` and
+        open there, as ``viewpoint`` may read them, affirmed, true at ``story_time`` unless
+        their predicate is ``permanent`` (#137's ``_current`` rule), each with its direction as
+        ``holder`` sees it (``out``: ``holder`` is the subject, or the predicate is symmetric). The
+        other end is the object or a member of a set object, as the projection reads it.
+        #164's exposure frame reads trust's relationships here at the frame's full position
+        (beat and step included) where the turn-granular projection cannot: one key per
+        predicate and direction is recorded (``through`` the frame), an empty result
+        included, so the frame's read set is the proof."""
+        from epistrel.core.canon import facts as canon
+        from epistrel.core.propositions.model import Polarity, TemporalKind
+        from epistrel.core.propositions.registry import load
+
+        registry = await load(self.conn, story_id)
+        wanted = [
+            p
+            for p in registry.predicates.values()
+            if p.projection == projection and p.inverse_of is None
+        ]
+        if not wanted:
+            return []
+        ids = {p.id for p in wanted}
+        rows: dict[str, list[Fact]] = {"out": [], "in": []}
+        for direction, (subject, object_id) in (
+            ("out", (holder, other)),
+            ("in", (other, holder)),
+        ):
+            for fact in await canon.canon(
+                self.conn,
+                story_id,
+                through_position=through_position,
+                viewpoint=viewpoint,
+                subject=subject,
+                member=object_id,
+            ):
+                if fact.predicate_id in ids and _object_matches(fact.proposition, object_id, None):
+                    rows[direction].append(fact)
+        bounds = _bounds(story_time, None)
+        found: list[tuple[Fact, str]] = []
+        for predicate in sorted(wanted, key=lambda p: p.id):
+            permanent = predicate.temporal_kind is TemporalKind.PERMANENT
+            window = (None, None) if permanent else bounds
+
+            def kept(fact: Fact, pid: str = predicate.id, window: Any = window) -> bool:
+                return (
+                    fact.predicate_id == pid
+                    and fact.proposition.polarity is Polarity.AFFIRMED
+                    and _meets((fact.valid_from, fact.valid_to), window)
+                )
+
+            out = [f for f in rows["out"] if kept(f)]
+            back = [f for f in rows["in"] if kept(f)]
+            directions = [("out", holder, other, out + back if predicate.symmetric else out)]
+            if not predicate.symmetric:
+                directions.append(("in", other, holder, back))
+            for direction, subject, object_id, result in directions:
+                result = sorted({f.id: f for f in result}.values(), key=lambda f: f.id)
+                self.read_set.record(
+                    QueryKey(
+                        subjects=(subject,),
+                        predicate_id=predicate.id,
+                        object_id=object_id,
+                        holder=CANON,
+                        viewpoint=viewpoint,
+                        valid_window=window,
+                        reading="every" if window != (None, None) else "overlap",
+                        symmetric=predicate.symmetric,
+                        through=_through_key(through_position),
+                        result_hash=result_hash((f.id, f.tx_from) for f in result),
+                    )
+                )
+                found += [(f, direction) for f in result]
+        return found
+
     async def scene(
         self, story_id: str, *, as_of: int | None = None, viewpoint: str = OMNISCIENT
     ) -> SceneView:

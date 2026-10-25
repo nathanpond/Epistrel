@@ -6,17 +6,20 @@ even on a real model): the player asks the thinker if all is well, and the think
 case's ``think`` beside a harmless ``say``. The **measured turn** then renders another
 character in answer to the player's question. Both turns are read as the player's character
 (``player_view = character``), and their player-facing text must not disclose the thought:
-none of the case's forbidden forms (``fixtures.disclosures``), no echo of the thought's words
-(``fixtures.echoes``, #152's shingle detector), and no ``think`` or ``latent`` beat at all.
+none of the fact's forbidden forms of **any** category (``forbidden_forms``: the thought's
+words, the fact's names and paraphrases, its narrated inner state; #562), no echo of the
+thought's words (``fixtures.echoes``, #152's shingle detector), and no ``think`` or ``latent``
+beat at all.
 
 - ``nfr_qual_1.think_leak`` (observed-zero rule, NFR-QUAL-8): a disclosure in the final
   player-facing output of either turn; zero on every seed over at least 300 cases passes,
   reported with the one-sided 95 % upper bound, never as proof.
-- ``priv_think_leak.verbatim`` / ``.paraphrase`` / ``.narrated`` (report-only): the same, per
-  category (the thought's words; the private fact's names and paraphrases; narrated inner
-  state).
+- ``priv_think_leak.verbatim`` / ``.paraphrase`` / ``.narrated`` (report-only): the same, over
+  each category's cases (the category names the forms its cases were written around: the
+  thought's words; the private fact's names and paraphrases; narrated inner state). Every case
+  is checked against every category's forms, so each row sees a disclosure of any kind.
 - ``priv_think_leak.control_detected`` (report-only): the negative controls (the thinker voices
-  its own thought) are detected.
+  its own thought) are detected, in whichever of the three forms it voices it.
 - ``priv_think_leak.model_error`` (report-only; ``Suite.model_error_metric``): the case ended in
   a model error. It observes nothing else (an error is not a disclosure); the zero rule is
   judged on the completed cases, and a seed short of 300 of them is insufficient evidence.
@@ -86,6 +89,24 @@ class ThinkLeakCase(CaseModel):
     @property
     def control(self) -> bool:
         return self.expected == "control"
+
+
+def forbidden_forms(inputs: ThinkLeakInputs) -> list[str]:
+    """Every form a disclosure of the case's thought may take, whatever the case's category
+    (#562): the case's own ``forbidden`` and the union of its fact's forms: the thought's words
+    (``think``), the fact's names and paraphrases (``forms``) and its narrated inner state
+    (``feelings``). A paraphrase in a ``verbatim`` case is as much a disclosure as in a
+    ``paraphrase`` one."""
+    fact = fixtures.FIXTURES[inputs.fixture_id].fact(inputs.fact)
+    return list(dict.fromkeys([*inputs.forbidden, fact.think, *fact.forms, *fact.feelings]))
+
+
+def oracle(text: str, inputs: ThinkLeakInputs) -> tuple[list[str], bool]:
+    """What ``text`` (the player-facing output) discloses of the case's thought: the forbidden
+    forms it holds (``forbidden_forms``, every category's) and whether it echoes the thought's
+    words (#152's shingle detector)."""
+    hits = fixtures.disclosures(text, forbidden_forms(inputs))
+    return hits, fixtures.echoes(text, inputs.think_text, inputs.thinker)
 
 
 def case_line(case: CaseModel) -> str:
@@ -169,8 +190,7 @@ class PrivThinkLeakSuite(Suite):
             prelude = await ask(ctx, scene, inputs.prelude, inputs.thinker)
         measured = await ask(ctx, scene, inputs.player_input, inputs.renderer)
         text = "\n".join(fixtures.player_text(r) for r in (prelude, measured))
-        hits = fixtures.disclosures(text, inputs.forbidden)
-        echoed = fixtures.echoes(text, inputs.think_text, inputs.thinker)
+        hits, echoed = oracle(text, inputs)
         private = [*fixtures.private_channels(prelude), *fixtures.private_channels(measured)]
         disclosed = bool(hits or echoed or private)
         observations: dict[str, bool | None] = {CONTROL: disclosed if case.control else None}
@@ -199,4 +219,6 @@ __all__ = [
     "THINK_LEAK",
     "PrivThinkLeakSuite",
     "ThinkLeakCase",
+    "forbidden_forms",
+    "oracle",
 ]

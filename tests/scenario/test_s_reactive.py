@@ -20,6 +20,11 @@ The bar (``tests.reactive_support``): Cal (the player) asks; Bobby and Jenni are
 - ``test_s_reactive__interjections``: interjections are refused by default (a fixed reactor's is
   limited and deferred), allowed and viewpoint-checked when the story enables them (a ``say``
   with ``narrated_by``), and one over the word cap escalates.
+- ``test_s_reactive__interjection_rejected``: the complement (#560): an enabled interjection
+  that fails the reactor's viewpoint check is ``render_rejected``, never narrated, and absent
+  from the message.
+- ``test_s_reactive__calls_flat``: the turn's total model calls stay flat as reactors are added
+  (#560).
 - ``test_s_reactive__overrides``: per-request ``roles`` apply (``silent`` drops a reaction,
   ``primary`` renders the character), and their validation (an unknown character, the player,
   a named character overridden down) is 422; the PATCH route's own rules (the player 422, an
@@ -270,6 +275,84 @@ async def test_s_reactive__interjections(
         turn = await _play(client, b, "Bobby")
         assert rs.character_renders(stub) == ["Bobby", "Ada"]
         assert turn["roles"][b["Ada"]] == {"role": "primary", "source": "escalated"}
+
+
+MONEY = '"The money?" Ada asks.'
+
+
+@pytest.mark.part("M5", "FR-MULTI-7,9,10; NFR-PERF-7")
+async def test_s_reactive__interjection_rejected(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """#560, the complement of an enabled interjection: one that fails the reactor's viewpoint
+    check is rejected (``render_rejected``), never narrated, and absent from the message. With
+    interjections on, Ada interjects about the money in reaction to Bobby's ``think``, which she
+    never perceived."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        b = await rs.bar(client, engine)
+        await rs.interjections(client, b.story_id, True)
+        stub.reset()
+        ms.renders_for(
+            stub,
+            "Bobby",
+            rs.render(
+                beat("think", BOBBY_THINKS),
+                beat("say", "Evening.", intent="sincere"),
+                reactions=[rs.reaction(b["Ada"], MONEY, kind="interjection", reacts_to=0)],
+            ),
+        )
+        turn = await _play(client, b, "Bobby")
+        (dropped,) = await rs.rejected(engine, b.story_id)
+        assert dropped.payload["text"] == MONEY
+        report = (await turn_report(engine, b.story_id))["roles"]
+        assert [r["reason"] for r in report["rejected"]] == ["unperceived"]
+        assert await rs.narrated(engine, b.story_id) == []
+        ada_beats = await rows(
+            engine,
+            "SELECT type FROM events WHERE story_id = :s AND character_id = :c "
+            "AND type LIKE 'beat_%'",
+            s=b.story_id,
+            c=b["Ada"],
+        )
+        assert ada_beats == []
+        assert "The money" not in turn["message"]["text"]
+        assert "escalation_deferred" not in turn
+
+
+@pytest.mark.part("M5", "FR-MULTI-7,9,10; NFR-PERF-7")
+async def test_s_reactive__calls_flat(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """#560 (#176 Outcome 7): reactive characters cost no model call. With the same scripted
+    render for Bobby, the turn's **total** model calls (every purpose and schema, not only the
+    ``CharacterRender`` renders) are the same with one, two and three reactors present."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        totals: dict[int, int] = {}
+        kinds: dict[int, list[tuple[str, str]]] = {}
+        for reactors in (("Ada",), ("Ada", "Sam"), ("Ada", "Sam", "Dale")):
+            b = await rs.bar(client, engine, names=("Cal", "Bobby", *reactors))
+            stub.reset()
+            ms.renders_for(
+                stub,
+                "Bobby",
+                rs.render(
+                    beat("say", "Evening.", intent="sincere"),
+                    reactions=[rs.reaction(b["Ada"], GLANCE)],
+                ),
+            )
+            turn = await _play(client, b, "Bobby")
+            assert {r["role"] for c, r in turn["roles"].items() if c != b["Bobby"]} == {"reactive"}
+            assert len(turn["roles"]) == 1 + len(reactors)
+            totals[len(reactors)] = len(stub.calls)
+            kinds[len(reactors)] = sorted((c.purpose, c.response_schema or "") for c in stub.calls)
+        assert len(set(totals.values())) == 1, totals
+        assert kinds[1] == kinds[2] == kinds[3], kinds
 
 
 @pytest.mark.part("M5", "FR-MULTI-7,9,10; NFR-PERF-7")

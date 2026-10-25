@@ -107,8 +107,17 @@ async def test_q_04(pg_url: str, engine: AsyncEngine) -> None:
     assert fx.disclosures(fact.leak, injected.inputs.forbidden) != []
 
 
-NESTED_CASE = "asymmetry-nested-0003"
-"""The live run's case (``cbc7d954f0e8``) where Dana answered with the spare key's hiding place."""
+GUESSED_CASES = {
+    "asymmetry-nested-0003": r"\bkeys?\b",
+    "asymmetry-nested-0007": r"\bkeys?\b",
+    "asymmetry-nested-0009": r"\bkeys?\b",
+    "asymmetry-nested-0010": r"\bkeys?\b",
+    "asymmetry-whisper-0078": r"\bpawn\w*",
+}
+"""The live runs' flagged answers that guessed the fact (``cbc7d954f0e8``, 2026-10-24 and
+2026-10-25-2): asked how George gets in, Dana, Jenni and Bobby answered with a spare key; asked
+about Marcus's father's watch, Bobby invented a thief who pawned it. Each maps to a pattern for
+the fact's root word."""
 
 
 class _Contexts(Q04Suite):
@@ -139,18 +148,19 @@ class _Contexts(Q04Suite):
 
 
 @pytest.mark.part("M5", "FR-EPI-1,5; NFR-QUAL-1")
-async def test_q_04__nested_0003_context(pg_url: str, engine: AsyncEngine) -> None:
-    """The live run's ``asymmetry-nested-0003`` (Cal asks Dana how George gets in; Dana
-    answered with a spare key under the flowerpot) is not a context leak: Dana's generation
-    context for the measured turn (per-character partitions, perception ``full``,
-    ``core.epistemic.context.build_context`` through ``Engine.respond``) holds none of the
-    fact's forms and no key at all, and neither does any other non-holder character's
-    context in that scene. Dana's answer was the model's own invention from the question.
+@pytest.mark.parametrize("case_id", sorted(GUESSED_CASES))
+async def test_q_04__guessed_cases_context(pg_url: str, engine: AsyncEngine, case_id: str) -> None:
+    """The live runs' flagged answers in ``GUESSED_CASES`` are not context leaks: the asked
+    character's generation context for the measured turn (per-character partitions, perception
+    ``full``, ``core.epistemic.context.build_context`` through ``Engine.respond``) holds none of
+    the fact's forms and not even its root word, and neither does any other non-holder
+    character's context in that scene. The answers were the model's own guesses from the
+    question; the owner ruled them not leaks (2026-10-25, #179).
 
-    Complement asserted: the holder George's own context, built the same way, holds the fact,
-    so the probe can see it where it is."""
+    Complement asserted: the holder's own context, built the same way, holds the fact, so the
+    probe can see it where it is."""
     suite = _Contexts()
-    (case,) = [c for c in suite.load(SETS) if c.id == NESTED_CASE]
+    (case,) = [c for c in suite.load(SETS) if c.id == case_id]
     assert isinstance(case, AsymmetryCase)
     async with stub_engine(pg_url, engine) as lib:
         report = await run(
@@ -160,11 +170,11 @@ async def test_q_04__nested_0003_context(pg_url: str, engine: AsyncEngine) -> No
     fixture = fx.FIXTURES[case.inputs.fixture_id]
     holder = fixture.fact(case.inputs.fact).holder
     assert set(suite.contexts) == set(fixture.names)
-    key = re.compile(r"\bkeys?\b", re.IGNORECASE)
+    root = re.compile(GUESSED_CASES[case_id], re.IGNORECASE)
     for name, context in suite.contexts.items():
         assert context, name
         if name == holder:
             continue
         assert fx.disclosures(context, case.inputs.forbidden) == [], name
-        assert key.search(context) is None, name
+        assert root.search(context) is None, name
     assert fx.disclosures(suite.contexts[holder], case.inputs.forbidden) != []

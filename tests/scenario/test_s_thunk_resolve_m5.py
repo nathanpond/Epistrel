@@ -36,6 +36,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
 from epistrel.core.commit.epistemic import STORY_DAY
+from epistrel.core.epistemic import partitions, replay
+from epistrel.core.membership import Position
 from epistrel.core.propositions import registry, store
 from epistrel.orchestrator.models.registry import SalienceSketch
 from epistrel.orchestrator.structured.prompt import KNOWLEDGE_STEERING
@@ -158,6 +160,23 @@ async def _knowledge(engine: AsyncEngine, story: str, holder: str) -> list[Any]:
     )
 
 
+async def _held(engine: AsyncEngine, story: str, holder: str, predicate: str) -> list[Any]:
+    """``holder``'s active first-order beliefs of ``predicate`` (closed ones too): their
+    ``held_from`` and ``held_to`` turns and beats, by ``held_from``."""
+    return await rows(
+        engine,
+        "SELECT b.held_from_turn, b.held_from_beat, b.held_from_step, b.held_to_turn, "
+        "b.held_to_beat, b.held_to_step, b.tx_to FROM beliefs b "
+        "JOIN propositions p ON p.id = b.proposition_id JOIN predicates q ON q.id = p.predicate_id "
+        "WHERE b.story_id = :s AND b.holder_character_id = :h AND q.name = :n "
+        "AND b.kind = 'first_order' AND b.membership = 'active' "
+        "ORDER BY b.held_from_turn, b.held_from_beat, b.held_from_step",
+        s=story,
+        h=holder,
+        n=predicate,
+    )
+
+
 @pytest.mark.part("M5", "FR-COMMIT-11,14; FR-EPI-4")
 async def test_s_thunk_resolve__m5(
     stub_settings: Settings,
@@ -187,14 +206,39 @@ async def test_s_thunk_resolve__m5(
         assert report["epistemic"]["could_have_known"]["checks"] >= 1
         (resolved,) = await rows(engine, "SELECT * FROM thunks WHERE story_id = :s", s=story)
         assert str(resolved.state) == "resolved"
-        # Bobby's knowledge, at the knock's story-time: he knocked (a belief his observation
-        # of the narration already held, raised in place) and was at the porch (held from the
-        # knock's turn on).
+        # Bobby's knowledge, at the knock's story-time, held from the knock's turn on (#547):
+        # he knocked (a belief his observation of the narration already held from turn 2:
+        # raised in place, and its earlier span from the knock a backdated row of its own) and
+        # was at the porch.
         knowledge = await _knowledge(engine, story, bobby)
-        assert [(k.valid_at, k.predicate, k.held_from_turn) for k in knowledge] == [
+        assert sorted((k.valid_at, k.predicate, k.held_from_turn) for k in knowledge) == [
+            (knock.valid_time, "knocked_at", 1),
             (knock.valid_time, "knocked_at", 2),
             (knock.valid_time, "located_at", 1),
         ]
+        early, held = await _held(engine, story, bobby, "knocked_at")
+        assert (early.held_from_turn, held.held_from_turn, held.held_to_turn) == (1, 2, None)
+        # One hold, no gap, one open row: the backdated span closes where the held one starts.
+        assert (early.held_to_turn, early.held_to_beat, early.held_to_step) == (
+            held.held_from_turn,
+            held.held_from_beat,
+            held.held_from_step,
+        )
+        assert early.tx_to is None
+        async with engine.connect() as conn:
+            knocked_at = (await registry.load(conn, story)).named("knocked_at")
+            assert knocked_at is not None
+            knock_predicate = knocked_at.id
+            (open_row,) = [
+                b
+                for b in await partitions.partition(conn, story, bobby)
+                if b.proposition.predicate_id == knock_predicate
+            ]
+            known = await replay.could_have_known(
+                conn, story, bobby, open_row.proposition, Position.end_of(1)
+            )
+        assert isinstance(known, replay.Known), known
+        assert known.path.transition_kind == "resolution"
         (memory,) = await rows(
             engine,
             "SELECT * FROM memories WHERE story_id = :s AND provenance = 'resolution' "
@@ -231,7 +275,7 @@ async def test_s_thunk_resolve__m5(
             assert flag["severity"] == severity
             assert flag["gap_minutes"] >= days * STORY_DAY
             assert report["commit"]["rejected_bindings"] == []
-            assert len(await _knowledge(engine, story, bobby)) == 2  # the earlier variant's left
+            assert len(await _knowledge(engine, story, bobby)) == 3  # the earlier variant's left
 
 
 @pytest.mark.part("M5", "FR-COMMIT-11,14; FR-EPI-4")

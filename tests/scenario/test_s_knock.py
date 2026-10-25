@@ -110,11 +110,12 @@ async def _occurred(engine: AsyncEngine, story: str) -> list[Any]:
 
 
 async def _held(engine: AsyncEngine, story: str, holder: str, predicate: str) -> list[Any]:
-    """``holder``'s current first-order beliefs of ``predicate``."""
+    """``holder``'s current first-order beliefs of ``predicate`` (open: a backdated hold's
+    earlier span, closed where the open row starts, is not current; #547)."""
     return [
         b
         for b in ts.first_order(await ts.beliefs_of(engine, story, holder))
-        if b.predicate_id == predicate
+        if b.predicate_id == predicate and b.held_to_turn is None
     ]
 
 

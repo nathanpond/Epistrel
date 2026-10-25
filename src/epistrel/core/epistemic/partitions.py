@@ -1175,6 +1175,7 @@ async def _insert_belief(
     kind: BeliefKind = BeliefKind.FIRST_ORDER,
     resolution: bool = False,
     shape: Mapping[str, Any] | None = None,
+    held_to: Position | None = None,
 ) -> Belief:
     """Write ``proposition`` as a belief of ``holder`` (first-order unless ``kind`` says
     otherwise: a ``speech_act`` row holds that someone said it, a ``nested``/``attributed`` row
@@ -1182,7 +1183,11 @@ async def _insert_belief(
     columns are ``shape``'s, ``BELIEF_SHAPE_COLUMNS``) in ``operation``'s commit
     transaction (see the module docstring); answers the belief, with the open belief it closed
     in ``closed_id``. 422 ``holder_has_no_partition`` for the player's character; 422
-    ``unknown_predicate``; 409 ``erased_subject_referenced`` for an erased subject."""
+    ``unknown_predicate``; 409 ``erased_subject_referenced`` for an erased subject.
+
+    ``held_to`` (#165's backdated hold, ``transitions``' own): the row is written already closed
+    there, the earlier span of a hold whose open row starts at ``held_to``; that row is left
+    open (it must start at ``held_to`` or later)."""
     if getattr(operation, "story_id", story_id) != story_id:
         raise InvalidRequest(
             "a belief is written by an operation of its own story", {"field": "operation"}
@@ -1254,6 +1259,13 @@ async def _insert_belief(
         else await store.write_proposition(conn, story_id, proposition, found)
     )
     closed = prior
+    if held_to is not None:
+        if not start.before(held_to) or (prior is not None and prior.held_from.before(held_to)):
+            raise InvalidRequest(
+                "a backdated hold ends where the held belief starts, after its own start",
+                {"field": "held_to", "reason": "not_before_held"},
+            )
+        closed = None
     if closed is not None and not closed.held_from.before(start):
         raise InvalidRequest(
             "the holder already holds this proposition from this position or a later one",
@@ -1290,6 +1302,7 @@ async def _insert_belief(
         "valid_to": hi,
         "valid_span": Range(lo, hi, bounds="[)"),
         **start.columns("held_from"),
+        **({} if held_to is None else held_to.columns("held_to")),
         "tx_from": now,
         "provenance": provenance,
         "visibility": private_to(holder).document(),

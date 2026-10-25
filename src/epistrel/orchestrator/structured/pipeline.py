@@ -3872,12 +3872,14 @@ async def play(
         report_multi.tie_break_warning = warning
         async with db.connect() as conn:
             registry = await load_registry(conn, story_id)
-            conflicts = simultaneous_rules.conflicts_of(
+            conflicts = await simultaneous_rules.conflicts_of(
                 checked.checked,
                 checked.beats,
                 [p.id for p in order],
                 actor_id=read.actor.id,
                 registry=registry,
+                lookup=KeyedLookup(conn, read_set),
+                story_id=story_id,
             )
             object_names = await _entity_names(conn, story_id, [c.object_id for c in conflicts])
         if not conflicts:

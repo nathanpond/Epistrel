@@ -19,7 +19,10 @@ alone and before routing and composition:
    ``uncertain``, contradicted or denied claim is no effect), and the player's input ``do``
    (rank 0: the player wins a request-order tie), each ranked by its primary's place in request
    order. Speech, thoughts and the narrator's beats never take part.
-2. ``core.epistemic.conflicts.detect_conflicts``: deterministic and model-free.
+2. ``core.epistemic.conflicts.detect_conflicts``: deterministic and model-free. When two
+   characters' effects place one object in two different places (#549), the containment facts
+   (``located_in``) that could relate the places are read first through the turn's
+   ``KeyedLookup``, so they are keys of the turn's read set (``containment_facts``).
 3. The tie-break (``simultaneous_tie_break``, ``multi.tie_break_of``): ``request_order`` (the
    earlier-named primary's action stands) or ``director``: one ``generation`` call
    (``director_tiebreak.j2``, its answer ``{adjudications: [{object, winner}]}``) seeing only
@@ -51,10 +54,18 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from epistrel.core.epistemic.conflicts import Conflict, Effect, detect_conflicts
+from epistrel.core.epistemic.conflicts import (
+    Conflict,
+    Effect,
+    detect_conflicts,
+    needs_containment,
+)
 from epistrel.core.propositions.registry import Registry
+from epistrel.core.propositions.vocabulary import LOCATED_AT
+from epistrel.core.readset import KeyedLookup
 from epistrel.core.repair.rungs import SUBSTITUTION, RepairClass
 from epistrel.core.turns.beats import TurnBeat
+from epistrel.core.verify.rules import EVIDENCE_STATES, Options, Record
 from epistrel.orchestrator.budget import DIRECTOR_TIEBREAK, TurnBudget
 from epistrel.orchestrator.models.access import ModelAccessLayer
 from epistrel.orchestrator.models.adapter import ModelParams
@@ -365,16 +376,41 @@ def losing_claims(
     return found
 
 
-def conflicts_of(
+async def containment_facts(
+    lookup: KeyedLookup, story_id: str, effects: Sequence[Effect], registry: Registry
+) -> list[Record]:
+    """The containment facts a placement pair among ``effects`` reads (#549): every current
+    ``located_in`` fact, read through ``lookup`` so the key is in the turn's read set (a
+    concurrent change of the hierarchy is a rebase); none when no pair needs them."""
+    predicate = registry.get(LOCATED_AT)
+    via = None if predicate is None else predicate.containment_of
+    if via is None or not needs_containment(effects):
+        return []
+    facts = await lookup.canon_at(story_id, predicate=via, subjects=None)
+    return [Record.of_fact(f) for f in facts if f.commit_state in EVIDENCE_STATES]
+
+
+async def conflicts_of(
     claims: Sequence[CheckedClaim],
     beats: Sequence[TurnBeat],
     order: Sequence[str],
     *,
     actor_id: str,
     registry: Registry,
+    lookup: KeyedLookup,
+    story_id: str,
+    options: Options | None = None,
 ) -> list[Conflict]:
-    """The turn's conflicts over its effects (``effects_of`` then ``detect_conflicts``)."""
-    return detect_conflicts(effects_of(claims, beats, order, actor_id=actor_id), registry=registry)
+    """The turn's conflicts over its effects (``effects_of``, the containment facts a placement
+    pair needs, then ``detect_conflicts``)."""
+    effects = effects_of(claims, beats, order, actor_id=actor_id)
+    containment = await containment_facts(lookup, story_id, effects, registry)
+    return detect_conflicts(
+        effects,
+        registry=registry,
+        containment=containment,
+        options=options or Options(),
+    )
 
 
 __all__ = [
@@ -389,6 +425,7 @@ __all__ = [
     "attempt_repair",
     "attempt_text",
     "conflicts_of",
+    "containment_facts",
     "director_winners",
     "effects_of",
     "losing_claims",

@@ -428,3 +428,75 @@ async def test_s_nested_belief__no_nested_row(
         ("false", "false", "false"),
         ("unresolved", "unresolved", "unresolved"),
     ]
+
+
+@pytest.mark.part("M5", "FR-BELIEF-15; FR-EPI-2")
+async def test_s_nested_belief__module_off(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """#556 (#167 AC4): partitions on, ``nested_beliefs`` off. Jenni overhears Bobby's joke
+    "Probably Marcus again" and gets no nested record of it (no ``nested`` or ``attributed``
+    row). Her "Bobby thinks it was the delivery guy" gets no nested-belief check
+    (``attribution.checked`` false, belief relation ``unknown``): it is exempt from the
+    hallucination rule, sincere, not repaired, and kept; its objective label is still
+    computed, and still no nested row is written."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        w = await ns.knock_world(client, engine, "Cal", "Bobby", "Jenni")
+        story = w.story_id
+        cal, bobby, jenni = w.ids["Cal"], w.ids["Bobby"], w.ids["Jenni"]
+        await ns.enable_nested(engine, story, nested=False)
+        await parts.transit(
+            engine,
+            story,
+            bobby,
+            w.knocked(w.driver),
+            cause=transitions.Kind.TESTIMONY,
+            kind=OperationKind.CONTROL,
+            source=cal,
+            outcome="accept",
+        )
+
+        def nested_kinds(found: list[Any]) -> list[str]:
+            return [r.kind for r in found if r.kind in ("nested", "attributed")]
+
+        # The overheard joke: no nested record.
+        await _play(
+            client,
+            stub,
+            w,
+            "Bobby",
+            beat("say", JOKE, intent="joking", addressee=jenni, propositions=[_knocked("Marcus")]),
+        )
+        assert nested_kinds(await ns.nested_rows(engine, story, jenni)) == []
+
+        # The attribution: no nested-belief check, exempt from the hallucination rule.
+        stub.reset()
+        played = await _play(
+            client,
+            stub,
+            w,
+            "Jenni",
+            beat(
+                "say",
+                THINKS_DRIVER,
+                intent="sincere",
+                propositions=[_knocked("the delivery guy", attribution={"holder": "Bobby"})],
+            ),
+        )
+        report = await turn_report(engine, story)
+        (verdict,) = _speech(report)
+        assert verdict["attribution"]["checked"] is False
+        assert verdict["attribution"]["belief_ids"] == []
+        assert verdict["attribution"]["objective_relation"] == "true"  # the label still stands
+        assert verdict["speech"]["belief_relation"] == "unknown"
+        assert verdict["speech"]["classification"] == "sincere"
+        assert verdict["speech"]["contrary_belief_ids"] == []
+        assert "repairs" not in report
+        assert "delivery" in played["message"]["text"]
+        utterance = await _utterance(engine, story, jenni)
+        assert (utterance.belief_relation, utterance.classification) == ("unknown", "sincere")
+        assert nested_kinds(await ns.nested_rows(engine, story, jenni)) == []
+        assert nested_kinds(await ns.nested_rows(engine, story, bobby)) == []

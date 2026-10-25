@@ -3831,12 +3831,13 @@ async def play(
             registry = await load_registry(conn, story_id)
             lookup = KeyedLookup(conn, read_set)
             for witness in later:
+                # #559: only a verified staged beat the witness perceived in full is its
+                # antecedent (#174 AC1).
                 heard = {
                     b.beat
-                    for b in turn_stage.perceived_for(
+                    for b in turn_stage.perceived_antecedents(
                         witness.id, level=level, scene=scene, names=names, places=places
                     )
-                    if b.fidelity == "content"
                 }
                 for b in checked_k.beats:
                     props = verified.get(b.beat, [])

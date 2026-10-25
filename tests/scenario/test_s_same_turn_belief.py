@@ -52,7 +52,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
 from epistrel.core.enums import OperationKind
+from epistrel.core.epistemic import perception
 from epistrel.core.epistemic.errors import AntecedentInvalid
+from epistrel.core.epistemic.perception import SceneState
 from epistrel.core.epistemic.stage import StagedBeat, TurnStage
 from epistrel.core.epistemic.transitions import Antecedent, Kind
 from epistrel.core.membership import Position
@@ -404,14 +406,18 @@ class Riverbank:
     collapsed: str
 
 
-async def _riverbank(client: Any, engine: AsyncEngine, *, collapsed: bool = True) -> Riverbank:
-    """``__beats``'s story (see the module docstring)."""
+async def _riverbank(
+    client: Any, engine: AsyncEngine, *, collapsed: bool = True, jenni_away: bool = False
+) -> Riverbank:
+    """``__beats``'s story (see the module docstring); ``jenni_away`` puts Jenni at the mill,
+    out of the riverbank's sight and hearing (``__unperceived``)."""
     story, ids = await structured_story(client, "Cal", "Bobby", "Jenni")
     await ts.enable_testimony(engine, story, "defaulted", level="co_location")
     await ms.per_character(engine, story)
     bank = await ps.place_entity(engine, story, "riverbank")
+    mill = await ps.place_entity(engine, story, "the mill") if jenni_away else bank
     for name in ("Cal", "Bobby", "Jenni"):
-        await ps.put(engine, story, ids[name], bank)
+        await ps.put(engine, story, ids[name], mill if name == "Jenni" else bank)
     async with engine.begin() as conn:
         bridge = await store.add_entity(conn, story, "place", "the river bridge")
         states = {
@@ -588,6 +594,80 @@ async def test_s_same_turn_belief__beats(
             "SELECT id FROM events WHERE story_id = :s AND type LIKE 'beat_%'",
             s=world.story_id,
         )
+
+
+def _staged_antecedents(world: Riverbank) -> tuple[list[int], list[int]]:
+    """``__unperceived``'s stage: Bobby's verified beat 2 at the riverbank, Jenni at the mill,
+    Cal beside Bobby; Jenni's and Cal's ``perceived_antecedents`` (``antecedents_for`` itself
+    routes no perception, so beat 2 is in Jenni's)."""
+    stage = TurnStage("op", 1, 0)
+    bank, mill = "01PLACEBANK0000000000000000", "01PLACEMILL0000000000000000"
+    scene = SceneState(
+        location=bank,
+        placements={world.cal: bank, world.bobby: bank, world.jenni: mill},
+        characters=frozenset({world.cal, world.bobby, world.jenni}),
+        places=frozenset({bank, mill}),
+    )
+    names = {world.cal: "Cal", world.bobby: "Bobby", world.jenni: "Jenni"}
+    places = {bank: "the riverbank", mill: "the mill"}
+    seen = Proposition(
+        subject_id=world.bridge,
+        predicate_id=world.bridge,
+        object_id=world.collapsed,
+        valid_time=ALWAYS,
+    )
+    stage.open_render(world.bobby, 2)
+    stage.stage(StagedBeat(beat=2, kind="say", character_id=world.bobby, text=COLLAPSED), [seen])
+    stage.open_render(world.jenni, 3)
+    stage.open_render(world.cal, 3)
+    assert [b.beat for b in stage.antecedents_for(world.jenni)] == [2]
+
+    def antecedents(character: str) -> list[int]:
+        return [
+            b.beat
+            for b in stage.perceived_antecedents(
+                character, level=perception.CO_LOCATION, scene=scene, names=names, places=places
+            )
+        ]
+
+    return antecedents(world.jenni), antecedents(world.cal)
+
+
+@pytest.mark.part("M5", "FR-EPI-14; FR-MULTI-11")
+async def test_s_same_turn_belief__unperceived(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """The complement of ``__beats`` (#559; #174 AC1, FR-EPI-14 (b)): only staged beats the
+    later character **perceived** are its antecedents. The same sequential turn, Bobby then
+    Jenni, at perception ``co_location`` with Jenni at the mill: Bobby's verified beat 2 is not
+    under her ``## Just now``, no acceptance forms from it at staging, and she holds no belief
+    about the bridge after the commit (no ``staged_beat`` citation, no transition at all).
+
+    The stage itself (``_staged_antecedents``): ``perceived_antecedents``, what the pipeline's
+    staging asks, leaves beat 2 out for Jenni and keeps it for Cal beside Bobby."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        world = await _riverbank(client, engine, jenni_away=True)
+        stub.reset()
+        ms.renders_for(
+            stub, "Bobby", ms.render(beat("say", COLLAPSED, intent="sincere", propositions=[SEEN]))
+        )
+        ms.renders_for(stub, "Jenni", ms.render(beat("do", FERRY)))
+        stub.script("salience_detection", [_salient(2)])
+        response = await respond(client, world.story_id, _sequential(world))
+        assert response.status_code == 200, response.text
+        (prompt,) = ms.render_prompts(stub, "Jenni")
+        assert "## Just now" not in prompt
+        assert COLLAPSED not in prompt
+        report = await turn_report(engine, world.story_id)
+        assert report["multi"]["accepted"] == 0
+        assert await _jenni_on_bridge(engine, world) == []
+
+    jenni_heard, cal_heard = _staged_antecedents(world)
+    assert jenni_heard == []
+    assert cal_heard == [2]
 
 
 @pytest.mark.part("M5", "FR-EPI-14; FR-MULTI-11")

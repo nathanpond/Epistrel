@@ -19,6 +19,13 @@ model salience):
 - sparse, low-weight machinery: every modeled character is ``minor``, the omniscient story read
   shows its weight and ``modeled_at`` (Jenni ``major`` at position 0), a minor holds no memory
   of a beat it did not take part in, and the author can promote one to ``major``.
+
+``test_s_modeling__complements`` (#553) asserts the complements: erasing the lazily modeled
+neighbor removes its ``characters`` row and its partition, leaving no residue of it; a minor's
+scope consolidates at ``window_memories // 5`` and its hot budget is the deployment's
+``minor_hot_budget_fraction`` of the character budget (a major keeps both dials); an age repair
+that finds no age leaves the entity unmodeled (``modeling_deferred``); and a story that refuses
+new arrivals models nobody.
 """
 
 from __future__ import annotations
@@ -29,13 +36,19 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core.epistemic.modeling import MODELING_DEFERRED
+from epistrel.core.memory import consolidation, retirement
+from epistrel.core.profiles.effective import effective_configuration
 from epistrel.orchestrator.structured.render import DEFAULT_REPAIRED_AGE
 from tests import modeling_support as ms
+from tests import perception_support as ps
 from tests.auth_support import auth_settings
+from tests.erasure_support import erase, erasure_settings, residue
 from tests.event_support import rows, scalar
+from tests.novelty_support import set_arrivals
 from tests.respond_support import body, respond, respond_client
 from tests.story_support import WRITE
-from tests.structured_turn_support import beat, render, turn_report
+from tests.structured_turn_support import ages, beat, render, turn_report
 
 pytestmark = pytest.mark.integration
 
@@ -46,6 +59,7 @@ PASSES = "Jenni passes the jogger on the path."
 TIP = "Jenni hands the delivery driver a tip."
 COFFEE = "Jenni sips her coffee."
 AGAIN = "Thanks again, see you tomorrow!"
+MAILMAN = "Jenni waves to the mailman."
 
 
 @pytest.fixture
@@ -193,3 +207,94 @@ async def test_s_modeling(
         assert promoted.status_code == 200, promoted.text
         assert promoted.json()["character"]["weight"] == "major"
         assert (await ms.characters_of(engine, story))["the delivery driver"].weight == "major"
+
+
+@pytest.mark.part("M5", "FR-EPI-9,10")
+async def test_s_modeling__complements(
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """See the module docstring (#553): erasure, the minor's dials, deferral, no arrivals."""
+    async with respond_client(erasure_settings(pg_url), engine) as (client, epistrel):
+        story, ids, _ = await ms.street(client, engine)
+        await _turn(client, epistrel, story, ids, render(beat("do", WAVE)), ms.salient_characters())
+        neighbor = (await ms.characters_of(engine, story))["the neighbor"]
+        assert neighbor.weight == "minor"
+        assert await ms.memory_texts(engine, story, neighbor.id) == [(1, f"Jenni does: {WAVE}")]
+
+        # The minor's dials, read from the database: the window a fifth, the budget a fraction.
+        async with engine.connect() as conn:
+            settings = (await effective_configuration(conn, story, validate=False)).settings
+            dials = consolidation.ConsolidationSettings.of(settings)
+            minor_dials = await consolidation.holder_dials(
+                conn, story, consolidation.Scope(characters=(neighbor.id,)), dials
+            )
+            major_dials = await consolidation.holder_dials(
+                conn, story, consolidation.Scope(characters=(ids["Jenni"],)), dials
+            )
+            budgets = await retirement.budgets_of(conn, story, settings)
+        assert minor_dials.window_memories == max(1, dials.window_memories // 5)
+        assert major_dials.window_memories == dials.window_memories
+        full = settings.memory.hot_set.memories_per_character
+        assert budgets.character_budget(ids["Jenni"]) == full
+        assert budgets.character_budget(neighbor.id) == max(1, int(full * budgets.minor_fraction))
+        assert budgets.minor_fraction < 1
+
+        # Erasure removes the modeled minor and its partition like any character's, each
+        # deleted record leaving its marker.
+        partition = {
+            str(m.id)
+            for m in await rows(
+                engine,
+                "SELECT id FROM memories WHERE story_id = :s AND holder_character_id = :c",
+                s=story,
+                c=neighbor.id,
+            )
+        }
+        assert partition
+        await erase(client, "character", neighbor.id, story, confirm_all=True)
+        markers = await rows(
+            engine,
+            "SELECT payload->>'record_table' AS record_table, "
+            "payload->>'record_id' AS record_id FROM events "
+            "WHERE story_id = :s AND type = 'erasure_marker'",
+            s=story,
+        )
+        marked = {(m.record_table, m.record_id) for m in markers}
+        assert ("characters", neighbor.id) in marked
+        assert {("memories", i) for i in partition} <= marked
+        assert "the neighbor" not in await ms.characters_of(engine, story)
+        assert await ps.memories_of(engine, story, neighbor.id) == []
+        assert (
+            await scalar(
+                engine,
+                "SELECT count(*) FROM memories WHERE story_id = :s AND holder_character_id = :c",
+                s=story,
+                c=neighbor.id,
+            )
+            == 0
+        )
+        assert not any((await residue(engine, story, ["the neighbor"])).values())
+
+        # An age repair that finds no age: the mailman waits, unmodeled (modeling_deferred).
+        stub = epistrel.models.stub
+        stub.reset()
+        # Every structured retry of the age repair answers no age.
+        stub.script("generation", [render(beat("do", MAILMAN)), *[ages()] * 4])
+        stub.script("salience_detection", [ms.salient_characters()])
+        deferred = await respond(client, story, body(ids["Wren"], "Morning!"))
+        assert deferred.status_code == 200, deferred.text
+        assert MODELING_DEFERRED in deferred.json()["degradation"]
+        report = (await turn_report(engine, story))["modeling"]
+        assert report["modeled"] == []
+        assert report["deferred"] == [{"beat": 2, "trigger": "interaction"}]
+        assert not [n for n in await ms.characters_of(engine, story) if "mailman" in n]
+
+        # A story that refuses new arrivals models nobody, the age repair answering or not.
+        await set_arrivals(engine, story, allowed=False)
+        await _turn(
+            client, epistrel, story, ids, render(beat("do", MAILMAN)), ms.salient_characters()
+        )
+        # No modeling plan at all: the age repair is never asked.
+        assert "modeling" not in await turn_report(engine, story)
+        assert not [c for c in stub.calls if c.response_schema == "AgeRepairAnswer"]
+        assert not [n for n in await ms.characters_of(engine, story) if "mailman" in n]

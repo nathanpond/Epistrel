@@ -20,15 +20,17 @@ verification and #170's context assembly through ``resolve_needed``). The resolu
 history stood through E (``through_position = E`` on every read: #159's partition and #133's
 canon, a later beat or step of the same turn excluded exactly like a later turn; a belief
 another pass resolved after E is excluded unless this pass made it, ``membership.including``),
-and its trust in the source as of E (``testimony.trust(through=E)``). #162's deterministic
-default decides (``testimony.testimony``); the result is written as the ``said`` belief and the
-first-order transition the decision calls for, both dated at E (``held_from = E``) and written by
-the needing operation (``beliefs.resolution_operation_id``: FR-BELIEF-12's narrative state,
-committed with that turn and covered by its revision increment; FR-BELIEF-13's two anchors:
-valid-from E, inclusion the needing turn). Then later **dated** transitions are folded forward
-in narrative order: a belief the witness came to hold after E that contradicts the resolved one
-closes it at its own position, by a ``correction`` transition dated there and citing that
-belief's own antecedent (FR-BELIEF-8: belief, then correction, each in its own frame).
+and its trust in the source as of E (``testimony.trust(through=E)``: the relationships canon held
+at E's full position, read through the same lookup, and the outcomes at or before E). #162's
+deterministic default decides (``testimony.testimony``); the result is written as the ``said``
+belief and the first-order transition the decision calls for, both dated at E
+(``held_from = E``) and written by the needing operation (``beliefs.resolution_operation_id``:
+FR-BELIEF-12's narrative state, committed with that turn and covered by its revision
+increment; FR-BELIEF-13's two anchors: valid-from E, inclusion the needing turn). Then later
+**dated** transitions are folded forward in narrative order: a belief the witness came to hold
+after E that contradicts the resolved one closes it at its own position, by a ``correction``
+transition dated there and citing that belief's own antecedent (FR-BELIEF-8: belief, then
+correction, each in its own frame).
 
 **The read set is the proof** (EXPOSURE-FRAME): every keyed read of a resolution is recorded in
 its own ``StructuredReadSet`` with its ``through`` bound (``Resolution.reads``), and none is
@@ -499,7 +501,9 @@ async def decide(
     trust = (
         testimony.TRUST_NEUTRAL
         if exposure.source is None
-        else await testimony.trust(conn, story_id, witness, exposure.source, through=frame)
+        else await testimony.trust(
+            conn, story_id, witness, exposure.source, through=frame, lookup=lookup
+        )
     )
     intent = testimony.perceived(await _intent(conn, exposure.source_event_id))
     act = testimony.SpeechAct(

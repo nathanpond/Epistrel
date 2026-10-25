@@ -23,7 +23,10 @@ transition (#160's ``transition()``), gated by three things:
   witness's own transitions: -0.1 per claim of the speaker's the witness rejected, -0.1 per
   testimony belief from the speaker later overturned (corrected), +0.1 per testimony belief
   from the speaker a later observation confirmed; clamped to [0, 1]. Trust is derived, never
-  stored: it follows the timeline (truncation, swap, fork) and erasure with the transitions;
+  stored: it follows the timeline (truncation, swap, fork) and erasure with the transitions.
+  In #164's exposure frame the same relationships are read from canon at the frame's full
+  position (the projection is turn-granular; a relationship committed at a later beat of the
+  frame's own turn is outside it), as keys of the frame's read set;
 - **perceived intent**: a ``joking`` say is ``speech_act_only``; every other declared intent
   reads as sincere (a hearer never reads ``deceptive``: an undetected deception is accepted on
   the normal rules, and a detected one, the witness's knowledge contradicting it, is a
@@ -81,7 +84,7 @@ from epistrel.core.membership import (
 )
 from epistrel.core.propositions.model import Proposition
 from epistrel.core.propositions.registry import Registry
-from epistrel.core.readset import KeyedLookup
+from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.tables import characters, stories
 from epistrel.core.tables.beliefs import belief_transitions, beliefs
 from epistrel.core.verify.rules import Holder, Record, Verdict, VerdictKind, check_with
@@ -152,31 +155,36 @@ async def trust(
     speaker: str,
     *,
     through: Position | None = None,
+    lookup: KeyedLookup | None = None,
 ) -> float:
     """``witness``'s trust in ``speaker`` now, or as of ``through`` (#164's exposure frame: the
-    relationships as of its turn and only the outcomes recorded at or before it; see the module
+    relationships canon held at that full position, a later beat or step of its own turn
+    excluded exactly like a later turn, read through ``lookup`` so each read is a key of the
+    frame's read set, and only the outcomes recorded at or before it; see the module
     docstring)."""
-    from epistrel.core.projections.structured import relationships_views
     from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX
 
-    as_of = None
-    if through is not None:
-        # The relationships as of the frame's turn; a frame in the turn being committed (lazy
-        # resolution off) reads them now, its own turn not being the head yet.
-        head = await conn.scalar(select(stories.c.next_turn_index).where(stories.c.id == story_id))
-        as_of = through.turn if 0 <= through.turn <= int(head or 0) - 1 else None
-    _, views = await relationships_views(
-        conn,
-        story_id,
-        [witness],
-        as_of=as_of,
-        viewpoint=f"{CHARACTER_VIEWPOINT_PREFIX}{witness}",
-    )
-    seed = seed_trust(
-        (v.predicate, v.qualifiers)
-        for v in views.get(witness, ())
-        if v.other.entity_id == speaker and (v.direction == "out" or "trust" not in v.qualifiers)
-    )
+    viewpoint = f"{CHARACTER_VIEWPOINT_PREFIX}{witness}"
+    if through is None:
+        from epistrel.core.projections.structured import relationships_views
+
+        _, views = await relationships_views(conn, story_id, [witness], viewpoint=viewpoint)
+        relations = [
+            (v.predicate, v.qualifiers)
+            for v in views.get(witness, ())
+            if v.other.entity_id == speaker
+            and (v.direction == "out" or "trust" not in v.qualifiers)
+        ]
+    else:
+        relations = await _relations_in_frame(
+            lookup or KeyedLookup(conn, StructuredReadSet()),
+            story_id,
+            witness,
+            speaker,
+            through,
+            viewpoint,
+        )
+    seed = seed_trust(relations)
     t = belief_transitions.c
     b = beliefs.c
     mine = [
@@ -231,6 +239,45 @@ async def trust(
         )
     )
     return nudged(seed, int(confirmed or 0), int(rejected or 0), int(overturned or 0))
+
+
+async def _relations_in_frame(
+    lookup: KeyedLookup,
+    story_id: str,
+    witness: str,
+    speaker: str,
+    through: Position,
+    viewpoint: str,
+) -> list[tuple[str, Mapping[str, Any]]]:
+    """The ``(predicate name, qualifiers)`` of ``witness``'s relationships to ``speaker`` that
+    seed trust in the frame through ``through``: what #137's projection answers, but read from
+    canon at the frame's full position (``KeyedLookup.relations_between``; the projection is
+    turn-granular) and valid at the frame's turn's story-time, as the projection's "now"."""
+    from epistrel.core.projections.structured import RELATIONSHIPS
+    from epistrel.core.propositions.registry import load
+    from epistrel.core.resolution.time import TimeBasis, story_time_at
+
+    zero = await lookup.conn.scalar(
+        select(stories.c.story_minute_zero).where(stories.c.id == story_id)
+    )
+    now = story_time_at(through.turn, TimeBasis(minute_zero=int(zero or 0)))
+    registry = await load(lookup.conn, story_id)
+    found = await lookup.relations_between(
+        story_id,
+        witness,
+        speaker,
+        projection=RELATIONSHIPS,
+        through_position=through,
+        story_time=now,
+        viewpoint=viewpoint,
+    )
+    relations: list[tuple[str, Mapping[str, Any]]] = []
+    for fact, direction in found:
+        qualifiers = dict(fact.proposition.qualifiers)
+        if direction == "out" or "trust" not in qualifiers:
+            predicate = registry.get(fact.predicate_id)
+            relations.append(("" if predicate is None else predicate.name, qualifiers))
+    return relations
 
 
 # -- the default ---------------------------------------------------------------------------------

@@ -101,7 +101,7 @@ from epistrel.core.events.operation import Operation
 from epistrel.core.events.registry import validate
 from epistrel.core.events.types import CastMember, Fork, ForkedFrom, StoryCreated
 from epistrel.core.ids import new_ulid
-from epistrel.core.membership import DERIVED_TABLES
+from epistrel.core.membership import DERIVED_TABLES, POSITION_MAX
 from epistrel.core.ownership import Owner
 from epistrel.core.projections.heads import head_row
 from epistrel.core.stories import (
@@ -236,6 +236,7 @@ class ForkRequest(BaseModel):
     slot: StrictInt | None = Field(
         default=None,
         ge=0,
+        le=POSITION_MAX,
         description="The boundary `N⁺k`: copy `at_turn`'s inter-turn slots 1..k too (default: "
         "none, the boundary `N`). A beat or a step is never a boundary (422 "
         "`turn_boundary_required`).",

@@ -62,7 +62,7 @@ from epistrel.core.epistemic.stage import StagedBeat, TurnStage
 from epistrel.core.epistemic.transitions import Antecedent, Kind
 from epistrel.core.events import Operation
 from epistrel.core.ids import new_ulid
-from epistrel.core.membership import Position, beat_steps
+from epistrel.core.membership import POSITION_MAX, Position, beat_steps
 from epistrel.core.propositions import registry, store
 from epistrel.core.propositions.model import Interval, Proposition
 from epistrel.core.tables import events
@@ -530,6 +530,13 @@ async def test_s_same_turn_belief__turn_boundaries(
             error = refused.json()["error"]
             assert error["code"] == "turn_boundary_required", (path, shape)
             assert error["details"]["boundary"] == ["turn", "slot"]
+        # #569: the slot is a smallint; past POSITION_MAX it is 422, never a 500.
+        for path, shape in (
+            ("truncate", {"to_turn": 1, "slot": POSITION_MAX + 1}),
+            ("fork", {"at_turn": 1, "slot": POSITION_MAX + 1}),
+        ):
+            refused = await client.post(f"/stories/{story}/{path}", json=shape, headers=WRITE)
+            assert refused.status_code == 422, (path, shape, refused.text)
         assert await _revision(engine, story) == before
         stories = await scalar(engine, "SELECT count(*) FROM stories")
         forked = await client.post(

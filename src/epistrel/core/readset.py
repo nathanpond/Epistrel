@@ -772,7 +772,8 @@ class KeyedLookup:
         ``holder`` and ``other`` (entity ids) written at or before ``through_position`` and
         open there, as ``viewpoint`` may read them, affirmed, true at ``story_time`` unless
         their predicate is ``permanent`` (#137's ``_current`` rule), each with its direction as
-        ``holder`` sees it (``out``: ``holder`` is the subject, or the predicate is symmetric).
+        ``holder`` sees it (``out``: ``holder`` is the subject, or the predicate is symmetric). The
+        other end is the object or a member of a set object, as the projection reads it.
         #164's exposure frame reads trust's relationships here at the frame's full position
         (beat and step included) where the turn-granular projection cannot: one key per
         predicate and direction is recorded (``through`` the frame), an empty result
@@ -801,9 +802,9 @@ class KeyedLookup:
                 through_position=through_position,
                 viewpoint=viewpoint,
                 subject=subject,
-                object=object_id,
+                member=object_id,
             ):
-                if fact.predicate_id in ids:
+                if fact.predicate_id in ids and _object_matches(fact.proposition, object_id, None):
                     rows[direction].append(fact)
         bounds = _bounds(story_time, None)
         found: list[tuple[Fact, str]] = []

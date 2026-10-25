@@ -76,7 +76,7 @@ from sqlalchemy import (
     tuple_,
     update,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, INT8RANGE, Range, array
+from sqlalchemy.dialects.postgresql import ARRAY, INT8RANGE, JSONB, Range, array
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core import readset
@@ -1073,6 +1073,7 @@ def _canon_where(
     reading: Reading = "every",
     ids: Sequence[str] | None = None,
     written_in: tuple[int, int] | None = None,
+    member: str | None = None,
 ) -> list[ColumnElement[bool]]:
     """``canon``'s selection on ``f`` (a ``facts`` alias joined to ``propositions``), shared by
     every read that must select exactly what ``canon`` does (``canon_links``, #470)."""
@@ -1101,6 +1102,14 @@ def _canon_where(
         where.append(f.c.predicate_id == predicate)
     if object is not None:
         where.append(propositions.c.object_id == object)
+    if member is not None:
+        # The object is ``member``, or a set object holds it (#542).
+        where.append(
+            or_(
+                propositions.c.object_id == member,
+                propositions.c.object_set.contains(cast([member], JSONB)),
+            )
+        )
     if ids is not None:
         where.append(f.c.id.in_(list(ids)))
     if written_in is not None:
@@ -1123,6 +1132,7 @@ async def canon(
     limit: int | None = None,
     ids: Sequence[str] | None = None,
     written_in: tuple[int, int] | None = None,
+    member: str | None = None,
 ) -> list[Fact]:
     """Fact versions of ``story_id`` as ``viewpoint`` may read them; each coordinate filters
     only when given (see the module docstring): ``story_time`` (valid-time covering it),
@@ -1130,7 +1140,8 @@ async def canon(
     ``through_position`` (``(turn, slot_k)``: written at or before it); ``ids`` keeps only those
     versions (#142's neighborhood seed); ``written_in`` (``(first, last)`` turns, inclusive)
     keeps only versions written at a turn in that window (a consolidation window's facts, #452:
-    read in the query, not filtered from the whole canon). Ordered by ``valid_from``, then id."""
+    read in the query, not filtered from the whole canon); ``member`` keeps versions whose object
+    is that entity or a set object holding it. Ordered by ``valid_from``, then id."""
     await check_viewpoint(conn, story_id, viewpoint)
     f = facts.alias("f")
     where = _canon_where(
@@ -1146,6 +1157,7 @@ async def canon(
         reading=reading,
         ids=ids,
         written_in=written_in,
+        member=member,
     )
     query = _select(f).where(*where).order_by(f.c.valid_from.nulls_first(), f.c.id)
     if limit is not None:

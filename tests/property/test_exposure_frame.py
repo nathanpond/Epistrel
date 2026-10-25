@@ -55,6 +55,7 @@ from epistrel.core.enums import (
 from epistrel.core.epistemic import exposure, partitions, testimony, transitions
 from epistrel.core.events import Operation
 from epistrel.core.membership import Position, beat_steps
+from epistrel.core.propositions import registry as registry_
 from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Interval, Polarity, Proposition
 from epistrel.core.propositions.registry import load
@@ -552,3 +553,74 @@ def test_exposure_frame__resolver(pg_url: str) -> None:
     assert tally.excluded_same_turn > 0
     assert tally.contradicted > 0
     assert tally.trusted > 0
+
+
+# -- a relationship to a set that holds the speaker (#542) -----------------------------------
+
+SWORN_TRUST = 0.9
+
+
+async def _sworn(engine: AsyncEngine, w: c.World) -> Proposition:
+    """Ann is sworn to Bobby and Cal (an author relationship whose object is a set, with a
+    ``trust`` qualifier of ``SWORN_TRUST``)."""
+    async with engine.begin() as conn:
+        reg = await registry_.register_author(
+            conn,
+            w.story_id,
+            registry_.ScenarioRules.parse(
+                {
+                    "predicates": [
+                        {
+                            "name": "sworn_to",
+                            "subject_type": "person",
+                            "object_type": "person",
+                            "set_object": True,
+                            "qualifiers": {"trust": "float"},
+                            "projection": "relationships",
+                            "docs": "Bound by oath to a band of people.",
+                        }
+                    ]
+                }
+            ),
+        )
+    sworn = reg.named("sworn_to")
+    assert sworn is not None
+    return Proposition(
+        subject_id=w.people["Ann"],
+        predicate_id=sworn.id,
+        object_set=(w.people["Bobby"], w.people["Cal"]),
+        qualifiers={"trust": SWORN_TRUST},
+        valid_time=Interval.of(None, None),
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.part("M5", "FR-BELIEF-5,6,7,8; FR-STORE-31")
+@pytest.mark.parametrize(("beat_no", "trust"), [(1, SWORN_TRUST), (3, testimony.TRUST_NEUTRAL)])
+async def test_exposure_frame__trust_set_object(
+    engine: AsyncEngine, beat_no: int, trust: float
+) -> None:
+    """A relationship whose object is a set holding the speaker seeds trust in the frame, as
+    the projection reads it (a row per member): Ann sworn to {Bobby, Cal} at beat 1 of E's
+    turn trusts Bobby at its ``trust`` qualifier (the claim ``believed``); the same oath at
+    beat 3, after E, is outside the frame (neutral, ``suspected``). Its read is keyed through E
+    on the speaker, so a set object holding him touches it."""
+    w, claim = await _world(engine)
+    story = w.story_id
+    ann, bobby = w.characters["Ann"], w.characters["Bobby"]
+    oath = await _sworn(engine, w)
+    await xs.plain_turn(engine, story)
+    exposure_id = await _expose_with(engine, story, ann, claim, bobby, [(oath, (2, beat_no, 0))])
+    async with engine.connect() as conn:
+        assert await testimony.trust(conn, story, ann, bobby) == SWORN_TRUST  # canon now
+        assert await testimony.trust(conn, story, ann, bobby, through=FRAME) == trust
+    resolution, _ = await xs.resolve(engine, story, exposure_id)
+    assert resolution.outcome.trust == trust
+    level = BeliefConfidenceLevel.BELIEVED if beat_no == 1 else BeliefConfidenceLevel.SUSPECTED
+    assert resolution.outcome.confidence is level
+    keys = {
+        (r.subjects, r.object_id, r.through)
+        for r in resolution.reads
+        if r.predicate_id == oath.predicate_id
+    }
+    assert keys == {((ann,), bobby, FRAME.key()), ((bobby,), ann, FRAME.key())}

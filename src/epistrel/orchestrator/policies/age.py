@@ -9,14 +9,15 @@ current age is below the threshold (default 18, so 17 and under).
   was recorded. M2 has no clock, so it is ``true_age``.
 - **Present** under Lite is every character of the story's cast: Lite tracks no location, so
   nobody is ever elsewhere. Under per-character partitions with perception on (#161) a
-  character authoritatively placed somewhere other than the scene's location is **not
-  present** (``CastMember.present``, read by ``store.guard_context`` from
-  ``core.epistemic.scene.placed_elsewhere``: authoritative co-location, never the consumer's
-  roster). ``involved`` stays the whole cast (the engine tracks no involvement; recognizing
-  who the content is about is the model's), so the one accepted condition,
+  character outside the turn's routing audience is **not present** (``CastMember.present``,
+  read by ``store.guard_context`` from ``core.epistemic.scene.placed_elsewhere``: the union
+  over the turn's beats of routing's co-located set, mid-turn arrivals included (#541) —
+  authoritative co-location, never the consumer's roster). ``involved`` stays the whole cast
+  (the engine tracks no involvement; recognizing who the content is about is the model's), so
+  the one accepted condition,
   ``minor_involved_or_present``, holds exactly when the cast has a minor, and the check's
   subjects say who is present: content involving the minor is blocked wherever they are, and
-  content merely near a minor only while the minor is in the room.
+  content merely near a minor only while the minor is in the content's audience.
 - An age-conditioned policy whose condition is false **does not apply**: it is left out of the
   checks (no ``guardrail_check`` call), so adult-only stories pay nothing for it.
 - When it applies, the model receives **subjects**: every cast member as an opaque positional
@@ -46,7 +47,7 @@ class CastMember:
     true_age: int
     age_recorded_at: datetime | None = None
     present: bool = True
-    """Authoritatively co-located with the content (#161); always under Lite and M4."""
+    """In the content's routing audience (#161, #541); always under Lite and M4."""
 
 
 def current_age(member: CastMember) -> int:
@@ -62,7 +63,7 @@ def in_order(cast: Iterable[CastMember]) -> tuple[CastMember, ...]:
 
 def present(cast: Iterable[CastMember]) -> tuple[CastMember, ...]:
     """Who is present for the content: under Lite, the whole cast; under perception routing,
-    the members not authoritatively elsewhere."""
+    the members in the turn's routing audience."""
     return tuple(m for m in in_order(cast) if m.present)
 
 

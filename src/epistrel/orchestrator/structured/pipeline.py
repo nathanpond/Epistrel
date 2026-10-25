@@ -3521,6 +3521,26 @@ async def _staged_moves(
     return {n: tuple(m) for n, m in moves.items()}
 
 
+async def turn_guard(
+    db: AsyncEngine,
+    story_id: str,
+    read: TurnRead,
+    primaries: Sequence[str],
+    checked: Checked | None = None,
+) -> Any:
+    """The guard context of a structured turn's output checks (#541, FR-GUARD-11): an
+    age-conditioned policy's ``present`` set is the union over the turn's beats of routing's
+    co-located set, for the input's actor and ``primaries`` across the moves ``checked``'s
+    canon stages (``_staged_moves``; none before anything is checked)."""
+    moves: scene_loader.Moves | None = None
+    if checked is not None:
+        async with db.connect() as conn:
+            moves = await _staged_moves(conn, story_id, checked)
+    return await guard_context(
+        db, story_id, actors=(read.actor.id, *primaries), moves=moves or None
+    )
+
+
 async def audience_of(
     db: AsyncEngine,
     story_id: str,
@@ -4035,7 +4055,11 @@ async def play(
         )
         authority[:] = [split]
         say, do = split.say, split.do
-        context = await guard_context(db, story_id)
+        # #541: ``present`` for the output gate is the turn's routing audience, the input's
+        # actor and the primaries' co-located sets (``turn_guard``).
+        context = await turn_guard(
+            db, story_id, read, [p.id for p in (read.characters or (read.character,))]
+        )
         policies = output_policies(context, cast_.render_ids)
         rounds.append(1)
         planned.clear()
@@ -4399,6 +4423,17 @@ async def play(
                     # A named primary who is not in the scene renders with nothing perceived.
                     report_multi.not_present.append(primary.id)
                 turn_stage.open_render(primary.id, next_beat)
+                if k > 0:
+                    # #541: a later primary's output gate counts who the earlier primaries'
+                    # beats brought in (an escalated reactor is an actor too); a simultaneous
+                    # turn's primaries render against the starting placements.
+                    context = await turn_guard(
+                        db,
+                        story_id,
+                        read,
+                        [p.id for p in order],
+                        None if simultaneous or merged is None else merged,
+                    )
                 rendered_k, outcome_k, replaced = await render_primary(k, read_k, next_beat)
                 fresh = 0
                 if turn_roles is not None and rendered_k.finish_reason != "fallback":
@@ -4530,6 +4565,8 @@ async def play(
         assert merged is not None  # noqa: S101 - every turn renders a primary
         checked = merged
         sequential = len(order) > 1  # #176: an escalation renders another primary
+        # #541: the follow-up, repair and composition checks see the whole turn's audience.
+        context = await turn_guard(db, story_id, read, [p.id for p in order], checked)
         if turn_roles is not None:
             checked.silent = turn_roles.silent()
         rendered = renders_done[0] if len(renders_done) == 1 else _merged_rendered(renders_done)
@@ -4692,6 +4729,8 @@ async def play(
             mode=perception.SIMULTANEOUS if simultaneous else perception.SEQUENTIAL,
         )
         heard_state[:] = [heard]
+        # #541: the follow-up's beats may have brought someone in.
+        context = await turn_guard(db, story_id, read, [p.id for p in order], checked)
         composition = await compose_turn(
             db,
             models,

@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import weakref
 from collections import defaultdict
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
@@ -35,7 +35,15 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 if TYPE_CHECKING:
     from epistrel.core.events import Operation
 
-from epistrel.core.epistemic.perception import CO_LOCATION, FULL, NONE, Level, SceneState, pair
+from epistrel.core.epistemic.perception import (
+    CO_LOCATION,
+    FULL,
+    NONE,
+    Level,
+    SceneState,
+    pair,
+    turn_audience,
+)
 from epistrel.core.profiles.capabilities import level_at_least, module_on
 from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.profiles.schema import ProfileSettings
@@ -279,12 +287,19 @@ async def recheck(conn: AsyncConnection, op: Operation) -> bool:
 register_rebase_check(recheck)
 
 
-async def placed_elsewhere(conn: AsyncConnection, story_id: str) -> frozenset[str]:
-    """The characters authoritatively placed somewhere other than the scene's location at the
-    story's next turn (#55's ``present`` set, FR-GUARD-11: everyone else is present). Empty
-    when routing is off (perception ``none``: everyone is present, as under Lite) or the scene
-    has no location; an unplaced character counts as present, so the minors policy errs toward
-    applying."""
+async def placed_elsewhere(
+    conn: AsyncConnection,
+    story_id: str,
+    actors: Iterable[str] = (),
+    moves: Moves | None = None,
+) -> frozenset[str]:
+    """The characters authoritatively placed outside the routing audience of the story's next
+    turn (#55's ``present`` set, FR-GUARD-11; #541: everyone else is present): the union over
+    the turn's beats of routing's co-located set (``perception.turn_audience``) for the scene's
+    location and the ``actors`` (the turn's player and primaries), before and after each
+    beat's staged ``moves``. Empty when routing is off (perception ``none``: everyone is
+    present, as under Lite) or neither the scene nor any actor has a location; an unplaced
+    character counts as present, so the minors policy errs toward applying."""
     if await current_level(conn, story_id) == NONE:
         return frozenset()
     turn = await conn.scalar(
@@ -293,9 +308,11 @@ async def placed_elsewhere(conn: AsyncConnection, story_id: str) -> frozenset[st
     if turn is None:
         return frozenset()
     scene = await load_scene_state(conn, story_id, int(turn))
-    if scene.location is None:
+    wanted = tuple(actors)
+    if scene.location is None and all(scene.at(a) is None for a in wanted):
         return frozenset()
-    return frozenset(c for c, where in scene.placements.items() if where != scene.location)
+    audience = turn_audience(scene, wanted, moves)
+    return frozenset(c for c in scene.placements if c not in audience)
 
 
 __all__ = [

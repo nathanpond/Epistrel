@@ -1614,7 +1614,10 @@ class Engine:
         ``reserve_output_for`` (a turn's render characters) adds the turn's first output check
         to the reservation: one call per model-assisted output policy (#68)."""
         principal = self.require_principal(ctx)
-        context = await policy_store.guard_context(self.db, story_id)
+        # #541: the input's routing audience is the actor's co-located set.
+        context = await policy_store.guard_context(
+            self.db, story_id, actors=() if actor is None else (actor,)
+        )
         if reserve_output_for is not None:
             reserved += output_gate.output_reservation(context, reserve_output_for)
         deadline_s = DEFAULT_TURN_DEADLINE_S

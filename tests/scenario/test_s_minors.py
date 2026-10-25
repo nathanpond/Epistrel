@@ -12,7 +12,9 @@ minors_support``). Structured stories run with per-character partitions and perc
 2. Sexual content involving the 16-year-old: blocked on player input (422 naming the policy)
    and on output (regenerated, then the safe fallback).
 3. Sexual content between two adults: blocked while the 16-year-old is authoritatively in the
-   room; allowed at Explicit with the 16-year-old in another room.
+   room; allowed at Explicit with the 16-year-old in another room. Presence is the turn's routing
+   audience (#541): when the 16-year-old, rendered first, walks in from the barn mid-turn, the
+   partner's render after her counts her present and is withheld (the safe fallback).
 4. A character a render introduces at a high-school game gets a lazy age of 17 or under (the
    age repair, scripted), and the rule applies to them.
 5. A player persona aged 15: the rule applies to the player character too.
@@ -36,6 +38,7 @@ from epistrel.core.seeds.ratings import EVERYONE_ID, EXPLICIT_ID
 from epistrel.core.stories import CharacterSpec, StorySpec, create_story_from
 from epistrel.orchestrator.policies.seeds.policies import MINORS_POLICY_ID
 from tests import genesis_support as g
+from tests import multi_support as ms
 from tests import perception_support as ps
 from tests.auth_support import auth_settings, bearer
 from tests.catalog_support import scratch_catalog
@@ -69,6 +72,7 @@ DOCS = Path(__file__).resolve().parents[2] / "docs"
 INVOLVING = "Ilse kisses Maribelle hard on the mouth."
 NEAR = "They make love slowly by the fire."
 NEAR_INPUT = "I pull Ilse close and we make love slowly by the fire."
+ARRIVES = "Maribelle walks in from the barn, shaking off the rain."
 
 
 def _violation(response: Any) -> list[str]:
@@ -176,6 +180,36 @@ async def test_s_minors__m5(
         assert _violation(await respond(client, story, body(ids[ADULT_NAME], NEAR_INPUT))) == [
             MINORS_POLICY_ID
         ]
+
+        # 3b. #541: the minor arrives mid-turn. She renders first (per-character renders, a
+        # sequential turn) and walks in from the barn; the partner's render after her is in her
+        # audience, so its intimacy is withheld (the safe fallback). The player's input, heard
+        # in the cabin before she arrives, still marks her not present.
+        story, ids = await explicit_trio(engine)
+        cabin, _ = await _rooms(engine, story, ids)
+        await ms.per_character(engine, story)
+        stub.reset()
+        recognise_near(stub, "make love")
+        ms.renders_for(
+            stub,
+            MINOR_NAME,
+            ms.render(beat("do", ARRIVES, propositions=[claim("I", "located_at", "cabin")])),
+        )
+        ms.renders_for(stub, PARTNER_NAME, ms.render(beat("do", NEAR)))
+        arrived = await respond(
+            client,
+            story,
+            body(
+                ids[ADULT_NAME],
+                "Ilse, come here.",
+                render_character_ids=[ids[MINOR_NAME], ids[PARTNER_NAME]],
+            ),
+        )
+        assert arrived.status_code == 200, arrived.text
+        assert NEAR not in arrived.json()["message"]["text"]
+        checks = subject_checks(stub)
+        assert ELSEWHERE in checks[0]
+        assert [c for c in checks[1:] if ELSEWHERE not in c]
 
         # 4. Introduced at a high-school game: a lazy age of 17 or under, and the rule applies.
         story, ids = await explicit_trio(engine)

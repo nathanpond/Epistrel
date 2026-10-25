@@ -48,6 +48,9 @@ not normalize takes ``Verifier.unnormalizable`` (``uncertain``, never a guess, F
 with the safe disposition, except an extraction finding of its own that is uncertain only
 because a weak relation names something no entity holds: it is surfaced, not repaired
 (``surfaces``; #479, ADR-163).
+A claim leaking another character's private thought (#172: the thought side index or the
+inner-state check, ``DetectedClaim.think_leak``) takes ``Verifier.leaked`` (always repaired,
+``think_leak``), and a ``recall`` claim ``Verifier.verify_recall`` (grounded, or a confabulation).
 With verification off nothing is verified, and no verify call is made.
 
 **After verification** (#150 calls these per beat): ``dependences`` lists the claims of
@@ -82,6 +85,7 @@ from epistrel.core.commit.lifecycle import open_clause, thunk_columns, thunk_of
 from epistrel.core.commit.sketch import ThunkSketch
 from epistrel.core.config_changes import read_section
 from epistrel.core.enums import OperationKind
+from epistrel.core.epistemic.resurface import RECALL
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.profiles.schema import ProfileSettings
@@ -95,7 +99,7 @@ from epistrel.core.resolution.context import (
     load_time_basis,
 )
 from epistrel.core.resolution.entities import NARRATOR, PLAYER, ResolutionContext
-from epistrel.core.resolution.time import Position
+from epistrel.core.resolution.time import Position, turn_of
 from epistrel.core.settings_schema import OMNISCIENT, VerifySettings
 from epistrel.core.tables import events, operations
 from epistrel.core.tables.commitments import thunks
@@ -124,10 +128,12 @@ from epistrel.core.verify.permission import Asserter
 from epistrel.core.verify.protected import (
     CanonReads,
     ProtectedIndex,
+    load_private_records,
     load_protected_index,
     viewpoint_of,
 )
 from epistrel.core.verify.rules import VerdictReason
+from epistrel.core.visibility import OBJECTIVE, Visibility
 from epistrel.observability.metrics import CLAIMS_CHECKED, CLAIMS_DETECTED
 from epistrel.orchestrator.budget import COMPOSED, TurnBudget
 from epistrel.orchestrator.jobs.types import JobContext, JobHandler, JobOutput
@@ -253,7 +259,7 @@ async def load_env(
     basis = await load_time_basis(conn, story_id)
     index = await load_index(conn, story_id)
     lookup = KeyedLookup(conn, read_set)
-    turn = position if isinstance(position, int) else position[0]
+    turn = turn_of(position)
     contexts: dict[str, ResolutionContext] = {}
     protected: dict[str, ProtectedIndex | None] = {}
     # The speakers share one canon read and one scene and relationships read (#452).
@@ -297,6 +303,16 @@ async def load_env(
     )
     open_thunks: list[tuple[str, ThunkSketch]] = [(x.id, x.sketch) for x in map(thunk_of, rows)]
 
+    # #172: the characters' private records, the thought side index and the inner-state
+    # check's (``core.verify.protected``).
+    private = await load_private_records(
+        conn,
+        story_id,
+        turn,
+        names={i: e.canonical_name for i, e in index.entries.items()},
+        predicates={pid: p.name for pid, p in registry.predicates.items()},
+    )
+
     def context_for(speaker: str) -> ResolutionContext:
         return contexts.get(speaker) or contexts[NARRATOR]
 
@@ -311,6 +327,7 @@ async def load_env(
         scene_entity=scene_entity,
         placement=placement,
         open_thunks=open_thunks,
+        private=private,
     )
 
 
@@ -384,7 +401,7 @@ async def to_claims(
 ) -> list[DetectedClaim]:
     """The model's claims as layer (c) claims: located, confident enough, normalized."""
     found: list[DetectedClaim] = []
-    turn = position if isinstance(position, int) else position[0]
+    turn = turn_of(position)
     unknown = 0
     for item in answer.claims:
         if item.confidence < EXTRACTION_MIN_CONFIDENCE:
@@ -692,6 +709,7 @@ class CheckedClaim:
 
 
 SURFACE: SafeDisposition = "surface"
+SAY_CHANNEL = "say"
 SURFACED_LAYERS: frozenset[str] = frozenset({"declared", "extraction"})
 """The layers whose untracked weak-relation claims are surfaced; a detector's risk claims
 (possession, transfer, quantity, time, protected content) always keep the safe disposition."""
@@ -737,9 +755,13 @@ async def verify_detected(
     asserter_of: Callable[[DetectedClaim], Asserter] | None = None,
     scope_of: Callable[[DetectedClaim], tuple[str, ...] | None] | None = None,
     start: int = 0,
+    intent_of: Callable[[DetectedClaim], str | None] | None = None,
+    cites_of: Callable[[DetectedClaim], Sequence[str]] | None = None,
 ) -> list[CheckedClaim]:
     """Verify every detected claim of ``outcome`` (see the module docstring); claim ids are
-    ``<operation>:<n>`` from ``start``."""
+    ``<operation>:<n>`` from ``start``. A character's ``say`` claim (never the player's own,
+    FR-EPI-12) is first-person: it names its speaker as the believer (#166), with its beat's
+    declared intent (``intent_of``) and its render's ``think`` citations (``cites_of``)."""
     checked: list[CheckedClaim] = []
     on = verifier is not None and verifier.config.on
     for n, claim in enumerate(outcome.claims, start):
@@ -754,6 +776,28 @@ async def verify_detected(
             channel=claim.channel if claim.channel != MESSAGE else "narration",
             scope=None if scope_of is None else scope_of(claim),
         )
+        if claim.think_leak and claim.protected_ref is not None:
+            # #172: another character's private thought, repeated or narrated.
+            checked.append(
+                CheckedClaim(claim, verifier.leaked(claim.protected_ref, ref=ref), claim_id)
+            )
+            continue
+        if claim.category == RECALL:
+            # #172 (FR-VERIFY-9): a first-person recall, checked against the speaker's records.
+            checked.append(
+                CheckedClaim(
+                    claim,
+                    await verifier.verify_recall(
+                        claim.recalled or "",
+                        claim.speaker,
+                        position,
+                        ref=ref,
+                        claim_id=claim_id,
+                    ),
+                    claim_id,
+                )
+            )
+            continue
         if claim.proposition is None:
             reason = claim.unnormalized or Unnormalizable(VerdictReason.UNRESOLVED_ENTITY)
             disposition: SafeDisposition | None = SURFACE if surfaces(claim) else None
@@ -771,13 +815,54 @@ async def verify_detected(
         viewpoint = (
             OMNISCIENT if claim.speaker == NARRATOR else viewpoint_of(claim.speaker, player_id)
         )
+        believer = (
+            claim.speaker
+            if claim.channel == SAY_CHANNEL and claim.speaker not in (PLAYER, NARRATOR)
+            else None
+        )
+        proposition = claim.proposition
+        if claim.attribution is not None:
+            # #167: "Bobby thinks …" asserts Bobby's belief, not the proposition: checked
+            # against the speaker's nested beliefs (a say), never against canon as asserted.
+            if claim.channel != SAY_CHANNEL:
+                checked.append(CheckedClaim(claim, None, claim_id))
+                continue
+            checked.append(
+                CheckedClaim(
+                    claim,
+                    await verifier.verify_attribution(
+                        proposition,
+                        claim.attribution,
+                        position,
+                        believer=believer,
+                        ref=ref,
+                        intent=None if intent_of is None or believer is None else intent_of(claim),
+                    ),
+                    claim_id,
+                )
+            )
+            if not claim.attribution.factive:
+                continue
+            # A factive attribution ("Jenni knows it was George") also asserts the proposition.
+            claim = replace(claim, attribution=None)
+            claim_id = None if claim_id is None else f"{claim_id}f"
+            ref = replace(ref, claim_id=claim_id)
         result = await verifier.verify(
-            claim.proposition,
+            proposition,
             viewpoint,
             position,
             ref=ref,
             asserter=asserter,
             protected=claim.protected,
+            believer=believer,
+            intent=None if intent_of is None or believer is None else intent_of(claim),
+            cites=() if cites_of is None or believer is None else tuple(cites_of(claim)),
+            # #146's resolution exemption: a claim filling an open thunk resolves it, so
+            # binding the thunk to a modeled character is reconciliation's to judge (#154,
+            # #165), not a permission denial.
+            resolves=claim.matched_thunk_id
+            if claim.channel in lifecycle.DEPENDENCE_CHANNELS
+            else None,
         )
         checked.append(CheckedClaim(claim, result, claim_id))
     return checked
@@ -806,9 +891,11 @@ async def apply_dependences(
     *,
     read_set: StructuredReadSet,
     registry: Registry | None = None,
+    visibility_of: Callable[[CheckedClaim], Visibility | None] | None = None,
 ) -> list[lifecycle.Dependence]:
     """Hand each dependence (``dependences``) to ``core.commit.lifecycle.depend`` in the turn's
-    commit step, after re-finding its thunk through the keyed lookup (#146's read-set key)."""
+    commit step, after re-finding its thunk through the keyed lookup (#146's read-set key).
+    ``visibility_of`` scopes a claim's resolution (#169; ``None``: ``objective``)."""
     found: list[lifecycle.Dependence] = []
     story_id = str(operation.story_id)
     lookup = KeyedLookup(conn, read_set)
@@ -819,6 +906,7 @@ async def apply_dependences(
         target = await matching.dependence_target(lookup, story_id, proposition)
         if target is None:
             continue
+        scope = None if visibility_of is None else visibility_of(c)
         found.append(
             await lifecycle.depend(
                 conn,
@@ -828,6 +916,7 @@ async def apply_dependences(
                 beat=c.claim.beat,
                 channel=cast(lifecycle.Channel, c.claim.channel),
                 registry=registry,
+                visibility=OBJECTIVE if scope is None else scope,
             )
         )
     return found

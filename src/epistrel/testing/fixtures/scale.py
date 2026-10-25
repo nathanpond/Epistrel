@@ -83,7 +83,7 @@ from epistrel.core.propositions import registry as predicate_registry
 from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Interval, Polarity, Proposition
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME
-from epistrel.core.seeds.profiles import STRUCTURED_M4_PROFILE_ID
+from epistrel.core.seeds.profiles import STRUCTURED_M4_PROFILE_ID, STRUCTURED_M4_VERSION
 from epistrel.core.stories import CharacterSpec, StorySpec, create_story_from
 from epistrel.core.tables import operations, stories
 from epistrel.core.tables.memories import memories
@@ -677,7 +677,10 @@ async def _create(
         await conn.execute(
             update(stories)
             .where(stories.c.id == story_id)
-            .values(engine_profile_id=STRUCTURED_M4_PROFILE_ID, engine_profile_version_pin=None)
+            .values(
+                engine_profile_id=STRUCTURED_M4_PROFILE_ID,
+                engine_profile_version_pin=STRUCTURED_M4_VERSION,
+            )
         )
         for person in person_names(SUBJECTS):
             people[person] = await store.add_entity(

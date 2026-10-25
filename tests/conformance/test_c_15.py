@@ -627,6 +627,8 @@ def test_c_15__scenario_field_classes() -> None:
     ]
 
 
+SEEDED = (FieldClass.knowledge_seed, None)
+"""A ``knowledge_seed`` field (the #173 additions use it, to keep lines short)."""
 CLASSES: dict[str, tuple[FieldClass, Use | None]] = {
     "schema_version": (FieldClass.configuration, Use.creation_only),
     "public_card.name": (FieldClass.public_card, None),
@@ -641,6 +643,9 @@ CLASSES: dict[str, tuple[FieldClass, Use | None]] = {
     "world.locations[].id": (FieldClass.knowledge_seed, None),
     "world.locations[].name": (FieldClass.knowledge_seed, None),
     "world.locations[].description": (FieldClass.knowledge_seed, None),
+    "world.locations[].located_in": SEEDED,
+    "world.locations[].adjacent_to[].location": SEEDED,
+    "world.locations[].adjacent_to[].barrier": SEEDED,
     "world.entities[].id": (FieldClass.knowledge_seed, None),
     "world.entities[].name": (FieldClass.knowledge_seed, None),
     "world.entities[].kind": (FieldClass.knowledge_seed, None),
@@ -665,14 +670,21 @@ CLASSES: dict[str, tuple[FieldClass, Use | None]] = {
     "cast.roles[].seeded_memories[].disclosure": (FieldClass.knowledge_seed, None),
     "cast.roles[].seeded_memories[].kind": (FieldClass.knowledge_seed, None),
     "cast.roles[].seeded_memories[].valid_time": (FieldClass.knowledge_seed, None),
+    "cast.roles[].seeded_memories[].confidence": SEEDED,
+    "cast.roles[].seeded_memories[].nested.attributed_holder": SEEDED,
+    "cast.roles[].seeded_memories[].nested.proposition": SEEDED,
+    "cast.roles[].seeded_memories[].nested.attributed_confidence": SEEDED,
     "cast.roles[].relationships[].to_role": (FieldClass.knowledge_seed, None),
     "cast.roles[].relationships[].name": (FieldClass.knowledge_seed, None),
+    "cast.roles[].relationships[].trust": SEEDED,
+    "cast.roles[].relationships[].audience": SEEDED,
     "cast.roles[].state_initial_values": (FieldClass.starting_state, None),
     "cast.roles[].starting_location": (FieldClass.knowledge_seed, None),
     "cast.roles[].participation": (FieldClass.configuration, Use.story_setting),
     "cast.roles[].name_overrides.canonical": (FieldClass.knowledge_seed, None),
     "cast.roles[].name_overrides.aliases": (FieldClass.knowledge_seed, None),
     "cast.max_characters_at_start": (FieldClass.configuration, Use.creation_only),
+    "cast.groups": SEEDED,
     "starting_state.seeded_memories[].id": (FieldClass.knowledge_seed, None),
     "starting_state.seeded_memories[].text": (FieldClass.knowledge_seed, None),
     "starting_state.seeded_memories[].holder": (FieldClass.knowledge_seed, None),
@@ -680,12 +692,18 @@ CLASSES: dict[str, tuple[FieldClass, Use | None]] = {
     "starting_state.seeded_memories[].disclosure": (FieldClass.knowledge_seed, None),
     "starting_state.seeded_memories[].kind": (FieldClass.knowledge_seed, None),
     "starting_state.seeded_memories[].valid_time": (FieldClass.knowledge_seed, None),
+    "starting_state.seeded_memories[].confidence": SEEDED,
+    "starting_state.seeded_memories[].nested.attributed_holder": SEEDED,
+    "starting_state.seeded_memories[].nested.proposition": SEEDED,
+    "starting_state.seeded_memories[].nested.attributed_confidence": SEEDED,
     "starting_state.states": (FieldClass.starting_state, None),
     "starting_state.clock": (FieldClass.starting_state, None),
     "starting_state.scheduled_events": (FieldClass.knowledge_seed, None),
     "starting_state.predicates": (FieldClass.story_rule, None),
     "starting_state.closed_sets": (FieldClass.story_rule, None),
     "starting_state.rules": (FieldClass.story_rule, None),
+    "starting_state.channels[].id": SEEDED,
+    "starting_state.channels[].participants": SEEDED,
     "starting_state.opening.narration": (FieldClass.starting_state, None),
     "starting_state.opening.starting_location": (FieldClass.knowledge_seed, None),
     "starting_state.opening.roles_present": (FieldClass.starting_state, None),
@@ -699,11 +717,24 @@ CLASSES: dict[str, tuple[FieldClass, Use | None]] = {
     "drivers.planned_reveals[].truth.disclosure": (FieldClass.knowledge_seed, None),
     "drivers.planned_reveals[].truth.kind": (FieldClass.knowledge_seed, None),
     "drivers.planned_reveals[].truth.valid_time": (FieldClass.knowledge_seed, None),
+    "drivers.planned_reveals[].truth.confidence": SEEDED,
+    "drivers.planned_reveals[].truth.nested.attributed_holder": SEEDED,
+    "drivers.planned_reveals[].truth.nested.proposition": SEEDED,
+    "drivers.planned_reveals[].truth.nested.attributed_confidence": SEEDED,
     "drivers.planned_reveals[].allowed_roles": (FieldClass.director, None),
     "drivers.planned_reveals[].conditions": (FieldClass.director, None),
     "drivers.milestones": (FieldClass.director, None),
     "drivers.endings": (FieldClass.director, None),
     "story_settings_defaults.interaction_mode": (FieldClass.configuration, Use.story_setting),
+    "story_settings_defaults.sequence_order": (FieldClass.configuration, Use.story_setting),
+    "story_settings_defaults.simultaneous_tie_break": (
+        FieldClass.configuration,
+        Use.story_setting,
+    ),
+    "story_settings_defaults.reactive_interjections": (
+        FieldClass.configuration,
+        Use.story_setting,
+    ),
     "story_settings_defaults.turn_concurrency": (FieldClass.configuration, Use.story_setting),
     "story_settings_defaults.player_authority": (FieldClass.configuration, Use.story_setting),
     "story_settings_defaults.default_output_viewpoint": (
@@ -720,6 +751,7 @@ CLASSES: dict[str, tuple[FieldClass, Use | None]] = {
     ),
     "story_settings_defaults.audit_retention_days": (FieldClass.configuration, Use.story_setting),
     "story_settings_defaults.allow_new_arrivals": (FieldClass.configuration, Use.story_setting),
+    "story_settings_defaults.player_view": (FieldClass.configuration, Use.story_setting),
     "story_settings_defaults.policies[].name": (FieldClass.configuration, Use.policy),
     "story_settings_defaults.policies[].applies_to": (FieldClass.configuration, Use.policy),
     "story_settings_defaults.policies[].rule": (FieldClass.configuration, Use.policy),
@@ -1217,9 +1249,8 @@ def replay_surfaces(pg_url: str, tmp_path_factory: pytest.TempPathFactory) -> An
 
 
 REPLAY_EXCLUDED: dict[str, str] = {}
-"""Mutating routes the replay does not reach, each with the reason (none: every mutating route
-is replayed; ``replay_support.REPLACED_NOT_STORED`` names the one replayed without a stored
-result)."""
+"""Mutating routes the replay does not reach, each with the reason
+(``replay_support.REPLACED_NOT_STORED`` names the one replayed without a stored result)."""
 
 
 @pytest.mark.integration

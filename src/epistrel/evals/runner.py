@@ -48,24 +48,55 @@ reported version. The run's fingerprint then also names the judge as ``quality_j
 judged itself (``SuiteResult.judge``). On the stub the judge is a stub of its own, scripted like
 the run's.
 
-**Failures.** A ``ModelError`` during a case is a failed case — every metric of the suite
-observes it as bad — never an exclusion. Any other exception, or a malformed labeled set, is a
-**harness error**: the suite's verdict is ``error``. Each failed case's inputs and output go to
-``failures`` (JSON lines, never committed) when a path is given.
+**Per-purpose routing** (#179). ``AdapterConfig.real_purposes`` names the purposes a real-model
+run sends to the endpoint (``--real-purpose``, repeatable; ``None``: every purpose): every other
+purpose is answered by a stub of the run's own, with its default answers, so a run can put
+only ``generation`` on the local model. A suite's **scripted** calls (``CaseContext.scripted``:
+a prelude a case plays before what it measures, #179's planted thought) go to that stub on
+every run, scripted by the suite (``CaseContext.scripted_stub``). The fingerprint names the
+stub as the model of every purpose the endpoint does not serve, and the report lists the routed
+purposes (``Report.real_purposes``).
+
+**Per-suite configuration** (#179). A suite whose stories run a configuration other than the
+seeded profile's (``Suite.dials``, a settings merge patch over it; ``Suite.profile_label`` names
+it) reports its own fingerprint of that configuration in its result (``SuiteResult.fingerprint``
+and ``profile``).
+
+**Failures.** A ``ModelError`` during a case is a failed case, never a silent exclusion. A
+suite with a model-error row (``Suite.model_error_metric``: NFR-QUAL-1's zero-leak suites, #179)
+reports it there, and the case observes nothing else: an error is not a disclosure, a missed
+control or a repair, and the suite's floors are judged on its completed cases (the observed-zero
+rule's 300 cases are completed ones: a seed short of them because of model errors is
+``insufficient_evidence``, ``gate.judge``'s ``lost``). The row is report-only (the owner's
+decision of 2026-10-24: model-robustness floors belong to M9, ADR-164). Every other suite (M4's)
+observes the error as bad on every metric (#134). Either way the failure record's ``detail``
+carries the error's code and its content-free details (``ERROR_DETAILS``: the purpose, the
+reason, the attempts and the structural error codes). Any other exception, or a malformed
+labeled set, is a **harness error**: the suite's verdict is ``error``. Each failed case's inputs
+and output go to ``failures`` (JSON lines, never committed) when a path is given.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import json
 import os
 import random
 import secrets
 import time
 from collections import defaultdict
-from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Collection,
+    Iterator,
+    Mapping,
+    Sequence,
+)
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -99,7 +130,13 @@ from epistrel.evals.suites import CaseModel, Counts, MalformedCase, Outcome, Sui
 from epistrel.orchestrator.embeddings.adapter import EMBEDDING
 from epistrel.orchestrator.models import config as model_config
 from epistrel.orchestrator.models.access import EVAL_SCOPE, ModelAccessLayer, eval_scope
-from epistrel.orchestrator.models.adapter import ModelParams
+from epistrel.orchestrator.models.adapter import (
+    Message,
+    ModelAdapter,
+    ModelParams,
+    ModelResult,
+    ProbeResult,
+)
 from epistrel.orchestrator.models.errors import ModelError
 from epistrel.orchestrator.models.facts import TEMPLATE_HASHES
 from epistrel.orchestrator.models.registry import (
@@ -109,7 +146,7 @@ from epistrel.orchestrator.models.registry import (
     STORY_PURPOSES,
     JudgeCriteria,
 )
-from epistrel.orchestrator.models.stub import STUB_MODEL
+from epistrel.orchestrator.models.stub import STUB_MODEL, StubAdapter
 from epistrel.tools import model_matrix
 from epistrel.tools.generated import REPO_ROOT
 
@@ -122,9 +159,11 @@ DEFAULT_SEED_BASE = 20261008
 DEFAULT_SEEDS = 2
 DEFAULT_SETS_DIR = REPO_ROOT / "evals" / "sets"
 BUILD_DIR = REPO_ROOT / "build" / "evals"
-FINGERPRINT_PROFILE = seeded_profiles.STRUCTURED_M4_NAME
-FINGERPRINT_VERSION = 1
-"""The fingerprint is the seeded ``Structured (M4)`` profile's, at its seeded version, with the
+FINGERPRINT_PROFILE = seeded_profiles.STRUCTURED_NAME
+FINGERPRINT_VERSION = seeded_profiles.STRUCTURED_VERSION
+"""The fingerprint is the seeded ``Structured`` profile's, at its current version (the owner's
+decision of 2026-10-23: every eval follows it; the committed M4 baselines keep their
+``Structured (M4) v1`` label), with the
 run's model as every story purpose's (#109's ``fingerprint()``; the stub run's model is
 ``stub``), and, for a run with a second judge model (#475), the judge as ``quality_judge``'s."""
 
@@ -177,6 +216,9 @@ class AdapterConfig:
     """The judge model's endpoint; ``None``: ``base_url``."""
     judge_api_key: str | None = None
     """The judge endpoint's key; ``None``: ``api_key``."""
+    real_purposes: tuple[str, ...] | None = None
+    """The purposes a real-model run sends to the endpoint (#179); ``None``: every purpose.
+    Every other purpose is answered by the run's stub (module docstring)."""
 
     @property
     def model_name(self) -> str:
@@ -199,23 +241,33 @@ class AdapterConfig:
 
 
 def run_fingerprint(
-    model: str, dials: Mapping[str, Any] | None = None, *, judge: str | None = None
+    model: str,
+    dials: Mapping[str, Any] | None = None,
+    *,
+    judge: str | None = None,
+    real_purposes: Collection[str] | None = None,
 ) -> str:
     """The fingerprint the run reports (``FINGERPRINT_VERSION``'s docstring): the seeded
     profile over the deployment's seeded defaults, as a fresh deployment runs it; with
     ``dials`` (a settings merge patch) the variant they make (#158's ``gated`` configuration).
     With ``judge`` (#475: a second judge model) it also names the judge as ``quality_judge``'s
     model. FR-PROF-16 lists every model purpose's identifier, and ``quality_judge`` is one.
-    Without a judge, the fingerprint is unchanged."""
+    Without a judge, the fingerprint is unchanged. With ``real_purposes`` (#179) every other
+    story purpose's model is the stub."""
     settings = merged_settings(
-        seeded_profiles.profile_defaults(), seeded_profiles.STRUCTURED_M4_SETTINGS, dials
+        seeded_profiles.profile_defaults(), seeded_profiles.STRUCTURED_SETTINGS, dials
     )
-    models = {purpose: ModelIdentity(id=model) for purpose in STORY_PURPOSES}
+    models = {
+        purpose: ModelIdentity(
+            id=model if real_purposes is None or purpose in real_purposes else STUB_MODEL
+        )
+        for purpose in STORY_PURPOSES
+    }
     if judge is not None:
         models[QUALITY_JUDGE.name] = ModelIdentity(id=judge)
     facts = RuntimeFacts(models=models, templates=TEMPLATE_HASHES)
     return fingerprint(
-        profile_id=seeded_profiles.STRUCTURED_M4_PROFILE_ID,
+        profile_id=seeded_profiles.STRUCTURED_PROFILE_ID,
         version=FINGERPRINT_VERSION,
         settings=settings,
         facts=facts,
@@ -226,6 +278,76 @@ def default_run_id(fingerprint_value: str, when: datetime) -> str:
     """``<fingerprint[:12]>-<YYYY-MM-DD>`` (UTC); the report writer adds ``-2``… on a clash."""
     digest = fingerprint_value.split(":", 1)[-1]
     return f"{digest[:12]}-{when.astimezone(UTC).strftime('%Y-%m-%d')}"
+
+
+# -- per-purpose routing (#179) ---------------------------------------------------------------
+
+SCRIPTED: contextvars.ContextVar[bool] = contextvars.ContextVar("evals_scripted", default=False)
+"""Set inside ``CaseContext.scripted``: the block's model calls go to the run's stub."""
+
+
+class RoutedAdapter:
+    """A real-model run's adapter (module docstring): the purposes in ``real_purposes`` (every
+    purpose for ``None``) go to ``real`` unless a scripted block is open; everything else to
+    ``stub``, which answers with its defaults or what a suite scripted."""
+
+    name = "routed"
+
+    def __init__(
+        self,
+        real: ModelAdapter,
+        stub: StubAdapter,
+        real_purposes: Collection[str] | None = None,
+    ) -> None:
+        self.real = real
+        self.stub = stub
+        self.real_purposes = None if real_purposes is None else frozenset(real_purposes)
+
+    def routes_real(self, purpose: str) -> bool:
+        if SCRIPTED.get():
+            return False
+        return self.real_purposes is None or purpose in self.real_purposes
+
+    async def complete(
+        self,
+        purpose: str,
+        messages: Sequence[Message],
+        params: ModelParams,
+        response_schema: type[Any] | None = None,
+    ) -> ModelResult:
+        target: ModelAdapter = self.real if self.routes_real(purpose) else self.stub
+        return await target.complete(purpose, messages, params, response_schema)
+
+    async def probe(self, purpose: str) -> ProbeResult:
+        return await self.real.probe(purpose)
+
+    async def aclose(self) -> None:
+        await self.real.aclose()
+
+
+@contextlib.contextmanager
+def routed(engine: Engine, config: AdapterConfig) -> Iterator[None]:
+    """A real-model run's engine on a ``RoutedAdapter`` for the run (restored afterwards); a
+    stub run's untouched."""
+    if config.adapter == "stub":
+        yield
+        return
+    layer = engine.models
+    before = layer.adapter
+    layer.adapter = RoutedAdapter(before, StubAdapter(), config.real_purposes)
+    try:
+        yield
+    finally:
+        layer.adapter = before
+
+
+def scripted_stub(engine: Engine) -> StubAdapter:
+    """The stub a scripted block's calls reach: the engine's own on a stub run, the routed
+    adapter's on a real one."""
+    adapter = engine.models.adapter
+    if isinstance(adapter, RoutedAdapter):
+        return adapter.stub
+    return engine.models.stub
 
 
 # -- scratch stories --------------------------------------------------------------------------
@@ -348,6 +470,21 @@ class CaseContext:
         return await judges.score(
             self.judge_models, message, reference, criteria, case_id=self.scope_id(key)
         )
+
+    @contextlib.contextmanager
+    def scripted(self) -> Iterator[None]:
+        """A block whose model calls go to the run's stub on every run (module docstring):
+        a case's scripted prelude."""
+        token = SCRIPTED.set(True)
+        try:
+            yield
+        finally:
+            SCRIPTED.reset(token)
+
+    @property
+    def scripted_stub(self) -> StubAdapter:
+        """The stub ``scripted`` blocks reach (``runner.scripted_stub``)."""
+        return scripted_stub(self.engine)
 
     def scope_id(self, key: str) -> str:
         """``<case>.<key>``: the eval scope of one judge call of this case (a stub run scripts
@@ -571,10 +708,7 @@ async def _play(suite: Suite, job: SuiteRun, case: CaseModel, seed: int) -> _Pla
         with eval_scope(case.id, seed):
             outcome = await suite.evaluate(ctx, case)
     except ModelError as exc:
-        # A model error is a failed case, never an exclusion (#134).
-        outcome = Outcome(
-            {metric.id: False for metric in suite.metrics}, detail={"model_error": exc.code}
-        )
+        outcome = model_error_outcome(suite, exc)
     except Exception as exc:
         error = f"case {case.id} seed {seed}: {type(exc).__name__}: {exc}"
     finally:
@@ -583,7 +717,33 @@ async def _play(suite: Suite, job: SuiteRun, case: CaseModel, seed: int) -> _Pla
         except Exception as exc:
             error = error or f"case {case.id} seed {seed}: cleanup failed: {type(exc).__name__}"
     latency = round((time.perf_counter() - started) * 1000)
+    errored = suite.model_error_metric
+    if outcome is not None and errored is not None and errored not in outcome.observations:
+        outcome = replace(outcome, observations={**outcome.observations, errored: True})
     return _Played(case, seed, outcome, error, latency)
+
+
+ERROR_DETAILS = ("purpose", "reason", "provider_status", "attempts", "structural_errors")
+"""The keys of a ``ModelError``'s details a failure record keeps: what failed and why, as codes
+and counts, never the model's answer or the prompt (invariant 3)."""
+
+
+def model_error_outcome(suite: Suite, exc: ModelError) -> Outcome:
+    """A case that ended in ``exc`` (module docstring): with the suite's model-error row, that
+    row observes it as bad and nothing else is observed; without one, every metric is bad
+    (#134). ``detail`` names the error: its code, class and ``ERROR_DETAILS``."""
+    errored = suite.model_error_metric
+    observations: dict[str, bool | None]
+    if errored is None:
+        observations = {metric.id: False for metric in suite.metrics}
+    else:
+        observations = {metric.id: None for metric in suite.metrics}
+        observations[errored] = False
+    details = {k: exc.details[k] for k in ERROR_DETAILS if k in exc.details}
+    return Outcome(
+        observations,
+        detail={"model_error": exc.code, "error_type": type(exc).__name__, **details},
+    )
 
 
 def _record_failure(job: SuiteRun, suite: Suite, played: _Played) -> None:
@@ -593,7 +753,9 @@ def _record_failure(job: SuiteRun, suite: Suite, played: _Played) -> None:
     # first by this layer" is not a failure); a suite with no floor counts every metric.
     floored = {m.id for m in suite.metrics if m.rule is not Rule.informational}
     watched = floored or {m.id for m in suite.metrics}
-    if all(played.outcome.observations.get(m) is not False for m in watched):
+    if "model_error" not in played.outcome.detail and all(
+        played.outcome.observations.get(m) is not False for m in watched
+    ):
         return
     job.failures.parent.mkdir(parents=True, exist_ok=True)
     line = {
@@ -618,9 +780,11 @@ async def _play_seeds(
     latencies: list[int],
     gate_slots: asyncio.Semaphore,
     every: list[Outcome],
+    lost: dict[int, int],
 ) -> None:
     """Every seed's cases, in its shuffled order, tallied into ``tallies`` (and every outcome
-    collected into ``every``, for ``Suite.summarize``)."""
+    collected into ``every``, for ``Suite.summarize``; per seed, the cases a model error ended
+    counted in ``lost``)."""
 
     async def bounded(case: CaseModel, seed: int) -> _Played:
         async with gate_slots:
@@ -638,6 +802,8 @@ async def _play_seeds(
                 errors.append(played.error)
             if played.outcome is None:
                 continue
+            if "model_error" in played.outcome.detail:
+                lost[seed] = lost.get(seed, 0) + 1
             outcomes.append(played.outcome)
             every.append(played.outcome)
             for metric in suite.metrics:
@@ -682,12 +848,13 @@ async def run_suite(suite: Suite, job: SuiteRun) -> SuiteResult:
     latencies: list[int] = []
     gate_slots = asyncio.Semaphore(max(1, job.concurrency))
     every: list[Outcome] = []
+    lost: dict[int, int] = {}
     try:
         await suite.setup(job.engine, _ctx())
     except Exception as exc:
         return SuiteResult.errored(suite, [f"setup: {type(exc).__name__}: {exc}"], list(job.seeds))
     try:
-        await _play_seeds(suite, job, cases, tallies, errors, latencies, gate_slots, every)
+        await _play_seeds(suite, job, cases, tallies, errors, latencies, gate_slots, every, lost)
     finally:
         try:
             await suite.teardown(job.engine, _ctx())
@@ -701,8 +868,11 @@ async def run_suite(suite: Suite, job: SuiteRun) -> SuiteResult:
     calibration = calibration_ref(suite, job)
     metrics = []
     for metric in suite.metrics:
-        seed_tallies = [tally for _, tally in sorted(tallies[metric.id].items())]
-        result = MetricResult.of(metric, judge(metric, seed_tallies))
+        ordered = sorted(tallies[metric.id].items())
+        seed_tallies = [tally for _, tally in ordered]
+        # A suite with a model-error row judges its floors on the completed cases (#179).
+        missed = [lost.get(seed, 0) for seed, _ in ordered] if suite.model_error_metric else []
+        result = MetricResult.of(metric, judge(metric, seed_tallies, lost=missed))
         added = dict(summary.metrics.get(metric.id, {}))
         if metric.id in suite.judge_metrics:
             added["judge_based"] = True
@@ -726,6 +896,21 @@ async def run_suite(suite: Suite, job: SuiteRun) -> SuiteResult:
         notes=[*suite.reading_notes, *summary.notes],
         calibration=calibration,
         judge=suite_judge(suite, job),
+        profile=suite.profile_label,
+        fingerprint=suite_fingerprint(suite, job.config),
+    )
+
+
+def suite_fingerprint(suite: Suite, config: AdapterConfig) -> str | None:
+    """The fingerprint of the configuration ``suite``'s stories ran under, when it is not the
+    seeded profile's (``Suite.dials``, #179); ``None`` otherwise (the run's fingerprint)."""
+    if suite.dials is None:
+        return None
+    return run_fingerprint(
+        config.model_name,
+        suite.dials,
+        judge=config.judge_model,
+        real_purposes=routed_purposes(config),
     )
 
 
@@ -805,7 +990,9 @@ async def run_suites(
                 f"no judge calibration for {config.judge_name!r} in {store}: run "
                 "`calibrate-judge` (or `run --all`) first"
             )
-    fingerprint_value = run_fingerprint(config.model_name, judge=config.judge_model)
+    fingerprint_value = run_fingerprint(
+        config.model_name, judge=config.judge_model, real_purposes=routed_purposes(config)
+    )
     report = Report(
         run_id=run_id or default_run_id(fingerprint_value, started),
         started_at=started.isoformat(timespec="seconds"),
@@ -817,61 +1004,74 @@ async def run_suites(
         host=host_of(config),
         seed_base=seed_base,
         seeds=list(seeds),
+        real_purposes=routed_purposes(config),
     )
-    async with engine_for(config, engine) as live, judge_layer_for(config, live) as judging:
-        report.model_version = await preflight(live, config)
-        judge_version = report.model_version
-        if config.judge_model is not None:
-            judge_version = await judge_preflight(judging, config)
-            report.judge = JudgeModel(
-                model=config.judge_model,
-                model_version=judge_version,
-                endpoint=(config.judge_base_url or config.base_url)
-                if config.adapter == "openai"
-                else None,
-            )
-        if calibrate:
-            stored = await calibrate_judge(
-                live,
-                config,
-                sets_dir=sets_dir,
-                model_version=judge_version,
-                flip=calibration_flip,
-                seed=seed_base,
-                judge_layer=judging,
-            )
-            judges.save(store, stored)
-        await sweep(live)
-        before = await story_rows(live.db)
-        job = SuiteRun(
-            engine=live,
-            config=config,
-            seeds=seeds,
-            run_id=report.run_id,
-            sets_dir=sets_dir,
-            sample=sample,
-            full=frozenset(full),
-            seed_base=report.seed_base,
-            concurrency=concurrency,
-            failures=failures,
-            cases=cases or {},
-            calibration=stored,
-            judge_layer=None if config.self_judged else judging,
-            judge_version=judge_version,
-        )
-        try:
-            for suite in suites:
-                report.merge(await run_suite(suite, job))
-                if on_suite is not None:
-                    pending = on_suite(report)
-                    if pending is not None:
-                        await pending
-        finally:
+    async with (
+        engine_for(config, engine) as live,
+        judge_layer_for(config, live) as judging,
+    ):
+        with routed(live, config):
+            report.model_version = await preflight(live, config)
+            judge_version = report.model_version
+            if config.judge_model is not None:
+                judge_version = await judge_preflight(judging, config)
+                report.judge = JudgeModel(
+                    model=config.judge_model,
+                    model_version=judge_version,
+                    endpoint=(config.judge_base_url or config.base_url)
+                    if config.adapter == "openai"
+                    else None,
+                )
+            if calibrate:
+                stored = await calibrate_judge(
+                    live,
+                    config,
+                    sets_dir=sets_dir,
+                    model_version=judge_version,
+                    flip=calibration_flip,
+                    seed=seed_base,
+                    judge_layer=judging,
+                )
+                judges.save(store, stored)
             await sweep(live)
-        problems = isolation_problems(before, await story_rows(live.db))
+            before = await story_rows(live.db)
+            job = SuiteRun(
+                engine=live,
+                config=config,
+                seeds=seeds,
+                run_id=report.run_id,
+                sets_dir=sets_dir,
+                sample=sample,
+                full=frozenset(full),
+                seed_base=report.seed_base,
+                concurrency=concurrency,
+                failures=failures,
+                cases=cases or {},
+                calibration=stored,
+                judge_layer=None if config.self_judged else judging,
+                judge_version=judge_version,
+            )
+            try:
+                for suite in suites:
+                    report.merge(await run_suite(suite, job))
+                    if on_suite is not None:
+                        pending = on_suite(report)
+                        if pending is not None:
+                            await pending
+            finally:
+                await sweep(live)
+            problems = isolation_problems(before, await story_rows(live.db))
     report.errors.extend(f"isolation: {p}" for p in problems)
     report.finish(datetime.now(UTC))
     return report
+
+
+def routed_purposes(config: AdapterConfig) -> list[str] | None:
+    """The purposes a real-model run routes to its endpoint (``None``: every one; a stub run
+    names none)."""
+    if config.adapter == "stub" or config.real_purposes is None:
+        return None
+    return sorted(config.real_purposes)
 
 
 async def calibrate_judge(

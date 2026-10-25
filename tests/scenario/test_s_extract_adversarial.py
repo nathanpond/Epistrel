@@ -29,7 +29,14 @@ from epistrel.core.verify import shadow
 from epistrel.core.verify.detect import DetectBeat
 from epistrel.core.verify.rules import VerdictKind
 from tests import detection_support as ds
+from tests import multi_support as ms
+from tests import reactive_support as rs
 from tests import verify_support as vs
+from tests.auth_support import auth_settings
+from tests.event_support import rows
+from tests.respond_support import respond_client
+from tests.secrets_support import play, secret, secret_story
+from tests.structured_turn_support import beat
 
 pytestmark = pytest.mark.integration
 
@@ -176,3 +183,134 @@ async def test_s_extract_adversarial__m4(engine: AsyncEngine, mode: str) -> None
         )
     assert stored is not None
     assert (stored["detection"]["shadow"], stored["detection"]["shadow_missed"]) == ("sampled", 1)
+
+
+# -- the M5 part (#172): protected content in a ``say`` --------------------------------------------
+
+UNLIKE_MARCUS = "You deserve better, unlike Marcus, who's been seeing Dana behind your back."
+
+
+@pytest.mark.part("M5", "FR-VERIFY-14; NFR-PRIV-1")
+async def test_s_extract_adversarial__m5(
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """(b) Bobby's ``say`` "…unlike Marcus, who's been seeing Dana behind your back…" is
+    structurally complete and declares nothing, but the affair exists only in Marcus's private
+    partition (his belief that he is married to Dana; no canon names her). The protected-content
+    index (#148, extended by #172 to other characters' belief-only records) protects "Dana"
+    from Bobby: the hit claims Marcus's belief, Bobby's permission to introduce it is denied
+    (#144: another character's secret, which precedes ``protected_content``; as Bobby's
+    first-person word it has no legitimate basis either, #166's hallucination) and the beat is
+    repaired; the secret is never canonized and never
+    reaches the message. Complement: Marcus saying it himself matches nothing of his own.
+    ((f), a reactive narration implying the reactor already knew a secret, is #176's slice.)"""
+    settings = auth_settings(pg_url, model_adapter="stub")
+    async with respond_client(settings, engine) as (client, epistrel):
+        story, ids = await secret_story(client, engine, "Jenni", "Bobby", "Marcus")
+        dana, belief = await secret(
+            engine, story, ids["Marcus"], ids["Marcus"], "married_to", "Dana"
+        )
+        stub = epistrel.models.stub
+
+        leaked = await play(
+            client,
+            engine,
+            stub,
+            story,
+            ids["Jenni"],
+            ids["Bobby"],
+            beat("say", UNLIKE_MARCUS, intent="sincere"),
+        )
+        assert belief in leaked.protected_refs()
+        assert leaked.denied
+        assert set(leaked.denied) <= {"protected_content", "other_character_secret"}
+        assert leaked.tags
+        assert set(leaked.tags) <= {"unpermitted", "hallucination"}
+        assert "Dana" not in leaked.message
+        facts = await rows(
+            engine,
+            "SELECT f.id FROM facts f JOIN propositions p ON p.id = f.proposition_id "
+            "WHERE f.story_id = :s AND (p.object_id = :d OR p.subject_id = :d)",
+            s=story,
+            d=dana,
+        )
+        assert facts == []
+
+        own = await play(
+            client,
+            engine,
+            stub,
+            story,
+            ids["Jenni"],
+            ids["Marcus"],
+            beat("say", "I've been seeing Dana, and I'm sorry.", intent="sincere"),
+        )
+        assert belief not in own.protected_refs()
+        assert not own.denied
+        assert "Dana" in own.message
+
+
+# -- the M5 part's (f) (#176): a reactive narration implying a secret --------------------------
+
+FLINCHES_AT_DANA = "Dale flinches at the mention of Dana."
+FLINCHES = "Dale flinches."
+
+
+@pytest.mark.part("M5", "FR-VERIFY-14")
+async def test_s_extract_adversarial__f(
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """(f) Bobby's render is structurally complete and narrates Dale's reaction (#176's
+    ``reactions`` channel): "Dale flinches at the mention of Dana." Nobody mentioned Dana: the
+    affair exists only in Marcus's private partition, so the reaction implies Dale already knew
+    it. The same claim detection runs on the narration (FR-VERIFY-14), attributed to Dale (the
+    reactor, not the narrator, is the viewpoint checked): the protected-content index protects
+    "Dana" from Dale, the reaction is dropped (``render_rejected``), never committed as Dale's
+    ``do`` and never in the message, and nothing about Dana is canonized. Complement: Dale's
+    plain flinch is accepted as his narrated ``do``."""
+    settings = auth_settings(pg_url, model_adapter="stub")
+    async with respond_client(settings, engine) as (client, epistrel):
+        story, ids = await secret_story(client, engine, "Jenni", "Bobby", "Marcus", "Dale")
+        await ms.per_character(engine, story)
+        dana, _ = await secret(engine, story, ids["Marcus"], ids["Marcus"], "married_to", "Dana")
+        stub = epistrel.models.stub
+        for text, kept in ((FLINCHES_AT_DANA, False), (FLINCHES, True)):
+            stub.reset()
+            ms.renders_for(
+                stub,
+                "Bobby",
+                rs.render(
+                    beat("say", "Evening, everyone.", intent="sincere"),
+                    reactions=[rs.reaction(ids["Dale"], text)],
+                ),
+            )
+            answer = await client.post(
+                f"/stories/{story}/respond",
+                json={
+                    "actor_character_id": ids["Jenni"],
+                    "player_input": {"say": "Hello."},
+                    "render_character_ids": [ids["Bobby"]],
+                },
+                headers=rs.WRITE,
+            )
+            assert answer.status_code == 200, answer.text
+            message = answer.json()["message"]["text"]
+            narrated = [n.text for n in await rs.narrated(engine, story)]
+            if kept:
+                assert narrated[-1] == FLINCHES
+                assert FLINCHES in message
+            else:
+                assert narrated == []
+                assert "Dana" not in message
+                (dropped,) = await rs.rejected(engine, story)
+                assert dropped.payload["text"] == FLINCHES_AT_DANA
+                assert (
+                    await rows(
+                        engine,
+                        "SELECT f.id FROM facts f JOIN propositions p ON p.id = f.proposition_id "
+                        "WHERE f.story_id = :s AND (p.object_id = :d OR p.subject_id = :d)",
+                        s=story,
+                        d=dana,
+                    )
+                    == []
+                )

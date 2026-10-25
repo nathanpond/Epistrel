@@ -14,6 +14,7 @@ from epistrel.core import stories as stories_module
 from epistrel.core.concurrency import Decide
 from epistrel.core.context import RequestContext
 from epistrel.core.enums import OperationKind, Provenance
+from epistrel.core.epistemic.roles import DEFAULT_ROLE
 from epistrel.core.errors import StoryArchived, StoryBusy
 from epistrel.core.events import Operation
 from epistrel.core.stories import STORY_TABLES, StorySpec
@@ -91,7 +92,13 @@ async def test_i_10(engine: AsyncEngine, settings: Settings) -> None:
         assert (story["timeline_revision"], story["next_turn_index"]) == (1, 1)
         assert story["characters"] == [
             {"id": ada, "name": "Ada", "is_player": True},
-            {"id": brann, "name": "Brann", "is_player": False},
+            {
+                "id": brann,
+                "name": "Brann",
+                "is_player": False,
+                # #176: every non-player character's participation (the default).
+                "participation": {"role": DEFAULT_ROLE, "fixed": False},
+            },
         ]
         assert story["settings"]["turn_concurrency"] == "queue"
         assert story["settings"]["default_output_viewpoint"] == f"character:{ada}"

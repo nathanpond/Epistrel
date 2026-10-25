@@ -54,7 +54,10 @@ No automated check spends money or calls a real model (the owner's decision, 202
 
 Each report states the model and the version the server reported, the configuration
 fingerprint (FR-PROF-16: the seeded `Structured (M4)` profile with the model as every story
-purpose's, and a second judge model as `quality_judge`'s when one is set), the judge, the host,
+purpose's, and a second judge model as `quality_judge`'s when one is set; with
+`--real-purpose`, the stub as every other purpose's, listed as **Routed purposes**), a suite's
+own configuration and fingerprint when its stories run another (#179's M5 modules), the judge,
+the host,
 the seeds and the sample size, and one row per metric: floor, rule,
 mean ± SD across seeds, cases per seed, seeds, verdict and, for a zero-tolerance metric, the
 one-sided 95% upper bound.
@@ -91,8 +94,39 @@ measures.
 | `q03` | Q-03: abstract-query recall with vs without the reflection tier | report only | `retrieval/abstract.jsonl` (60) | #143, #157 |
 | `e12` | E-12 (M4): engine interventions and prose. Every turn where a repair rung, the composition or its polish changed the first draft is a pair; the masked pair is judged by `quality_judge` in both orders. First-draft preference rate per intervention type and fingerprint, with its Wilson 95 % interval. | mean + SD ≤ 55 % on ≥ 300 non-tied pairs per seed, else insufficient evidence (relative) | `scenarios/` (21 scenarios × 4 turns) | #158 |
 | `e13` | E-13 (M4): text-quality signals per fingerprint: repetition, repeated openings, length accuracy (model-free), voice consistency and story-driver adherence (judge scores, uncalibrated in M4), and the Spearman correlation with users' ratings | report only (no gate) | `scenarios/` | #158 |
+| `e01_viewpoint` | E-01 (M5): a character's own claims through `Verifier.verify` against canon and its belief partition, with the declared intent: lies, false beliefs and belief-consistent claims, none of which may be repaired | false contradiction ≤ 2 %, false support ≤ 1 % (rate; NFR-QUAL-2's floors gate from M9, ADR-164); accuracy reported | `entailment_viewpoint/` (300) | #179 |
+| `q04` | Q-04: knowledge asymmetry. A character is asked about another character's private fact through `respond` (per-character partitions, perception `full`, the output read as the player's character); the player-facing answer must hold none of the fact's forbidden forms. Negative controls (the holder asked) show the oracle detects a disclosure. | 0 observed on ≥ 300 cases a seed (zero) | `asymmetry/` (384 + 32 controls) | #179 |
+| `priv_think_leak` | NFR-QUAL-1's private-thought metric: a scripted prelude plants a character's `think`, then another character answers the player; neither turn's player-facing output may disclose the thought (verbatim, paraphrased or as narrated inner state) | 0 observed on ≥ 300 cases a seed (zero) | `think_leak/` (345 + 32 controls) | #179 |
 
 `--check` lists NFR-QUAL-9 as pending until M6 delivers time estimation.
+
+## NFR-QUAL-1's zero-leak run (#179)
+
+`q04` and `priv_think_leak` measure NFR-QUAL-1 on the final player-facing output. Their stories
+run the seeded profile with M5's per-character partitions and `full` perception (each result
+names that configuration and its own fingerprint). Until #181 delivers those modules, the two
+suites deliver them for their own run. A disclosure the pipeline repaired before the output is
+reported (`q04.render_repaired`), not counted. A clean run is reported as "0 observed in n
+cases" with its one-sided 95% upper bound: evidence of a low rate, never a claim that no
+disclosure can happen.
+
+CI runs both on the stub, full sets, two seeds, as the `evals-zero-leak` job (the `--all` job
+skips them). The M5 exit evidence is one local run of the three M5 suites, under one run id,
+with only `generation` on the local model (`--real-purpose generation`): every other purpose
+gets the stub's default answers, and each case's prelude is scripted on every run. The labeled
+sets must be approved first (their `PROVENANCE.md`):
+
+```sh
+uv run python -m epistrel.evals run --suite q04 --suite priv_think_leak --suite e01_viewpoint \
+    --new-run --base-url http://localhost:1234/v1 --model <loaded model> \
+    --embedding-model <loaded embedding model> --real-purpose generation --seeds 2 \
+    --concurrency 2 --hardware "<machine, memory>" --server-version "LM Studio <version>"
+```
+
+A disclosure on the local model is a privacy defect: file one `sev:high` `area:orchestrator`
+bug per suite naming the case ids and the fingerprint (never the output text). It blocks M5:
+NFR-QUAL-1 does not take ADR-164's route to M9. The `e01_viewpoint` rows are reported; their
+NFR-QUAL-2 floors gate from M9.
 
 ## The quality judge and its calibration (#158)
 

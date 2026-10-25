@@ -1,5 +1,5 @@
 """The structured turn E-06 and E-07 play (#157): a scratch story of Wren (the player) and Maren
-(the innkeeper) on ``Structured (M4)``, one ``Engine.respond`` with the player's line, read at
+(the innkeeper) on ``Structured``, one ``Engine.respond`` with the player's line, read at
 the omniscient viewpoint so every channel (say, think, do, latent) is visible.
 
 ``structure_problems(result)`` is FR-TURN-1's check on what the turn released: at least one

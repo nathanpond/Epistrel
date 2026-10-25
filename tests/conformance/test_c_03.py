@@ -34,6 +34,7 @@ from sqlalchemy import text
 
 from epistrel.api import create_app
 from epistrel.api.config_changes import ConfigChangesBody
+from epistrel.api.routes.admin.beliefs import BeliefWritten
 from epistrel.api.routes.admin.feedback_export import FeedbackExportWrittenBody
 from epistrel.api.routes.admin.model_config import (
     ModelConfigBody,
@@ -76,7 +77,7 @@ from epistrel.api.routes.engine_profiles import (
     ProfileVersionsBody,
 )
 from epistrel.api.routes.history import HistoryResponse
-from epistrel.api.routes.inspect import LedgerBody
+from epistrel.api.routes.inspect import BeliefsBody, DivergencesBody, ExposuresBody, LedgerBody
 from epistrel.api.routes.media import (
     MediaListBody,
     MediaUploadedBody,
@@ -98,7 +99,9 @@ from epistrel.api.routes.respond import RespondResponse
 from epistrel.api.routes.retrieval import RetrievalBody
 from epistrel.api.routes.scene import EntityProfileBody, SceneBody
 from epistrel.api.routes.stories import (
+    CharacterWeightedBody,
     IngestResponse,
+    ParticipationSetBody,
     PromotionBody,
     StatusBody,
     StoryBody,
@@ -145,6 +148,7 @@ from epistrel.core.config_changes import ConfigScope
 from epistrel.core.context import RequestContext
 from epistrel.core.db import make_engine
 from epistrel.core.deployment import SettingsPatch
+from epistrel.core.epistemic.author import BeliefRequest
 from epistrel.core.errors import EpistrelError
 from epistrel.core.feedback import FeedbackRequest
 from epistrel.core.feedback_export import FeedbackExportRequest
@@ -171,7 +175,13 @@ from epistrel.core.ratings.change import RatingChangeRequest, RatingCheckStarted
 from epistrel.core.ratings.suggest import SuggestionRequest
 from epistrel.core.seeds.profiles import LITE_PRESET_ID, STRUCTURED_M4_PROFILE_ID
 from epistrel.core.seeds.ratings import EVERYONE_ID, EXPLICIT_ID
-from epistrel.core.stories import AdHocCharacter, StorySpec
+from epistrel.core.stories import (
+    AdHocCharacter,
+    CharacterWeightRequest,
+    ModelEntityRequest,
+    ParticipationSpec,
+    StorySpec,
+)
 from epistrel.core.story_texts import CustomInstructionsRequest, PinnedMemoriesRequest
 from epistrel.core.tables.ownership import EntityType
 from epistrel.core.timeline import Swapped, TruncateRequest, UntruncateRequest, Untruncation
@@ -315,7 +325,8 @@ WINDOW_ONE = {"from_turn": 1, "to_turn": 1}
 
 
 async def _structured_fork(engine: Engine, ids: Ids) -> None:
-    """The fork on the seeded ``Structured (M4)`` profile, consolidation on (#143)."""
+    """The fork on the seeded ``Structured`` profile's latest version (#181: every M5 module on),
+    consolidation on (#143)."""
     async with engine.db.begin() as conn:
         await conn.execute(
             text(
@@ -388,6 +399,10 @@ async def _commit_fact(
     )
 
 
+async def _belief_written(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(BeliefWritten.of(await call))
+
+
 async def _fact_written(call: Awaitable[Any]) -> dict[str, Any]:
     return dump(FactWritten.of(await call))
 
@@ -406,6 +421,26 @@ async def _fact_list(engine: Engine, story_id: str) -> dict[str, Any]:
 
 async def _ledger(engine: Engine, story_id: str) -> dict[str, Any]:
     return dump(LedgerBody.of(await engine.inspect_ledger(CTX, story_id, viewpoint="omniscient")))
+
+
+async def _beliefs(engine: Engine, story_id: str, character: str) -> dict[str, Any]:
+    return dump(
+        BeliefsBody.of(
+            await engine.inspect_beliefs(CTX, story_id, character=character, viewpoint="omniscient")
+        )
+    )
+
+
+async def _divergences(engine: Engine, story_id: str) -> dict[str, Any]:
+    return dump(
+        DivergencesBody.of(await engine.inspect_divergences(CTX, story_id, viewpoint="omniscient"))
+    )
+
+
+async def _exposures(engine: Engine, story_id: str) -> dict[str, Any]:
+    return dump(
+        ExposuresBody.of(await engine.inspect_exposures(CTX, story_id, viewpoint="omniscient"))
+    )
 
 
 def _keep(name: str, *path: str | int) -> Callable[[dict[str, Any], Ids], None]:
@@ -1173,6 +1208,23 @@ def _steps() -> list[Step]:
             ),
             group=MUTATION_GROUP,
         ),
+        # An author belief (#160): the fork follows the seeded ``Structured`` profile's latest
+        # version, which keeps partitions (#181), so both surfaces write it (201).
+        Step(
+            "write_belief",
+            lambda ids: Rest(
+                "POST",
+                "/admin/stories/{fork}/beliefs",
+                {"holder": ids["fork_ada"], "proposition": _knows(ids, "fork")},
+            ),
+            lambda e, ids: _belief_written(
+                e.write_belief(
+                    CTX,
+                    ids["fork"],
+                    BeliefRequest(holder=ids["fork_ada"], proposition=_knows(ids, "fork")),
+                )
+            ),
+        ),
         Step(
             "delete_story",
             lambda ids: Rest("DELETE", "/stories/{fork}"),
@@ -1225,6 +1277,28 @@ def _steps() -> list[Step]:
             ),
             _keep("dale", "id"),
         ),
+        # The added character's belief projection (#159): omniscient, empty (no belief yet).
+        Step(
+            "inspect_beliefs",
+            lambda ids: Rest(
+                "GET",
+                f"{s}/inspect/beliefs",
+                params={"character": ids["dale"], "viewpoint": "omniscient"},
+            ),
+            lambda e, ids: _beliefs(e, ids["story"], ids["dale"]),
+        ),
+        # #178's knowledge inspections: the story keeps no partitions (#181 delivers the
+        # module), so both surfaces answer 409 module_off.
+        Step(
+            "inspect_divergences",
+            lambda ids: Rest("GET", f"{s}/inspect/divergences", params={"viewpoint": "omniscient"}),
+            lambda e, ids: _divergences(e, ids["story"]),
+        ),
+        Step(
+            "inspect_exposures",
+            lambda ids: Rest("GET", f"{s}/inspect/exposures", params={"viewpoint": "omniscient"}),
+            lambda e, ids: _exposures(e, ids["story"]),
+        ),
         Step(
             "promote_character",
             lambda ids: Rest("POST", f"{s}/characters/{{dale}}/promote", {"owner": "p-curator"}),
@@ -1233,6 +1307,39 @@ def _steps() -> list[Step]:
                     CTX, ids["story"], ids["dale"], PromoteRequest(owner="p-curator")
                 )
             ),
+        ),
+        # #163: the author sets the added character's weight, then models an entity of the
+        # story as a (minor) character.
+        Step(
+            "set_character_weight",
+            lambda ids: Rest("POST", f"{s}/characters/{{dale}}/weight", {"weight": "minor"}),
+            lambda e, ids: _weighted(
+                e.set_character_weight(
+                    CTX, ids["story"], ids["dale"], CharacterWeightRequest(weight="minor")
+                )
+            ),
+        ),
+        # #176: the author sets the added character's participation role.
+        Step(
+            "set_participation",
+            lambda ids: Rest(
+                "PATCH",
+                f"{s}/characters/{{dale}}/participation",
+                {"role": "primary", "fixed": True},
+            ),
+            lambda e, ids: _participation(
+                e.set_participation(
+                    CTX, ids["story"], ids["dale"], ParticipationSpec(role="primary", fixed=True)
+                )
+            ),
+        ),
+        Step(
+            "model_entity",
+            lambda ids: Rest("POST", f"{s}/entities/{{neighbor}}/model", {"true_age": 40}),
+            lambda e, ids: _weighted(
+                e.model_entity(CTX, ids["story"], ids["neighbor"], ModelEntityRequest(true_age=40))
+            ),
+            prepare=_modelable,
         ),
         # -- error paths: the same error on both surfaces
         Step(
@@ -2508,6 +2615,20 @@ async def _promoted(call: Awaitable[Any]) -> dict[str, Any]:
     return dump(PromotionBody.of(await call))
 
 
+async def _participation(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ParticipationSetBody.of(await call))
+
+
+async def _weighted(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(CharacterWeightedBody.of(await call))
+
+
+async def _modelable(engine: Engine, ids: Ids) -> None:
+    """An unmodeled person of the story (#163's author directive models it)."""
+    async with engine.db.begin() as conn:
+        ids["neighbor"] = await store.add_entity(conn, ids["story"], "person", "the neighbor")
+
+
 async def _persona_write(call: Awaitable[Any]) -> dict[str, Any]:
     return dump(PersonaBody.of(await call))
 
@@ -2983,6 +3104,7 @@ async def test_c_03(surfaces: tuple[Settings, Settings], dummy_dsn: str) -> None
     assert answered == [
         ("add_story_character", 201),
         ("promote_character", 201),
+        ("set_character_weight", 200),
         ("create_character_draft", 201),
         ("save_character_draft", 200),
         ("save_character_draft", 409),

@@ -182,7 +182,9 @@ class FactRequest(_Request):
     """An author fact: #131's normalized proposition (JSON only, never prose), who may read it
     (``visibility``, default ``objective``), optional valid-time bounds replacing the
     proposition's (``valid_from``/``valid_to``, story-minutes, exact), a related fact
-    (``anchored_to``) and ``locked`` (``author_locked``: no render may change it, FR-VERIFY-11)."""
+    (``anchored_to``) and ``locked`` (``author_locked``: no render may change it, FR-VERIFY-11).
+    ``holder`` is always ``canon``: a character holder is 422 ``viewpoint_cannot_assign_truth``
+    (FR-EPI-8, #169; a character's view is a belief, ``POST …/beliefs``)."""
 
     model_config = ConfigDict(
         extra="forbid",
@@ -196,12 +198,13 @@ class FactRequest(_Request):
     valid_to: StrictInt | None = None
     anchored_to: str | None = None
     locked: StrictBool = False
+    holder: str = Field(default="canon", min_length=1, max_length=64)
 
 
 class SupersedeRequest(_Request):
     """The successor of a current fact version: its proposition (same subject, predicate and
     key qualifiers, else 422 ``key_mismatch``); visibility, valid-time and the lock carry over
-    unless given."""
+    unless given. ``holder``: as ``FactRequest``'s (#169)."""
 
     model_config = ConfigDict(
         extra="forbid",
@@ -214,6 +217,7 @@ class SupersedeRequest(_Request):
     valid_from: StrictInt | None = None
     valid_to: StrictInt | None = None
     locked: StrictBool | None = None
+    holder: str = Field(default="canon", min_length=1, max_length=64)
 
 
 def _valid_time(valid_from: int | None, valid_to: int | None) -> Interval | None:
@@ -708,6 +712,7 @@ async def commit_fact(
     expected_revision: int | None = None,
 ) -> FactWrite:
     """Write an author fact (see the module docstring)."""
+    canon.refuse_holder(request.holder)
     await require_writable(db, story_id)
     settings = await require_canon(db, story_id)
     await check_expected_revision(db, story_id, expected_revision)
@@ -761,6 +766,7 @@ async def supersede_fact(
 ) -> FactWrite:
     """Supersede current version ``fact_id`` with ``request.proposition`` (#133's
     ``supersede``; see the module docstring)."""
+    canon.refuse_holder(request.holder)
     return await _supersede(
         db,
         story_id,

@@ -42,7 +42,7 @@ from epistrel.core.db import make_engine, make_sync_engine
 from epistrel.engine import Engine
 from epistrel.orchestrator.jobs.handlers import reembed as reembed_job
 from epistrel.testing import perf
-from epistrel.testing.fixtures import scale
+from epistrel.testing.fixtures import knowledge, scale
 from tests.auth_support import auth_settings, forget_ledger
 from tests.conftest import alembic_config
 from tests.model_support import config_key
@@ -52,6 +52,9 @@ HOST_VAR = "EPISTREL_TEST_PERF_HOST"
 """The host label every result carries (``perf.yml`` sets ``github-runner``)."""
 RESULT_DIR = Path("build/perf")
 VIEWPOINT = "omniscient"
+KNOWLEDGE = knowledge.KnowledgeSpec(private_share=0.0)
+"""P-02's knowledge layer (#182): 200 beliefs and 50 exposures per character, no memory made
+private (P-01's omniscient reads of the same fixture stay as they were)."""
 
 
 @dataclass
@@ -245,6 +248,7 @@ def gate(measured_ms: float, budget_ms: float) -> list[str]:
 __all__ = [
     "CACHE_VAR",
     "HOST_VAR",
+    "KNOWLEDGE",
     "RESULT_DIR",
     "Retrievals",
     "ScaleRun",

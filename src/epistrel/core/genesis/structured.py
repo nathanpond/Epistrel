@@ -68,7 +68,7 @@ from __future__ import annotations
 import copy
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Final
 
 from sqlalchemy import func, select, update
@@ -80,8 +80,9 @@ from epistrel.core.catalog.scenario_models import WORLD_HOLDER, FieldClass
 from epistrel.core.enums import MemoryKind, RecordProvenance
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.events.operation import Operation
-from epistrel.core.genesis import merge
-from epistrel.core.genesis.materialize import STRUCTURED
+from epistrel.core.genesis import epistemic, merge
+from epistrel.core.genesis.epistemic import AuthorAct, EpistemicPlan, MemberMemory, SeededBelief
+from epistrel.core.genesis.materialize import PARTITIONS, STRUCTURED
 from epistrel.core.genesis.models import DeferredItem, MaterializedEntry, MaterializedOutcome
 from epistrel.core.ids import new_ulid
 from epistrel.core.memory.records import SeedMemory, write_seed
@@ -96,7 +97,7 @@ from epistrel.core.propositions.registry import (
     load,
     register_author,
 )
-from epistrel.core.propositions.vocabulary import CORE_BY_NAME
+from epistrel.core.propositions.vocabulary import CORE_BY_NAME, LOCATED_IN
 from epistrel.core.resolution.entities import (
     NARRATOR,
     EntitySpec,
@@ -107,7 +108,7 @@ from epistrel.core.tables import events, genesis_deferred
 from epistrel.core.verify.merge import MergeResult, SeedFact, SeedLayer
 from epistrel.core.verify.normalize import ClaimSketch, normalize
 from epistrel.core.verify.rules import ClosedSetRecord
-from epistrel.core.verify.seeds import CANON, SeedWorld, read_seed, seed_facts
+from epistrel.core.verify.seeds import CANON, SeedWorld, read_seed, seed_facts, seed_of
 from epistrel.observability.logging import get_logger
 
 log = get_logger(__name__)
@@ -130,6 +131,10 @@ BACKGROUND_FIELDS: Final = ("appearance", "personality", "values_motivations", "
 _SEED = re.compile(r"(\.seeded_memories\[\d+\]|^drivers\.planned_reveals\[\d+\]\.truth)$")
 _RULE = re.compile(r"^starting_state\.(predicates|closed_sets|rules)\[(\d+)\]$")
 _RELATIONSHIP = re.compile(r"^cast\.roles\[\d+\]\.relationships\[\d+\]$")
+_LOCATION = re.compile(r"^world\.locations\[\d+\]$")
+_CHANNEL = re.compile(r"^starting_state\.channels\[\d+\]$")
+PERSONA_ITEM: Final = "persona.audience"
+LIMITED_KINDS: Final = frozenset({"belief", "nested"})
 
 
 # -- inputs ----------------------------------------------------------------------------------
@@ -146,6 +151,7 @@ class CastInput:
     true_age: int
     spec: EntitySpec
     background: tuple[tuple[str, str], ...] = ()
+    is_player: bool = False
 
 
 def background_of(
@@ -213,6 +219,13 @@ class Plan:
     """Rows this genesis adds: a seed memory waiting for ``episodic``."""
     entries: list[MaterializedEntry] = field(default_factory=list)
     errors: list[Entry] = field(default_factory=list)
+    epistemic: EpistemicPlan | None = None
+    """The partitions branch's beliefs, memories and opening exposures (#173; ``None``: the
+    story keeps no partitions)."""
+    aliases: dict[str, str] = field(default_factory=dict)
+    """A duplicate fact's merge key → the key of the one fact written for it (#173)."""
+    settings: Any = None
+    """The story's effective settings (what the belief writes check their modules against)."""
 
     @property
     def conflicts(self) -> int:
@@ -270,6 +283,24 @@ class _Builder:
     """A merge key → the item it came from."""
     tracked: list[_Item] = field(default_factory=list)
     memories: list[tuple[_Item, PlannedMemory]] = field(default_factory=list)
+    partitions: bool = False
+    nested: bool = False
+    groups: Mapping[str, Sequence[str]] = field(default_factory=dict)
+    roles: epistemic.Cast | None = None
+    beliefs: list[tuple[_Item, SeededBelief]] = field(default_factory=list)
+    member_memories: list[tuple[_Item, MemberMemory]] = field(default_factory=list)
+    epistemic: EpistemicPlan = field(default_factory=EpistemicPlan)
+
+    def believe(self, tracked: _Item, belief: SeededBelief) -> None:
+        n = sum(1 for _, b in self.beliefs if b.act == belief.act and b.holder == belief.holder)
+        key = belief.key or f"{belief.act}@{belief.holder}#{n}"
+        self.beliefs.append((tracked, replace(belief, key=key)))
+
+    def consumed(self, item: DeferredItem) -> bool:
+        """Whether this genesis materializes ``item``'s capability."""
+        return item.capability_needed == STRUCTURED or (
+            self.partitions and item.capability_needed == PARTITIONS
+        )
 
     def track(self, item: DeferredItem | None, field_ref: str, location: EntryLocation) -> _Item:
         found = _Item(item, field_ref, location)
@@ -433,6 +464,31 @@ def _linked(build: _Builder, role: str) -> set[str]:
     return found
 
 
+def _cast(build: _Builder) -> epistemic.Cast:
+    """The roles as audiences resolve them (#173): filled roles, the player's, the scenario's
+    named groups and every relationship's two roles."""
+    if build.roles is None:
+        links: list[tuple[str, str]] = []
+        for item in build.items:
+            value = _value(item)
+            role = item.location.role
+            if _RELATIONSHIP.match(item.field_ref) and isinstance(value, Mapping) and role:
+                links.append((role, str(value.get("to_role"))))
+        build.roles = epistemic.Cast.of(
+            {r: m.character_id for r, m in build.by_role.items()},
+            players=[m.role_id for m in build.cast if m.is_player],
+            groups=build.groups,
+            relationships=links,
+        )
+    return build.roles
+
+
+def _audience(build: _Builder, value: Mapping[str, Any]) -> epistemic.Audience:
+    holder_role = value.get("holder")
+    role = holder_role if isinstance(holder_role, str) and holder_role != WORLD_HOLDER else None
+    return epistemic.resolve([str(a) for a in value.get("audience") or ()], role, _cast(build))
+
+
 def _seed_visibility(
     build: _Builder, value: Mapping[str, Any], holder: str | None, item: DeferredItem
 ) -> Visibility:
@@ -441,19 +497,9 @@ def _seed_visibility(
     audience = [str(a) for a in value.get("audience") or ()]
     if value.get("disclosure") != "secret" and SHARED & set(audience):
         return Visibility(scope="objective" if holder is None else "public")
-    named: set[str] = set()
     holder_role = value.get("holder")
-    for token in audience:
-        if token == SELF and holder is not None:
-            named.add(holder)
-        elif token == ACQUAINTANCES and isinstance(holder_role, str):
-            named.update(
-                build.by_role[r].character_id
-                for r in _linked(build, holder_role)
-                if r in build.by_role
-            )
-        elif token in build.by_role:
-            named.add(build.by_role[token].character_id)
+    del holder_role
+    named = set(_audience(build, value).characters)
     if not named:
         return Visibility(scope="engine")
     return Visibility(scope="characters", characters=tuple(sorted(named)))
@@ -473,6 +519,9 @@ def _seeds(build: _Builder) -> None:
         holder = (
             None if holder_role in (None, WORLD_HOLDER) else _characters(item).get(str(holder_role))
         )
+        if build.partitions and kind in LIMITED_KINDS and holder is not None:
+            _belief_seed(build, item, tracked, value, holder, kind)
+            continue
         if kind in DEFERRED_KINDS:
             tracked.add("deferred")
             continue
@@ -508,10 +557,149 @@ def _seeds(build: _Builder) -> None:
                 ),
             )
             build.memories.append((tracked, memory))
-        if item.capability_needed == STRUCTURED and (keys or shared):
+        elif build.partitions and visibility.scope == "characters" and build.consumed(item):
+            _canon_beliefs(build, item, tracked, value, holder, layer, keys, text)
+            shared = True  # every member holds it: the item is materialized
+        if build.consumed(item) and (keys or shared):
             build.plan.materialized.add(item.field_ref)
         else:
             tracked.add("deferred")
+
+
+def _act(build: _Builder, item: DeferredItem, value: Mapping[str, Any], holder: str | None) -> str:
+    """The item's author act (one ``seed_materialized`` event), keyed by its field ref."""
+    build.epistemic.act(
+        AuthorAct(
+            field_ref=item.field_ref,
+            seed_id=None if value.get("id") is None else str(value.get("id")),
+            holder=holder,
+            audience=tuple(str(a) for a in value.get("audience") or ()),
+            disclosure=None if value.get("disclosure") is None else str(value.get("disclosure")),
+        )
+    )
+    return item.field_ref
+
+
+def _unfilled(tracked: _Item, audience: epistemic.Audience) -> None:
+    if audience.dropped:
+        tracked.add(epistemic.UNFILLED)
+
+
+def _canon_beliefs(
+    build: _Builder,
+    item: DeferredItem,
+    tracked: _Item,
+    value: Mapping[str, Any],
+    holder: str | None,
+    layer: SeedLayer,
+    keys: Sequence[str],
+    text: str,
+) -> None:
+    """A limited canon seed's beliefs and memories: a ``known`` belief of each fact in every
+    member's partition (the seed's disclosure for its holders, ``open`` for the others)."""
+    audience = _audience(build, value)
+    _unfilled(tracked, audience)
+    act = _act(build, item, value, holder)
+    disclosure = str(value.get("disclosure") or "open")
+    facts = {f.seed_id: f for f in build.layers[layer] if f.seed_id in keys}
+    for member in audience.characters:
+        holds = holder is None or member == holder
+        for key in keys:
+            proposition = facts[key].proposition
+            if proposition is None:  # pragma: no cover - a seed's facts are propositions
+                continue
+            build.believe(
+                tracked,
+                SeededBelief(
+                    act=act,
+                    holder=member,
+                    proposition=proposition,
+                    level=epistemic.Level.KNOWN,
+                    disclosure=disclosure if holds else "open",
+                    layer=layer,
+                    fact_key=key,
+                ),
+            )
+        build.member_memories.append(
+            (tracked, MemberMemory(act=act, member=member, text=text, facts=tuple(keys)))
+        )
+
+
+def _belief_seed(
+    build: _Builder,
+    item: DeferredItem,
+    tracked: _Item,
+    value: Mapping[str, Any],
+    holder: str,
+    kind: str,
+) -> None:
+    """A ``belief`` or ``nested`` seed: beliefs only (see ``core.genesis.epistemic``)."""
+    assert build.world is not None  # noqa: S101
+    attributed: str | None = None
+    attributed_level: epistemic.Level | None = None
+    text = str(value.get("text") or "")
+    read = text
+    if kind == "nested":
+        content = value.get("nested")
+        if not build.nested or not isinstance(content, Mapping):
+            tracked.add("deferred")
+            return
+        attributed = _characters(item).get(str(content.get("attributed_holder")))
+        if attributed is None:
+            attributed = next(
+                (
+                    m.character_id
+                    for m in build.cast
+                    if m.role_id == content.get("attributed_holder") and not m.is_player
+                ),
+                None,
+            )
+        if attributed is None or attributed == holder:
+            tracked.add(epistemic.UNFILLED)
+            tracked.add("deferred")
+            return
+        attributed_level = epistemic.level_of(
+            content.get("attributed_confidence"), epistemic.Level.KNOWN
+        )
+        read = str(content.get("proposition") or "")
+    reading = read_seed(read, build.world, holder=holder)
+    if reading.unresolved or not reading.propositions:
+        build.error(
+            f"{item.field_ref}.{'nested.proposition' if kind == 'nested' else 'text'}",
+            item.location,
+            reading.unresolved[0] if reading.unresolved else "no_proposition",
+            UNNORMALIZABLE_RULE,
+        )
+        return
+    audience = _audience(build, value)
+    _unfilled(tracked, audience)
+    act = _act(build, item, value, holder)
+    level = epistemic.level_of(value.get("confidence"), epistemic.Level.BELIEVED)
+    disclosure = str(value.get("disclosure") or "open")
+    for member in audience.characters:
+        if member == attributed:
+            continue
+        for proposition in reading.propositions:
+            build.believe(
+                tracked,
+                SeededBelief(
+                    act=act,
+                    holder=member,
+                    proposition=proposition.model_copy(
+                        update={"valid_time": Interval(start=None, end=None)}
+                    )
+                    if value.get("valid_time") is None
+                    else proposition,
+                    level=level,
+                    disclosure=disclosure if member == holder else "open",
+                    layer=SeedLayer.ROLE,
+                    attributed=attributed,
+                    attributed_level=attributed_level,
+                ),
+            )
+        build.member_memories.append((tracked, MemberMemory(act=act, member=member, text=text)))
+    tracked.add("nested" if attributed is not None else "belief")
+    build.plan.materialized.add(item.field_ref)
 
 
 def _relationships(build: _Builder) -> None:
@@ -544,11 +732,179 @@ def _relationships(build: _Builder) -> None:
         if not isinstance(found, Proposition):
             tracked.add("deferred")
             continue
-        proposition = found.model_copy(update={"valid_time": Interval(start=None, end=None)})
-        build.add_facts(
+        update_: dict[str, Any] = {"valid_time": Interval(start=None, end=None)}
+        trust = value.get("trust")
+        if isinstance(trust, int | float) and not isinstance(trust, bool):
+            # #162's seeded trust: ``testimony.seed_trust`` reads the fact's qualifier.
+            update_["qualifiers"] = {**found.qualifiers, "trust": float(trust)}
+        proposition = found.model_copy(update=update_)
+        keys = build.add_facts(
             tracked, item.field_ref, SeedLayer.WORLD, [proposition], Visibility(scope="public")
         )
         build.plan.materialized.add(item.field_ref)
+        if build.partitions:
+            _relationship_beliefs(build, item, tracked, value, owner, proposition, keys)
+
+
+def _relationship_beliefs(
+    build: _Builder,
+    item: DeferredItem,
+    tracked: _Item,
+    value: Mapping[str, Any],
+    owner: str,
+    proposition: Proposition,
+    keys: Sequence[str],
+) -> None:
+    """A ``known`` belief of the relationship for each role that knows it (its ``audience``,
+    default its two roles), ``open``."""
+    knowing = [str(r) for r in value.get("audience") or (owner, value.get("to_role"))]
+    audience = epistemic.resolve(knowing, None, _cast(build))
+    if value.get("audience"):  # its two roles by default: the player's is no news
+        _unfilled(tracked, audience)
+    if not audience.characters:
+        return
+    act = _act(build, item, {"audience": knowing, "disclosure": "open"}, None)
+    for member in audience.characters:
+        build.believe(
+            tracked,
+            SeededBelief(
+                act=act,
+                holder=member,
+                proposition=proposition,
+                level=epistemic.Level.KNOWN,
+                disclosure="open",
+                layer=SeedLayer.WORLD,
+                fact_key=keys[0] if keys else None,
+            ),
+        )
+
+
+def _topology(build: _Builder) -> None:
+    """Each location's ``located_in`` and ``adjacent_to`` (#161's topology; #173): objective
+    canon between the places' entities, an adjacency once per pair (the lower id first), its
+    barrier the fact's qualifier."""
+    pairs: set[tuple[str, str]] = set()
+    for item in build.items:
+        if not _LOCATION.match(item.field_ref) or item.capability_needed != STRUCTURED:
+            continue
+        value = _value(item)
+        if not isinstance(value, Mapping):
+            continue
+        place = build.places.get(str(value.get("id")))
+        if place is None:
+            continue
+        found: list[Proposition] = []
+        outer = build.places.get(str(value.get("located_in")))
+        if value.get("located_in") is not None and outer is not None:
+            found.append(
+                Proposition(
+                    subject_id=place,
+                    predicate_id=LOCATED_IN,
+                    object_id=outer,
+                    valid_time=Interval(start=None, end=None),
+                )
+            )
+        for adjacent in value.get("adjacent_to") or ():
+            other = build.places.get(str(adjacent.get("location")))
+            if other is None or other == place:
+                continue
+            lo, hi = sorted((place, other))
+            if (lo, hi) in pairs:
+                continue
+            pairs.add((lo, hi))
+            barrier = adjacent.get("barrier")
+            found.append(
+                Proposition(
+                    subject_id=lo,
+                    predicate_id=CORE_BY_NAME["adjacent_to"].id,
+                    object_id=hi,
+                    qualifiers={} if barrier is None else {"barrier": str(barrier)},
+                    valid_time=Interval(start=None, end=None),
+                )
+            )
+        if not found:
+            continue
+        tracked = next(t for t in build.tracked if t.field_ref == item.field_ref)
+        build.add_facts(tracked, f"topology:{item.field_ref}", SeedLayer.WORLD, found, Visibility())
+
+
+def _channels(build: _Builder) -> None:
+    """Each open channel (``starting_state.channels``; #161, #173): ``on_channel(character,
+    channel id)`` objective canon for each participant filling a role."""
+    for item in build.items:
+        if not _CHANNEL.match(item.field_ref) or item.capability_needed != STRUCTURED:
+            continue
+        value = _value(item)
+        if not isinstance(value, Mapping):
+            continue
+        tracked = build.track(item, item.field_ref, item.location)
+        chars = _characters(item)
+        found = [
+            Proposition(
+                subject_id=chars[str(role)],
+                predicate_id=CORE_BY_NAME["on_channel"].id,
+                literal=TypedLiteral(kind=LiteralKind.STR, value=str(value.get("id"))),
+                valid_time=Interval(start=None, end=None),
+            )
+            for role in value.get("participants") or ()
+            if str(role) in chars
+        ]
+        if not found:
+            tracked.add("deferred")
+            continue
+        build.add_facts(tracked, item.field_ref, SeedLayer.WORLD, found, Visibility())
+        build.plan.materialized.add(item.field_ref)
+
+
+def _persona(build: _Builder) -> None:
+    """The persona's acquaintances believe its name, exact age and traits (#173); a stranger
+    holds none of it. No canon comes from the persona's description."""
+    for item in build.items:
+        if item.field_ref != PERSONA_ITEM or not build.partitions:
+            continue
+        value = _value(item)
+        player = item.location.role
+        if not isinstance(value, Mapping) or player is None or player not in build.by_role:
+            continue
+        member = build.by_role[player]
+        tracked = build.track(item, item.field_ref, item.location)
+        cast = _cast(build)
+        audience = epistemic.resolve(sorted(cast.acquaintances(player)), None, cast)
+        act = _act(build, item, {"audience": [epistemic.ACQUAINTANCES]}, member.character_id)
+        traits = epistemic.traits_of(str(value.get("description") or ""))
+        age = value.get("age")
+        for holder in audience.characters:
+            for belief in epistemic.identity_beliefs(
+                act,
+                holder,
+                member.character_id,
+                str(value.get("name") or member.name),
+                int(age) if isinstance(age, int) else member.true_age,
+                traits,
+            ):
+                build.believe(tracked, belief)
+            description = str(value.get("description") or "")
+            if description.strip():
+                build.member_memories.append(
+                    (tracked, MemberMemory(act=act, member=holder, text=description))
+                )
+        tracked.add("belief" if audience.characters else "deferred")
+        build.plan.materialized.add(item.field_ref)
+
+
+def _opening(build: _Builder, narration: str | None, present: Sequence[str]) -> None:
+    """Turn 1's exposures: the narration's propositions, for the present non-player roles."""
+    assert build.world is not None  # noqa: S101
+    if not build.partitions or not narration:
+        return
+    witnesses = tuple(
+        build.by_role[r].character_id
+        for r in dict.fromkeys(present)
+        if r in build.by_role and not build.by_role[r].is_player
+    )
+    reading = read_seed(narration, build.world)
+    build.epistemic.opening = reading.propositions
+    build.epistemic.witnesses = witnesses if reading.propositions else ()
 
 
 def _placements(build: _Builder, placements: Mapping[str, str]) -> None:
@@ -580,6 +936,8 @@ def _backgrounds(build: _Builder) -> None:
     assert build.world is not None  # noqa: S101
     for member in build.cast:
         for name, text in member.background:
+            if build.partitions and member.is_player and name == "description":
+                continue  # #173: a persona's description is its acquaintances' beliefs only
             reading = read_seed(text, build.world, holder=member.character_id)
             if not reading.propositions:
                 continue
@@ -649,12 +1007,21 @@ def plan(
     *,
     placements: Mapping[str, str] | None = None,
     episodic: bool = True,
+    settings: Any = None,
+    groups: Mapping[str, Sequence[str]] | None = None,
+    opening: tuple[str | None, Sequence[str]] = (None, ()),
 ) -> Plan:
     """The structured materialization of ``items`` (a creation's ``genesis_deferred`` items)
     for ``cast``, with ``placements`` (role id → a world location's scenario id) and whether the
-    story keeps episodic memory (see the module docstring). Pure."""
+    story keeps episodic memory (see the module docstring). With ``settings`` keeping
+    partitions, the partitions branch (``core.genesis.epistemic``) runs too, with the
+    scenario's named ``groups`` and its ``opening`` (narration, roles present). Pure."""
     build = _Builder(scenario_id, version, story_id, items, cast, episodic)
     build.by_role = {member.role_id: member for member in cast}
+    build.partitions = epistemic.partitions_on(settings)
+    build.nested = build.partitions and epistemic.nested_on(settings)
+    build.groups = dict(groups or {})
+    build.plan.settings = settings
     _entities(build)
     layer = _rules(build)
     entities = [(m.character_id, m.spec) for m in cast] + list(build.plan.entities)
@@ -663,18 +1030,44 @@ def plan(
         _closed_sets(build, layer)
     _seeds(build)
     _relationships(build)
+    _topology(build)
+    _channels(build)
     _placements(build, placements or {})
     _backgrounds(build)
+    _persona(build)
+    _opening(build, *opening)
     result = _merged(build)
     kept = {fact.seed_id for fact in result.kept}
-    for fact in (f for layer_facts in build.layers.values() for f in layer_facts):
-        if fact.seed_id in kept and fact.proposition is not None:
-            build.plan.facts.append(
-                PlannedFact(fact.seed_id, fact.proposition, build.visibility[fact.seed_id])
-            )
-            tracked = build.owner.get(fact.seed_id)
+    candidates = [
+        (fact.seed_id, fact.proposition, build.visibility[fact.seed_id])
+        for layer_facts in build.layers.values()
+        for fact in layer_facts
+        if fact.seed_id in kept and fact.proposition is not None
+    ]
+    merged: dict[str, tuple[str, Visibility]] = {k: (k, v) for k, _, v in candidates}
+    lost_audience: set[str] = set()
+    if build.partitions:
+        merged, lost = epistemic.dedupe_facts(candidates)
+        for loser, winner in lost:
+            lost_audience.add(loser)
+            tracked = build.owner.get(loser)
             if tracked is not None:
+                tracked.add(epistemic.VISIBILITY_CONFLICT)
+                if tracked.loser is None:
+                    tracked.winner = seed_of(winner)
+                    tracked.loser = seed_of(loser)
+                    tracked.rule = epistemic.VISIBILITY_CONFLICT
+    for key, proposition, _ in candidates:
+        winner, visibility = merged[key]
+        tracked = build.owner.get(key)
+        if winner != key:
+            build.plan.aliases[key] = winner
+            if tracked is not None and key not in lost_audience:
                 tracked.add("canon")
+            continue
+        build.plan.facts.append(PlannedFact(key, proposition, visibility))
+        if tracked is not None:
+            tracked.add("canon")
     for tracked, memory in build.memories:
         if memory.facts and not any(k in kept for k in memory.facts):
             continue  # every fact it states lost the merge: dropped entirely (U-27)
@@ -701,9 +1094,50 @@ def plan(
                     payload=copy.deepcopy(tracked.item.payload),
                 )
             )
+    if build.partitions:
+        _beliefs(build, kept, lost_audience)
     _identity(build)
     build.plan.entries = [t.entry() for t in build.tracked if t.outcomes]
     return build.plan
+
+
+def _beliefs(build: _Builder, kept: set[str], lost_audience: set[str]) -> None:
+    """The partitions branch's beliefs after the fact merge: a canon copy whose fact was dropped
+    (or whose audience lost) is not written; the rest go through the per-holder merge."""
+    candidates = [
+        (tracked, b)
+        for tracked, b in build.beliefs
+        if b.fact_key is None or (b.fact_key in kept and b.fact_key not in lost_audience)
+    ]
+    owner = {b.key: tracked for tracked, b in candidates}
+    beliefs, losses = epistemic.merge_beliefs([b for _, b in candidates], registry=build.registry)
+    for loss in losses:
+        tracked = owner[loss.loser.key]
+        tracked.add("merge_conflict" if loss.code == "merge_conflict" else loss.code)  # type: ignore[arg-type]
+        if tracked.loser is None:
+            winner = owner[loss.winner.key]
+            tracked.winner, tracked.loser, tracked.rule = (
+                str(winner.location.seed_id or winner.field_ref),
+                str(tracked.location.seed_id or tracked.field_ref),
+                loss.rule,
+            )
+    beliefs = epistemic.numbered(beliefs)
+    held = {(b.act, b.holder) for b in beliefs}
+    for b in beliefs:
+        tracked = owner[b.key]
+        tracked.add("nested" if b.attributed is not None else "belief")
+    build.epistemic.beliefs = beliefs
+    if build.episodic:
+        for tracked, memory in build.member_memories:
+            if (memory.act, memory.member) not in held:
+                continue
+            keys = tuple(b.key for b in beliefs if (b.act, b.holder) == (memory.act, memory.member))
+            facts = tuple(build.plan.aliases.get(k, k) for k in memory.facts if k in kept)
+            build.epistemic.memories.append(replace(memory, beliefs=keys, facts=facts))
+            tracked.add("memory")
+    used = {b.act for b in beliefs}
+    build.epistemic.acts = [a for a in build.epistemic.acts if a.field_ref in used]
+    build.plan.epistemic = build.epistemic
 
 
 def by_outcome(entries: Iterable[MaterializedEntry]) -> dict[str, int]:
@@ -764,7 +1198,11 @@ async def write(conn: AsyncConnection, story_id: str, operation: Operation, foun
     origin = await _story_created(conn, operation.operation_id)
     memories: list[SeedMemory] = []
     for memory in found.memories:
-        facts = [written[k] for k in memory.facts if k in written]
+        facts = [
+            written[found.aliases.get(k, k)]
+            for k in memory.facts
+            if found.aliases.get(k, k) in written
+        ]
         causes = tuple(dict.fromkeys(e for f in facts for e in f.source_event_ids))
         if not causes and origin is not None:
             causes = (origin,)
@@ -781,12 +1219,23 @@ async def write(conn: AsyncConnection, story_id: str, operation: Operation, foun
         )
     if memories:
         await write_seed(conn, operation, memories)
+    if found.epistemic is not None:
+        await epistemic.write(
+            conn,
+            story_id,
+            operation,
+            found.epistemic,
+            facts={k: written[found.aliases.get(k, k)] for k in {*written, *found.aliases}},
+            settings=found.settings,
+            registry=registry,
+        )
     if found.materialized:
+        capabilities = [STRUCTURED] if found.epistemic is None else [STRUCTURED, PARTITIONS]
         await conn.execute(
             update(genesis_deferred)
             .where(
                 genesis_deferred.c.story_id == story_id,
-                genesis_deferred.c.capability_needed == STRUCTURED,
+                genesis_deferred.c.capability_needed.in_(capabilities),
                 genesis_deferred.c.field_ref.in_(sorted(found.materialized)),
             )
             .values(materialized_at=func.transaction_timestamp())

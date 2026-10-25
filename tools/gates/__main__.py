@@ -11,14 +11,17 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from tools.gates.assignment import check_assignment
+from tools.gates.character_context import main as check_character_context
 from tools.gates.config import ConfigError, load_config
 from tools.gates.deps import DepsError, check_deps, load_deny, load_lock
+from tools.gates.epistemic import main as check_epistemic_separation
 from tools.gates.keyed_readers import main as check_keyed_readers
 from tools.gates.lexicon import LexiconError, load_parts, parse_lexicon
 from tools.gates.lexicon import check as check_lexicon
 from tools.gates.licenses import LicensesError
 from tools.gates.licenses import run as run_licenses
 from tools.gates.parts import PartsError, check_parts, collect_parts, write_json
+from tools.gates.perception import main as check_perception_authority
 from tools.gates.spec import SpecError, load_spec
 from tools.gates.traceability import PlanError, code_parts
 from tools.gates.traceability import run as run_traceability
@@ -70,6 +73,18 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "check-keyed-readers", help="keyed readers read facts only through KeyedLookup (#136)"
     )
+    sub.add_parser(
+        "check-epistemic-separation",
+        help="canon never reads beliefs and partitions never read facts (FR-EPI-1; #159)",
+    )
+    sub.add_parser(
+        "check-perception-authority",
+        help="only core.epistemic.perception decides who perceives a beat (FR-TURN-10; #161)",
+    )
+    sub.add_parser(
+        "check-character-context",
+        help="a character's prompt is built only by build_context (NFR-PRIV-4; #170)",
+    )
     lic = sub.add_parser("check-licenses", help="runtime dependency licenses are allowlisted")
     lic.add_argument("--lock", type=Path, default=DEFAULT_LOCK, help="uv.lock path")
     lic.add_argument("--runtime-env", type=Path, default=DEFAULT_RUNTIME_ENV, help="runtime venv")
@@ -83,6 +98,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_check_deps(args.lock, args.pyproject)
     if args.check == "check-keyed-readers":
         return check_keyed_readers([])
+    if args.check == "check-epistemic-separation":
+        return check_epistemic_separation([])
+    if args.check == "check-perception-authority":
+        return check_perception_authority([])
+    if args.check == "check-character-context":
+        return check_character_context([])
     if args.check == "check-licenses":
         try:
             lic_report = run_licenses(

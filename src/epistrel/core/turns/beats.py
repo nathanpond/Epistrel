@@ -12,8 +12,9 @@ erasure and runs the resurrection guard (#127): a character's beat with ``proven
 and ``authority = authoritative``, a narrator's with ``provenance = system``; the event's
 ``character_id`` is the actor (``None`` for narration) and its ``beat`` the beat's position.
 Its payload carries the text, the propositions it asserts with their verdicts, the claims
-detection found beyond them and its resolved mentions (#139, #148), and, for a beat the repair
-ladder corrected, ``repaired_from {rung, class}`` (#151).
+detection found beyond them and its resolved mentions (#139, #148), for a beat the repair
+ladder corrected, ``repaired_from {rung, class}`` (#151), and the beat's perception qualifiers
+(``perception``, #161), so a history read re-routes it as it was routed.
 
 **Speech acts** (FR-TURN-5,6). Every ``say`` (and the player's own ``say``) is stored as an
 utterance (``write_utterances``, the ``utterances`` table) and is **never** canon by being said:
@@ -23,7 +24,9 @@ is the verifier's decision, not the utterance's. Its three labels are independen
 contradicted → ``false``, otherwise → ``unresolved``: undecided, novel, none at all or
 verification off), ``belief_relation`` (``unknown`` until M5's partitions) and ``intent`` as the
 render declared it on the ``say`` (``unspecified`` when nothing was declared; the player's input
-is always ``unspecified``).
+is always ``unspecified``). Under per-character partitions (#166) the verifier classifies each
+claim (``core.verify.speech_acts``); ``speech_labels`` aggregates them into the utterance's
+belief relation, checked intent and ``classification``.
 
 **Latent routing** (FR-TURN-4). A ``latent`` beat's propositions go to canon with its declared
 visibility (``visibility_of``: ``objective`` by default, ``public``, or ``characters`` naming
@@ -40,7 +43,10 @@ the introducing beat's text, the next ``ordinal``, the one true age (``true_age_
 entity (#139) and a canon ``age`` fact at the story-time of the introducing turn
 (``story_time_at``), visible as objective canon, so a later claim about the age is checked
 against it. A name the cast already has is a mention of that character, never a new row. The
-character joins the cast from the next turn.
+character joins the cast from the next turn. An introduced character is modeled at creation
+(#163, a salience trigger): ``weight = minor`` and ``modeled_at`` = the introducing beat.
+``write_character_facts`` writes a new character's ``age`` (and, for #163's modeling, its
+``located_at`` in the scene): ``core.epistemic.modeling`` writes no canon itself.
 
 Log lines carry ids and counts only (invariant 3).
 """
@@ -51,13 +57,14 @@ import logging
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from sqlalchemy import func, insert, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.canon.facts import OBJECTIVE, Fact, FactOperation, Visibility, commit_fact
-from epistrel.core.enums import Authority, Provenance, RecordProvenance
+from epistrel.core.enums import Authority, CharacterWeight, Provenance, RecordProvenance
+from epistrel.core.epistemic.perception import Qualifiers
 from epistrel.core.erasure import guard
 from epistrel.core.erasure.index import index_records, reindex_story
 from epistrel.core.erasure.records import character_record
@@ -72,20 +79,21 @@ from epistrel.core.events.types import (
     DetectedRef,
 )
 from epistrel.core.ids import new_ulid
-from epistrel.core.membership import insert_derived
+from epistrel.core.membership import Position, insert_derived, step_of
 from epistrel.core.propositions.model import (
     Interval,
     LiteralKind,
     Proposition,
     TypedLiteral,
 )
-from epistrel.core.propositions.vocabulary import CORE_BY_NAME
+from epistrel.core.propositions.vocabulary import CORE_BY_NAME, LOCATED_AT
 from epistrel.core.resolution.context import load_time_basis
 from epistrel.core.resolution.entities import add_entities, character_spec
 from epistrel.core.resolution.time import story_time_at
 from epistrel.core.tables import characters, events
 from epistrel.core.tables.characters import TRUE_AGE_MAX, TRUE_AGE_MIN
 from epistrel.core.tables.utterances import utterances
+from epistrel.core.verify.attribution import ClaimAttribution
 
 log = logging.getLogger(__name__)
 
@@ -128,6 +136,29 @@ class AssertedClaim:
     span: tuple[int, int] | None = None
     category: str = "declared"
     proposition_id: str | None = None
+    belief_relation: str | None = None
+    """The claim's belief relation under per-character partitions (#166; ``None``: the belief
+    dimension did not run)."""
+    classification: str | None = None
+    """The claim's speech-act classification (#166, ``core.verify.speech_acts``)."""
+    intent_corrected: bool = False
+    """A declared lie the speaker's beliefs support, relabelled sincere (#166)."""
+    attribution: ClaimAttribution | None = None
+    """#167: the claim attributes its proposition to someone ("Bobby thinks …"): not the
+    speaker's own assertion of it."""
+    attribution_objective: str | None = None
+    """#167: whether the attributed holder actually believes it (``true``/``false``/
+    ``unresolved``): the utterance's label, never a context input."""
+    beyond: str | None = None
+    """#171: canon's verdict beyond the speaker's view (``supported``/``contradicted``) when that
+    view leaves a first-person claim open (#166's ``hidden``): Jenni's "I've never met that
+    stranger" is false in canon though her view holds no ``same_as``. Only the objective label
+    reads it (classified labels are omniscient reads only); the claim's verdict is unchanged."""
+
+    @property
+    def attributed(self) -> bool:
+        """An attribution claim (#167): it reports a belief, it asserts nothing of its own."""
+        return self.attribution is not None
 
     def payload(self) -> BeatProposition:
         assert self.proposition is not None  # noqa: S101 - only normalized claims are listed
@@ -159,6 +190,23 @@ class TurnBeat:
     narrator: bool = False
     repaired_from: tuple[int, str] | None = None
     """``(rung, class)`` when the repair ladder corrected the beat (#151)."""
+    qualifiers: Qualifiers = field(default_factory=Qualifiers)
+    """The beat's explicit perception qualifiers (#161; persisted on its event)."""
+    cites: tuple[str, ...] = ()
+    """A ``think``'s citations (#166): the records a new belief it reasons from rests on."""
+    step: int = 0
+    """The ``act`` step that owns the beat (#168, FR-TURN-12; 0: outside declared steps)."""
+    hidden: tuple[str, ...] | None = None
+    """#169: a ``latent``'s declared hidden commitment: its noticers (empty: the rendering
+    character); ``None`` when it declared none."""
+    observed: str = "fact"
+    """#169: what a hidden ``latent``'s noticers perceived: ``fact`` or ``signal``."""
+    attempt: bool = False
+    """#175: a ``simultaneous`` turn's losing action, rewritten as an attempt that failed (rung
+    2): its effect dropped, and the detectors never read it again."""
+    narrated_by: str | None = None
+    """#176 (FR-MULTI-9): a reactive character's reaction, narrated by this character's render
+    (``character_id`` is the reactor's)."""
 
     @property
     def declared(self) -> tuple[AssertedClaim, ...]:
@@ -171,18 +219,72 @@ class TurnBeat:
     def labels(self) -> BeatLabels | None:
         if self.kind != "say":
             return None
+        speech = speech_labels(self.claims, self.intent)
         return BeatLabels(
             objective_relation=objective_relation_of(self.claims),
-            belief_relation=UNKNOWN_BELIEF,
-            intent=self.intent,
+            belief_relation=speech.belief_relation,
+            intent=speech.intent,
+            classification=speech.classification,
+            intent_corrected=speech.intent_corrected,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class SpeechLabels:
+    """An utterance's belief relation, checked intent and classification over its claims
+    (#166; ``core.verify.speech_acts``): ``unknown``, the declared intent and ``None`` when the
+    belief dimension did not run."""
+
+    belief_relation: str = UNKNOWN_BELIEF
+    intent: Intent = UNSPECIFIED
+    classification: str | None = None
+    intent_corrected: bool = False
+
+
+def speech_labels(claims: Iterable[AssertedClaim], intent: Intent) -> SpeechLabels:
+    """The utterance's speech-act labels (see ``SpeechLabels``): the relation aggregated over
+    its classified claims, the worst classification, and the intent relabelled ``sincere`` when
+    a declared lie was corrected and no claim of it stands as a lie."""
+    from epistrel.core.verify import speech_acts
+
+    classified = [c for c in claims if c.classification is not None]
+    if not classified:
+        return SpeechLabels(intent=intent)
+    worst = speech_acts.worst(
+        cast(speech_acts.Classification, c.classification) for c in classified
+    )
+    relation = speech_acts.aggregate_relation(
+        cast(speech_acts.BeliefRelation, c.belief_relation)
+        for c in classified
+        if c.belief_relation is not None
+    )
+    corrected = (
+        intent == "deceptive"
+        and any(c.intent_corrected for c in classified)
+        and worst not in (speech_acts.LIE, speech_acts.HALLUCINATION)
+    )
+    return SpeechLabels(
+        belief_relation=relation,
+        intent="sincere" if corrected else intent,
+        classification=worst,
+        intent_corrected=corrected,
+    )
 
 
 def objective_relation_of(claims: Iterable[AssertedClaim]) -> ObjectiveRelation:
     """An utterance's objective relation (FR-TURN-6): over its claims' verdicts, any
     ``contradicted`` → ``false``; all ``supported`` (at least one) → ``true``; otherwise →
-    ``unresolved`` (undecided, novel, denied, none at all, or verification off)."""
-    verdicts = [c.verdict for c in claims]
+    ``unresolved`` (undecided, novel, denied, none at all, or verification off). A claim the
+    speaker's view leaves open counts as canon decides it beyond that view (``beyond``, #171)."""
+    # #167: an attribution claim asserts someone's belief, not its proposition; #171: canon
+    # beyond the speaker's view decides a claim that view leaves open.
+    verdicts = [
+        c.beyond
+        if c.beyond is not None and c.verdict not in (SUPPORTED, CONTRADICTED)
+        else c.verdict
+        for c in claims
+        if not c.attributed
+    ]
     if CONTRADICTED in verdicts:
         return "false"
     if verdicts and all(v == SUPPORTED for v in verdicts):
@@ -225,6 +327,10 @@ def beat_payload(beat: TurnBeat) -> dict[str, Any]:
     if beat.repaired_from is not None:
         rung, repair_class = beat.repaired_from
         payload["repaired_from"] = {"rung": rung, "class": repair_class}
+    if not beat.qualifiers.empty:
+        payload["perception"] = beat.qualifiers.payload()
+    if beat.narrated_by is not None:
+        payload["narrated_by"] = beat.narrated_by
     if beat.kind == "say":
         payload["intent"] = beat.intent
         payload["labels"] = beat.labels()
@@ -250,6 +356,7 @@ def stage_beats(op: Operation, beats: Sequence[TurnBeat]) -> None:
             authority=Authority.AUTHORITATIVE,
             character_id=None if beat.kind == "narration" else beat.character_id,
             beat=beat.beat,
+            step=beat.step,
         )
 
 
@@ -279,18 +386,45 @@ class Utterance:
     objective_relation: ObjectiveRelation
     intent: Intent = UNSPECIFIED
     belief_relation: str = UNKNOWN_BELIEF
+    classification: str | None = None
+    attribution_objective_relation: str | None = None
+
+
+def attribution_objective_of(claims: Iterable[AssertedClaim]) -> str | None:
+    """An utterance's attribution objective relation (#167): over its attribution claims'
+    objective relations, any ``false`` → ``false``, else any ``unresolved`` → ``unresolved``, else
+    ``true``; ``None`` when it attributes nothing (or none was labelled)."""
+    found = [c.attribution_objective for c in claims if c.attributed]
+    labelled = [f for f in found if f is not None]
+    if not labelled:
+        return None
+    if "false" in labelled:
+        return "false"
+    if "unresolved" in labelled:
+        return "unresolved"
+    return "true"
 
 
 def utterance_of(beat: TurnBeat, proposition_ids: Sequence[str]) -> Utterance:
-    """The utterance a ``say`` beat stores."""
+    """The utterance a ``say`` beat stores: its labels (#166: the speech-act labels of its
+    classified claims). ``proposition_ids`` are its claims' stored propositions, in claim
+    order; an attribution claim's (#167) is not one the speaker asserted, and is left out."""
     if beat.kind != "say" or beat.character_id is None:
         raise InvalidRequest("only a character's say is an utterance", {"field": "beat"})
+    speech = speech_labels(beat.claims, beat.intent)
+    normalized = [c for c in beat.claims if c.proposition is not None]
+    ids = list(proposition_ids)
+    if len(normalized) == len(ids):
+        ids = [i for c, i in zip(normalized, ids, strict=True) if not c.attributed]
     return Utterance(
         beat=beat.beat,
         speaker_character_id=beat.character_id,
-        proposition_ids=tuple(proposition_ids),
+        proposition_ids=tuple(ids),
         objective_relation=objective_relation_of(beat.claims),
-        intent=beat.intent,
+        intent=speech.intent,
+        belief_relation=speech.belief_relation,
+        classification=speech.classification,
+        attribution_objective_relation=attribution_objective_of(beat.claims),
     )
 
 
@@ -329,6 +463,10 @@ async def write_utterances(
                 "objective_relation": row.objective_relation,
                 "belief_relation": row.belief_relation,
                 "intent": row.intent,
+                "classification": row.classification,
+                "attribution_objective_relation": row.attribution_objective_relation,
+                # #168: the say's declared causal step (FR-STORE-31).
+                "step": step_of(row.beat, operation.operation_id),
             }
         )
     await insert_derived(conn, utterances, values)
@@ -418,6 +556,11 @@ async def write_introductions(
                 "true_age_source": intro.source,
                 "age_recorded_at": func.transaction_timestamp(),
                 "is_player": False,
+                # #163: an introduced character is modeled at creation, a minor.
+                "weight": CharacterWeight.MINOR.value,
+                **Position(
+                    operation.narrative_turn or 0, operation.turn_variant or 0, 0, intro.beat, 0
+                ).columns("modeled"),
             }
         )
     await conn.execute(insert(characters).values(rows))
@@ -446,27 +589,66 @@ async def write_introductions(
     )
     # The new names may already be in the story's records (FR-ADMIN-6; #123).
     await reindex_story(conn, story_id)
-    basis = await load_time_basis(conn, story_id)
-    turn = operation.narrative_turn or 0
-    since = story_time_at(turn, basis)
-    written: list[Fact] = []
-    for intro in fresh:
-        written.append(
-            await commit_fact(
-                conn,
-                story_id,
-                Proposition(
-                    subject_id=intro.character_id,
-                    predicate_id=AGE,
-                    literal=TypedLiteral(kind=LiteralKind.INT, value=intro.age),
-                    valid_time=Interval.of(since, None),
-                ),
-                provenance=RecordProvenance.RENDER,
-                operation=operation,
-                beat=intro.beat,
-            )
-        )
+    written = await write_character_facts(
+        conn, operation, [(i.character_id, i.age, i.beat) for i in fresh]
+    )
     log.debug("introductions written: %d", len(fresh))
+    return written
+
+
+async def write_character_facts(
+    conn: AsyncConnection,
+    operation: FactOperation,
+    joined: Sequence[tuple[str, int | None, int]],
+    *,
+    location: str | None = None,
+) -> list[Fact]:
+    """The canon a new character needs, in ``operation``'s commit transaction: for each
+    ``(character_id, age, beat)`` its ``age`` fact at the story-time of the turn (objective, so a
+    later claim about the age is checked against it; none for a ``None`` age, a character whose
+    age is already canon) and, with a ``location``, its
+    ``located_at`` there (#163: a modeled character joins the scene it was modeled in). Answers
+    the facts written. Canon's writer for ``core.epistemic.modeling``, which never writes canon
+    itself (#160's gate)."""
+    story_id = operation.story_id
+    if story_id is None or not joined:
+        return []
+    basis = await load_time_basis(conn, story_id)
+    since = story_time_at(operation.narrative_turn or 0, basis)
+    written: list[Fact] = []
+    for character_id, age, beat in joined:
+        if age is not None:
+            written.append(
+                await commit_fact(
+                    conn,
+                    story_id,
+                    Proposition(
+                        subject_id=character_id,
+                        predicate_id=AGE,
+                        literal=TypedLiteral(kind=LiteralKind.INT, value=age),
+                        valid_time=Interval.of(since, None),
+                    ),
+                    provenance=RecordProvenance.RENDER,
+                    operation=operation,
+                    beat=beat,
+                )
+            )
+        if location is not None:
+            written.append(
+                await commit_fact(
+                    conn,
+                    story_id,
+                    Proposition(
+                        subject_id=character_id,
+                        predicate_id=LOCATED_AT,
+                        object_id=location,
+                        valid_time=Interval.of(since, None),
+                    ),
+                    provenance=RecordProvenance.RENDER,
+                    operation=operation,
+                    beat=beat,
+                )
+            )
     return written
 
 
@@ -484,17 +666,20 @@ __all__ = [
     "Intent",
     "Introduction",
     "ObjectiveRelation",
+    "SpeechLabels",
     "TurnBeat",
     "Utterance",
     "beat_event_ids",
     "beat_payload",
     "event_type_of",
     "objective_relation_of",
+    "speech_labels",
     "stage_beats",
     "stage_introductions",
     "taken_names",
     "utterance_of",
     "visibility_of",
+    "write_character_facts",
     "write_introductions",
     "write_utterances",
 ]

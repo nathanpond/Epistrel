@@ -10,6 +10,7 @@ indefinites keep today's ``uncertain`` result. The extraction model's snake_case
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import replace
 from datetime import UTC, datetime
 
@@ -229,6 +230,42 @@ def test_a_weak_relation_touching_another_character_is_not_marked(
     assert found.weak_relation
     assert found.touches_character
     assert not found.untracked_weak
+
+
+def test_a_composed_renders_own_character_is_not_the_narrators_other() -> None:
+    """#484 (the owner's option (a)): on the composition path the narrator's "other character"
+    excludes the turn's render characters, so a weak texture claim about Maren surfaces as on
+    her own render's beats; Wren, not a render character, is still another."""
+    composed = dataclasses.replace(CAST, composing=frozenset({MAREN}))
+    sketch = ClaimSketch(
+        subject_text="Maren", relation_text="wipes_down", object_text="the counter", declared=True
+    )
+    found = normalize(
+        sketch,
+        NARRATOR,
+        3,
+        registry=vs.REGISTRY,
+        context=composed,
+        basis=BASIS,
+        introduce=Introductions(),
+    )
+    assert isinstance(found, Unnormalizable)
+    assert (found.weak_relation, found.touches_character) == (True, False)
+    other = normalize(
+        replace_subject(sketch, "Wren"),
+        NARRATOR,
+        3,
+        registry=vs.REGISTRY,
+        context=composed,
+        basis=BASIS,
+        introduce=Introductions(),
+    )
+    assert isinstance(other, Unnormalizable)
+    assert other.touches_character
+
+
+def replace_subject(sketch: ClaimSketch, subject: str) -> ClaimSketch:
+    return dataclasses.replace(sketch, subject_text=subject)
 
 
 @pytest.mark.parametrize(

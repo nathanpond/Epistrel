@@ -41,7 +41,9 @@ SUBMIT_UNTIL = float(os.environ.get("EPISTREL_PERF_SUBMIT_UNTIL", "1680"))
 """Seconds after ``START`` past which no turn is submitted."""
 SCENARIO = os.environ.get("EPISTREL_PERF_SCENARIO", "lite")
 """``structured`` (#153): each turn names one render character, the story's second
-(``other_id``): a single-character structured turn."""
+(``other_id``): a single-character structured turn. ``multi`` (#182): each turn names the
+story's two primaries (``primary_ids``), rendered ``sequential``ly in that order."""
+PLANNING = ("reduced_characters", "deferred_characters", "escalation_deferred")
 SETTLED = frozenset({"committed", "failed", "abandoned"})
 
 _stories: list[dict[str, Any]] = json.loads(open(STORIES_FILE).read())  # noqa: SIM115
@@ -105,6 +107,9 @@ class StoryPlayer(User):
         }
         if SCENARIO == "structured":
             body["render_character_ids"] = [self.story["other_id"]]
+        elif SCENARIO == "multi":
+            body["render_character_ids"] = list(self.story["primary_ids"])
+            body["interaction_mode"] = "sequential"
         headers = {
             **self.target.headers(),
             "Prefer": "respond-async",
@@ -169,7 +174,27 @@ class StoryPlayer(User):
             record["first_call_offset_ms"] = result.get("first_call_offset_ms")
             record["model_ms"] = sum(int(c.get("latency_ms", 0)) for c in calls)
             record["turn"] = result.get("turn")
+            if SCENARIO == "multi":
+                record.update(_multi(self.story, result))
         _write(record)
+
+
+def _multi(story: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    """A multi-character turn's figures (#182): each primary's beats in the viewpoint's result,
+    the budget-planning entries it reported, its degradation steps, the profile it ran under
+    and the perception level its beats were filtered at."""
+    beats = result.get("beats") or []
+    profile = result.get("profile") or {}
+    return {
+        "primary_beats": {
+            p: sum(1 for b in beats if b.get("actor_character_id") == p)
+            for p in story.get("primary_ids") or []
+        },
+        "planning": {k: len(result[k]) for k in PLANNING if result.get(k)},
+        "degradation": list(result.get("degradation") or []),
+        "profile": f"{profile['id']} v{profile['version']}" if profile else None,
+        "audience_filter": result.get("audience_filter"),
+    }
 
 
 def _error_code(answer: Any) -> str:

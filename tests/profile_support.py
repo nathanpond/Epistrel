@@ -230,14 +230,45 @@ def map_units() -> set[str]:
     return _units([group for entry in CAPABILITY_MAP for group in entry.requirements])
 
 
-def delivered_rules() -> list[DependencyRule]:
-    """The dependency rules whose modules (and condition) are all delivered."""
+M4_MODULES = frozenset(
+    {
+        *M3_DELIVERED,
+        "episodic",
+        "consolidation",
+        "verification",
+        "contradiction_checking",
+        "commitment",
+        "repair",
+    }
+)
+"""The modules delivered by the end of M4 (#129): its parts keep asserting their own rules as
+later milestones deliver more."""
+M5_MODULES = frozenset(
+    {
+        "partitions",
+        "nested_beliefs",
+        "lazy_resolution",
+        "testimony",
+        "perception",
+        "multi_character",
+    }
+)
+"""The modules M5 delivers (#181)."""
+
+
+def delivered_rules(among: frozenset[str] | None = None) -> list[DependencyRule]:
+    """The dependency rules whose modules (and condition) are all delivered (and, with
+    ``among``, all named in it)."""
+
+    def ok(module: str) -> bool:
+        return schema.is_delivered(module) and (among is None or module in among)
+
     return [
         rule
         for rule in schema.DEPENDENCIES
-        if schema.is_delivered(rule.module)
-        and all(schema.is_delivered(r.module) for r in rule.requires)
-        and (rule.when is None or schema.is_delivered(rule.when.module))
+        if ok(rule.module)
+        and all(ok(r.module) for r in rule.requires)
+        and (rule.when is None or ok(rule.when.module))
     ]
 
 

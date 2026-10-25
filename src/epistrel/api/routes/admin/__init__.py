@@ -12,6 +12,7 @@ import re
 from fastapi import APIRouter
 
 from epistrel.api.routes.admin import (
+    beliefs,
     erasure,
     feedback_export,
     model_config,
@@ -30,6 +31,7 @@ ADMIN_PREFIX = "/admin"
 router = APIRouter(prefix=ADMIN_PREFIX, tags=["admin"])
 router.include_router(stories.router)
 router.include_router(mutation.router)
+router.include_router(beliefs.router)
 router.include_router(ratings.router)
 router.include_router(settings.router)
 router.include_router(policies.router)

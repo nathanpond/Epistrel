@@ -45,6 +45,7 @@ from functools import cache
 from importlib import resources
 from typing import Any
 
+from epistrel.core.membership import Position as NarrativePosition
 from epistrel.core.propositions.model import (
     DEFAULT_EPOCH,
     Bound,
@@ -83,13 +84,21 @@ class TimeBasis:
     epoch: datetime | None = None
 
 
-Position = int | tuple[int, int]
-"""A narrative position: a turn, or ``(turn, beat)``."""
+Position = int | tuple[int, int] | NarrativePosition
+"""A narrative position: a turn, ``(turn, beat)``, or the shared ``core.membership.Position``
+(#164)."""
+
+
+def turn_of(position: Position) -> int:
+    """The turn of ``position`` in any of its forms."""
+    if isinstance(position, NarrativePosition):
+        return position.turn
+    return position if isinstance(position, int) else position[0]
 
 
 def story_time_at(position: Position, basis: TimeBasis) -> int:
     """The story-minute of ``position`` (see the module docstring)."""
-    turn = position if isinstance(position, int) else position[0]
+    turn = turn_of(position)
     return basis.minute_zero + turn * basis.minutes_per_turn
 
 
@@ -399,4 +408,5 @@ __all__ = [
     "grammar",
     "resolve_time",
     "story_time_at",
+    "turn_of",
 ]

@@ -51,7 +51,6 @@ NEVER_DEFERRED = (
 
 UNUSED_SETTINGS = {
     "interaction_mode": "multi_character",
-    "player_authority": "structured",
     "ambiguous_retcon_timing": "history_rewrite",
     "backfill_conflict_policy": "history_rewrite",
     "required_providers": "providers",
@@ -119,6 +118,10 @@ def expected_deferred(body: Mapping[str, Any], *, player: bool = True) -> list[t
         found += [
             (f"starting_state.{name}[{i}]", "structured") for i in range(len(state.get(name, [])))
         ]
+    found += [
+        (f"starting_state.channels[{i}]", "structured")
+        for i in range(len(state.get("channels", [])))
+    ]
     found += [
         (f"drivers.planned_reveals[{i}].truth", "structured")
         for i in range(len(body.get("drivers", {}).get("planned_reveals", [])))

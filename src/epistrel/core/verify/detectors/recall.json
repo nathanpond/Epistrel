@@ -1,0 +1,22 @@
+{
+  "category": "recall",
+  "language": "en",
+  "description": "First-person recall cues (#172, FR-VERIFY-9): a say beat in which the speaker claims to remember something ('I remember you seemed sad that day'). The clause after the cue is the recalled content, verified against the speaker's own dated records (core.epistemic.resurface): backed, it is a grounded recall; unbacked, a confabulation. A question or a negated cue asserts no memory.",
+  "cues": [
+    "i remember",
+    "i still remember",
+    "i remembered",
+    "i recall",
+    "i recalled",
+    "i still recall",
+    "i can still see",
+    "i never forgot",
+    "i haven't forgotten",
+    "remember when",
+    "remember that day",
+    "that day when",
+    "that time when",
+    "back when"
+  ],
+  "negated": ["i don't remember", "i do not remember", "i can't remember", "i cannot remember", "i don't recall", "i do not recall"]
+}

@@ -18,6 +18,7 @@ from epistrel.core.profiles.fingerprint import FINGERPRINT_PATTERN
 from epistrel.core.stories import CharacterSpec, StorySpec
 from epistrel.evals import (
     SUITES,
+    ZERO_MIN_CASES,
     AdapterConfig,
     Direction,
     Metric,
@@ -107,6 +108,22 @@ def test_one_seed_or_no_observation_is_insufficient_evidence() -> None:
     assert judge(zero, []).verdict is Verdict.insufficient_evidence
     info = Metric("x.info", Rule.informational)
     assert judge(info, [SeedTally(1, 1, 1), SeedTally(2, 2, 0)]).verdict is Verdict.report_only
+
+
+def test_a_zero_run_short_only_by_model_errors_is_insufficient_evidence() -> None:
+    """#179: a zero-tolerance metric is judged on completed cases. A clean seed below 300 of
+    them because model errors ended cases (``lost``) is insufficient evidence, never a pass.
+
+    Complement asserted: the same seed short without errors, or short even with them, fails
+    (a short set is not evidence), and a violation fails whatever was lost."""
+    zero = Metric("x.zero", Rule.zero, 0.0, Direction.at_most)
+    two = [SeedTally(1, 299, 0), SeedTally(2, 300, 0)]
+    assert judge(zero, two, lost=[1, 0]).verdict is Verdict.insufficient_evidence
+    assert judge(zero, two).verdict is Verdict.failed
+    assert judge(zero, two, lost=[0, 0]).verdict is Verdict.failed
+    assert judge(zero, [SeedTally(1, 10, 0)], lost=[5]).verdict is Verdict.failed
+    assert judge(zero, [SeedTally(1, 299, 1)], lost=[1]).verdict is Verdict.failed
+    assert judge(zero, [SeedTally(1, 0, 0)], lost=[300]).verdict is Verdict.insufficient_evidence
 
 
 def test_upper_bound_is_the_exact_one_sided_binomial_bound() -> None:
@@ -275,7 +292,14 @@ async def test_harness_stub_run(pg_url: str, engine: AsyncEngine, tmp_path: Path
             # On a small sample E-10's gated recall depends on how many of its measured gap
             # (identity claims no detector flags, #157) the sample drew; its full set passes.
             failing = {m.id for m in suite.metrics if m.verdict is Verdict.failed}
-            assert failing <= {"nfr_qual_10.recall_gated"}, suite
+            # #179's zero-tolerance metrics: clean, but a 12-case sample is below NFR-QUAL-8's
+            # 300 cases, which fails by the observed-zero rule (their full sets pass).
+            short = {
+                m.id
+                for m in suite.metrics
+                if m.rule is Rule.zero and m.violations == 0 and m.sample_size < ZERO_MIN_CASES
+            }
+            assert failing - short <= {"nfr_qual_10.recall_gated"}, suite
             # E-12's stub set is far below NFR-QUAL-14's 300 pairs a type (#158).
             proven = Verdict.insufficient_evidence if suite.name == "e12" else Verdict.passed
             assert suite.verdict is proven or failing, suite

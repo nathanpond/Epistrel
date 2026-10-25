@@ -114,6 +114,7 @@ from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StringConstraints
 from sqlalchemy import Text, and_, cast, delete, func, insert, or_, select, text, update
+from sqlalchemy.dialects.postgresql import array
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import (
@@ -193,9 +194,12 @@ from epistrel.core.tables import (
     turn_queue,
 )
 from epistrel.core.tables.audit_log import AuditKind
+from epistrel.core.tables.beliefs import belief_transitions, beliefs
 from epistrel.core.tables.catalog import CATALOG_SCHEMA, ERASURE_GUC
 from epistrel.core.tables.commitments import thunks
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
+from epistrel.core.tables.divergences import divergences
+from epistrel.core.tables.exposures import exposures
 from epistrel.core.tables.facts import facts
 from epistrel.core.tables.media import (
     MediaState,
@@ -1273,9 +1277,13 @@ async def _redact_structured(
     """The structured stores (#131): an erased character's entity loses its aliases (deleted,
     each with a marker); every other record naming the subject is redacted in place. A story
     predicate's name keeps its id as a suffix when redacted, so names stay unique per story.
-    Facts (#133), memories (#135) and thunks (#146) go first: see ``_erase_facts``,
-    ``_erase_memories`` and ``_erase_thunks``."""
+    Facts (#133), exposures (#164), divergences (#166), beliefs (#159), memories (#135) and
+    thunks (#146) go first: see ``_erase_facts``, ``_erase_exposures``, ``_erase_divergences``,
+    ``_erase_beliefs``, ``_erase_memories`` and ``_erase_thunks``."""
     await _erase_facts(conn, story_id, refs, removed, tally, run)
+    await _erase_exposures(conn, story_id, refs, removed, tally, run)
+    await _erase_divergences(conn, story_id, refs, removed, tally, run)
+    await _erase_beliefs(conn, story_id, removed, tally, run, refs=refs)
     await _erase_memories(conn, story_id, refs, removed, redactor, tally, run)
     await _erase_thunks(conn, story_id, refs, removed, redactor, tally, run)
     owned = list(
@@ -1393,6 +1401,175 @@ async def _erase_facts(
             )
 
 
+async def _erase_exposures(
+    conn: AsyncConnection,
+    story_id: str,
+    refs: Mapping[str, set[str]],
+    removed: set[str],
+    tally: _Tally,
+    run: _StoryRun,
+) -> None:
+    """Exposures (#164): every exposure of or about the subject (its witness or source is an
+    erased character, or its proposition is about one: the index's declared rows) is deleted,
+    each with a marker."""
+    x = exposures.c
+    found = set(refs.get(exposures.name, ()))
+    if removed:
+        found |= {
+            str(i)
+            for i in await conn.scalars(
+                select(x.id).where(
+                    x.story_id == story_id,
+                    or_(
+                        x.witness_character_id.in_(sorted(removed)),
+                        x.source_character_id.in_(sorted(removed)),
+                    ),
+                )
+            )
+        }
+    for exposure_id in sorted(found):
+        await _delete(
+            conn,
+            run,
+            tally,
+            exposures.name,
+            exposure_id,
+            delete(exposures).where(x.id == exposure_id),
+        )
+
+
+async def _erase_divergences(
+    conn: AsyncConnection,
+    story_id: str,
+    refs: Mapping[str, set[str]],
+    removed: set[str],
+    tally: _Tally,
+    run: _StoryRun,
+) -> None:
+    """Divergences (#166): every divergence of or about the subject (its speaker is an erased
+    character, or one of its propositions is about one: the index's declared rows) is deleted,
+    each with a marker, before the beliefs it names."""
+    d = divergences.c
+    found = set(refs.get(divergences.name, ()))
+    if removed:
+        found |= {
+            str(i)
+            for i in await conn.scalars(
+                select(d.id).where(
+                    d.story_id == story_id, d.speaker_character_id.in_(sorted(removed))
+                )
+            )
+        }
+    for divergence_id in sorted(found):
+        await _delete(
+            conn,
+            run,
+            tally,
+            divergences.name,
+            divergence_id,
+            delete(divergences).where(d.id == divergence_id),
+        )
+
+
+async def _erase_beliefs(
+    conn: AsyncConnection,
+    story_id: str,
+    removed: set[str],
+    tally: _Tally,
+    run: _StoryRun,
+    *,
+    refs: Mapping[str, set[str]] | None = None,
+) -> None:
+    """Beliefs (#159): every belief of or about the subject (an erased character holds it, or
+    its proposition's subject or object is one: the index's declared rows, #164) is deleted,
+    each with a marker, and the transitions (#160) of the erased holders and of those beliefs
+    with it. ``belief_state`` is refolded by the ``rebuilt`` stage."""
+    about = set((refs or {}).get(beliefs.name, ()))
+    if not removed and not about:
+        return
+    held = sorted(
+        {
+            *(
+                str(i)
+                for i in await conn.scalars(
+                    select(beliefs.c.id).where(
+                        beliefs.c.story_id == story_id,
+                        beliefs.c.holder_character_id.in_(sorted(removed)),
+                    )
+                )
+            ),
+            *about,
+        }
+    )
+    # #167: a nested belief goes with its inner rows (an erased attributed holder or speaker
+    # deeper in its chain), outermost last.
+    frontier = list(held)
+    while frontier:
+        outer = sorted(
+            {
+                str(i)
+                for i in await conn.scalars(
+                    select(beliefs.c.id).where(
+                        beliefs.c.story_id == story_id, beliefs.c.inner_belief_id.in_(frontier)
+                    )
+                )
+            }
+            - set(held)
+        )
+        held += outer
+        frontier = outer
+    for belief_id in held:
+        await _delete(
+            conn,
+            run,
+            tally,
+            beliefs.name,
+            str(belief_id),
+            delete(beliefs).where(beliefs.c.id == belief_id),
+        )
+    # Their transitions (#160) go with them, each with a marker; a transition another holder's
+    # belief rests on loses the erased source (the testimony stays, its witness does not).
+    t = belief_transitions.c
+    gone = list(
+        await conn.scalars(
+            select(t.id)
+            .where(
+                t.story_id == story_id,
+                or_(t.holder_character_id.in_(sorted(removed)), t.belief_id.in_(held)),
+            )
+            .order_by(t.id)
+        )
+    )
+    for transition_id in gone:
+        await _delete(
+            conn,
+            run,
+            tally,
+            belief_transitions.name,
+            str(transition_id),
+            delete(belief_transitions).where(t.id == transition_id),
+        )
+    sourced = list(
+        await conn.scalars(
+            select(t.id)
+            .where(
+                t.story_id == story_id,
+                t.source_character_id.in_(sorted(removed)),
+                t.holder_character_id.not_in(sorted(removed)),
+            )
+            .order_by(t.id)
+        )
+    )
+    for transition_id in sourced:
+        tally.record(belief_transitions.name, 1)
+        if run.write:
+            await conn.execute(
+                update(belief_transitions)
+                .where(t.id == transition_id)
+                .values(source_character_id=None)
+            )
+
+
 async def _erase_thunks(
     conn: AsyncConnection,
     story_id: str,
@@ -1460,6 +1637,55 @@ async def _erase_thunks(
             )
 
 
+async def _prune_memory_visibility(
+    conn: AsyncConnection,
+    story_id: str,
+    removed: set[str],
+    owned: set[Any],
+    tally: _Tally,
+    run: _StoryRun,
+) -> list[str]:
+    """Memories scoped to characters among whom is an erased one (#178, S-ERASURE-BOUNDARY M5):
+    the name leaves ``visibility.characters``; a memory no character is left to see is deleted
+    with a marker (as ``_erase_facts`` does a fact's). Answers the deleted ids."""
+    if not removed:
+        return []
+    m = memories.c
+    rows = await conn.execute(
+        select(m.id, m.visibility)
+        .where(
+            m.story_id == story_id,
+            m.visibility["scope"].astext == "characters",
+            m.visibility["characters"].has_any(array(sorted(removed), type_=Text)),
+        )
+        .order_by(m.id)
+    )
+    deleted: list[str] = []
+    for row in rows:
+        if row.id in owned:
+            continue
+        named = [c for c in row.visibility.get("characters") or () if c not in removed]
+        if not named:
+            await _delete(
+                conn,
+                run,
+                tally,
+                memories.name,
+                str(row.id),
+                delete(memories).where(m.id == row.id),
+            )
+            deleted.append(str(row.id))
+            continue
+        tally.record(memories.name, 1)
+        if run.write:
+            await conn.execute(
+                update(memories)
+                .where(m.id == row.id)
+                .values(visibility={**row.visibility, "characters": named})
+            )
+    return deleted
+
+
 async def _erase_memories(
     conn: AsyncConnection,
     story_id: str,
@@ -1501,6 +1727,10 @@ async def _erase_memories(
             str(memory_id),
             delete(memories).where(m.id == memory_id),
         )
+    # #178: a memory another character holds that the subject could also see loses the
+    # subject's name from its visibility; one no character is left to see is deleted.
+    pruned = await _prune_memory_visibility(conn, story_id, removed, set(owned), tally, run)
+    owned = [*owned, *pruned]
     if owned and run.write:
         # The hot set's counters lost rows: the next reader recounts them (#147).
         await retirement.invalidate(conn, story_id)

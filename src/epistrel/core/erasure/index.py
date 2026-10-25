@@ -676,6 +676,10 @@ _FACTS = "epistrel.core.canon.facts"
 _MEMORIES = "epistrel.core.memory.records"
 _MUTATION = "epistrel.core.mutation"
 _COMMITMENTS = "epistrel.core.commit.lifecycle"
+_PARTITIONS = "epistrel.core.epistemic.partitions"
+_TRANSITIONS = "epistrel.core.epistemic.transitions"
+_EXPOSURES = "epistrel.core.epistemic.exposure"
+_DIVERGENCES = "epistrel.core.epistemic.divergences"
 
 SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
     SubjectWriter(
@@ -690,8 +694,14 @@ SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
     ),
     SubjectWriter(
         "characters",
-        # #150: a structured turn creates the characters its renders introduce.
-        ("epistrel.core.stories", "epistrel.core.genesis.create", "epistrel.core.turns.beats"),
+        # #150: a structured turn creates the characters its renders introduce; #163 the
+        # characters it models lazily (and the author's modeling directive).
+        (
+            "epistrel.core.stories",
+            "epistrel.core.genesis.create",
+            "epistrel.core.turns.beats",
+            "epistrel.core.epistemic.modeling",
+        ),
         f"{_RECORDS}:read_characters",
     ),
     SubjectWriter(
@@ -770,6 +780,17 @@ SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
     SubjectWriter("memories", (_MEMORIES, _MUTATION), f"{_RECORDS}:read_memories"),
     # Commitments (#146): a thunk's proposition sketch, walked whole (positional mentions).
     SubjectWriter("thunks", (_COMMITMENTS,), f"{_RECORDS}:read_thunks"),
+    # Belief partitions (#159): a belief's holder and its proposition's subject and object
+    # characters are declared subjects.
+    SubjectWriter("beliefs", (_PARTITIONS,), f"{_RECORDS}:read_beliefs"),
+    # Belief transitions (#160): the holder and the source are declared subjects.
+    SubjectWriter("belief_transitions", (_TRANSITIONS,), f"{_RECORDS}:read_belief_transitions"),
+    # Exposures (#164): the witness, the source and the proposition's subject and object
+    # characters are declared subjects.
+    SubjectWriter("exposures", (_EXPOSURES,), f"{_RECORDS}:read_exposures"),
+    # Divergences (#166): the speaker and the asserted and believed propositions' subject and
+    # object characters are declared subjects.
+    SubjectWriter("divergences", (_DIVERGENCES,), f"{_RECORDS}:read_divergences"),
 )
 """Every indexed table (see the module docstring); the coverage test's source of truth."""
 
@@ -806,6 +827,10 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "(#137)",
     "scene_state": "a projection of facts and turns: entity ids only, refolded by erasure's "
     "rebuilt stage (#137)",
+    "belief_state": "a projection of beliefs, which are erased: ids, levels and positions, "
+    "refolded by erasure's rebuilt stage (#159)",
+    "nested_belief_state": "a projection of nested beliefs, which are erased: ids, levels and "
+    "positions, refolded by erasure's rebuilt stage (#167)",
     # Deployment tables (#334: the coverage test enumerates every table with text or JSON).
     "alembic_version": "the schema migration's revision id",
     "schema_meta": "schema bookkeeping keys and values",

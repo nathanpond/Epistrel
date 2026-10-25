@@ -177,6 +177,10 @@ class SuiteResult(BaseModel):
     judge: SuiteJudge | None = None
     """For a judged suite (#475): the judge its calls went to; ``None`` for any other suite, and
     in a report written before #475."""
+    profile: str | None = None
+    """The configuration the suite's stories ran under, when it is not the run's (#179)."""
+    fingerprint: str | None = None
+    """That configuration's fingerprint (#179); ``None``: the run's."""
 
     @classmethod
     def errored(cls, suite: Suite, errors: list[str], seeds: list[int]) -> SuiteResult:
@@ -207,6 +211,8 @@ class Report(BaseModel):
     host: Host
     judge: JudgeModel | None = None
     """The run's second judge model (#475); ``None``: the run model judged (self-judged)."""
+    real_purposes: list[str] | None = None
+    """The purposes a real-model run sent to its endpoint (#179); ``None``: every purpose."""
     seed_base: int
     seeds: list[int]
     suites: list[SuiteResult] = Field(default_factory=list)
@@ -434,8 +440,13 @@ HOW_TO_READ = """\
 - A judge-based row is only as good as the judge: before such a run the quality judge is
   calibrated against human-labeled pairs, and a judge whose agreement is below 75% makes every
   judge-based row *report only*.
-- A model error during a case counts as a failed case; it is never excluded. Timings are
-  informational: the model may share its machine with other work.
+- A model error during a case is a failed case, never silently excluded. In a suite with a
+  model-error row (NFR-QUAL-1's zero-leak suites) it is counted and reported on that row, which
+  is report-only, and it is not scored as a disclosure: the suite's floors are judged on its
+  completed cases, and a zero-tolerance metric with fewer than 300 completed cases on a seed is
+  *insufficient evidence*, never a pass. Model-robustness floors belong to M9 (ADR-164). In
+  every other suite a model error counts as a bad observation on each of its metrics. Timings
+  are informational: the model may share its machine with other work.
 - A floor applies to the configuration this fingerprint names (NFR-QUAL-11); any other
   configuration is unmeasured until it has its own report.
 """
@@ -474,6 +485,15 @@ def render_markdown(report: Report) -> str:
         "as every story purpose's"
         + (" and the judge as `quality_judge`'s" if report.judge is not None else "")
         + ")",
+        *(
+            [
+                "- **Routed purposes:** "
+                + ", ".join(f"`{p}`" for p in report.real_purposes)
+                + " on the model; every other purpose on the stub's default answers"
+            ]
+            if report.real_purposes is not None
+            else []
+        ),
         f"- **Host:** {'; '.join(host_bits)}",
         f"- **Seeds:** {seed_text}",
         f"- **Sample size:** {report.sample_size} cases per seed",
@@ -495,6 +515,13 @@ def render_markdown(report: Report) -> str:
             f"{len(suite.seeds)} seeds{timing}; {gated}. Guarantee rows measured: "
             f"{', '.join(f'`{g}`' for g in suite.guarantees) or EM_DASH}."
         )
+        if suite.profile is not None:
+            lines += [
+                "",
+                f"Configuration: {suite.profile}"
+                + (f" (fingerprint `{suite.fingerprint}`)" if suite.fingerprint else "")
+                + ".",
+            ]
         if suite.judge is not None:
             lines += ["", judge_text(suite.judge)]
         if suite.calibration is not None:

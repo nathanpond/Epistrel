@@ -112,6 +112,7 @@ from epistrel.core.settings_schema import ConfigClass
 from epistrel.core.stories import delete_story
 from epistrel.orchestrator.jobs.handlers import retention
 from epistrel.orchestrator.models.registry import (
+    BELIEF_ADJUDICATION,
     CONSOLIDATION,
     ENTAILMENT,
     EXTRACTION_BACKSTOP,
@@ -167,6 +168,7 @@ PURPOSES = Purposes.of(list(STORY_PURPOSES), list(RESERVED_PURPOSES))
 LITE_ROUTED = set(STORY_PURPOSES) - {
     IMPORTANCE_SCORING.name,
     ENTAILMENT.name,
+    BELIEF_ADJUDICATION.name,
     CONSOLIDATION.name,
     SALIENCE_DETECTION.name,
     EXTRACTION_BACKSTOP.name,

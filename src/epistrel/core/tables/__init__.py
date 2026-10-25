@@ -9,6 +9,12 @@ naming them (``tests/integration/test_feedback.py``) sees each one (FR-FB-2).
 from epistrel.core.tables import feedback as _feedback  # noqa: F401 - registers the tables
 from epistrel.core.tables.audit_log import audit_log
 from epistrel.core.tables.base import NAMING_CONVENTION, metadata
+from epistrel.core.tables.beliefs import (
+    belief_state,
+    belief_transitions,
+    beliefs,
+    nested_belief_state,
+)
 from epistrel.core.tables.catalog import (
     character_catalog,
     character_versions,
@@ -20,6 +26,7 @@ from epistrel.core.tables.client_events import client_events
 from epistrel.core.tables.commitments import promissory_ledger, thunks
 from epistrel.core.tables.deployment import config_changes, deployment_state
 from epistrel.core.tables.detection import extraction_shadow
+from epistrel.core.tables.divergences import divergences
 from epistrel.core.tables.erasure import erasure_ledger
 from epistrel.core.tables.escalations import (
     escalations,
@@ -27,6 +34,7 @@ from epistrel.core.tables.escalations import (
     gate_thresholds,
 )
 from epistrel.core.tables.events import events
+from epistrel.core.tables.exposures import exposures
 from epistrel.core.tables.facts import facts
 from epistrel.core.tables.genesis import genesis_deferred
 from epistrel.core.tables.hot_set import overflow_episodes
@@ -73,6 +81,9 @@ from epistrel.core.tables.utterances import utterances
 __all__ = [
     "NAMING_CONVENTION",
     "audit_log",
+    "belief_state",
+    "belief_transitions",
+    "beliefs",
     "character_catalog",
     "character_snapshots",
     "character_versions",
@@ -83,6 +94,7 @@ __all__ = [
     "content_rating_versions",
     "content_ratings",
     "deployment_state",
+    "divergences",
     "engine_profile_versions",
     "engine_profiles",
     "entities",
@@ -91,6 +103,7 @@ __all__ = [
     "erasure_ledger",
     "escalations",
     "events",
+    "exposures",
     "extraction_shadow",
     "facts",
     "gate_threshold_history",
@@ -104,6 +117,7 @@ __all__ = [
     "memories",
     "metadata",
     "model_config",
+    "nested_belief_state",
     "offboarding_jobs",
     "operations",
     "overflow_episodes",

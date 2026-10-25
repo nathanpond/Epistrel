@@ -140,6 +140,57 @@ def excluding(operation_ids: Iterable[str]) -> Iterator[None]:
         _EXCLUDED.reset(token)
 
 
+_INCLUDED: ContextVar[tuple[str, ...]] = ContextVar("epistrel_membership_included", default=())
+
+
+@contextmanager
+def including(operation_ids: Iterable[str]) -> Iterator[None]:
+    """Within the block, ``included_through`` also admits the rows the named operations
+    included, wherever their turn lies: a lazy resolution pass sees the resolutions it made
+    earlier in the same pass (#164's documented order dependence), never a later turn's."""
+    ids = tuple(_ids(operation_ids))
+    token = _INCLUDED.set(tuple(sorted({*_INCLUDED.get(), *ids})))
+    try:
+        yield
+    finally:
+        _INCLUDED.reset(token)
+
+
+def included_operations() -> tuple[str, ...]:
+    """The operations ``including`` names here (none outside it)."""
+    return _INCLUDED.get()
+
+
+def recorded_through(table: FromClause, turn: int) -> ColumnElement[bool]:
+    """Rows of registered derived ``table`` written by an operation at or before turn ``turn``
+    (its ``position_columns``' turn; position-less rows always), or by one ``including`` names:
+    the record as it stood through that turn, whatever position the rows carry."""
+    entry = derived_entry(table)
+    written = table.c[entry.position_columns[0]]
+    kept = [written.is_(None), written <= turn]
+    ids = _INCLUDED.get()
+    if ids:
+        kept.append(table.c.operation_id.in_([literal(i) for i in ids]))
+    return or_(*kept)
+
+
+def included_through(table: FromClause, turn: int) -> ColumnElement[bool]:
+    """Rows of registered derived ``table`` in the record as of turn ``turn`` by their
+    inclusion operation (``DerivedTable.inclusion_operation_column``): rows without one, rows
+    whose including turn is at or before ``turn``, and the rows ``including`` names. A table
+    without the column admits every row."""
+    entry = derived_entry(table)
+    column = entry.inclusion_operation_column
+    if column is None:
+        return literal(True)
+    including_turn = table.c[entry.position_columns[0]]
+    kept = [table.c[column].is_(None), including_turn <= turn]
+    ids = _INCLUDED.get()
+    if ids:
+        kept.append(table.c[column].in_([literal(i) for i in ids]))
+    return or_(*kept)
+
+
 def excluded_operations() -> tuple[str, ...]:
     """The operations ``excluding`` leaves out of reads here (none outside it)."""
     return _EXCLUDED.get()
@@ -167,6 +218,14 @@ class DerivedTable:
     position_columns: tuple[str, str] = ("narrative_turn", "turn_variant")
     valid_time: tuple[str, str] | None = None
     tx_time: tuple[str, str] | None = None
+    inclusion_operation_column: str | None = None
+    """The column naming the operation that *included* the row in the record when that is not
+    where its valid-from lies (#164: a lazily resolved belief holds from its exposure position,
+    but is in the record only from the needing turn that resolved it). A row with the column set
+    is in a view through position P only when that operation's turn (the row's
+    ``position_columns``) is at or before P (``included_through``); ``NULL`` rows are bound by
+    their position as usual. The flips and #67's fork already follow it: it is the row's
+    ``operation_id``."""
 
     @property
     def name(self) -> str:
@@ -179,6 +238,7 @@ class DerivedTable:
             *self.position_columns,
             *(self.valid_time or ()),
             *(self.tx_time or ()),
+            *((self.inclusion_operation_column,) if self.inclusion_operation_column else ()),
         ]
         missing = [c for c in named if c not in self.table.c]
         if missing:
@@ -302,8 +362,52 @@ async def insert_derived(
     statement = insert(entry.table).values(
         membership=Membership.ACTIVE.value, membership_tx=func.transaction_timestamp()
     )
-    await conn.execute(statement, [dict(row) for row in rows])
+    stepped = "step" in entry.table.c and "beat" in entry.table.c
+    await conn.execute(statement, [_with_step(dict(row)) if stepped else dict(row) for row in rows])
     return len(rows)
+
+
+# -- the step index (FR-STORE-31, #168) -------------------------------------------------------
+
+_BEAT_STEPS: ContextVar[Mapping[str, Mapping[int, int]] | None] = ContextVar(
+    "epistrel_beat_steps", default=None
+)
+
+
+@contextmanager
+def beat_steps(operation_id: str, steps: Mapping[int, int]) -> Iterator[None]:
+    """Within the block, ``step_of`` answers each beat of ``operation_id`` its declared step
+    (#168: the ``act`` step owning the beat; FR-TURN-12): the structured turn's check and commit
+    run inside it, so every record a beat derives takes the beat's step, and ``insert_derived``
+    fills ``step`` on a row of a table with ``beat`` and ``step`` columns that names neither."""
+    current = dict(_BEAT_STEPS.get() or {})
+    current[operation_id] = dict(steps)
+    token = _BEAT_STEPS.set(current)
+    try:
+        yield
+    finally:
+        _BEAT_STEPS.reset(token)
+
+
+def step_of(beat: int | None, operation_id: str | None = None) -> int:
+    """The step of ``beat`` (0: outside declared steps, or no turn's steps in scope): of
+    ``operation_id``'s turn, or of the one turn in scope when it is ``None``."""
+    found = _BEAT_STEPS.get()
+    if not found or beat is None:
+        return 0
+    if operation_id is None:
+        if len(found) != 1:
+            return 0
+        (steps,) = found.values()
+    else:
+        steps = found.get(operation_id, {})
+    return int(steps.get(int(beat), 0))
+
+
+def _with_step(row: dict[str, Any]) -> dict[str, Any]:
+    if "step" not in row:
+        row["step"] = step_of(row.get("beat"), str(row.get("operation_id") or "")) or 0
+    return row
 
 
 def _ids(values: Iterable[str]) -> list[str]:
@@ -418,6 +522,136 @@ async def follow_membership_change(conn: AsyncConnection, change: MembershipChan
     await follow(conn, change.operation_ids, change.new, story_id=change.story_id)
 
 
+# -- narrative position ---------------------------------------------------------------------
+
+
+POSITION_MAX = 32_767
+"""The largest ``beat``/``step``/``slot_k`` a position holds (``smallint``): "the end of" a turn
+or a slot is ``(turn, slot_k, POSITION_MAX, POSITION_MAX)``."""
+
+
+@dataclass(frozen=True, slots=True, order=False)
+class Position:
+    """A narrative position in its five-column form (#159; #160 completes the comparator and
+    retypes the M4 aliases to it): ``turn`` and ``variant`` (the turn's operation), ``slot_k``
+    (0: the turn itself, ``k``: the k-th inter-turn slot after it), ``beat`` (0: the player
+    input) and ``step`` (0: outside declared steps).
+
+    The order is ``key()``: ``turn``, then ``slot_k``, then ``beat``, then ``step``. ``variant``
+    takes no part in it: positions are compared within one timeline, where a turn has one
+    active variant (the provisional comparator; #160 owns the full rules)."""
+
+    turn: int
+    variant: int = 0
+    slot_k: int = 0
+    beat: int = 0
+    step: int = 0
+
+    def key(self) -> tuple[int, int, int, int]:
+        return (self.turn, self.slot_k, self.beat, self.step)
+
+    def at_or_before(self, other: Position) -> bool:
+        return self.key() <= other.key()
+
+    def before(self, other: Position) -> bool:
+        return self.key() < other.key()
+
+    @classmethod
+    def end_of(cls, turn: int, slot_k: int = 0) -> Position:
+        """The last position of ``turn`` (or of its slot ``slot_k``): everything written in it
+        is at or before this."""
+        return cls(turn, 0, slot_k, POSITION_MAX, POSITION_MAX)
+
+    def columns(self, prefix: str) -> dict[str, int]:
+        """The five columns of a position group (``<prefix>_turn`` … ``<prefix>_step``)."""
+        return {
+            f"{prefix}_turn": self.turn,
+            f"{prefix}_variant": self.variant,
+            f"{prefix}_slot_k": self.slot_k,
+            f"{prefix}_beat": self.beat,
+            f"{prefix}_step": self.step,
+        }
+
+    @classmethod
+    def of_columns(cls, row: Mapping[str, Any], prefix: str) -> Position | None:
+        """The position group ``prefix`` of ``row`` (``None`` when its turn is ``NULL``)."""
+        turn = row.get(f"{prefix}_turn")
+        if turn is None:
+            return None
+        return cls(
+            int(turn),
+            int(row.get(f"{prefix}_variant") or 0),
+            int(row.get(f"{prefix}_slot_k") or 0),
+            int(row.get(f"{prefix}_beat") or 0),
+            int(row.get(f"{prefix}_step") or 0),
+        )
+
+    def document(self) -> dict[str, int]:
+        return {
+            "turn": self.turn,
+            "variant": self.variant,
+            "slot_k": self.slot_k,
+            "beat": self.beat,
+            "step": self.step,
+        }
+
+
+Through = Position | tuple[int, int]
+"""A view bound as the M4 readers took it (``(turn, slot_k)``: the end of that turn or slot) or
+as a full narrative position (#164: an exposure frame bounds canon at its beat and step)."""
+
+
+def bound_of(through: Through) -> Position:
+    """``through`` as a full position: ``(turn, slot_k)`` is the end of that turn or slot."""
+    if isinstance(through, Position):
+        return through
+    turn, slot = through
+    return Position.end_of(int(turn), int(slot or 0))
+
+
+POSITION_FIELDS: tuple[str, ...] = ("turn", "variant", "slot_k", "beat", "step")
+"""The columns of a position group, in order (``<prefix>_<field>``)."""
+
+
+def position_group(prefix: str, *, nullable: bool) -> list[Column[Any]]:
+    """The five columns of position group ``prefix`` (#159's ``held_from``/``held_to``): the
+    turn, then ``variant``, ``slot_k``, ``beat`` and ``step``; a nullable group is all ``NULL``
+    or a whole position (its table's CHECK, ``position_group_check``)."""
+    return [
+        Column(f"{prefix}_turn", Integer, nullable=nullable),
+        *(
+            Column(
+                f"{prefix}_{name}",
+                SmallInteger,
+                nullable=nullable,
+                server_default=None if nullable else text("0"),
+            )
+            for name in POSITION_FIELDS[1:]
+        ),
+    ]
+
+
+def position_group_check(prefix: str) -> str:
+    """A nullable position group is all ``NULL`` or none of it is."""
+    columns = [f"{prefix}_{name}" for name in POSITION_FIELDS]
+    return f"num_nulls({', '.join(columns)}) IN (0, {len(columns)})"
+
+
+def position_key(table: FromClause, prefix: str) -> Any:
+    """The order key of position group ``prefix`` of ``table`` as a SQL row value
+    ``(turn, slot_k, beat, step)``, to compare with ``position_literal``."""
+    from sqlalchemy import tuple_
+
+    return tuple_(*(table.c[f"{prefix}_{n}"] for n in ("turn", "slot_k", "beat", "step")))
+
+
+def position_literal(position: Position) -> Any:
+    """``position``'s order key as a SQL row value."""
+    from sqlalchemy import tuple_
+
+    return tuple_(*(literal(v) for v in position.key()))
+
+
 # -- reads ------------------------------------------------------------------------------------
 
 
@@ -494,13 +728,19 @@ __all__ = [
     "DERIVED_TABLES",
     "FLIP_TARGETS",
     "FOLLOWERS",
+    "POSITION_FIELDS",
+    "POSITION_MAX",
     "DerivedTable",
     "Follower",
+    "Position",
+    "Through",
     "active_as_of",
     "active_only",
     "active_only_predicate",
     "active_only_sql",
     "active_operation",
+    "beat_steps",
+    "bound_of",
     "derived_columns",
     "derived_entry",
     "derived_index_names",
@@ -511,10 +751,19 @@ __all__ = [
     "flip_membership",
     "follow",
     "follow_membership_change",
+    "included_operations",
+    "included_through",
+    "including",
     "insert_derived",
+    "position_group",
+    "position_group_check",
+    "position_key",
+    "position_literal",
     "position_of",
+    "recorded_through",
     "register_derived",
     "register_follower",
+    "step_of",
     "supersede",
     "tx_time_of",
     "valid_time_of",

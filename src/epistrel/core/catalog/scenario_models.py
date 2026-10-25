@@ -72,7 +72,10 @@ from epistrel.core.settings_schema import (
     CAST_LIMIT_MAX,
     CAST_LIMIT_MIN,
     DEFAULT_MAX_CHARACTERS_AT_START,
+    TIE_BREAK_PATTERN,
     DeploymentSettings,
+    PlayerView,
+    SequenceOrder,
     TurnConcurrency,
 )
 
@@ -194,6 +197,14 @@ FillMode = Literal["open", "default", "locked"]
 Participation = Literal["primary", "reactive", "silent"]
 Disclosure = Literal["open", "guarded", "secret"]
 SeedKind = Literal["canon", "belief", "nested", "scheduled"]
+SeedConfidence = Literal["suspected", "believed", "known"]
+"""How sure a seeded belief's holder is (#173; ``core.enums.BeliefConfidenceLevel`` less
+``unknown``)."""
+Barrier = Literal["none", "door_open", "door_closed", "window", "thin_wall", "wall"]
+"""What lies between two adjacent places (``core.propositions.vocabulary.BARRIERS``; #161)."""
+ChannelId = Annotated[str, Field(min_length=1, max_length=ALIAS_MAX), AfterValidator(_non_blank)]
+"""A remote channel's free-text token (``on_channel(character, channel_id)``; #161)."""
+Trust = Annotated[float, Strict(), Field(ge=0, le=1, allow_inf_nan=False)]
 InteractionMode = Literal["sequential", "simultaneous"]
 PlayerAuthority = Literal["own_character", "co_author"]
 RetconTiming = Literal["include_if_possible", "ask_author"]
@@ -255,13 +266,24 @@ class ScenarioMetadata(ScenarioModel):
 # -- the world ---------------------------------------------------------------------------------
 
 
+class LocationAdjacency(ScenarioModel):
+    """A place this one adjoins (#161's ``adjacent_to``, symmetric) and the barrier between them
+    (default ``door_open``)."""
+
+    location: Annotated[Slug, FieldClass.knowledge_seed]
+    barrier: Annotated[Barrier | None, FieldClass.knowledge_seed] = None
+
+
 class ScenarioLocation(ScenarioModel):
-    """A named place in the world: an id roles and the opening start at, a name and a
-    description."""
+    """A named place in the world: an id roles and the opening start at, a name, a description
+    and its topology (#161, #173): the place it lies in (``located_in``, a location id) and the
+    places it adjoins (``adjacent_to``), seeded as canon by a structured genesis."""
 
     id: Annotated[Slug, FieldClass.knowledge_seed]
     name: Annotated[Name, FieldClass.knowledge_seed]
     description: Annotated[Text | None, FieldClass.knowledge_seed] = None
+    located_in: Annotated[Slug | None, FieldClass.knowledge_seed] = None
+    adjacent_to: list[LocationAdjacency] = Field(default_factory=list, max_length=LOCATIONS_MAX)
 
 
 EntityKind = Literal["person", "place", "organization", "item", "event", "other"]
@@ -304,6 +326,16 @@ class ScenarioWorld(ScenarioModel):
 # -- seeds -------------------------------------------------------------------------------------
 
 
+class NestedSeed(ScenarioModel):
+    """A ``kind: nested`` seed's content (#173): the holder believes ``attributed_holder`` (a
+    role id) believes ``proposition`` (prose, read like a seed's text), at
+    ``attributed_confidence`` (default ``known``)."""
+
+    attributed_holder: Annotated[Slug, FieldClass.knowledge_seed]
+    proposition: Annotated[Prose, FieldClass.knowledge_seed]
+    attributed_confidence: Annotated[SeedConfidence | None, FieldClass.knowledge_seed] = None
+
+
 class Seed(ScenarioModel):
     """A seeded item (FR-SCN-3,8): its ``text``, its ``holder`` (a role id, or ``world``), its
     ``audience`` (who starts out knowing it) and its ``disclosure`` (how the holder treats it:
@@ -321,6 +353,8 @@ class Seed(ScenarioModel):
     disclosure: Annotated[Disclosure | None, FieldClass.knowledge_seed] = None
     kind: Annotated[SeedKind | None, FieldClass.knowledge_seed] = None
     valid_time: Annotated[Structure | None, FieldClass.knowledge_seed] = None
+    confidence: Annotated[SeedConfidence | None, FieldClass.knowledge_seed] = None
+    nested: NestedSeed | None = None
 
     @field_validator("audience")
     @classmethod
@@ -377,6 +411,17 @@ class RoleRelationship(ScenarioModel):
 
     to_role: Annotated[Slug, FieldClass.knowledge_seed]
     name: Annotated[Name, FieldClass.knowledge_seed]
+    trust: Annotated[Trust | None, FieldClass.knowledge_seed] = None
+    """How far the role trusts the other, 0 to 1 (#162's seeded trust; default: by name)."""
+    audience: Annotated[list[Slug] | None, FieldClass.knowledge_seed] = Field(
+        default=None, min_length=1, max_length=ROLES_MAX
+    )
+    """The roles that know the relationship (default: its two roles)."""
+
+    @field_validator("audience")
+    @classmethod
+    def _distinct(cls, value: list[str] | None) -> list[str] | None:
+        return None if value is None else _unique(value)
 
 
 class NameOverrides(ScenarioModel):
@@ -417,10 +462,14 @@ class ScenarioRole(ScenarioModel):
 
 
 class ScenarioCast(ScenarioModel):
-    """The cast: the roles, and the most character slots (player slots included) a story
+    """The cast: the roles, the named groups a seed's audience may name (``groups``: a group's
+    name → its role ids; #173), and the most character slots (player slots included) a story
     starts with (FR-SCN-4; ``null``: the deployment's default)."""
 
     roles: list[ScenarioRole] = Field(default_factory=list, max_length=ROLES_MAX)
+    groups: Annotated[dict[AudienceToken, list[Slug]] | None, FieldClass.knowledge_seed] = Field(
+        default=None, max_length=ROLES_MAX
+    )
     max_characters_at_start: Annotated[
         CastLimit | None, FieldClass.configuration, Use.creation_only
     ] = None
@@ -436,6 +485,16 @@ class ScenarioOpening(ScenarioModel):
     narration: Annotated[Text | None, FieldClass.starting_state] = None
     starting_location: Annotated[Slug | None, FieldClass.knowledge_seed] = None
     roles_present: Annotated[list[Slug], FieldClass.starting_state] = Field(
+        default_factory=list, max_length=ROLES_MAX
+    )
+
+
+class ScenarioChannel(ScenarioModel):
+    """A remote channel open when the story starts (#161's ``on_channel``; #173): its token and
+    the roles on it."""
+
+    id: Annotated[ChannelId, FieldClass.knowledge_seed]
+    participants: Annotated[list[Slug], FieldClass.knowledge_seed] = Field(
         default_factory=list, max_length=ROLES_MAX
     )
 
@@ -462,6 +521,7 @@ class ScenarioStartingState(ScenarioModel):
     rules: Annotated[list[Structure], FieldClass.story_rule] = Field(
         default_factory=list, max_length=STRUCTURES_MAX
     )
+    channels: list[ScenarioChannel] = Field(default_factory=list, max_length=ITEMS_MAX)
     opening: ScenarioOpening = Field(default_factory=ScenarioOpening)
 
 
@@ -533,6 +593,24 @@ class StorySettingsDefaults(ScenarioModel):
     interaction_mode: Annotated[
         InteractionMode | None, FieldClass.configuration, Use.story_setting
     ] = None
+    sequence_order: Annotated[SequenceOrder | None, FieldClass.configuration, Use.story_setting] = (
+        None
+    )
+    """Who orders a ``sequential`` turn's primaries (FR-MULTI-6; #174): ``request`` or
+    ``director``. ``null`` leaves the story's default (``request``). Needs per-character renders
+    (#181: kept ``inactive`` until the story runs them)."""
+    simultaneous_tie_break: Annotated[str | None, FieldClass.configuration, Use.story_setting] = (
+        Field(default=None, pattern=TIE_BREAK_PATTERN)
+    )
+    """How a ``simultaneous`` turn settles conflicting actions (FR-MULTI-8; #175):
+    ``request_order``, ``director`` or ``state:<name>`` (M6). ``null`` leaves the story's
+    default (``request_order``). Needs per-character renders (#181)."""
+    reactive_interjections: Annotated[
+        StrictBool | None, FieldClass.configuration, Use.story_setting
+    ] = None
+    """Whether reactive narration may give a reactive character a brief interjection
+    (FR-MULTI-9; #176). ``null`` leaves the story's default (off). Needs per-character renders
+    (#181)."""
     turn_concurrency: Annotated[
         TurnConcurrency | None, FieldClass.configuration, Use.story_setting
     ] = None
@@ -557,6 +635,10 @@ class StorySettingsDefaults(ScenarioModel):
     """The scenario's arrival policy (FR-VERIFY-11; #144): whether a director pass may introduce
     new arrivals, and a render a new unmodeled person as scene texture. ``null`` leaves the
     story's default (true)."""
+    player_view: Annotated[PlayerView | None, FieldClass.configuration, Use.story_setting] = None
+    """What a character viewpoint's output holds where perception is on (FR-RESP-13; #177):
+    ``character`` (the audience filter) or ``story`` (every beat, whatever the character
+    perceived). ``null`` leaves the story's default (``character``)."""
     policies: list[ScenarioPolicy] = Field(default_factory=list, max_length=POLICIES_MAX)
     required_providers: Annotated[list[ProviderName], FieldClass.configuration, Use.policy] = Field(
         default_factory=list, max_length=NAMES_MAX

@@ -77,7 +77,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Literal
 
@@ -99,13 +99,16 @@ from sqlalchemy.dialects.postgresql import DOUBLE_PRECISION
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core import timeline
+from epistrel.core.config_changes import read_section
 from epistrel.core.enums import Membership, RetrievalTier
+from epistrel.core.epistemic import modeling
 from epistrel.core.events.operation import register_turn_hook
 from epistrel.core.ids import new_ulid
 from epistrel.core.membership import active_only
 from epistrel.core.memory import records
 from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.profiles.schema import ProfileSettings
+from epistrel.core.settings_schema import HotSetSettings
 from epistrel.core.tables import stories
 from epistrel.core.tables.hot_set import overflow_episodes
 from epistrel.core.tables.memories import HOT_UNPINNED_WHERE, HOT_VECTORS_WHERE, memories
@@ -257,8 +260,33 @@ class Budgets:
             retain_dormant=h.retain_dormant_vectors,
         )
 
-    def budget(self, scope: str) -> int:
-        return self.vectors_per_story if scope == STORY else self.memories_per_character
+    minors: frozenset[str] = frozenset()
+    """The story's ``minor`` characters (#163), held to ``minor_fraction`` of the budget."""
+    minor_fraction: float = 1.0
+
+    def character_budget(self, character_id: str) -> int:
+        """A character's unpinned hot budget: ``memories_per_character``, scaled by the
+        deployment's ``minor_hot_budget_fraction`` for a ``minor`` (FR-EPI-10; at least 1)."""
+        if character_id in self.minors:
+            return max(1, int(self.memories_per_character * self.minor_fraction))
+        return self.memories_per_character
+
+    def budget(self, scope: str, scope_id: str | None = None) -> int:
+        if scope == STORY:
+            return self.vectors_per_story
+        return self.memories_per_character if scope_id is None else self.character_budget(scope_id)
+
+
+async def budgets_of(conn: AsyncConnection, story_id: str, settings: ProfileSettings) -> Budgets:
+    """The story's budgets under ``settings``, its minors' scaled by the deployment's
+    ``minor_hot_budget_fraction`` (#163)."""
+    minors = await modeling.minor_ids(conn, story_id)
+    if not minors:
+        return Budgets.of(settings)
+    caps = await read_section(conn, HotSetSettings)
+    return replace(
+        Budgets.of(settings), minors=minors, minor_fraction=caps.minor_hot_budget_fraction
+    )
 
 
 async def _settings(conn: AsyncConnection, story_id: str) -> ProfileSettings:
@@ -435,8 +463,9 @@ def overflow(counts: HotCounts, budgets: Budgets, story_id: str) -> dict[tuple[s
     """Every set over its budget, with its excess: ``{(scope, scope_id): excess}``."""
     found: dict[tuple[str, str], int] = {}
     for character, n in counts.characters.items():
-        if n > budgets.memories_per_character:
-            found[(CHARACTER, character)] = n - budgets.memories_per_character
+        allowed = budgets.character_budget(character)
+        if n > allowed:
+            found[(CHARACTER, character)] = n - allowed
     if counts.story_vectors > budgets.vectors_per_story:
         found[(STORY, story_id)] = counts.story_vectors - budgets.vectors_per_story
     return found
@@ -696,11 +725,11 @@ async def run_episode(
     settings = settings or await _settings(conn, story_id)
     if not await records.episodic_on(conn, story_id, settings):
         return EpisodeRun(episode_id, skipped="module_off")
-    budgets = Budgets.of(settings)
+    budgets = await budgets_of(conn, story_id, settings)
     turn = await head_turn(conn, story_id)
     forced = turn >= ep.deadline_turn
     current = await recount(conn, story_id)
-    budget = budgets.budget(ep.scope)
+    budget = budgets.budget(ep.scope, ep.scope_id)
     excess = current.count(ep.scope, ep.scope_id) - budget
     retired: dict[str, int] = {}
     wanted = 0
@@ -806,7 +835,7 @@ async def reevaluate(
     if not await records.episodic_on(conn, story_id, settings):
         return
     turn = max(await head_turn(conn, story_id), at_least)
-    await evaluate(conn, story_id, current, Budgets.of(settings), turn)
+    await evaluate(conn, story_id, current, await budgets_of(conn, story_id, settings), turn)
 
 
 async def counted_without_vectors(
@@ -898,7 +927,7 @@ async def on_membership_change(conn: AsyncConnection, change: timeline.Membershi
     ):
         return
     settings = await _settings(conn, change.story_id)
-    budgets = Budgets.of(settings)
+    budgets = await budgets_of(conn, change.story_id, settings)
     if change.new is Membership.ACTIVE:
         await _came_back(conn, change.story_id, change.operation_ids)
     else:
@@ -916,7 +945,7 @@ async def on_turn_committed(
     with nothing open and nothing made dormant costs one statement."""
     if made_dormant and await _memories_of(conn, story_id, made_dormant):
         settings = await _settings(conn, story_id)
-        await _left_active(conn, story_id, made_dormant, Budgets.of(settings))
+        await _left_active(conn, story_id, made_dormant, await budgets_of(conn, story_id, settings))
         current = await recount(conn, story_id)
         await reevaluate(conn, story_id, current, settings=settings, at_least=turn)
     e = overflow_episodes.c

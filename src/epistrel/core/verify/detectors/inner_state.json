@@ -1,0 +1,35 @@
+{
+  "category": "inner_state",
+  "language": "en",
+  "description": "Inner-state cues (#172, FR-TURN-3, NFR-PRIV-1): a sentence that asserts what a character thinks or feels ('he secretly thought she looked sad'). A cue word whose subject is another character than the viewpoint's, in a sentence whose content matches that character's private thoughts or beliefs, is a think_leak. Verbs of thought and feeling, adverb cues and cognition verbs; every inflection is listed (no stemmer). An observable action expressing a state (a sympathetic glance) carries no cue.",
+  "verbs": [
+    "think", "thinks", "thinking", "thought",
+    "feel", "feels", "feeling", "felt",
+    "wish", "wishes", "wishing", "wished",
+    "wonder", "wonders", "wondering", "wondered",
+    "hope", "hopes", "hoping", "hoped",
+    "fear", "fears", "fearing", "feared",
+    "worry", "worries", "worrying", "worried",
+    "muse", "muses", "musing", "mused"
+  ],
+  "adverbs": ["secretly", "inwardly", "privately", "silently", "quietly", "deep down"],
+  "cognition": [
+    "know", "knows", "knowing", "knew",
+    "realize", "realizes", "realizing", "realized",
+    "realise", "realises", "realising", "realised",
+    "suspect", "suspects", "suspecting", "suspected",
+    "believe", "believes", "believing", "believed",
+    "notice", "notices", "noticing", "noticed",
+    "guess", "guesses", "guessing", "guessed"
+  ],
+  "subject_pronouns": ["he", "she", "they"],
+  "object_pronouns": ["him", "her", "them", "his", "hers", "their"],
+  "stopwords": [
+    "a", "an", "the", "and", "or", "but", "so", "that", "this", "those", "these", "to", "of",
+    "in", "on", "at", "for", "with", "as", "is", "was", "are", "were", "be", "been", "am",
+    "i", "you", "he", "she", "it", "we", "they", "me", "him", "her", "us", "them", "my", "your",
+    "his", "its", "our", "their", "very", "really", "just", "today", "day", "time", "when",
+    "then", "now", "how", "what", "do", "does", "did", "had", "has", "have", "thinks", "says",
+    "there", "here", "too", "quite", "bit", "little", "kind", "sort", "some", "all"
+  ]
+}

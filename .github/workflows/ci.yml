@@ -134,9 +134,14 @@ jobs:
     # #157/#158: the eval suites' tests (tests/eval about 12 min, tests/evals about 4 min on the
     # runner) took `rest` past its 25 minutes, so they run in an `eval` shard, and the stub eval
     # run is a job of its own (`evals` below).
+    # #179 (M5's PR): `rest` reached 25 minutes on a slow runner (scenario ~8 min, perf ~7 min,
+    # top-level ~7 min) and `eval` 25 with E-08's real-suite run in it, so tests/scenario and
+    # tests/perf move together (P-05's census) to `scenario-perf`, and tests/eval, E-08 and the
+    # rest of tests/evals run as `eval`, `eval-e08-think`, `eval-e08` and `eval-harness`.
     name: test (${{ matrix.shard.name }})
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # 35, not 25 (#179): E-08's 300-case real-suite run is one file that took 21 minutes on a slow runner.
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -153,10 +158,22 @@ jobs:
             paths: tests/property tests/chaos
           - name: perf-scale
             paths: tests/perf/test_p_01.py tests/perf/test_p_02.py tests/perf/test_p_06.py
+          # tests/eval (the labeled-set suites, ~14 min), E-08's 300-case real-suite run (#179, over
+          # 11 min alone) and the rest of the harness split: together they outran the job's 25 minutes.
           - name: eval
-            paths: tests/eval tests/evals
+            paths: tests/eval
+          # E-08's think-leak pass (345 cases on two seeds) outgrew one shard beside the asymmetry
+          # runs once #179 resized the set, so it runs alone.
+          - name: eval-e08-think
+            paths: tests/evals/test_e_08.py::test_e_08__m5_think_leak
+          - name: eval-e08
+            paths: tests/evals/test_e_08.py --deselect=tests/evals/test_e_08.py::test_e_08__m5_think_leak
+          - name: eval-harness
+            paths: tests/evals --ignore=tests/evals/test_e_08.py
+          - name: scenario-perf
+            paths: tests/scenario tests/perf --ignore=tests/perf/test_p_01.py --ignore=tests/perf/test_p_02.py --ignore=tests/perf/test_p_06.py
           - name: rest
-            paths: tests --ignore=tests/conformance --ignore=tests/integration --ignore=tests/property --ignore=tests/chaos --ignore=tests/perf/test_p_01.py --ignore=tests/perf/test_p_02.py --ignore=tests/perf/test_p_06.py --ignore=tests/eval --ignore=tests/evals
+            paths: tests --ignore=tests/conformance --ignore=tests/integration --ignore=tests/property --ignore=tests/chaos --ignore=tests/scenario --ignore=tests/perf --ignore=tests/eval --ignore=tests/evals
     steps:
       - uses: actions/checkout@v7
         with:
@@ -167,7 +184,8 @@ jobs:
           version: ${{ env.UV_VERSION }}
           python-version: "3.14"
           enable-cache: true
-      - run: uv sync --frozen
+      # Locust (the `perf` group) for P-04's multi-character smoke run (#182, `perf_smoke`).
+      - run: uv sync --frozen --group perf
       # The video poster and probe tests run ffmpeg and ffprobe (#107), and fail without them: the
       # image installs Debian's ffmpeg. A separate GPL program, never linked.
       # #500: the Azure Ubuntu mirror served ffmpeg's 63 MB of .debs at about 60 KB/s (2026-10-22:
@@ -247,8 +265,10 @@ jobs:
       # job of its own, outside the test matrix (#157/#158 grew it past a shard's budget).
       # E-10 runs its full set (`--full e10`, about 30 s): its measured gap is 8 of 300 cases, and
       # a sample of 100 can draw 5 of them and sit exactly on the 95 % floor.
+      # #179's zero-leak suites (q04, priv_think_leak) need their full sets (NFR-QUAL-8's 300 cases a
+      # metric) and run as the `evals-zero-leak` job below.
       - name: evals (stub)
-        run: uv run python -m epistrel.evals run --adapter stub --all --seeds 2 --sample 100 --full e10 --fail-on-gate
+        run: uv run python -m epistrel.evals run --adapter stub --all --skip q04 --skip priv_think_leak --seeds 2 --sample 100 --full e10 --fail-on-gate
       - name: upload the stub eval report
         if: always()
         uses: actions/upload-artifact@v7
@@ -302,6 +322,39 @@ jobs:
           cache-from: type=gha,scope=ci
           cache-to: type=gha,mode=max,scope=ci
 
+  evals-zero-leak:
+    # #179 (NFR-QUAL-1, E-08 M5): the knowledge-asymmetry and private-thought suites on the stub,
+    # their full sets on two seeds (each case one or two structured turns, four at a time): the
+    # observed-zero rule passes only with no violation over at least 300 cases a seed. The stub
+    # answers every case with its authored clean render, so this proves the plumbing; the
+    # local-model run is the exit evidence (docs/evals/README.md).
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || '' }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v10.2.0  # exact: setup-uv publishes no floating major tag past v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.14"
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: evals zero-leak (stub)
+        run: uv run python -m epistrel.evals run --adapter stub --suite q04 --suite priv_think_leak --new-run --seeds 2 --concurrency 4 --fail-on-gate --markdown build/evals/stub-zero-leak.md
+      - name: upload the zero-leak stub report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: evals-zero-leak-stub-report
+          path: |
+            build/evals/stub-zero-leak.md
+            build/evals/*.json
+            build/evals/*.jsonl
+          if-no-files-found: warn
+          retention-days: 14
+
   gate:
     # One context for the ruleset to require: red if any job above did not succeed (for the
     # sharded `test`, any shard).
@@ -309,7 +362,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     if: always()
-    needs: [lint, types, test, evals, coverage, docker]
+    needs: [lint, types, test, evals, evals-zero-leak, coverage, docker]
     steps:
       - name: Summarise
         env:
@@ -317,14 +370,15 @@ jobs:
           TYPES: ${{ needs.types.result }}
           TEST: ${{ needs.test.result }}
           EVALS: ${{ needs.evals.result }}
+          ZERO_LEAK: ${{ needs.evals-zero-leak.result }}
           COVERAGE: ${{ needs.coverage.result }}
           DOCKER: ${{ needs.docker.result }}
         run: |
           printf '%s\n' '| job | result |' '|---|---|' \
             "| lint | $LINT |" "| types | $TYPES |" "| test | $TEST |" "| evals | $EVALS |" \
-            "| coverage | $COVERAGE |" \
+            "| evals-zero-leak | $ZERO_LEAK |" "| coverage | $COVERAGE |" \
             "| docker | $DOCKER |" >> "$GITHUB_STEP_SUMMARY"
-          for r in "$LINT" "$TYPES" "$TEST" "$EVALS" "$COVERAGE" "$DOCKER"; do
-            [ "$r" = "success" ] || { echo "gate: a job did not succeed ($LINT/$TYPES/$TEST/$EVALS/$COVERAGE/$DOCKER)"; exit 1; }
+          for r in "$LINT" "$TYPES" "$TEST" "$EVALS" "$ZERO_LEAK" "$COVERAGE" "$DOCKER"; do
+            [ "$r" = "success" ] || { echo "gate: a job did not succeed ($LINT/$TYPES/$TEST/$EVALS/$ZERO_LEAK/$COVERAGE/$DOCKER)"; exit 1; }
           done
           echo "gate: all jobs succeeded"

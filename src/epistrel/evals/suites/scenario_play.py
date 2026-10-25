@@ -288,6 +288,9 @@ async def play(ctx: CaseContext, case: ScenarioCase) -> Played:
     created = await ctx.story(StorySpec(characters=list(CAST)))
     story_id = created.story_id
     await scenes.structured(ctx.engine, ctx.principal, story_id, CONFIG_DIALS[case.config])
+    # The seeded profile routes perception (#181): the scenes place no one, so the player reads
+    # the turn as the story does (``player_view = story``: every beat in full, FR-RESP-13).
+    await ctx.engine.update_story_settings(ctx.principal, story_id, {"player_view": "story"})
     await _plant(ctx, story_id)
     await ctx.engine.set_custom_instructions(
         ctx.principal, story_id, CustomInstructionsRequest(text=drivers_text(case.drivers))

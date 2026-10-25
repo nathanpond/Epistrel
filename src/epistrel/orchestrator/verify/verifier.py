@@ -63,6 +63,31 @@ it ``needs_repair`` with ``repair_tag = "unpermitted"`` (#151's ladder), except
 ``player_authority``, whose player text stands; it is listed in ``report()["denied"]`` with its
 reason, and its verdict entry carries the permission code.
 
+**Viewpoint-aware: the speaker's beliefs** (FR-VERIFY-2,5,10, FR-TURN-6,7,8; #166). A
+character's first-person ``say`` claim (``verify(..., believer=, intent=)``; the player's own
+``say`` never, FR-EPI-12) is checked twice from one normalization: against canon as above (its
+**objective** relation) and, through a ``BeliefSource``, against #159's ``belief(speaker)``
+holder at the say beat's position (its **belief** relation: the speaker's partition, then the
+canon it may read; deterministic only, ``uncertain`` reads as ``unknown``). Neither overrides
+the other. ``core.verify.speech_acts`` checks the declared intent and classifies the claim:
+``sincere``, ``sincere_error`` (an established false belief, or a new one licensed by an
+independently verified antecedent), ``lie`` (deceptive against a contrary belief the speaker
+holds, or its own true age, which it knows: FR-CAT-12), ``joke`` or ``hallucination_repaired``
+(no legitimate basis). A claim needs a licence when the speaker's beliefs contradict it, or when
+the record holds it beyond the speaker's view (omniscient canon, or another character's belief or
+utterance: withheld content). A licence is citation-with-engine-fallback: the engine searches
+the speaker's history with #165's ``could_have_known`` (a path is the licensing antecedent),
+then the speaker's own earlier sincere word, then misinformation the speaker heard and repeats
+(a ``said`` row or an unresolved exposure of the same proposition, accepted at ``believed``:
+the assertion evidences acceptance); a ``think`` beat's ``cites`` are confirmed
+when one names the antecedent the search found, never on their own (FR-EPI-13: no
+self-attestation). A hallucination ``needs_repair`` whatever its declared intent (under
+``safe_disposition = surface``, one canon does not contradict is surfaced instead); a sincere
+error, a lie and a joke stand, and none of the last two canonizes. The dimensions ride on
+``VerifyResult.speech`` and on ``turn_report.verify`` (omniscient reads only); the pipeline
+writes what they license at the commit (``orchestrator.epistemic.speech``). Partitions off, or
+verification off, there is no belief dimension and no classification.
+
 **Within one turn** a ``Verifier`` is built per turn: identical ``(claim, records)`` requests
 reuse the first validated answer (the structured call's deterministic step), escalations run one
 after the other, and every residual that reached the gate leaves an ``EscalationRecord`` in
@@ -94,6 +119,9 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.canon.canonize import CanonRequest, anchor_for, visibility_of
 from epistrel.core.config_changes import read_section
+from epistrel.core.epistemic import resurface
+from epistrel.core.membership import Position as NarrativePosition
+from epistrel.core.membership import step_of
 from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.propositions.model import (
@@ -107,10 +135,10 @@ from epistrel.core.propositions.registry import Registry, load
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.resolution.context import load_time_basis
 from epistrel.core.resolution.time import TimeBasis
-from epistrel.core.settings_schema import OMNISCIENT, VerifySettings
+from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX, OMNISCIENT, VerifySettings
 from epistrel.core.tables import entities
 from epistrel.core.verify import permission as permissions
-from epistrel.core.verify import rules, yield_queries
+from epistrel.core.verify import rules, speech_acts, yield_queries
 from epistrel.core.verify.introduce import Introductions
 from epistrel.core.verify.neighborhood import Seed, fact_neighborhood
 from epistrel.core.verify.normalize import Unnormalizable
@@ -167,13 +195,28 @@ UNCERTAIN_SURFACED = "uncertain_surfaced"
 ENTAILMENT_RULE = "entailment"
 """The ``rule`` of a verdict the entailment model decided (it cites no record)."""
 UNPERMITTED = "unpermitted"
+HALLUCINATION = "hallucination"
+"""#166: the repair tag of a first-person claim with no legitimate basis (FR-VERIFY-10)."""
 RESOLUTION_CONFLICT = "resolution_conflict"
+THINK_LEAK = "think_leak"
+"""#172: the repair tag of a claim that repeats or narrates another character's private thought
+(the thought side index or the inner-state check; FR-TURN-3, NFR-PRIV-1)."""
+CONFABULATION = resurface.CONFABULATION
+"""#172: the repair tag of a recall no record of the speaker's backs (FR-VERIFY-9)."""
+RECALL_RULE = resurface.RECALL
+"""#172: the rule of a grounded recall's ``supported`` verdict."""
+HIDDEN_CONFLICT = "hidden_conflict"
+"""#169 (FR-EPI-8): a character's claim the character's view leaves open but hidden canon
+contradicts (a different value for a determined fact): ``contradicted``, citing nothing, so no
+repair reads or substitutes the hidden value."""
 """#154: a dependence's binding of an open thunk that conflicts with recorded history
 (``core.commit.reconcile``): ``contradicted``, repaired with an ``avoid_binding`` constraint."""
 """The repair tag of a novel claim its asserter may not introduce (#151's ladder)."""
 NEVER_CANONIZES = frozenset({"think"})
 """Beat channels whose claims never canonize."""
 SAY = "say"
+PARTITIONS_MODULE = "partitions"
+"""``character_knowledge.partitions``: the belief dimension runs only under it (#166)."""
 
 BUILT_IN_PARAMS = ModelParams(temperature=0.0, max_tokens=100)
 """The entailment call's own params; the story's ``entailment`` route's params win."""
@@ -276,6 +319,28 @@ class VerifyResult:
     """#154: the claim binds an open thunk against recorded history (``reconcile``'s
     ``Conflict``); ``avoid`` is the entity it bound, when one."""
     avoid: str | None = None
+    speech: SpeechAct | None = None
+    """#166: a first-person ``say`` claim's belief dimension and classification (``None``: not
+    a character's say, or partitions off)."""
+    attribution: AttributionCheck | None = None
+    """#167: the claim attributes its proposition to someone ("Bobby thinks …"): its belief
+    relation over the speaker's nested beliefs and its objective relation (a label only)."""
+    self_attested: bool = False
+    """#168: the claim asserts what a rejected ``believe`` step of the render concluded, in the
+    beats of the first ``act`` citing it (FR-TURN-12): self-attestation, a hallucination."""
+    hidden_conflict: bool = False
+    """#169: ``contradicted`` by canon hidden from the claim's viewpoint (``HIDDEN_CONFLICT``)."""
+    think_leak: str | None = None
+    """#172: the private record (``think:<ref>``) the claim repeats or narrates (``THINK_LEAK``):
+    always repaired, never canonized."""
+    recall: resurface.RecallCheck | None = None
+    """#172: a first-person recall's check against the speaker's own records (FR-VERIFY-9):
+    grounded (``supported``, rule ``recall``) or a confabulation (repaired)."""
+
+    @property
+    def confabulated(self) -> bool:
+        """#172: an unbacked recall."""
+        return self.recall is not None and not self.recall.grounded
 
     @property
     def reason(self) -> VerdictReason | None:
@@ -283,6 +348,8 @@ class VerifyResult:
 
     @property
     def rule(self) -> str | None:
+        if self.recall is not None and self.recall.grounded:
+            return RECALL_RULE
         if self.source == "entailment" and self.kind in (
             VerdictKind.SUPPORTED,
             VerdictKind.CONTRADICTED,
@@ -300,9 +367,42 @@ class VerifyResult:
         return self.permission if isinstance(self.permission, Permitted) else None
 
     @property
+    def hallucinated(self) -> bool:
+        """#166: the claim has no legitimate basis (``hallucination_repaired``); #168: or it
+        asserts a self-attested belief."""
+        return self.self_attested or (self.speech is not None and self.speech.decision.hallucinated)
+
+    @property
+    def stands(self) -> bool:
+        """#166: a sincere error, a lie or a joke: it stands as said."""
+        return self.speech is not None and self.speech.decision.stands
+
+    @property
+    def canonizes(self) -> bool:
+        """Whether a permitted novel claim may canonize: never a lie, a joke or a
+        hallucination (#166)."""
+        if self.attribution is not None:
+            return False  # #167: an attribution asserts someone's belief, never canon
+        if self.think_leak is not None or self.recall is not None:
+            return False  # #172: a private thought or a memory reference is never canon
+        return self.speech is None or self.speech.decision.classification in (
+            speech_acts.SINCERE,
+            speech_acts.SINCERE_ERROR,
+        )
+
+    @property
     def needs_repair(self) -> bool:
         """Whether #151 repairs the claim: contradicted, undecided under ``repair``, or novel
-        and not permitted (``repair_tag``)."""
+        and not permitted (``repair_tag``); under partitions (#166) a hallucination always
+        (unless surfaced), and never a sincere error, a lie or a joke."""
+        if self.think_leak is not None or self.confabulated:
+            return True  # #172: under every profile (the channel is private)
+        if self.recall is not None:
+            return False
+        if self.hallucinated:
+            return not self.surfaced
+        if self.stands or self.attribution is not None:
+            return False
         return (
             self.kind is VerdictKind.CONTRADICTED
             or self.disposition == "repair"
@@ -312,9 +412,16 @@ class VerifyResult:
     @property
     def repair_tag(self) -> str | None:
         """``unpermitted`` for a denied novel claim #151 repairs (FR-VERIFY-12);
-        ``resolution_conflict`` for a binding reconciliation rejected (#154)."""
+        ``resolution_conflict`` for a binding reconciliation rejected (#154); ``hallucination``
+        for a first-person claim with no legitimate basis (#166)."""
+        if self.think_leak is not None:
+            return THINK_LEAK
+        if self.confabulated:
+            return CONFABULATION
         if self.resolution_conflict:
             return RESOLUTION_CONFLICT
+        if self.hallucinated:
+            return HALLUCINATION
         denied = self.denied
         return UNPERMITTED if denied is not None and denied.repaired else None
 
@@ -346,7 +453,14 @@ class VerifyResult:
             "escalated": self.escalated,
             "disposition": self.disposition,
             "permission": None if self.permission is None else self.permission.code(),
-        } | ({"cause": RESOLUTION_CONFLICT} if self.resolution_conflict else {})
+        } | (
+            ({"cause": RESOLUTION_CONFLICT} if self.resolution_conflict else {})
+            | ({"cause": HIDDEN_CONFLICT} if self.hidden_conflict else {})
+            | ({"cause": THINK_LEAK, "private_ref": self.think_leak} if self.think_leak else {})
+            | ({"recall": self.recall.payload()} if self.recall is not None else {})
+            | ({"speech": self.speech.payload()} if self.speech is not None else {})
+            | ({"attribution": self.attribution.payload()} if self.attribution is not None else {})
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -417,6 +531,7 @@ class ClaimSource(Protocol):
         *,
         position: tuple[int, int] | None,
         protected: bool,
+        resolves: str | None = None,
     ) -> Permission | None: ...
 
     async def anchor(
@@ -484,6 +599,7 @@ class RecordsSource:
         *,
         position: tuple[int, int] | None,
         protected: bool,
+        resolves: str | None = None,
     ) -> Permission | None:
         del position
         facts = PermissionFacts(
@@ -493,6 +609,7 @@ class RecordsSource:
             placed=claim.subject_id in self.placed,
             allow_new_arrivals=self.allow_new_arrivals,
             protected=protected,
+            resolves=resolves,
         )
         return permissions.permission(claim, asserter, permissions.owner_of(claim, facts), facts)
 
@@ -579,6 +696,7 @@ class CanonSource:
         *,
         position: tuple[int, int] | None,
         protected: bool,
+        resolves: str | None = None,
     ) -> Permission | None:
         return await permissions.check(
             self.conn,
@@ -590,6 +708,7 @@ class CanonSource:
             protected=protected,
             registry=await self.registry(),
             remember=self.remember,
+            resolves=resolves,
         )
 
     async def anchor(
@@ -617,6 +736,492 @@ class CanonSource:
             )
         )
         return {str(r.id): str(r.canonical_name) for r in rows}
+
+
+# -- the speaker's beliefs (#166) -------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Licence:
+    """What licenses the belief a first-person claim expresses: the ``path`` the engine found
+    (``canon``, ``exposure``, ``implied``, ``transition``, ``said``, ``said_before``: the
+    speaker's own earlier sincere word, ``player``, ``not_applicable``), the transition ``kind``
+    that writes the belief (``None``: nothing to write, the speaker holds it already or the
+    check does not apply), the antecedent record (``table``, ``record_id``), the testimony's
+    ``source``, the position the belief holds from (``held_from``; ``None``: the claim's), the
+    path's record (``ref_id``) and whether a ``think``'s ``cites`` named it (``cited``)."""
+
+    path: str
+    kind: str | None = None
+    table: str | None = None
+    record_id: str | None = None
+    source: str | None = None
+    held_from: NarrativePosition | None = None
+    ref_id: str | None = None
+    cited: bool = False
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "path": self.path,
+            "kind": self.kind,
+            "antecedent": None
+            if self.record_id is None
+            else {"table": self.table, "id": self.record_id},
+            "cited": self.cited,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class AttributionCheck:
+    """An attribution claim's dimensions (#167; ``core.epistemic.nested``): whom it attributes
+    the proposition to and how (``mode``, ``factive``), the speaker's nested beliefs it was
+    checked over (``belief_ids``; ``None``: not checked, the ``nested_beliefs`` module being
+    off) and the **objective relation**, whether the attributed holder actually believes it
+    (computed by the Engine Core for the utterance label and the divergence records only; never
+    a context input)."""
+
+    attributed_holder: str | None
+    mode: str = "believes"
+    factive: bool = False
+    belief_ids: tuple[str, ...] | None = None
+    objective: str | None = None
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "attributed_holder": self.attributed_holder,
+            "mode": self.mode,
+            "factive": self.factive,
+            "checked": self.belief_ids is not None,
+            "belief_ids": list(self.belief_ids or ()),
+            "objective_relation": self.objective,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class SpeechAct:
+    """One first-person claim's speech-act dimensions (#166): the speaker, the claim's position,
+    the declared intent, the belief verdict, the classification (``decision``), the contrary
+    beliefs the claim contradicts (strongest first), what canon holds beyond the speaker's view
+    (``hidden``) and the licence the belief rests on."""
+
+    speaker: str
+    position: NarrativePosition
+    declared: str
+    belief: Verdict
+    decision: speech_acts.Decision
+    contrary: tuple[str, ...] = ()
+    hidden: VerdictKind | None = None
+    licence: Licence | None = None
+    known: tuple[str, ...] = ()
+    """The canon propositions the speaker holds of itself that the claim contradicts (its true
+    age, FR-CAT-12), when no belief row does: a lie may deviate from them."""
+    inferred: bool = False
+    """#167: the intent was inferred ``deceptive``: the contrary belief is one the speaker keeps
+    ``secret`` (its author act's ``disclosure``)."""
+
+    @property
+    def classification(self) -> str:
+        return self.decision.classification
+
+    @property
+    def writes(self) -> bool:
+        """Whether the commit writes the licensed belief (``orchestrator.epistemic.speech``)."""
+        return (
+            self.decision.write is not None
+            and self.licence is not None
+            and self.licence.kind is not None
+        )
+
+    def payload(self) -> dict[str, Any]:
+        """The ``speech`` entry of a verdict: ids and codes only."""
+        return {
+            "belief_kind": self.belief.kind.value,
+            "belief_relation": self.decision.belief_relation,
+            "declared_intent": self.declared,
+            "intent": self.decision.intent,
+            "intent_corrected": self.decision.intent_corrected,
+            "intent_inferred": self.inferred,
+            "classification": self.decision.classification,
+            "contrary_belief_ids": list(self.contrary),
+            "contrary_known": list(self.known),
+            "hidden": None if self.hidden is None else self.hidden.value,
+            "licence": None if self.licence is None else self.licence.payload(),
+            "belief_evidence": [e.as_payload() for e in self.belief.evidence],
+        }
+
+
+class BeliefSource:
+    """The speaker's belief set on the turn's connection (#166): #159's ``belief(speaker)``
+    holder through ``rules.verify`` (keyed in ``read_set``, recorded for the rebase re-check),
+    what the record holds beyond the speaker's view (omniscient canon, keyed and not recorded,
+    then another character's belief or utterance of it), and the licensing search
+    (``replay.could_have_known``, #165, the speaker's own earlier word, then the misinformation
+    the speaker heard). ``variant`` is the turn's (a claim's position is ``(turn, variant, 0,
+    beat, 0)``)."""
+
+    def __init__(
+        self,
+        conn: AsyncConnection,
+        read_set: StructuredReadSet,
+        story_id: str,
+        *,
+        settings: Any,
+        variant: int = 0,
+        remember: bool = True,
+    ) -> None:
+        self.conn = conn
+        self.read_set = read_set
+        self.story_id = story_id
+        self.settings = settings
+        self.variant = variant
+        self.remember = remember
+        self._registry: Registry | None = None
+        self.staged: dict[str, list[tuple[Record, NarrativePosition]]] = {}
+        """#168: each speaker's verified ``believe`` steps of the turn (not yet committed), at
+        their step positions: the belief record set a later beat is checked against."""
+
+    async def registry(self) -> Registry:
+        if self._registry is None:
+            self._registry = await load(self.conn, self.story_id)
+        return self._registry
+
+    def position(self, position: tuple[int, int] | None) -> NarrativePosition | None:
+        if position is None:
+            return None
+        turn, beat = position
+        return NarrativePosition(turn, self.variant, 0, beat, step_of(beat))
+
+    def stage(self, believer: str, claim: Proposition, at: NarrativePosition, ref: str) -> None:
+        """#168: ``believer`` holds ``claim`` from ``at`` (a verified render step, ``ref``)."""
+        self.staged.setdefault(believer, []).append((Record(claim, f"step:{ref}"), at))
+
+    async def check(
+        self, claim: Proposition, believer: str, at: NarrativePosition
+    ) -> Verdict | None:
+        found = await rules.verify(
+            self.conn,
+            self.read_set,
+            self.story_id,
+            claim,
+            holder=Holder.belief(believer),
+            position=at,
+            through_position=(at.turn, at.beat),
+            viewpoint=f"{CHARACTER_VIEWPOINT_PREFIX}{believer}",
+            remember=self.remember,
+        )
+        staged = [r for r, held in self.staged.get(believer, ()) if held.before(at)]
+        if found is None or not staged:
+            return found
+        if found.kind not in (VerdictKind.NOVEL, VerdictKind.UNCERTAIN):
+            return found
+        verdict = rules.check(
+            claim,
+            staged,
+            registry=await self.registry(),
+            holder=Holder.belief(believer),
+            position=at,
+        )
+        if verdict.kind in (VerdictKind.SUPPORTED, VerdictKind.CONTRADICTED):
+            return verdict
+        return found
+
+    async def hidden(
+        self, claim: Proposition, believer: str, at: NarrativePosition
+    ) -> VerdictKind | None:
+        """What the record holds of ``claim`` beyond the speaker's view: canon's omniscient
+        verdict when it settles the claim, else ``supported`` when another character holds or
+        said it (withheld content: ``replay.held_elsewhere``), else ``None``."""
+        from epistrel.core.epistemic import replay
+
+        found = await rules.verify(
+            self.conn,
+            self.read_set,
+            self.story_id,
+            claim,
+            through_position=(at.turn, at.beat),
+            viewpoint=OMNISCIENT,
+            remember=False,
+        )
+        if found is not None and found.kind in (VerdictKind.SUPPORTED, VerdictKind.CONTRADICTED):
+            return found.kind
+        if await replay.held_elsewhere(
+            self.conn, self.story_id, believer, claim, at, registry=await self.registry()
+        ):
+            return VerdictKind.SUPPORTED
+        return None
+
+    async def own_age(self, claim: Proposition, believer: str) -> bool:
+        """Whether ``claim`` is about ``believer``'s own age: a character knows its true age
+        (FR-CAT-12), so canon's ``age`` of itself is what it believes."""
+        from epistrel.core.propositions.vocabulary import CORE_BY_NAME
+
+        if claim.predicate_id != CORE_BY_NAME["age"].id:
+            return False
+        if claim.subject_id == believer:
+            return True
+        owner = await self.conn.scalar(
+            select(entities.c.character_id).where(
+                entities.c.story_id == self.story_id, entities.c.id == claim.subject_id
+            )
+        )
+        return owner is not None and str(owner) == believer
+
+    async def strongest(self, belief_ids: Sequence[str]) -> tuple[str, ...]:
+        """``belief_ids`` strongest first, then the most recently held (a lie's contrary
+        belief is the first)."""
+        from epistrel.core.epistemic import partitions
+
+        found = [
+            b
+            for i in dict.fromkeys(belief_ids)
+            if (b := await partitions.read_belief(self.conn, self.story_id, i)) is not None
+        ]
+        ranked = sorted(
+            found,
+            key=lambda b: (
+                -partitions.LEVELS.index(b.confidence_level),
+                -(b.confidence_scalar or 0.0),
+                tuple(-k for k in b.held_from.key()),
+            ),
+        )
+        return tuple(b.id for b in ranked)
+
+    async def secret(self, belief_ids: Sequence[str]) -> bool:
+        """Whether one of ``belief_ids`` is a belief its holder keeps ``secret``: its author act
+        (the ``belief_authored`` event or a seed its ``author`` transition cites) declared
+        ``disclosure = secret`` (FR-SCN-8; #167's deceptive inference), or the belief itself
+        keeps a seed's ``secret`` disclosure (``beliefs.disclosure``, #173)."""
+        from sqlalchemy import and_
+
+        from epistrel.core.tables import events
+        from epistrel.core.tables.beliefs import belief_transitions, beliefs
+
+        if not belief_ids:
+            return False
+        seeded = await self.conn.scalar(
+            select(beliefs.c.id)
+            .where(
+                beliefs.c.story_id == self.story_id,
+                beliefs.c.id.in_(list(belief_ids)),
+                beliefs.c.disclosure == "secret",
+            )
+            .limit(1)
+        )
+        if seeded is not None:
+            return True
+        t = belief_transitions.c
+        e = events.c
+        found = await self.conn.scalar(
+            select(t.id)
+            .select_from(
+                belief_transitions.join(
+                    events,
+                    and_(e.story_id == t.story_id, e.id == t.antecedent_ref["id"].astext),
+                )
+            )
+            .where(
+                t.story_id == self.story_id,
+                t.belief_id.in_(list(belief_ids)),
+                t.kind == "author",
+                t.antecedent_ref["table"].astext == "events",
+                e.payload["disclosure"].astext == "secret",
+            )
+            .limit(1)
+        )
+        return found is not None
+
+    async def attribution(
+        self,
+        claim: Proposition,
+        believer: str,
+        found: Any,
+        at: NarrativePosition,
+    ) -> tuple[VerdictKind, tuple[str, ...], tuple[str, ...]]:
+        """An attribution claim's belief verdict for its speaker (#167): over the speaker's own
+        nested (or ``said``) rows attributed to the holder, or, for a self-report ("I figured
+        …"), the speaker's own beliefs; with the rows it rests on and the contrary ones."""
+        from epistrel.core.epistemic import nested
+
+        if found.holder_id == believer and found.mode == "believes":
+            verdict = await self.check(claim, believer, at)
+            if verdict is None:
+                return VerdictKind.NOVEL, (), ()
+            cited = tuple(e.belief_id for e in verdict.evidence if e.belief_id is not None)
+            contrary = cited if verdict.kind is VerdictKind.CONTRADICTED else ()
+            return verdict.kind, cited, contrary
+        relation = await nested.attribution_belief_relation(
+            self.conn,
+            self.story_id,
+            believer,
+            str(found.holder_id),
+            claim,
+            at,
+            mode=found.mode,
+            registry=await self.registry(),
+        )
+        return relation.verdict, relation.belief_ids, relation.contrary
+
+    async def attributed_licence(
+        self, claim: Proposition, believer: str, found: Any, at: NarrativePosition
+    ) -> Licence | None:
+        """An attribution's licensing path (#165's replay over nested propositions,
+        ``nested.could_have_attributed``): a nested belief the speaker held, or a speech act it
+        perceived the holder sincerely make. Nothing new is written: the path is the record."""
+        from epistrel.core.epistemic import nested, replay
+
+        if found.holder_id is None or found.mode != "believes":
+            return None
+        if found.holder_id == believer:
+            return await self.licence(claim, believer, at)
+        answer = await nested.could_have_attributed(
+            self.conn,
+            self.story_id,
+            believer,
+            str(found.holder_id),
+            claim,
+            at,
+            registry=await self.registry(),
+        )
+        if isinstance(answer, replay.Known):
+            return Licence("attributed", ref_id=answer.path.ref_id)
+        return None
+
+    async def objective(self, claim: Proposition, found: Any, at: NarrativePosition) -> str | None:
+        """The attribution's objective relation (#167): whether the attributed holder actually
+        believes (or said) it, a label computed by the Engine Core (``None``: no holder)."""
+        from epistrel.core.epistemic import nested
+
+        if found.holder_id is None:
+            return None
+        return await nested.attribution_objective_relation(
+            self.conn,
+            self.story_id,
+            str(found.holder_id),
+            claim,
+            at,
+            mode=found.mode,
+            registry=await self.registry(),
+        )
+
+    async def licence(
+        self,
+        claim: Proposition,
+        believer: str,
+        at: NarrativePosition,
+        cites: Sequence[str] = (),
+    ) -> Licence | None:
+        """The claim's licensing antecedent, if one exists (see the module docstring)."""
+        from epistrel.core.epistemic import replay
+
+        answer = await replay.could_have_known(
+            self.conn,
+            self.story_id,
+            believer,
+            claim,
+            at,
+            settings=self.settings,
+            registry=await self.registry(),
+            read_set=self.read_set,
+        )
+        found: Licence | None
+        if isinstance(answer, replay.NotApplicable):
+            found = Licence("not_applicable")
+        elif isinstance(answer, replay.Known):
+            found = await self._of_path(answer.path, believer)
+        elif await replay.said_before(
+            self.conn, self.story_id, believer, claim, at, registry=await self.registry()
+        ):
+            found = Licence("said_before")  # the speaker's own earlier word: nothing new
+        else:
+            found = await self._misinformed(claim, believer, at)
+        if found is not None and cites:
+            named = {i for i in (found.record_id, found.ref_id) if i is not None}
+            found = dataclasses.replace(found, cited=bool(named & set(cites)))
+        return found
+
+    async def _of_path(self, path: Any, believer: str) -> Licence | None:
+        from epistrel.core.epistemic import exposure
+
+        if path.kind in ("player", "transition", "staged"):
+            # #168: a verified render step of this turn is written by the step itself.
+            return Licence(path.kind, ref_id=path.ref_id)
+        if path.kind == "canon":
+            return Licence("canon", "discovery", "facts", path.ref_id, ref_id=path.ref_id)
+        if path.kind == "implied":
+            return Licence("implied", "inference", "beliefs", path.ref_id, ref_id=path.ref_id)
+        if path.kind == "exposure" and path.ref_id is not None:
+            (e,) = await exposure.exposures_of(
+                self.conn, self.story_id, believer, ids=[path.ref_id]
+            ) or (None,)
+            if e is not None:
+                return self._heard(e)
+        return None
+
+    @staticmethod
+    def _heard(e: Any) -> Licence:
+        return Licence(
+            "exposure",
+            "testimony" if e.source is not None else "observation",
+            "events",
+            e.source_event_id,
+            source=e.source,
+            held_from=e.position,
+            ref_id=e.id,
+        )
+
+    async def _misinformed(
+        self, claim: Proposition, believer: str, at: NarrativePosition
+    ) -> Licence | None:
+        """Misinformation the speaker heard and now repeats: a ``said`` row of the same
+        proposition from someone else (its testimony's antecedent), else an unresolved exposure
+        to it, before the claim (accepted at ``believed``: the assertion evidences it)."""
+        from epistrel.core.enums import AntecedentKind, ExposureState
+        from epistrel.core.epistemic import exposure, partitions, transitions
+        from epistrel.core.propositions.registry import canonical
+
+        registry = await self.registry()
+        target = canonical(claim, registry)
+        key = target.normalized_key()
+
+        def same(p: Proposition) -> bool:
+            stored = canonical(p, registry)
+            return stored.normalized_key() == key and stored.polarity is target.polarity
+
+        for said in await partitions.speech_acts(self.conn, self.story_id, believer):
+            b = said.belief
+            if said.speaker_id in (None, believer) or not b.held_from.before(at):
+                continue
+            if not same(b.proposition):
+                continue
+            produced = [
+                t
+                for t in await transitions.transitions_of(
+                    self.conn, self.story_id, belief_ids=[b.id]
+                )
+                if t.id == b.provenance
+            ]
+            if not produced or produced[0].antecedent.kind is not AntecedentKind.RECORD:
+                continue
+            ref = produced[0].antecedent.ref
+            return Licence(
+                "said",
+                "testimony",
+                str(ref.get("table")),
+                str(ref.get("id")),
+                source=said.speaker_id,
+                held_from=b.held_from,
+                ref_id=b.id,
+            )
+        for e in await exposure.exposures_of(
+            self.conn,
+            self.story_id,
+            believer,
+            state=ExposureState.UNRESOLVED,
+            as_of_turn=at.turn,
+        ):
+            if e.position.before(at) and same(e.proposition):
+                return self._heard(e)
+        return None
 
 
 # -- rendering --------------------------------------------------------------------------------
@@ -800,8 +1405,11 @@ class Verifier:
         gate: Gate | None = None,
         routes: Mapping[str, Route] | None = None,
         on_escalation: EscalationSink | None = None,
+        beliefs: BeliefSource | None = None,
     ) -> None:
         self.source = source
+        self.beliefs = beliefs
+        """The speakers' belief sets (#166); ``None``: no belief dimension (partitions off)."""
         self.config = config
         self.models = models
         self.budget = budget
@@ -827,11 +1435,18 @@ class Verifier:
         ref: ClaimRef | None = None,
         asserter: Asserter | None = None,
         protected: bool = False,
+        resolves: str | None = None,
+        believer: str | None = None,
+        intent: str | None = None,
+        cites: Sequence[str] = (),
     ) -> VerifyResult | None:
         """``claim``'s verdict as ``viewpoint`` may know it, at narrative ``position`` (canon
         written at or before it); ``None`` when the story's verification is off. A claim that
         ends ``novel`` passes ``asserter``'s permission check (``protected``: the claim's text
-        matched protected content, #148's detector) before it can be canonized or repaired."""
+        matched protected content, #148's detector; ``resolves``: the open thunk the claim fills,
+        #146's resolution exemption) before it can be canonized or repaired. ``believer`` (#166:
+        the speaker of a first-person ``say``) adds the belief dimension and the classification,
+        with the beat's declared ``intent`` and its ``think``'s ``cites``."""
         if not self.config.on:
             return None
         checking = time.perf_counter()
@@ -846,8 +1461,19 @@ class Verifier:
         where = ref or ClaimRef()
         at = _At(viewpoint, position, holder)
         result = await self._settle(claim, verdict, fetched, at, where, top=True)
+        if (
+            result.kind is VerdictKind.NOVEL
+            and viewpoint != OMNISCIENT
+            and believer is None
+            and where.channel not in (SAY, *NEVER_CANONIZES)
+        ):
+            result = await self._hidden(result, claim, holder, position)
         if asserter is not None and result.kind is VerdictKind.NOVEL:
-            result = await self._permit(result, claim, asserter, at, protected=protected)
+            result = await self._permit(
+                result, claim, asserter, at, protected=protected, resolves=resolves
+            )
+        if believer is not None and self.beliefs is not None:
+            result = await self._speech(result, claim, believer, intent, cites, position)
         self.results.append((where, result))
         if result.surfaced:
             self.rendered[id(result)] = await self._render_claim(claim)
@@ -859,6 +1485,24 @@ class Verifier:
             result.disposition,
         )
         return result
+
+    async def _hidden(
+        self,
+        result: VerifyResult,
+        claim: Proposition,
+        holder: Holder,
+        position: tuple[int, int] | None,
+    ) -> VerifyResult:
+        """#169 (FR-EPI-8): a novel claim that canon hidden from its viewpoint contradicts (the
+        engine's check, not the character's) would give a determined fact a second value: it
+        is ``contradicted``, citing nothing (``HIDDEN_CONFLICT``)."""
+        found = await self.source.deterministic(
+            claim, holder=holder, viewpoint=OMNISCIENT, position=position
+        )
+        if found is None or found[0].kind is not VerdictKind.CONTRADICTED:
+            return result
+        verdict = Verdict(VerdictKind.CONTRADICTED, holder=holder, position=found[0].position)
+        return VerifyResult(claim, verdict, VerdictKind.CONTRADICTED, hidden_conflict=True)
 
     def adopt_answers(self, other: Verifier) -> None:
         """Reuse ``other``'s validated entailment answers (the same turn's): a repair's
@@ -890,6 +1534,237 @@ class Verifier:
         self.results.append((where, result))
         return result
 
+    # -- private thoughts and recall (#172) -----------------------------------------------
+
+    def leaked(self, private_ref: str, *, ref: ClaimRef | None = None) -> VerifyResult | None:
+        """A claim that repeats or narrates another character's private thought
+        (``private_ref``: ``think:<record>``): ``uncertain``, always repaired (``THINK_LEAK``,
+        FR-TURN-3), never canonized; ``None`` when the story's verification is off."""
+        if not self.config.on:
+            return None
+        where = ref or ClaimRef()
+        result = VerifyResult(
+            None, Verdict(VerdictKind.UNCERTAIN), VerdictKind.UNCERTAIN, think_leak=private_ref
+        )
+        self.results.append((where, result))
+        return result
+
+    async def verify_recall(
+        self,
+        content: str,
+        speaker: str,
+        position: tuple[int, int] | None,
+        *,
+        ref: ClaimRef | None = None,
+        claim_id: str | None = None,
+    ) -> VerifyResult | None:
+        """A first-person recall of ``content`` by ``speaker`` (FR-VERIFY-9;
+        ``core.epistemic.resurface``): ``supported`` with rule ``recall`` when one of the
+        speaker's dated records backs it, else a confabulation (``novel``, repaired, an
+        escalation record with gate reason ``confabulation``). ``None`` when verification is
+        off or the story has no per-character partitions (no record of the speaker's own)."""
+        if not self.config.on or self.beliefs is None:
+            return None
+        where = ref or ClaimRef()
+        turn = 0 if position is None else position[0]
+        check = await resurface.check_recall(
+            self.beliefs.conn, self.beliefs.story_id, speaker, turn=turn, content=content
+        )
+        kind = VerdictKind.SUPPORTED if check.grounded else VerdictKind.NOVEL
+        result = VerifyResult(None, Verdict(kind), kind, recall=check)
+        self.results.append((where, result))
+        if not check.grounded:
+            record = EscalationRecord(
+                claim_id=claim_id,
+                gate_reason=CONFABULATION,
+                predicate_shape=UNNORMALIZED_SHAPE.key(),
+                deterministic_confidence=1.0,
+                threshold=None,
+                called=False,
+                reused=False,
+                model_verdict=None,
+                model_confidence=None,
+                model_uncertain=None,
+                final_kind=kind.value,
+                disposition="repair",
+                degradation=(),
+                tentative_verdict=kind.value,
+                gate_outcome=CONFABULATION,
+                escalation_on=True,
+            )
+            self.escalations.append(record)
+            if self.on_escalation is not None:
+                self.on_escalation(record)
+        return result
+
+    # -- the speaker's beliefs (#166) -----------------------------------------------------
+
+    async def _speech(
+        self,
+        result: VerifyResult,
+        claim: Proposition,
+        believer: str,
+        intent: str | None,
+        cites: Sequence[str],
+        position: tuple[int, int] | None,
+    ) -> VerifyResult:
+        """``result`` with the claim's belief dimension and classification (see the module
+        docstring)."""
+        beliefs = self.beliefs
+        at = None if beliefs is None else beliefs.position(position)
+        if beliefs is None or at is None:
+            return result
+        found = await beliefs.check(claim, believer, at)
+        if found is None:
+            return result
+        declared = intent or "unspecified"
+        contrary: tuple[str, ...] = ()
+        known: tuple[str, ...] = ()
+        if found.kind is VerdictKind.CONTRADICTED:
+            contrary = await beliefs.strongest(
+                [e.belief_id for e in found.evidence if e.belief_id is not None]
+            )
+            if not contrary and await beliefs.own_age(claim, believer):
+                # FR-CAT-12: a character knows its own true age (canon it holds of itself).
+                known = tuple(
+                    e.proposition_id
+                    for e in found.evidence
+                    if e.fact_id is not None and e.proposition_id is not None
+                )
+        hidden = None
+        open_ = result.kind not in (VerdictKind.SUPPORTED, VerdictKind.CONTRADICTED)
+        if open_ and declared != speech_acts.JOKING:
+            # #171: asked for a belief-consistent claim too, so an established false belief
+            # beyond the speaker's view ("I've never met that stranger", canon holding that the
+            # stranger is Bobby) is a sincere error, labelled false, and stands.
+            hidden = await beliefs.hidden(claim, believer, at)
+        # #167: contradicting a belief the speaker keeps secret is a deception, whatever the
+        # render declared (FR-SCN-8's disclosure; a joke stays a joke).
+        intent_in = declared
+        inferred = False
+        if contrary and declared in ("sincere", "unspecified") and await beliefs.secret(contrary):
+            intent_in, inferred = speech_acts.DECEPTIVE, True
+        inputs = speech_acts.Inputs(
+            intent=intent_in,
+            canon=result.kind,
+            belief=found.kind,
+            contrary=bool(contrary or known),
+            hidden=hidden,
+        )
+        licence = None
+        if speech_acts.needs_licence(inputs):
+            licence = await beliefs.licence(claim, believer, at, cites)
+        decision = speech_acts.classify(inputs, licensed=licence is not None)
+        speech = SpeechAct(
+            believer, at, declared, found, decision, contrary, hidden, licence, known, inferred
+        )
+        found_result = dataclasses.replace(result, speech=speech)
+        if (
+            decision.hallucinated
+            and self.config.safe_disposition == "surface"
+            and result.kind is not VerdictKind.CONTRADICTED
+        ):
+            found_result = dataclasses.replace(
+                found_result,
+                disposition="surface",
+                degradation=(*result.degradation, UNCERTAIN_SURFACED),
+            )
+        log.debug("verify: speech act %s (belief %s)", decision.classification, found.kind.value)
+        return found_result
+
+    # -- attributions (#167) ---------------------------------------------------------------
+
+    async def verify_attribution(
+        self,
+        claim: Proposition,
+        found: Any,
+        position: tuple[int, int] | None,
+        *,
+        believer: str | None,
+        ref: ClaimRef | None = None,
+        intent: str | None = None,
+    ) -> VerifyResult | None:
+        """An attribution claim ("Bobby thinks it was Marcus"; ``found``: its
+        ``ClaimAttribution``): never checked against canon as the speaker's assertion (its
+        verdict stays ``novel`` and it never canonizes). Under per-character partitions, its
+        objective relation is labelled; under ``nested_beliefs`` the speaker's (``believer``)
+        belief relation is computed over its own nested beliefs only and the claim classified
+        (``core.verify.speech_acts``: no legitimate basis → a hallucination, repaired). With the
+        module off the claim is exempt from the hallucination rule (``unknown``, sincere).
+        ``None`` when verification is off."""
+        from epistrel.core.epistemic import nested
+
+        if not self.config.on:
+            return None
+        where = ref or ClaimRef()
+        holder = Holder.belief(believer) if believer is not None else CANON
+        base = Verdict(VerdictKind.NOVEL, holder=holder, position=position)
+        result = VerifyResult(claim, base, VerdictKind.NOVEL)
+        beliefs = self.beliefs
+        at = None if beliefs is None else beliefs.position(position)
+        if beliefs is None or at is None:
+            check_ = AttributionCheck(found.holder_id, found.mode, found.factive)
+            result = dataclasses.replace(result, attribution=check_)
+            self.results.append((where, result))
+            return result
+        objective = await beliefs.objective(claim, found, at)
+        on = nested.nested_on(beliefs.settings)
+        if believer is None:
+            check_ = AttributionCheck(found.holder_id, found.mode, found.factive, None, objective)
+            result = dataclasses.replace(result, attribution=check_)
+            self.results.append((where, result))
+            return result
+        declared = intent or "unspecified"
+        kind: VerdictKind = VerdictKind.NOVEL
+        cited: tuple[str, ...] = ()
+        contrary: tuple[str, ...] = ()
+        if on and found.holder_id is not None:
+            kind, cited, contrary = await beliefs.attribution(claim, believer, found, at)
+        check_ = AttributionCheck(
+            found.holder_id,
+            found.mode,
+            found.factive,
+            cited if on and found.holder_id is not None else None,
+            objective,
+        )
+        settles = {"true": VerdictKind.SUPPORTED, "false": VerdictKind.CONTRADICTED}
+        inputs = speech_acts.Inputs(
+            intent=declared,
+            canon=VerdictKind.NOVEL,
+            belief=kind,
+            contrary=bool(contrary),
+            # What the attributed holder actually holds is beyond the speaker's view.
+            hidden=settles.get(objective or "") if on else None,
+        )
+        licence = None
+        if on and speech_acts.needs_licence(inputs):
+            licence = await beliefs.attributed_licence(claim, believer, found, at)
+        decision = speech_acts.classify(inputs, licensed=licence is not None)
+        if decision.classification == speech_acts.SINCERE_ERROR:
+            # The attribution's truth is a label, never its classification (FR-BELIEF-15).
+            decision = dataclasses.replace(decision, classification=speech_acts.SINCERE)
+        decision = dataclasses.replace(decision, write=None)
+        speech = SpeechAct(
+            believer,
+            at,
+            declared,
+            Verdict(kind, holder=holder, position=position),
+            decision,
+            contrary,
+            None,
+            licence,
+        )
+        result = dataclasses.replace(result, speech=speech, attribution=check_)
+        if decision.hallucinated and self.config.safe_disposition == "surface":
+            result = dataclasses.replace(
+                result,
+                disposition="surface",
+                degradation=(*result.degradation, UNCERTAIN_SURFACED),
+            )
+        self.results.append((where, result))
+        log.debug("verify: attribution %s", decision.classification)
+        return result
+
     # -- novelty and permission (#144) ----------------------------------------------------
 
     async def _permit(
@@ -900,9 +1775,10 @@ class Verifier:
         at: _At,
         *,
         protected: bool,
+        resolves: str | None = None,
     ) -> VerifyResult:
         found = await self.source.permission(
-            claim, asserter, position=at.position, protected=protected
+            claim, asserter, position=at.position, protected=protected, resolves=resolves
         )
         anchor = None
         if isinstance(found, Permitted):
@@ -920,6 +1796,8 @@ class Verifier:
             if permitted is None or r.claim is None or r.asserter is None:
                 continue
             if r.kind is not VerdictKind.NOVEL or ref.channel in NEVER_CANONIZES:
+                continue
+            if not r.canonizes:  # #166: a lie, a joke or a hallucination never canonizes
                 continue
             if ref.channel == SAY and permitted.basis is not Basis.OWN:
                 continue
@@ -1199,7 +2077,20 @@ class Verifier:
         and escalated, one entry per claim (ids and codes only) and the denied novel claims'
         codes (``denied``: ids, asserters and reasons; ``await denied()`` renders them)."""
         escalated = sum(1 for _, r in self.results if r.escalated)
-        return {
+        speech = [r.speech for _, r in self.results if r.speech is not None]
+        found: dict[str, Any] = {}
+        if speech:
+            found["speech"] = {
+                "classified": len(speech),
+                "classifications": {
+                    c: n
+                    for c in speech_acts.CLASSIFICATIONS
+                    if (n := sum(1 for s in speech if s.classification == c))
+                },
+                "intent_corrected": sum(1 for s in speech if s.decision.intent_corrected),
+                "licensed": sum(1 for s in speech if s.writes),
+            }
+        return found | {
             "claims": len(self.results),
             "deterministic": len(self.results) - escalated,
             "escalated": escalated,
@@ -1226,7 +2117,9 @@ class Verifier:
                 "claim_id": ref.claim_id,
                 "span": None if ref.span is None else list(ref.span),
                 "beat": ref.beat,
-                "reason": None if r.reason is None else r.reason.value,
+                "reason": "hallucination"
+                if r.hallucinated
+                else (None if r.reason is None else r.reason.value),
                 "confidence": r.verdict.confidence,
             }
             for ref, r in self.results
@@ -1246,9 +2139,12 @@ async def story_verifier(
     budget: TurnBudget,
     gate: Gate | None = None,
     remember: bool = True,
+    variant: int = 0,
 ) -> Verifier:
     """A verifier over the story's canon under its effective configuration, routed by its
-    ``models.purposes`` (#325)."""
+    ``models.purposes`` (#325); under per-character partitions (#166) also over each speaker's
+    beliefs (``BeliefSource``; ``variant``: the turn's)."""
+    from epistrel.core.profiles.capabilities import module_on
     from epistrel.orchestrator.models.config import routes_of
 
     settings = (await effective_configuration(conn, story_id)).settings
@@ -1258,6 +2154,13 @@ async def story_verifier(
         # per verifier: one small read per turn, so a change applies to the next turn.
         tightened = await yield_queries.live_thresholds(conn)
         gate = Gate(config.entailment_gate, FixedThresholds(tightened)) if tightened else None
+    beliefs = (
+        BeliefSource(
+            conn, read_set, story_id, settings=settings, variant=variant, remember=remember
+        )
+        if config.on and module_on(settings, PARTITIONS_MODULE)
+        else None
+    )
     return Verifier(
         CanonSource(conn, read_set, story_id, remember=remember),
         config,
@@ -1265,6 +2168,7 @@ async def story_verifier(
         budget=budget,
         gate=gate,
         routes=routes_of(settings),
+        beliefs=beliefs,
     )
 
 
@@ -1273,17 +2177,21 @@ __all__ = [
     "ENTAILMENT_BUDGET",
     "ENTAILMENT_RULE",
     "ENTAILMENT_UNAVAILABLE",
+    "HALLUCINATION",
     "RESOLUTION_CONFLICT",
     "UNANCHORED",
     "UNCERTAIN_SURFACED",
     "UNPERMITTED",
+    "BeliefSource",
     "CanonSource",
     "ClaimRef",
     "ClaimSource",
     "EscalationRecord",
     "EscalationSink",
+    "Licence",
     "RecordsSource",
     "SafeDisposition",
+    "SpeechAct",
     "TimeFrame",
     "Verifier",
     "VerifyConfig",

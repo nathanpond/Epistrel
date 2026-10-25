@@ -31,8 +31,9 @@ the item's original JSON, with the story character ids genesis resolved) and the
 ``public`` and it is not secret, ``partitions`` when its audience is limited or it is secret or
 a belief, ``clock`` for a scheduled seed; a planned reveal's truth, a relationship, a location,
 an entity, a name override and every rule, predicate and closed set need ``structured``; the
-clock and scheduled events ``clock``; States and starting values ``states``; the player
-persona's audience-limited seeding (``persona.audience``) ``partitions``.
+clock and scheduled events ``clock``; an open channel (#173) ``structured``; States and
+starting values ``states``; the player persona's audience-limited seeding
+(``persona.audience``) ``partitions``.
 """
 
 from __future__ import annotations
@@ -97,10 +98,12 @@ PATH_HANDLING: Final[Mapping[str, Handling]] = {
     "starting_state.opening.roles_present": Handling.render,
     "starting_state.opening.narration": Handling.consume,
     "starting_state.scheduled_events": Handling.defer,
+    "cast.groups": Handling.consume,
 }
 """Fields handled other than their class: the world description and the starting places have a
 complete Lite form (rendered only), the opening narration becomes turn 1, and the scheduled
-events have no text form under Lite."""
+events have no text form under Lite; the named groups (#173) are read while the story is created,
+to resolve the seeds' audiences."""
 
 NEVER_DEFERRED: Final = frozenset(
     {FieldClass.public_card, FieldClass.director, FieldClass.recommendation, FieldClass.style}
@@ -356,6 +359,13 @@ def materialize(
     for name in ("predicates", "closed_sets", "rules"):
         for index, _ in enumerate(getattr(state, name)):
             build.add(f"starting_state.{name}", ("starting_state", name, index), STRUCTURED)
+    for index, channel in enumerate(state.channels):
+        build.add(
+            "starting_state.channels[]",
+            ("starting_state", "channels", index),
+            STRUCTURED,
+            roles=channel.participants,
+        )
     for index, reveal in enumerate(draft.drivers.planned_reveals):
         holder = reveal.truth.holder if reveal.truth.holder != WORLD_HOLDER else None
         build.add(

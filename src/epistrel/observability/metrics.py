@@ -24,6 +24,10 @@ The registry holds:
 - ``epistrel_thunks_total{event}`` (``introduced``, ``resolved``, ``expired``),
   ``epistrel_ledger_total{event}`` (``created``, ``discharged``) and
   ``epistrel_minimal_commits_total``: #146's commitment lifecycle (``core.commit.lifecycle``);
+- ``epistrel_belief_transitions_total{kind}`` and ``epistrel_belief_transitions_refused_total``:
+  #160's belief transitions (``core.epistemic.transitions``);
+- ``epistrel_perception_repairs_total{reason}``: #161's perception qualifiers repaired at routing
+  (``core.epistemic.perception``; the structured pipeline counts them);
 - #147's hot set (FR-MEM-8): the scrape-time gauges ``epistrel_hot_overflow{scope}`` (the
   summed excess of the open overflow episodes, ``character`` or ``story``; 0 when none is open)
   and ``epistrel_hot_overflow_episodes_open{scope}``, and the counters
@@ -41,7 +45,9 @@ The registry holds:
   turn's commit: the gate reason and the predicate shape (its four enum values joined by
   ``__``, ``core__functional__fluent__affirmed``), whether the model flipped the tentative
   verdict (``true``, ``false``, ``none``), and, for an escalation a proposed tightening would
-  have skipped, whether skipping agreed.
+  have skipped, whether skipping agreed;
+- ``epistrel_multi_turns_total{mode}`` and ``epistrel_director_order_total{outcome}``: #174's
+  sequential turns with several primaries and the director's ordering of them.
 
 Label values are enums, ULIDs, route names, HTTP statuses or sanitised model names (#44's rule),
 never content. prometheus-client's default process, platform and GC collectors are removed.
@@ -117,6 +123,84 @@ MINIMAL_COMMITS = Counter(
     "epistrel_minimal_commits",
     "Salient references discharged by the deterministic minimal commit.",
 )
+BELIEF_TRANSITIONS = Counter(
+    "epistrel_belief_transitions",
+    "Belief transitions written, by kind (observation, testimony, inference, discovery, "
+    "correction, forgetting, revision, author, resolution).",
+    ("kind",),
+)
+TESTIMONY_OUTCOMES = Counter(
+    "epistrel_testimony",
+    "Testimony outcomes written, one per witness and proposition heard (#162): accept, reject, "
+    "suspend, speech_act_only.",
+    ("outcome",),
+)
+ADJUDICATIONS = Counter(
+    "epistrel_adjudications",
+    "Testimony adjudications of salient witnesses (#162), by result: adjudicated (the model's "
+    "decision taken), kept (the default stood: low confidence or a guarded verdict), defaulted "
+    "(the budget or the per-turn cap left no call), unavailable (the model failed).",
+    ("result",),
+)
+MULTI_TURNS = Counter(
+    "epistrel_multi_turns",
+    "Structured turns that rendered several primaries (#174), by interaction mode.",
+    ("mode",),
+)
+ESCALATIONS = Counter(
+    "epistrel_escalations",
+    "Reactive characters whose narrated reaction needed a primary render (#176, FR-MULTI-10), "
+    "by outcome: escalated (rendered as a primary) or deferred_fixed_role / deferred_budget.",
+    ("outcome",),
+)
+PLAYER_AUTHORITY = Counter(
+    "epistrel_player_authority",
+    "Player input spans about another character (#180, FR-RESP-11), by player_authority mode and "
+    "outcome: a request's complied / refused / unresolved, a co_author span narrated, or the "
+    "code it was dropped with.",
+    ("mode", "outcome"),
+)
+PRIMARIES_REDUCED = Counter(
+    "epistrel_primaries_reduced",
+    "Named primaries budget planning turned into reactive narration (#176, NFR-PERF-7 (6)).",
+)
+DIRECTOR_ORDER = Counter(
+    "epistrel_director_order",
+    "The director's ordering of a sequential turn's primaries (#174), by outcome: director (its "
+    "order taken, a subset completed in request order) or skipped (request order: the budget, "
+    "the model or an invalid answer).",
+    ("outcome",),
+)
+CHARACTERS_MODELED = Counter(
+    "epistrel_characters_modeled",
+    "Characters modeled lazily (#163, FR-EPI-9), by trigger: interaction (a direct interaction "
+    "with a modeled character) or salience (the salience step, a render's introduction or the "
+    "author's directive).",
+    ("trigger",),
+)
+COULD_HAVE_KNOWN = Counter(
+    "epistrel_could_have_known_checks",
+    "Could-have-known checks by acquisition replay (#165), by outcome (known, no_path, "
+    "not_applicable).",
+    ("outcome",),
+)
+COULD_HAVE_KNOWN_FLAGS = Counter(
+    "epistrel_could_have_known_flags",
+    "Thunk resolutions flagged because the bound character would plausibly have known (#165), "
+    "by severity (mild, moderate, strong).",
+    ("severity",),
+)
+BELIEF_TRANSITIONS_REFUSED = Counter(
+    "epistrel_belief_transitions_refused",
+    "Belief transitions refused (self-attestation, an invalid antecedent, inconsistent "
+    "confidence).",
+)
+PERCEPTION_REPAIRS = Counter(
+    "epistrel_perception_repairs",
+    "Perception qualifiers dropped because they could not be honored, by reason (no_path, "
+    "sealed_barrier, no_channel, unknown_character, target_absent, unknown_location).",
+    ("reason",),
+)
 RETIREMENTS = Counter(
     "epistrel_hot_retirements",
     "Memories retired from the hot set, by reason (covered, floor, uncovered).",
@@ -191,6 +275,23 @@ def count_escalation(gate_reason: str, shape: str, flipped: bool | None) -> None
 def count_shadow(shape: str, agreed: bool) -> None:
     """Count one would-have-skipped escalation (``epistrel_verify_shadow_total``; #155)."""
     VERIFY_SHADOW.labels(shape=shape_label(shape), agreed="true" if agreed else "false").inc()
+
+
+PERCEPTION_REPAIR_REASONS = (
+    "no_path",
+    "sealed_barrier",
+    "no_channel",
+    "unknown_character",
+    "target_absent",
+    "unknown_location",
+)
+
+
+def count_perception_repair(reason: str) -> None:
+    """Count one dropped perception qualifier (``epistrel_perception_repairs_total{reason}``)."""
+    if reason not in PERCEPTION_REPAIR_REASONS:
+        raise ValueError(f"unknown perception repair reason {reason}")
+    PERCEPTION_REPAIRS.labels(reason=reason).inc()
 
 
 def count_repair(rung: int, repair_class: str) -> None:
@@ -356,13 +457,26 @@ async def metrics() -> Response:
 
 
 __all__ = [
+    "ADJUDICATIONS",
+    "BELIEF_TRANSITIONS",
+    "BELIEF_TRANSITIONS_REFUSED",
+    "CHARACTERS_MODELED",
+    "COULD_HAVE_KNOWN",
+    "COULD_HAVE_KNOWN_FLAGS",
+    "DIRECTOR_ORDER",
+    "ESCALATIONS",
     "GAUGES",
     "HOT_COUNTS_CORRECTED",
     "HOT_SCOPES",
     "HTTP_DURATION",
     "LEDGER",
     "MINIMAL_COMMITS",
+    "MULTI_TURNS",
     "OPERATIONS",
+    "PERCEPTION_REPAIRS",
+    "PERCEPTION_REPAIR_REASONS",
+    "PLAYER_AUTHORITY",
+    "PRIMARIES_REDUCED",
     "QUARANTINES",
     "REPAIRS",
     "REPAIR_CLASSES",
@@ -370,8 +484,10 @@ __all__ = [
     "REQUEST_BUCKETS",
     "RETIREMENTS",
     "SANITIZES",
+    "TESTIMONY_OUTCOMES",
     "THUNKS",
     "SchedulerGauges",
+    "count_perception_repair",
     "count_repair",
     "render_metrics",
     "router",

@@ -22,6 +22,13 @@ stub at 2 s per call whose renders declare 10% contradicted and 10% novel claims
 verification, permission and repair run under load. It adds NFR-PERF-1's retrieval and
 NFR-PERF-2's verify p95 budgets to the gate and writes ``<date>-<time>-structured.md``.
 
+``--scenario multi`` (#182, ``perf.lite_smoke.multi``) seeds the structured stories with
+per-character knowledge on the ``Structured`` profile's per-character renders and plays one
+two-character ``sequential`` turn per story every 60 s; its gate adds both primaries' beats in
+every turn, no reduced, deferred or escalation-deferred character, and the per-character
+``context``/``compose`` stages, and it writes ``<date>-<time>-multi.md``. ``--smoke`` scales the
+warm-up and the end margin to 30 s (PR CI's 2-minute run).
+
 The target can be pointed elsewhere through ``EPISTREL_PERF_BASE_URL``,
 ``EPISTREL_PERF_CREDENTIAL``, ``EPISTREL_PERF_PRINCIPAL`` and ``EPISTREL_PERF_DSN``.
 """
@@ -62,13 +69,15 @@ RETRIEVAL_P95_BUDGET_S = 0.150
 VERIFY_P95_BUDGET_S = 0.050
 """NFR-PERF-2, the deterministic-verify budget the structured variant gates on (``verify``)."""
 HOST_CLASSES = ("mac", "reference", "ci")
-SCENARIOS = ("lite", "structured")
+SCENARIOS = ("lite", "structured", "multi")
 STRUCTURED_INTERVAL_S = 60.0
 """One single-character turn per structured story every 60 s (the structured variant)."""
 STRUCTURED_MEMORIES = 10_000
 STRUCTURED_EVENTS = 20_000
 """Each structured story's size (docs/04 P-04 M4): 10,000 memories and 20,000 events."""
 ENFORCED_HOST_CLASS = "reference"
+SMOKE_MARGIN_S = 30.0
+"""PR CI's smoke run (``--smoke``, #182): the warm-up and the end margin scale to 30 s."""
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8100"
 DEFAULT_CREDENTIAL = "perf-only-credential-0000000000000000"

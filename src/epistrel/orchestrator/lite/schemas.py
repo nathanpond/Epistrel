@@ -13,9 +13,17 @@ in it has been checked (FR-RESP-1).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Annotated, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+    model_validator,
+)
 
 from epistrel.core.history import HistoryItem
 from epistrel.core.ids import Ulid
@@ -26,8 +34,13 @@ from epistrel.core.settings_schema import (
     MAX_TURN_DEADLINE_S,
     MIN_CALLS_PER_TURN,
     MIN_DEADLINE_S,
+    TIE_BREAK_PATTERN,
     GenerationSettings,
+    InteractionMode,
+    PlayerView,
+    SequenceOrder,
 )
+from epistrel.core.viewpoint import AudienceFilter
 from epistrel.orchestrator.models.metrics import ModelCall
 
 MAX_INPUT_CHARS = 8_000
@@ -35,20 +48,35 @@ MAX_RECENT_MESSAGES = 20
 MAX_RECENT_MESSAGE_CHARS = 2_000
 MAX_ID_CHARS = 64
 MAX_RENDER_CHARACTERS = 64
+MAX_ROLES = 64
+"""The most characters one request's ``roles`` names (#176)."""
+ParticipationRole = Literal["primary", "reactive", "silent"]
 
 
 class PlayerInputBody(BaseModel):
-    """The actor's ``say`` and/or ``do``; at least one, and whitespace alone counts as none."""
+    """The actor's ``say`` and/or ``do``; at least one, and whitespace alone counts as none.
+
+    - ``whisper_to`` (#177, from #161): the characters the ``say`` is whispered to. Under
+      ``full`` perception only they hear the words; everyone else in the room gets the envelope
+      ("Wren whispers something to Marcus"). A target who is not in the room is dropped silently
+      (``turn_report.perception.qualifiers_repaired``, reason ``target_absent``); every target
+      dropped leaves an aside. Ignored below ``full`` (FR-TURN-2). Needs a ``say``.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     say: str | None = Field(default=None, max_length=MAX_INPUT_CHARS)
     do: str | None = Field(default=None, max_length=MAX_INPUT_CHARS)
+    whisper_to: list[Ulid] = Field(
+        default_factory=list, max_length=MAX_RENDER_CHARACTERS, exclude_if=lambda v: not v
+    )
 
     @model_validator(mode="after")
     def _something_said_or_done(self) -> Self:
         if not ((self.say or "").strip() or (self.do or "").strip()):
             raise ValueError("player_input needs a non-empty say or do")
+        if self.whisper_to and not (self.say or "").strip():
+            raise ValueError("player_input.whisper_to needs a say to whisper")
         return self
 
     @property
@@ -111,6 +139,13 @@ class RespondRequest(BaseModel):
       ``temperature`` and ``top_p``, for this request only (FR-RESP-3).
     - ``scene_context``: non-authoritative; never stored or placed in a prompt.
     - ``budget``: this turn's ``max_calls``/``deadline_s``, within the story's (#69).
+    - ``interaction_mode``/``sequence_order``: a structured story with per-character renders
+      (#174): several ``render_character_ids`` render ``sequential``ly, in request order or the
+      director's, or ``simultaneous``ly (#175), their conflicts settled by
+      ``simultaneous_tie_break``.
+    - ``roles``/``reactive_interjections``: a structured story with per-character renders
+      (#176): this turn's participation roles of present characters over their stored ones,
+      and whether reactive narration may give a reactive character a brief interjection.
     """
 
     model_config = ConfigDict(
@@ -138,6 +173,52 @@ class RespondRequest(BaseModel):
     prompt_params: GenerationSettings | None = None
     scene_context: SceneContext | None = None
     budget: BudgetOverride | None = None
+    interaction_mode: InteractionMode | None = None
+    """#174: this turn's interaction mode over the story's (``sequential`` renders each
+    primary seeing what the earlier ones did); needs per-character renders (409 ``module_off``
+    otherwise)."""
+    sequence_order: SequenceOrder | None = None
+    """#174: who orders this turn's primaries over the story's setting (``request`` or
+    ``director``); needs per-character renders (409 ``module_off`` otherwise)."""
+    simultaneous_tie_break: str | None = Field(default=None, pattern=TIE_BREAK_PATTERN)
+    """#175: how this ``simultaneous`` turn settles conflicting actions, over the story's
+    setting (``request_order``, ``director``; ``state:<name>`` is 422 ``not_yet`` until M6);
+    needs per-character renders (409 ``module_off`` otherwise)."""
+    roles: dict[Ulid, ParticipationRole] | None = Field(default=None, max_length=MAX_ROLES)
+    """#176 (FR-MULTI-7): this turn's participation role per present character, over its stored
+    one (a ``fixed`` role included): ``primary`` names the character to render (after
+    ``render_character_ids``), ``reactive`` or ``silent`` sets how others may narrate it. A
+    character the story does not have, the player's or the actor's, or a named character
+    overridden down is 422; ``fixed`` is not settable per request. Needs per-character renders
+    (422 otherwise)."""
+    reactive_interjections: StrictBool | None = None
+    """#176 (FR-MULTI-9): whether reactive narration may give a reactive character a brief
+    interjection this turn, over the story's setting. Needs per-character renders (422
+    otherwise)."""
+    player_view: PlayerView | None = None
+    """#177 (FR-RESP-13): this turn's player view over the story's ``player_view``:
+    ``character`` (the output holds only what the viewing character perceived) or ``story``
+    (every beat, whatever the character perceived; never a ``think`` or ``latent``). Echoed as
+    ``player_view``. A no-op where perception is ``none``."""
+
+
+TURN_OVERRIDES = ("interaction_mode", "sequence_order", "simultaneous_tie_break")
+"""#174's per-request overrides of a story's multi-character settings."""
+ROLE_OVERRIDES = ("roles", "reactive_interjections")
+"""#176's per-request overrides of the turn's participation roles."""
+VIEW_OVERRIDES = ("player_view",)
+"""#177's per-request override of the story's player view."""
+
+
+def body_of(request: RespondRequest, *exclude: str) -> dict[str, Any]:
+    """``request`` as JSON, #174's and #176's overrides left out when unset (a turn that names
+    none hashes, and is stored, as it did before them)."""
+    unset = {
+        k
+        for k in (*TURN_OVERRIDES, *ROLE_OVERRIDES, *VIEW_OVERRIDES)
+        if getattr(request, k) is None
+    }
+    return request.model_dump(mode="json", exclude={*exclude, *unset})
 
 
 class RegenerateRequest(BaseModel):
@@ -185,7 +266,6 @@ class FinishedMessage:
     ] = None
 
 
-AudienceFilter = Literal["none", "co_location", "full"]
 SAFE_FALLBACK = "safe_fallback"
 """The ``degradation`` entry of a turn whose reply is the safe fallback (#68)."""
 QUARANTINED_CONTEXT = "quarantined_context"
@@ -198,10 +278,12 @@ PIN_QUARANTINED = "pin_quarantined"
 @dataclass(frozen=True, slots=True)
 class TurnWarning:
     """Something the turn did that the consumer should know (#145: ``pin_quarantined``, an
-    author pin the output gate's convergence rule quarantined, with its ``memory_id``)."""
+    author pin the output gate's convergence rule quarantined, with its ``memory_id``; #174:
+    ``primary_not_present``, a named primary not in the scene, with its ``character_id``)."""
 
     kind: str
     memory_id: str | None = None
+    character_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,6 +374,32 @@ class RespondResult:
     before #113."""
     replayed: bool = False
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
+    order: list[str] = field(default_factory=list)
+    """#174: a structured turn with several primaries, their ids in the order they rendered
+    (the request's, or the director's); empty otherwise."""
+    interaction_mode: str | None = None
+    """#175: a structured turn under per-character renders, the mode it ran in (``sequential``
+    or ``simultaneous``, as requested); ``None`` otherwise."""
+    adjudications: list[dict[str, Any]] = field(default_factory=list)
+    """#175: a simultaneous turn's settled conflicts, ``{object, winner, loser, rule}``."""
+    roles: dict[str, dict[str, str]] = field(default_factory=dict)
+    """#176: a structured turn under per-character renders, every present character's role for
+    the turn, ``{cid: {role, source}}``; empty otherwise."""
+    escalation_deferred: list[dict[str, Any]] = field(default_factory=list)
+    """#176 (FR-MULTI-10): the reactive characters whose escalation was unavailable,
+    ``{character_id, reason: fixed_role|budget, needed}``."""
+    deferred_characters: list[dict[str, Any]] = field(default_factory=list)
+    """#176 (NFR-PERF-7 (6)): the named primaries budget planning deferred to a later turn,
+    ``{character_id, reason, fixed}``."""
+    reduced_characters: list[str] = field(default_factory=list)
+    """#176 (NFR-PERF-7 (6)): the named primaries budget planning turned into reactive
+    narration."""
+    player_view: str | None = None
+    """#177 (FR-RESP-13): the player view the result was produced under (``character`` or
+    ``story``); ``None`` only in a result stored before #177."""
+    reconcile: list[dict[str, Any]] = field(default_factory=list)
+    """#177 (FR-MULTI-3): a structured turn's reconciled concurrent commitments, ``{proposition,
+    winner_beat, loser_beat, rule}``; empty when nothing contradicted."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -307,6 +415,7 @@ __all__ = [
     "PIN_QUARANTINED",
     "QUARANTINED_CONTEXT",
     "SAFE_FALLBACK",
+    "TURN_OVERRIDES",
     "BudgetOverride",
     "BudgetReport",
     "DegradationStep",
@@ -321,4 +430,5 @@ __all__ = [
     "RespondResult",
     "SceneContext",
     "TurnWarning",
+    "body_of",
 ]

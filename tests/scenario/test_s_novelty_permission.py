@@ -26,6 +26,16 @@ Bobby's render introduces new material in a structured story (the Bobby/Jenni fi
   precedence order are unit-tested in ``tests/test_permission.py``).
 - ``test_s_novelty_permission__model_free``: the complement: ``core/verify/permission.py``
   calls no model purpose and depends on nothing in the Orchestrator.
+- ``test_s_novelty_permission__reactive`` (M5, #176): the reactive-narration exception.
+- ``test_s_novelty_permission__b`` (M5, #172): (b) a secret about Jenni held only in her
+  partition, introduced by Bobby, is matched by the protected-content index and repaired, never
+  canonized; spoken by Jenni herself, it is permitted.
+- ``test_s_novelty_permission__reactive`` (M5, #176): the reactive-narration exception: Jenni's
+  render narrating Bobby's flinch is accepted, his thought or decision repaired.
+- ``test_s_novelty_permission__player`` (M5, #180): (c) an action by the player character
+  introduced by an NPC render is repaired; the player's input about an NPC is never fact under
+  ``own_character``; the exception, a ``co_author`` input narrating an NPC's action, is accepted
+  as player authority.
 """
 
 from __future__ import annotations
@@ -33,11 +43,13 @@ from __future__ import annotations
 import ast
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Interval, Layer, Predicate, PredicateOwner
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME
 from epistrel.core.verify import permission as pm
@@ -53,12 +65,17 @@ from epistrel.core.verify.permission import (
 from epistrel.core.verify.rules import VerdictKind
 from epistrel.orchestrator.models.registry import DELIVERED, PORTS, RESERVED
 from epistrel.orchestrator.verify.verifier import UNPERMITTED, ClaimRef
+from tests import multi_support as ms
 from tests import novelty_support as ns
+from tests import reactive_support as rs
 from tests import structured_turn_support as st
 from tests import verify_support as vs
 from tests.auth_support import auth_settings
 from tests.canon_support import PRINCIPAL
+from tests.event_support import rows
 from tests.respond_support import body, respond, respond_client
+from tests.secrets_support import play, secret, secret_story
+from tests.story_support import WRITE as WRITE_HEADERS
 
 PERMISSION_MODULE = Path(pm.__file__)
 
@@ -391,3 +408,191 @@ def test_s_novelty_permission__model_free() -> None:
     assert not purposes & strings, purposes & strings
     for entry in ("structured_call", "ModelAccessLayer", "chat", "complete", "embed"):
         assert entry not in names, entry
+
+
+# -- the M5 part (#172): (b) a secret about Jenni -------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.part("M5", "FR-VERIFY-11,12")
+async def test_s_novelty_permission__b(
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """(b) Bobby's render introduces a secret about Jenni that exists only in Jenni's partition
+    (she believes she works for Vince; no canon names Vince): "Jenni works for Vince, you
+    know." The protected-content index (other characters' belief-only records, #172) matches
+    "Vince" in Bobby's say; the hit claims Jenni's belief, its permission is denied and the
+    beat is repaired, and nothing about Vince is canonized. Complement: the same sentence
+    spoken by Jenni herself is permitted (her own record, which her index never protects from
+    her) and stands."""
+    settings = auth_settings(pg_url, model_adapter="stub")
+    async with respond_client(settings, engine) as (client, epistrel):
+        story, ids = await secret_story(client, engine, "Wren", "Bobby", "Jenni")
+        vince, belief = await secret(
+            engine, story, ids["Jenni"], ids["Jenni"], "employed_by", "Vince"
+        )
+        stub = epistrel.models.stub
+        secret_line = "Jenni works for Vince, you know."
+        bobby = await play(
+            client,
+            engine,
+            stub,
+            story,
+            ids["Wren"],
+            ids["Bobby"],
+            st.beat("say", secret_line, intent="sincere"),
+        )
+        assert belief in bobby.protected_refs()
+        assert bobby.denied
+        assert bobby.tags
+        assert "Vince" not in bobby.message
+        about = (
+            "SELECT f.id FROM facts f JOIN propositions p ON p.id = f.proposition_id "
+            "WHERE f.story_id = :s AND (p.object_id = :v OR p.subject_id = :v)"
+        )
+        assert await rows(engine, about, s=story, v=vince) == []
+
+        jenni = await play(
+            client,
+            engine,
+            stub,
+            story,
+            ids["Wren"],
+            ids["Jenni"],
+            st.beat("say", "I work for Vince, you know.", intent="sincere"),
+        )
+        assert belief not in jenni.protected_refs()
+        assert not jenni.denied
+        assert not jenni.tags
+        assert "Vince" in jenni.message
+
+
+# -- the M5 part (#176): the reactive-narration exception ------------------------------------------
+
+FLINCH = "Bobby flinches at the noise."
+
+
+@pytest.mark.integration
+@pytest.mark.part("M5", "FR-MULTI-9; FR-VERIFY-11,12")
+async def test_s_novelty_permission__reactive(
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """The exception (FR-MULTI-9): Jenni's primary render narrates Bobby (reactive) flinching
+    at a noise he perceived ("Jenni drops a pan. Bobby flinches at the noise."): accepted as
+    reactive narration (Bobby's ``beat_do``, ``narrated_by`` Jenni), not repaired as an action
+    by another character. The same render narrating Bobby's ``think`` ("Bobby thinks Jenni is
+    lying.") or a decision of his ("Bobby decides to leave.", Bobby's role fixed ``reactive``,
+    so it cannot escalate) is repaired: the thought dropped, the decision limited to a
+    non-verbal reaction. The matrix: a reactive asserter may establish that its reactor spoke,
+    never a placement change or backstory of his (``tests/test_permission.py``)."""
+    async with respond_client(auth_settings(pg_url, model_adapter="stub"), engine) as (
+        client,
+        epistrel,
+    ):
+        stub = epistrel.models.stub
+        b = await rs.bar(client, engine, names=("Cal", "Jenni", "Bobby"))
+
+        async def jenni(text: str) -> dict[str, Any]:
+            stub.reset()
+            ms.renders_for(stub, "Jenni", rs.render(st.beat("do", text)))
+            answer = await respond(
+                client, b.story_id, body(b["Cal"], "Hm?", render_character_ids=[b["Jenni"]])
+            )
+            assert answer.status_code == 200, answer.text
+            found: dict[str, Any] = answer.json()
+            return found
+
+        turn = await jenni(f"Jenni drops a pan. {FLINCH}")
+        (flinch,) = await rs.narrated(engine, b.story_id)
+        assert (flinch.character_id, flinch.narrated_by, flinch.text) == (
+            b["Bobby"],
+            b["Jenni"],
+            FLINCH,
+        )
+        assert FLINCH in turn["message"]["text"]
+        report = await st.turn_report(engine, b.story_id)
+        assert "repairs" not in report
+        assert report["roles"]["reactions"][0]["character_id"] == b["Bobby"]
+
+        await rs.set_role(client, b.story_id, b["Bobby"], "reactive", fixed=True)
+        turn = await jenni(
+            "Jenni drops a pan. Bobby thinks Jenni is lying. Bobby decides to leave."
+        )
+        assert "thinks Jenni" not in turn["message"]["text"]
+        assert "decides" not in turn["message"]["text"]
+        latest = (await rs.narrated(engine, b.story_id))[-1]
+        assert latest.text == "Bobby looks up but says nothing."
+        assert turn["escalation_deferred"] == [
+            {"character_id": b["Bobby"], "reason": "fixed_role", "needed": "decision"}
+        ]
+        roles = (await st.turn_report(engine, b.story_id))["roles"]
+        assert roles["dropped"] == {"inner_state": 1}
+        assert roles["limited"] == 1
+
+
+# -- the M5 part (#180): (c) and the co_author exception ------------------------------------------
+
+HANDS_OVER = "Jenni hands me the key."
+
+
+@pytest.mark.integration
+@pytest.mark.part("M5", "FR-RESP-11; FR-VERIFY-11,12")
+async def test_s_novelty_permission__player(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """(c) An action by the player character introduced by an NPC render is repaired (the M4
+    rule, unchanged): Jenni's render "Cal hands Jenni a coin." is denied ``player_character`` and
+    repaired, never canonized. The player's input about an NPC is likewise never fact under
+    ``own_character``: "Jenni hands me the key." is a request (``turn_report.player_authority``),
+    neither canonized nor listed under ``verify.denied``. The exception: under ``co_author`` the
+    same input is accepted as player authority, permitted ``co_author`` and canonized with
+    provenance ``player``."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        story, ids = await st.structured_story(client, "Cal", "Jenni", "Bobby")
+        async with engine.begin() as conn:
+            key = await store.add_entity(conn, story, "item", "the key")
+            coin = await store.add_entity(conn, story, "item", "a coin")
+        stub = epistrel.models.stub
+        cal, jenni = ids["Cal"], ids["Jenni"]
+        about = (
+            "SELECT f.provenance::text AS provenance FROM facts f JOIN propositions p "
+            "ON p.id = f.proposition_id WHERE f.story_id = :s "
+            "AND (p.subject_id = :e OR p.object_id = :e)"
+        )
+
+        # (c): the player character's action, introduced by Jenni's render.
+        stub.script("generation", [st.render(st.beat("do", "Cal hands Jenni a coin."))])
+        answer = await respond(
+            client, story, body(cal, "Hi.", render_character_ids=[jenni]), AS_OWNER
+        )
+        assert answer.status_code == 200, answer.text
+        report = await st.turn_report(engine, story)
+        assert "player_character" in {d["reason"] for d in report["verify"]["denied"]}
+        assert report["repairs"]
+        assert await rows(engine, about, s=story, e=coin) == []
+
+        # own_character: the player's input about Jenni is a request, never fact.
+        stub.reset()
+        stub.script("generation", [st.render(st.beat("say", "No."))])
+        answer = await respond(client, story, body(cal, None, do=HANDS_OVER), AS_OWNER)
+        assert answer.status_code == 200, answer.text
+        report = await st.turn_report(engine, story)
+        assert report["player_authority"]["requests"][0]["text"] == HANDS_OVER
+        assert report["verify"]["denied"] == []
+        assert await rows(engine, about, s=story, e=key) == []
+
+        # The exception: co_author narration of Jenni's action is player authority.
+        patched = await client.patch(
+            f"/stories/{story}/settings",
+            json={"player_authority": "co_author"},
+            headers={**WRITE_HEADERS, **AS_OWNER},
+        )
+        assert patched.status_code == 200, patched.text
+        stub.reset()
+        stub.script("generation", [st.render(st.beat("say", "Oops."))])
+        answer = await respond(client, story, body(cal, None, do=HANDS_OVER), AS_OWNER)
+        assert answer.status_code == 200, answer.text
+        report = await st.turn_report(engine, story)
+        assert "repairs" not in report
+        assert "permitted:co_author" in {v["permission"] for v in report["verify"]["verdicts"]}
+        assert {r.provenance for r in await rows(engine, about, s=story, e=key)} == {"player"}

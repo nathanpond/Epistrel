@@ -45,6 +45,11 @@ REQUIRE_APPROVED = "EPISTREL_REQUIRE_APPROVED_SETS"
 DIGEST = REPO_ROOT / "docs" / "evals" / "sets-digest.md"
 DIGEST_SAMPLES = 20
 DIGEST_SEED = 157
+STRATIFIED = frozenset(
+    {"asymmetry/cases.jsonl", "think_leak/cases.jsonl", "entailment_viewpoint/cases.jsonl"}
+)
+"""#179's sets, whose digest sample is stratified by family (the fixture, the category) and
+template, so every stratum is in front of the reviewer."""
 HAND_WRITTEN = frozenset({"smoke", "e02"})
 """Suites whose sets predate #157 (#134's smoke, #155's E-02): no provenance or digest rule."""
 
@@ -96,6 +101,31 @@ def _label(value: Any) -> str:
     return "labeled"
 
 
+def _stratum(row: dict[str, Any]) -> tuple[str, str]:
+    inputs = row.get("inputs") if isinstance(row.get("inputs"), dict) else {}
+    assert isinstance(inputs, dict)  # noqa: S101 - narrowed above
+    return str(row.get("family", "")), str(inputs.get("template", ""))
+
+
+def stratified(rows: list[dict[str, Any]], rnd: random.Random) -> list[dict[str, Any]]:
+    """``DIGEST_SAMPLES`` rows drawn round-robin over the strata (family, template), each
+    stratum shuffled by ``rnd``; the strata in sorted order."""
+    strata: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in rows:
+        strata.setdefault(_stratum(row), []).append(row)
+    queues = []
+    for key in sorted(strata):
+        members = list(strata[key])
+        rnd.shuffle(members)
+        queues.append(members)
+    picked: list[dict[str, Any]] = []
+    while len(picked) < min(DIGEST_SAMPLES, len(rows)):
+        for queue in queues:
+            if queue and len(picked) < DIGEST_SAMPLES:
+                picked.append(queue.pop())
+    return picked
+
+
 def digest_text(sets_dir: Path) -> str:
     lines = [
         "# Labeled eval sets: the review digest",
@@ -130,9 +160,11 @@ def digest_text(sets_dir: Path) -> str:
             "",
         ]
         seed_key = sharing[0] if sharing else owner
-        picked = random.Random(f"{DIGEST_SEED}:{seed_key}").sample(  # noqa: S311 - a digest
-            rows, min(DIGEST_SAMPLES, len(rows))
-        )
+        rnd = random.Random(f"{DIGEST_SEED}:{seed_key}")  # noqa: S311 - a digest
+        if set_file in STRATIFIED:
+            picked = stratified(rows, rnd)
+        else:
+            picked = rnd.sample(rows, min(DIGEST_SAMPLES, len(rows)))
         for row in sorted(picked, key=lambda r: str(r["id"])):
             shown = _shown(row)
             lines.append(f"- `{row['id']}`: `{json.dumps(shown, ensure_ascii=False)}`")

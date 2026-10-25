@@ -8,6 +8,8 @@ outputs are ``audit``; truncate, untruncate, swap, fork, settings and story/char
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import ConfigDict, Field, JsonValue
 
 from epistrel.core.enums import EventCategory
@@ -148,12 +150,16 @@ class BeatVisibility(EventPayload):
 
 class BeatLabels(EventPayload):
     """An utterance's three independent labels (FR-TURN-6): the objective relation of what it
-    asserts (#142's verdicts), the speaker's belief relation (``unknown`` until M5) and its
-    communicative intent as declared."""
+    asserts (#142's verdicts), the speaker's belief relation (``unknown`` until M5's partitions)
+    and its communicative intent as declared and checked; under partitions (#166) also the
+    verifier's ``classification`` and whether a declared lie was relabelled sincere
+    (``intent_corrected``). Omniscient reads only, once classified."""
 
     objective_relation: str
     belief_relation: str = "unknown"
     intent: str = "unspecified"
+    classification: str | None = None
+    intent_corrected: bool = False
 
 
 class DetectedRef(EventPayload):
@@ -184,6 +190,16 @@ class PlayerInput(EventPayload):
     """A structured turn (#150): the propositions detected in the input, with their verdicts."""
     mentions: tuple[dict[str, JsonValue], ...] = Field(default=(), exclude_if=lambda v: not v)
     """A structured turn (#150): the input's resolved mentions (#139)."""
+    perception: dict[str, JsonValue] | None = Field(default=None, exclude_if=lambda v: not v)
+    """The player's ``say``'s perception qualifiers (#177, from #161): ``whisper_to`` as the
+    request named it, the targets not in the room dropped (``Qualifiers.payload``), so a history
+    read re-routes the input like any beat. Absent when the request named none."""
+    requests: tuple[dict[str, JsonValue], ...] = Field(default=(), exclude_if=lambda v: not v)
+    """A structured turn under ``player_authority = own_character`` (#180, FR-RESP-11): the
+    input's spans about other characters, each tagged ``request`` with its ``kind``,
+    ``character_id``, ``text`` and ``span`` (``[channel, start, end]`` in the input as typed).
+    They are not part of ``text``/``say``/``do`` (the player's own), never fact and never in
+    working memory. Absent when the input asked nothing of anyone."""
 
 
 @register("message_rendered", category=EventCategory.NARRATIVE_STATE)
@@ -211,6 +227,18 @@ class MessageRendered(EventPayload):
     """A scenario's opening narration (turn 1 of a story created from a scenario, #119): the
     characters of the roles present when the story opens (stored; the Lite pipeline does not
     use it)."""
+    interaction_mode: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    """#175: ``simultaneous`` for a structured turn whose primaries rendered against one
+    starting state (a history read routes its beats against the starting placements); absent
+    otherwise."""
+    perception_level: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    """#177: the perception level (``co_location`` or ``full``) a structured turn's message was
+    audience-filtered at; absent when it was not (perception ``none``, and every turn before
+    #177: its beats are read as perceived by all). A history read recomposes the message when
+    the story's level or player view is no longer the one it was composed under."""
+    player_view: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    """#177: the player view (``character`` or ``story``) the message was composed under, beside
+    ``perception_level``; absent with it."""
 
 
 @register("think", category=EventCategory.NARRATIVE_STATE)
@@ -454,6 +482,104 @@ class FactSuperseded(EventPayload):
     remainders: tuple[str, ...] = ()
 
 
+@register("belief_committed", category=EventCategory.DERIVED)
+class BeliefCommitted(EventPayload):
+    """A belief record written to a holder's partition (FR-EPI-1,3,6; #159): the new row
+    (``belief_id``) and its proposition, and the open belief of the same holder and proposition it
+    closed (``closes``, at the new row's ``held_from``). Identifiers only, and no character's (the
+    row names its holder); the
+    belief follows its operation's membership, so this event does too. #160's
+    ``belief_transition`` event joins it with the acquisition's cause."""
+
+    belief_id: str
+    proposition_id: str
+    closes: str | None = None
+
+
+@register("belief_transition", category=EventCategory.DERIVED)
+class BeliefTransitioned(EventPayload):
+    """A belief-set change with its typed cause (FR-EPI-7,13, FR-BELIEF-2; #160): the transition
+    (``transition_id``), the belief it produced or changed, its ``kind``, its ``antecedent``
+    (``{kind, ref}``) and the beliefs a correction closed (``prior_belief_ids``). Identifiers
+    only; the transition follows its operation's membership, so this event does too."""
+
+    transition_id: str
+    belief_id: str
+    kind: str
+    antecedent: dict[str, Any]
+    prior_belief_ids: tuple[str, ...] = ()
+
+
+@register("exposure_recorded", category=EventCategory.DERIVED)
+class ExposureRecorded(EventPayload):
+    """A non-salient witness's exposure records (FR-BELIEF-5; #164): the exposures one beat
+    wrote, by id. Identifiers only; each row names its witness, proposition, source and
+    position."""
+
+    exposure_ids: tuple[str, ...]
+
+
+@register("belief_resolved", category=EventCategory.DERIVED)
+class BeliefResolved(EventPayload):
+    """An exposure resolved lazily inside the narrative turn that needed it (FR-BELIEF-7,12;
+    #164): the exposure, the transition that resolved it (the first-order belief's, else the
+    speech act's) and how (``defaulted`` or ``adjudicated``). Identifiers only; the transition
+    names the belief, dated at the exposure position."""
+
+    exposure_id: str
+    transition_id: str
+    resolution: str = "defaulted"
+
+
+@register("character_weight_set", category=EventCategory.CONTROL)
+class CharacterWeightSet(EventPayload):
+    """The author set a character's narrative weight (FR-EPI-10; #163's
+    ``POST /stories/{id}/characters/{cid}/weight``): ``minor`` or ``major``, and the weight it
+    had. Prospective: what the character already holds is not rewritten."""
+
+    character_id: str
+    weight: str
+    previous: str
+
+
+@register("character_modeled", category=EventCategory.DERIVED)
+class CharacterModeled(EventPayload):
+    """A story entity became a modeled character (FR-EPI-9; #163): the trigger
+    (``interaction`` or ``salience``), the entity (a story character's entity id is its
+    character id) and the position it was modeled at (``at_turn``, ``at_variant``,
+    ``at_slot_k``, ``at_beat``, ``at_step``). Identifiers only; the ``character_defined`` event
+    beside it names the character."""
+
+    trigger: str
+    entity_id: str
+    position: dict[str, int]
+
+
+@register("belief_authored", category=EventCategory.CONTROL)
+class BeliefAuthored(EventPayload):
+    """An author directed a character's belief (FR-EPI-7's author direction; #160's
+    ``POST /admin/stories/{id}/beliefs``): the author act an ``author`` transition cites. The
+    holder is ``holder_character_id``; the belief and its transition carry the rest."""
+
+    holder_character_id: str
+    disclosure: str | None = None
+
+
+@register("seed_materialized", category=EventCategory.CONTROL)
+class SeedMaterialized(EventPayload):
+    """A structured genesis seeded what characters start out believing (FR-SCN-8; #173): the
+    author act each ``author`` transition of the seed cites. ``field_ref`` names the item (a
+    seed, a relationship, the persona), ``seed_id`` the seed, ``holder_character_id`` its holder
+    (``None`` for the world's), ``audience`` its tokens as written and ``disclosure`` how the
+    holder treats it (what #166's lie rule reads). Identifiers and tokens only."""
+
+    field_ref: str
+    seed_id: str | None = None
+    holder_character_id: str | None = None
+    audience: tuple[str, ...] = ()
+    disclosure: str | None = None
+
+
 # -- commitments (FR-COMMIT-1..3,5..7,10,13; #146) ---------------------------------------------
 
 
@@ -624,6 +750,18 @@ class CompositionRejected(EventPayload):
     cause: str | None = None
 
 
+@register("turn_reconciled", category=EventCategory.AUDIT)
+class TurnReconciled(EventPayload):
+    """The concurrent commitments a structured turn reconciled on one timeline before its
+    composition (FR-MULTI-3; #177, ``orchestrator.structured.reconcile``): each contradictory
+    pair's proposition key, the beat whose commitment stood, the beat rewritten as an attempt
+    (its ``do``) or whose ``latent`` was dropped, and the rule (``author``, ``earlier_beat``,
+    ``request_order``); each duplicate commitment kept once (``dedupe``). Ids, beat numbers and
+    codes only. Audit only: no story view reads it."""
+
+    pairs: tuple[dict[str, JsonValue], ...] = ()
+
+
 # -- the structured turn (FR-TURN-1,4,5,6; #150) -------------------------------------------------
 
 
@@ -655,6 +793,15 @@ class StructuredBeat(EventPayload):
     detected: tuple[DetectedRef, ...] = Field(default=(), exclude_if=lambda v: not v)
     mentions: tuple[dict[str, JsonValue], ...] = Field(default=(), exclude_if=lambda v: not v)
     repaired_from: RepairedFrom | None = Field(default=None, exclude_if=lambda v: v is None)
+    perception: dict[str, JsonValue] | None = Field(default=None, exclude_if=lambda v: not v)
+    """The beat's explicit perception qualifiers as validated before staging (#161;
+    ``core.epistemic.perception.Qualifiers.payload``): ``addressee``, ``manner``, ``whisper_to``,
+    ``aside``, ``eavesdrop_by``, ``remote_channel``, ``language``, ``partial_text``,
+    ``location``; absent when none was declared. A history read re-routes the beat from them."""
+    narrated_by: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    """#176 (FR-MULTI-9): a reactive character's reaction another render narrated (a
+    ``beat_do``, or a brief interjection's ``beat_say``): the narrating render's character id;
+    absent for a beat the character's own render gave."""
 
 
 @register("beat_say", category=EventCategory.NARRATIVE_STATE)

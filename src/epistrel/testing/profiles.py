@@ -17,10 +17,13 @@ schema reads those delivered settings as interpretive (``schema.INTERPRETIVE_SET
 ``schema.setting_tags`` gives them the interpretive class, and every ``config_changes`` row that
 takes its class from there records it. Leaving the block restores the schema's own tags.
 
-``structured_m4()`` names the seeded ``Structured (M4)`` profile (#129), the fixture profile of
-every M4 integration test: a story created with ``engine_profile_id = structured_m4()`` runs
-under every module M4 delivers. Migration ``0047`` seeds it in every database at head, the
-test databases included.
+``structured_m4()`` names the seeded profile whose version 1 is ``Structured (M4)`` (#129), the
+fixture profile of every M4 integration test: a story pinned to its version 1 (``version: 1`` on
+``PUT /stories/{id}/engine-profile``, ``engine_profile_version: 1`` on a scenario creation, or
+``engine_profile_version_pin = 1``) runs under every module M4 delivers. ``structured()`` names
+the same row at its latest version, ``Structured`` (#181: version 2, every M5 module on).
+Migrations ``0047`` and ``0080`` seed it in every database at head, the test databases
+included.
 
 Nothing in ``Engine`` or ``create_app`` imports this module, and Core never does.
 """
@@ -32,7 +35,13 @@ from contextlib import contextmanager
 
 from epistrel.core.profiles import schema
 from epistrel.core.profiles.schema import DependencyRule
-from epistrel.core.seeds.profiles import STRUCTURED_M4_PROFILE_ID, structured_m4_settings
+from epistrel.core.seeds.profiles import (
+    STRUCTURED_M4_PROFILE_ID,
+    STRUCTURED_M4_VERSION,
+    STRUCTURED_PROFILE_ID,
+    structured_m4_settings,
+    structured_settings,
+)
 
 TEST_CLAUSE = "test"
 """The ``clause`` of a test-only rule: FR-PROF-4 states no such rule."""
@@ -79,16 +88,25 @@ def extra_rule(rule: DependencyRule) -> Iterator[DependencyRule]:
 
 
 def structured_m4() -> str:
-    """The id of the seeded ``Structured (M4)`` profile (its settings:
-    ``structured_m4_settings()``)."""
+    """The id of the seeded profile whose version ``STRUCTURED_M4_VERSION`` is ``Structured
+    (M4)`` (its settings: ``structured_m4_settings()``); a story pins that version to run it."""
     return STRUCTURED_M4_PROFILE_ID
 
 
+def structured() -> str:
+    """The id of the seeded ``Structured`` profile, whose latest version a story follows (its
+    settings: ``structured_settings()``)."""
+    return STRUCTURED_PROFILE_ID
+
+
 __all__ = [
+    "STRUCTURED_M4_VERSION",
     "TEST_CLAUSE",
     "data_producing",
     "extra_rule",
     "interpretive",
+    "structured",
     "structured_m4",
     "structured_m4_settings",
+    "structured_settings",
 ]

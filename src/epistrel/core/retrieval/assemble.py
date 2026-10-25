@@ -11,12 +11,15 @@ its ``text``. The tiers, in priority order:
    entities;
 4. ``MEMORIES``: the ranked memories, best first.
 
-``assemble(items, budget)`` walks them in that order (a stable sort by tier: within a tier the
-order given) and places each item that still fits: an item over the remaining budget is
-dropped (``budget``), and a pin over the pins' share is dropped (``pin_cap``), and the walk goes
-on, so a smaller later item may still fit. The placed items never exceed the budget, whatever
-the story's age (FR-MEM-6's bounded context). A repeated ``(kind, item_id)`` is placed once
-(the first, highest-priority occurrence; the repeat is dropped as ``duplicate``).
+``assemble(items, budget)`` takes only an already viewpoint-filtered set
+(``core.retrieval.filtered.ViewpointFiltered``, U-31 M5, NFR-PRIV-4; #170): anything else is a
+``TypeError``, so the helper cannot widen what a character sees. It walks them in that order (a
+stable sort by tier: within a tier the order given) and places each item that still fits: an
+item over the remaining budget is dropped (``budget``), and a pin over the pins' share is
+dropped (``pin_cap``), and the walk goes on, so a smaller later item may still fit. The placed
+items never exceed the budget, whatever the story's age (FR-MEM-6's bounded context). A repeated
+``(kind, item_id)`` is placed once (the first, highest-priority occurrence; the repeat is
+dropped as ``duplicate``).
 
 Tokens are M3's estimate (``core.summary.estimate_tokens``: ``len(text) // 4``, no tokenizer),
 at least 1 per item.
@@ -24,11 +27,11 @@ at least 1 per item.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Literal
 
+from epistrel.core.retrieval.filtered import ViewpointFiltered
 from epistrel.core.summary import estimate_tokens
 
 PIN_SHARE = 0.4
@@ -90,8 +93,13 @@ class Context:
     used: int = 0
 
 
-def assemble(items: Iterable[ContextItem], budget: int, *, pin_share: float = PIN_SHARE) -> Context:
-    """Fill ``budget`` tokens by tier (see the module docstring)."""
+def assemble(
+    items: ViewpointFiltered[ContextItem], budget: int, *, pin_share: float = PIN_SHARE
+) -> Context:
+    """Fill ``budget`` tokens by tier with ``items``, an already viewpoint-filtered set (see the
+    module docstring)."""
+    if not isinstance(items, ViewpointFiltered):
+        raise TypeError("the context assembler takes only an already viewpoint-filtered set")
     if budget < 0:
         raise ValueError("a token budget is not negative")
     if not 0.0 <= pin_share <= 1.0:

@@ -1,0 +1,15 @@
+{
+  "category": "audible",
+  "language": "en",
+  "description": "Sound-category actions (#161): a do beat whose text uses one of these verbs is heard in the adjoining places through any barrier but a wall, at envelope fidelity ('You hear a knock from the hallway'). The noun is what the hearer is told they heard.",
+  "lemmas": [
+    {"lemma": "knock", "forms": ["knock", "knocks", "knocked", "knocking"], "noun": "a knock"},
+    {"lemma": "bang", "forms": ["bang", "bangs", "banged", "banging"], "noun": "a bang"},
+    {"lemma": "pound", "forms": ["pound", "pounds", "pounded", "pounding"], "noun": "a pounding"},
+    {"lemma": "shout", "forms": ["shout", "shouts", "shouted", "shouting"], "noun": "a shout"},
+    {"lemma": "yell", "forms": ["yell", "yells", "yelled", "yelling"], "noun": "a yell"},
+    {"lemma": "scream", "forms": ["scream", "screams", "screamed", "screaming"], "noun": "a scream"},
+    {"lemma": "slam", "forms": ["slam", "slams", "slammed", "slamming"], "noun": "a slam"},
+    {"lemma": "crash", "forms": ["crash", "crashes", "crashed", "crashing"], "noun": "a crash"}
+  ]
+}

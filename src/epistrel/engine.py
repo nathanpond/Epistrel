@@ -65,7 +65,9 @@ from epistrel.core.catalog.report import ValidationResult
 from epistrel.core.commit import lifecycle as commitment
 from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.context import SYSTEM_PRINCIPAL, RequestContext, requesting_principal
-from epistrel.core.enums import EntryStatus, StoryStatus, ThunkState
+from epistrel.core.enums import EntryStatus, ExposureState, StoryStatus, ThunkState
+from epistrel.core.epistemic import author as belief_author
+from epistrel.core.epistemic import inspection, partitions
 from epistrel.core.erasure import boundary as erasure_boundary
 from epistrel.core.erasure import catalog_block
 from epistrel.core.erasure import erase as erasure
@@ -121,7 +123,7 @@ from epistrel.core.ratings import reactivation
 from epistrel.core.ratings import suggest as rating_suggestion
 from epistrel.core.retrieval import lexical_backend
 from epistrel.core.retrieval import pipeline as retrieval_pipeline
-from epistrel.core.settings_schema import ConfigClass, StorySettings
+from epistrel.core.settings_schema import ConfigClass, PlayerView, StorySettings
 from epistrel.core.tables import events
 from epistrel.core.tables.media import MediaKind, MediaState
 from epistrel.core.tables.ownership import EntityType
@@ -223,6 +225,8 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "supersede_fact": ResultCodec.of(mutation.FactWrite, status=201),
     "lock_fact": ResultCodec.of(mutation.FactWrite),
     "unlock_fact": ResultCodec.of(mutation.FactWrite),
+    # Author beliefs (#160): a story-scoped control write.
+    "write_belief": ResultCodec.of(belief_author.BeliefWrite, status=201),
     # A blank story or one from a scenario (201); a scenario creation #109's two stages held
     # back (200, nothing written).
     "create_story": ResultCodec.of(
@@ -271,6 +275,11 @@ CODECS: dict[str, ResultCodec[Any]] = {
     # and a promotion, which only reads the story (deployment-scoped, like a catalog create).
     "add_story_character": ResultCodec.of(stories.StoryCharacterAdded, status=201),
     "promote_character": ResultCodec.of(catalog_promote.Promotion, status=201),
+    # #163: an author's weight change and modeling directive (story-scoped control operations).
+    "set_character_weight": ResultCodec.of(stories.CharacterWeighted),
+    # #176: a character's participation role (a story configuration write).
+    "set_participation": ResultCodec.of(stories.ParticipationSet, revision_field=_CONFIG),
+    "model_entity": ResultCodec.of(stories.CharacterWeighted, status=201),
     "create_content_rating": ResultCodec.of(
         ratings.RatingWrite, status=201, revision_field=_CONFIG
     ),
@@ -1243,6 +1252,36 @@ class Engine:
             material={"story_id": story_id, "body": _body(request)},
         )
 
+    async def write_belief(
+        self, ctx: RequestContext, story_id: str, request: belief_author.BeliefRequest
+    ) -> belief_author.BeliefWrite:
+        """Set what a modeled character believes (FR-EPI-7's author direction; #160): an
+        ``author`` belief transition citing the call's own author act, with dual confidence
+        (FR-BELIEF-4: 422 ``confidence_inconsistent`` for a level its scalar does not project
+        onto). A held belief it contradicts is closed (a correction keeps its history). A
+        position-less ``control`` operation that bumps the revision (201). 409 ``module_off``
+        unless the story keeps partitions; 422 ``holder_has_no_partition`` for the player's
+        character."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> belief_author.BeliefWrite:
+            return await belief_author.write_belief(
+                self.db,
+                story_id,
+                request,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+                expected_revision=ctx.expected_revision,
+            )
+
+        return await self._keyed(
+            ctx,
+            "write_belief",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "body": _body(request)},
+        )
+
     async def supersede_fact(
         self,
         ctx: RequestContext,
@@ -1366,6 +1405,7 @@ class Engine:
         include_audit: bool = False,
         variant: variants.ChainRef | None = None,
         include_summary: bool = False,
+        player_view: PlayerView | None = None,
     ) -> History:
         """The story's corrected history through ``as_of`` (default the head), produced for one
         output viewpoint (FR-RESP-12): ``viewpoint`` (or ``ctx.viewpoint``) when named, else
@@ -1374,7 +1414,8 @@ class Engine:
         (``include_audit``) need ``omniscient`` by name (403 ``omniscient_required``). Pages of
         whole turns, newest first, up to ``limit`` items; ``before_turn`` pages backwards.
         ``variant`` reads along that chain instead of the active one (#66);
-        ``include_summary`` adds the included rolling-summary segments (#72)."""
+        ``include_summary`` adds the included rolling-summary segments (#72). ``player_view``
+        (#177): ``character`` or ``story`` over the story's setting (FR-RESP-13)."""
         ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
         return await read_history(
             self.db,
@@ -1387,6 +1428,7 @@ class Engine:
             include_audit=include_audit,
             variant=variant,
             include_summary=include_summary,
+            player_view=player_view,
         )
 
     @refuses_nul()
@@ -1813,24 +1855,121 @@ class Engine:
         ctx: RequestContext,
         story_id: str,
         *,
-        viewpoint: str | None = None,
+        viewpoint: str | None,
         state: ThunkState | None = None,
         discharged: bool | None = None,
         limit: int = commitment.INSPECT_LIMIT_DEFAULT,
         after_id: str | None = None,
     ) -> commitment.LedgerPage:
-        """The story's thunks and promissory ledger (docs/02 §9's ``inspect/ledger``; FR-ADMIN-5
-        is M5's), ``omniscient`` only (403 ``omniscient_required`` otherwise): a page of
-        ``limit`` thunks by id after ``after_id`` (only those in effective ``state`` when
-        given), with their ledger entries (``discharged`` filters them). 409 ``module_off`` when
-        the story does not run commitment."""
+        """The story's thunks and promissory ledger (docs/02 §9's ``inspect/ledger``;
+        FR-ADMIN-5), an omniscient read (``inspection.omniscient_read``: 422
+        ``viewpoint_unresolved`` when none is named, 403 ``omniscient_required`` for a
+        character): a page of ``limit`` thunks by id after ``after_id`` (only those in effective
+        ``state`` when given), with their ledger entries (``discharged`` filters them). 409
+        ``module_off`` when the story does not run commitment."""
         ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
-        require_omniscient(ctx.viewpoint or "", field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
         return await commitment.inspect_ledger(
             self.db,
             story_id,
             state=state,
             discharged=discharged,
+            limit=limit,
+            after_id=after_id,
+        )
+
+    @refuses_nul()
+    async def inspect_beliefs(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        character: str,
+        viewpoint: str | None,
+        proposition_id: str | None = None,
+        as_of: int | None = None,
+        limit: int = partitions.INSPECT_LIMIT_DEFAULT,
+        after: str | None = None,
+    ) -> partitions.BeliefInspection:
+        """``character``'s belief projection (FR-EPI-6, FR-ADMIN-5; docs/02 §9's
+        ``inspect/beliefs``; #159, #178), an omniscient read (422 ``viewpoint_unresolved``
+        when none is named, 403 ``omniscient_required`` for a character: it shows a partition
+        no other character may read): a page of ``limit`` ``belief_state`` rows by proposition
+        id after ``after`` (only ``proposition_id`` when given), each with its current belief;
+        ``as_of`` reads it as the corrected record stood through that turn. 404 for an unknown
+        story; 409 ``module_off`` when the story keeps no partitions; 422 for a character
+        outside the cast; the player's character (no partition) answers an empty page."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
+        return await partitions.inspect(
+            self.db,
+            story_id,
+            character=character,
+            proposition_id=proposition_id,
+            limit=limit,
+            after=after,
+            as_of=as_of,
+        )
+
+    @refuses_nul()
+    async def inspect_divergences(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        viewpoint: str | None,
+        speaker: str | None = None,
+        subject: str | None = None,
+        as_of: int | None = None,
+        limit: int = inspection.INSPECT_LIMIT_DEFAULT,
+        after_id: str | None = None,
+    ) -> inspection.DivergencePage:
+        """The story's divergences (FR-TURN-7, FR-ADMIN-5; docs/02 §9's ``inspect/divergences``;
+        #166, #178): what each lying speaker asserted against what it believes, an omniscient
+        read (422 ``viewpoint_unresolved`` / 403 ``omniscient_required``). A page by id
+        (``limit``, ``after_id``); ``speaker`` keeps one speaker's, ``subject`` those about an
+        entity, ``as_of`` those positioned through a turn. 409 ``module_off`` when the story
+        keeps no partitions."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
+        return await inspection.inspect_divergences(
+            self.db,
+            story_id,
+            speaker=speaker,
+            subject=subject,
+            as_of=as_of,
+            limit=limit,
+            after_id=after_id,
+        )
+
+    @refuses_nul()
+    async def inspect_exposures(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        viewpoint: str | None,
+        character: str | None = None,
+        state: ExposureState | None = None,
+        as_of: int | None = None,
+        limit: int = inspection.INSPECT_LIMIT_DEFAULT,
+        after_id: str | None = None,
+    ) -> inspection.ExposurePage:
+        """The story's exposures (FR-BELIEF-5,14, FR-ADMIN-5; ``inspect/exposures``; #164,
+        #178): what each witness heard and has (``resolved``) or has not yet (``unresolved``)
+        decided, an omniscient read (422 ``viewpoint_unresolved`` / 403
+        ``omniscient_required``) that never resolves anything. A page by id (``limit``,
+        ``after_id``); ``character`` keeps one witness's, ``state`` one effective state as the
+        record stood through ``as_of``. 409 ``module_off`` when the story keeps no
+        partitions."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
+        return await inspection.inspect_exposures(
+            self.db,
+            story_id,
+            character=character,
+            state=state,
+            as_of=as_of,
             limit=limit,
             after_id=after_id,
         )
@@ -2536,6 +2675,101 @@ class Engine:
             run,
             story_id=story_id,
             material={"story_id": story_id, "body": _body(request)},
+        )
+
+    async def set_participation(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        character_id: str,
+        request: stories.ParticipationSpec,
+    ) -> stories.ParticipationSet:
+        """Set a story character's participation role, ``{role, fixed}`` (FR-MULTI-7; #176): a
+        prospective story configuration write that moves the story's ``config_revision`` and
+        records a ``config_changes`` row. 404 for an unknown story or a character not in it;
+        422 ``is_player`` for the player's character; 409 ``story_archived``. Answers the
+        character as a read lists it."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> stories.ParticipationSet:
+            return await stories.set_participation(
+                self.db, story_id, character_id, request, principal=principal
+            )
+
+        return await self._keyed(
+            ctx,
+            "set_participation",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "character_id": character_id, "body": _body(request)},
+        )
+
+    async def set_character_weight(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        character_id: str,
+        request: stories.CharacterWeightRequest,
+    ) -> stories.CharacterWeighted:
+        """Set a story character's narrative weight, ``minor`` or ``major`` (FR-EPI-10; #163):
+        prospective, a control operation that bumps the revision. 404 for an unknown story or a
+        character not in it; 422 ``is_player`` for the player's character; 409
+        ``story_archived``; 409 ``revision_conflict`` for a stale expected revision; 423
+        ``story_busy`` while a turn is in flight. Answers the character as an omniscient read
+        lists it."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> stories.CharacterWeighted:
+            return await stories.set_character_weight(
+                self.db,
+                story_id,
+                character_id,
+                request,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+                expected_revision=ctx.expected_revision,
+            )
+
+        return await self._keyed(
+            ctx,
+            "set_character_weight",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "character_id": character_id, "body": _body(request)},
+        )
+
+    async def model_entity(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        entity_id: str,
+        request: stories.ModelEntityRequest,
+    ) -> stories.CharacterWeighted:
+        """The author's directive to model one of the story's entities as a character
+        (FR-EPI-9; #163): a ``minor`` character with the request's true age, adopting the
+        entity. 404 for an unknown story or entity; 422 ``already_modeled``, ``not_a_person``
+        or ``allow_new_arrivals``; 409 ``story_archived``; 409 ``revision_conflict``; 423
+        ``story_busy`` while a turn is in flight. Answers the new character as an omniscient
+        read lists it (201)."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> stories.CharacterWeighted:
+            return await stories.model_entity(
+                self.db,
+                story_id,
+                entity_id,
+                request,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+                expected_revision=ctx.expected_revision,
+            )
+
+        return await self._keyed(
+            ctx,
+            "model_entity",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "entity_id": entity_id, "body": _body(request)},
         )
 
     async def promote_character(

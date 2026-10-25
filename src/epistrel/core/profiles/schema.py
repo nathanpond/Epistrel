@@ -35,11 +35,11 @@ of that setting means, and the settings it owns. ``DELIVERED`` maps each module 
 has delivered to its delivered levels: in M3 the ``lite`` pipeline, the rolling summary, pinned
 memories, the polish pass, budgets and models; M4 adds the ``structured`` pipeline, episodic
 retrieval, consolidation, verification at every level, contradiction checking, commitment and
-the repair attempts (#129). M5 and M6 flip entries here and nothing else. ``delivered_schema``
-derives, from the full model, the JSON Schema of only the delivered modules and levels: the
-OpenAPI document and ``GET /engine-profiles/schema`` publish that one.
-``PATCH_SCHEMA`` is the same with ``null`` allowed for every member: a JSON merge patch over a
-story's overrides (#113).
+the repair attempts (#129); M5 the character-knowledge, perception and per-character modules
+(#181). M6 flips entries here and nothing else. ``delivered_schema`` derives, from the full
+model, the JSON Schema of only the delivered modules and levels: the OpenAPI document and
+``GET /engine-profiles/schema`` publish that one. ``PATCH_SCHEMA`` is the same with ``null``
+allowed for every member: a JSON merge patch over a story's overrides (#113).
 
 **The dependency graph (FR-PROF-4).** ``DEPENDENCIES`` declares, as data, every rule FR-PROF-4
 states, delivered or not. ``FR_PROF_4`` holds each clause of the requirement verbatim, and each
@@ -278,6 +278,14 @@ class Pins(ProfileModel):
 # -- character knowledge, perception, verification, commitment ----------------------------------
 
 
+DEFAULT_MAX_ADJUDICATIONS_PER_TURN = 2
+MAX_MAX_ADJUDICATIONS_PER_TURN = 10
+DEFAULT_MAX_LAZY_RESOLUTIONS_PER_TURN = 20
+MAX_MAX_LAZY_RESOLUTIONS_PER_TURN = 200
+DEFAULT_INTERJECTION_MAX_WORDS = 6
+MAX_INTERJECTION_MAX_WORDS = 20
+
+
 class NestedBeliefs(ProfileModel):
     """Nested beliefs (FR-EPI-2, FR-BELIEF-15): off, or a depth of at least 2."""
 
@@ -295,6 +303,16 @@ class CharacterKnowledge(ProfileModel):
         Literal["off", "model", "defaulted"], BEHAVIORAL, INTERPRETIVE, RELEVANT
     ] = "off"
     """Testimony adjudication (FR-BELIEF-3): ``model`` or ``defaulted``."""
+    max_adjudications_per_turn: Annotated[int, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
+        default=DEFAULT_MAX_ADJUDICATIONS_PER_TURN, ge=0, le=MAX_MAX_ADJUDICATIONS_PER_TURN
+    )
+    """The most ``belief_adjudication`` calls one turn makes (#162): the testimony and
+    simultaneous-conflict adjudications beyond it follow the deterministic default."""
+    max_lazy_resolutions_per_turn: Annotated[int, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
+        default=DEFAULT_MAX_LAZY_RESOLUTIONS_PER_TURN, ge=0, le=MAX_MAX_LAZY_RESOLUTIONS_PER_TURN
+    )
+    """The most pending exposures one turn resolves when a need reaches them (#164): the rest
+    wait for a later need."""
 
 
 class Perception(ProfileModel):
@@ -380,6 +398,11 @@ class MultiCharacter(ProfileModel):
     renders: Annotated[Literal["combined", "per_character"], BEHAVIORAL, PROSPECTIVE, RELEVANT] = (
         "combined"
     )
+    interjection_max_words: Annotated[int, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
+        default=DEFAULT_INTERJECTION_MAX_WORDS, ge=1, le=MAX_INTERJECTION_MAX_WORDS
+    )
+    """The most words a reactive character's brief interjection may have, where the story's
+    ``reactive_interjections`` allows one (FR-MULTI-9; #176)."""
 
 
 # -- repair, budgets, models ----------------------------------------------------------------------
@@ -694,6 +717,12 @@ DELIVERED: Mapping[str, frozenset[str]] = types.MappingProxyType(
         "verification": frozenset({"declared", "extraction", "entailment"}),
         "contradiction_checking": frozenset({ON}),
         "commitment": frozenset({ON}),
+        "partitions": frozenset({ON}),
+        "nested_beliefs": frozenset({ON}),
+        "lazy_resolution": frozenset({ON}),
+        "testimony": frozenset({"model", "defaulted"}),
+        "perception": frozenset({"co_location", "full"}),
+        "multi_character": frozenset({"per_character"}),
         "repair": frozenset({ON}),
         "polish": frozenset({ON}),
         "budgets": frozenset({ON}),
@@ -706,7 +735,10 @@ the ``structured`` pipeline (with the hot-set budgets it owns), episodic retriev
 consolidation, verification at ``declared``, ``extraction`` and ``entailment`` (with
 ``extraction_mode``, ``entailment_gate`` and ``entailment_min_confidence``; #142 adds the
 latter and ``safe_disposition``), contradiction checking, commitment, and the repair
-attempts. A module not listed is not delivered at any level."""
+attempts. M5 (#181): per-character partitions (with their adjudication and lazy-resolution
+caps), nested beliefs, lazy resolution, testimony at ``model`` and ``defaulted``, perception at
+``co_location`` and ``full``, and per-character renders (with ``interjection_max_words``). A
+module not listed is not delivered at any level."""
 
 
 UNDELIVERED_VALUES: Mapping[str, tuple[object, ...]] = types.MappingProxyType(

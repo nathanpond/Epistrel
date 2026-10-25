@@ -58,13 +58,14 @@ VOLATILE_KEYS = frozenset(
         "latency_ms_by_stage",
         "queued_ms",
         "first_call_offset_ms",
+        "context_ms",
         "worker_id",
         "attempt",
     }
 )
 """Keys dropped wherever they appear (columns, ``jsonb`` and response bodies): wall-clock
-durations (a turn's queue wait and first-call delay too, #76) and which worker or attempt ran a
-job."""
+durations (a turn's queue wait and first-call delay too, #76; #170's context assembly time)
+and which worker or attempt ran a job."""
 
 ID_PATTERN = re.compile(rf"(?<![{CROCKFORD}])[{CROCKFORD}]{{{ULID_LENGTH}}}(?![{CROCKFORD}])")
 TIMESTAMP_PATTERN = re.compile(
@@ -78,6 +79,9 @@ HASH_MARK = "«hash»"
 
 _STORY_RANK = "(SELECT s.created_at FROM stories s WHERE s.id = t.story_id)"
 _CAST_RANK = "(SELECT c.ordinal FROM characters c WHERE c.id = t.character_id)"
+_HOLDER_RANK = "(SELECT c.name FROM characters c WHERE c.id = t.holder_character_id)"
+_WITNESS_RANK = "(SELECT c.name FROM characters c WHERE c.id = t.witness_character_id)"
+_SPEAKER_RANK = "(SELECT c.name FROM characters c WHERE c.id = t.speaker_character_id)"
 
 _RECORD_RANK = (
     "(SELECT e.seq FROM events e WHERE e.story_id = t.story_id AND e.id::text = t.record_id) "
@@ -176,6 +180,34 @@ ORDER: dict[str, str] = {
         f"{_STORY_RANK}, t.tx_from, t.narrative_turn NULLS FIRST, t.valid_from NULLS FIRST, "
         "t.valid_to NULLS LAST"
     ),
+    # Belief partitions (#159): by holder name, then the belief's held position and level;
+    # the projection by holder name and since-position.
+    "beliefs": (
+        f"{_STORY_RANK}, {_HOLDER_RANK}, t.held_from_turn, t.held_from_slot_k, "
+        "t.held_from_beat, t.held_from_step, t.confidence_level, t.polarity, t.tx_from"
+    ),
+    "belief_transitions": (
+        f"{_STORY_RANK}, {_HOLDER_RANK}, t.position_turn, t.position_slot_k, t.position_beat, "
+        "t.position_step, t.kind, t.confidence_level, t.tx_from"
+    ),
+    # Exposures (#164): by witness name, then the exposure position and state.
+    "exposures": (
+        f"{_STORY_RANK}, {_WITNESS_RANK}, t.position_turn, t.position_slot_k, t.position_beat, "
+        "t.position_step, t.state"
+    ),
+    # Divergences (#166): by speaker name, then the say beat's position.
+    "divergences": (
+        f"{_STORY_RANK}, {_SPEAKER_RANK}, t.position_turn, t.position_slot_k, t.position_beat, "
+        "t.position_step, t.created_at"
+    ),
+    "belief_state": (
+        f"{_STORY_RANK}, {_HOLDER_RANK}, t.since_turn, t.since_slot_k, t.since_beat, "
+        "t.since_step, t.current_level, t.polarity"
+    ),
+    "nested_belief_state": (
+        f"{_STORY_RANK}, {_HOLDER_RANK}, t.since_turn, t.since_slot_k, t.since_beat, "
+        "t.since_step, t.depth, t.current_level, t.polarity"
+    ),
     # Memory records (#135): by narrative position, beat and kind, then by text.
     "memories": (
         f"{_STORY_RANK}, t.narrative_turn NULLS FIRST, t.turn_variant NULLS FIRST, "
@@ -211,7 +243,8 @@ ORDER: dict[str, str] = {
     # Speech acts (#150): by the beat's position, then the labels.
     "utterances": (
         f"{_STORY_RANK}, t.narrative_turn NULLS FIRST, t.turn_variant NULLS FIRST, "
-        "t.objective_relation, t.belief_relation, t.intent, t.created_at"
+        "t.objective_relation, t.belief_relation, t.intent, t.classification NULLS FIRST, "
+        "t.created_at"
     ),
     # The read set's change index (#136): by revision, then valid window and change kind.
     "proposition_changes": (

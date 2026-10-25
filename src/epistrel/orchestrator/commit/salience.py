@@ -121,6 +121,9 @@ class SalienceVerdict:
     unlocated: tuple[SalientQuote | SalienceQuote, ...] = ()
     called: bool = False
     degradation: tuple[str, ...] = ()
+    characters: tuple[str, ...] = ()
+    """The figures the model singled out as characters to model (#163's salience trigger), as
+    the words naming them; ``core.epistemic.modeling.candidates`` finds each in its beat."""
 
 
 def _inputs(beats: Sequence[Beat], scene_context: SceneContext) -> SalienceInputs:
@@ -184,7 +187,11 @@ def _located(result: SalienceResult, beats: Sequence[Beat]) -> SalienceVerdict:
         else:
             texture.append(span)
     return SalienceVerdict(
-        salient=tuple(salient), texture=tuple(texture), unlocated=tuple(unlocated), called=True
+        salient=tuple(salient),
+        texture=tuple(texture),
+        unlocated=tuple(unlocated),
+        called=True,
+        characters=tuple(dict.fromkeys(c.strip() for c in result.characters if c.strip())),
     )
 
 

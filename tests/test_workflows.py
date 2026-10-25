@@ -268,7 +268,7 @@ def test_perf_runs_the_scale_suite_weekly_and_opens_a_docs_pr() -> None:
         assert f"tests/perf/{name}" in run["run"]
     report = next(s for s in steps if s.get("name") == "Report a red run")
     assert "Weekly perf run failed" in report["run"]
-    assert docs["needs"] == ["weekly", "weekly-structured"]
+    assert docs["needs"] == ["weekly", "weekly-structured", "weekly-multi"]
     assert "failure" in docs["if"]
     assert docs["permissions"] == {"contents": "write", "pull-requests": "write"}
     others = {n: j.get("permissions", {}) for n, j in wf["jobs"].items() if n != "weekly-docs"}
@@ -284,6 +284,8 @@ def test_perf_runs_the_scale_suite_weekly_and_opens_a_docs_pr() -> None:
         "docs/capacity.md",
         "perf/results/*-structured.md",
         "perf/results/*-structured.json",
+        "perf/results/*-multi.md",
+        "perf/results/*-multi.json",
     }
     (pytest_step,) = [
         s for s in _steps(_workflow("ci.yml"), "test") if "pytest" in s.get("run", "")
@@ -330,6 +332,48 @@ def test_perf_runs_the_structured_workload_weekly() -> None:
     assert any("perf/results/" in s.get("run", "") for s in docs_steps)
 
 
+def test_perf_runs_the_multi_character_workload_weekly() -> None:
+    """#182 (P-04 M5): the multi-character variant runs on the weekly schedule and on dispatch,
+    after the structured one, on the GitHub-hosted runner as host class ``ci`` for 30 minutes,
+    with Locust from the ``perf`` group and its own seed cached by its key; it fails on failed,
+    lost or duplicated turns and on a reduced, deferred or escalation-deferred character (the
+    gate itself is reported there, not enforced), uploads the report, its sidecar and Locust's
+    HTML report, and files or comments on the weekly issue when red; the docs job downloads it
+    and commits the report. PR CI's test job syncs the ``perf`` group for the multi smoke run.
+
+    Complement asserted: it does not run on the nightly schedule, and it may not write
+    contents."""
+    wf = _workflow("perf.yml")
+    job = wf["jobs"]["weekly-multi"]
+    assert job["needs"] == ["weekly-structured"]
+    assert job["if"].startswith("always() && (")
+    assert "'0 3 * * 0'" in job["if"]
+    assert "inputs.suite == 'weekly'" in job["if"]
+    assert "'0 3 * * *'" not in job["if"]
+    assert job["permissions"] == {"contents": "read", "issues": "write"}
+    assert job["timeout-minutes"] == 180
+    steps = _steps(wf, "weekly-multi")
+    assert any(s.get("run") == "uv sync --frozen --group perf" for s in steps)
+    (cache,) = [s for s in steps if str(s.get("uses", "")).startswith("actions/cache@")]
+    assert cache["with"]["path"] == "build/perf/cache"
+    assert cache["with"]["key"] == "p04-multi-${{ steps.seed.outputs.key }}"
+    run = next(s for s in steps if s.get("id") == "multi")
+    assert "python -m perf.lite_smoke --scenario multi --minutes 30 --host-class ci" in run["run"]
+    check = next(s for s in steps if s.get("id") == "turns")
+    for field in ('f["failed"]', 'f["lost"]', 'f["duplicated"]', "reduced, deferred", "sys.exit(1"):
+        assert field in check["run"]
+    (upload,) = [s for s in steps if str(s.get("uses", "")).startswith("actions/upload-artifact@")]
+    assert upload["with"]["name"] == "perf-multi"
+    assert any("locust.html" in s.get("run", "") for s in steps)
+    report = next(s for s in steps if s.get("name") == "Report a red run")
+    assert "Weekly perf run failed" in report["run"]
+    docs_steps = _steps(wf, "weekly-docs")
+    assert any(s.get("with", {}).get("name") == "perf-multi" for s in docs_steps)
+    assert any("build/perf/multi/*-multi.md" in s.get("run", "") for s in docs_steps)
+    ci_steps = _steps(_workflow("ci.yml"), "test")
+    assert any(s.get("run") == "uv sync --frozen --group perf" for s in ci_steps)
+
+
 def test_redteam_runs_nightly_and_on_dispatch_and_reports_a_red_run() -> None:
     """#145: R-01's full corpus (`redteam_long`) and the PR subset every night (03:30 UTC) and
     on dispatch, with the log uploaded; a red run files or comments on an issue. PR CI names
@@ -345,6 +389,11 @@ def test_redteam_runs_nightly_and_on_dispatch_and_reports_a_red_run() -> None:
     assert '-m "redteam or redteam_long"' in run["run"]
     report = next(s for s in _steps(wf, "redteam") if s.get("name") == "Report a red run")
     assert "Nightly red-team run failed" in report["run"]
+    # #170: PRIV's extended run (5,000 examples), reported like the corpus.
+    priv = next(s for s in _steps(wf, "redteam") if s.get("id") == "priv")
+    assert priv["env"] == {"EPISTREL_HYPOTHESIS_PROFILE": "nightly"}
+    assert "tests/property/test_priv.py" in priv["run"]
+    assert "steps.priv.outcome == 'failure'" in report["if"]
     (pytest_step,) = [
         s for s in _steps(_workflow("ci.yml"), "test") if "pytest" in s.get("run", "")
     ]
@@ -426,23 +475,52 @@ def _test_files_under(path: Path) -> set[Path]:
     return {p for p in path.rglob("test_*.py") if fixtures not in p.parents}
 
 
-def _shard_files(spec: str) -> set[Path]:
-    """The test modules one shard's arguments select, with pytest's own semantics: positional
-    paths, minus ``--ignore`` paths, minus files whose absolute path (or a parent's) matches an
-    ``--ignore-glob`` pattern made absolute against the repository root."""
-    selected: set[Path] = set()
+def _module_tests(path: Path) -> set[str]:
+    """A test module's top-level test functions and classes: the nodes a ``path::name`` shard
+    argument can name."""
+    tree = ast.parse(path.read_text())
+    return {
+        node.name
+        for node in tree.body
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name.startswith("test")
+        )
+        or (isinstance(node, ast.ClassDef) and node.name.startswith("Test"))
+    }
+
+
+Node = tuple[Path, str]
+
+
+def _shard_nodes(spec: str) -> set[Node]:
+    """The tests one shard's arguments select, with pytest's own semantics: positional paths or
+    ``path::name`` node ids, minus ``--ignore`` paths, minus files whose absolute path (or a
+    parent's) matches an ``--ignore-glob`` pattern made absolute against the repository root,
+    minus ``--deselect`` node ids. A module is its top-level tests (``_module_tests``)."""
+    selected: set[Node] = set()
     ignored: list[Path] = []
     globs: list[str] = []
+    deselected: set[Node] = set()
     for word in spec.split():
         if word.startswith("--ignore="):
             ignored.append(REPO_ROOT / word.removeprefix("--ignore="))
         elif word.startswith("--ignore-glob="):
             globs.append(str(REPO_ROOT / word.removeprefix("--ignore-glob=")))
+        elif word.startswith("--deselect="):
+            path, _, name = word.removeprefix("--deselect=").partition("::")
+            assert name in _module_tests(REPO_ROOT / path), f"no test to deselect {word!r}"
+            deselected.add((REPO_ROOT / path, name))
         else:
             assert not word.startswith("-"), f"unexpected shard option {word!r}"
-            target = REPO_ROOT / word
+            path, _, name = word.partition("::")
+            target = REPO_ROOT / path
             assert target.exists(), f"shard path {word!r} does not exist"
-            selected |= _test_files_under(target)
+            if name:
+                assert name in _module_tests(target), f"shard node {word!r} does not exist"
+                selected.add((target, name))
+            else:
+                selected |= {(f, t) for f in _test_files_under(target) for t in _module_tests(f)}
 
     def kept(path: Path) -> bool:
         chain = [path, *path.parents]
@@ -450,28 +528,56 @@ def _shard_files(spec: str) -> set[Path]:
             return False
         return not any(fnmatch.fnmatch(str(p), g) for p in chain for g in globs)
 
-    return {p for p in selected if kept(p)}
+    return {n for n in selected if kept(n[0])} - deselected
+
+
+def _shard_files(spec: str) -> set[Path]:
+    """The test modules one shard runs any test of."""
+    return {path for path, _ in _shard_nodes(spec)}
+
+
+def _every_node() -> set[Node]:
+    return {(f, t) for f in _test_files_under(REPO_ROOT / "tests") for t in _module_tests(f)}
 
 
 def test_ci_shards_partition_the_test_files() -> None:
-    """#331: the sharded `test` job runs every test module under tests/ in exactly one shard.
+    """#331: the sharded `test` job runs every test under tests/ in exactly one shard. A module
+    may be split across shards by node id (`path::test`, `--deselect=path::test`; #179's E-08).
 
-    Complement asserted: a module no shard names (or two shards both name) is reported; the
+    Complement asserted: a test no shard names (or two shards both name) is reported; the
     shard names are unique, since each names its coverage data file."""
     shards = _shards()
     names = [s["name"] for s in shards]
     assert len(names) == len(set(names)), names
     assert len(shards) > 1, names
-    owners: dict[Path, list[str]] = {}
+    owners: dict[Node, list[str]] = {}
     for shard in shards:
-        for path in _shard_files(shard["paths"]):
-            owners.setdefault(path, []).append(shard["name"])
-    every = _test_files_under(REPO_ROOT / "tests")
-    missing = sorted(str(p.relative_to(REPO_ROOT)) for p in every - set(owners))
-    twice = {str(p.relative_to(REPO_ROOT)): o for p, o in owners.items() if len(o) > 1}
+        for node in _shard_nodes(shard["paths"]):
+            owners.setdefault(node, []).append(shard["name"])
+    every = _every_node()
+
+    def show(node: Node) -> str:
+        return f"{node[0].relative_to(REPO_ROOT)}::{node[1]}"
+
+    missing = sorted(show(n) for n in every - set(owners))
+    twice = {show(n): o for n, o in owners.items() if len(o) > 1}
     assert missing == [], f"no CI shard runs {missing}"
     assert twice == {}, f"more than one CI shard runs {twice}"
     assert set(owners) == every
+
+
+def test_ci_shard_node_split_is_checked() -> None:
+    """The node-id split is not vacuous: E-08's think-leak test runs in its own shard and the
+    rest of the module in another; without the `--deselect`, both shards would run it."""
+    by_name = {s["name"]: s["paths"] for s in _shards()}
+    e08 = REPO_ROOT / "tests" / "evals" / "test_e_08.py"
+    think = (e08, "test_e_08__m5_think_leak")
+    assert _shard_nodes(by_name["eval-e08-think"]) == {think}
+    rest = _shard_nodes(by_name["eval-e08"])
+    assert think not in rest
+    assert rest | {think} == {(e08, t) for t in _module_tests(e08)}
+    undeselected = by_name["eval-e08"].split(" --deselect=")[0]
+    assert think in _shard_nodes(undeselected)
 
 
 def test_ci_shard_partition_check_sees_a_gap() -> None:

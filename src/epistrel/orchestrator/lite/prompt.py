@@ -5,10 +5,11 @@ the ``generation`` purpose's ``GenerationInputs``; the ``lite_generation.j2`` te
 them as one ``system`` message (rating guidance first, then custom instructions, a scenario
 story's scenario text (#122), the actor's and render characters' definitions as
 ``### Author notes: <name>`` in request order, each with its deflection style when it has one
-(FR-GUARD-7), a scenario story's director notes, pinned memories, the rolling summary and the
-preamble), the verbatim window as alternating ``user``/``assistant`` messages, and the player
-input as the final ``user`` message. Nothing from the request's scene context is an argument
-here, so it cannot reach the prompt (FR-RESP-4).
+(FR-GUARD-7), a scenario story's director notes, pinned memories, the rolling summary, the
+preamble and the story's ``player_authority`` instruction, #180), the verbatim window as
+alternating ``user``/``assistant`` messages, and the player input as the final ``user``
+message. Nothing from the request's scene context is an argument here, so it cannot reach the
+prompt (FR-RESP-4).
 
 Several render characters share this one generation (FR-RESP-5, FR-LITE-5). Their knowledge is
 separated only by instruction: each one's notes are labelled with its name and the preamble says
@@ -91,6 +92,7 @@ def assemble(
         voiced_characters=[c.name for c in cast.render],
         policy_constraints=list(constraints),
         player_input=PlayerInput(name=cast.actor.name, say=say, do=do),
+        player_authority=inputs.player_authority,
     )
 
 

@@ -17,19 +17,19 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | Area | Spec | ADRs |
 |---|---|---|
 | FR-RESP | §1 | 047, 071, 078, 087, 091, 144, 145 |
-| FR-STORE | §2 | 045, 072, 075, 076, 079, 080, 122, 128, 129, 132, 138, 143, 144 |
-| FR-CONC | §2.3 | 045, 052, 057, 062, 072, 144 |
-| FR-MEM | §4 | 070, 071, 072, 075 |
-| FR-EPI | §5 | 024 |
-| FR-BELIEF | §5.1 | 026, 069, 075 |
-| FR-TURN | §6 | 043 |
-| FR-COMMIT | §7 | 018, 022, 043, 053, 129 |
-| FR-RET | §8 | 129 |
-| FR-PROP | §8.1 | 160, 162, 163, 165 |
-| FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162, 163, 165 |
-| FR-GUARD | §11 | 087, 095, 096, 114, 161 |
+| FR-STORE | §2 | 045, 072, 075, 076, 079, 080, 122, 128, 129, 132, 138, 143, 144, 167 |
+| FR-CONC | §2.3 | 045, 052, 057, 062, 072, 144, 169 |
+| FR-MEM | §4 | 070, 071, 072, 075, 169 |
+| FR-EPI | §5 | 024, 167, 168, 171, 173 |
+| FR-BELIEF | §5.1 | 026, 069, 075, 168, 170, 172, 173 |
+| FR-TURN | §6 | 043, 169, 170 |
+| FR-COMMIT | §7 | 018, 022, 043, 053, 129, 173 |
+| FR-RET | §8 | 129, 167 |
+| FR-PROP | §8.1 | 160, 162, 163, 165, 167 |
+| FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162, 163, 165, 173 |
+| FR-GUARD | §11 | 087, 095, 096, 114, 161, 169 |
 | FR-REWRITE | §12.1 | 144 |
-| FR-MODEL | §13 | 129, 136, 144, 150 |
+| FR-MODEL | §13 | 129, 136, 144, 150, 170 |
 | FR-EXT | §15 | 051, 054, 056, 061, 066, 072, 074, 092, 133, 140, 144 |
 | FR-STATE | §15.1 | 055, 072, 144 |
 | FR-CLOCK | §15.2 | 060, 063, 064, 067, 068, 073, 074, 076, 144 |
@@ -37,7 +37,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-API | §17 | 092, 138 |
 | FR-AUTH | §17.1 | 078, 091, 093, 144, 149, 152 |
 | FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144, 153, 154, 155, 156, 157, 159, 161 |
-| FR-CAT | §18.1 | 081, 088, 089, 090, 091, 095, 097, 107, 108, 138, 144 |
+| FR-CAT | §18.1 | 081, 088, 089, 090, 091, 095, 097, 107, 108, 138, 144, 171 |
 | FR-SCN | §18.2 | 081, 082, 087, 088, 091, 097, 107, 140, 141, 142 |
 | FR-PROF | §18.3 | 084, 086, 087, 107, 134, 138, 141, 142, 144, 158 |
 | FR-LITE | §18.4 | 085, 086, 087 |
@@ -46,13 +46,13 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-IMG | §18.7 | 098, 099, 100, 101, 102, 103, 104, 105, 108, 109, 110, 114, 116, 117, 118, 119, 120, 121, 124, 125, 129, 130, 131, 135, 136, 145 |
 | FR-FB | §18.8 | 111 |
 | FR-OBS | §19 | 129, 158, 162 |
-| NFR-PERF | §20 | 080, 123, 126, 133, 137, 145, 146, 147, 162 |
+| NFR-PERF | §20 | 080, 123, 126, 133, 137, 145, 146, 147, 162, 170 |
 | NFR-DETERM | §20 | 045, 080 |
 | NFR-SCALE | §20 | 070, 072, 075, 137 |
 | NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 112, 114, 115, 158, 164, 166 |
 | NFR-REL | §20 | 045, 127 |
 | NFR-SEC | §20 | 138, 149, 152 |
-| NFR-PRIV | §20 | 077, 101, 154, 157, 159, 161 |
+| NFR-PRIV | §20 | 077, 101, 154, 157, 159, 161, 169 |
 | NFR-PORT | §20 | 150 |
 | NFR-OPS | §20 | 127, 148, 151 |
 | NFR-MAINT | §20 | 148 |
@@ -229,6 +229,13 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 164 | Model-bound quality floors that miss on the reference model after M4's engine fixes move to M9: Performance tuning | Amended | 166 |
 | 165 | The render's own declared claims surface like extraction claims, and an unknown name or a pronoun with no antecedent counts as untracked | Current | — |
 | 166 | NFR-QUAL-7 (generation conformance) also moves to M9 | Current | — |
+| 167 | Visibility is decided by scope alone, and beliefs are a derived table with a rebuildable projection | Current | — |
+| 168 | A belief and its producing transition name each other, and one function writes every belief | Current | — |
+| 169 | Perception routing is one pure function over authoritative state, and it writes one memory per perceiver | Current | — |
+| 170 | Testimony is a speech-act belief for every witness and a separate, gated transition; trust is derived, never stored | Current | — |
+| 171 | A character is modeled lazily by interaction or salience, at minor weight, and a minor's partition is sparse by rule | Current | — |
+| 172 | A non-salient witness's exposure is resolved lazily in its own frame, by the turn that needs it | Current | — |
+| 173 | Could-have-known is a replay of dated acquisitions; a thunk binding obliges its character's knowledge | Current | — |
 
 ---
 
@@ -1695,6 +1702,117 @@ Everything else keeps the safe disposition: detector findings, the excluded reso
 - M4's live exit evidence is NFR-QUAL-5, 6, 8, 10, 13 and 15 on the reference model tier. NFR-QUAL-5 and NFR-QUAL-10 pass at `eee9fba` (100 % each).
 - M9 receives the remaining causes: model output that declares new people and facts in core relations, temperature-0 non-determinism on the serving stack, and length adherence.
 - Invariant 7 holds; `check-assignment`, `check-parts`, `check-lexicon` and `check-traceability` pass.
+---
+
+### ADR-167 — Visibility is decided by scope alone, and beliefs are a derived table with a rebuildable projection
+**Status:** Accepted.
+**Context:** M5's partitions (#159) give each modeled character its own belief records, and FR-EPI-5 puts one visibility scope on every fact, memory and belief. Two questions had more than one reasonable answer. First, a memory has a holder (`memories.holder_character_id`) as well as a visibility, so a viewpoint filter could ask either. Second, FR-STORE-3 calls the belief state a projection, while #130's registry makes every derived record follow its operation's membership. A belief needs both: the record itself must flip with truncation, and the per-character current state must be cheap to query.
+**Decision:**
+- Whether a viewpoint may read a record is decided by its `visibility` scope alone (`core.visibility`): `objective` and `public` reach every viewpoint, `engine` only `omniscient`, and `characters` only the characters it lists. A record's holder does not take part. A per-perceiver memory (#161) is written `characters: [perceiver]`, and a belief is always `characters: [holder]` (a CHECK). Retrieval composes one predicate from this into every arm (`core.retrieval.viewpoint`), gated by the `partitions` module, and canon's own filter is the same rule.
+- `beliefs` is a derived table in #130's registry (`DerivedTable` with the inner proposition's valid-time and transaction-time). `belief_state` is a rebuildable projection over it: one row per held first-order belief, kept by the belief write's hook in the same transaction and by a membership follower, folded by the same function for a rebuild, erasure's rebuilt stage and a fork, and exempt from the subject index.
+- A `belief(A)` holder is checked by the same deterministic rules as canon. Its record set is A's partition plus the canon A may read. The belief wins, and the merged set decides only whether the claim is known or novel to A.
+**Consequences:**
+- A holder column never widens or narrows what a viewpoint reads. A reader that wants "A's own" records asks for the scope, not the holder.
+- With `partitions` off (every Lite story and M4's structured profile), memories are not filtered and canon keeps its own filter, as in M4.
+- The projection can be dropped and refolded at any time, and the derived rows carry the truth. #160's correction reopens a prior belief through the same membership follower.
+- Tests: `tests/property/test_visibility.py` (VISIBILITY), `tests/integration/test_i_11.py` (I-11), `tests/integration/test_belief_projection.py` (I-01 M5), `tests/integration/test_belief_holder.py` (U-15 M5).
+
+---
+
+### ADR-168 — A belief and its producing transition name each other, and one function writes every belief
+**Status:** Accepted.
+**Context:** FR-EPI-7 makes provenance mandatory: no belief exists without a typed acquisition, and FR-EPI-13,14 require that acquisition's antecedent to be verified and to precede the dependent step. #159 left `beliefs.provenance` nullable for #160. Two shapes were possible: a nullable link checked by application code, or a link the schema enforces. A transition also has to name the belief it produced or changed, so the two rows would reference each other. Separately, #131's proposition store has no shape upsert, so "the same belief again" cannot be found by a stored hash.
+**Decision:**
+- `beliefs.provenance` is NOT NULL and a foreign key to `belief_transitions.id`, and `belief_transitions.belief_id` is a foreign key to `beliefs.id`. Both are `DEFERRABLE INITIALLY DEFERRED`, so the transition is written first, naming the belief id it is about to produce. A constraint trigger after each belief insert refuses a belief whose producing transition is missing, belongs to another story or holder, or names another belief. A unique index keeps one belief per producing transition. Both rows are story-scoped, so these are the only foreign keys between story tables besides `story_id` and `operation_id`.
+- `core.epistemic.transitions.transition()` is the only caller of `partitions._insert_belief` (the `check-epistemic-separation` gate scans for any other), and no module of `core/epistemic` names canon's writers. A held belief (the same `normalized_key` and polarity among the holder's open beliefs) changes in place, and its previous state is kept on the transition. A belief it contradicts is closed whole. A transition is a derived record of its operation, and a membership follower re-settles the beliefs its transitions touched from the active transitions, so a truncated correction reopens its prior.
+- The committed-record probe of an antecedent (`core.antecedents`) lives outside `core.canon` and `core.epistemic`, because it reads facts and beliefs alike and answers only existence and position.
+**Consequences:**
+- A belief cannot be written without its cause, by any path, raw SQL included.
+- Story deletion, erasure and fork handle the pair inside one transaction; the fork maps both ids and settles the copied beliefs on the copied transitions.
+- `belief_state` stays a rebuildable projection: an in-place change and a closure refresh it in the writing transaction, and the fold derives the same rows.
+- Tests: `tests/property/test_belief_provenance.py` (BELIEF-PROVENANCE), `tests/property/test_confidence_projection.py` (CONFIDENCE-PROJECTION), `tests/integration/test_u_12.py` (U-12 M5), `tests/soak/test_x_02.py` (X-02 M5).
+
+---
+
+### ADR-169 — Perception routing is one pure function over authoritative state, and it writes one memory per perceiver
+**Status:** Accepted.
+**Context:** M5's perception routing (#161; FR-TURN-2,9,10,13, NFR-PRIV-3) decides, per beat, who perceives its content, who only its envelope, and who nothing. M4's episodic writer (#135) stores one shared memory per observable beat with no holder, which cannot say that Bobby heard only that Jenni whispered. Three consumers need the same answer: memory writes, the audience filter (#177) and working memory (#170). The consumer also sends a scene roster (FR-RESP-4), which is tempting to read and must not grant perception.
+**Decision:**
+- `core.epistemic.perception.route_perception(beat, scene_state, qualifiers, level)` is pure. Its inputs are #137's placements, canon's `located_in`/`adjacent_to` topology and its barriers, `on_channel` facts, the characters' languages and the beat's explicit qualifiers. The roster is never an input. Widening qualifiers are validated against that state (FR-TURN-13), and one that cannot be honored is dropped, never honored. `check-perception-authority` (an AST gate) keeps the placement and scene tables and the topology predicates out of every other module, so #55's `present` set comes from the exported helpers.
+- Under per-character partitions with perception at `co_location` or `full`, routing replaces #135's shared writer for a structured turn: the memory sink writes one `memories` row per perceiver, with the perceiver as holder, `characters: [perceiver]` visibility (ADR-167), and new `fidelity` (`content`/`envelope`) and `channel` columns. An envelope's text is rendered deterministically per qualifier. With perception `none` the shared writer stays.
+- The turn routes at its commit, under the story lock, at the level the effective configuration has then (FR-CONC-16). `perception_level` is a configuration dependency. A turn begun under partitions whose story has none at commit regenerates.
+- Routing results are never stored. The beat's validated qualifiers are persisted on its event, so a later read re-routes it.
+**Consequences:**
+- A whisper writes the envelope to the room and the words to the target only, and a manipulated roster changes nothing, by construction (PERCEPTION-AUTHORITY).
+- Memory rows grow with the room: a beat perceived by four characters writes four rows. Identical texts are embedded separately until #138's job shares embeddings by content hash.
+- Belief acquisitions attach to the same results through `PERCEPTION_SINKS` (#160, #162, #164), so they cannot disagree with the memories.
+- Tests: `tests/property/test_perception_authority.py` (PERCEPTION-AUTHORITY), `tests/test_u_17.py` (U-17), `tests/scenario/test_s_whisper.py` (S-WHISPER M5), `tests/integration/test_perception_revalidation.py` (CONFIG-REVALIDATION M5), `tests/scenario/test_s_minors.py` (S-MINORS M5), `tests/redteam/test_r_07.py` (R-07 M5).
+
+---
+
+### ADR-170 — Testimony is a speech-act belief for every witness and a separate, gated transition; trust is derived, never stored
+**Status:** Accepted.
+**Context:** M5's testimony (#162; FR-BELIEF-1,2,3,9, FR-TURN-7) must record that an assertion was heard without making anyone believe it, gate each witness's acceptance by trust, priors and consistency, adjudicate salient witnesses with a model only as optional work, and keep the per-event fan-out proportionate to salience. The planner suggested a stored `character_trust` table nudged by later outcomes.
+**Decision:**
+- Every content witness of a `say` (#161's routing; never the speaker, never the player's character) gets, per claim, a minimal `beliefs` row of `kind = speech_act` (`believes(H, said(S, X))`: held `known`, its producing testimony transition naming the speaker and the witness's decision as `outcome`). It never contradicts, closes or reuses a first-order belief and never enters `belief_state`. #167 adds the full speech-act shape.
+- The decision is `core.epistemic.testimony.testimony()`, deterministic and pure over #140's `check()` on the witness's partition (and the canon it may read), the witness's trust in the speaker and the intent it reads (`joking`, else sincere: a hearer never reads `deceptive`). Its first-order effect, if any, is a separate `testimony`, `revision` or `correction` transition citing the say beat's event, so #160's antecedent and self-attestation guards apply.
+- Trust is derived when needed: seeded from #137's `relationships` projection as the witness may read it (kin and friends high, enemies low, a `trust` qualifier overriding), then moved ±0.1 by the witness's own transitions with that speaker (rejections, overturned testimony beliefs, observation-confirmed ones). No trust table exists, so trust follows truncation, swaps, forks and erasure with the transitions.
+- `belief_adjudication` (defaulting to the entailment model) runs before composition for salient witnesses only (a salience-marked beat, or a claim touching the witness's partition; never minors, never under rule-based salience), at most two per turn, as the optional budget kind `testimony` (after follow-up, before repair). The commit recomputes the default over committed state and takes the model's decision only at confidence 0.6 or more, never over a `contradicted` verdict and never accepting a joke. An unfunded adjudication lists `testimony_defaulted`, ranked between repairs and entailment (NFR-PERF-7 step 3).
+- Witnesses neither salient nor addressed are not resolved here: their exposure record and lazy resolution are #164's.
+**Consequences:**
+- Hearing is recorded for everyone and believing is per witness, in the same commit, from the same routing results as the memories.
+- A model can make a witness more cautious or accept an open claim, but it cannot make anyone believe what their own records contradict.
+- Tests: `tests/scenario/test_s_testimony.py` (S-TESTIMONY M5), `tests/conformance/test_c_04.py::test_c_04__adjudication_row` (C-04 M5), `tests/perf/test_p_09_m5.py` (P-09 M5), `tests/test_u_05.py::test_u_05__hearer_intent` (U-05 M5).
+
+---
+
+### ADR-171 — A character is modeled lazily by interaction or salience, at minor weight, and a minor's partition is sparse by rule
+**Status:** Accepted.
+**Context:** M5's character modeling (#163; FR-EPI-9,10,11,12, FR-CAT-7) must model a person only on direct interaction or explicit salience, never on appearance, and must keep modeling every waved-at neighbor from becoming a scaling burden. The player is a character to others but has no engine-held mind. M4 already created a `characters` row for every person a render `introduces` (#150), with no notion of weight.
+**Decision:**
+- `core.epistemic.modeling` is the one gate: `maybe_model(entity, trigger)` with `interaction` (a deterministic detector over the turn's beats: an interaction-verb lexicon in the #148 table style for `do` and narration, a vocative for `say`, the player's own input included) or `salience` (the salience step's new `characters` list, a render's `introduces`, the author's `POST /stories/{id}/entities/{eid}/model`). It runs only under per-character partitions. Under shared knowledge only introductions and the author create characters, as in M4.
+- A modeled character is an ordinary `characters` row (`weight = minor`, `modeled_at` a five-column position), created in the turn's commit before routing so the triggering beat reaches its new partition. An existing entity is adopted (its id becomes the character's). A description mints the entity, with its words as descriptors. Its true age comes from one optional age-repair call; an unfunded or implausible repair defers it (`modeling_deferred`). The epistemic model writes no canon, so the `age` and `located_at` facts are `core.turns.beats.write_character_facts`'.
+- Weight is a Postgres enum on `characters`: the cast, the player (a CHECK) and author-added characters are `major`, and M4's render-introduced rows are backfilled `minor`. Only the author changes it, prospectively (`POST /stories/{id}/characters/{cid}/weight`, a control operation that bumps the revision).
+- Sparsity is keyed on weight in the consumers, not in routing: the memory sink drops a minor's memory of a beat it neither acted in, nor was addressed by, nor took part in the interaction of. A minor's consolidation window is `window_memories // 5`. Its hot budget is scaled by the deployment's `minor_hot_budget_fraction` (0.2). Its records score × 0.5 in retrieval. It is never the default render character and never takes a testimony adjudication. Privacy is untouched (FR-EPI-11).
+**Consequences:**
+- Modeling is liberal and cheap: a minor costs one row, one optional age call and only the memories of its own interactions. Promotion is the author's decision.
+- A modeled character persists like any character: a truncation or regeneration of the turn that modeled it keeps the row, as M4's introductions do, and erasure removes it and its partition like any character's.
+- The retrieval penalty reads the holder's current weight, so a promoted minor's earlier records rank as a major's.
+- Tests: `tests/scenario/test_s_modeling.py` (S-MODELING M5), `tests/scenario/test_s_promote_m5.py` (S-PROMOTE M5), `tests/scenario/test_s_minor_interiority.py::test_s_minor_interiority__minor_privacy` (S-MINOR-INTERIORITY M5, #163's slice), `tests/scenario/test_s_player.py::test_s_player__modeling` (S-PLAYER M5), `tests/test_modeling.py`.
+
+---
+
+### ADR-172 — A non-salient witness's exposure is resolved lazily in its own frame, by the turn that needs it
+**Status:** Accepted.
+**Context:** M5's exposure records (#164; FR-BELIEF-5,6,7,8,12,13,14, FR-STORE-31) defer belief formation for witnesses #162 leaves unresolved, and must not let anything the story revealed after the hearing decide what the witness made of it. The resolution is narrative state of the turn that makes it, yet it holds from the hearing, so a view through an earlier turn, a truncation, a swap and a fork must each see it, or not, by the right anchor.
+**Decision:**
+- `exposures` (migration 0072) holds one row per (witness, beat, proposition) heard, with its source, the beat's event, the fidelity and the five-column exposure position (`(turn, beat, 1)`, the witness rule; an inter-turn slot `(turn, slot_k)`). An exposure writes no belief. Salient witnesses' exposures are written resolved, for audit; envelopes, `do`s and narrations are eager observations, not exposures (`core.epistemic.observation`, a perception sink).
+- `core.epistemic.exposure.resolve_exposure(exposure, needing_operation)` runs only in a narrative turn's commit. It decides by #162's default in the frame through E: #140's check over the partition and the canon read with `through_position = E` (canon positions gain `step`; `core.membership.Position` is the bound the M4 readers now accept), trust as of E. It writes the `said` and first-order beliefs at `held_from = E` in the needing operation, then folds later dated contradicting beliefs forward as a correction dated at each one's own position.
+- Two anchors: valid-from is `held_from`, inclusion is the needing operation (`beliefs.resolution_operation_id`, #130's new `DerivedTable.inclusion_operation_column`). A partition read through a turn before the resolving one excludes it; truncation, swap and fork follow the operation as for any derived row.
+- An exposure's state is read through its resolutions' `belief_resolved` events, which follow their operations, so a swap back to a chain that resolved it brings its resolution back. Read-only inspection never resolves.
+- Every keyed read of a resolution carries its `through` bound in the read set, which is the proof that nothing after E was read; the resolver imports no semantic retrieval.
+**Consequences:**
+- Deferral saves work, not information: a bystander resolved years later decides from what it knew then, and a later observation corrects it in its own frame.
+- The need sites are #162's testimony of an eager witness today; #166's verification and #170's context assembly call `resolve_needed` too. With `lazy_resolution` off, exposures are resolved at once, by the default.
+- Adjudicated lazy resolution (the needing turn's model call for a primary witness) is not built; every lazy resolution is `defaulted`.
+- Tests: `tests/property/test_exposure_frame.py` (EXPOSURE-FRAME M5), `tests/scenario/test_s_pollution.py` (S-POLLUTION M5, S-INTRA-TURN-FRAME M5), `tests/scenario/test_s_resolution_anchors.py` (S-RESOLUTION-ANCHORS M5, S-UNDO-SWAP M5), `tests/scenario/test_s_testimony.py::test_s_testimony__exposure` (S-TESTIMONY M5).
+
+---
+
+### ADR-173 — Could-have-known is a replay of dated acquisitions; a thunk binding obliges its character's knowledge
+**Status:** Accepted.
+**Context:** M5's could-have-known (#165; FR-EPI-4, FR-BELIEF-2,11, FR-COMMIT-11,14) must decide mechanically whether a character could know a fact at a narrative position, for #166's hallucination rule, #176's reactive bounds and #154's thunk reconciliation. A late answer to "who did it?" must not land on a character whose own later words show they did not know. M4 left `core/commit/epistemic.could_have_known` as a stub that never flags.
+**Decision:**
+- `core.epistemic.replay.could_have_known(character, proposition, T)` answers `Known(path)`, `NoPath(nearest)` or `NotApplicable`. It replays the character's dated acquisition records through T: its beliefs held at T (bitemporal, a closed one not counted, a decayed one counted) with their transitions' levels, canon the character may read, `imply()` over its partition, and its unresolved exposures before T, dry-run in their frame by `exposure.decide` with nothing persisted. A pure `replay()` over in-memory records decides, so the property runs without a database. The player is always `Known`, the narrator and a story without partitions are `NotApplicable`, an unmodeled entity is `NoPath`. An envelope is a `spoke_to`/`spoke` observation and no path to the words.
+- Reconciliation (`core.commit.reconcile`) derives knowledge obligations for a binding to a modeled, non-player character under partitions: the binding and its implied obligations, held at `known` from the thunk's introduction at its story-time. It searches the character's later sincere `say` (sincere or unlabelled), `do` and `think` beats for a declared proposition that contradicts them, or a wh-question about the thunk's event (a new `question` detector table, `core/verify/detectors/question.json`). A hit is a `Conflict` (`conflicting_lines`), rejected and steered like a positional one. A non-conflicting binding commits the knowledge with the resolution, as `resolution` transitions citing the thunk and a backdated memory of the act made from the sketch without a model call.
+- The M4 hook becomes the soft flag over the replay. It fires, in the resolving turn's commit, for a character modeled before the thunk, outside the thunk's own turn, co-located with the thunk's event per #137's scene, who has no path to the binding. Severity is banded by the story-time gap: `mild` under a day, `moderate` under 30, `strong` beyond. It is a warning: `turn_report.commit.could_have_known_flags`, the `could_have_known_flag` degradation, `/inspect/ledger`, and a steer on the next render only.
+- #146's resolution exemption reaches #144's permission check: the verifier passes the claim's matched thunk (`resolves`), so binding a thunk to a modeled character is reconciliation's to judge, not a permission denial.
+**Consequences:**
+- One function answers "could they know this at T" for every caller; its answers are counted (`turn_report.epistemic.could_have_known`, `epistrel_could_have_known_checks_total{outcome}`) and memoized within a turn.
+- A knowledge proposition the character already held (it observed the binding narration in the same turn) is changed in place by #160's rule and keeps its `held_from`. The resolution's anchor at t is the transition's story-time.
+- Same-turn staged beats and render steps license only once #174's and #168's oracles exist; nested propositions replay against #167's rows; P-02's `could_have_known` span is #153's to measure.
+- Tests: `tests/property/test_could_have_known.py` (COULD-HAVE-KNOWN M5), `tests/test_u_19_m5.py` (U-19 M5), `tests/scenario/test_s_thunk_resolve_m5.py` (S-THUNK-RESOLVE M5), `tests/scenario/test_s_whisper.py::test_s_whisper__inference` (S-WHISPER M5), `tests/test_replay.py`.
+
 ---
 
 *Every ADR above is Accepted as a record; the indexes at the top show which are amended or partly superseded. No decisions are open.*

@@ -215,6 +215,108 @@ class RetrievalTier(StrEnum):
     RETIRED = "retired"
 
 
+class BeliefConfidenceLevel(StrEnum):
+    """A belief's categorical confidence (FR-BELIEF-4's dual confidence; #159 creates it, #160
+    projects the scalar onto it): ``unknown`` (suspended: the holder neither holds nor denies
+    it), ``suspected``, ``believed`` or ``known``, weakest first. Postgres enum
+    ``belief_confidence_level``."""
+
+    UNKNOWN = "unknown"
+    SUSPECTED = "suspected"
+    BELIEVED = "believed"
+    KNOWN = "known"
+
+
+class BeliefKind(StrEnum):
+    """What a belief record holds (#159 pre-declares every kind; #167 writes the last three):
+    a ``first_order`` belief about the world, an ``attributed`` belief about what another
+    character believes, a belief about a ``speech_act`` (that someone said something), or a
+    ``nested`` belief deeper than one level. Postgres enum ``belief_kind``."""
+
+    FIRST_ORDER = "first_order"
+    ATTRIBUTED = "attributed"
+    SPEECH_ACT = "speech_act"
+    NESTED = "nested"
+
+
+class BeliefTransitionKind(StrEnum):
+    """The typed cause of a belief-set change (FR-EPI-7, FR-BELIEF-2; #160): the acquisition
+    operations ``observation``, ``testimony``, ``inference``, ``discovery``, ``correction``,
+    ``forgetting`` and ``revision``, plus ``author`` (author direction, a seed) and ``resolution``
+    (a thunk binding's knowledge obligation, FR-COMMIT-14). Postgres enum
+    ``belief_transition_kind``."""
+
+    OBSERVATION = "observation"
+    TESTIMONY = "testimony"
+    INFERENCE = "inference"
+    DISCOVERY = "discovery"
+    CORRECTION = "correction"
+    FORGETTING = "forgetting"
+    REVISION = "revision"
+    AUTHOR = "author"
+    RESOLUTION = "resolution"
+
+
+class AntecedentKind(StrEnum):
+    """What a belief transition's antecedent is (FR-EPI-14 (a) to (d); #160): a committed
+    ``record``, a verified ``staged_beat`` earlier in the same turn, a verified ``render_step``
+    earlier in the same render, or a reconciled thunk ``resolution``. Postgres enum
+    ``antecedent_kind``."""
+
+    RECORD = "record"
+    STAGED_BEAT = "staged_beat"
+    RENDER_STEP = "render_step"
+    RESOLUTION = "resolution"
+
+
+class BeliefHoldState(StrEnum):
+    """Whether a belief is ``held``, ``decayed`` (a forgetting transition lowered it; #143's
+    consolidation reads these) or ``corrected`` (a correction closed it; #160). Postgres enum
+    ``belief_hold_state``."""
+
+    HELD = "held"
+    DECAYED = "decayed"
+    CORRECTED = "corrected"
+
+
+class ExposureKind(StrEnum):
+    """What a witness's exposure record holds (FR-BELIEF-5; #164): the ``content`` of an
+    utterance it heard (a claim it may later come to believe), or only its ``envelope`` (reserved:
+    an envelope is an eager ``spoke_to``/``spoke`` observation and writes no exposure). Postgres
+    enum ``exposure_kind``."""
+
+    CONTENT = "content"
+    ENVELOPE = "envelope"
+
+
+class ExposureFidelity(StrEnum):
+    """How much of the utterance the witness caught: ``full``, or ``partial`` (a render-limited
+    eavesdropper: only the claims inside its ``partial_text``). Postgres enum
+    ``exposure_fidelity``."""
+
+    FULL = "full"
+    PARTIAL = "partial"
+
+
+class ExposureState(StrEnum):
+    """An exposure's stored state: ``unresolved`` until a narrative turn needing the witness's
+    belief resolves it (``resolved``). The effective state is read through the resolving
+    operation's membership (``core.epistemic.exposure``). Postgres enum ``exposure_state``."""
+
+    UNRESOLVED = "unresolved"
+    RESOLVED = "resolved"
+
+
+class CharacterWeight(StrEnum):
+    """A modeled character's narrative weight (FR-EPI-10; #163): ``minor`` (modeled lazily by
+    interaction or salience: a sparse partition, a smaller consolidation window and hot budget,
+    never a default render) or ``major`` (the cast, the player's character, an author-created or
+    author-promoted character). Postgres enum ``character_weight``."""
+
+    MINOR = "minor"
+    MAJOR = "major"
+
+
 PG_ENUM_TYPES: dict[str, type[StrEnum]] = {
     "event_category": EventCategory,
     "operation_kind": OperationKind,
@@ -234,6 +336,15 @@ PG_ENUM_TYPES: dict[str, type[StrEnum]] = {
     "memory_kind": MemoryKind,
     "memory_trust_tier": MemoryTrustTier,
     "retrieval_tier": RetrievalTier,
+    "belief_confidence_level": BeliefConfidenceLevel,
+    "belief_kind": BeliefKind,
+    "belief_transition_kind": BeliefTransitionKind,
+    "antecedent_kind": AntecedentKind,
+    "belief_hold_state": BeliefHoldState,
+    "character_weight": CharacterWeight,
+    "exposure_kind": ExposureKind,
+    "exposure_fidelity": ExposureFidelity,
+    "exposure_state": ExposureState,
 }
 """Postgres enum type name (``<schema>.<name>`` outside ``public``) → the Python enum whose
 values it holds (creation order)."""

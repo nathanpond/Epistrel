@@ -1,6 +1,6 @@
 """Personas, ad-hoc story characters and their promotion to the catalog (#114).
 
-Three milestone parts live here, each the only file for its test ID's part:
+Four milestone parts live here, each the only file for its test ID's part:
 
 - ``test_c_19``, C-19's M3 part (docs/04 §5): saved personas created, read, listed by owner,
   edited and deleted; a player character's snapshot unchanged by the persona's edit and
@@ -12,6 +12,9 @@ Three milestone parts live here, each the only file for its test ID's part:
   wires them into ``POST /stories``: the test then asserts the zero-row refusals end to end,
   and a story created with a saved persona keeps its copy through the persona's edit and
   deletion.
+- ``test_c_19__audience``, C-19's M5 part (#173): a persona seeded by audience, its
+  coworkers' beliefs and a stranger's age band, revised by observation without a canon
+  contradiction.
 - ``test_s_promote``, S-PROMOTE's M3 part (docs/04 §7): a delivery driver added mid-story stays
   out of the catalog until the author promotes him, and the draft promotion makes carries his
   definition and none of the story's facts.
@@ -38,6 +41,8 @@ from epistrel.config import Settings
 from epistrel.core import membership
 from epistrel.core.catalog.report import Outcome, ValidationReport
 from epistrel.core.context import RequestContext
+from epistrel.core.enums import BeliefConfidenceLevel
+from epistrel.core.epistemic import transitions
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.genesis.models import (
     PERSONA_REQUIRED,
@@ -47,17 +52,22 @@ from epistrel.core.genesis.models import (
     resolve_personas,
 )
 from epistrel.core.ids import new_ulid
+from epistrel.core.propositions.model import Interval, LiteralKind, Proposition, TypedLiteral
 from epistrel.core.tables.memories import memories
 from tests import genesis_support as g
 from tests import memory_support as memory
+from tests import partition_support as parts
 from tests import scenario_support as scenarios
+from tests import seeded_partitions_support as sp
 from tests.auth_support import auth_settings, bearer
 from tests.catalog_support import every, ids
 from tests.event_support import execute_in_tx, rows, scalar
 from tests.media_support import png, uploaded
 from tests.persona_support import copy_into
-from tests.respond_support import respond_client
+from tests.respond_support import body as respond_body
+from tests.respond_support import respond, respond_client
 from tests.story_support import create, story_body
+from tests.structured_turn_support import beat, render, schema_calls, text_of
 
 AUTHOR = "p-author"
 OWNER = "p-persona-owner"
@@ -302,6 +312,136 @@ async def test_c_19(stub_settings: Settings, engine: AsyncEngine) -> None:
         gone = await client.delete(f"/personas/{jo['id']}", headers=as_(AUTHOR))
         assert gone.status_code == 204, gone.text
         assert await player_row(engine, player_id) == copied_row
+
+
+@pytest.mark.integration
+@pytest.mark.part("M5", "FR-SCN-8")
+async def test_c_19__audience(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """C-19's M5 part: a persona is seeded by audience (#173). Sam (23, "short-tempered, flies
+    off the handle") is a coworker of Alice and Bob and a stranger to Carol: the coworkers
+    hold Sam's name, exact age and both traits as beliefs (citing the persona's
+    ``seed_materialized`` act); Carol holds none of them and, rendered, sees Sam only as "early
+    twenties"; no NPC but an acquaintance holds the age 23. No canon record comes from the
+    persona's description. When Sam stays calm in front of Bob, Bob's belief about the temper
+    is revised through the ordinary belief operations (an ``observation`` transition closes it),
+    and no canon contradiction is raised: the facts are as they were."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        profile = await sp.partitioned_profile(client, "Seeded office")
+        scenario_id, _ = await g.published_scenario(client, sp.office())
+        made = await g.create_from(
+            client,
+            g.from_scenario(
+                scenario_id,
+                slots={
+                    name: g.ad_hoc_slot(name.title(), 40, f"{name.title()} works here.")
+                    for name in ("alice", "bob", "carol")
+                },
+                players={"player": g.player(**sp.TEMPER)},
+                engine_profile_id=profile,
+                ignore_warnings=True,
+            ),
+        )
+        story = made["story_id"]
+        by_role = {c["role_id"]: c["id"] for c in made["characters"]}
+        sam = by_role["player"]
+        rows = await sp.beliefs(engine, story)
+        about_sam = {
+            role: sorted(
+                (r.predicate, str((r.literal or {}).get("value")))
+                for r in rows
+                if str(r.holder) == by_role[role] and str(r.subject_id) == sam
+            )
+            for role in ("alice", "bob", "carol")
+        }
+        expected = sorted(
+            [("age", "23"), ("name", "Sam"), *(("trait", t) for t in sp.TEMPER_TRAITS)]
+        )
+        assert about_sam == {"alice": expected, "bob": expected, "carol": []}
+        assert {r.act for r in rows if str(r.subject_id) == sam} == {"seed_materialized"}
+        ages = {str(r.holder) for r in rows if r.predicate == "age" and str(r.subject_id) == sam}
+        assert ages == {by_role["alice"], by_role["bob"]}
+        facts_before = await sp.rows_of(
+            engine,
+            "SELECT f.id, pr.name, p.literal FROM facts f JOIN propositions p "
+            "ON p.id = f.proposition_id JOIN predicates pr ON pr.id = p.predicate_id "
+            "WHERE f.story_id = :s ORDER BY f.id",
+            s=story,
+        )
+        assert not [f for f in facts_before if f.name == "trait"]
+        assert not [f for f in facts_before if "temper" in json.dumps(f.literal or {})]
+
+        # -- Carol, a stranger, sees an age band
+        stub = epistrel.models.stub
+        stub.calls.clear()
+        stub.script("generation", [render(beat("do", "Carol looks up."))])
+        answer = await respond(
+            client,
+            story,
+            respond_body(sam, "Morning.", render_character_ids=[by_role["carol"]]),
+        )
+        assert answer.status_code == 200, answer.text
+        (call,) = schema_calls(stub, "CharacterRender")
+        carol = text_of(call)
+        assert "Sam (early twenties)" in carol
+        assert "23" not in carol
+        assert "short-tempered" not in carol
+
+        # -- Sam stays calm: Bob revises the temper belief by observation
+        (temper,) = [
+            r
+            for r in rows
+            if str(r.holder) == by_role["bob"]
+            and r.predicate == "trait"
+            and (r.literal or {}).get("value") == "short-tempered"
+        ]
+        trait_id = await scalar(
+            engine,
+            "SELECT id FROM predicates WHERE story_id = :s AND name = 'trait'",
+            s=story,
+        )
+        await parts.transit(
+            engine,
+            story,
+            by_role["bob"],
+            Proposition(
+                subject_id=sam,
+                predicate_id=str(trait_id),
+                literal=TypedLiteral(kind=LiteralKind.STR, value="short-tempered"),
+                polarity="negated",
+                valid_time=Interval(start=None, end=None),
+            ),
+            cause=transitions.Kind.OBSERVATION,
+            confidence=transitions.Confidence(level=BeliefConfidenceLevel.BELIEVED),
+        )
+        after = await sp.rows_of(
+            engine,
+            "SELECT b.id, b.polarity, b.held_to_turn FROM beliefs b JOIN propositions p "
+            "ON p.id = b.proposition_id WHERE b.story_id = :s AND b.holder_character_id = :h "
+            "AND p.predicate_id = :t AND p.literal->>'value' = 'short-tempered'",
+            s=story,
+            h=by_role["bob"],
+            t=str(trait_id),
+        )
+        closed = {str(r.id): r for r in after}
+        assert closed[str(temper.id)].held_to_turn is not None
+        assert [r.polarity for r in after if r.held_to_turn is None] == ["negated"]
+        facts_after = await sp.rows_of(
+            engine, "SELECT f.id FROM facts f WHERE f.story_id = :s ORDER BY f.id", s=story
+        )
+        assert [str(f.id) for f in facts_after][: len(facts_before)] == [
+            str(f.id) for f in facts_before
+        ]
+        assert not await sp.rows_of(
+            engine,
+            "SELECT f.id FROM facts f JOIN propositions p ON p.id = f.proposition_id "
+            "WHERE f.story_id = :s AND p.predicate_id = :t",
+            s=story,
+            t=str(trait_id),
+        )
 
 
 @pytest.mark.integration

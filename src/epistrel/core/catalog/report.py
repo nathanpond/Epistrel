@@ -69,6 +69,12 @@ CODES: Mapping[str, str] = types.MappingProxyType(
         "seed_missing_holder": "a seed declares no holder (FR-SCN-8)",
         "seed_missing_audience": "a seed declares no audience (FR-SCN-8)",
         "seed_missing_disclosure": "a seed declares no disclosure (FR-SCN-8)",
+        "seed_audience_unknown": "a seed's audience names no level, role or named group (FR-SCN-8)",
+        "seed_holder_required": "a belief or nested seed is held by the world, not a role "
+        "(FR-SCN-8)",
+        "seed_nested_missing": "a nested seed has no nested content (FR-SCN-8)",
+        "seed_reference_unknown": "a knowledge seed names a role or location the scenario lacks "
+        "(FR-SCN-8)",
         "media_missing": "a media asset the entry shows does not exist",
         "media_retired": "a media asset the entry shows was retired",
         "media_not_allowed": "a media asset's type or size is not allowed now",
@@ -86,11 +92,17 @@ CODES: Mapping[str, str] = types.MappingProxyType(
         "input_policy": "text fails an input policy (FR-GUARD-10; kept)",
         "personality_in_role": "role text asserts personality (FR-SCN-7; ignored: the "
         "character's applies)",
+        "seed_audience_ignored": "an audience token that changes nothing: `acquaintances` on a "
+        "role no relationship links (FR-SCN-8; ignored)",
         "definition_truncated": "a promoted character's definition was longer than "
         "background_flavor holds, and was cut (FR-CAT-8, #114; kept)",
         # later milestones' (the structured pipeline, M4; nested beliefs, M5)
         "fact_conflict_dropped": "a seed's fact lost a conflict and was dropped (FR-SCN-7)",
         "belief_conflict": "two seeds give one holder contradictory beliefs (FR-SCN-7)",
+        "visibility_conflict": "two seeds state one fact with different audiences; the higher "
+        "source's audience applies (FR-SCN-8)",
+        "seed_audience_unfilled": "a seed's audience names an unfilled role or the player's; "
+        "it is dropped (FR-SCN-8)",
     }
 )
 """The codes a report uses, with what each means (an open vocabulary: a later check adds its

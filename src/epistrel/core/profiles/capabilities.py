@@ -14,6 +14,11 @@ bullet and per sub-clause of the requirement, in its order:
   group that holds only part of a requirement says which part in ``notes``;
 - ``requires``: the modules it needs, each on at a level at least the one named (``Needs``);
   empty for the required-field repair clause, which applies wherever its field is required;
+- ``story_settings``: the story settings (``StorySettings`` fields, and a character's
+  ``participation``) that only matter where the entry holds (#181): per-character renders'
+  interaction mode, order, tie-break, interjections and participation, and the player's
+  authority, whose structured effects run with them (FR-PROF-13's "player authority → story
+  setting"). Each is stored and reported whatever the profile;
 - ``floor``: true for the one entry FR-PROF-13 calls the floor, whose requirements are every
   area no other entry lists (``epistrel.tools.capability_map`` computes that complement from
   docs/03 when it renders ``docs/capability-map.md``).
@@ -124,6 +129,7 @@ class CapabilityEntry:
     requires: tuple[Needs, ...]
     notes: str = ""
     floor: bool = False
+    story_settings: tuple[str, ...] = ()
 
     def holds(self, effective: ProfileSettings) -> bool:
         """Whether the area applies under ``effective``: every module it needs is on."""
@@ -141,10 +147,26 @@ class CapabilityEntry:
 
 
 def _entry(
-    slug: str, area: str, requirements: str, *needs: Needs, notes: str = ""
+    slug: str,
+    area: str,
+    requirements: str,
+    *needs: Needs,
+    notes: str = "",
+    story_settings: tuple[str, ...] = (),
 ) -> CapabilityEntry:
     groups = tuple(group.strip() for group in requirements.split(";") if group.strip())
-    return CapabilityEntry(slug, area, groups, needs, notes)
+    return CapabilityEntry(slug, area, groups, needs, notes, story_settings=story_settings)
+
+
+MULTI_CHARACTER_SETTINGS = (
+    "interaction_mode",
+    "sequence_order",
+    "simultaneous_tie_break",
+    "reactive_interjections",
+    "participation",
+    "player_authority",
+)
+"""The story settings of per-character renders (FR-MULTI-5..9, FR-RESP-11; #174 to #180)."""
 
 
 STRUCTURED_PIPELINE = Needs(PIPELINE, STRUCTURED)
@@ -254,6 +276,10 @@ CAPABILITY_MAP: tuple[CapabilityEntry, ...] = (
         "Per-character renders",
         "FR-MULTI",
         Needs("multi_character", "per_character"),
+        notes="Player authority is a story setting (`player_authority`, FR-RESP-11): its "
+        "structured effects run under the `structured` pipeline, and under `lite` it is a "
+        "prompt instruction only.",
+        story_settings=MULTI_CHARACTER_SETTINGS,
     ),
     _entry("consolidation", "Consolidation", "FR-MEM-3,6,9,10", Needs("consolidation")),
     _entry(
@@ -319,6 +345,7 @@ def module_names(effective: ProfileSettings) -> tuple[str, ...]:
 __all__ = [
     "CAPABILITY",
     "CAPABILITY_MAP",
+    "MULTI_CHARACTER_SETTINGS",
     "PIPELINE",
     "STRUCTURED",
     "CapabilityEntry",

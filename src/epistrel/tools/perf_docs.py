@@ -18,7 +18,12 @@ so the pages are never edited by hand.
   has its sidecar as ``p_04_structured.json`` (``python -m perf.lite_smoke --scenario
   structured``; ``perf.yml``'s ``weekly-structured`` job): the verdict with its host class, the
   aggregate criteria (turn commit, retrieval and verify p95 budgets, failures, lost or
-  duplicated turns), every story's verdict, and the commit, retrieve and verify stages.
+  duplicated turns), every story's verdict, and the commit, retrieve and verify stages; and
+  P-04's multi-character variant (NFR-PERF-4 M5, #182) the same way from ``p_04_multi.json``
+  (``--scenario multi``; ``weekly-multi``), with its per-character ``context`` and ``compose``
+  stages, its degradation counts and the profile and perception level it ran under.
+- ``docs/perf.md`` has P-02's ``could_have_known`` span (#165, measured by #182;
+  ``p_02_could_have_known``) beside the verify budget, with its p95 by path.
 - ``docs/capacity.md`` has P-06's curve: memories, HNSW build time, index size and retrieval
   percentiles at each step, which steps are gated, and the server settings the curve was
   measured under. It also states that capacity is claimed only for the measured range.
@@ -40,9 +45,11 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-RESULTS = ("p_01", "p_02", "p_06", "p_06_retirement")
+RESULTS = ("p_01", "p_02", "p_02_could_have_known", "p_06", "p_06_retirement")
 STRUCTURED = "p_04_structured"
 """P-04's structured variant: the run's JSON sidecar (perf.lite_smoke.report.sidecar)."""
+MULTI = "p_04_multi"
+"""P-04's multi-character variant (#182): the run's JSON sidecar."""
 HISTORY_START = "<!-- history:start -->"
 HISTORY_END = "<!-- history:end -->"
 HISTORY_HEADER = (
@@ -87,7 +94,7 @@ def _host_note(host: Mapping[str, Any]) -> str:
 def load(results: Path) -> dict[str, dict[str, Any]]:
     """The run's result files that exist, by name."""
     found: dict[str, dict[str, Any]] = {}
-    for name in (*RESULTS, STRUCTURED):
+    for name in (*RESULTS, STRUCTURED, MULTI):
         path = results / f"{name}.json"
         if path.exists():
             found[name] = json.loads(path.read_text())
@@ -105,7 +112,49 @@ def _bucket(value: Any) -> str:
 
 def structured_lines(run: Mapping[str, Any] | None) -> list[str]:
     """P-04's structured variant, summarised from its sidecar (``NOT_MEASURED`` without one)."""
-    lines = ["", "## P-04: the structured reference workload (NFR-PERF-4, M4)", ""]
+    return _workload_lines(
+        run,
+        "## P-04: the structured reference workload (NFR-PERF-4, M4)",
+        "structured stories",
+        "single-character turn",
+        ("commit", "retrieve", "verify", "front_to_first_call", "queue_wait"),
+    )
+
+
+def multi_lines(run: Mapping[str, Any] | None) -> list[str]:
+    """P-04's multi-character variant (#182), summarised from its sidecar (``NOT_MEASURED``
+    without one): as the structured one, plus its per-character stages, its degradation counts
+    and the profile and perception level its turns ran under."""
+    lines = _workload_lines(
+        run,
+        "## P-04: the multi-character reference workload (NFR-PERF-4, M5)",
+        "structured stories with per-character knowledge",
+        "two-character sequential turn",
+        ("commit", "retrieve", "verify", "context", "compose", "front_to_first_call"),
+    )
+    if not run:
+        return lines
+    info = dict(run.get("info") or {})
+    multi = dict(dict(run.get("figures") or {}).get("multi") or {})
+    steps = dict(multi.get("degradation") or {})
+    return [
+        *lines,
+        "",
+        f"Profile `{info.get('profile') or 'unknown'}`, perception "
+        f"`{info.get('perception') or 'unknown'}`. Degradation steps: "
+        + (", ".join(f"`{k}` {v}" for k, v in steps.items()) or "none")
+        + ".",
+    ]
+
+
+def _workload_lines(
+    run: Mapping[str, Any] | None,
+    heading: str,
+    stories_are: str,
+    turn_is: str,
+    stage_names: Sequence[str],
+) -> list[str]:
+    lines = ["", heading, ""]
     if not run:
         return [*lines, NOT_MEASURED]
     info = dict(run.get("info") or {})
@@ -115,8 +164,8 @@ def structured_lines(run: Mapping[str, Any] | None) -> list[str]:
         f"**{verdict}** on host class `{info.get('host_class')}` "
         f"({'gated' if enforced else 'reported, not gated'}): {info.get('host')}, engine "
         f"`{info.get('engine_sha')}`, started {info.get('started')}. "
-        f"{info.get('stories')} structured stories of {int(info.get('memories') or 0):,} "
-        f"memories and {int(info.get('events') or 0):,} events, one single-character turn every "
+        f"{info.get('stories')} {stories_are} of {int(info.get('memories') or 0):,} "
+        f"memories and {int(info.get('events') or 0):,} events, one {turn_is} every "
         f"{float(info.get('interval_s') or 0):g} s each for {float(info.get('minutes') or 0):g} "
         f"minutes, open loop, `turn_concurrency = queue`, the stub at "
         f"{float(info.get('stub_latency_s') or 0):g} s per call with 10% contradicted and 10% "
@@ -139,7 +188,7 @@ def structured_lines(run: Mapping[str, Any] | None) -> list[str]:
         "|---|---|---|---|---|",
     ]
     stages = dict(run.get("stages") or {})
-    for stage in ("commit", "retrieve", "verify", "front_to_first_call", "queue_wait"):
+    for stage in stage_names:
         q = stages.get(stage)
         if q:
             lines.append(
@@ -205,6 +254,7 @@ def perf_page(found: Mapping[str, Mapping[str, Any]], existing: str = "") -> str
     host = _host_of(found)
     label = host_label(host)
     p01, p02, spike = found.get("p_01"), found.get("p_02"), found.get("p_06_retirement")
+    known = found.get("p_02_could_have_known")
     lines = [
         "# Performance measurements",
         "",
@@ -224,6 +274,12 @@ def perf_page(found: Mapping[str, Mapping[str, Any]], existing: str = "") -> str
             "NFR-PERF-2",
             50.0,
             (p02 or {}).get("check_ms", {}).get("p95"),
+        ),
+        (
+            "P-02 could_have_known",
+            "NFR-PERF-2",
+            50.0,
+            (known or {}).get("check_ms", {}).get("p95"),
         ),
     ):
         lines.append(
@@ -266,6 +322,28 @@ def perf_page(found: Mapping[str, Mapping[str, Any]], existing: str = "") -> str
         ]
     else:
         lines.append(NOT_MEASURED)
+    lines += ["", "## P-02: the could-have-known replay (NFR-PERF-2; #165, #182)", ""]
+    if known:
+        q = known.get("check_ms", {})
+        held = dict(known.get("knowledge") or {})
+        lines += [
+            f"{known.get('checks')} checks of FR-EPI-4's replay over {known.get('facts'):,} facts "
+            f"of canon, with {held.get('beliefs')} beliefs and {held.get('exposures')} unresolved "
+            "exposures per character, a quarter of the checks on each path. Its budget is part "
+            f"of P-02's verify span. Host: {label}.",
+            "",
+            "| Path | p50 (ms) | p95 (ms) | p99 (ms) | max (ms) |",
+            "|---|---|---|---|---|",
+            f"| all | {_ms(q.get('p50'))} | {_ms(q.get('p95'))} | {_ms(q.get('p99'))} | "
+            f"{_ms(q.get('max'))} |",
+        ]
+        for kind, k in dict(known.get("by_kind_ms") or {}).items():
+            lines.append(
+                f"| {kind} | {_ms(k.get('p50'))} | {_ms(k.get('p95'))} | {_ms(k.get('p99'))} | "
+                f"{_ms(k.get('max'))} |"
+            )
+    else:
+        lines.append(NOT_MEASURED)
     lines += ["", "## The forced-retirement spike (#147, FR-MEM-8)", ""]
     if spike:
         lines += [
@@ -287,6 +365,7 @@ def perf_page(found: Mapping[str, Mapping[str, Any]], existing: str = "") -> str
     else:
         lines.append(NOT_MEASURED)
     lines += structured_lines(found.get(STRUCTURED))
+    lines += multi_lines(found.get(MULTI))
     measured = any(name in found for name in RESULTS)
     rows = [*history_rows(existing), history_row(found)] if measured else history_rows(existing)
     lines += [

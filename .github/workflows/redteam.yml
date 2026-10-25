@@ -1,8 +1,9 @@
 # The nightly red-team run (#145, docs/04 §10): R-01's full poisoning-loop corpus (20
 # plant-then-extract sequences, `redteam_long`) beside the PR subset (`redteam`, which PR CI
-# also runs). Each sequence gates itself (it terminates within the polish budget and never
-# emits its canary), so a regression turns this run red; the run reports in the step summary,
-# uploads the log, and on a red run opens (or comments on) a "Nightly red-team run failed" issue.
+# also runs), and PRIV's extended property run (#170: 5,000 examples). Each sequence gates
+# itself (it terminates within the polish budget and never emits its canary), so a regression
+# turns this run red; the run reports in the step summary, uploads the log, and on a red run
+# opens (or comments on) a "Nightly red-team run failed" issue.
 name: Red team
 
 on:
@@ -47,14 +48,26 @@ jobs:
           mkdir -p build/redteam
           set -o pipefail
           uv run pytest tests/redteam -m "redteam or redteam_long" -rA --junitxml=build/redteam/junit.xml 2>&1 | tee build/redteam/redteam.log
+      # #170: PRIV (the context half, tests/property/test_priv.py) at 5,000 Hypothesis
+      # examples; PR CI runs the same property at 500.
+      - name: PRIV extended
+        id: priv
+        if: always()
+        env:
+          EPISTREL_HYPOTHESIS_PROFILE: nightly
+        run: |
+          mkdir -p build/redteam
+          set -o pipefail
+          uv run pytest tests/property/test_priv.py -rA 2>&1 | tee build/redteam/priv.log
       - name: Summarise
         if: always()
         env:
           OUTCOME: ${{ steps.redteam.outcome }}
+          PRIV: ${{ steps.priv.outcome }}
         run: |
           {
-            printf '%s\n' "## Nightly red-team run: $OUTCOME" '' '```'
-            grep -E '^(FAILED|ERROR|PASSED) |[0-9]+ (passed|failed)' build/redteam/redteam.log | tail -30 || true
+            printf '%s\n' "## Nightly red-team run: $OUTCOME (PRIV extended: $PRIV)" '' '```'
+            grep -E '^(FAILED|ERROR|PASSED) |[0-9]+ (passed|failed)' build/redteam/redteam.log build/redteam/priv.log | tail -30 || true
             printf '%s\n' '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
@@ -64,13 +77,13 @@ jobs:
           path: build/redteam/
           if-no-files-found: warn
       - name: Report a red run
-        if: failure() && steps.redteam.outcome == 'failure'
+        if: failure() && (steps.redteam.outcome == 'failure' || steps.priv.outcome == 'failure')
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          failed=$(grep -E '^(FAILED|ERROR) ' build/redteam/redteam.log | head -20 || true)
+          failed=$(grep -hE '^(FAILED|ERROR) ' build/redteam/redteam.log build/redteam/priv.log | head -20 || true)
           body=$(printf '%s\n' "The nightly red-team run failed: $RUN_URL" '' 'Failed:' '```' "$failed" '```')
           open=$(gh issue list --state open --search 'in:title "Nightly red-team run failed"' --json number --jq '.[0].number // empty')
           if [ -n "$open" ]; then

@@ -130,6 +130,23 @@ CATEGORY_DESCRIPTIONS: Mapping[ContentCategory, str] = {
         "a character viewpoint) and their deterministic assembly, which the polish may only "
         "order and join."
     ),
+    ContentCategory.BELIEF_RECORD: (
+        "One salient witness's view for testimony adjudication (#162): its name, the records the "
+        "deterministic consistency check read for the claim (its own beliefs and the canon it "
+        "may read, rendered like claims), its trust in the speaker, its earlier outcomes with "
+        "that speaker and the rules' default decision. Never another character's private "
+        "record or canon the witness cannot know."
+    ),
+    ContentCategory.UTTERANCE_TEXT: (
+        "The say a witness heard (#162): the speaker's name, the words as the witness perceived "
+        "them, the visible manner, the claims they carry and the intent the witness reads."
+    ),
+    ContentCategory.BELIEF_STATE: (
+        "A structured character render's own belief state (#170, FR-TURN-8): its beliefs as "
+        '"you suspect / believe / know ..." lines, its nested beliefs ("you think Bobby '
+        'believes ...") and the speech acts it heard ("you heard Bobby say ..."). Its own '
+        "partition only; never another character's, a scalar, a provenance or a divergence."
+    ),
 }
 
 STRUCTURED_LABELS: Mapping[StructuredOutput, str] = {

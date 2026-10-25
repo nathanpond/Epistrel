@@ -65,7 +65,8 @@ def test_m2_purposes_are_delivered_with_tagged_schemas() -> None:
     # verify's entailment (#142), memory consolidation (#143), which lite_summary now
     # defaults to (#51's note), commitment's salience_detection (#146), claim detection's
     # extraction_backstop (#148) and the repair ladder's regeneration (#151), which shares
-    # generation's row (docs/02 §5: usually the same model).
+    # generation's row (docs/02 §5: usually the same model). M5 delivers testimony's
+    # belief_adjudication (#162), which defaults to entailment's row (FR-MODEL-2).
     assert set(DELIVERED) == {
         "generation",
         "guardrail_check",
@@ -75,12 +76,14 @@ def test_m2_purposes_are_delivered_with_tagged_schemas() -> None:
         "quality_judge",
         "importance_scoring",
         "entailment",
+        "belief_adjudication",
         "salience_detection",
         "extraction_backstop",
         "regeneration",
     }
     for purpose in DELIVERED.values():
         parents = {
+            "belief_adjudication": "entailment",
             "rating_suggestion": "guardrail_check",
             "lite_summary": "consolidation",
             "regeneration": "generation",

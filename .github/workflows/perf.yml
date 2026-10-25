@@ -268,8 +268,90 @@ jobs:
             gh issue create --title "Weekly perf run failed $(date -u +%F)" --label bug --label needs-triage --label performance --body "$body"
           fi
 
+  weekly-multi:
+    needs: [weekly-structured]
+    if: always() && (github.event.schedule == '0 3 * * 0' || (github.event_name == 'workflow_dispatch' && inputs.suite == 'weekly'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v10.3.0  # exact: setup-uv publishes no floating major tag past v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.14"
+          enable-cache: true
+      # Locust is in the `perf` group.
+      - run: uv sync --frozen --group perf
+      - name: Multi-character seed cache key
+        id: seed
+        run: |
+          key=$(uv run python -c 'from perf.lite_smoke import multi; print(multi.cache_key(10))')
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        with:
+          path: build/perf/cache
+          key: p04-multi-${{ steps.seed.outputs.key }}
+      # The compose stack (compose.perf.yml + compose.multi.yml) builds the image from this
+      # checkout. Exit 0 on the `ci` host class whatever the verdict.
+      - name: P-04 multi-character workload
+        id: multi
+        run: |
+          mkdir -p build/perf/multi
+          set -o pipefail
+          uv run python -m perf.lite_smoke --scenario multi --minutes 30 --host-class ci --out build/perf/multi 2>&1 | tee build/perf/multi.log
+      # Reported, not gated on this host class; an error, a failed request, a lost or duplicated
+      # turn, or a reduced, deferred or escalation-deferred character still fails the job.
+      - name: Check for failed, lost, duplicated or reduced turns
+        id: turns
+        run: |
+          sidecar=$(ls build/perf/multi/*-multi.json | tail -1)
+          cp "$sidecar" build/perf/p_04_multi.json
+          uv run python -c 'import json, sys; d = json.load(open(sys.argv[1])); f = d["figures"]; planned = [c for c in d["aggregate"] if c["name"].startswith("reduced, deferred") and not c["passed"]]; print("failed", f["failed"], "lost", f["lost"], "duplicated", f["duplicated"], "planning", len(planned)); sys.exit(1 if f["failed"] or f["lost"] or f["duplicated"] or planned else 0)' build/perf/p_04_multi.json
+      - name: Summarise
+        if: always()
+        env:
+          OUTCOME: ${{ steps.multi.outcome }}/${{ steps.turns.outcome }}
+        run: |
+          {
+            printf '%s\n' "## P-04 multi-character: $OUTCOME (host class ci: reported, not gated)" ''
+            report=$(ls build/perf/multi/*-multi.md 2>/dev/null | tail -1)
+            if [ -n "$report" ]; then sed -n '1,/^## Per story/p' "$report"; else printf '%s\n' '(no report written)'; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep Locust's HTML report
+        if: always()
+        run: cp build/perf/run-*/locust.html build/perf/multi/ 2>/dev/null || true
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: perf-multi
+          path: |
+            build/perf/multi/
+            build/perf/p_04_multi.json
+            build/perf/multi.log
+          if-no-files-found: warn
+      - name: Report a red run
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          tail_log=$(tail -20 build/perf/multi.log 2>/dev/null || true)
+          body=$(printf '%s\n' "The weekly P-04 multi-character run failed (host: github-runner, not the reference host): $RUN_URL" '' '```' "$tail_log" '```' '' 'The report is in the run artifact `perf-multi`.')
+          open=$(gh issue list --state open --search 'in:title "Weekly perf run failed"' --json number --jq '.[0].number // empty')
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --body "$body"
+          else
+            gh issue create --title "Weekly perf run failed $(date -u +%F)" --label bug --label needs-triage --label performance --body "$body"
+          fi
+
   weekly-docs:
-    needs: [weekly, weekly-structured]
+    needs: [weekly, weekly-structured, weekly-multi]
     if: always() && (needs.weekly.result == 'success' || needs.weekly.result == 'failure')
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -296,12 +378,18 @@ jobs:
         with:
           name: perf-structured
           path: build/perf
-      # The structured report and its JSON sidecar are committed beside the Lite ones
-      # (perf/results/; test_p_04__structured reads the newest).
-      - name: Keep the structured report
+      - uses: actions/download-artifact@v8
+        if: needs.weekly-multi.result == 'success' || needs.weekly-multi.result == 'failure'
+        continue-on-error: true
+        with:
+          name: perf-multi
+          path: build/perf
+      # The structured and multi-character reports and their JSON sidecars are committed beside
+      # the Lite ones (perf/results/; test_p_04__structured and test_p_04__multi read the newest).
+      - name: Keep the structured and multi-character reports
         run: |
           mkdir -p perf/results
-          for report in build/perf/structured/*-structured.md; do
+          for report in build/perf/structured/*-structured.md build/perf/multi/*-multi.md; do
             [ -e "$report" ] || continue
             cp "$report" "${report%.md}.json" perf/results/
           done
@@ -317,14 +405,18 @@ jobs:
             docs/capacity.md
             perf/results/*-structured.md
             perf/results/*-structured.json
+            perf/results/*-multi.md
+            perf/results/*-multi.json
           commit-message: "docs: the weekly performance measurements (github-runner) (#153)"
           title: "docs: weekly performance measurements (github-runner, not the reference host)"
           labels: performance
           body: |
             The weekly scale suite's measurements (P-01, P-02, P-06 and #147's retirement spike)
-            and P-04's structured workload, rendered by `python -m epistrel.tools.perf_docs`
-            (#153). Host: github-runner (not the reference host). Suite result:
-            ${{ needs.weekly.result }}; structured workload: ${{ needs.weekly-structured.result }}. Run:
+            and P-04's structured and multi-character workloads, rendered by `python -m
+            epistrel.tools.perf_docs` (#153, #182). Host: github-runner (not the reference
+            host). Suite result: ${{ needs.weekly.result }}; structured workload:
+            ${{ needs.weekly-structured.result }}; multi-character workload:
+            ${{ needs.weekly-multi.result }}. Run:
             ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
             A pull request opened with the workflow's token does not start `ci.yml`: close and

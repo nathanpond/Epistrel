@@ -208,6 +208,46 @@ class IdempotencySettings(BaseModel):
 
 
 TurnConcurrency = Literal["reject", "queue"]
+InteractionMode = Literal["sequential", "simultaneous"]
+"""FR-MULTI-5 (#174): how a turn's primaries render, one after another seeing what the earlier
+ones did (``sequential``), or each against the turn's starting state (``simultaneous``, #175: its
+conflicting actions settled by the story's tie-break, FR-MULTI-8)."""
+SequenceOrder = Literal["request", "director"]
+"""FR-MULTI-6 (#174): who orders a ``sequential`` turn's primaries."""
+PlayerView = Literal["character", "story"]
+"""FR-RESP-13 (#177): what a character viewpoint's output holds, only what the character
+perceived (``character``, the audience filter) or every beat of the story (``story``)."""
+DEFAULT_PLAYER_VIEW: PlayerView = "character"
+PlayerAuthority = Literal["own_character", "co_author"]
+"""FR-RESP-11 (#180): the player's authority over the other characters, none beyond its own
+character (``own_character``: input about another character is a request) or narration of their
+observable actions (``co_author``), never their thoughts."""
+DEFAULT_PLAYER_AUTHORITY: PlayerAuthority = "own_character"
+DEFAULT_INTERACTION_MODE: InteractionMode = "sequential"
+TIE_BREAK_PATTERN = r"^(request_order|director|state:[a-z][a-z0-9_]{0,63})$"
+"""FR-MULTI-8 (#175): a ``simultaneous`` turn's tie-break, ``request_order`` (the earlier-named
+primary's action stands), ``director`` (one narrator call chooses) or ``state:<name>`` (a
+designated State such as initiative: M6's, accepted by the schema and refused 422 ``not_yet``
+until then, ``refuse_state_tie_break``)."""
+REQUEST_ORDER_TIE_BREAK = "request_order"
+STATE_TIE_BREAK_PREFIX = "state:"
+
+
+def refuse_state_tie_break(value: str | None, field: str) -> None:
+    """422 ``validation_error`` (``reason: not_yet``) for a ``state:<name>`` tie-break: the
+    designated-State tie-break is M6's (#175; FR-MULTI-8)."""
+    if value is not None and value.startswith(STATE_TIE_BREAK_PREFIX):
+        message = "a designated-State tie-break (state:<name>) is not delivered yet"
+        raise InvalidRequest(
+            message,
+            {
+                "field": field,
+                "reason": "not_yet",
+                "errors": [{"field": field, "message": message, "type": "value_error"}],
+            },
+        )
+
+
 TURN_QUEUE_MAX_MIN = 1
 TURN_QUEUE_MAX_LIMIT = 50
 DEFAULT_TURN_QUEUE_MAX = 5
@@ -329,6 +369,57 @@ class StorySettings(BaseModel):
     without it reads true. Interpretive: a structured turn's permission checks depend on it
     (#136's re-check at commit)."""
 
+    interaction_mode: Annotated[InteractionMode | None, PROSPECTIVE] = None
+    """How a turn with several primaries renders them (FR-MULTI-5; #174): ``sequential`` (each
+    later primary renders seeing the checked beats of those before it) or ``simultaneous``
+    (#175: every primary renders against the turn's starting state, seeing none of the others'
+    reactions, and conflicting actions are settled by ``simultaneous_tie_break``). ``None``:
+    the scenario's setting when genesis kept it inactive (``inactive``, capability
+    ``multi_character``, #122), else ``sequential``. A request overrides it. Prospective."""
+
+    sequence_order: Annotated[SequenceOrder | None, PROSPECTIVE] = None
+    """Who orders a ``sequential`` turn's primaries (FR-MULTI-6; #174): ``request`` (the
+    request's ``render_character_ids`` order) or ``director`` (one optional narrator call;
+    request order when it cannot be made). ``None``: ``request``. A request overrides it.
+    Prospective."""
+
+    simultaneous_tie_break: Annotated[str | None, PROSPECTIVE] = Field(
+        default=None, pattern=TIE_BREAK_PATTERN
+    )
+    """How a ``simultaneous`` turn settles two primaries' conflicting actions on one object
+    (FR-MULTI-8; #175): ``request_order`` (the earlier-named primary's action stands),
+    ``director`` (one optional narrator call chooses the winner; request order when it cannot
+    be made) or ``state:<name>`` (a designated State; M6, refused 422 ``not_yet`` until then).
+    ``None``: ``request_order``. The loser's action is repaired in character as an attempt. A
+    request overrides it. Prospective."""
+
+    reactive_interjections: Annotated[StrictBool, PROSPECTIVE] = False
+    """Whether reactive narration may give a reactive character a brief interjection
+    (FR-MULTI-9; #176): at most ``multi_character.interjection_max_words`` words (6), checked
+    against the reactor's viewpoint like any ``say``. Off by default (the owner's decision): a
+    reactive character's narrated speech escalates it to a primary render instead (FR-MULTI-10).
+    A request overrides it. Prospective."""
+
+    player_view: Annotated[PlayerView, PROSPECTIVE] = DEFAULT_PLAYER_VIEW
+    """What a character viewpoint's output holds where perception is on (FR-RESP-13; #177, the
+    owner's round-two decision): ``character`` (the default) applies the audience filter, so a
+    response, history read and beat list hold only what the viewing character perceived, and a
+    character that perceived nothing gets an empty narration; ``story`` returns every beat of the
+    turn at full content whatever the character perceived (roleplay that lets a player read scenes
+    their character is not in), still never a ``think`` or ``latent``. The character's own
+    partition and memory are the same under both. A no-op where perception is ``none``. A
+    request (and a history read) overrides it. Prospective."""
+
+    player_authority: Annotated[PlayerAuthority, INTERPRETIVE] = DEFAULT_PLAYER_AUTHORITY
+    """The player's authority over the other characters (FR-RESP-11; #180; the owner's default
+    ``own_character``): under ``own_character`` player input describing another character's
+    actions, speech or thoughts is a request that character's render resolves (it may comply or
+    refuse), and nothing of theirs is recorded from the input; under ``co_author`` the player
+    may narrate their observable actions, recorded as theirs and checked against their
+    viewpoint where partitions are on, and never their ``think``. Lite: an instruction in the
+    prompt only. Genesis copies the scenario's ``story_settings_defaults.player_authority``.
+    Interpretive: a structured turn's handling of its input depends on it (#64)."""
+
     @field_validator("default_output_viewpoint")
     @classmethod
     def _never_omniscient(cls, value: str | None) -> str | None:
@@ -344,6 +435,30 @@ class StorySettings(BaseModel):
         document = dict(value or {})
         document.update({k: v for k, v in columns.items() if k in COLUMN_SETTINGS})
         return cls.model_validate(document)
+
+
+class CharacterParticipation(BaseModel):
+    """A story character's participation role as stored (FR-MULTI-7; #176)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    role: Annotated[Literal["primary", "reactive", "silent"], PROSPECTIVE] = "reactive"
+    fixed: Annotated[StrictBool, PROSPECTIVE] = False
+
+
+class CharacterSettings(BaseModel):
+    """A story character's own story settings (#181 registers them beside ``StorySettings``,
+    #64's table): its participation role (``PATCH /stories/{id}/characters/{cid}/participation``,
+    recorded as ``participation:<character id>``). Prospective: a turn already running keeps the
+    roles it resolved."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, use_attribute_docstrings=True)
+
+    participation: Annotated[CharacterParticipation, PROSPECTIVE] = Field(
+        default_factory=CharacterParticipation
+    )
+    """The role (``primary``, ``reactive`` or ``silent``) and whether it is ``fixed``. Needs
+    per-character renders (``multi_character``): stored and inert otherwise."""
 
 
 # -- structured model results (FR-MODEL-6,7; #53) ------------------------------------------------
@@ -764,6 +879,7 @@ class MemorySettings(BaseModel):
 
 
 DEFAULT_MAX_PINNED_PER_CHARACTER = 200
+DEFAULT_MINOR_HOT_BUDGET_FRACTION = 0.2
 DEFAULT_MAX_PINNED_PER_STORY = 2_000
 MAX_PINNED_PER_CHARACTER_LIMIT = 10_000
 MAX_PINNED_PER_STORY_LIMIT = 100_000
@@ -787,6 +903,12 @@ class HotSetSettings(BaseModel):
     max_pinned_per_story: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_MAX_PINNED_PER_STORY, ge=1, le=MAX_PINNED_PER_STORY_LIMIT
     )
+    minor_hot_budget_fraction: Annotated[StrictFloat, PROSPECTIVE] = Field(
+        default=DEFAULT_MINOR_HOT_BUDGET_FRACTION, gt=0.0, le=1.0
+    )
+    """The share of the per-character hot budget (``memory.hot_set.memories_per_character``) a
+    ``minor`` character's unpinned hot memories are held to (FR-EPI-10; #163): lazily modeled
+    characters are consolidated and retired sooner. Prospective."""
 
 
 DEFAULT_EMBEDDING_BATCH_MAX = 64

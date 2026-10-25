@@ -1,7 +1,7 @@
 """E-06: generation conformance, M4's part (docs/04 §8; FR-TURN-1, NFR-QUAL-7; #157).
 
 Each case is one structured turn (``suites.structured_turns``: ``Engine.respond`` on
-``Structured (M4)``) with the case's ``prompt_params``. A case **conforms** when, together:
+``Structured``) with the case's ``prompt_params``. A case **conforms** when, together:
 
 - **structure** (FR-TURN-1): the released turn is a valid say/think/do/latent render
   (``structure_problems``);

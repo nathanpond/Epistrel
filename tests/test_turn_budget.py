@@ -215,3 +215,36 @@ def test_the_plan_and_its_minimum() -> None:
     assert planner.ladder_steps(
         ["entailment_safe_disposition", "salience_skipped", "skip_polish", "safe_fallback"]
     ) == ["skip_polish", "safe_fallback", "entailment_safe_disposition"]
+
+
+def test_optional_work_never_spends_a_later_renders_held_slot() -> None:
+    """#182 (Rule 1, found by P-08's three-character rows): a sequential turn's later renders
+    and their output checks are still held while an earlier render's salience pass runs. With
+    only held and named slots left, the salience call is refused (``salience_skipped``) instead
+    of spending a slot the last render needs, which failed that render (``budget_exhausted``).
+
+    Complement asserted: with one free call beyond the reservation, the salience call fits."""
+    from epistrel.core.seeds.profiles import structured_m4_settings
+    from epistrel.orchestrator.structured import planner
+
+    settings = ProfileSettings.model_validate(structured_m4_settings())
+
+    def three_primaries(cap: int) -> TurnBudget:
+        plan = planner.TurnPlan(
+            primaries=3,
+            beats_planned=6,
+            reservation=reservation(settings, guardrail_input=1, guardrail_output=3, renders=3),
+            optional=planner.optional_work(settings),
+        )
+        assert plan.minimum == 11  # 3 renders, 3 B, C, G = 1 input + 3 output checks
+        budget = planner.plan_budget(plan, story_max_calls=cap, turn_deadline=45.0)
+        # The input check, the first render, its output check and its extraction.
+        for purpose in ("guardrail_check", "generation", "guardrail_check", "extraction_backstop"):
+            budget.debit(purpose=purpose)
+        return budget
+
+    tight = three_primaries(11)
+    assert tight.held == 4  # two renders and their output checks
+    assert not tight.affordable("salience_detection", first=True)
+    assert tight.affordable("generation", first=True)  # the second render keeps its slot
+    assert three_primaries(12).affordable("salience_detection", first=True)

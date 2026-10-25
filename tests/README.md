@@ -62,3 +62,13 @@ capability lexicon (#39) at the **latest** of its milestones.
 
 `tests/gates/fixtures/` contains deliberately broken trees for the checker's own tests; pytest does
 not collect them (`norecursedirs`).
+
+## Red-team corpora are permanent
+
+The red-team suites (`tests/redteam/`, docs/04 §10) read their attempts from corpora under
+`tests/redteam/corpus/`: R-01's plant-then-extract sequences (`r01-*.json`) and R-03's
+private-thought extraction sequences (`r03.jsonl`, one sequence per line). A failure found by any
+means (a red-team run, a bug report, a live session) becomes a new permanent case in the matching
+corpus, and a case is never deleted or weakened to make a run pass. The five `pr` cases of each
+corpus run under `redteam` in PR CI; the whole corpus runs under `redteam_long`, deselected unless
+`-m` names it, nightly in `redteam.yml`.

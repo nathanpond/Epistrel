@@ -36,6 +36,19 @@ orchestrator. ``beats_of_operation`` reads an operation's beats from its M2/M3 b
 (``player_input``, ``message_rendered``, ``think``, ``latent``) for callers that have no typed
 beats of their own.
 
+**Per-perceiver memories** (#161; FR-TURN-2,10, NFR-PRIV-3). Under per-character partitions with
+perception at ``co_location`` or ``full``, routing replaces the shared-holder writer above for a
+structured turn's beats: ``write_perceived(conn, operation, results)`` (the memory sink of
+``core.epistemic.perception.PERCEPTION_SINKS``) writes **one row per perceiver** of each routed
+``say``, ``do``, ``narration`` and ``think`` (a ``think`` reaches its thinker only):
+``holder_character_id`` the perceiver, ``visibility`` ``characters: [perceiver]``, ``fidelity``
+(``content``: the attributed line, or an eavesdropper's ``partial_text``; ``envelope``: the
+deterministic envelope, ``Jenni whispers something to Marcus``, with no propositions) and
+``channel`` (``self``, ``room``, ``eavesdrop``, ``remote``, ``adjacent`` or ``think``). A
+non-perceiver gets nothing. The rest is the episodic writer's: the guard, the erasure index and
+the hooks, inert unless ``episodic`` is on. The player's character gets its memories too (it
+holds no beliefs, FR-EPI-12).
+
 **Semantic memories and reflections** (FR-MEM-2,3; #143). ``write_consolidated(conn,
 operation, rows, covered)`` is the writer the consolidation job calls in its positioned
 operation's commit (``core.memory.consolidation`` builds the rows): ``semantic`` and
@@ -62,9 +75,19 @@ second writer of ``semantic`` rows beside consolidation; it runs the guard, the 
 
 **Working memory** (FR-MEM-5) is a function over events, never a table:
 ``working_memory(conn, story_id, character_id, through_position, n)`` answers the last ``n``
-beats of the active timeline at or before the position, as the character perceives them. M4
-is shared knowledge: a character perceives every beat except other characters' ``think`` and
-every ``latent``; ``character_id=None`` (the narrator, omniscient) perceives everything.
+beats of the active timeline at or before the position, as the character perceives them. With
+perception ``none`` (shared knowledge, every M4 profile) a character perceives every beat except
+other characters' ``think`` and every ``latent``; ``character_id=None`` (the narrator,
+omniscient) perceives everything. **Viewpoint-filtered** (FR-MEM-11; #170): at ``co_location``
+or ``full`` (``level``), a character's window is rebuilt from history through the same routing
+as memory writes: each turn's beats are re-routed by ``core.epistemic.perception.route_turn``
+over that turn's authoritative scene (``scene_loader``, by default
+``core.epistemic.scene.load_scene``; one load per turn read) with the qualifiers stored on each
+beat event, so a beat whose content the character perceived reads in full, an envelope-only
+beat as its envelope ("Jenni whispers something to Marcus"), a beat it did not perceive not at
+all, and no ``latent`` and no other character's ``think`` ever. ``n`` counts perceived beats:
+earlier turns are read until ``n`` are found (at most ``SCAN_TURNS_PER_BEAT · n`` turns back).
+Pure re-routing over stored beats (``perceived_window``): nothing is stored.
 
 **Importance** (FR-MEM-7). The ``importance_scoring`` purpose scores a memory 0..1 through the
 Model Access Layer (the importance job); ``set_importance`` writes a score only where none is
@@ -86,7 +109,7 @@ Log lines carry identifiers and counts only (invariant 3); this module logs noth
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any, Literal, Protocol, cast
@@ -120,11 +143,13 @@ from epistrel.core.enums import (
     RecordProvenance,
     RetrievalTier,
 )
+from epistrel.core.epistemic import modeling, perception
 from epistrel.core.erasure import guard
 from epistrel.core.erasure.index import index_records
 from epistrel.core.erasure.records import memory_record
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.ids import new_ulid
+from epistrel.core.membership import Position as NarrativePosition
 from epistrel.core.membership import active_only, active_operation, insert_derived
 from epistrel.core.profiles.capabilities import module_on
 from epistrel.core.profiles.effective import effective_configuration
@@ -219,6 +244,9 @@ class Beat:
     """The entities the beat involves beyond its actor (its resolved mentions). #150 passes
     both; ``core.retrieval.pipeline.beat_occasion`` derives them from a beat's text and its
     resolved mentions."""
+    narrated: bool = False
+    """#176 (FR-MULTI-9): a reactive character's reaction another render narrated: its actor
+    remembers it, but forms no belief from it (``core.epistemic.observation``)."""
 
 
 class Memory(BaseModel):
@@ -269,6 +297,8 @@ class Memory(BaseModel):
     retired_reason: str | None = None
     retired_at: datetime | None = None
     retired_turn: int | None = None
+    fidelity: str | None = None
+    channel: str | None = None
 
 
 def _memory(row: Any) -> Memory:
@@ -317,6 +347,8 @@ def _memory(row: Any) -> Memory:
         retired_reason=row.retired_reason,
         retired_at=row.retired_at,
         retired_turn=row.retired_turn,
+        fidelity=row.fidelity,
+        channel=row.channel,
     )
 
 
@@ -518,6 +550,236 @@ async def write_episodic(
     return await memories_by_id(conn, story_id, ids)
 
 
+ROUTED: frozenset[str] = frozenset({"say", "do", "narration", "think"})
+"""The beats routing writes a memory for (a ``latent`` goes to canon, FR-TURN-4)."""
+
+
+def perceived_line(
+    beat: Beat,
+    seen: perception.Perceived,
+    names: Mapping[str, str],
+    places: Mapping[str, str],
+) -> str:
+    """What ``seen``'s holder remembers of ``beat``: the attributed line at ``content`` (a
+    ``think`` as ``<name> thinks: …``; an eavesdropper limited to part of the words as that
+    part), the envelope at ``envelope``; cut to ``TEXT_MAX`` characters."""
+    name = names.get(beat.character_id or "")
+    if seen.fidelity == perception.ENVELOPE and seen.envelope is not None:
+        return perception.envelope_text(seen.envelope, names, places)[:TEXT_MAX]
+    if seen.partial_text and name:
+        return f"{name} says (you catch only part of it): {seen.partial_text.strip()}"[:TEXT_MAX]
+    if beat.kind == "think" and name:
+        return f"{name} thinks: {beat.text.strip()}"[:TEXT_MAX]
+    return render_line(beat.kind, name, beat.text)
+
+
+async def places_and_names(
+    conn: AsyncConnection, story_id: str
+) -> tuple[dict[str, str], dict[str, str]]:
+    """The story's character names by id and its place names ("the parlor") by entity id:
+    what an envelope's text names (``perception.envelope_text``)."""
+    return await _names(conn, story_id), await _place_names(conn, story_id)
+
+
+async def _place_names(conn: AsyncConnection, story_id: str) -> dict[str, str]:
+    found = await conn.execute(
+        select(entities.c.id, entities.c.canonical_name).where(
+            entities.c.story_id == story_id, entities.c.kind == "place"
+        )
+    )
+    return {str(r.id): f"the {r.canonical_name}" for r in found}
+
+
+def _minor_holds(
+    result: perception.PerceptionResult,
+    beat: Beat,
+    seen: perception.Perceived,
+    names: Mapping[str, str],
+) -> bool:
+    """Whether a minor perceiver keeps its memory of ``beat`` (``core.epistemic.modeling``'s
+    sparsity rule): it acted in it, was addressed by it (``addressee``, ``whisper_to``, a remote
+    channel), or is a party to the interaction it states."""
+    q = result.qualifiers
+    addressed = [
+        *([q.addressee] if q.addressee else []),
+        *q.whisper_to,
+        *(q.remote_channel.participants if q.remote_channel is not None else ()),
+    ]
+    return modeling.holds_memory(
+        seen.character_id,
+        actor=beat.character_id,
+        addressed=addressed,
+        participants=beat.participants,
+        kind=beat.kind,
+        text=beat.text,
+        content=seen.fidelity == perception.CONTENT,
+        names=names,
+    )
+
+
+async def write_perceived(
+    conn: AsyncConnection,
+    operation: MemoryOperation,
+    results: Sequence[perception.PerceptionResult],
+    *,
+    settings: ProfileSettings | None = None,
+) -> list[Memory]:
+    """One episodic memory per perceiver of each routed beat of ``results`` whose ``source``
+    is a ``Beat`` (see the module docstring), inside ``operation``'s commit transaction;
+    answers the memories written (none when the ``episodic`` module is off)."""
+    story_id = operation.story_id
+    if story_id is None:
+        raise InvalidRequest("a memory belongs to a story", {"field": "operation"})
+    routed_all = [
+        (r, r.beat.source, seen)
+        for r in results
+        if isinstance(r.beat.source, Beat)
+        and r.beat.source.kind in ROUTED
+        and r.beat.source.text.strip()
+        for seen in r.perceived
+    ]
+    if not routed_all or not await episodic_on(conn, story_id, settings):
+        return []
+    cast = await _names(conn, story_id)
+    # #163 (FR-EPI-10): a minor's partition accrues only from the interactions it took part in.
+    minors = await modeling.minor_ids(conn, story_id)
+    routed = [
+        (beat, seen)
+        for r, beat, seen in routed_all
+        if seen.character_id not in minors or _minor_holds(r, beat, seen, cast)
+    ]
+    if not routed:
+        return []
+    beats = list({id(b): b for b, _ in routed}.values())
+    await _check_beats(conn, story_id, operation.operation_id, beats, cast)
+    unknown = sorted({seen.character_id for _, seen in routed} - cast.keys())
+    if unknown:
+        raise InvalidRequest(
+            "a perceiver is one of the story's characters",
+            {"field": "results.perceived", "reason": "unknown_character"},
+        )
+    places = await _place_names(conn, story_id)
+    rows: list[dict[str, Any]] = []
+    contents: list[guard.Content] = []
+    for beat, seen in routed:
+        assert isinstance(beat, Beat)  # noqa: S101 - filtered above
+        line = perceived_line(beat, seen, cast, places)
+        provenance = RecordProvenance(beat.provenance)
+        content = seen.fidelity == perception.CONTENT
+        contents.append(
+            guard.Content(
+                (line,),
+                frozenset({beat.character_id}) if beat.character_id else frozenset(),
+                consumer=provenance is RecordProvenance.PLAYER,
+            )
+        )
+        rows.append(
+            {
+                "id": new_ulid(),
+                "story_id": story_id,
+                "kind": MemoryKind.EPISODIC.value,
+                "text": line,
+                "holder_character_id": seen.character_id,
+                "character_id": beat.character_id,
+                "visibility": Visibility(
+                    scope="characters", characters=(seen.character_id,)
+                ).document(),
+                "provenance": provenance.value,
+                "trust_tier": trust_tier_of(provenance).value,
+                "operation_id": operation.operation_id,
+                "source_event_ids": [beat.event_id],
+                "narrative_turn": operation.narrative_turn,
+                "turn_variant": operation.turn_variant,
+                "beat": beat.beat,
+                "proposition_ids": list(beat.proposition_ids) if content else [],
+                "event_type": beat.event_type,
+                "participants": participants_of(beat),
+                "fidelity": seen.fidelity,
+                "channel": seen.channel,
+            }
+        )
+    await guard.check_content(
+        conn, story_id, contents, base_revision=operation.base_revision, path=__name__
+    )
+    await insert_derived(conn, memories, rows)
+    await index_records(conn, [memory_record(SimpleNamespace(**r)) for r in rows])
+    ids = tuple(str(r["id"]) for r in rows)
+    for hook in [*MEMORY_HOOKS, *EPISODIC_HOOKS]:
+        await hook(conn, story_id, ids)
+    return await memories_by_id(conn, story_id, ids)
+
+
+async def write_observed(
+    conn: AsyncConnection,
+    operation: MemoryOperation,
+    *,
+    holder: str,
+    proposition_id: str,
+    text: str,
+    source_event_ids: Sequence[str],
+    beat: int,
+    step: int,
+    settings: ProfileSettings | None = None,
+) -> Memory | None:
+    """A verified ``observe`` step's episodic memory (#168, FR-TURN-12): ``holder``'s own (its
+    visibility is ``holder`` alone), "<name> noticed: <text>", wrapping the observed
+    proposition, at the step's beat and ``step``, sourced from the observed fact's event when
+    there is one. Inert (``None``) unless the story keeps episodic memory or ``text`` is
+    empty. Runs the resurrection guard, the erasure index and the hooks like every writer."""
+    story_id = operation.story_id
+    if story_id is None:
+        raise InvalidRequest("a memory belongs to a story", {"field": "operation"})
+    if not text.strip() or not await episodic_on(conn, story_id, settings):
+        return None
+    cast = await _names(conn, story_id)
+    line = f"{cast.get(holder, '')} noticed: {text.strip()}".strip()[:TEXT_MAX]
+    provenance = RecordProvenance.RENDER
+    row: dict[str, Any] = {
+        "id": new_ulid(),
+        "story_id": story_id,
+        "kind": MemoryKind.EPISODIC.value,
+        "text": line,
+        "holder_character_id": holder,
+        "character_id": holder,
+        "visibility": Visibility(scope="characters", characters=(holder,)).document(),
+        "provenance": provenance.value,
+        "trust_tier": trust_tier_of(provenance).value,
+        "operation_id": operation.operation_id,
+        "source_event_ids": list(source_event_ids),
+        "narrative_turn": operation.narrative_turn,
+        "turn_variant": operation.turn_variant,
+        "beat": beat,
+        "step": step,
+        "proposition_ids": [proposition_id],
+        "participants": [],
+    }
+    await guard.check_content(
+        conn,
+        story_id,
+        [guard.Content((line,), frozenset({holder}))],
+        base_revision=operation.base_revision,
+        path=__name__,
+    )
+    await insert_derived(conn, memories, [row])
+    await index_records(conn, [memory_record(SimpleNamespace(**row))])
+    ids = (str(row["id"]),)
+    for hook in [*MEMORY_HOOKS, *EPISODIC_HOOKS]:
+        await hook(conn, story_id, ids)
+    return (await memories_by_id(conn, story_id, ids))[0]
+
+
+async def memory_sink(
+    conn: AsyncConnection,
+    operation: perception.SinkOperation,
+    results: Sequence[perception.PerceptionResult],
+) -> None:
+    """The memory sink of ``core.epistemic.perception.PERCEPTION_SINKS`` (``write_perceived``)."""
+    await write_perceived(conn, operation, results)
+
+
+perception.register_perception_sink(memory_sink)
+
+
 CONSOLIDATED_KINDS: frozenset[MemoryKind] = frozenset({MemoryKind.SEMANTIC, MemoryKind.REFLECTION})
 
 _CONSOLIDATED_FIELDS: tuple[str, ...] = (
@@ -666,6 +928,71 @@ async def write_author(
         conn,
         story_id,
         [guard.Content((line,), frozenset(fact.visibility.characters or ()))],
+        base_revision=operation.base_revision,
+        path=__name__,
+    )
+    await insert_derived(conn, memories, [row])
+    await index_records(conn, [memory_record(SimpleNamespace(**row))])
+    ids = (str(row["id"]),)
+    for hook in list(MEMORY_HOOKS):
+        await hook(conn, story_id, ids)
+    return (await memories_by_id(conn, story_id, ids))[0]
+
+
+async def write_resolution(
+    conn: AsyncConnection,
+    operation: MemoryOperation,
+    *,
+    holder: str,
+    act: str,
+    at: NarrativePosition,
+    source_event_ids: Sequence[str] = (),
+    settings: ProfileSettings | None = None,
+) -> Memory | None:
+    """The bound character's backdated memory of the act a thunk resolution names (#165,
+    FR-COMMIT-14): an ``episodic`` row of ``holder`` alone (``characters: [holder]``),
+    provenance ``resolution``, its text made from the thunk's sketch without a model call
+    ("Bobby knocked at the porch."), anchored at the thunk's introduction (``at``: its turn,
+    variant and beat) and written by the resolving operation, so it follows that operation's
+    membership; importance takes the default. Inert (``None``) unless the story keeps episodic
+    memory. Runs the resurrection guard, the erasure index and ``MEMORY_HOOKS`` like every
+    writer."""
+    from epistrel.core.visibility import private_to
+
+    story_id = operation.story_id
+    if story_id is None:
+        raise InvalidRequest("a memory belongs to a story", {"field": "operation"})
+    if not await episodic_on(conn, story_id, settings):
+        return None
+    name = await conn.scalar(
+        select(characters.c.name).where(
+            characters.c.story_id == story_id, characters.c.id == holder
+        )
+    )
+    line = f"{name or 'You'} {act.strip()}.".strip()[:TEXT_MAX]
+    provenance = RecordProvenance.RESOLUTION
+    row: dict[str, Any] = {
+        "id": new_ulid(),
+        "story_id": story_id,
+        "kind": MemoryKind.EPISODIC.value,
+        "text": line,
+        "holder_character_id": holder,
+        "character_id": holder,
+        "visibility": private_to(holder).document(),
+        "provenance": provenance.value,
+        "trust_tier": trust_tier_of(provenance).value,
+        "operation_id": operation.operation_id,
+        "source_event_ids": list(source_event_ids),
+        "narrative_turn": at.turn,
+        "turn_variant": at.variant,
+        "beat": at.beat,
+        "proposition_ids": [],
+        "participants": [holder],
+    }
+    await guard.check_content(
+        conn,
+        story_id,
+        [guard.Content((line,), frozenset({holder}))],
         base_revision=operation.base_revision,
         path=__name__,
     )
@@ -837,9 +1164,14 @@ async def beats_of_operation(conn: AsyncConnection, operation_id: str) -> list[B
 # -- working memory -----------------------------------------------------------------------------
 
 
+WorkingFidelity = Literal["content", "envelope", "partial"]
+
+
 @dataclass(frozen=True, slots=True)
 class WorkingBeat:
-    """One beat of working memory: where it is, what kind, whose and what it says."""
+    """One beat of working memory: where it is, what kind, whose and what it says, and how the
+    character perceived it (#170: ``envelope``: ``text`` is the envelope; ``partial``: ``text``
+    is the part an eavesdropper caught)."""
 
     event_id: str
     narrative_turn: int
@@ -848,10 +1180,32 @@ class WorkingBeat:
     kind: BeatKind
     character_id: str | None
     text: str
+    fidelity: WorkingFidelity = "content"
+    staged: bool = False
+    """#174: a beat of the turn in progress, staged (verified, not yet committed): what an
+    earlier primary of a ``sequential`` turn rendered (``core.epistemic.stage``)."""
 
 
-Position = int | tuple[int, int]
-"""A narrative position: a turn, or ``(turn, beat)``."""
+class StagedWindow(Protocol):
+    """The turn's staged beats as ``working_memory(…, stage=)`` reads them (#174's
+    ``core.epistemic.stage.TurnStage``)."""
+
+    turn: int
+
+    def perceived_for(
+        self,
+        character_id: str,
+        *,
+        level: perception.Level,
+        scene: perception.SceneState | None,
+        names: Mapping[str, str],
+        places: Mapping[str, str],
+    ) -> list[WorkingBeat]: ...
+
+
+Position = int | tuple[int, int] | NarrativePosition
+"""A narrative position: a turn, ``(turn, beat)``, or the shared ``core.membership.Position``
+(its turn and beat bound the beats; #164)."""
 
 
 def _working(row: Any) -> list[WorkingBeat]:
@@ -870,20 +1224,42 @@ def _working(row: Any) -> list[WorkingBeat]:
     ]
 
 
-async def working_memory(
-    conn: AsyncConnection,
-    story_id: str,
-    character_id: str | None,
-    through_position: Position | None = None,
-    n: int = DEFAULT_WORKING_MEMORY_BEATS,
-) -> list[WorkingBeat]:
-    """The last ``n`` beat events of the active timeline at or before ``through_position`` (the
-    head when ``None``), oldest first, as ``character_id`` perceives them (see the module
-    docstring). Read from ``events``; nothing is stored."""
-    if n < 1:
+SceneLoader = Callable[
+    [AsyncConnection, str, int],
+    Awaitable[tuple[perception.SceneState, Mapping[int, tuple[tuple[str, str | None], ...]]]],
+]
+"""Loads the scene at the start of a turn and the moves its beats committed
+(``core.epistemic.scene.load_scene``'s shape)."""
+
+SCAN_TURNS_PER_BEAT = 4
+"""How many turns back a routed window reads per beat it holds, at most (a character long
+absent gets fewer beats rather than an unbounded scan)."""
+
+
+def _through_clause(through_position: Position | None) -> list[Any]:
+    e = events
+    if through_position is None:
         return []
+    turn, beat = (
+        (through_position, None)
+        if isinstance(through_position, int)
+        else (through_position.turn, through_position.beat)
+        if isinstance(through_position, NarrativePosition)
+        else through_position
+    )
+    if beat is None:
+        return [e.c.narrative_turn <= turn]
+    return [
+        or_(
+            e.c.narrative_turn < turn,
+            and_(e.c.narrative_turn == turn, or_(e.c.beat.is_(None), e.c.beat <= beat)),
+        )
+    ]
+
+
+def _beat_where(story_id: str, through_position: Position | None) -> list[Any]:
     e, o = events, operations
-    where = [
+    return [
         e.c.story_id == story_id,
         e.c.type.in_(BEAT_EVENT_TYPES),
         e.c.category.in_([EventCategory.NARRATIVE_STATE.value, EventCategory.INPUT.value]),
@@ -891,21 +1267,230 @@ async def working_memory(
         e.c.slot_k.is_(None),
         o.c.status == OperationStatus.COMMITTED.value,
         active_operation(o),
+        *_through_clause(through_position),
+        not_composed(),
     ]
-    if through_position is not None:
-        turn, beat = (
-            (through_position, None) if isinstance(through_position, int) else through_position
-        )
-        if beat is None:
-            where.append(e.c.narrative_turn <= turn)
-        else:
-            where.append(
-                or_(
-                    e.c.narrative_turn < turn,
-                    and_(e.c.narrative_turn == turn, or_(e.c.beat.is_(None), e.c.beat <= beat)),
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryBeat:
+    """One stored beat as routing re-reads it (#170): the working beat as stored, its stored
+    perception qualifiers, and the moves its beat number committed."""
+
+    beat: WorkingBeat
+    qualifiers: perception.Qualifiers = field(default_factory=perception.Qualifiers)
+    moves: tuple[tuple[str, str | None], ...] = ()
+
+
+def _route_kind(kind: BeatKind) -> perception.RouteKind:
+    return kind
+
+
+def perceived_window(
+    turns: Sequence[tuple[perception.SceneState, Sequence[HistoryBeat]]],
+    character_id: str,
+    level: perception.Level,
+    names: Mapping[str, str],
+    places: Mapping[str, str],
+    *,
+    mode: str = perception.SEQUENTIAL,
+) -> list[WorkingBeat]:
+    """What ``character_id`` perceived of each turn's beats (``turns``: each turn's scene at its
+    start and its beats in order), oldest first: every beat re-routed at ``level`` by
+    ``perception.route_turn``; a content perceiver keeps the beat (an eavesdropper limited to
+    part of the words, that part), an envelope perceiver its envelope, anyone else nothing; a
+    ``latent`` is never kept, a ``think`` only by its thinker. Pure."""
+    found: list[WorkingBeat] = []
+    for scene, beats in turns:
+        routed = perception.route_turn(
+            [
+                perception.RouteBeat(
+                    kind=_route_kind(h.beat.kind),
+                    beat=int(h.beat.beat or 0),
+                    actor=None if h.beat.kind == "narration" else h.beat.character_id,
+                    qualifiers=h.qualifiers,
+                    sound=perception.sound_of(h.beat.text) if h.beat.kind == "do" else None,
+                    moves=h.moves,
+                    source=h.beat,
                 )
+                for h in beats
+            ],
+            scene,
+            level,
+            mode=mode,
+        )
+        for result in routed:
+            source = result.beat.source
+            assert isinstance(source, WorkingBeat)  # noqa: S101 - built above
+            if source.kind == "latent":
+                continue
+            seen = result.of(character_id)
+            if seen is None:
+                continue
+            if source.kind == "think" and source.character_id != character_id:
+                continue  # pragma: no cover - routing gives a think to its thinker only
+            if seen.fidelity == perception.ENVELOPE and seen.envelope is not None:
+                text = perception.envelope_text(seen.envelope, names, places)
+                found.append(replace(source, text=text, fidelity="envelope"))
+            elif seen.partial_text:
+                found.append(replace(source, text=seen.partial_text.strip(), fidelity="partial"))
+            else:
+                found.append(source)
+    return found
+
+
+async def _turn_mode(conn: AsyncConnection, story_id: str, turn: int) -> str:
+    """The interaction mode turn ``turn``'s active message recorded (#175; ``sequential`` when
+    it names none)."""
+    e, o = events, operations
+    found = await conn.scalar(
+        select(e.c.payload["interaction_mode"].astext)
+        .select_from(e.join(o, o.c.operation_id == e.c.operation_id))
+        .where(
+            e.c.story_id == story_id,
+            e.c.narrative_turn == turn,
+            e.c.slot_k.is_(None),
+            e.c.type == "message_rendered",
+            o.c.status == OperationStatus.COMMITTED.value,
+            active_operation(o),
+        )
+        .limit(1)
+    )
+    return str(found) if found else perception.SEQUENTIAL
+
+
+async def _routed_memory(
+    conn: AsyncConnection,
+    story_id: str,
+    character_id: str,
+    through_position: Position | None,
+    n: int,
+    level: perception.Level,
+    scene_loader: SceneLoader | None,
+) -> list[WorkingBeat]:
+    """``working_memory``'s viewpoint-filtered window (see the module docstring)."""
+    if scene_loader is None:
+        from epistrel.core.epistemic import scene as scenes
+
+        async def default_loader(
+            c: AsyncConnection, story: str, turn: int
+        ) -> tuple[perception.SceneState, Mapping[int, tuple[tuple[str, str | None], ...]]]:
+            return await scenes.load_scene(c, story, turn)
+
+        scene_loader = default_loader
+    e, o = events, operations
+    where = _beat_where(story_id, through_position)
+    found_turns = await conn.scalars(
+        select(e.c.narrative_turn)
+        .join(o, o.c.operation_id == e.c.operation_id)
+        .where(*where)
+        .group_by(e.c.narrative_turn)
+        .order_by(e.c.narrative_turn.desc())
+        .limit(max(1, SCAN_TURNS_PER_BEAT * n))
+    )
+    names = await _names(conn, story_id)
+    places = await _place_names(conn, story_id)
+    window: list[WorkingBeat] = []
+    for turn in [int(t) for t in found_turns]:
+        rows = await conn.execute(
+            select(
+                e.c.id,
+                e.c.type,
+                e.c.narrative_turn,
+                e.c.turn_variant,
+                e.c.beat,
+                e.c.character_id,
+                e.c.payload,
             )
-    where.append(not_composed())
+            .join(o, o.c.operation_id == e.c.operation_id)
+            .where(*where, e.c.narrative_turn == turn)
+            .order_by(e.c.beat.asc().nulls_first(), e.c.seq)
+        )
+        scene, moves = await scene_loader(conn, story_id, turn)
+        beats: list[HistoryBeat] = []
+        for row in rows:
+            stored = perception.Qualifiers.of((row.payload or {}).get("perception"))
+            beats += [HistoryBeat(b, stored) for b in _working(row)]
+        for index, item in enumerate(beats):
+            last = index == len(beats) - 1 or beats[index + 1].beat.beat != item.beat.beat
+            committed = moves.get(int(item.beat.beat or 0))
+            if last and committed:
+                beats[index] = replace(item, moves=tuple(committed))
+        mode = perception.SEQUENTIAL
+        if any(h.moves for h in beats):
+            # #175: a simultaneous turn's moves apply after it (its message names the mode).
+            mode = await _turn_mode(conn, story_id, turn)
+        window = [
+            *perceived_window([(scene, beats)], character_id, level, names, places, mode=mode),
+            *window,
+        ]
+        if len(window) >= n:
+            break
+    return window[-n:]
+
+
+async def working_memory(
+    conn: AsyncConnection,
+    story_id: str,
+    character_id: str | None,
+    through_position: Position | None = None,
+    n: int = DEFAULT_WORKING_MEMORY_BEATS,
+    *,
+    level: perception.Level = perception.NONE,
+    scene_loader: SceneLoader | None = None,
+    stage: StagedWindow | None = None,
+) -> list[WorkingBeat]:
+    """The last ``n`` beats of the active timeline at or before ``through_position`` (the head
+    when ``None``), oldest first, as ``character_id`` perceives them at perception ``level``
+    (see the module docstring: ``none`` and ``character_id=None`` read as M4 did; above it, the
+    window is re-routed). Read from ``events``; nothing is stored. ``stage`` (#174): the turn's
+    staged beats as the character perceived them (routed over the turn's scene) follow the
+    window, flagged ``staged`` and not counted in ``n``."""
+    window = await _committed_memory(
+        conn,
+        story_id,
+        character_id,
+        through_position,
+        n,
+        level=level,
+        scene_loader=scene_loader,
+    )
+    if stage is None or character_id is None:
+        return window
+    scene: perception.SceneState | None = None
+    if level != perception.NONE:
+        if scene_loader is None:
+            from epistrel.core.epistemic import scene as scenes
+
+            scene, _ = await scenes.load_scene(conn, story_id, stage.turn)
+        else:
+            scene, _ = await scene_loader(conn, story_id, stage.turn)
+    names = await _names(conn, story_id)
+    places = await _place_names(conn, story_id)
+    return [
+        *window,
+        *stage.perceived_for(character_id, level=level, scene=scene, names=names, places=places),
+    ]
+
+
+async def _committed_memory(
+    conn: AsyncConnection,
+    story_id: str,
+    character_id: str | None,
+    through_position: Position | None,
+    n: int,
+    *,
+    level: perception.Level,
+    scene_loader: SceneLoader | None,
+) -> list[WorkingBeat]:
+    if n < 1:
+        return []
+    if character_id is not None and level != perception.NONE:
+        return await _routed_memory(
+            conn, story_id, character_id, through_position, n, level, scene_loader
+        )
+    e, o = events, operations
+    where = _beat_where(story_id, through_position)
     if character_id is not None:
         where.append(
             or_(
@@ -1129,15 +1714,21 @@ __all__ = [
     "EPISODIC_MODULE",
     "MEMORY_HOOKS",
     "OBSERVABLE",
+    "ROUTED",
+    "SCAN_TURNS_PER_BEAT",
     "SEED_IMPORTANCE",
     "Beat",
     "BeatKind",
+    "HistoryBeat",
     "Memory",
     "MemoryHook",
     "MemoryOperation",
     "Position",
+    "SceneLoader",
     "SeedMemory",
+    "StagedWindow",
     "WorkingBeat",
+    "WorkingFidelity",
     "after_rewrite",
     "beats_of_operation",
     "committed_turns",
@@ -1147,7 +1738,11 @@ __all__ = [
     "memories_by_id",
     "memories_linked",
     "memories_through",
+    "memory_sink",
     "participants_of",
+    "perceived_line",
+    "perceived_window",
+    "places_and_names",
     "register_episodic_hook",
     "register_memory_hook",
     "remove_memory_hook",
@@ -1159,6 +1754,9 @@ __all__ = [
     "working_memory",
     "write_author",
     "write_consolidated",
+    "write_observed",
+    "write_perceived",
+    "write_resolution",
     "write_seed",
 ]
 

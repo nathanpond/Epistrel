@@ -284,6 +284,7 @@ COMPLETE: dict[str, Any] = {
             },
         ],
         "max_characters_at_start": 6,
+        "groups": {"family": ["mother", "brother", "aunt", "player"]},
     },
     "starting_state": {
         "seeded_memories": [

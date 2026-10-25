@@ -8,7 +8,8 @@ definition as labelled author notes (never a public card) in request order, each
 facts), the pinned memories, the rolling summary, then the constant preamble: who
 is voiced, in request order, and the one line that separates the characters' knowledge
 (FR-LITE-5: by instruction only), and on a guardrail regeneration one constraint line per
-violated output policy (#68). Empty sections are left out. The verbatim window follows as chat messages, one per transcript
+violated output policy (#68); then the story's ``## Player authority`` instruction (#180,
+FR-RESP-11: its only Lite effect). Empty sections are left out. The verbatim window follows as chat messages, one per transcript
 row through the ``line`` macro (``prompts.render``), and the ``user`` block is the player input,
 the final ``user`` message. -#}
 {% macro line(entry) -%}
@@ -68,6 +69,15 @@ Each character knows only what their notes and the scene show.
 {% for constraint in policy_constraints %}
 {{ constraint }}
 {% endfor %}
+{% if player_authority == "co_author" %}
+
+## Player authority
+The player may narrate other characters' actions; honor them unless impossible. Never take the player's word for another character's thoughts.
+{% elif player_authority == "own_character" %}
+
+## Player authority
+Treat the player's statements about other characters as requests those characters resolve: each may comply or refuse, in character.
+{% endif %}
 {% endblock %}
 {% block user %}
 {{ player_input.name }}:{% if player_input.say %} "{{ player_input.say }}"{% endif %}{% if player_input.do %} *{{ player_input.do }}*{% endif %}

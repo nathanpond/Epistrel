@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.config_changes import read_settings
 from epistrel.core.enums import StoryStatus
+from epistrel.core.epistemic.scene import placed_elsewhere
 from epistrel.core.errors import PolicyNotFound, StoryNotFound
 from epistrel.core.policies.model import (
     SCOPE_RANK,
@@ -341,9 +342,14 @@ async def creation_context(
 
 
 async def guard_context(db: AsyncEngine, story_id: str) -> GuardContext:
-    """The story's effective policies, cast and live threshold (``StoryNotFound`` if absent)."""
+    """The story's effective policies, cast and live threshold (``StoryNotFound`` if absent).
+    Under perception routing (#161) a cast member authoritatively placed away from the scene
+    is marked not ``present`` (``core.epistemic.scene.placed_elsewhere``)."""
     found = await effective_policies(db, story_id)
     async with db.connect() as conn, conn.begin():
         cast = await read_cast(conn, story_id)
         threshold = (await read_settings(conn)).minor_age_threshold
+        elsewhere = await placed_elsewhere(conn, story_id)
+    if elsewhere:
+        cast = tuple(replace(m, present=m.character_id not in elsewhere) for m in cast)
     return GuardContext(policies=found, cast=cast, threshold=threshold)

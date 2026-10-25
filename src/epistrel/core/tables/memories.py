@@ -9,12 +9,17 @@ One row is one memory record:
 - **where it came from**: ``provenance`` (#133's ``record_provenance``), ``trust_tier``
   (``memory_trust_tier``, derived mechanically from the provenance), the derived-record
   columns of ``core.membership`` (the producing operation, ``source_event_ids``, the narrative
-  position ``narrative_turn``/``turn_variant`` plus ``beat``, and the timeline membership with
+  position ``narrative_turn``/``turn_variant`` plus ``beat`` and ``step`` (#168, migration
+  0075: the beat's declared causal step, FR-STORE-31), and the timeline membership with
   ``membership_tx``), ``proposition_ids`` (the propositions a memory wraps: a beat's), and
   ``character_id`` (the beat's actor, ``NULL`` for narration).
 - **who may know it**: ``holder_character_id`` (whose memory it is; ``NULL``: shared, as every
   render-derived memory is in M4) and ``visibility`` (#133's shape:
   ``{"scope": objective|public|engine|characters, "characters": [...]}``).
+- **how it was perceived** (#161, migration 0070; FR-TURN-2,10): a memory perception routing
+  wrote has the perceiver as ``holder_character_id``, ``fidelity`` (``content``: the words or
+  the action; ``envelope``: only that it happened, ``Jenni whispers something to Marcus``) and
+  ``channel`` (``CHANNELS``); both are ``NULL`` on every other memory.
 - **how important it is now**: ``importance`` (0..1, ``NULL`` until scored; ranking and
   retirement read ``NULL`` as ``DEFAULT_IMPORTANCE``) and ``importance_at`` (the committed turn
   the importance was assigned at; ``core.memory.records.decayed_importance`` decays from it).
@@ -30,11 +35,11 @@ One row is one memory record:
   it.
 - **what consolidation made of it** (#143, migration 0058): on a ``semantic`` or ``reflection``
   row, ``level`` (1: compressed from episodic memories and canon; 2: from level-1 outputs),
-  ``modality`` (``objective``, ``attributed_claim`` or ``observation``: the epistemic type
-  FR-MEM-9 preserves; an attributed claim's speaker is its ``character_id``), ``inputs_hash``
-  (the replay key: a digest of its inputs' content, the same in a fork) and the provenance
-  FR-MEM-10 stores, ``model``, ``model_version`` (``NULL`` when the adapter reports none) and
-  ``prompt_hash``; on any row, ``covered_by`` (the consolidation outputs that cover it,
+  ``modality`` (``objective``, ``attributed_claim``, ``observation`` or, #178, ``belief``: the
+  epistemic type FR-MEM-9 preserves; an attributed claim's speaker is its ``character_id``),
+  ``inputs_hash`` (the replay key: a digest of its inputs' content, the same in a fork) and the
+  provenance FR-MEM-10 stores, ``model``, ``model_version`` (``NULL`` when the adapter reports
+  none) and ``prompt_hash``; on any row, ``covered_by`` (the consolidation outputs that cover it,
   rewritten as outputs are made; an output that is no longer active covers nothing, so readers
   join on its membership; #147's retirement prefers covered records).
 - **quarantine** (#145, migration 0059; FR-GUARD-4,5): ``quarantined_at`` (``NULL``: not
@@ -61,7 +66,8 @@ One row is one memory record:
   (``ix_memories_pinned``). ``core.memory.retirement`` and ``core.memory.pins`` write these.
 
 Guarded (``epistrel_memories_guard``): an UPDATE may change only ``MUTABLE_MEMORY_COLUMNS``; an
-erasure (``epistrel.erasure = on``) may also rewrite ``text`` and ``quarantine_reason``, and a
+erasure (``epistrel.erasure = on``) may also rewrite ``text``, ``quarantine_reason`` and (#178,
+migration 0079: an erased character leaves ``visibility.characters``) ``visibility``, and a
 sanitize (``epistrel.sanitize`` = the memory's id, #145) that one row's ``text`` and
 ``inputs_hash``. A DELETE passes only under an
 erasure or the story's deletion (``epistrel.allow_story_delete``); TRUNCATE is refused. The
@@ -124,8 +130,15 @@ HOT_UNPINNED_WHERE = f"retrieval_tier = 'hot' AND NOT pinned AND {active_only_pr
 HOT_VECTORS_WHERE = f"{HOT_UNPINNED_WHERE} AND embedding IS NOT NULL"
 """The rows the story's vector budget counts (``ix_memories_hot_vectors``)."""
 
-MODALITIES: tuple[str, ...] = ("objective", "attributed_claim", "observation")
-"""The epistemic types a consolidation output carries (``modality``, CHECK; FR-MEM-9)."""
+MODALITIES: tuple[str, ...] = ("objective", "attributed_claim", "observation", "belief")
+"""The epistemic types a consolidation output carries (``modality``, CHECK; FR-MEM-9): #178
+adds ``belief``, a statement resting on a holder's own memory (``holder_character_id``)."""
+
+FIDELITIES: tuple[str, ...] = ("content", "envelope")
+"""How much of its beat a routed memory's holder perceived (``fidelity``, CHECK; #161)."""
+CHANNELS: tuple[str, ...] = ("self", "room", "eavesdrop", "remote", "adjacent", "think")
+"""How a routed memory reached its holder (``channel``, CHECK; #161): its own beat, the room it
+is in, an eavesdrop, a remote channel, a sound through a barrier, or its own thought."""
 
 VISIBILITY_SCOPES: tuple[str, ...] = ("objective", "public", "engine", "characters")
 """The visibility scopes a memory may carry (#133's, ``visibility->>'scope'``, CHECK)."""
@@ -211,6 +224,7 @@ memories = Table(
     Column("importance_at", Integer, nullable=True),
     *derived_columns(),
     Column("beat", SmallInteger, nullable=True),
+    Column("step", SmallInteger, nullable=False, server_default=text("0")),
     Column("proposition_ids", ARRAY(ulid_type()), nullable=False, server_default=text("'{}'")),
     Column("event_type", Text, nullable=True),
     Column("participants", ARRAY(ulid_type()), nullable=False, server_default=text("'{}'")),
@@ -246,6 +260,8 @@ memories = Table(
     Column("retired_reason", Text, nullable=True),
     Column("retired_at", TIMESTAMP(timezone=True), nullable=True),
     Column("retired_turn", Integer, nullable=True),
+    Column("fidelity", Text, nullable=True),
+    Column("channel", Text, nullable=True),
     CheckConstraint(f"char_length(text) <= {TEXT_MAX}", name="text_length"),
     CheckConstraint("NOT pinned OR retrieval_tier = 'hot'", name="pinned_hot"),
     CheckConstraint(
@@ -275,6 +291,14 @@ memories = Table(
         name="modality",
     ),
     CheckConstraint("level IS NULL OR level IN (1, 2)", name="level"),
+    CheckConstraint(
+        "fidelity IS NULL OR fidelity IN (" + ", ".join(f"'{f}'" for f in FIDELITIES) + ")",
+        name="fidelity",
+    ),
+    CheckConstraint(
+        "channel IS NULL OR channel IN (" + ", ".join(f"'{c}'" for c in CHANNELS) + ")",
+        name="channel",
+    ),
     CheckConstraint(
         "(visibility->>'scope' = 'characters') = "
         "(jsonb_typeof(visibility->'characters') = 'array' "

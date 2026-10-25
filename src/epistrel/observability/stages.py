@@ -23,6 +23,14 @@ gates on them, #153), observed once per call rather than once per turn:
 - ``verify``: one claim's deterministic verify path (the verifier's keyed fetch and ``check``,
   no model fallback; NFR-PERF-2's span, as P-02 measures it).
 
+Two more are a structured turn's per-character work (``MULTI_STAGES``; P-04's multi-character
+variant reports them as its ``context_ms`` and ``compose_ms`` columns, #182):
+
+- ``context``: one character render's context (#170's ``build_context``: the partition read,
+  lazy resolutions and the viewpoint-scoped retrieval included), once per render;
+- ``compose``: the turn's reconciliation of concurrent commitments (#177), the audience filter
+  and the composition, the polish's model calls left out, once per turn.
+
 The buckets are log-spaced from 1 ms to 60 s, with the gates' bounds as edges. Labels are the
 stage names only (invariant 3). This module imports nothing from the Engine, so
 ``epistrel.core`` may observe ``commit``.
@@ -47,6 +55,8 @@ Stage = Literal[
     "post_commit",
     "retrieve",
     "verify",
+    "context",
+    "compose",
 ]
 STAGES: tuple[Stage, ...] = (
     "queue_wait",
@@ -60,6 +70,9 @@ STAGES: tuple[Stage, ...] = (
 """The stages every committed turn observes once."""
 STRUCTURED_STAGES: tuple[Stage, ...] = ("retrieve", "verify")
 """The stages only a structured turn observes, once per retrieval and once per claim checked."""
+MULTI_STAGES: tuple[Stage, ...] = ("context", "compose")
+"""A structured turn's per-character stages: ``context`` once per character render, ``compose``
+once per turn (#182)."""
 STAGE_BUCKETS = (
     0.001,
     0.002,
@@ -86,7 +99,8 @@ queue-front-to-first-call bound are bucket edges, so P-04 reads each gate exactl
 TURN_STAGE = Histogram(
     "epistrel_turn_stage_seconds",
     "Turn latency by stage: queue_wait, front_to_first_call, assemble, generate, "
-    "policy_check, commit, post_commit; and a structured turn's retrieve and verify, per call.",
+    "policy_check, commit, post_commit; a structured turn's retrieve and verify, per call; "
+    "and its context, per character render, and compose, per turn.",
     ("stage",),
     buckets=STAGE_BUCKETS,
 )
@@ -108,6 +122,7 @@ def timed(stage: Stage) -> Iterator[None]:
 
 
 __all__ = [
+    "MULTI_STAGES",
     "STAGES",
     "STAGE_BUCKETS",
     "STRUCTURED_STAGES",

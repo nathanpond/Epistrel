@@ -96,9 +96,15 @@ from epistrel.core.context import RequestContext
 from epistrel.core.enums import OperationKind, StoryStatus
 from epistrel.core.erasure.index import index_records
 from epistrel.core.erasure.records import operation_record
-from epistrel.core.errors import RevisionConflict, StoryArchived, TimelineChanged
+from epistrel.core.errors import (
+    InvalidRequest,
+    ModuleOff,
+    RevisionConflict,
+    StoryArchived,
+    TimelineChanged,
+)
 from epistrel.core.events import Operation
-from epistrel.core.history import turn_beats
+from epistrel.core.history import story_player_view, turn_beats
 from epistrel.core.profiles.effective import ProfileVersionRef, StoryProfile
 from epistrel.core.profiles.fingerprint import Stamp
 from epistrel.core.profiles.schema import ProfileSettings
@@ -129,7 +135,9 @@ from epistrel.orchestrator.lite.prompt import assemble, model_params, prompt_has
 from epistrel.orchestrator.lite.schemas import (
     PIN_QUARANTINED,
     QUARANTINED_CONTEXT,
+    ROLE_OVERRIDES,
     SAFE_FALLBACK,
+    TURN_OVERRIDES,
     BudgetOverride,
     BudgetReport,
     DegradationStep,
@@ -142,6 +150,7 @@ from epistrel.orchestrator.lite.schemas import (
     RespondRequest,
     RespondResult,
     TurnWarning,
+    body_of,
 )
 from epistrel.orchestrator.models.access import ModelAccessLayer, routing
 from epistrel.orchestrator.models.adapter import ModelResult
@@ -211,6 +220,24 @@ class TurnTiming:
         stages.observe("policy_check", self.policy_check_s)
 
 
+def refuse_role_overrides(request: Any) -> None:
+    """422 ``validation_error`` (``reason: per_character_only``): a request overriding the
+    turn's participation roles or interjections (#176) of a story that renders one combined
+    reply (a stored role is accepted and inert there)."""
+    for name in ROLE_OVERRIDES:
+        if getattr(request, name, None) is not None:
+            field = f"body.{name}"
+            message = f"{name} needs per-character renders (multi_character = per_character)"
+            raise InvalidRequest(
+                message,
+                {
+                    "field": field,
+                    "reason": "per_character_only",
+                    "errors": [{"field": field, "message": message, "type": "value_error"}],
+                },
+            )
+
+
 async def respond(
     db: AsyncEngine,
     models: ModelAccessLayer,
@@ -226,6 +253,15 @@ async def respond(
     started = ctx.received_at if ctx.received_at is not None else time.monotonic()
     story = await read_story_cast(db, story_id)
     cast = resolve_cast(story, request)
+    if any(getattr(request, k) is not None for k in TURN_OVERRIDES):
+        # #174: a Lite story renders one combined reply; there is no mode or order to override.
+        raise ModuleOff(
+            "interaction_mode, sequence_order and simultaneous_tie_break need per-character "
+            "renders "
+            "(multi_character = per_character)",
+            {"story_id": story_id, "module": "multi_character"},
+        )
+    refuse_role_overrides(request)
     if story.status == StoryStatus.ARCHIVED.value:
         raise StoryArchived(
             f"story {story_id} is archived; unarchive it to change it", {"story_id": story_id}
@@ -243,7 +279,7 @@ async def respond(
         await call.claim(
             {
                 "story_id": story_id,
-                "body": request.model_dump(mode="json", exclude={"output_viewpoint"})
+                "body": body_of(request, "output_viewpoint")
                 | {"render_character_ids": cast.render_ids},
                 "actor_character_id": cast.actor.id,
                 "viewpoint": try_resolve(resolution),
@@ -252,7 +288,7 @@ async def respond(
             # The request as sent, which an erasure cannot change (#375).
             sent={
                 "story_id": story_id,
-                "body": request.model_dump(mode="json"),
+                "body": body_of(request),
                 "viewpoint": ctx.viewpoint,
                 "expected_revision": ctx.expected_revision,
             },
@@ -297,7 +333,7 @@ async def respond(
             if concurrency.mode == "reject":
                 raise held.busy(story_id)
             queued = {
-                "body": request.model_dump(mode="json"),
+                "body": body_of(request),
                 "turn_budget": {"max_calls": budget.max_calls, "deadline_s": budget.deadline_s},
             }
             return await queue_turn(op.operation_id, queued, viewpoint, concurrency)
@@ -717,6 +753,8 @@ async def _play(
             **_stamp_fields(stamped[0] if stamped else None),
             "profile": ProfileVersionRef(id=captured.profile_id, version=captured.version),
             "config_revision": configuration.config_revision,
+            # #177: echoed; a no-op under Lite (perception ``none``: nothing is filtered).
+            "player_view": request.player_view or await story_player_view(conn, story_id),
         }
         if regenerating is not None:
             return RegenerateResult(**fields, previous_variant=regenerating.variant)

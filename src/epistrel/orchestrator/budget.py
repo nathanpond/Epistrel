@@ -36,10 +36,11 @@ purpose maps to that kind (``kind_of``: ``extraction_backstop`` is ``extraction`
 ``composed`` while ``charging(COMPOSED)``), and every other call sees them as spent
 (``can_afford``, ``can_afford_unreserved``). A named slot the turn did not use is released
 (``release_named``) and may then fund optional work. Optional work (``salience``,
-``entailment``, ``follow_up``, ``repair``, ``polish``, in that priority) spends only what no
-reservation holds: the adapter refuses a first ``entailment`` or ``salience_detection``
-attempt that would dip below the line, and the pipeline asks ``try_optional(kind, cost)``
-before a follow-up render, a model repair or the polish. ``pending`` pre-allocates the
+``entailment``, ``follow_up``, ``testimony`` (#162), ``repair``, ``polish``, in that
+priority) spends only what no reservation holds: the adapter refuses a first ``entailment``
+or ``salience_detection`` attempt that would dip below the line, and the pipeline asks
+``try_optional(kind, cost)`` before a follow-up render, a testimony adjudication, a model
+repair or the polish. ``pending`` pre-allocates the
 higher-priority salience calls so an earlier entailment call cannot starve them, and
 ``latency_estimate_s`` treats a call that could not start before ``deadline - estimate`` as
 unaffordable (``can_start``). Once an optional kind is refused, no less important kind runs
@@ -64,6 +65,8 @@ from epistrel.core.settings_schema import (
     MIN_DEADLINE_S,
 )
 
+PER_PRIMARY_CALLS = 5
+"""NFR-PERF-6's per-primary share of the default cap (``4 + 5 per primary + G``)."""
 GUARDRAIL_INPUT = "guardrail_input"
 GUARDRAIL_OUTPUT = "guardrail_output"
 
@@ -72,16 +75,36 @@ EXTRACTION = "extraction"
 COMPOSED = "composed"
 """C: the composed message's detection (owner: ``extraction_backstop`` while charging it)."""
 SALIENCE = "salience"
+DIRECTOR_ORDER = "director_order"
+"""#174: the director's ordering of a sequential turn's primaries (one ``generation`` call)."""
+DIRECTOR_TIEBREAK = "director_tiebreak"
+"""#175: the director's judgment of a simultaneous turn's conflicting actions (one
+``generation`` call)."""
 ENTAILMENT = "entailment"
 FOLLOW_UP = "follow_up"
+TESTIMONY = "testimony"
+"""#162: a salient witness's ``belief_adjudication`` call."""
 REPAIR = "repair"
 POLISH = "polish"
-OPTIONAL_PRIORITY = (SALIENCE, ENTAILMENT, FOLLOW_UP, REPAIR, POLISH)
+OPTIONAL_PRIORITY = (
+    SALIENCE,
+    DIRECTOR_ORDER,
+    DIRECTOR_TIEBREAK,
+    ENTAILMENT,
+    FOLLOW_UP,
+    TESTIMONY,
+    REPAIR,
+    POLISH,
+)
 """Optional work, most important first: the pool is spent in this order (NFR-PERF-7 gives
-polish up first, then repairs, then entailment)."""
+polish up first, then repairs, then testimony adjudication, then entailment)."""
+ADAPTER_GATED = frozenset({SALIENCE, ENTAILMENT})
+"""The optional kinds no ``try_optional`` grant precedes: the Model Access Layer's
+``affordable`` check is their only gate, so it keeps them off every reserved slot (#182)."""
 PURPOSE_KINDS = {
     "extraction_backstop": EXTRACTION,
     "entailment": ENTAILMENT,
+    "belief_adjudication": TESTIMONY,
     "salience_detection": SALIENCE,
     "regeneration": REPAIR,
     "guardrail_check": "guardrail",
@@ -90,9 +113,10 @@ PURPOSE_KINDS = {
 """What kind of call a purpose's call is, unless the caller is ``charging`` another kind."""
 
 
-def lite_default_calls(guardrail_calls: int) -> int:
-    """The Lite default ``max_model_calls_per_turn``: ``4 + 5 + G`` (one primary, O = 0)."""
-    return LITE_BASE_CALLS + guardrail_calls
+def lite_default_calls(guardrail_calls: int, primaries: int = 1) -> int:
+    """The default ``max_model_calls_per_turn``: ``4 + 5 per primary + G`` (O = 0; one primary
+    under Lite, #174's B under a sequential structured turn)."""
+    return LITE_BASE_CALLS + PER_PRIMARY_CALLS * (max(1, primaries) - 1) + guardrail_calls
 
 
 @dataclass
@@ -213,7 +237,13 @@ class TurnBudget:
             return remaining is None or remaining >= 1
         if kind in OPTIONAL_PRIORITY and (self._denied_ahead(kind) or not self.can_start()):
             return self._deny(kind)
-        if remaining is None or remaining - self.named_unspent - self._ahead_of(kind) >= 1:
+        # #182 (Rule 1): the optional work the adapter gates itself (salience, entailment) never
+        # spends a held slot either. A sequential turn's later renders and their output checks
+        # are still held when an earlier render's salience runs; spending them failed the last
+        # render (``budget_exhausted``) instead of skipping the optional call. Work granted by
+        # ``try_optional`` spends the slot that grant held, so it is not refused here.
+        floor = self.reserved_unspent if kind in ADAPTER_GATED else self.named_unspent
+        if remaining is None or remaining - floor - self._ahead_of(kind) >= 1:
             return True
         return self._deny(kind)
 
@@ -409,6 +439,8 @@ def plan_lite_budget(
 __all__ = [
     "COMPOSED",
     "DEFAULT_TURN_DEADLINE_S",
+    "DIRECTOR_ORDER",
+    "DIRECTOR_TIEBREAK",
     "ENTAILMENT",
     "EXTRACTION",
     "FOLLOW_UP",
@@ -418,6 +450,7 @@ __all__ = [
     "MIN_CALLS_PER_TURN",
     "MIN_DEADLINE_S",
     "OPTIONAL_PRIORITY",
+    "PER_PRIMARY_CALLS",
     "POLISH",
     "PURPOSE_KINDS",
     "REPAIR",

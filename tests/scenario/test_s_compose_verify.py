@@ -89,6 +89,7 @@ async def test_s_compose_verify(
             "message_id": played["message"]["message_id"],
             "text": CLEAN,
             "mode": "polished",
+            "narrative": CLEAN,  # #177
         }
         assert FALLBACK not in played["degradation"]
         assert report["mode"] == "polished"

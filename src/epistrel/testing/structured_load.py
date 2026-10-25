@@ -1,7 +1,7 @@
 """Structured turns under load (#153): what P-04's structured variant and P-08's structured and
 repair-heavy rows share.
 
-A structured load story is a story on the seeded ``Structured (M4)`` profile (``use_structured``)
+A structured load story is a story on the seeded ``Structured`` profile (``use_structured``)
 with planted canon (``plant``): two items of its own, ``PLANTED_ITEM`` and ``NOVEL_ITEM``, and
 for each character it names, "this character owns ``PLANTED_ITEM``" for all story-time, an
 author fact committed through ``Engine.commit_fact``. Nothing in canon mentions ``NOVEL_ITEM``.
@@ -30,7 +30,7 @@ from epistrel.core.mutation import FactRequest
 from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Interval, Proposition
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME
-from epistrel.core.seeds.profiles import STRUCTURED_M4_PROFILE_ID
+from epistrel.core.seeds.profiles import STRUCTURED_PROFILE_ID
 from epistrel.core.tables import stories
 
 PLANTED_ITEM = "brass lantern"
@@ -60,13 +60,13 @@ def render_claims(contradicted: float, novel: float = 0.0) -> list[dict[str, Any
 
 
 async def use_structured(db: AsyncEngine, story_id: str) -> None:
-    """Put a new story, before its first turn, on the seeded ``Structured (M4)`` profile (as
-    the scale fixture does: no turn has resolved its configuration yet)."""
+    """Put a new story, before its first turn, on the seeded ``Structured`` profile's latest
+    version (the scale fixture pins version 1: no turn has resolved its configuration yet)."""
     async with db.begin() as conn:
         await conn.execute(
             update(stories)
             .where(stories.c.id == story_id)
-            .values(engine_profile_id=STRUCTURED_M4_PROFILE_ID, engine_profile_version_pin=None)
+            .values(engine_profile_id=STRUCTURED_PROFILE_ID, engine_profile_version_pin=None)
         )
 
 

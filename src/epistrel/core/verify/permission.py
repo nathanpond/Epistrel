@@ -10,9 +10,31 @@ model or imports the Orchestrator.
 **Asserters** (``Asserter``): a character's render (``character``), a director/world pass
 (``director``), player input (``player``, whose actor is the player's own character; input for
 a character the platform plays is that character's render, FR-AUTH-3) and the author
-(``author``). M5's exceptions are not delivered: attributed reactive narration (``reactive``,
-FR-MULTI-9) is judged as its character's render and ``co_author`` player input (FR-RESP-11) as
-plain player input, so a claim either exception would admit is ``Denied``.
+(``author``). Attributed reactive narration (``reactive``, FR-MULTI-9; #176) names the narrating
+render's character and the ``reactor`` it narrates: see "The reactive exception" below.
+``co_author`` player input (FR-RESP-11; #180) is the player narrating another character's
+action under ``player_authority = co_author``: see "The co-author exception" below.
+
+**The co-author exception** (FR-RESP-11, FR-VERIFY-11; #180, replacing M4's stub). A claim of a
+beat the player narrated for another modeled character (``Asserter("co_author", player)``) about
+that character's observable action, a predicate of ``CO_AUTHOR_PREDICATES`` (that it spoke, to
+someone; what it holds, handed over or took; where it is), is permitted with basis
+``co_author`` (canonized with provenance ``player``); anything else about a modeled character
+(its backstory, a relationship, a state) stays ``player_authority``: the player text stands,
+never canon. Another human's character is never narrated (``player_authority``). The thoughts
+never reach this rule: a narrated thought is dropped before verification
+(``orchestrator.structured.player_authority``, ``player_cannot_write_think``), and the
+orchestrator checks the narrated beat against the character's own viewpoint.
+
+**The reactive exception** (FR-MULTI-9, FR-VERIFY-11; #176). A claim of a reaction another render
+narrated (``Asserter("reactive", narrator, reactor=…)``) is the reactor's observable reaction:
+about the reactor (and anyone else only as its addressee, the narrator or the world), with a
+predicate of ``REACTIVE_PREDICATES`` (that the reactor spoke, or spoke to someone) or a presence
+the scene already holds (``present_at`` on a placed reactor) it is permitted with basis
+``reactive``; anything else about the reactor (its backstory, a placement change, a possession, a
+decision) is ``other_character_secret``, as it would be for the narrator's own render, and the
+player's character stays ``player_character``. The reactor's thoughts never reach this rule: a
+narrated thought is dropped before verification (``core.epistemic.roles``).
 
 **Ownership.** ``owner_of`` derives the subject's owner from ``entities.character_id`` and
 ``characters.is_player``: ``player_character``, ``modeled_character`` (an entity with a
@@ -35,9 +57,12 @@ sibling introduces Jenni's backstory too.
   speech, thoughts or backstory;
 - ``other_character_secret``: a render asserting another modeled character's secrets,
   backstory, actions or thoughts, or a director pass asserting anything about a modeled
-  character beyond an arrival;
+  character beyond an arrival or an identity (#171: a director's ``same_as`` linking one
+  non-player modeled character to an unmodeled entity, "the stranger is Bobby", is permitted
+  with basis ``identity``);
 - ``player_authority``: player input about another character (``player_authority =
-  own_character``): the player's text stands and is not repaired, but it is never canonized;
+  own_character``, or anything but an observable action under ``co_author``): the player's text
+  stands and is not repaired, but it is never canonized;
 - ``policy``: an arrival while the story's ``allow_new_arrivals`` is off (a director pass's
   arrival, or a render bringing in a new unmodeled person);
 - ``protected_content``: the claim's text matched protected content (#148's detector, passed
@@ -52,8 +77,9 @@ character is reconciled by #154 (FR-COMMIT-11,14), not refused here. External va
 author-locked canon still win.
 
 A permitted claim carries its basis: ``own`` (the asserter's own actions, thoughts and minor
-backstory within its constraints), ``texture`` (incidental scene texture, an unmodeled person
-included), ``arrival``, ``world`` (a director's world fact), ``author`` or ``resolution``. An
+backstory within its constraints), ``co_author`` (#180), ``texture`` (incidental scene texture,
+an unmodeled person included), ``arrival``, ``world`` (a director's world fact), ``identity``
+(#171), ``author`` or ``resolution``. An
 **arrival** is a ``located_at``/``present_at`` claim on a person with no prior placement (no
 current fact of either predicate).
 
@@ -134,6 +160,22 @@ class Basis(StrEnum):
     WORLD = "world"
     AUTHOR = "author"
     RESOLUTION = "resolution"
+    IDENTITY = "identity"
+    REACTIVE = "reactive"
+    """#176 (FR-MULTI-9): a reactor's observable reaction another render narrated."""
+    CO_AUTHOR = "co_author"
+    """#180 (FR-RESP-11): another character's observable action the ``co_author`` player
+    narrated."""
+
+
+REACTIVE_PREDICATES: frozenset[str] = frozenset({"spoke", "spoke_to"})
+"""What reactive narration may establish about its reactor (#176): that it spoke (to someone)."""
+
+CO_AUTHOR_PREDICATES: frozenset[str] = frozenset(
+    {*REACTIVE_PREDICATES, "holds", "located_at", "present_at"}
+)
+"""What ``co_author`` narration may establish about another character (#180): its observable
+actions, that it spoke (to someone), what it holds (a transfer) and where it is."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,10 +185,14 @@ class Asserter:
 
     kind: AsserterKind
     character_id: str | None = None
+    reactor: str | None = None
+    """#176: the character a ``reactive`` asserter narrates (FR-MULTI-9)."""
 
     def __post_init__(self) -> None:
         if self.kind in ("character", "reactive", "player", "co_author") and not self.character_id:
             raise ValueError(f"a {self.kind} asserter names its character")
+        if self.kind == "reactive" and not self.reactor:
+            raise ValueError("a reactive asserter names the reactor it narrates")
 
     @property
     def provenance(self) -> RecordProvenance:
@@ -287,9 +333,15 @@ def permission(
             return Permitted(Basis.ARRIVAL) if facts.allow_new_arrivals else Denied(Reason.POLICY)
         if any(e.is_player for e in modeled):
             return Denied(Reason.PLAYER_CHARACTER)
+        if name == "same_as" and len(modeled) == 1 and len(_argument_ids(claim)) == 2:
+            # #171 (FR-PROP-7): a narrated reveal that an unmodeled entity is a modeled
+            # character ("the stranger is Bobby"); two characters as one is M7's merge.
+            return _texture(facts, Basis.IDENTITY)
         if modeled:
             return Denied(Reason.OTHER_CHARACTER_SECRET)
         return _texture(facts, Basis.WORLD)
+    if asserter.kind == "reactive" and asserter.reactor is not None:
+        return _reactive(claim, asserter, subject_owner, facts, modeled, name)
     own = asserter.character_id
     others = [e for e in modeled if e.character_id != own]
     mine = next((e for e in facts.entities.values() if e.character_id == own), None)
@@ -297,6 +349,13 @@ def permission(
         # Player input for the player's own character (FR-AUTH-3: input for a character the
         # platform plays is that character's render, below).
         if others:
+            if (
+                asserter.kind == "co_author"
+                and name in CO_AUTHOR_PREDICATES
+                and not any(e.is_player for e in others)
+            ):
+                # #180: the co-author exception (see the module docstring).
+                return _texture(facts, Basis.CO_AUTHOR)
             return Denied(Reason.PLAYER_AUTHORITY)
     elif any(e.is_player for e in others):
         return Denied(Reason.PLAYER_CHARACTER)
@@ -305,6 +364,30 @@ def permission(
     if arrival and subject_owner.character_id != own and not facts.allow_new_arrivals:
         return Denied(Reason.POLICY)
     return _texture(facts, Basis.OWN if subject_owner.character_id == own else Basis.TEXTURE)
+
+
+def _reactive(
+    claim: Proposition,
+    asserter: Asserter,
+    subject_owner: SubjectOwner,
+    facts: PermissionFacts,
+    modeled: Sequence[EntityInfo],
+    name: str | None,
+) -> Permission:
+    """The reactive exception (see the module docstring)."""
+    reactor = asserter.reactor
+    if any(e.is_player and e.character_id != reactor for e in modeled):
+        return Denied(Reason.PLAYER_CHARACTER)
+    if subject_owner.character_id != reactor:
+        # Not about the reactor: the narrator's own render's rules.
+        return permission(claim, Asserter("character", asserter.character_id), subject_owner, facts)
+    presence = name == "present_at" and facts.placed
+    if name not in REACTIVE_PREDICATES and not presence:
+        return Denied(Reason.OTHER_CHARACTER_SECRET)
+    others = [e for e in modeled if e.character_id not in (reactor, asserter.character_id)]
+    if others and name != "spoke_to":
+        return Denied(Reason.OTHER_CHARACTER_SECRET)
+    return _texture(facts, Basis.REACTIVE)
 
 
 def _texture(facts: PermissionFacts, basis: Basis) -> Permission:
@@ -386,11 +469,18 @@ async def facts_for(
     conn = lookup.conn
     predicate = registry.get(claim.predicate_id)
     ids = _argument_ids(claim)
-    if asserter is not None and asserter.character_id is not None:
-        ids.append(asserter.character_id)
+    own = [
+        c
+        for c in (
+            None if asserter is None else asserter.character_id,
+            None if asserter is None else asserter.reactor,
+        )
+        if c is not None
+    ]
+    ids += own
     known = await entity_infos(conn, story_id, ids)
-    if asserter is not None and asserter.character_id is not None:
-        known.update(await character_infos(conn, story_id, [asserter.character_id], known))
+    if own:
+        known.update(await character_infos(conn, story_id, own, known))
     locks = await lookup.canon_at(
         story_id,
         predicate=claim.predicate_id,
@@ -542,6 +632,7 @@ register_rebase_check(recheck)
 
 
 __all__ = [
+    "CO_AUTHOR_PREDICATES",
     "LOCKED_FIELDS",
     "PLACEMENT_PREDICATES",
     "PRECEDENCE",

@@ -11,12 +11,15 @@ in turn order, as its own paragraph (separated by a blank line):
 - ``do``: ``*text*``;
 - ``narration``: the text as it is;
 - ``think``, ``omniscient`` only: ``[Name thinks] text``;
-- ``latent``, ``omniscient`` only: ``[latent] text``.
+- ``latent``, ``omniscient`` only: ``[latent] text``;
+- a beat the viewpoint perceived only the envelope of (#177, ``fidelity: envelope``): its
+  envelope as an action, ``*Jenni whispers something to Marcus*``.
 
 The ``say``/``do``/narration shape is #150's M4 placeholder, already stored on M4 turns, so a
 recomposed message of an older turn reads like the one stored. For a character viewpoint the
 input is the beats less ``think`` and ``latent`` (``viewpoint_beats``; perception ``none``,
-FR-RESP-12). The player's input is not part of the message.
+FR-RESP-12), and where perception is on what the audience filter returns
+(``core.epistemic.audience``, #177). The player's input is not part of the message.
 """
 
 from __future__ import annotations
@@ -57,6 +60,11 @@ class AssemblyBeat:
     text: str
     character_id: str | None
     beat: int
+    fidelity: str = "content"
+    """``envelope`` (#177): ``text`` is the beat's envelope, assembled as an action."""
+
+
+ENVELOPE = "envelope"
 
 
 def viewpoint_beats[B: Beat](beats: Sequence[B], viewpoint: str) -> list[B]:
@@ -76,6 +84,8 @@ def piece(beat: Beat, names: Mapping[str, str]) -> str:
     """One beat's paragraph of the assembly (see the module docstring)."""
     name = names.get(beat.character_id or "", "")
     text = beat.text.strip()
+    if getattr(beat, "fidelity", None) == ENVELOPE:
+        return f"*{text}*"
     if beat.kind == "say":
         return f'{name}: "{text}"' if name else f'"{text}"'
     if beat.kind == "do":
@@ -102,6 +112,7 @@ def deterministic_assembly(beats: Sequence[Beat], names: Mapping[str, str], view
 
 
 __all__ = [
+    "ENVELOPE",
     "LATENT_LABEL",
     "PRIVATE_KINDS",
     "SEPARATOR",

@@ -25,7 +25,11 @@ the narrator is skipped (``narrator_skipped``).
 only what no reservation holds, never below the minimum, and only while it could start before
 the deadline (``latency_estimate_s``, ``DEFAULT_LATENCY_ESTIMATE_S``). The degradation on
 exhaustion follows NFR-PERF-7's order: ``skip_polish`` → ``repair_deterministic`` (or
-``safe_fallback``) → ``entailment_safe_disposition`` → ``beat_replaced_safe_fallback`` (a render
+``safe_fallback``) → ``testimony_defaulted`` → ``entailment_safe_disposition`` →
+``primaries_reduced`` / ``primaries_deferred`` (#174, #176: the named primaries the cap could
+not plan render as reactive narration, or, a fixed ``primary``, are deferred with
+``primary_deferred``) →
+``beat_replaced_safe_fallback`` (a render
 whose reserved extraction cannot start before the deadline is replaced by the safe fallback
 before anything it said is detected or committed). ``salience_skipped`` and
 ``narrator_skipped`` are reported beside them. A turn's ``degradation`` lists the ladder's steps
@@ -35,12 +39,14 @@ first, in that order (``ladder_rank``), then every other step in the order it wa
 from __future__ import annotations
 
 import time
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.core.epistemic import roles
+from epistrel.core.epistemic.roles import Participation
 from epistrel.core.errors import BudgetBelowSafetyMinimum, InvalidRequest
 from epistrel.core.profiles.capabilities import module_on
 from epistrel.core.profiles.effective import StoryProfile
@@ -48,6 +54,7 @@ from epistrel.core.profiles.reservation import Reservation, reservation
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.orchestrator.budget import (
     COMPOSED,
+    DIRECTOR_ORDER,
     ENTAILMENT,
     EXTRACTION,
     FOLLOW_UP,
@@ -57,6 +64,7 @@ from epistrel.orchestrator.budget import (
     POLISH,
     REPAIR,
     SALIENCE,
+    TESTIMONY,
     TurnBudget,
     lite_default_calls,
 )
@@ -66,7 +74,8 @@ from epistrel.orchestrator.policies.output_gate import output_reservation
 from epistrel.orchestrator.policies.store import guard_context
 
 PRIMARIES = 1
-"""Primary renders a structured turn plans in M4 (one character renders)."""
+"""Primary renders a structured turn plans by default (one character renders; #174: a
+``sequential`` turn plans one per named primary)."""
 DEFAULT_LATENCY_ESTIMATE_S = 2.0
 """How long a reserved or optional call is assumed to take: one that could not start before
 ``deadline - this`` is unaffordable (#156's default, per purpose)."""
@@ -78,8 +87,31 @@ ENTAILMENT_SAFE_DISPOSITION = "entailment_safe_disposition"
 BEAT_REPLACED = "beat_replaced_safe_fallback"
 SALIENCE_SKIPPED = "salience_skipped"
 NARRATOR_SKIPPED = "narrator_skipped"
-LADDER = (SKIP_POLISH, REPAIR_DETERMINISTIC, ENTAILMENT_SAFE_DISPOSITION, BEAT_REPLACED)
-"""NFR-PERF-7's order as M4 has it: what goes first when the budget or the deadline runs
+PRIMARIES_DEFERRED = "primaries_deferred"
+"""NFR-PERF-7 (#174, P-09 M5): the budget could not plan every named primary, so the extra ones
+were deferred (only the first renders); before beat replacement in the ladder."""
+PRIMARIES_REDUCED = "primaries_reduced"
+"""NFR-PERF-7 step 6 (#176): the budget could not plan every named primary, so the extra ones
+(not fixed ``primary``) render as reactive narration instead; before beat replacement."""
+PRIMARY_DEFERRED = "primary_deferred"
+"""NFR-PERF-7 step 6 (#176): a fixed ``primary`` the budget could not plan was deferred to a
+later turn (never narrated reactively): the notice beside ``primaries_deferred``."""
+TESTIMONY_DEFAULTED = "testimony_defaulted"
+"""NFR-PERF-7 step 3 (#162): a salient witness's testimony adjudication the budget (or the
+per-turn cap) could not fit, decided by the rules' default instead."""
+ADJUDICATION_UNAVAILABLE = "adjudication_unavailable"
+"""#162: a testimony adjudication whose model failed; the rules' default decided it."""
+LADDER = (
+    SKIP_POLISH,
+    REPAIR_DETERMINISTIC,
+    TESTIMONY_DEFAULTED,
+    ENTAILMENT_SAFE_DISPOSITION,
+    PRIMARIES_REDUCED,
+    PRIMARIES_DEFERRED,
+    PRIMARY_DEFERRED,
+    BEAT_REPLACED,
+)
+"""NFR-PERF-7's order as M5 has it: what goes first when the budget or the deadline runs
 short (``safe_fallback`` stands in for ``repair_deterministic`` when no deterministic rung
 applied)."""
 
@@ -92,14 +124,26 @@ class TurnPlan:
     beats_planned: int
     reservation: Reservation
     optional: tuple[str, ...]
+    deferred: tuple[str, ...] = ()
+    """#174: the named primaries the budget could not plan (``primaries_deferred``); #176: only
+    those that may not render as reactive narration (a fixed ``primary``)."""
+    reduced: tuple[str, ...] = ()
+    """#176 (NFR-PERF-7 (6)): the named primaries the budget could not plan that render as
+    reactive narration instead (``primaries_reduced``)."""
+    deferred_fixed: tuple[str, ...] = ()
+    """#176: the deferred primaries whose ``primary`` role is fixed (``primary_deferred``)."""
+    director: bool = False
+    """#174: the director's ordering call is pre-allocated (``sequence_order = director``)."""
 
     @property
     def minimum(self) -> int:
-        """The single-primary minimum: ``1 + B + C + G``."""
+        """The minimum: ``P + B + C + G`` (one primary: ``1 + B + C + G``)."""
         return self.primaries + self.reservation.total
 
     def payload(self) -> dict[str, Any]:
         return {
+            **({"deferred": list(self.deferred)} if self.deferred else {}),
+            **({"reduced": list(self.reduced)} if self.reduced else {}),
             "primaries": self.primaries,
             "beats_planned": self.beats_planned,
             "reservation": {
@@ -112,6 +156,22 @@ class TurnPlan:
         }
 
 
+def adjudicates(settings: ProfileSettings) -> bool:
+    """Whether a turn under ``settings`` may adjudicate testimony with a model (#162): per-
+    character partitions with ``character_knowledge.testimony = model`` delivered, and model
+    salience (under ``commitment.salience = rules``, or with commitment off, salience is
+    rule-based and adjudication is never called)."""
+    from epistrel.core.profiles import schema
+
+    return (
+        module_on(settings, "partitions")
+        and schema.level_of(settings, "testimony") == "model"
+        and schema.is_delivered("testimony", "model")
+        and settings.commitment.enabled
+        and settings.commitment.salience != "rules"
+    )
+
+
 def optional_work(settings: ProfileSettings) -> tuple[str, ...]:
     """The optional work ``settings`` turns on, most important first."""
     found: list[str] = []
@@ -122,6 +182,8 @@ def optional_work(settings: ProfileSettings) -> tuple[str, ...]:
         found.append(ENTAILMENT)
     if commitment:
         found.append(FOLLOW_UP)
+    if adjudicates(settings):
+        found.append(TESTIMONY)
     if module_on(settings, "repair"):
         found.append(REPAIR)
     if settings.repair.polish.enabled:
@@ -135,24 +197,44 @@ def plan_turn(
     *,
     guardrail_input: int,
     guardrail_output: int,
+    primaries: int = PRIMARIES,
+    director: bool = False,
 ) -> TurnPlan:
-    """The turn's plan under ``effective`` (the configuration captured at its start); the
-    request names no more than one primary in M4 (``resolve_structured_cast``)."""
-    del request  # M4 plans one primary whatever the request names (#150's cast check)
+    """The turn's plan under ``effective`` (the configuration captured at its start):
+    ``primaries`` renders (#174: one per primary of a ``sequential`` turn; the cast check,
+    ``resolve_structured_cast``, decides how many), each with its extraction (B) and its first
+    output check (``guardrail_output`` per render); ``director``: the ordering call is
+    pre-allocated as optional work."""
+    del request
     settings = effective.settings
+    count = max(1, primaries)
+    optional = optional_work(settings)
+    if director and count > 1:
+        optional = tuple(k for k in OPTIONAL_PRIORITY if k in (*optional, DIRECTOR_ORDER))
     return TurnPlan(
-        primaries=PRIMARIES,
+        primaries=count,
         beats_planned=settings.render.max_beats,
         reservation=reservation(
-            settings, guardrail_input=guardrail_input, guardrail_output=guardrail_output
+            settings,
+            guardrail_input=guardrail_input,
+            guardrail_output=guardrail_output * count,
+            renders=count,
         ),
-        optional=optional_work(settings),
+        optional=optional,
+        director=director and count > 1,
     )
 
 
 def default_calls(plan: TurnPlan) -> int:
     """NFR-PERF-6's default cap for the plan: ``4 + 5 per primary + G`` (#69's formula)."""
-    return lite_default_calls(plan.reservation.guardrail)
+    return lite_default_calls(plan.reservation.guardrail, plan.primaries)
+
+
+def held_after_input(plan: TurnPlan | None, budget: TurnBudget) -> int:
+    """What stays held once the input gate has spent its reservation: every planned render and
+    its first output check (one primary: ``1 + G_out``)."""
+    primaries = PRIMARIES if plan is None else plan.primaries
+    return primaries + budget.reserved.get(GUARDRAIL_OUTPUT, 0)
 
 
 def plan_budget(
@@ -212,6 +294,8 @@ def plan_budget(
     budget.reserve(COMPOSED, found.composed)
     if SALIENCE in plan.optional:
         budget.pending[SALIENCE] = plan.primaries
+    if plan.director:
+        budget.pending[DIRECTOR_ORDER] = 1
     return budget
 
 
@@ -226,26 +310,54 @@ async def plan_structured(
     turn_deadline: float,
     started: float,
     override: Any = None,
+    director: bool = False,
+    stored: Mapping[str, Participation] | None = None,
 ) -> tuple[TurnPlan, TurnBudget]:
     """The turn's plan and budget: G is one call per model-assisted input policy for the
-    actor's input plus one per model-assisted output policy for the first output checkpoint
-    (#69's count). Raises 422 ``budget_below_safety_minimum`` before any model call."""
+    actor's input plus one per model-assisted output policy for each render's first output
+    checkpoint (#69's count). Raises 422 ``budget_below_safety_minimum`` before any model call.
+    #174 (NFR-PERF-7, P-09 M5): a turn naming several primaries whose cap cannot cover them all
+    plans as many as fit, in order (at least one), and defers the rest (``plan.deferred``).
+    #176 (NFR-PERF-7 (6)): of the rest, those whose stored role (``stored``) is not a fixed
+    ``primary`` render as reactive narration instead (``plan.reduced``), and a fixed one is
+    deferred with a notice (``plan.deferred_fixed``)."""
     context = await guard_context(db, story_id)
-    plan = plan_turn(
-        request,
-        configuration,
-        guardrail_input=len(model_assisted(input_policies(context, actor=cast.actor.id))),
-        guardrail_output=output_reservation(context, cast.render_ids),
-    )
-    budget = plan_budget(
-        plan,
-        story_max_calls=story_max_calls,
-        turn_deadline=turn_deadline,
-        override_max_calls=None if override is None else override.max_calls,
-        override_deadline_s=None if override is None else override.deadline_s,
-        started=started,
-    )
-    return plan, budget
+    guardrail_input = len(model_assisted(input_policies(context, actor=cast.actor.id)))
+    guardrail_output = output_reservation(context, cast.render_ids)
+    ids = list(cast.render_ids)
+    count = max(1, len(ids))
+    while True:
+        plan = plan_turn(
+            request,
+            configuration,
+            guardrail_input=guardrail_input,
+            guardrail_output=guardrail_output,
+            primaries=count,
+            director=director,
+        )
+        try:
+            budget = plan_budget(
+                plan,
+                story_max_calls=story_max_calls,
+                turn_deadline=turn_deadline,
+                override_max_calls=None if override is None else override.max_calls,
+                override_deadline_s=None if override is None else override.deadline_s,
+                started=started,
+            )
+        except BudgetBelowSafetyMinimum:
+            if count <= 1:
+                raise
+            count -= 1
+            continue
+        if count < len(ids):
+            cut = roles.reduce(ids, count, stored or {})
+            plan = replace(
+                plan,
+                deferred=tuple(c for c, _ in cut.deferred),
+                reduced=cut.reduced,
+                deferred_fixed=tuple(c for c, fixed in cut.deferred if fixed),
+            )
+        return plan, budget
 
 
 def reserve_narrator(budget: TurnBudget, plan: TurnPlan) -> bool:
@@ -281,8 +393,12 @@ RANK = {
     SKIP_POLISH: 0,
     REPAIR_DETERMINISTIC: 1,
     SAFE_FALLBACK: 1,
-    ENTAILMENT_SAFE_DISPOSITION: 2,
-    BEAT_REPLACED: 3,
+    TESTIMONY_DEFAULTED: 2,
+    ENTAILMENT_SAFE_DISPOSITION: 3,
+    PRIMARIES_REDUCED: 4,
+    PRIMARIES_DEFERRED: 4,
+    PRIMARY_DEFERRED: 4,
+    BEAT_REPLACED: 5,
 }
 
 
@@ -297,20 +413,27 @@ def ladder_steps(steps: Sequence[str]) -> list[str]:
 
 
 __all__ = [
+    "ADJUDICATION_UNAVAILABLE",
     "BEAT_REPLACED",
     "DEFAULT_LATENCY_ESTIMATE_S",
     "ENTAILMENT_SAFE_DISPOSITION",
     "LADDER",
     "NARRATOR_SKIPPED",
     "PRIMARIES",
+    "PRIMARIES_DEFERRED",
+    "PRIMARIES_REDUCED",
+    "PRIMARY_DEFERRED",
     "REPAIR",
     "REPAIR_DETERMINISTIC",
     "SAFE_FALLBACK",
     "SALIENCE_SKIPPED",
     "SKIP_POLISH",
+    "TESTIMONY_DEFAULTED",
     "TurnPlan",
+    "adjudicates",
     "budget_report",
     "default_calls",
+    "held_after_input",
     "ladder_rank",
     "ladder_steps",
     "optional_work",

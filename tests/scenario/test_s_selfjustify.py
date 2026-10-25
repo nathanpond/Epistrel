@@ -111,10 +111,11 @@ async def _speech(engine: AsyncEngine, story_id: str) -> dict[str, Any]:
     return found
 
 
-async def _misinform(engine: AsyncEngine, edu: Education, *, eager: bool) -> str:
+async def _misinform(engine: AsyncEngine, edu: Education, *, eager: bool, ahead: int = 0) -> str:
     """A turn in which Cal tells Bobby he got his degree at Florida: Bobby hears it as a salient
     witness (``eager``: his ``said`` row, the default having rejected it against canon he may
-    read) or is exposed to it (#164's lazy path). Answers the say event's id."""
+    read) or is exposed to it (#164's lazy path). ``ahead``: the row positioned that many turns
+    after the say's own (#555: an antecedent after the claim). Answers the say event's id."""
     told = _degree_of(edu, edu.florida)
     found: dict[str, Any] = {}
     settings = await parts.partitioned(engine, edu.story_id)
@@ -138,7 +139,9 @@ async def _misinform(engine: AsyncEngine, edu: Education, *, eager: bool) -> str
                 )
             )
             found["event"] = event_id
-            at = testimony.witness_position(op.narrative_turn or 0, op.turn_variant or 0, 2)
+            at = testimony.witness_position(
+                (op.narrative_turn or 0) + ahead, op.turn_variant or 0, 2
+            )
             if eager:
                 await transitions.transition(
                     conn,
@@ -322,3 +325,70 @@ async def test_s_selfjustify__misinformed(
                 async with engine.connect() as conn:
                     held = await partitions.partition(conn, edu.story_id, edu.bobby)
                 assert any(b.id == belief.id for b in held), case
+
+
+FORGED_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+"""A well-formed id no record of any story has (#555)."""
+
+
+@pytest.mark.part("M5", "FR-VERIFY-10; FR-EPI-7,13; FR-TURN-8")
+async def test_s_selfjustify__forged_cite(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """#555 (#166 AC3: a new false belief only through an antecedent; the cite is never
+    self-attestation). Bobby says "I got my degree at Florida" with a ``think`` whose ``cites``
+    names a real but unrelated event of the story, or a made-up id, both with his OSU belief
+    seeded and with none: each is a hallucination, repaired, licensed by nothing, and the belief
+    set does not change. And an antecedent positioned after the claim (Cal's misinformation, his
+    ``said`` row a turn later than the say) licenses nothing either, cited or not."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+
+        async def unlicensed(edu: Education, cites: list[str] | None, case: Any) -> None:
+            before = await _counts(engine, edu.story_id)
+            stub.reset()
+            played = await _play(
+                client,
+                edu,
+                beat("think", REMEMBER, **({"cites": cites} if cites is not None else {})),
+                beat("say", FLORIDA_LINE, intent="sincere", propositions=[_degree("Florida")]),
+                stub=stub,
+            )
+            found = await _speech(engine, edu.story_id)
+            assert (found["classification"], found["belief_relation"]) == (
+                "hallucination_repaired",
+                "inconsistent",
+            ), case
+            assert found["licence"] is None, case
+            (repaired,) = (await turn_report(engine, edu.story_id))["repairs"]
+            assert repaired["accepted"], case
+            assert "Florida" not in played["message"]["text"], case
+            assert await _counts(engine, edu.story_id) == before, case
+            assert await _florida_beliefs(engine, edu) == [], case
+
+        for seeded in (True, False):
+            edu = await _story(client, engine)
+            if seeded:
+                await parts.believe(
+                    engine,
+                    edu.story_id,
+                    edu.bobby,
+                    _degree_of(edu, edu.osu),
+                    kind=OperationKind.CONTROL,
+                )
+            unrelated = await scalar(
+                engine,
+                "SELECT id FROM events WHERE story_id = :s ORDER BY seq DESC LIMIT 1",
+                s=edu.story_id,
+            )
+            assert unrelated is not None
+            await unlicensed(edu, [str(unrelated)], ("unrelated", seeded))
+            await unlicensed(edu, [FORGED_ID], ("made_up", seeded))
+
+        # The misinformation Bobby holds, positioned after the claim: no licence, cited or not.
+        for cited in (False, True):
+            edu = await _story(client, engine)
+            said = await _misinform(engine, edu, eager=True, ahead=2)
+            await unlicensed(edu, [said] if cited else None, ("after", cited))

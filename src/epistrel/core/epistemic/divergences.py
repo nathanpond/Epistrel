@@ -3,12 +3,13 @@
 
 ``record_divergences`` writes one ``divergences`` row per lie claim in the turn's commit
 transaction (a commit step): the utterance, the speaker, the asserted proposition, the contrary
-belief and its proposition (``None`` for a lie about something no record settles), and the say
-beat's position. The erasure guard runs over the speaker first, and each row is indexed with its
-declared subjects (the speaker and both propositions' subject and object characters). A row is a
-derived record of the turn (it follows truncation, swap, regenerate and fork) and persists: it is
-queryable for as long as the turn is in the timeline (``divergences_of``). #169's reveal sets
-``revealed_by_event_id``.
+belief and its proposition (``None`` for a lie about something no record settles), the say
+beat's position, and, for a lie that attributes a belief to someone, the attribution's objective
+relation (a label, FR-BELIEF-15; #545). The erasure guard runs over the speaker first, and
+each row is indexed with its declared subjects (the speaker and both propositions' subject and
+object characters). A row is a derived record of the turn (it follows truncation, swap,
+regenerate and fork) and persists: it is queryable for as long as the turn is in the timeline
+(``divergences_of``). #169's reveal sets ``revealed_by_event_id``.
 
 Log lines carry identifiers and counts only (invariant 3).
 """
@@ -49,6 +50,9 @@ class Divergence:
     believed_belief_id: str | None = None
     believed_proposition_id: str | None = None
     source_event_id: str | None = None
+    attribution_objective_relation: str | None = None
+    """#545: for an attribution lie, whether the attributed holder actually believes it (a
+    label, FR-BELIEF-15); ``None`` for any other lie."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +68,7 @@ class DivergenceRow:
     position: Position
     revealed_by_event_id: str | None
     operation_id: str
+    attribution_objective_relation: str | None = None
 
 
 async def _characters_of(
@@ -124,6 +129,7 @@ async def record_divergences(
                 "asserted_proposition_id": item.asserted_proposition_id,
                 "believed_proposition_id": item.believed_proposition_id,
                 "believed_belief_id": item.believed_belief_id,
+                "attribution_objective_relation": item.attribution_objective_relation,
                 **item.position.columns("position"),
                 "operation_id": op.operation_id,
                 "source_event_ids": [] if item.source_event_id is None else [item.source_event_id],
@@ -177,6 +183,7 @@ async def divergences_of(
             if r.revealed_by_event_id is None
             else str(r.revealed_by_event_id),
             operation_id=str(r.operation_id),
+            attribution_objective_relation=r.attribution_objective_relation,
         )
         for r in found
     ]

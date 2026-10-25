@@ -1727,22 +1727,20 @@ class Verifier:
             cited if on and found.holder_id is not None else None,
             objective,
         )
-        settles = {"true": VerdictKind.SUPPORTED, "false": VerdictKind.CONTRADICTED}
+        # #545 (FR-BELIEF-15, NFR-PRIV-1): the classification, the licence and so the repair
+        # read the speaker's own nested beliefs only. The objective relation (what B actually
+        # holds) is a label on the utterance, the verdict and a divergence, never an input here:
+        # fed in as ``hidden`` it made the speaker's line survive or not by B's private state.
         inputs = speech_acts.Inputs(
             intent=declared,
             canon=VerdictKind.NOVEL,
             belief=kind,
             contrary=bool(contrary),
-            # What the attributed holder actually holds is beyond the speaker's view.
-            hidden=settles.get(objective or "") if on else None,
         )
         licence = None
         if on and speech_acts.needs_licence(inputs):
             licence = await beliefs.attributed_licence(claim, believer, found, at)
         decision = speech_acts.classify(inputs, licensed=licence is not None)
-        if decision.classification == speech_acts.SINCERE_ERROR:
-            # The attribution's truth is a label, never its classification (FR-BELIEF-15).
-            decision = dataclasses.replace(decision, classification=speech_acts.SINCERE)
         decision = dataclasses.replace(decision, write=None)
         speech = SpeechAct(
             believer,

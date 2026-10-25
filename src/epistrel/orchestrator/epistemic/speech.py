@@ -185,6 +185,12 @@ async def speech_committed(
                             else (speech.known[0] if speech.known else None)
                         ),
                         source_event_id=say.event_id,
+                        # #545: an attribution lie carries its objective relation as a label.
+                        attribution_objective_relation=(
+                            None
+                            if c.result is None or c.result.attribution is None
+                            else c.result.attribution.objective
+                        ),
                     )
                 )
     found.capped = budget.capped

@@ -319,3 +319,112 @@ async def test_s_nested_belief(
         assert utterance.attribution_objective_relation == "true"
         kinds = {r.kind for r in await ns.nested_rows(engine, story, jenni)}
         assert {"speech_act", "nested", "attributed"} <= kinds
+
+
+@pytest.mark.part("M5", "FR-BELIEF-15; FR-TURN-6; NFR-PRIV-1")
+async def test_s_nested_belief__no_nested_row(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """#545: Jenni holds no nested belief about Bobby and says "Bobby thinks it was the
+    delivery guy", sincerely and then as a lie. What Bobby actually holds (the driver, George,
+    or nothing) changes only the objective label (on the verdict, the utterance and the lie's
+    divergence): her classification, belief relation, repair and kept line are identical, so
+    whether her line survives never reveals Bobby's mind."""
+    outcomes: list[tuple[Any, ...]] = []
+    labels: list[tuple[str, ...]] = []
+    for bobby_believes in ("driver", "george", None):
+        async with respond_client(stub_settings, engine) as (client, epistrel):
+            stub = epistrel.models.stub
+            w = await ns.knock_world(client, engine, "Cal", "Bobby", "Jenni")
+            story = w.story_id
+            cal, bobby, jenni = w.ids["Cal"], w.ids["Bobby"], w.ids["Jenni"]
+            await ns.enable_nested(engine, story)
+            await c.commit(
+                engine,
+                story,
+                w.knocked(w.george),
+                kind=OperationKind.CONTROL,
+                provenance="author",
+                visibility=Visibility(scope="engine"),
+            )
+            if bobby_believes is not None:
+                await parts.transit(
+                    engine,
+                    story,
+                    bobby,
+                    w.knocked(w.driver if bobby_believes == "driver" else w.george),
+                    cause=transitions.Kind.TESTIMONY,
+                    kind=OperationKind.CONTROL,
+                    source=cal,
+                    outcome="accept",
+                )
+            assert await ns.nested_rows(engine, story, jenni) == []
+            outcome: list[tuple[Any, ...]] = []
+            label: list[str] = []
+            for intent in ("sincere", "deceptive"):
+                stub.reset()
+                played = await _play(
+                    client,
+                    stub,
+                    w,
+                    "Jenni",
+                    beat(
+                        "say",
+                        THINKS_DRIVER,
+                        intent=intent,
+                        propositions=[
+                            _knocked("the delivery guy", attribution={"holder": "Bobby"})
+                        ],
+                    ),
+                )
+                report = await turn_report(engine, story)
+                (verdict,) = _speech(report)
+                utterance = await _utterance(engine, story, jenni)
+                outcome.append(
+                    (
+                        intent,
+                        verdict["speech"]["classification"],
+                        verdict["speech"]["belief_relation"],
+                        verdict["attribution"]["checked"],
+                        verdict["attribution"]["belief_ids"],
+                        "repairs" in report,
+                        "delivery" in played["message"]["text"],
+                        utterance.classification,
+                        utterance.belief_relation,
+                    )
+                )
+                assert (
+                    utterance.attribution_objective_relation
+                    == verdict["attribution"]["objective_relation"]
+                )
+                label.append(verdict["attribution"]["objective_relation"])
+                # The label never reaches Jenni's context.
+                prompts = [text_of(call) for call in renders_of(stub)]
+                assert prompts
+                for prompt in prompts:
+                    assert "objective" not in prompt.casefold()
+            (divergence,) = await rows(
+                engine,
+                "SELECT attribution_objective_relation FROM divergences "
+                "WHERE story_id = :s AND speaker_character_id = :c AND membership = 'active'",
+                s=story,
+                c=jenni,
+            )
+            label.append(divergence.attribution_objective_relation)
+            outcomes.append(tuple(outcome))
+            labels.append(tuple(label))
+    # Identical whatever Bobby holds: a sincere guess she cannot check stands, a lie about it is
+    # a lie; neither is repaired and the line is kept.
+    expected: tuple[tuple[Any, ...], ...] = (
+        ("sincere", "sincere", "unknown", True, [], False, True, "sincere", "unknown"),
+        ("deceptive", "lie", "unknown", True, [], False, True, "lie", "unknown"),
+    )
+    assert outcomes == [expected, expected, expected]
+    # Only the label differs: Bobby believes the driver (true), George (false), nothing.
+    assert labels == [
+        ("true", "true", "true"),
+        ("false", "false", "false"),
+        ("unresolved", "unresolved", "unresolved"),
+    ]

@@ -118,6 +118,11 @@ class Suite:
     modules), named by ``profile_label``; its result reports that configuration's fingerprint.
     ``None``: the seeded profile as it is."""
     profile_label: ClassVar[str | None] = None
+    model_error_metric: ClassVar[str | None] = None
+    """The suite's model-error row (#179; an informational metric of ``metrics``): a case a
+    ``ModelError`` ended observes it as bad and nothing else, so an error is never scored as a
+    disclosure, and every completed case observes it as good (the runner fills it in). ``None``
+    (M4's suites): a model error is bad on every metric (#134)."""
     judge_purposes: ClassVar[tuple[str, ...]] = ()
     """The purposes the suite's harness-side judge calls use (#475): E-03's ``entailment``,
     E-12/E-13's ``quality_judge``. A suite that names any is a **judged suite**. Its judge calls

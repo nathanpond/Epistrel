@@ -62,10 +62,18 @@ seeded profile's (``Suite.dials``, a settings merge patch over it; ``Suite.profi
 it) reports its own fingerprint of that configuration in its result (``SuiteResult.fingerprint``
 and ``profile``).
 
-**Failures.** A ``ModelError`` during a case is a failed case — every metric of the suite
-observes it as bad — never an exclusion. Any other exception, or a malformed labeled set, is a
-**harness error**: the suite's verdict is ``error``. Each failed case's inputs and output go to
-``failures`` (JSON lines, never committed) when a path is given.
+**Failures.** A ``ModelError`` during a case is a failed case, never a silent exclusion. A
+suite with a model-error row (``Suite.model_error_metric``: NFR-QUAL-1's zero-leak suites, #179)
+reports it there, and the case observes nothing else: an error is not a disclosure, a missed
+control or a repair, and the suite's floors are judged on its completed cases (the observed-zero
+rule's 300 cases are completed ones: a seed short of them because of model errors is
+``insufficient_evidence``, ``gate.judge``'s ``lost``). The row is report-only (the owner's
+decision of 2026-10-24: model-robustness floors belong to M9, ADR-164). Every other suite (M4's)
+observes the error as bad on every metric (#134). Either way the failure record's ``detail``
+carries the error's code and its content-free details (``ERROR_DETAILS``: the purpose, the
+reason, the attempts and the structural error codes). Any other exception, or a malformed
+labeled set, is a **harness error**: the suite's verdict is ``error``. Each failed case's inputs
+and output go to ``failures`` (JSON lines, never committed) when a path is given.
 """
 
 from __future__ import annotations
@@ -88,7 +96,7 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -700,10 +708,7 @@ async def _play(suite: Suite, job: SuiteRun, case: CaseModel, seed: int) -> _Pla
         with eval_scope(case.id, seed):
             outcome = await suite.evaluate(ctx, case)
     except ModelError as exc:
-        # A model error is a failed case, never an exclusion (#134).
-        outcome = Outcome(
-            {metric.id: False for metric in suite.metrics}, detail={"model_error": exc.code}
-        )
+        outcome = model_error_outcome(suite, exc)
     except Exception as exc:
         error = f"case {case.id} seed {seed}: {type(exc).__name__}: {exc}"
     finally:
@@ -712,7 +717,33 @@ async def _play(suite: Suite, job: SuiteRun, case: CaseModel, seed: int) -> _Pla
         except Exception as exc:
             error = error or f"case {case.id} seed {seed}: cleanup failed: {type(exc).__name__}"
     latency = round((time.perf_counter() - started) * 1000)
+    errored = suite.model_error_metric
+    if outcome is not None and errored is not None and errored not in outcome.observations:
+        outcome = replace(outcome, observations={**outcome.observations, errored: True})
     return _Played(case, seed, outcome, error, latency)
+
+
+ERROR_DETAILS = ("purpose", "reason", "provider_status", "attempts", "structural_errors")
+"""The keys of a ``ModelError``'s details a failure record keeps: what failed and why, as codes
+and counts, never the model's answer or the prompt (invariant 3)."""
+
+
+def model_error_outcome(suite: Suite, exc: ModelError) -> Outcome:
+    """A case that ended in ``exc`` (module docstring): with the suite's model-error row, that
+    row observes it as bad and nothing else is observed; without one, every metric is bad
+    (#134). ``detail`` names the error: its code, class and ``ERROR_DETAILS``."""
+    errored = suite.model_error_metric
+    observations: dict[str, bool | None]
+    if errored is None:
+        observations = {metric.id: False for metric in suite.metrics}
+    else:
+        observations = {metric.id: None for metric in suite.metrics}
+        observations[errored] = False
+    details = {k: exc.details[k] for k in ERROR_DETAILS if k in exc.details}
+    return Outcome(
+        observations,
+        detail={"model_error": exc.code, "error_type": type(exc).__name__, **details},
+    )
 
 
 def _record_failure(job: SuiteRun, suite: Suite, played: _Played) -> None:
@@ -722,7 +753,9 @@ def _record_failure(job: SuiteRun, suite: Suite, played: _Played) -> None:
     # first by this layer" is not a failure); a suite with no floor counts every metric.
     floored = {m.id for m in suite.metrics if m.rule is not Rule.informational}
     watched = floored or {m.id for m in suite.metrics}
-    if all(played.outcome.observations.get(m) is not False for m in watched):
+    if "model_error" not in played.outcome.detail and all(
+        played.outcome.observations.get(m) is not False for m in watched
+    ):
         return
     job.failures.parent.mkdir(parents=True, exist_ok=True)
     line = {
@@ -747,9 +780,11 @@ async def _play_seeds(
     latencies: list[int],
     gate_slots: asyncio.Semaphore,
     every: list[Outcome],
+    lost: dict[int, int],
 ) -> None:
     """Every seed's cases, in its shuffled order, tallied into ``tallies`` (and every outcome
-    collected into ``every``, for ``Suite.summarize``)."""
+    collected into ``every``, for ``Suite.summarize``; per seed, the cases a model error ended
+    counted in ``lost``)."""
 
     async def bounded(case: CaseModel, seed: int) -> _Played:
         async with gate_slots:
@@ -767,6 +802,8 @@ async def _play_seeds(
                 errors.append(played.error)
             if played.outcome is None:
                 continue
+            if "model_error" in played.outcome.detail:
+                lost[seed] = lost.get(seed, 0) + 1
             outcomes.append(played.outcome)
             every.append(played.outcome)
             for metric in suite.metrics:
@@ -811,12 +848,13 @@ async def run_suite(suite: Suite, job: SuiteRun) -> SuiteResult:
     latencies: list[int] = []
     gate_slots = asyncio.Semaphore(max(1, job.concurrency))
     every: list[Outcome] = []
+    lost: dict[int, int] = {}
     try:
         await suite.setup(job.engine, _ctx())
     except Exception as exc:
         return SuiteResult.errored(suite, [f"setup: {type(exc).__name__}: {exc}"], list(job.seeds))
     try:
-        await _play_seeds(suite, job, cases, tallies, errors, latencies, gate_slots, every)
+        await _play_seeds(suite, job, cases, tallies, errors, latencies, gate_slots, every, lost)
     finally:
         try:
             await suite.teardown(job.engine, _ctx())
@@ -830,8 +868,11 @@ async def run_suite(suite: Suite, job: SuiteRun) -> SuiteResult:
     calibration = calibration_ref(suite, job)
     metrics = []
     for metric in suite.metrics:
-        seed_tallies = [tally for _, tally in sorted(tallies[metric.id].items())]
-        result = MetricResult.of(metric, judge(metric, seed_tallies))
+        ordered = sorted(tallies[metric.id].items())
+        seed_tallies = [tally for _, tally in ordered]
+        # A suite with a model-error row judges its floors on the completed cases (#179).
+        missed = [lost.get(seed, 0) for seed, _ in ordered] if suite.model_error_metric else []
+        result = MetricResult.of(metric, judge(metric, seed_tallies, lost=missed))
         added = dict(summary.metrics.get(metric.id, {}))
         if metric.id in suite.judge_metrics:
             added["judge_based"] = True

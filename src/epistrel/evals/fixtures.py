@@ -20,6 +20,11 @@ scratch story of the fixture's cast on the seeded ``Structured`` profile's lates
 M5 module on: per-character partitions, testimony by the model, perception ``full``; #181),
 everyone placed in the fixture's room, then the case's private facts. ``player_view`` is
 ``character`` (the default; FR-RESP-13), so the output is filtered for the player's character.
+The characters a case names ``silent`` (the fact's holder or the thought's thinker, wherever
+another character renders) take a fixed ``silent`` participation role (#176): the engine never
+narrates their reaction or escalates them to a render of their own, so a holder can never
+answer with its own secret and a case measures knowledge crossing between characters only (the
+owner's decision of 2026-10-24). A named render is still the holder's own (``primary``).
 
 **The oracle** never asks the pipeline's own detectors whether they let something through: it
 applies the case's own forbidden forms to the player-facing output (``player_text``: the
@@ -40,7 +45,7 @@ from epistrel.core.mutation import FactRequest
 from epistrel.core.propositions.model import Interval, Proposition
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME
 from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX
-from epistrel.core.stories import CharacterSpec, StorySpec
+from epistrel.core.stories import CharacterSpec, ParticipationSpec, StorySpec
 from epistrel.core.verify.protected import (
     PrivateRecord,
     ProtectedIndex,
@@ -878,10 +883,13 @@ async def build_scene(
     facts: Sequence[PrivateFact] = (),
     *,
     present: Sequence[str] | None = None,
+    silent: Sequence[str] = (),
 ) -> Scene:
     """The fixture's scene with ``facts`` established (see the module docstring): the whole
     cast is in the story, and the player with ``present`` (every character for ``None``) is in
-    the fixture's room; the others are elsewhere (unplaced: perception routes them nothing)."""
+    the fixture's room; the others are elsewhere (unplaced: perception routes them nothing).
+    The ``silent`` characters' participation role is a fixed ``silent``."""
+    quiet = ParticipationSpec(role="silent", fixed=True)
     cast = [
         CharacterSpec(
             name=fixture.player.name,
@@ -890,7 +898,12 @@ async def build_scene(
             is_player=True,
         ),
         *(
-            CharacterSpec(name=p.name, definition=p.definition, true_age=p.age)
+            CharacterSpec(
+                name=p.name,
+                definition=p.definition,
+                true_age=p.age,
+                participation=quiet if p.name in silent else None,
+            )
             for p in fixture.cast
         ),
     ]

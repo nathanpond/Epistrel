@@ -3,9 +3,10 @@
 A metric is measured once per seed over the same labeled cases. Each case observes it as
 **good** or **bad** (``True``/``False``), or not at all (``None``: the case is outside the
 metric's denominator, as a supported claim is for a false-contradiction rate). A model error
-is a bad observation, never an exclusion. Per seed the metric's value is the share of good
-observations for an ``at_least`` floor (recall ≥ 95 %) and the share of bad ones for an
-``at_most`` floor (false support ≤ 1 %); values are fractions 0-1.
+is a bad observation, never an exclusion; in a suite with a model-error row it is a bad
+observation of that row alone (#179, ``runner``'s module docstring). Per seed the metric's
+value is the share of good observations for an ``at_least`` floor (recall ≥ 95 %) and the
+share of bad ones for an ``at_most`` floor (false support ≤ 1 %); values are fractions 0-1.
 
 - **Rate rule** (``rate``): the mean across seeds clears the floor by more than one sample
   standard deviation (n - 1): ``mean - sd > floor`` for ``at_least``, ``mean + sd < floor`` for
@@ -13,7 +14,9 @@ observations for an ``at_least`` floor (recall ≥ 95 %) and the share of bad on
 - **Observed-zero rule** (``zero``): no bad observation on any seed, on at least
   ``ZERO_MIN_CASES`` (300) cases per seed. The verdict reports the one-sided 95 % upper bound
   on the true rate, ``1 - 0.05^(1/n)`` (≈ 3/n): evidence of a low rate, never a claim of zero.
-  One violation on any seed fails, and so does a clean run on fewer than 300 cases.
+  One violation on any seed fails, and so does a clean run on fewer than 300 cases, unless the
+  seed is short of them only because model errors ended cases (``judge``'s ``lost``, a suite
+  with a model-error row, #179): that is ``insufficient_evidence``, never a pass.
 - **Relative rule** (``relative``, NFR-QUAL-14's engine-intervention floor; #158): an aggregate
   target on the ``at_most`` side, judged only on at least ``RELATIVE_MIN_PAIRS`` (300)
   observations per seed (E-12's non-tied pairs of one intervention type); it passes when the mean
@@ -161,8 +164,11 @@ def _value(metric: Metric, tally: SeedTally) -> float:
     return count / tally.n
 
 
-def judge(metric: Metric, tallies: Sequence[SeedTally]) -> Judgement:
-    """``metric``'s verdict over ``tallies`` (one per seed) under its rule (module docstring)."""
+def judge(metric: Metric, tallies: Sequence[SeedTally], *, lost: Sequence[int] = ()) -> Judgement:
+    """``metric``'s verdict over ``tallies`` (one per seed) under its rule (module docstring).
+    ``lost``: per seed (aligned with ``tallies``), the cases a model error ended, which observe
+    nothing; a clean zero-tolerance run whose seeds reach ``ZERO_MIN_CASES`` only with them is
+    ``insufficient_evidence``."""
     seeds = len(tallies)
     sample = min((t.n for t in tallies), default=0)
     values = tuple(_value(metric, t) for t in tallies if t.n)
@@ -174,6 +180,11 @@ def judge(metric: Metric, tallies: Sequence[SeedTally]) -> Judgement:
         violations = sum(t.bad for t in tallies)
         bound = upper_bound_95(sample) if violations == 0 else None
         verdict = _zero_verdict(violations, sample, seeds)
+        short = any(lost) and all(
+            t.n + n >= ZERO_MIN_CASES for t, n in zip(tallies, lost, strict=True)
+        )
+        if verdict is Verdict.failed and not violations and short:
+            verdict = Verdict.insufficient_evidence
     elif metric.rule is Rule.informational or metric.floor is None:
         verdict = Verdict.report_only
     elif sample == 0 or mean is None or stdev is None:

@@ -110,6 +110,22 @@ def test_one_seed_or_no_observation_is_insufficient_evidence() -> None:
     assert judge(info, [SeedTally(1, 1, 1), SeedTally(2, 2, 0)]).verdict is Verdict.report_only
 
 
+def test_a_zero_run_short_only_by_model_errors_is_insufficient_evidence() -> None:
+    """#179: a zero-tolerance metric is judged on completed cases. A clean seed below 300 of
+    them because model errors ended cases (``lost``) is insufficient evidence, never a pass.
+
+    Complement asserted: the same seed short without errors, or short even with them, fails
+    (a short set is not evidence), and a violation fails whatever was lost."""
+    zero = Metric("x.zero", Rule.zero, 0.0, Direction.at_most)
+    two = [SeedTally(1, 299, 0), SeedTally(2, 300, 0)]
+    assert judge(zero, two, lost=[1, 0]).verdict is Verdict.insufficient_evidence
+    assert judge(zero, two).verdict is Verdict.failed
+    assert judge(zero, two, lost=[0, 0]).verdict is Verdict.failed
+    assert judge(zero, [SeedTally(1, 10, 0)], lost=[5]).verdict is Verdict.failed
+    assert judge(zero, [SeedTally(1, 299, 1)], lost=[1]).verdict is Verdict.failed
+    assert judge(zero, [SeedTally(1, 0, 0)], lost=[300]).verdict is Verdict.insufficient_evidence
+
+
 def test_upper_bound_is_the_exact_one_sided_binomial_bound() -> None:
     assert upper_bound_95(300) == pytest.approx(1 - 0.05 ** (1 / 300))
     assert upper_bound_95(300) == pytest.approx(0.01, abs=0.0005)

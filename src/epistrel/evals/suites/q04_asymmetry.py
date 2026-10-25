@@ -16,6 +16,14 @@ the pipeline's own detectors). A behavioural backstop to PRIV (#170), never a pr
   with the fact) are detected, so a clean run is visibly not a blind oracle.
 - ``q04.render_repaired`` (report-only): the turn repaired a render before the output (a leak
   the pipeline caught is not a violation; it is reported here).
+- ``q04.model_error`` (report-only; ``Suite.model_error_metric``): the case ended in a model
+  error. It observes nothing else (an error is not a disclosure); the zero rule is judged on the
+  completed cases, and a seed short of 300 of them is insufficient evidence, never a pass.
+
+The fact's holder, present in a withheld case's scene, is a fixed ``silent`` participant
+(``fixtures.build_scene``): it is never narrated reacting or escalated to its own render, so
+the case measures one character's knowledge reaching another, never a holder voicing its own
+secret (the owner's decision of 2026-10-24).
 
 The stub answers each case with its authored clean render (``stub_answer``); E-08's injected
 violation (``leak_answer``) is the private fact paraphrased so that no protected entity name
@@ -47,6 +55,7 @@ if TYPE_CHECKING:
 ASYMMETRY = "nfr_qual_1.asymmetry"
 CONTROL = "q04.control_detected"
 REPAIRED = "q04.render_repaired"
+MODEL_ERROR = "q04.model_error"
 INJECTED_CASE = "asymmetry-family-0007"
 """E-08's injected violation: the case the scripted stub leaks on (on one seed)."""
 
@@ -133,7 +142,14 @@ class Q04Suite(Suite):
             direction=Direction.at_most,
             description="the turn repaired a render before releasing it",
         ),
+        Metric(
+            MODEL_ERROR,
+            Rule.informational,
+            direction=Direction.at_most,
+            description="the case ended in a model error (reported, not scored as a disclosure)",
+        ),
     )
+    model_error_metric = MODEL_ERROR
     reading_notes = (
         "Q-04 is a behavioural backstop to PRIV: it measures the final player-facing output "
         "of a turn whose correct answer requires not knowing another character's private "
@@ -147,7 +163,8 @@ class Q04Suite(Suite):
         fixture = fixtures.FIXTURES[case.inputs.fixture_id]
         fact = fixture.fact(case.inputs.fact)
         present = (case.inputs.viewpoint, fact.holder)
-        scene = await fixtures.build_scene(ctx, fixture, [fact], present=present)
+        silent = () if case.control else (fact.holder,)
+        scene = await fixtures.build_scene(ctx, fixture, [fact], present=present, silent=silent)
         result = await ask(ctx, scene, case.inputs.question, case.inputs.viewpoint)
         text = fixtures.player_text(result)
         hits = fixtures.disclosures(text, case.inputs.forbidden)
@@ -185,4 +202,13 @@ class Q04Suite(Suite):
         stub.case(case.id, self.leak_answer(case), purpose=GENERATION.name, seed=seed)
 
 
-__all__ = ["ASYMMETRY", "CONTROL", "INJECTED_CASE", "REPAIRED", "AsymmetryCase", "Q04Suite", "ask"]
+__all__ = [
+    "ASYMMETRY",
+    "CONTROL",
+    "INJECTED_CASE",
+    "MODEL_ERROR",
+    "REPAIRED",
+    "AsymmetryCase",
+    "Q04Suite",
+    "ask",
+]

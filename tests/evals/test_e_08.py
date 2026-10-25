@@ -5,25 +5,37 @@ knowledge-asymmetry and private-thought metrics on their labeled sets, through t
 
 The runs use the stub at four cases at once (each case is one or two structured turns): the
 private-thought suite's full set on two seeds (its 300 measured cases: the clean pass), the
-asymmetry suite on 299 of its cases (one seed: the short run) and on 300 with E-08's injected
-violation (one seed: the violation), and E-01 M5's viewpoint suite beside them (the rate rule).
+asymmetry suite on 299 of its cases (one seed: the short run) and on 301 with E-08's injected
+violation and one model error (one seed: the violation), and E-01 M5's viewpoint suite beside
+them (the rate rule). ``test_e_08__m5_model_errors`` plays small slices of both zero-leak suites
+with model errors injected (#179's Rule 1 fix): an error is reported on the suite's model-error
+row and is never scored as a disclosure.
 """
 
 from __future__ import annotations
+
+import json
+from pathlib import Path
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.evals import SUITES, AdapterConfig, Rule, Verdict, run, upper_bound_95
 from epistrel.evals.report import MetricResult, Report, render_markdown
-from epistrel.evals.suites.priv_think_leak import THINK_LEAK, ThinkLeakCase
+from epistrel.evals.runner import ERROR_DETAILS
+from epistrel.evals.suites import priv_think_leak as think_leak
+from epistrel.evals.suites import q04_asymmetry as q04
+from epistrel.evals.suites.priv_think_leak import THINK_LEAK, ThinkLeakCase, case_line
 from epistrel.evals.suites.q04_asymmetry import ASYMMETRY, INJECTED_CASE, AsymmetryCase, Q04Suite
+from epistrel.orchestrator.models.registry import GENERATION
 from tests.eval.suite_support import SEEDS, SETS
 from tests.evals.support import stub_engine
 
 pytestmark = pytest.mark.integration
 
 CONCURRENCY = 4
+BROKEN = "this is not a render"
+"""A generation answer that never validates: the turn fails with ``invalid_structure``."""
 
 
 def _metric(report: Report, metric_id: str) -> MetricResult:
@@ -45,8 +57,9 @@ async def test_e_08__m5_real_suites(pg_url: str, engine: AsyncEngine) -> None:
     both seeds, pass, reported "0 observed in 300 cases" with a one-sided 95% upper bound of
     about 1% (never as "leak-free"); 299 clean asymmetry cases fail (fewer than 300); 300
     asymmetry cases with one deterministically injected violation (the scripted stub leaks on
-    ``asymmetry-family-0007`` on one seed, a paraphrase the pipeline cannot catch) fail, with
-    the violation counted and no bound. The viewpoint suite passes its rate floors beside them.
+    ``asymmetry-family-0007`` on one seed, a paraphrase the pipeline cannot catch) and one more
+    case ended by a model error fail, with the violation counted once (the error is not one,
+    #179) and no bound. The viewpoint suite passes its rate floors beside them.
 
     Complement asserted: the 299 and the 300 runs differ only in the one case and the leak, and
     the clean think-leak run's controls are all detected (the oracle is not blind)."""
@@ -80,6 +93,7 @@ async def test_e_08__m5_real_suites(pg_url: str, engine: AsyncEngine) -> None:
     )
     injected = next(c for c in pool if c.id == INJECTED_CASE)
     others = [c for c in pool if c.id != INJECTED_CASE][:299]
+    errored = next(c for c in pool if c.id != INJECTED_CASE and c not in others)
     one_seed = SEEDS[:1]
     async with stub_engine(pg_url, engine) as lib:
         short = await run(
@@ -96,20 +110,144 @@ async def test_e_08__m5_real_suites(pg_url: str, engine: AsyncEngine) -> None:
 
     async with stub_engine(pg_url, engine) as lib:
         asymmetry.inject(lib.models.stub, injected, one_seed[0])
+        lib.models.stub.case(errored.id, BROKEN, purpose=GENERATION.name, seed=one_seed[0])
         leaked = await run(
             asymmetry,
             AdapterConfig(),
             one_seed,
             engine=lib,
-            cases={asymmetry.name: [*others, injected]},
+            cases={asymmetry.name: [*others, injected, errored]},
             concurrency=CONCURRENCY,
         )
     leak = _metric(leaked, ASYMMETRY)
     _reported(leaked, leak, 300, 1)
     assert (leak.violations, leak.verdict, leak.upper_bound_95) == (1, Verdict.failed, None)
     assert leak.per_seed == [pytest.approx(1 / 300)]
+    lost = _metric(leaked, q04.MODEL_ERROR)
+    assert (lost.sample_size, lost.verdict) == (301, Verdict.report_only)
+    assert lost.per_seed == [pytest.approx(1 / 301)]
 
     viewpoint = SUITES["e01_viewpoint"]
     async with stub_engine(pg_url, engine) as lib:
         rated = await run(viewpoint, AdapterConfig(), SEEDS, engine=lib)
     assert rated.suites[0].verdict is Verdict.passed
+
+
+def _failures(path: Path) -> dict[tuple[str, int], dict[str, object]]:
+    lines = [json.loads(x) for x in path.read_text().splitlines()] if path.exists() else []
+    return {(x["case"]["id"], x["seed"]): x for x in lines}
+
+
+def _assert_model_error(record: dict[str, object], row: str) -> None:
+    """A model error's failure record: its row bad and nothing else observed, no output, and
+    the error's code, reason and structural codes in ``detail`` (never story content)."""
+    observations = record["observations"]
+    assert isinstance(observations, dict)
+    assert observations.pop(row) is False
+    assert set(observations.values()) == {None}
+    assert record["output"] == ""
+    detail = record["detail"]
+    assert isinstance(detail, dict)
+    assert set(detail) <= {"model_error", "error_type", *ERROR_DETAILS}
+    assert (detail["model_error"], detail["purpose"], detail["reason"]) == (
+        "model_unavailable",
+        GENERATION.name,
+        "invalid_structure",
+    )
+    codes = detail["structural_errors"]
+    assert isinstance(codes, list)
+    assert codes
+    assert all(isinstance(c, str) and BROKEN not in c for c in codes)
+
+
+@pytest.mark.part("M5", "NFR-QUAL-1,8")
+async def test_e_08__m5_model_errors(pg_url: str, engine: AsyncEngine, tmp_path: Path) -> None:
+    """#179's Rule 1 fix (the owner's live run scored 413 model errors as disclosures): on a
+    Q-04 slice of four withheld cases and two controls, two seeds, a model error injected on one
+    withheld case and one control (an answer that never validates: ``invalid_structure``)
+    scores neither as a disclosure, a missed control or a repair. ``q04.model_error`` reports
+    both (report-only), the zero rule counts only the completed cases, and the suite's verdict
+    is decided by them (a slice this short fails by the observed-zero rule, as a clean one
+    does). Each error's failure record names the error's reason and structural codes, with no
+    output. The private-thought suite alike: an errored withheld case observes no category row.
+
+    Complement asserted: the same slice played clean has the same verdicts, every case observed,
+    no failure record and a ``model_error`` row of 0."""
+    suite = SUITES["q04"]
+    cases = [c for c in suite.load(SETS) if isinstance(c, AsymmetryCase)]
+    withheld = [c for c in cases if not c.control][:4]
+    controls = [c for c in cases if c.control][:2]
+    picked = {suite.name: [*withheld, *controls]}
+    clean_log, broken_log = tmp_path / "clean.jsonl", tmp_path / "broken.jsonl"
+    async with stub_engine(pg_url, engine) as lib:
+        clean = await run(
+            suite, AdapterConfig(), SEEDS, engine=lib, cases=picked, failures=clean_log
+        )
+    async with stub_engine(pg_url, engine) as lib:
+        for case in (withheld[0], controls[0]):
+            for seed in SEEDS:
+                lib.models.stub.case(case.id, BROKEN, purpose=GENERATION.name, seed=seed)
+        broken = await run(
+            suite, AdapterConfig(), SEEDS, engine=lib, cases=picked, failures=broken_log
+        )
+
+    assert clean.harness_errors == []
+    assert broken.harness_errors == []
+    expected = {  # metric: (clean (n, mean), errored (n, mean)) per seed
+        ASYMMETRY: ((4, 0.0), (3, 0.0)),
+        q04.CONTROL: ((2, 1.0), (1, 1.0)),
+        q04.REPAIRED: ((6, 0.0), (4, 0.0)),
+        q04.MODEL_ERROR: ((6, 0.0), (6, 2 / 6)),
+    }
+    for metric_id, (calm, hit) in expected.items():
+        for report, (n, mean) in ((clean, calm), (broken, hit)):
+            found = _metric(report, metric_id)
+            assert (found.sample_size, found.seed_count) == (n, 2), metric_id
+            assert found.mean == pytest.approx(mean), metric_id
+    assert _metric(broken, ASYMMETRY).violations == 0
+    assert _metric(broken, q04.MODEL_ERROR).verdict is Verdict.report_only
+    # Four completed cases are far short of 300 with or without the errors: failed, both runs.
+    assert _metric(clean, ASYMMETRY).verdict is Verdict.failed
+    assert _metric(broken, ASYMMETRY).verdict is Verdict.failed
+    assert clean.suites[0].verdict is broken.suites[0].verdict is Verdict.failed
+    assert _failures(clean_log) == {}
+    records = _failures(broken_log)
+    assert set(records) == {(c.id, seed) for c in (withheld[0], controls[0]) for seed in SEEDS}
+    for record in records.values():
+        _assert_model_error(record, q04.MODEL_ERROR)
+
+    leak_suite = SUITES["priv_think_leak"]
+    pool = [c for c in leak_suite.load(SETS) if isinstance(c, ThinkLeakCase)]
+    measured = [c for c in pool if not c.control]
+    failing = measured[0]
+    passing = next(c for c in measured[1:] if c.inputs.category == failing.inputs.category)
+    control = next(c for c in pool if c.control)
+    one_seed = SEEDS[:1]
+    async with stub_engine(pg_url, engine) as lib:
+        for thinking in (failing, control):
+            lib.models.stub.when((case_line(thinking),), BROKEN, GENERATION.name)
+        thought = await run(
+            leak_suite,
+            AdapterConfig(),
+            one_seed,
+            engine=lib,
+            cases={leak_suite.name: [failing, passing, control]},
+            failures=broken_log,
+        )
+    assert thought.harness_errors == []
+    category = think_leak.CATEGORY_METRICS[failing.inputs.category]
+    rows: list[tuple[str, int, float | None]] = [
+        (THINK_LEAK, 1, 0.0),
+        (category, 1, 0.0),
+        (think_leak.CONTROL, 0, None),
+        (think_leak.MODEL_ERROR, 3, 2 / 3),
+    ]
+    for metric_id, n, want in rows:
+        found = _metric(thought, metric_id)
+        assert found.sample_size == n, metric_id
+        assert found.mean == (None if want is None else pytest.approx(want)), metric_id
+    assert _metric(thought, THINK_LEAK).violations == 0
+    leaked = {k: v for k, v in _failures(broken_log).items() if v["suite"] == leak_suite.name}
+    assert set(leaked) == {(failing.id, one_seed[0]), (control.id, one_seed[0])}
+    for record in leaked.values():
+        _assert_model_error(record, think_leak.MODEL_ERROR)

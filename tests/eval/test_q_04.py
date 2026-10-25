@@ -9,13 +9,16 @@ E-08 M5's (``tests/evals/test_e_08.py``) and CI's ``evals-zero-leak`` job."""
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from epistrel.evals import SUITES, AdapterConfig, Verdict, run
+from epistrel.evals import SUITES, AdapterConfig, CaseModel, Verdict, run
 from epistrel.evals import fixtures as fx
+from epistrel.evals.runner import CaseContext
+from epistrel.evals.suites import Outcome
 from epistrel.evals.suites.q04_asymmetry import (
     ASYMMETRY,
     CONTROL,
@@ -23,9 +26,11 @@ from epistrel.evals.suites.q04_asymmetry import (
     REPAIRED,
     AsymmetryCase,
     Q04Suite,
+    ask,
 )
 from tests.eval.suite_support import SEEDS, SETS, by_id
 from tests.evals.support import stub_engine
+from tests.structured_turn_support import schema_calls, text_of
 
 pytestmark = pytest.mark.integration
 
@@ -100,3 +105,66 @@ async def test_q_04(pg_url: str, engine: AsyncEngine) -> None:
     assert leak.per_seed == [0.0, pytest.approx(1 / asymmetry.sample_size)]
     fact = fx.FIXTURES["family"].fact(injected.inputs.fact)
     assert fx.disclosures(fact.leak, injected.inputs.forbidden) != []
+
+
+NESTED_CASE = "asymmetry-nested-0003"
+"""The live run's case (``cbc7d954f0e8``) where Dana answered with the spare key's hiding place."""
+
+
+class _Contexts(Q04Suite):
+    """Q-04 with each character's render prompt recorded: the measured turn's scene built as
+    ``Q04Suite.evaluate`` builds it (the fact established, the asked character and the holder
+    present, the holder a fixed ``silent`` participant), the asked character rendered first,
+    then every other character of the cast in turn, in the same scene."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.contexts: dict[str, str] = {}
+
+    async def evaluate(self, ctx: CaseContext, case: CaseModel) -> Outcome:
+        assert isinstance(case, AsymmetryCase)
+        fixture = fx.FIXTURES[case.inputs.fixture_id]
+        fact = fixture.fact(case.inputs.fact)
+        present = (case.inputs.viewpoint, fact.holder)
+        scene = await fx.build_scene(ctx, fixture, [fact], present=present, silent=(fact.holder,))
+        stub = ctx.engine.models.stub
+        others = [n for n in fixture.names if n != case.inputs.viewpoint]
+        for name in (case.inputs.viewpoint, *others):
+            stub.calls.clear()
+            await ask(ctx, scene, case.inputs.question, name)
+            self.contexts[name] = "\n".join(
+                text_of(c) for c in schema_calls(stub, "CharacterRender")
+            )
+        return Outcome({})
+
+
+@pytest.mark.part("M5", "FR-EPI-1,5; NFR-QUAL-1")
+async def test_q_04__nested_0003_context(pg_url: str, engine: AsyncEngine) -> None:
+    """The live run's ``asymmetry-nested-0003`` (Cal asks Dana how George gets in; Dana
+    answered with a spare key under the flowerpot) is not a context leak: Dana's generation
+    context for the measured turn (per-character partitions, perception ``full``,
+    ``core.epistemic.context.build_context`` through ``Engine.respond``) holds none of the
+    fact's forms and no key at all, and neither does any other non-holder character's
+    context in that scene. Dana's answer was the model's own invention from the question.
+
+    Complement asserted: the holder George's own context, built the same way, holds the fact,
+    so the probe can see it where it is."""
+    suite = _Contexts()
+    (case,) = [c for c in suite.load(SETS) if c.id == NESTED_CASE]
+    assert isinstance(case, AsymmetryCase)
+    async with stub_engine(pg_url, engine) as lib:
+        report = await run(
+            suite, AdapterConfig(), SEEDS[:1], engine=lib, cases={suite.name: [case]}
+        )
+    assert report.harness_errors == []
+    fixture = fx.FIXTURES[case.inputs.fixture_id]
+    holder = fixture.fact(case.inputs.fact).holder
+    assert set(suite.contexts) == set(fixture.names)
+    key = re.compile(r"\bkeys?\b", re.IGNORECASE)
+    for name, context in suite.contexts.items():
+        assert context, name
+        if name == holder:
+            continue
+        assert fx.disclosures(context, case.inputs.forbidden) == [], name
+        assert key.search(context) is None, name
+    assert fx.disclosures(suite.contexts[holder], case.inputs.forbidden) != []

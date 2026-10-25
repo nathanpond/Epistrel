@@ -17,6 +17,14 @@ none of the case's forbidden forms (``fixtures.disclosures``), no echo of the th
   state).
 - ``priv_think_leak.control_detected`` (report-only): the negative controls (the thinker voices
   its own thought) are detected.
+- ``priv_think_leak.model_error`` (report-only; ``Suite.model_error_metric``): the case ended in
+  a model error. It observes nothing else (an error is not a disclosure); the zero rule is
+  judged on the completed cases, and a seed short of 300 of them is insufficient evidence.
+
+The thinker is a fixed ``silent`` participant (``fixtures.build_scene``): it renders the prelude
+it is named for, and in the measured turn it is never narrated reacting or escalated to a render
+of its own, so a case measures a thought crossing to another character, never the thinker
+voicing it (the owner's decision of 2026-10-24).
 
 On the stub both turns answer their authored renders (``stub_prelude``, ``stub_answer``), keyed
 on the case and the player's line (``StubAdapter.when``). CI gates on the stub run of the full
@@ -42,6 +50,7 @@ if TYPE_CHECKING:
 
 THINK_LEAK = "nfr_qual_1.think_leak"
 CONTROL = "priv_think_leak.control_detected"
+MODEL_ERROR = "priv_think_leak.model_error"
 CATEGORY_METRICS = {
     "verbatim": "priv_think_leak.verbatim",
     "paraphrase": "priv_think_leak.paraphrase",
@@ -115,7 +124,14 @@ class PrivThinkLeakSuite(Suite):
             Rule.informational,
             description="a negative control (the thinker voices its thought) was detected",
         ),
+        Metric(
+            MODEL_ERROR,
+            Rule.informational,
+            direction=Direction.at_most,
+            description="the case ended in a model error (reported, not scored as a disclosure)",
+        ),
     )
+    model_error_metric = MODEL_ERROR
     reading_notes = (
         "The private-thought metric reads both turns of a case as the player's character: the "
         "scripted prelude that plants the thought (its `think` must be filtered out) and the "
@@ -145,7 +161,9 @@ class PrivThinkLeakSuite(Suite):
         assert isinstance(case, ThinkLeakCase)  # noqa: S101 - load() validated it
         inputs = case.inputs
         fixture = fixtures.FIXTURES[inputs.fixture_id]
-        scene = await fixtures.build_scene(ctx, fixture, present=(inputs.thinker, inputs.renderer))
+        scene = await fixtures.build_scene(
+            ctx, fixture, present=(inputs.thinker, inputs.renderer), silent=(inputs.thinker,)
+        )
         self._script_prelude(ctx, case)
         with ctx.scripted():
             prelude = await ask(ctx, scene, inputs.prelude, inputs.thinker)
@@ -174,4 +192,11 @@ class PrivThinkLeakSuite(Suite):
         )
 
 
-__all__ = ["CATEGORY_METRICS", "CONTROL", "THINK_LEAK", "PrivThinkLeakSuite", "ThinkLeakCase"]
+__all__ = [
+    "CATEGORY_METRICS",
+    "CONTROL",
+    "MODEL_ERROR",
+    "THINK_LEAK",
+    "PrivThinkLeakSuite",
+    "ThinkLeakCase",
+]

@@ -111,7 +111,14 @@ from epistrel.core.events.registry import validate
 from epistrel.core.events.types import FactCommitted
 from epistrel.core.events.types import FactSuperseded as FactSupersededEvent
 from epistrel.core.ids import new_ulid
-from epistrel.core.membership import Through, active_as_of, active_only, bound_of, insert_derived
+from epistrel.core.membership import (
+    Through,
+    active_as_of,
+    active_only,
+    bound_of,
+    insert_derived,
+    step_of,
+)
 from epistrel.core.projections import structured
 from epistrel.core.propositions import store
 from epistrel.core.propositions.codec import proposition_from_row
@@ -578,6 +585,7 @@ async def _append_event(
             narrative_turn=w.operation.narrative_turn,
             turn_variant=w.operation.turn_variant,
             beat=w.beat,
+            step=step_of(w.beat, w.operation.operation_id),
             slot_k=w.slot_k,
             principal=w.operation.principal,
             type=type_,

@@ -109,7 +109,13 @@ from epistrel.core.events.types import (
     ThunkResolved,
 )
 from epistrel.core.ids import new_ulid
-from epistrel.core.membership import Position, active_only, active_operation, insert_derived
+from epistrel.core.membership import (
+    Position,
+    active_only,
+    active_operation,
+    insert_derived,
+    step_of,
+)
 from epistrel.core.profiles.capabilities import level_at_least, module_on
 from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.profiles.schema import ProfileSettings
@@ -443,6 +449,7 @@ async def _append(
             narrative_turn=operation.narrative_turn,
             turn_variant=operation.turn_variant,
             beat=beat,
+            step=step_of(beat, operation.operation_id),
             principal=operation.principal,
             type=type_,
             payload=body,

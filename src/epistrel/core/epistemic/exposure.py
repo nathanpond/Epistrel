@@ -403,10 +403,10 @@ async def record_exposures(
     )
     rows: list[dict[str, Any]] = []
     records = []
-    by_beat: dict[int, list[str]] = {}
+    by_beat: dict[tuple[int, int], list[str]] = {}
     for item in exposed:
         exposure_id = new_ulid()
-        by_beat.setdefault(item.position.beat, []).append(exposure_id)
+        by_beat.setdefault((item.position.beat, item.position.step), []).append(exposure_id)
         resolved = item.resolved_by_transition is not None
         rows.append(
             {
@@ -443,7 +443,7 @@ async def record_exposures(
         )
     await insert_derived(conn, exposures, rows)
     await index_records(conn, records)
-    for beat, ids in sorted(by_beat.items()):
+    for (beat, step), ids in sorted(by_beat.items()):
         await partitions._append_event(
             conn,
             story_id,
@@ -451,6 +451,7 @@ async def record_exposures(
             ExposureRecorded(exposure_ids=tuple(ids)),
             beat or None,
             EXPOSURE_RECORDED,
+            step=step,
         )
     return [str(r["id"]) for r in rows]
 

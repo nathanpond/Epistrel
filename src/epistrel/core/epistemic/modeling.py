@@ -79,7 +79,7 @@ from epistrel.core.errors import InvalidRequest
 from epistrel.core.events.registry import EventPayload, lookup, validate
 from epistrel.core.events.types import CharacterDefined, CharacterModeled
 from epistrel.core.ids import new_ulid
-from epistrel.core.membership import Position
+from epistrel.core.membership import Position, step_of
 from epistrel.core.profiles.capabilities import module_on
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.resolution.entities import EntitySpec, add_entities, descriptors_of
@@ -722,6 +722,7 @@ async def _append(
             narrative_turn=operation.narrative_turn,
             turn_variant=operation.turn_variant,
             beat=beat,
+            step=step_of(beat, operation.operation_id),
             principal=getattr(operation, "principal", None) or "system",
             type=type_,
             payload=body,

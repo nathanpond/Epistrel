@@ -1113,9 +1113,11 @@ async def _append_event(
     payload: EventPayload,
     beat: int | None,
     type_: str = BELIEF_COMMITTED,
+    step: int = 0,
 ) -> str:
     """Append the write's ``derived`` event (``type_``) to its operation (the caller holds the
-    story lock: a commit step)."""
+    story lock: a commit step), at ``beat`` and ``step`` (FR-STORE-31: the belief's or the
+    transition's own; 0 outside declared steps)."""
     body = validate(type_, payload).model_dump(mode="json")
     last = await conn.scalar(
         select(func.coalesce(func.max(events.c.seq), 0)).where(events.c.story_id == story_id)
@@ -1131,6 +1133,7 @@ async def _append_event(
             narrative_turn=operation.narrative_turn,
             turn_variant=operation.turn_variant,
             beat=beat,
+            step=step,
             principal=operation.principal,
             type=type_,
             payload=body,
@@ -1283,6 +1286,7 @@ async def _insert_belief(
             closes=None if closed is None else closed.id,
         ),
         beat,
+        step=step,
     )
     if closed is not None:
         await conn.execute(

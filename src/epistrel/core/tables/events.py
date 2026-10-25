@@ -61,7 +61,9 @@ events = Table(
     Column("narrative_turn", Integer, nullable=True),
     Column("turn_variant", SmallInteger, nullable=True),
     Column("beat", SmallInteger, nullable=True),
-    Column("step", SmallInteger, nullable=True),
+    # FR-STORE-31 (#168): 0 outside declared steps. Nullable: rows written before 0082 keep their
+    # ``NULL`` (the log is append-only), which readers take as 0.
+    Column("step", SmallInteger, nullable=True, server_default=text("0")),
     Column("slot_k", SmallInteger, nullable=True),
     Column("character_id", ulid_type(), nullable=True),
     Column("principal", Text, nullable=False),

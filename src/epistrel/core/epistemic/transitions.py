@@ -1180,6 +1180,7 @@ async def _transition(
         ),
         position.beat or None,
         BELIEF_TRANSITION,
+        step=position.step,
     )
     now = (await conn.execute(select(func.transaction_timestamp()))).scalar_one()
     await conn.execute(

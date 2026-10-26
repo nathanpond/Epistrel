@@ -9253,3 +9253,15 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Change:** S-FAMILY's only-child merge clause (FR-SCN-7) moved from M5 to M7, with the new story #580 in M7 under epic #25 (a closed-set reading of background flavor in `read_seed` for the genesis and Lite→Full fact merge).
   **Why:** the owner's decision on #576 (option a). The engine cannot read "only child" from prose, and M7 reruns the fact merge for the upgrade.
   **Affects:** M7 (epic #25: the Lite→Full upgrade stories and the I-27 M7 merge should account for #580's closed sets). Plans may be stale.
+
+## /n8-exec M5 (verify fixes, pass 3) — 2026-10-26
+
+- **Decision:** Scope is #582 and #583 only, on branch `milestone/m5-verify-fixes-3` off `c59ce3b`. #173 (owner text and #523) and the owner's live-run items stay as they are.
+  **Why:** these are the two bugs re-verify 2 filed; the rest waits on the owner.
+  **Issue:** #582, #583
+- **Decision (Rule 1):** #583: `_followed_by` decides by the second object's **head noun**: the last word after the determiner before a time adverb, a `then` word or article, punctuation, or the third word. `later`/`earlier`/`ago`/`again` move from `time_words` to a new `time_adverbs` list in `interaction.json`. I followed the issue's "likely fix". The alternative, a stop-word list after the object, would not cover modifiers ("the morning paper").
+  **Why:** a time noun as a modifier, or a time adverb after a real object, is not motion past. Mutation-checked: the old scan fails the new list ("a note that morning").
+  **Issue:** #583
+- **Decision (Rule 1):** #582: the draft-time minors guard reads what the draft declares (`_draft_topology`): a `remote_channel` beat puts its actor on the channel, and asserted (or factive) `on_channel`, `adjacent_to` and `located_at` sketches apply by cast name, first or last name, pronoun or "I" (the actor), with places by name. If one of those sketches can't be read, **everyone counts present** (`guard_context(everyone=True)`). I chose this over the issue's other option, re-gating released beats under the post-verification context, which would spend guardrail calls the turn never reserved after its budget plan, and would mean a mid-pipeline fallback across merged primaries.
+  **Why:** the guard has to over-approximate routing's commit-time delivered set. An unreadable declaration can only be over-approximated by "everyone"; that means extra fallbacks only in stories with a minor and flagged content, the same direction as "an unplaced character counts as present".
+  **Issue:** #582

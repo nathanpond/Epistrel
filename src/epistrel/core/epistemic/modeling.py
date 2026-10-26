@@ -14,8 +14,9 @@ appearance (a mention in narration, a jogger seen running past):
   suffices), the player's own ``say``/``do`` included. A verb whose direct sense needs a word
   after its object (``direct_then``, #543) has it only then: "passes the waiter a note" hands
   something over while "passes the jogger on the path" is motion past (appearance), and "calls
-  the waiter over" summons. A ``say`` merely *about* the entity, or
-  words inside the speech, are appearance;
+  the waiter over" summons; a time or frequency phrase after the object ("passes the jogger a
+  second time", "the next morning"; #573) is no second object. A ``say`` merely *about* the
+  entity, or words inside the speech, are appearance;
 - ``salience``: the salience step (#146) lists the entity among its ``characters`` (stub
   scriptable), a render introduces it (#150's ``introduces``: the character is modeled at
   creation), or the author directs it (``POST /stories/{id}/entities/{eid}/model``).
@@ -160,6 +161,8 @@ class Lexicon:
     openers: tuple[str, ...]
     articles: frozenset[str]
     persons: frozenset[str]
+    times: frozenset[str] = frozenset()
+    """Words that make the phrase after a direct object a time or frequency phrase (#573)."""
 
 
 @cache
@@ -187,6 +190,7 @@ def lexicon() -> Lexicon:
         ),
         articles=frozenset(str(a).casefold() for a in table.get("articles", ())),
         persons=frozenset(str(p).casefold() for p in table.get("person_nouns", ())),
+        times=frozenset(str(t).casefold() for t in table.get("time_words", ())),
     )
 
 
@@ -356,10 +360,30 @@ def _party_before(
     return None
 
 
-def _followed_by(text: str, target: Party, verb: Verb) -> bool:
-    """Whether the word after ``target`` is one ``verb``'s direct sense needs (``then``)."""
+def _followed_by(text: str, target: Party, verb: Verb, lex: Lexicon) -> bool:
+    """Whether the word after ``target`` is one ``verb``'s direct sense needs (``then``).
+
+    A determiner there opens a second object only when the phrase it opens is not a time or
+    frequency phrase (#573): "passes the waiter a note" hands something over, "passes the jogger
+    a second time" / "an hour later" / "the next morning" is motion past. The phrase is the
+    words after the determiner up to punctuation or the next ``then`` word, at most three."""
     word = _WORD.match(text, _skip_space(text, target.span[1]))
-    return word is not None and word.group().casefold() in verb.then
+    if word is None or word.group().casefold() not in verb.then:
+        return False
+    if word.group().casefold() in lex.particles:
+        return True  # "calls the waiter over": a particle, not a determiner
+    pos = word.end()
+    for _ in range(3):
+        nxt = _WORD.match(text, _skip_space(text, pos))
+        if nxt is None or text[pos : nxt.start()].strip():
+            break  # the end, or punctuation between the words
+        folded = nxt.group().casefold()
+        if folded in lex.times:
+            return False
+        if folded in verb.then:
+            break
+        pos = nxt.end()
+    return True
 
 
 def _verb_interactions(
@@ -387,8 +411,13 @@ def _verb_interactions(
             else:
                 if verb.direct:
                     target = _party_at(text, pos, mentions, entities, lex)
-                    if target is not None and verb.then and not _followed_by(text, target, verb):
-                        # #543: "passes the jogger on the path" is motion past, not a hand-over.
+                    if (
+                        target is not None
+                        and verb.then
+                        and not _followed_by(text, target, verb, lex)
+                    ):
+                        # #543, #573: "passes the jogger on the path" / "a second time" is
+                        # motion past, not a hand-over.
                         target = None
             if target is None:
                 continue

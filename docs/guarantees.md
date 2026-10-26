@@ -6,6 +6,8 @@
 
 **The model proposes; the engine validates structured claims, effects, and permissions.**
 
+**Privacy is structural first (NFR-PRIV-4): context assembly is the primary privacy control, output scanning a secondary, measured one.** A character's generation context is built only from what that character could know. Output scanning (protected-content matching, claim detection, the PRIV checks) is evidence with an upper bound, never proof that nothing leaked.
+
 Each step below is either **deterministic**, performed by rules and proven by tests, or
 **model-dependent**, performed by a model and measured by the eval metric shown (an
 NFR-QUAL requirement), or marked `unmeasured` where no metric is defined yet. A step

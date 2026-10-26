@@ -208,13 +208,7 @@ from epistrel.core.profiles.fingerprint import Stamp
 from epistrel.core.profiles.reservation import extraction_on
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.propositions import store
-from epistrel.core.propositions.model import (
-    Interval,
-    LiteralKind,
-    Polarity,
-    Proposition,
-    TypedLiteral,
-)
+from epistrel.core.propositions.model import Polarity, Proposition
 from epistrel.core.propositions.registry import (
     Registry,
     auto_name,
@@ -223,12 +217,7 @@ from epistrel.core.propositions.registry import (
     file_identity_proposal,
 )
 from epistrel.core.propositions.registry import load as load_registry
-from epistrel.core.propositions.vocabulary import (
-    ADJACENT_TO,
-    CORE_BY_NAME,
-    LOCATED_AT,
-    ON_CHANNEL,
-)
+from epistrel.core.propositions.vocabulary import CORE_BY_NAME
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.resolution import identity as identity_rules
 from epistrel.core.resolution.context import load_context
@@ -3554,10 +3543,7 @@ async def _staged_moves(
     return {n: tuple(m) for n, m in moves.items()}
 
 
-_DRAFT_RELATIONS = {"located_at": LOCATED_AT, "on_channel": ON_CHANNEL, "adjacent_to": ADJACENT_TO}
-_SELF_WORDS = frozenset(
-    {"i", "me", "myself", "he", "him", "himself", "she", "her", "herself", "they", "them"}
-)
+_DRAFT_RELATIONS = frozenset({"located_at", "on_channel", "adjacent_to"})
 
 
 def _draft_relation(relation: str) -> str | None:
@@ -3567,7 +3553,8 @@ def _draft_relation(relation: str) -> str | None:
         name = auto_name(relation)
     except InvalidRequest:
         return None
-    return _DRAFT_RELATIONS.get(RELATION_ALIASES.get(name, name))
+    found = RELATION_ALIASES.get(name, name)
+    return found if found in _DRAFT_RELATIONS else None
 
 
 def _draft_topology(
@@ -3576,77 +3563,29 @@ def _draft_topology(
     names: Mapping[str, str],
     places: Mapping[str, str],
 ) -> tuple[list[Proposition], dict[int, tuple[tuple[str, str | None], ...]], bool]:
-    """The channels, barriers and moves a draft declares before anything is checked (#582),
-    read conservatively for the minors guard: a beat on a ``remote_channel`` puts its actor on
-    the channel, and each asserted (unattributed or factive) ``on_channel``, ``adjacent_to``
-    or ``located_at`` sketch applies with its subject read as a cast name (a pronoun or "I":
-    the beat's actor) and its place by name. ``True`` last when such a sketch cannot be read
-    so: the guard then counts everyone present, as it does an unplaced character."""
-    cast: dict[str, str | None] = {}
-    for cid, name in names.items():
-        words = name.casefold().split()
-        for key in {name.casefold(), *(words[:1] + words[-1:])}:
-            cast[key] = cid if cast.get(key, cid) == cid else None  # None: ambiguous
-
-    def place(text: str | None) -> str | None:
-        folded = (text or "").casefold().strip()
-        return places.get(folded) or places.get(folded.removeprefix("the ").strip())
-
-    declared: list[Proposition] = []
-    moves: dict[int, list[tuple[str, str | None]]] = {}
-    always = Interval.of(None, None)
-    for beat in beats:
-        actor = None if beat.kind == NARRATION else beat.character_id
-        remote = beat.qualifiers.remote_channel
-        if remote is not None and actor is not None:
-            declared.append(
-                Proposition(
-                    subject_id=actor,
-                    predicate_id=ON_CHANNEL,
-                    literal=TypedLiteral(kind=LiteralKind.STR, value=remote.channel_id),
-                    valid_time=always,
-                )
-            )
-        for sketch in sketches.get(beat.beat, ()):
-            predicate = _draft_relation(sketch.relation)
-            if predicate is None or (sketch.attribution and not sketch.attribution.factive):
-                continue
-            folded = sketch.subject.casefold().strip()
-            subject = actor if folded in _SELF_WORDS else cast.get(folded)
-            if predicate == ON_CHANNEL:
-                if sketch.negated:
-                    continue  # a hang-up: the guard keeps the channel
-                if subject is None or not sketch.object:
-                    return [], {}, True
-                declared.append(
-                    Proposition(
-                        subject_id=subject,
-                        predicate_id=ON_CHANNEL,
-                        literal=TypedLiteral(kind=LiteralKind.STR, value=sketch.object),
-                        valid_time=always,
-                    )
-                )
-            elif predicate == ADJACENT_TO:
-                if sketch.negated:
-                    continue
-                here, there = place(sketch.subject), place(sketch.object)
-                if here is None or there is None:
-                    return [], {}, True
-                declared.append(
-                    Proposition(
-                        subject_id=here,
-                        predicate_id=ADJACENT_TO,
-                        object_id=there,
-                        qualifiers=dict(sketch.qualifiers),
-                        valid_time=always,
-                    )
-                )
-            else:
-                to = None if sketch.negated else place(sketch.object)
-                if subject is None or (to is None and not sketch.negated):
-                    return [], {}, True
-                moves.setdefault(beat.beat, []).append((subject, to))
-    return declared, {n: tuple(m) for n, m in moves.items()}, False
+    """The draft's ``remote_channel`` beats and topology sketches (asserted, or a factive
+    attribution) as ``perception.draft_topology`` reads them for the minors guard (#582)."""
+    channels = [
+        (b.character_id, b.qualifiers.remote_channel.channel_id)
+        for b in beats
+        if b.kind != NARRATION and b.character_id and b.qualifiers.remote_channel is not None
+    ]
+    found = [
+        perception.DraftSketch(
+            beat=b.beat,
+            actor=None if b.kind == NARRATION else b.character_id,
+            relation=relation,
+            subject=sketch.subject,
+            object=sketch.object,
+            negated=sketch.negated,
+            qualifiers=dict(sketch.qualifiers),
+        )
+        for b in beats
+        for sketch in sketches.get(b.beat, ())
+        if (relation := _draft_relation(sketch.relation)) is not None
+        and (sketch.attribution is None or sketch.attribution.factive)
+    ]
+    return perception.draft_topology(channels, found, names, places)
 
 
 async def turn_guard(

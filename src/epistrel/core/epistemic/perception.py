@@ -79,6 +79,7 @@ from functools import cache
 from importlib import resources
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
+from epistrel.core.propositions.model import Interval, LiteralKind, Proposition, TypedLiteral
 from epistrel.core.propositions.vocabulary import (
     ADJACENT_TO,
     BARRIERS,
@@ -298,6 +299,94 @@ def with_declared(scene: SceneState, claims: Iterable[Any]) -> SceneState:
     return replace(
         scene, channels={k: frozenset(v) for k, v in channels.items()}, adjacency=adjacency
     )
+
+
+@dataclass(frozen=True, slots=True)
+class DraftSketch:
+    """A topology claim a draft declares before it is checked (#582): a ``located_at``,
+    ``on_channel`` or ``adjacent_to`` sketch of beat ``beat`` by ``actor`` (``None``: a
+    narration), its subject and object as written."""
+
+    beat: int
+    actor: str | None
+    relation: str
+    subject: str
+    object: str | None = None
+    negated: bool = False
+    qualifiers: Mapping[str, str] = field(default_factory=dict)
+
+
+_SELF_WORDS = frozenset(
+    {"i", "me", "myself", "he", "him", "himself", "she", "her", "herself", "they", "them"}
+)
+
+
+def draft_topology(
+    channels: Iterable[tuple[str, str]],
+    sketches: Iterable[DraftSketch],
+    names: Mapping[str, str],
+    places: Mapping[str, str],
+) -> tuple[list[Proposition], dict[int, tuple[tuple[str, str | None], ...]], bool]:
+    """The channels, barriers and moves a draft declares before anything is checked (#582),
+    read conservatively for the minors guard: each ``(actor, channel)`` of a ``remote_channel``
+    beat puts the actor on the channel, and each sketch applies with its subject read as a
+    cast name in ``names`` (full, first or last; a pronoun or "I": the beat's actor) and its
+    places by name in ``places`` (case-folded, with or without "the"); a negated
+    ``located_at`` is an exit, a negated channel or barrier is kept. ``True`` last when a
+    sketch cannot be read so: the guard then counts everyone present, as it does an unplaced
+    character. Answers ``with_declared``'s claims and ``Moves`` by beat."""
+    cast: dict[str, str | None] = {}
+    for cid, name in names.items():
+        words = name.casefold().split()
+        for key in {name.casefold(), *(words[:1] + words[-1:])}:
+            cast[key] = cid if cast.get(key, cid) == cid else None  # None: ambiguous
+
+    def place(text: str | None) -> str | None:
+        folded = (text or "").casefold().strip()
+        return places.get(folded) or places.get(folded.removeprefix("the ").strip())
+
+    always = Interval.of(None, None)
+
+    def on(who: str, channel: str) -> Proposition:
+        return Proposition(
+            subject_id=who,
+            predicate_id=ON_CHANNEL,
+            literal=TypedLiteral(kind=LiteralKind.STR, value=channel),
+            valid_time=always,
+        )
+
+    declared = [on(who, channel) for who, channel in channels]
+    moves: dict[int, list[tuple[str, str | None]]] = {}
+    for sketch in sketches:
+        folded = sketch.subject.casefold().strip()
+        subject = sketch.actor if folded in _SELF_WORDS else cast.get(folded)
+        if sketch.relation == "on_channel":
+            if sketch.negated:
+                continue  # a hang-up: the guard keeps the channel
+            if subject is None or not sketch.object:
+                return [], {}, True
+            declared.append(on(subject, sketch.object))
+        elif sketch.relation == "adjacent_to":
+            if sketch.negated:
+                continue
+            here, there = place(sketch.subject), place(sketch.object)
+            if here is None or there is None:
+                return [], {}, True
+            declared.append(
+                Proposition(
+                    subject_id=here,
+                    predicate_id=ADJACENT_TO,
+                    object_id=there,
+                    qualifiers=dict(sketch.qualifiers),
+                    valid_time=always,
+                )
+            )
+        elif sketch.relation == "located_at":
+            to = None if sketch.negated else place(sketch.object)
+            if subject is None or (to is None and not sketch.negated):
+                return [], {}, True
+            moves.setdefault(sketch.beat, []).append((subject, to))
+    return declared, {n: tuple(m) for n, m in moves.items()}, False
 
 
 # -- the outputs --------------------------------------------------------------------------------
@@ -798,6 +887,7 @@ __all__ = [
     "PERCEPTION_SINKS",
     "SOUND_BLOCKING",
     "Channel",
+    "DraftSketch",
     "Envelope",
     "Fidelity",
     "Level",
@@ -813,6 +903,7 @@ __all__ = [
     "SinkOperation",
     "co_located_set",
     "deliver",
+    "draft_topology",
     "eavesdrop_path",
     "envelope_text",
     "noticers",

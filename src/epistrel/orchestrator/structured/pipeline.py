@@ -208,15 +208,27 @@ from epistrel.core.profiles.fingerprint import Stamp
 from epistrel.core.profiles.reservation import extraction_on
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.propositions import store
-from epistrel.core.propositions.model import Polarity, Proposition
+from epistrel.core.propositions.model import (
+    Interval,
+    LiteralKind,
+    Polarity,
+    Proposition,
+    TypedLiteral,
+)
 from epistrel.core.propositions.registry import (
     Registry,
+    auto_name,
     canonical,
     consider_proposals,
     file_identity_proposal,
 )
 from epistrel.core.propositions.registry import load as load_registry
-from epistrel.core.propositions.vocabulary import CORE_BY_NAME
+from epistrel.core.propositions.vocabulary import (
+    ADJACENT_TO,
+    CORE_BY_NAME,
+    LOCATED_AT,
+    ON_CHANNEL,
+)
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.resolution import identity as identity_rules
 from epistrel.core.resolution.context import load_context
@@ -272,7 +284,12 @@ from epistrel.core.turns.beats import (
 from epistrel.core.verify import attribution
 from epistrel.core.verify.detect import DeclaredClaim, DetectBeat, DetectedClaim
 from epistrel.core.verify.introduce import Introductions
-from epistrel.core.verify.normalize import ClaimSketch, Unnormalizable, normalize_declared
+from epistrel.core.verify.normalize import (
+    RELATION_ALIASES,
+    ClaimSketch,
+    Unnormalizable,
+    normalize_declared,
+)
 from epistrel.core.verify.permission import Asserter
 from epistrel.core.verify.protected import PrivateRecord
 from epistrel.core.verify.rules import CANON, Record, VerdictKind, check
@@ -3537,6 +3554,101 @@ async def _staged_moves(
     return {n: tuple(m) for n, m in moves.items()}
 
 
+_DRAFT_RELATIONS = {"located_at": LOCATED_AT, "on_channel": ON_CHANNEL, "adjacent_to": ADJACENT_TO}
+_SELF_WORDS = frozenset(
+    {"i", "me", "myself", "he", "him", "himself", "she", "her", "herself", "they", "them"}
+)
+
+
+def _draft_relation(relation: str) -> str | None:
+    """The topology predicate (#582) a sketch's relation names, as ``predicate_for`` reads
+    it: by exact name, then ``RELATION_ALIASES``."""
+    try:
+        name = auto_name(relation)
+    except InvalidRequest:
+        return None
+    return _DRAFT_RELATIONS.get(RELATION_ALIASES.get(name, name))
+
+
+def _draft_topology(
+    beats: Sequence[TurnBeat],
+    sketches: Mapping[int, Sequence[PropositionSketch]],
+    names: Mapping[str, str],
+    places: Mapping[str, str],
+) -> tuple[list[Proposition], dict[int, tuple[tuple[str, str | None], ...]], bool]:
+    """The channels, barriers and moves a draft declares before anything is checked (#582),
+    read conservatively for the minors guard: a beat on a ``remote_channel`` puts its actor on
+    the channel, and each asserted (unattributed or factive) ``on_channel``, ``adjacent_to``
+    or ``located_at`` sketch applies with its subject read as a cast name (a pronoun or "I":
+    the beat's actor) and its place by name. ``True`` last when such a sketch cannot be read
+    so: the guard then counts everyone present, as it does an unplaced character."""
+    cast: dict[str, str | None] = {}
+    for cid, name in names.items():
+        words = name.casefold().split()
+        for key in {name.casefold(), *(words[:1] + words[-1:])}:
+            cast[key] = cid if cast.get(key, cid) == cid else None  # None: ambiguous
+
+    def place(text: str | None) -> str | None:
+        folded = (text or "").casefold().strip()
+        return places.get(folded) or places.get(folded.removeprefix("the ").strip())
+
+    declared: list[Proposition] = []
+    moves: dict[int, list[tuple[str, str | None]]] = {}
+    always = Interval.of(None, None)
+    for beat in beats:
+        actor = None if beat.kind == NARRATION else beat.character_id
+        remote = beat.qualifiers.remote_channel
+        if remote is not None and actor is not None:
+            declared.append(
+                Proposition(
+                    subject_id=actor,
+                    predicate_id=ON_CHANNEL,
+                    literal=TypedLiteral(kind=LiteralKind.STR, value=remote.channel_id),
+                    valid_time=always,
+                )
+            )
+        for sketch in sketches.get(beat.beat, ()):
+            predicate = _draft_relation(sketch.relation)
+            if predicate is None or (sketch.attribution and not sketch.attribution.factive):
+                continue
+            folded = sketch.subject.casefold().strip()
+            subject = actor if folded in _SELF_WORDS else cast.get(folded)
+            if predicate == ON_CHANNEL:
+                if sketch.negated:
+                    continue  # a hang-up: the guard keeps the channel
+                if subject is None or not sketch.object:
+                    return [], {}, True
+                declared.append(
+                    Proposition(
+                        subject_id=subject,
+                        predicate_id=ON_CHANNEL,
+                        literal=TypedLiteral(kind=LiteralKind.STR, value=sketch.object),
+                        valid_time=always,
+                    )
+                )
+            elif predicate == ADJACENT_TO:
+                if sketch.negated:
+                    continue
+                here, there = place(sketch.subject), place(sketch.object)
+                if here is None or there is None:
+                    return [], {}, True
+                declared.append(
+                    Proposition(
+                        subject_id=here,
+                        predicate_id=ADJACENT_TO,
+                        object_id=there,
+                        qualifiers=dict(sketch.qualifiers),
+                        valid_time=always,
+                    )
+                )
+            else:
+                to = None if sketch.negated else place(sketch.object)
+                if subject is None or (to is None and not sketch.negated):
+                    return [], {}, True
+                moves.setdefault(beat.beat, []).append((subject, to))
+    return declared, {n: tuple(m) for n, m in moves.items()}, False
+
+
 async def turn_guard(
     db: AsyncEngine,
     story_id: str,
@@ -3544,6 +3656,7 @@ async def turn_guard(
     primaries: Sequence[str],
     checked: Checked | None = None,
     beats: Sequence[TurnBeat] = (),
+    sketches: Mapping[int, Sequence[PropositionSketch]] | None = None,
 ) -> Any:
     """The guard context of a structured turn's output checks (#541, FR-GUARD-11): an
     age-conditioned policy's ``present`` set is the union over the turn's beats of routing's
@@ -3551,7 +3664,9 @@ async def turn_guard(
     canon stages (``_staged_moves``; none before anything is checked), and (#571) everyone
     routing delivers ``checked``'s beats and the draft's ``beats`` to: a narration's
     ``location`` (a place's name resolved to its id, as ``validate_perception`` does) reaches
-    whoever is there, so the set is never smaller than routing's delivered set."""
+    whoever is there, so the set is never smaller than routing's delivered set. #582: the
+    draft's ``beats`` are routed over the channels, barriers and moves its ``sketches`` declare
+    (``_draft_topology``), since nothing of the draft is checked yet."""
     moves: scene_loader.Moves | None = None
     turn_beats = [*(checked.beats if checked is not None else ()), *beats]
     if checked is not None or turn_beats:
@@ -3565,9 +3680,18 @@ async def turn_guard(
         if q.location is not None:
             q = replace(q, location=places.get(q.location.casefold(), q.location))
         routed.append(_route_beat(beat, q))
-    declared = [
+    declared: list[Any] = [
         c.proposition for b in turn_beats for c in b.declared if c.verdict != "contradicted"
     ]
+    if beats:
+        drafted, drafted_moves, unread = _draft_topology(beats, sketches or {}, read.names, places)
+        if unread:
+            return await guard_context(db, story_id, everyone=True)
+        declared += drafted
+        combined = dict(moves or {})
+        for number, step in drafted_moves.items():
+            combined[number] = (*combined.get(number, ()), *step)
+        moves = combined
     return await guard_context(
         db,
         story_id,
@@ -4289,6 +4413,7 @@ async def play(
                     [p.id for p in order],
                     None if simultaneous or merged is None else merged,
                     () if drafted is None else drafted.beats,
+                    None if drafted is None else drafted.sketches,
                 )
 
             async def produce(constraints: tuple[str, ...], attempt: int) -> Draft:

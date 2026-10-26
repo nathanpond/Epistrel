@@ -12,7 +12,8 @@ Each is caught by the final check, the response is the deterministic assembly of
 beats (``mode: deterministic``, ``degradation: ["composition_fallback"]``), the check's failure
 kind is reported, and the rejected text is kept only as a ``composition_rejected`` audit
 record. Complement: a clean composition (reordered with a speech cue, the same words) passes
-and is returned verbatim with ``mode: polished``.
+and is returned verbatim with ``mode: polished``, also with the cast placed in the scene (the
+speaker cue's name, detected as presence there, traces to the speaker's own beat; #572).
 
 Played end to end through ``respond`` with the stub adapter.
 """
@@ -26,6 +27,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from tests import perception_support as ps
 from tests.auth_support import auth_settings
 from tests.event_support import rows
 from tests.respond_support import body, respond, respond_client
@@ -116,3 +118,17 @@ async def test_s_compose_verify(
             assert THOUGHT not in played["message"]["text"]
             assert (await _rejected(engine, story))[-1].payload["text"] == polished
         assert len(await _rejected(engine, story)) == 3
+
+        # A placed scene (#572's E-12): the speaker cue names Jenni, which detection reads as
+        # her presence in the tavern; her own beat shows it, so the clean composition still
+        # traces and is released verbatim.
+        story, ids = await structured_story(client, "Bobby", "Jenni")
+        tavern = await place(engine, story, "tavern")
+        for name in ("Bobby", "Jenni"):
+            await ps.put(engine, story, ids[name], tavern)
+        played, report = await play(CLEAN)
+        assert played["message"]["text"] == CLEAN
+        assert played["message"]["mode"] == "polished"
+        assert FALLBACK not in played["degradation"]
+        assert report["check"]["failures"] == []
+        assert report["check"]["traced"] == report["check"]["claims"]

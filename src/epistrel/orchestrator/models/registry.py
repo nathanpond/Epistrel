@@ -174,6 +174,9 @@ class PlayerInput(InputSchema):
     name: Annotated[str, C.PLAYER_INPUT]
     say: Annotated[str | None, C.PLAYER_INPUT] = None
     do: Annotated[str | None, C.PLAYER_INPUT] = None
+    heard: Annotated[list[str], C.PLAYER_INPUT] = Field(default_factory=list)
+    """#572: a character render's perceived input short of its words (an envelope, an
+    eavesdropper's part), as working-memory lines; ``say``/``do`` are then what it perceived."""
 
 
 class AgeClue(InputSchema):

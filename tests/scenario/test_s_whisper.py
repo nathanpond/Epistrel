@@ -32,6 +32,11 @@ through #160), which still licenses nothing about the words: when Bobby then cla
 the claim is caught as a hallucination and repaired (#166). Complement: once Marcus tells Bobby
 the words, the same claim has a path (the exposure, dry-run; then the testimony it resolves
 to).
+
+``test_s_whisper__output`` also plays the player's own whisper to Marcus (#572): it is routed
+with its ``whisper_to`` before any render, so Bobby's render prompt (its working memory and its
+player-input section) carries only "Wren whispers something to Marcus" and none of the words (a
+sentinel), while Marcus's carries them.
 """
 
 from __future__ import annotations
@@ -386,6 +391,7 @@ async def test_s_whisper__inference(
 THOUGHT = "S-WHISPER-THOUGHT he must not find out."
 ENVELOPE = "Jenni whispers something to Marcus"
 RECENT = "S-WHISPER-RECENT Jenni whispered: the key is under the blue mat."
+PLAYER_WORDS = "PLAYERWHISPERSENTINEL the key is under the blue mat."
 
 
 def _vp(character_id: str) -> str:
@@ -526,6 +532,38 @@ async def test_s_whisper__output(
         assert ("Wren whispers something to Marcus", "envelope", "room") in _texts(
             await ps.memories_of(engine, story, ids["Bobby"])
         )
+
+        # #572: the player's whisper is routed with its qualifier before any render, so a
+        # non-target's prompt (its working memory and its player-input section) holds only the
+        # envelope. Complement: the target Marcus's prompt carries the words.
+        for who in ("Bobby", "Marcus"):
+            story, ids, places = await _room(client, engine)
+            stub = epistrel.models.stub
+            before = len(renders_of(stub))
+            stub.script("generation", [render(beat("do", f"{who} shrugs."))])
+            response = await respond(
+                client,
+                story,
+                {
+                    "actor_character_id": ids["Wren"],
+                    "player_input": {"say": PLAYER_WORDS, "whisper_to": [ids["Marcus"]]},
+                    "render_character_ids": [ids[who]],
+                },
+            )
+            assert response.status_code == 200, response.text
+            (call,) = renders_of(stub)[before:]
+            prompt = text_of(call)
+            if who == "Bobby":
+                assert "PLAYERWHISPERSENTINEL" not in prompt
+                assert "blue mat" not in prompt
+                assert prompt.count("Wren whispers something to Marcus") == 2
+                assert ("Wren whispers something to Marcus", "envelope", "room") in _texts(
+                    await ps.memories_of(engine, story, ids["Bobby"])
+                )
+            else:
+                assert f"Wren says: {PLAYER_WORDS}" in prompt
+                assert f'Wren: "{PLAYER_WORDS}"' in prompt
+                assert "whispers something" not in prompt
 
         # Working memory: the consumer's recent messages carry the words, yet Bobby's next
         # context holds only the envelope and none of them; Marcus's holds the words.

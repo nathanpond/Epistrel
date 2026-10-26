@@ -3792,7 +3792,10 @@ async def play(
     view: audience_rules.PlayerView = request.player_view or story.settings.player_view
     """#177: the player view the output is produced under (the request's, else the story's)."""
     input_qualifiers: list[perception.Qualifiers] = [perception.Qualifiers()]
-    """#177: the player's ``say``'s validated ``whisper_to``."""
+    """#177: the player's ``say``'s validated ``whisper_to`` (#572: validated before any render,
+    so each character's context routes the input with it)."""
+    input_repairs: list[perception.Repair] = []
+    """#177: the repairs validating ``input_qualifiers`` made (``qualifiers_repaired``)."""
     reconciled: list[reconcile_rules.Reconciliation] = []
     """#177: the turn's reconciliation (``turn_report.reconcile``)."""
     settled_pairs: list[tuple[int, int]] = []
@@ -4037,8 +4040,18 @@ async def play(
         as it perceived them (``## Just now``)."""
         embeddings = models.embeddings
         pending = [
-            *([character_context.PendingBeat("say", read.actor.id, say)] if say else []),
-            *([character_context.PendingBeat("do", read.actor.id, do)] if do else []),
+            # #572: the player's input with its validated qualifiers (a whisper's non-targets
+            # get its envelope), which also fills the render's player-input section.
+            *(
+                [
+                    character_context.PendingBeat(
+                        "say", read.actor.id, say, input_qualifiers[0], player=True
+                    )
+                ]
+                if say
+                else []
+            ),
+            *([character_context.PendingBeat("do", read.actor.id, do, player=True)] if do else []),
             # #180: the co_author player's narrated beats, as they happened.
             *(
                 character_context.PendingBeat(
@@ -4055,8 +4068,6 @@ async def play(
             story_id=story_id,
             turn=read.turn,
             settings=settings,
-            say=say,
-            do=do,
             pending=tuple(pending),
             location_name=read.location_name,
             present=read.present_ids,
@@ -4095,6 +4106,21 @@ async def play(
         )
         authority[:] = [split]
         say, do = split.say, split.do
+        input_qualifiers[:] = [perception.Qualifiers()]
+        input_repairs.clear()
+        if say and request.player_input.whisper_to:
+            # #177 (from #161): the player's whisper; a target not in the room is dropped
+            # silently (``qualifiers_repaired``), every target dropped leaves an aside. #572:
+            # validated here, before any render, so the renders' contexts route the input with it.
+            asked = perception.Qualifiers(whisper_to=tuple(request.player_input.whisper_to))
+            if scene_loader.level_of(settings) == perception.FULL:
+                async with db.connect() as conn:
+                    scene_state = await scene_loader.load_scene_state(conn, story_id, read.turn)
+                asked, repairs = perception.validate_qualifiers(
+                    perception.RouteBeat("say", 1, read.actor.id, asked), scene_state
+                )
+                input_repairs[:] = list(repairs)
+            input_qualifiers[:] = [asked]
         # #541: ``present`` for the output gate is the turn's routing audience, the input's
         # actor and the primaries' co-located sets (``turn_guard``).
         context = await turn_guard(
@@ -4340,8 +4366,6 @@ async def play(
                     sections,
                     read_k.character,
                     read.actor,
-                    say=say,
-                    do=do,
                     budget=budget_tokens,
                     others_present=() if turn_roles is None else turn_roles.others_present(),
                     interjections=turn_roles is not None and turn_roles.interjections,
@@ -4735,19 +4759,8 @@ async def play(
         )
         scene_loader.remember_level(read_set, scene_loader.level_of(settings))
         checked = await validate_perception(db, story_id, read, checked, settings)
-        input_qualifiers[:] = [perception.Qualifiers()]
-        if say and request.player_input.whisper_to:
-            # #177 (from #161): the player's whisper; a target not in the room is dropped
-            # silently (``qualifiers_repaired``), every target dropped leaves an aside.
-            asked = perception.Qualifiers(whisper_to=tuple(request.player_input.whisper_to))
-            if scene_loader.level_of(settings) == perception.FULL:
-                async with db.connect() as conn:
-                    state = await scene_loader.load_scene_state(conn, story_id, read.turn)
-                asked, repairs = perception.validate_qualifiers(
-                    perception.RouteBeat("say", 1, read.actor.id, asked), state
-                )
-                checked.perception_repairs[:0] = list(repairs)
-            input_qualifiers[:] = [asked]
+        # #177: the player's whisper's repairs, validated before the renders (#572).
+        checked.perception_repairs[:0] = list(input_repairs)
         # #162: salient witnesses' testimony, adjudicated as optional work before the polish.
         checked.adjudications = await adjudicate.adjudicate_turn(
             db,

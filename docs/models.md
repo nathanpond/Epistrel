@@ -69,6 +69,7 @@ Writes the reply of a Lite turn from the story's prompt sections; in a structure
 | `player_input.name` | `player_input` |
 | `player_input.say` | `player_input` |
 | `player_input.do` | `player_input` |
+| `player_input.heard` | `player_input` |
 | `player_authority` | `constraint` |
 | `player_requests` | `player_input` |
 | `scene` | `scene` |
@@ -385,6 +386,7 @@ Rewrites one beat of a structured render that contradicted canon or asserted wha
 | `player_input.name` | `player_input` |
 | `player_input.say` | `player_input` |
 | `player_input.do` | `player_input` |
+| `player_input.heard` | `player_input` |
 | `player_authority` | `constraint` |
 | `player_requests` | `player_input` |
 | `scene` | `scene` |

@@ -162,7 +162,9 @@ class Lexicon:
     articles: frozenset[str]
     persons: frozenset[str]
     times: frozenset[str] = frozenset()
-    """Words that make the phrase after a direct object a time or frequency phrase (#573)."""
+    """Head nouns that make the phrase after a direct object a time or frequency phrase (#573)."""
+    time_adverbs: frozenset[str] = frozenset()
+    """Adverbs that end that phrase's noun ("an hour later", "a note again"; #583)."""
 
 
 @cache
@@ -191,6 +193,7 @@ def lexicon() -> Lexicon:
         articles=frozenset(str(a).casefold() for a in table.get("articles", ())),
         persons=frozenset(str(p).casefold() for p in table.get("person_nouns", ())),
         times=frozenset(str(t).casefold() for t in table.get("time_words", ())),
+        time_adverbs=frozenset(str(t).casefold() for t in table.get("time_adverbs", ())),
     )
 
 
@@ -365,25 +368,27 @@ def _followed_by(text: str, target: Party, verb: Verb, lex: Lexicon) -> bool:
 
     A determiner there opens a second object only when the phrase it opens is not a time or
     frequency phrase (#573): "passes the waiter a note" hands something over, "passes the jogger
-    a second time" / "an hour later" / "the next morning" is motion past. The phrase is the
-    words after the determiner up to punctuation or the next ``then`` word, at most three."""
+    a second time" / "an hour later" / "the next morning" is motion past. The phrase's head noun
+    decides (#583): the last of the words after the determiner before a time adverb, a ``then``
+    word or article, punctuation, or the third word. "a note again", "the morning paper" and "a
+    note that morning" hand something over; a head in ``times`` is a time phrase."""
     word = _WORD.match(text, _skip_space(text, target.span[1]))
     if word is None or word.group().casefold() not in verb.then:
         return False
     if word.group().casefold() in lex.particles:
         return True  # "calls the waiter over": a particle, not a determiner
     pos = word.end()
+    head: str | None = None
     for _ in range(3):
         nxt = _WORD.match(text, _skip_space(text, pos))
         if nxt is None or text[pos : nxt.start()].strip():
             break  # the end, or punctuation between the words
         folded = nxt.group().casefold()
-        if folded in lex.times:
-            return False
-        if folded in verb.then:
+        if folded in lex.time_adverbs or folded in verb.then or folded in lex.articles:
             break
+        head = folded
         pos = nxt.end()
-    return True
+    return head not in lex.times
 
 
 def _verb_interactions(

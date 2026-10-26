@@ -17,7 +17,9 @@ the two adults proceeds; brought back into the room, the same input is blocked. 
 content's routing audience, not the player's room (#541): with the player in the cabin and the
 partner and the 16-year-old in the barn, the partner's beats reach the minor, so the same
 intimacy rendered there is withheld while the player's own input (heard in the cabin) still
-marks her not present.
+marks her not present. A narration located in her room reaches her too (#571: the ``present``
+set is never smaller than routing's delivered set), so it is withheld and enters no memory of
+hers; the same narration located in an empty room leaves her elsewhere.
 """
 
 from __future__ import annotations
@@ -25,9 +27,17 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from epistrel.core.epistemic.perception import SceneState, turn_audience
+from epistrel.core.epistemic.perception import (
+    Qualifiers,
+    RouteBeat,
+    SceneState,
+    route_turn,
+    turn_audience,
+)
+from epistrel.core.tables import memories
 from epistrel.orchestrator.policies.seeds.policies import MINORS_POLICY_ID
 from tests import perception_support as ps
 from tests.auth_support import auth_settings
@@ -233,3 +243,105 @@ def test_r_07__turn_audience() -> None:
     assert turn_audience(scene, ["player"], arrives) == {"player", "minor"}
     # Someone who never shares a room with a beat stays out.
     assert "other" not in turn_audience(scene, ["player", "adult"], arrives)
+
+
+LOCATED = "two farmhands make love slowly in the hay."
+CABIN_INPUT = "I wait and listen to the rain."
+CABIN_REPLY = "Ilse glances at the window."
+
+
+async def _narrated_in(
+    engine: AsyncEngine, client: Any, stub: Any, room: str
+) -> tuple[Any, list[str]]:
+    """The player and Ilse in the cabin, the 16-year-old in the barn, a shed nobody is in; the
+    turn's narration located in ``room`` (by its name). Answers the response and the texts of
+    the minor's memories."""
+    stub.reset()  # no script or match left from an earlier story
+    recognise_near(stub, "make love")
+    story, ids = await explicit_trio(engine)
+    await ps.perceive(engine, story, "full")
+    cabin = await ps.place_entity(engine, story, "cabin")
+    barn = await ps.place_entity(engine, story, "barn")
+    await ps.place_entity(engine, story, "shed")
+    for name in (ADULT_NAME, PARTNER_NAME):
+        await ps.put(engine, story, ids[name], cabin)
+    await ps.put(engine, story, ids[MINOR_NAME], barn)
+    narration = f"Out in the {room}, {LOCATED}"
+    stub.script(
+        "generation",
+        [render(beat("narration", narration, location=room)), render(beat("do", CABIN_REPLY))] * 3,
+    )
+    played = await respond(client, story, body(ids[ADULT_NAME], None, do=CABIN_INPUT))
+    async with engine.connect() as conn:
+        held = await conn.scalars(
+            select(memories.c.text).where(
+                memories.c.story_id == story,
+                memories.c.holder_character_id == ids[MINOR_NAME],
+            )
+        )
+        texts = [str(t) for t in held]
+    return played, texts
+
+
+@pytest.mark.integration
+@pytest.mark.redteam
+@pytest.mark.part("M5", "FR-GUARD-11; FR-TURN-10")
+async def test_r_07__located_narration(
+    pg_url: str,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """#571: with the adults in the cabin and the 16-year-old in the barn, a narration located
+    in the barn is routed to her, so she is present for it: the intimacy is withheld (the safe
+    fallback) and no memory of hers holds it. Complement: the same narration located in an
+    empty shed reaches no one, so she stays elsewhere and the turn passes."""
+    settings = auth_settings(pg_url, model_adapter="stub")
+    async with respond_client(settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        withheld, held = await _narrated_in(engine, client, stub, "barn")
+        assert withheld.status_code == 200, withheld.text
+        assert withheld.json()["guardrail"]["fallback_used"] is True
+        assert LOCATED not in withheld.json()["message"]["text"]
+        assert not [t for t in held if LOCATED in t]
+        checks = subject_checks(stub)
+        assert ELSEWHERE in checks[0]  # the player's input, heard in the cabin only
+        assert checks[1:]
+        assert all(ELSEWHERE not in c for c in checks[1:])
+
+        passed, held = await _narrated_in(engine, client, stub, "shed")
+        assert passed.status_code == 200, passed.text
+        assert passed.json()["guardrail"]["fallback_used"] is False
+        assert CABIN_REPLY in passed.json()["message"]["text"]
+        assert not [t for t in held if LOCATED in t]
+        checks = subject_checks(stub)
+        assert checks
+        assert all(ELSEWHERE in c for c in checks)
+
+
+def _cabin_barn_shed() -> SceneState:
+    """The player and an adult in the cabin, the minor in the barn, someone else in the loft,
+    and an empty shed."""
+    return SceneState(
+        location="cabin",
+        placements={"player": "cabin", "adult": "cabin", "minor": "barn", "other": "loft"},
+        characters=frozenset({"player", "adult", "minor", "other"}),
+        places=frozenset({"cabin", "barn", "loft", "shed"}),
+    )
+
+
+@pytest.mark.redteam
+@pytest.mark.part("M5", "FR-GUARD-11; FR-TURN-10")
+def test_r_07__turn_audience_located() -> None:
+    """#571: the ``present`` set holds everyone routing delivers the turn's beats to: a
+    narration located in the barn reaches the minor there. Complement: a narration located in
+    an empty room adds no one. Either way routing's delivered set is inside it."""
+    scene = _cabin_barn_shed()
+    actors = ["player", "adult"]
+    narrated = RouteBeat("narration", 2, None, Qualifiers(location="barn"))
+    assert turn_audience(scene, actors, beats=[narrated]) == {"player", "adult", "minor"}
+    empty = RouteBeat("narration", 2, None, Qualifiers(location="shed"))
+    assert turn_audience(scene, actors, beats=[empty]) == {"player", "adult"}
+    for routed in (narrated, empty):
+        audience = turn_audience(scene, actors, beats=[routed])
+        for result in route_turn([routed], scene, "full"):
+            assert result.perceivers <= audience

@@ -3543,17 +3543,38 @@ async def turn_guard(
     read: TurnRead,
     primaries: Sequence[str],
     checked: Checked | None = None,
+    beats: Sequence[TurnBeat] = (),
 ) -> Any:
     """The guard context of a structured turn's output checks (#541, FR-GUARD-11): an
     age-conditioned policy's ``present`` set is the union over the turn's beats of routing's
     co-located set, for the input's actor and ``primaries`` across the moves ``checked``'s
-    canon stages (``_staged_moves``; none before anything is checked)."""
+    canon stages (``_staged_moves``; none before anything is checked), and (#571) everyone
+    routing delivers ``checked``'s beats and the draft's ``beats`` to: a narration's
+    ``location`` (a place's name resolved to its id, as ``validate_perception`` does) reaches
+    whoever is there, so the set is never smaller than routing's delivered set."""
     moves: scene_loader.Moves | None = None
-    if checked is not None:
+    turn_beats = [*(checked.beats if checked is not None else ()), *beats]
+    if checked is not None or turn_beats:
         async with db.connect() as conn:
-            moves = await _staged_moves(conn, story_id, checked)
+            if checked is not None:
+                moves = await _staged_moves(conn, story_id, checked)
+            places = await _place_ids(conn, story_id) if turn_beats else {}
+    routed: list[perception.RouteBeat] = []
+    for beat in turn_beats:
+        q = beat.qualifiers
+        if q.location is not None:
+            q = replace(q, location=places.get(q.location.casefold(), q.location))
+        routed.append(_route_beat(beat, q))
+    declared = [
+        c.proposition for b in turn_beats for c in b.declared if c.verdict != "contradicted"
+    ]
     return await guard_context(
-        db, story_id, actors=(read.actor.id, *primaries), moves=moves or None
+        db,
+        story_id,
+        actors=(read.actor.id, *primaries),
+        moves=moves or None,
+        beats=routed,
+        declared=declared,
     )
 
 
@@ -4231,6 +4252,19 @@ async def play(
                 read.inputs, ResolvedCast(actor=read.actor, render=(read_k.character,))
             )
 
+            async def draft_guard(draft: Draft) -> Any:
+                # #571: the draft's own beats are routed too, so a narration located in a
+                # minor's room makes her present for it; earlier primaries' beats as at k > 0.
+                drafted = by_draft.get(id(draft))
+                return await turn_guard(
+                    db,
+                    story_id,
+                    read,
+                    [p.id for p in order],
+                    None if simultaneous or merged is None else merged,
+                    () if drafted is None else drafted.beats,
+                )
+
             async def produce(constraints: tuple[str, ...], attempt: int) -> Draft:
                 assembling = time.perf_counter()
                 params = render_params(
@@ -4389,6 +4423,7 @@ async def play(
                     policies=policies,
                 ),
                 withheld=partial(refuse_withheld, db),
+                context_of=draft_guard,
             )
             timing.policy_check_s += time.perf_counter() - gating
             clock.add("render", time.perf_counter() - gating)

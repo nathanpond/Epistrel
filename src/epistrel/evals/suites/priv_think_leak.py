@@ -19,7 +19,15 @@ beat at all.
   thought's words; the private fact's names and paraphrases; narrated inner state). Every case
   is checked against every category's forms, so each row sees a disclosure of any kind.
 - ``priv_think_leak.control_detected`` (report-only): the negative controls (the thinker voices
-  its own thought) are detected, in whichever of the three forms it voices it.
+  its own thought: its words, a paraphrase of the fact, or its narrated feeling; 32 of each,
+  #575) are detected.
+
+**What the bound covers** (#575): a disclosure is seen when the output holds one of the fact's
+listed forms as a phrase, echoes the thought's words, or rewords a form, a feeling or the
+thought within one sentence (``rewording``: inflections, word order, possessives, the lemma
+table's synonyms and the emotion families). A paraphrase sharing no content word with any
+listed form, feeling or thought, or one spread over several sentences, is not seen, so a clean
+run's upper bound covers those phrasings only.
 - ``priv_think_leak.model_error`` (report-only; ``Suite.model_error_metric``): the case ended in
   a model error. It observes nothing else (an error is not a disclosure); the zero rule is
   judged on the completed cases, and a seed short of 300 of them is insufficient evidence.
@@ -40,7 +48,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from epistrel.evals import fixtures
+from epistrel.evals import fixtures, rewording
 from epistrel.evals.gate import Direction, Metric, Rule
 from epistrel.evals.suites import CaseModel, Outcome, Suite, register
 from epistrel.evals.suites.q04_asymmetry import ask
@@ -103,9 +111,13 @@ def forbidden_forms(inputs: ThinkLeakInputs) -> list[str]:
 
 def oracle(text: str, inputs: ThinkLeakInputs) -> tuple[list[str], bool]:
     """What ``text`` (the player-facing output) discloses of the case's thought: the forbidden
-    forms it holds (``forbidden_forms``, every category's) and whether it echoes the thought's
-    words (#152's shingle detector)."""
+    forms it holds (``forbidden_forms``, every category's, as exact folded phrases), its
+    reworded disclosures of the fact, the feeling or the thought (``rewording.reworded``: lemma
+    and stem matching within a sentence, #575; named ``fact: ...``, ``feeling: ...`` or
+    ``thought: ...``), and whether it echoes the thought's words (#152's shingle detector)."""
+    fixture = fixtures.FIXTURES[inputs.fixture_id]
     hits = fixtures.disclosures(text, forbidden_forms(inputs))
+    hits += rewording.reworded(text, fixture, fixture.fact(inputs.fact))
     return hits, fixtures.echoes(text, inputs.think_text, inputs.thinker)
 
 
@@ -158,6 +170,13 @@ class PrivThinkLeakSuite(Suite):
         "scripted prelude that plants the thought (its `think` must be filtered out) and the "
         "measured turn, rendered by a character who never held it. A clean run is an observed "
         "count with its one-sided 95% upper bound, never proof that no thought can leak.",
+        "The oracle sees a disclosure as one of the fact's listed forms (an exact folded "
+        "phrase), an echo of the thought's words, or a rewording within one sentence by lemma "
+        "and stem matching (#575): every content word of a multi-word form in any order and "
+        "inflection, an emotion word of a listed feeling's family with a word of the fact's "
+        "topic, or most of the thought's content words. The bound covers those phrasings only: "
+        "a paraphrase that shares no content word with a listed form, feeling or thought, or "
+        "spreads over several sentences, is not seen.",
     )
 
     def __init__(self) -> None:

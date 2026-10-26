@@ -9241,3 +9241,15 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision (Rule 1, #572):** With the cast placed, every polish that names the speaker failed its check: `detect_message` reads a speaker cue ("Bobby says") as `present_at(Bobby, <scene>)`, and `compose.trace` found no beat for it (`untraced`). This predates #572 (reproduced on `69a6d2c`) and hits any story with placed characters. `compose.trace` now traces an affirmed `present_at` claim whose text is exactly the name of a beat's actor the viewpoint receives. Any other untraced claim still fails closed. Covered by a placed-scene case in `tests/scenario/test_s_compose_verify.py`. **Why:** a blocker for #572's eval, a narrow fix in the code it exercises. **Issue:** #572
 - **Decision (owner question, filed):** An unplaced rendered character now gets no player words in its user block under partitions. Kept strict (option a). The options (a: strict, b: render-only exception, c: strict plus a degradation note and docs, d: routing-rule change by ADR) are on #579 (`needs-triage`, `question`). **Issue:** #579
 - **Decision (Rule 3, #575):** CI's `evals-zero-leak` job was cancelled at its 40-minute `timeout-minutes` on `a339bf7`; the run at `aa62011` (PR #570) took 35 minutes. #575 added 64 controls to `think_leak` on two seeds, and the reworded oracle does more matching. Raised the job's timeout to 60 minutes. The gate itself (observed zero, `--fail-on-gate`) is unchanged. **Issue:** #575
+
+## Owner decisions — 2026-10-26 (fix pass 2)
+
+- **Decision (owner):** The owner re-approved the `think_leak` set with 96 controls (#575): "1) approved". `evals/sets/think_leak/PROVENANCE.md` now reads `approved by owner 2026-10-26`, and `--check-sets` passes with `EPISTREL_REQUIRE_APPROVED_SETS=1`. This clears the merge-gate blocker. **Issue:** #575
+- **Decision (owner):** #576 takes option (a): "2) a". S-FAMILY's only-child clause moves from its M5 part to a new **[M7: FR-SCN-7]** part in docs/04, and §22's FR-SCN-7 row gains `S-FAMILY (M7)`. The work is filed as #580 (M7, epic #25): a table-driven closed-set reading of background flavor for the genesis fact merge. `test_s_family.py`'s docstring cites the move. This meets #576's AC (docs/04 amended with the owner's words; the docstring cites it). #576 closes with PR #578. #173 AC4's S-FAMILY half is covered; its other half still waits on #523. **Issue:** #576, #580
+- **Decision (owner):** #579 keeps the strict behaviour (option a): "3) ok". An unplaced rendered character perceives none of the player's input under partitions, which follows docs/02 §4.4. **Issue:** #579
+
+## Ad-hoc — 2026-10-26
+
+- **Change:** S-FAMILY's only-child merge clause (FR-SCN-7) moved from M5 to M7, with the new story #580 in M7 under epic #25 (a closed-set reading of background flavor in `read_seed` for the genesis and Lite→Full fact merge).
+  **Why:** the owner's decision on #576 (option a). The engine cannot read "only child" from prose, and M7 reruns the fact merge for the upgrade.
+  **Affects:** M7 (epic #25: the Lite→Full upgrade stories and the I-27 M7 merge should account for #580's closed sets). Plans may be stale.

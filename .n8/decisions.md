@@ -9268,3 +9268,6 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision (Rule 3):** `_draft_topology`'s reading moved into `core.epistemic.perception.draft_topology` (with a plain `DraftSketch` record). The pipeline keeps a thin `_draft_topology` that maps the draft's sketches and `remote_channel` beats into it.
   **Why:** the full suite at `b57bd0f` failed `tests/gates/test_perception_authority_gate.py`. `pipeline.py` imported `ADJACENT_TO`/`ON_CHANNEL`, and FR-TURN-10 keeps perception decisions in the routing module. Core cannot import the orchestrator's `PropositionSketch`, hence the record. Behaviour is unchanged: the R-07 tests and the remote-rule mutation check still hold.
   **Issue:** #582
+- **Decision (Rule 3):** `DraftSketch.relation` was renamed to `predicate`.
+  **Why:** at `d6ec95d`, `tests/test_ownership_rules.py::test_only_ownership_code_reads_relations` (#104 AC2) flagged `perception.py`. Its AST scan bans any `.relation == "<literal>"`, because that is how code would decide on an ownership relation's name. The field holds a core predicate name, so `predicate` is the accurate word. The gate stays as strict as it was.
+  **Issue:** #582

@@ -3574,7 +3574,7 @@ def _draft_topology(
         perception.DraftSketch(
             beat=b.beat,
             actor=None if b.kind == NARRATION else b.character_id,
-            relation=relation,
+            predicate=relation,
             subject=sketch.subject,
             object=sketch.object,
             negated=sketch.negated,

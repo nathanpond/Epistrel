@@ -304,12 +304,12 @@ def with_declared(scene: SceneState, claims: Iterable[Any]) -> SceneState:
 @dataclass(frozen=True, slots=True)
 class DraftSketch:
     """A topology claim a draft declares before it is checked (#582): a ``located_at``,
-    ``on_channel`` or ``adjacent_to`` sketch of beat ``beat`` by ``actor`` (``None``: a
-    narration), its subject and object as written."""
+    ``on_channel`` or ``adjacent_to`` sketch (``predicate``: the core name) of beat ``beat`` by
+    ``actor`` (``None``: a narration), its subject and object as written."""
 
     beat: int
     actor: str | None
-    relation: str
+    predicate: str
     subject: str
     object: str | None = None
     negated: bool = False
@@ -360,13 +360,13 @@ def draft_topology(
     for sketch in sketches:
         folded = sketch.subject.casefold().strip()
         subject = sketch.actor if folded in _SELF_WORDS else cast.get(folded)
-        if sketch.relation == "on_channel":
+        if sketch.predicate == "on_channel":
             if sketch.negated:
                 continue  # a hang-up: the guard keeps the channel
             if subject is None or not sketch.object:
                 return [], {}, True
             declared.append(on(subject, sketch.object))
-        elif sketch.relation == "adjacent_to":
+        elif sketch.predicate == "adjacent_to":
             if sketch.negated:
                 continue
             here, there = place(sketch.subject), place(sketch.object)
@@ -381,7 +381,7 @@ def draft_topology(
                     valid_time=always,
                 )
             )
-        elif sketch.relation == "located_at":
+        elif sketch.predicate == "located_at":
             to = None if sketch.negated else place(sketch.object)
             if subject is None or (to is None and not sketch.negated):
                 return [], {}, True

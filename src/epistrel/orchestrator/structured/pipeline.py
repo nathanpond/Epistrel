@@ -3543,17 +3543,38 @@ async def turn_guard(
     read: TurnRead,
     primaries: Sequence[str],
     checked: Checked | None = None,
+    beats: Sequence[TurnBeat] = (),
 ) -> Any:
     """The guard context of a structured turn's output checks (#541, FR-GUARD-11): an
     age-conditioned policy's ``present`` set is the union over the turn's beats of routing's
     co-located set, for the input's actor and ``primaries`` across the moves ``checked``'s
-    canon stages (``_staged_moves``; none before anything is checked)."""
+    canon stages (``_staged_moves``; none before anything is checked), and (#571) everyone
+    routing delivers ``checked``'s beats and the draft's ``beats`` to: a narration's
+    ``location`` (a place's name resolved to its id, as ``validate_perception`` does) reaches
+    whoever is there, so the set is never smaller than routing's delivered set."""
     moves: scene_loader.Moves | None = None
-    if checked is not None:
+    turn_beats = [*(checked.beats if checked is not None else ()), *beats]
+    if checked is not None or turn_beats:
         async with db.connect() as conn:
-            moves = await _staged_moves(conn, story_id, checked)
+            if checked is not None:
+                moves = await _staged_moves(conn, story_id, checked)
+            places = await _place_ids(conn, story_id) if turn_beats else {}
+    routed: list[perception.RouteBeat] = []
+    for beat in turn_beats:
+        q = beat.qualifiers
+        if q.location is not None:
+            q = replace(q, location=places.get(q.location.casefold(), q.location))
+        routed.append(_route_beat(beat, q))
+    declared = [
+        c.proposition for b in turn_beats for c in b.declared if c.verdict != "contradicted"
+    ]
     return await guard_context(
-        db, story_id, actors=(read.actor.id, *primaries), moves=moves or None
+        db,
+        story_id,
+        actors=(read.actor.id, *primaries),
+        moves=moves or None,
+        beats=routed,
+        declared=declared,
     )
 
 
@@ -3771,7 +3792,10 @@ async def play(
     view: audience_rules.PlayerView = request.player_view or story.settings.player_view
     """#177: the player view the output is produced under (the request's, else the story's)."""
     input_qualifiers: list[perception.Qualifiers] = [perception.Qualifiers()]
-    """#177: the player's ``say``'s validated ``whisper_to``."""
+    """#177: the player's ``say``'s validated ``whisper_to`` (#572: validated before any render,
+    so each character's context routes the input with it)."""
+    input_repairs: list[perception.Repair] = []
+    """#177: the repairs validating ``input_qualifiers`` made (``qualifiers_repaired``)."""
     reconciled: list[reconcile_rules.Reconciliation] = []
     """#177: the turn's reconciliation (``turn_report.reconcile``)."""
     settled_pairs: list[tuple[int, int]] = []
@@ -4016,8 +4040,18 @@ async def play(
         as it perceived them (``## Just now``)."""
         embeddings = models.embeddings
         pending = [
-            *([character_context.PendingBeat("say", read.actor.id, say)] if say else []),
-            *([character_context.PendingBeat("do", read.actor.id, do)] if do else []),
+            # #572: the player's input with its validated qualifiers (a whisper's non-targets
+            # get its envelope), which also fills the render's player-input section.
+            *(
+                [
+                    character_context.PendingBeat(
+                        "say", read.actor.id, say, input_qualifiers[0], player=True
+                    )
+                ]
+                if say
+                else []
+            ),
+            *([character_context.PendingBeat("do", read.actor.id, do, player=True)] if do else []),
             # #180: the co_author player's narrated beats, as they happened.
             *(
                 character_context.PendingBeat(
@@ -4034,8 +4068,6 @@ async def play(
             story_id=story_id,
             turn=read.turn,
             settings=settings,
-            say=say,
-            do=do,
             pending=tuple(pending),
             location_name=read.location_name,
             present=read.present_ids,
@@ -4074,6 +4106,21 @@ async def play(
         )
         authority[:] = [split]
         say, do = split.say, split.do
+        input_qualifiers[:] = [perception.Qualifiers()]
+        input_repairs.clear()
+        if say and request.player_input.whisper_to:
+            # #177 (from #161): the player's whisper; a target not in the room is dropped
+            # silently (``qualifiers_repaired``), every target dropped leaves an aside. #572:
+            # validated here, before any render, so the renders' contexts route the input with it.
+            asked = perception.Qualifiers(whisper_to=tuple(request.player_input.whisper_to))
+            if scene_loader.level_of(settings) == perception.FULL:
+                async with db.connect() as conn:
+                    scene_state = await scene_loader.load_scene_state(conn, story_id, read.turn)
+                asked, repairs = perception.validate_qualifiers(
+                    perception.RouteBeat("say", 1, read.actor.id, asked), scene_state
+                )
+                input_repairs[:] = list(repairs)
+            input_qualifiers[:] = [asked]
         # #541: ``present`` for the output gate is the turn's routing audience, the input's
         # actor and the primaries' co-located sets (``turn_guard``).
         context = await turn_guard(
@@ -4231,6 +4278,19 @@ async def play(
                 read.inputs, ResolvedCast(actor=read.actor, render=(read_k.character,))
             )
 
+            async def draft_guard(draft: Draft) -> Any:
+                # #571: the draft's own beats are routed too, so a narration located in a
+                # minor's room makes her present for it; earlier primaries' beats as at k > 0.
+                drafted = by_draft.get(id(draft))
+                return await turn_guard(
+                    db,
+                    story_id,
+                    read,
+                    [p.id for p in order],
+                    None if simultaneous or merged is None else merged,
+                    () if drafted is None else drafted.beats,
+                )
+
             async def produce(constraints: tuple[str, ...], attempt: int) -> Draft:
                 assembling = time.perf_counter()
                 params = render_params(
@@ -4306,8 +4366,6 @@ async def play(
                     sections,
                     read_k.character,
                     read.actor,
-                    say=say,
-                    do=do,
                     budget=budget_tokens,
                     others_present=() if turn_roles is None else turn_roles.others_present(),
                     interjections=turn_roles is not None and turn_roles.interjections,
@@ -4389,6 +4447,7 @@ async def play(
                     policies=policies,
                 ),
                 withheld=partial(refuse_withheld, db),
+                context_of=draft_guard,
             )
             timing.policy_check_s += time.perf_counter() - gating
             clock.add("render", time.perf_counter() - gating)
@@ -4700,19 +4759,8 @@ async def play(
         )
         scene_loader.remember_level(read_set, scene_loader.level_of(settings))
         checked = await validate_perception(db, story_id, read, checked, settings)
-        input_qualifiers[:] = [perception.Qualifiers()]
-        if say and request.player_input.whisper_to:
-            # #177 (from #161): the player's whisper; a target not in the room is dropped
-            # silently (``qualifiers_repaired``), every target dropped leaves an aside.
-            asked = perception.Qualifiers(whisper_to=tuple(request.player_input.whisper_to))
-            if scene_loader.level_of(settings) == perception.FULL:
-                async with db.connect() as conn:
-                    state = await scene_loader.load_scene_state(conn, story_id, read.turn)
-                asked, repairs = perception.validate_qualifiers(
-                    perception.RouteBeat("say", 1, read.actor.id, asked), state
-                )
-                checked.perception_repairs[:0] = list(repairs)
-            input_qualifiers[:] = [asked]
+        # #177: the player's whisper's repairs, validated before the renders (#572).
+        checked.perception_repairs[:0] = list(input_repairs)
         # #162: salient witnesses' testimony, adjudicated as optional work before the polish.
         checked.adjudications = await adjudicate.adjudicate_turn(
             db,

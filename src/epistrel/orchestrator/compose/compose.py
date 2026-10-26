@@ -40,7 +40,9 @@ call the turn reserved), then ``trace``:
   proposition's shape or is covered by one (#140's coverage rule, ``supported``: a narrowed
   restatement traces, a wider one does not). A beat's propositions are all it asserts (its
   declared ones, the claims verified new and the uncertain ones it surfaced). A claim with no
-  proposition is untraced unless it is a beat's own words (fail closed);
+  proposition is untraced unless it is a beat's own words (fail closed). The bare name of a
+  viewpoint beat's actor (a speaker cue, "Bobby says.") is detected in a placed scene as that
+  actor's ``present_at`` of the scene; it traces to the actor's own beat;
 - **attribution**: a speaker cue (``Name:``, ``Name says``, ``said Name``) on a unit must name
   its ``say`` beat's actor, a ``do`` unit opening with a name must name its actor, narration
   carries no speaker cue, a connective unit's cue must name a speaker of the turn, and an
@@ -89,8 +91,9 @@ from typing import Any, ClassVar, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from epistrel.core.propositions.model import Proposition
+from epistrel.core.propositions.model import Polarity, Proposition
 from epistrel.core.propositions.registry import Registry
+from epistrel.core.propositions.vocabulary import PRESENT_AT
 from epistrel.core.turns.assembly import (
     PRIVATE_KINDS,
     Beat,
@@ -692,6 +695,7 @@ def trace(
 
     # Traceability.
     visible_props = _props(beats)
+    actors = {b.character_id for b in beats if b.character_id is not None}
     hidden_props = _props(hidden)
     withheld_props = _props(withheld)
     traced = 0
@@ -714,6 +718,16 @@ def trace(
             continue
         proposition = claim.proposition
         if proposition is not None and _covered(proposition, visible_props, registry):
+            traced += 1
+            continue
+        if (
+            proposition is not None
+            and proposition.predicate_id == PRESENT_AT
+            and proposition.polarity is Polarity.AFFIRMED
+            and index.lookup(text[start:end]) in actors
+        ):
+            # A speaker cue or a lead naming a visible beat's actor ("Bobby says."): detection
+            # reads the bare name as presence in the scene, which the actor's own beat shows.
             traced += 1
             continue
         private = (proposition is not None and _covered(proposition, hidden_props, registry)) or (

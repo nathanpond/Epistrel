@@ -650,12 +650,18 @@ def turn_audience(
     scene: SceneState,
     actors: Iterable[str] = (),
     moves: Mapping[int, Iterable[tuple[str, str | None]]] | None = None,
+    beats: Sequence[RouteBeat] = (),
+    level: Level = FULL,
 ) -> frozenset[str]:
     """#55's ``present`` set for a turn's text (FR-GUARD-11; #541): the union over the turn's
     beats of each beat's co-located set as routing reads it (``co_located_set``), for the
     scene's location (the narrator's and the player's beats) and every actor's location, at the
     turn's start and after each beat's ``moves`` in beat order, so a character who arrives
-    mid-turn is in it; the actors themselves always are."""
+    mid-turn is in it; the actors themselves always are. #571: with the turn's ``beats``, also
+    everyone routing delivers any of them to (``route_turn`` under ``level``, each beat number's
+    ``moves`` riding on its last beat): a located narration's room, an eavesdropper, a remote
+    channel's participants and an adjoining room's listeners, so the set is never smaller than
+    routing's delivered set."""
     wanted = tuple(dict.fromkeys(actors))
     states = [scene]
     for _, step in sorted((moves or {}).items()):
@@ -665,6 +671,19 @@ def turn_audience(
         found |= co_located_set(state)
         for actor in wanted:
             found |= co_located_set(state, actor)
+    if beats:
+        staged = {n: tuple(step) for n, step in (moves or {}).items()}
+        ordered = sorted(beats, key=lambda b: b.beat)
+        routed = [
+            replace(b, moves=staged[b.beat])
+            if b.beat in staged
+            and not b.moves
+            and (i == len(ordered) - 1 or ordered[i + 1].beat != b.beat)
+            else b
+            for i, b in enumerate(ordered)
+        ]
+        for result in route_turn(routed, scene, level):
+            found |= result.perceivers
     return frozenset(found)
 
 

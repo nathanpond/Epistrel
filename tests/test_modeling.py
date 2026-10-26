@@ -60,6 +60,18 @@ def test_interaction_verbs_find_the_other_party() -> None:
     assert _objects("do", "Jenni passes the jogger.") == []
     assert _objects("do", "Jenni passes the waiter a note.") == [(None, "the waiter")]
     assert _objects("do", "Jenni passes Mrs. Patel the salt.") == [(PATEL, "Mrs. Patel")]
+    # #573: a time or frequency phrase after the object is no second object.
+    assert _objects("do", "Jenni passes the jogger a second time.") == []
+    assert _objects("do", "Jenni passes the jogger an hour later.") == []
+    assert _objects("do", "Jenni passes the jogger the next morning.") == []
+    assert _objects("do", "Jenni passes the jogger a few minutes later.") == []
+    assert _objects("do", "Jenni passes Mrs. Patel every morning.") == []
+    assert _objects("do", "Jenni passes the waiter a second note.") == [(None, "the waiter")]
+    assert _objects("do", "Jenni passes the waiter a note the next morning.") == [
+        (None, "the waiter")
+    ]
+    passing = BeatView("do", 2, "Jenni passes the jogger a second time.", JENNI)
+    assert modeling.candidates([passing], ENTITIES) == []
     # "calls X over" summons them; "calls to X" addresses them.
     assert _objects("do", "Jenni calls the waiter over.") == [(None, "the waiter")]
     assert _objects("do", "Jenni calls out to the waiter.") == [(None, "the waiter")]

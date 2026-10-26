@@ -278,6 +278,9 @@ class Implicated:
 Implicate = Callable[[Draft, OutputCheck, int], Awaitable[Implicated]]
 """``implicate(draft, check, attempt)``: FR-GUARD-5's feedback for a rejected draft."""
 
+ContextOf = Callable[[Draft], Awaitable[GuardContext]]
+"""``context_of(draft)``: the guard context ``draft`` is checked under (#571)."""
+
 Withheld = Callable[[Sequence[str]], Awaitable[None]]
 """``withheld(policy_ids)``: raises (503 ``erasure_pending``) when a pending catalog-scope
 erasure reaches any of the violated policies (#447; ``check.refuse_withheld``)."""
@@ -311,9 +314,12 @@ async def gate_output(
     fallback: FallbackLines,
     implicate: Implicate | None = None,
     withheld: Withheld | None = None,
+    context_of: ContextOf | None = None,
 ) -> Gated:
     """Generate, check, and regenerate or fall back; see the module docstring. ``withheld`` is
-    asked about every violation before anything is done with it (#447)."""
+    asked about every violation before anything is done with it (#447). ``context_of`` (#571),
+    when given, is each draft's own guard context (in place of ``context``): who is present
+    for it can depend on what it says (a narration located in another room)."""
     rejected: list[Rejected] = []
     quarantined: list[str] = []
     pins: list[str] = []
@@ -326,7 +332,8 @@ async def gate_output(
         # The first check spends the slots reserved for it; a regeneration's, those it held.
         budget.release_to(len(_assisted(policies)))
         try:
-            check = await check_output(models, draft.text, policies, context, budget=budget)
+            checking = context if context_of is None else await context_of(draft)
+            check = await check_output(models, draft.text, policies, checking, budget=budget)
         except ModelError as exc:
             # The deadline cut the check short: the draft is unchecked, so it is never released.
             out = _out_of_time(exc, budget)

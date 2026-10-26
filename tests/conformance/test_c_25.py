@@ -27,6 +27,7 @@ complement: the fact is retrievable, and visibility alone keeps it from the othe
 
 ``test_c_25__m5_planned_reveal`` (FR-EPI-5; #173): a planned reveal created at genesis under
 partitions stays ``engine``-scoped, in no partition, no memory and no character's context.
+``test_c_25__m5_planned_reveal_belief`` (#574): the same when the truth says ``kind: belief``.
 """
 
 from __future__ import annotations
@@ -265,3 +266,59 @@ async def test_c_25__m5_planned_reveal(
             assert DEED not in seen, role
             if role == "mother":
                 assert "holds The love letters" in seen
+
+
+@pytest.mark.part("M5", "FR-EPI-5")
+async def test_c_25__m5_planned_reveal_belief(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """#574: a planned reveal's truth that says ``kind: belief`` (holder the Brother, audience
+    him and the Mother) is still one ``engine``-scoped canon fact at genesis, never a belief in
+    the audience's partitions: the truth's kind does not bypass the reveal's scope."""
+    document = sp.family()
+    document["world"]["entities"].append({"id": "deed", "name": "The deed", "kind": "item"})
+    document["drivers"] = {
+        "planned_reveals": [
+            {
+                "truth": {
+                    "text": DEED,
+                    "kind": "belief",
+                    "holder": "brother",
+                    "audience": ["self", "mother"],
+                    "disclosure": "secret",
+                },
+                "allowed_roles": ["mother"],
+                "conditions": "Only after the will is read.",
+            }
+        ]
+    }
+    async with respond_client(stub_settings, engine) as (client, _):
+        profile = await sp.partitioned_profile(client)
+        scenario_id, _ = await g.published_scenario(client, document)
+        cast = await sp.cast(client)
+        made = await g.create_from(client, sp.request(scenario_id, cast, profile))
+        story = made["story_id"]
+        by_role = {c["role_id"]: c["id"] for c in made["characters"]}
+        ents = await sp.entity_ids(engine, story)
+        deed, letters = ents["The deed"], ents["The love letters"]
+
+        (fact,) = await sp.rows_of(
+            engine,
+            "SELECT f.visibility, f.provenance, p.subject_id FROM facts f "
+            "JOIN propositions p ON p.id = f.proposition_id "
+            "WHERE f.story_id = :s AND p.object_id = :o",
+            s=story,
+            o=deed,
+        )
+        assert (fact.visibility, fact.provenance) == ({"scope": "engine"}, "seed")
+        assert str(fact.subject_id) == by_role["brother"]
+        held = await sp.beliefs(engine, story)
+        assert [r for r in held if str(r.object_id) == deed] == []
+        memories = await sp.rows_of(
+            engine, "SELECT id FROM memories WHERE story_id = :s AND text = :t", s=story, t=DEED
+        )
+        assert memories == []
+        # The complement: the Mother's own secret is in her partition.
+        assert [str(r.holder) for r in held if str(r.object_id) == letters] == [by_role["mother"]]

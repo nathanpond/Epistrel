@@ -56,6 +56,19 @@ UNMEASURED = "unmeasured"
 """The metric of a model-dependent step no NFR-QUAL requirement measures yet."""
 BOUNDARY = "The model proposes; the engine validates structured claims, effects, and permissions."
 """FR-VERIFY-15's boundary sentence."""
+PRIVACY_CONTROL = (
+    "Privacy is structural first (NFR-PRIV-4): context assembly is the primary privacy control, "
+    "output scanning a secondary, measured one."
+)
+"""NFR-PRIV-4's order of controls, in docs/02's words (the guarantee boundary and Security, #170
+AC5): a character's generation context is built only from what that character could know, and
+output scanning's results are evidence with an upper bound, never proof that nothing leaked."""
+PRIVACY_CONTROL_DETAIL = (
+    "A character's generation context is built only from what that character could know. Output "
+    "scanning (protected-content matching, claim detection, the PRIV checks) is evidence with an "
+    "upper bound, never proof that nothing leaked."
+)
+"""The sentence that follows ``PRIVACY_CONTROL`` in the published table."""
 
 
 class Kind(StrEnum):
@@ -540,6 +553,8 @@ __all__ = [
     "BOUNDARY",
     "GUARANTEE",
     "GUARANTEES",
+    "PRIVACY_CONTROL",
+    "PRIVACY_CONTROL_DETAIL",
     "UNMEASURED",
     "GuaranteeRow",
     "GuaranteeStatus",

@@ -211,6 +211,7 @@ from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Polarity, Proposition
 from epistrel.core.propositions.registry import (
     Registry,
+    auto_name,
     canonical,
     consider_proposals,
     file_identity_proposal,
@@ -272,7 +273,12 @@ from epistrel.core.turns.beats import (
 from epistrel.core.verify import attribution
 from epistrel.core.verify.detect import DeclaredClaim, DetectBeat, DetectedClaim
 from epistrel.core.verify.introduce import Introductions
-from epistrel.core.verify.normalize import ClaimSketch, Unnormalizable, normalize_declared
+from epistrel.core.verify.normalize import (
+    RELATION_ALIASES,
+    ClaimSketch,
+    Unnormalizable,
+    normalize_declared,
+)
 from epistrel.core.verify.permission import Asserter
 from epistrel.core.verify.protected import PrivateRecord
 from epistrel.core.verify.rules import CANON, Record, VerdictKind, check
@@ -3537,6 +3543,51 @@ async def _staged_moves(
     return {n: tuple(m) for n, m in moves.items()}
 
 
+_DRAFT_RELATIONS = frozenset({"located_at", "on_channel", "adjacent_to"})
+
+
+def _draft_relation(relation: str) -> str | None:
+    """The topology predicate (#582) a sketch's relation names, as ``predicate_for`` reads
+    it: by exact name, then ``RELATION_ALIASES``."""
+    try:
+        name = auto_name(relation)
+    except InvalidRequest:
+        return None
+    found = RELATION_ALIASES.get(name, name)
+    return found if found in _DRAFT_RELATIONS else None
+
+
+def _draft_topology(
+    beats: Sequence[TurnBeat],
+    sketches: Mapping[int, Sequence[PropositionSketch]],
+    names: Mapping[str, str],
+    places: Mapping[str, str],
+) -> tuple[list[Proposition], dict[int, tuple[tuple[str, str | None], ...]], bool]:
+    """The draft's ``remote_channel`` beats and topology sketches (asserted, or a factive
+    attribution) as ``perception.draft_topology`` reads them for the minors guard (#582)."""
+    channels = [
+        (b.character_id, b.qualifiers.remote_channel.channel_id)
+        for b in beats
+        if b.kind != NARRATION and b.character_id and b.qualifiers.remote_channel is not None
+    ]
+    found = [
+        perception.DraftSketch(
+            beat=b.beat,
+            actor=None if b.kind == NARRATION else b.character_id,
+            predicate=relation,
+            subject=sketch.subject,
+            object=sketch.object,
+            negated=sketch.negated,
+            qualifiers=dict(sketch.qualifiers),
+        )
+        for b in beats
+        for sketch in sketches.get(b.beat, ())
+        if (relation := _draft_relation(sketch.relation)) is not None
+        and (sketch.attribution is None or sketch.attribution.factive)
+    ]
+    return perception.draft_topology(channels, found, names, places)
+
+
 async def turn_guard(
     db: AsyncEngine,
     story_id: str,
@@ -3544,6 +3595,7 @@ async def turn_guard(
     primaries: Sequence[str],
     checked: Checked | None = None,
     beats: Sequence[TurnBeat] = (),
+    sketches: Mapping[int, Sequence[PropositionSketch]] | None = None,
 ) -> Any:
     """The guard context of a structured turn's output checks (#541, FR-GUARD-11): an
     age-conditioned policy's ``present`` set is the union over the turn's beats of routing's
@@ -3551,7 +3603,9 @@ async def turn_guard(
     canon stages (``_staged_moves``; none before anything is checked), and (#571) everyone
     routing delivers ``checked``'s beats and the draft's ``beats`` to: a narration's
     ``location`` (a place's name resolved to its id, as ``validate_perception`` does) reaches
-    whoever is there, so the set is never smaller than routing's delivered set."""
+    whoever is there, so the set is never smaller than routing's delivered set. #582: the
+    draft's ``beats`` are routed over the channels, barriers and moves its ``sketches`` declare
+    (``_draft_topology``), since nothing of the draft is checked yet."""
     moves: scene_loader.Moves | None = None
     turn_beats = [*(checked.beats if checked is not None else ()), *beats]
     if checked is not None or turn_beats:
@@ -3565,9 +3619,18 @@ async def turn_guard(
         if q.location is not None:
             q = replace(q, location=places.get(q.location.casefold(), q.location))
         routed.append(_route_beat(beat, q))
-    declared = [
+    declared: list[Any] = [
         c.proposition for b in turn_beats for c in b.declared if c.verdict != "contradicted"
     ]
+    if beats:
+        drafted, drafted_moves, unread = _draft_topology(beats, sketches or {}, read.names, places)
+        if unread:
+            return await guard_context(db, story_id, everyone=True)
+        declared += drafted
+        combined = dict(moves or {})
+        for number, step in drafted_moves.items():
+            combined[number] = (*combined.get(number, ()), *step)
+        moves = combined
     return await guard_context(
         db,
         story_id,
@@ -4289,6 +4352,7 @@ async def play(
                     [p.id for p in order],
                     None if simultaneous or merged is None else merged,
                     () if drafted is None else drafted.beats,
+                    None if drafted is None else drafted.sketches,
                 )
 
             async def produce(constraints: tuple[str, ...], attempt: int) -> Draft:

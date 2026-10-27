@@ -9271,3 +9271,34 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision (Rule 3):** `DraftSketch.relation` was renamed to `predicate`.
   **Why:** at `d6ec95d`, `tests/test_ownership_rules.py::test_only_ownership_code_reads_relations` (#104 AC2) flagged `perception.py`. Its AST scan bans any `.relation == "<literal>"`, because that is how code would decide on an ownership relation's name. The field holds a core predicate name, so `predicate` is the accurate word. The gate stays as strict as it was.
   **Issue:** #582
+
+## /n8-exec M5 (verify fixes, pass 4) — 2026-10-27
+
+- **Decision:** Scope is #520 and #587 only, on branch `milestone/m5-verify-fixes-4` off `ad7368b`. Owner PRs #586 and #589 are left as they are (open, the owner's to merge). #588 (needs-triage) is not touched.
+  **Why:** these two are the bugs blocking M5 after re-verify 3. The rest is the owner's.
+  **Issue:** #520, #587
+- **Decision (Rule 1):** #587's cause is pool churn against a 2 s connect timeout. Both weekly crashes (run 40431295698, and the 10-25 run) were in seeding (`build_scale_stories` → `insert_memories`), 30 to 55 minutes in, when the pool opened a new connection (`_do_get` → `_create_connection`) and psycopg's `connect_timeout` expired. The seeders used `core.db.make_engine`: SQLAlchemy's default pool (5 kept) and the service's 2 s timeout. With ten stories at once, an overflow connection closes when it returns to a pool already holding 5 idle ones, so every rise in concurrency opens backends again. Measured locally, a 10-story seed at 2,000 memories opened 22 connections through the service engine and 10 through the new one. The fix is `perf.lite_smoke.seed.seed_engine`: a pool of the story count plus 2, and a 30 s connect timeout, used by all three seeders. `make_engine` gains `pool_size`/`connect_timeout` keywords; the service defaults are unchanged.
+  **Why:** the traceback names the connect, and the 2 s bound exists only to keep `/health` fast. I did not choose a bigger Postgres container or `max_connections`: no "too many clients" error appeared, and the service container is the same one the reference stack uses.
+  **Issue:** #587, #538
+- **Decision (Rule 3):** `perf.yml` gains the dispatch choice `suite: weekly-p04`. It runs `weekly-structured` and `weekly-multi` alone. `weekly` does not run, so `weekly-docs` (which needs its result) is skipped.
+  **Why:** #587's AC1 needs a dispatched run that completes. The only existing choice, `weekly`, adds the hour-long scale suite. It would also make `weekly-docs` push a commit built on the dispatch ref to the rolling `perf/weekly` branch of open PR #539, putting this branch's commits into a PR against main.
+  **Issue:** #587
+- **Decision (Rule 1):** #520's per-check cost was profiled by stage on the 50k knowledge fixture. Before the fix, the exposed path took p50 83 ms over 59 statements, against 8–12 statements on the other paths. Three-quarters of it was repeated or unneeded reads:
+  - every keyed read reloaded the predicate registry (2 statements plus parsing) and the cast (`check_viewpoint`);
+  - the holder's whole partition of the predicate (about 100 rows) was read twice, and 120 canon versions of the subject, all filtered in Python;
+  - all 50 of the holder's unresolved exposures were read to compare in Python;
+  - the dry run read the witness's trust (relationships plus 3 counts) although the default accepts a novel claim at `suspected` at any trust;
+  - aliases were rebuilt per call (about 850 column proxies per check).
+
+  The fix, each lever result-preserving:
+  - `KeyedLookup.canon_at`/`beliefs`/`relations_between` take the caller's `registry`, and validate a viewpoint once per lookup;
+  - the window, entity and key filters run in SQL as supersets of the Python `kept` filters, which still decide, so results and read-set hashes are unchanged;
+  - `exposure.accepts` reads trust only when the pure default differs at trust 0 and trust 1. This is sound because the default is monotone in trust, which a new hypothesis test pins;
+  - `facts` and `exposure` use module-level aliases.
+
+  The result: 20 statements on the exposed path, which dropped from p50 83 ms to 30 ms in the stage profile. The guard (AC2) is `tests/test_replay.py::test_an_exposure_check_reads_each_thing_once`. It counts statements by kind, not time, and was mutation-checked against each lever.
+  **Why:** I took the issue's options 1 and 3 in spirit: the exposure key in SQL, and trust not re-read, done without a cache so no staleness question arises. Option 2 (reusing the replay's reads for the dry run) was not needed. Option 4 (an owner call on the bound) was not taken. I chose explicit registry pass-through over a per-lookup registry memo. The memo would be stale-prone: some predicate writes (registry.py's raw inserts, erasure's update) do not bump `config_revision`.
+  **Issue:** #520
+- **Decision:** `exposure.decide` is split into `_framed` (consistency, intent, act) and `_trust`. Its keyed reads keep their order (consistency, then trust), so a resolution's read set is unchanged. #164's context dry run still calls `decide`, because it needs the full outcome.
+  **Why:** `accepts` and `decide` must read the same frame. Sharing the code is what keeps them equal.
+  **Issue:** #520

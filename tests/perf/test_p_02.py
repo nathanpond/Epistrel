@@ -40,6 +40,7 @@ from collections import Counter
 from typing import Any
 
 import pytest
+from sqlalchemy import text
 
 from epistrel.core.epistemic import replay
 from epistrel.core.propositions import registry as predicate_registry
@@ -272,8 +273,6 @@ async def test_p_02__knowledge_is_analyzed(scale_1k_knowledge: ScaleRun) -> None
     ``knowledge.apply`` now analyzes: the planner's row counts are the tables' own.
 
     Complement asserted: the layer is not empty (the counts compared are not zero)."""
-    from sqlalchemy import text
-
     async with scale_1k_knowledge.db.connect() as conn:
         for table in ("beliefs", "exposures"):
             rows = await conn.scalar(text(f"SELECT count(*) FROM {table}"))  # noqa: S608

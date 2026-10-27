@@ -444,12 +444,19 @@ def _through(t: Any, position: Position) -> ColumnElement[bool]:
     )
 
 
+_CLOSER = facts.alias("closer")
+"""``_closed_by``'s row, built once: an alias proxies every ``facts`` column when it is first
+read, and a canon read made that per call (#520)."""
+_CANON = facts.alias("f")
+"""``canon``'s version row, built once (#520, as ``_CLOSER``)."""
+
+
 def _closed_by(
     f: Any, record_time: datetime | None, through: Position | None = None
 ) -> ColumnElement[bool]:
     """Some row in the timeline (at ``record_time``, or now; at or before ``through`` when
     given) closes version ``f``."""
-    s = facts.alias("closer")
+    s = _CLOSER
     where = [
         s.c.story_id == f.c.story_id,
         s.c.supersedes.contains(cast(array([f.c.id]), ARRAY(facts.c.id.type))),
@@ -1074,6 +1081,7 @@ def _canon_where(
     ids: Sequence[str] | None = None,
     written_in: tuple[int, int] | None = None,
     member: str | None = None,
+    overlapping: tuple[int | None, int | None] | None = None,
 ) -> list[ColumnElement[bool]]:
     """``canon``'s selection on ``f`` (a ``facts`` alias joined to ``propositions``), shared by
     every read that must select exactly what ``canon`` does (``canon_links``, #470)."""
@@ -1114,6 +1122,12 @@ def _canon_where(
         where.append(f.c.id.in_(list(ids)))
     if written_in is not None:
         where.append(f.c.narrative_turn.between(*written_in))
+    if overlapping is not None:
+        lo, hi = overlapping
+        if hi is not None:
+            where.append(or_(f.c.valid_from.is_(None), f.c.valid_from < hi))
+        if lo is not None:
+            where.append(or_(f.c.valid_to.is_(None), f.c.valid_to > lo))
     return where
 
 
@@ -1133,6 +1147,8 @@ async def canon(
     ids: Sequence[str] | None = None,
     written_in: tuple[int, int] | None = None,
     member: str | None = None,
+    viewpoint_checked: bool = False,
+    overlapping: tuple[int | None, int | None] | None = None,
 ) -> list[Fact]:
     """Fact versions of ``story_id`` as ``viewpoint`` may read them; each coordinate filters
     only when given (see the module docstring): ``story_time`` (valid-time covering it),
@@ -1141,9 +1157,13 @@ async def canon(
     versions (#142's neighborhood seed); ``written_in`` (``(first, last)`` turns, inclusive)
     keeps only versions written at a turn in that window (a consolidation window's facts, #452:
     read in the query, not filtered from the whole canon); ``member`` keeps versions whose object
-    is that entity or a set object holding it. Ordered by ``valid_from``, then id."""
-    await check_viewpoint(conn, story_id, viewpoint)
-    f = facts.alias("f")
+    is that entity or a set object holding it. Ordered by ``valid_from``, then id.
+    ``viewpoint_checked``: the caller has validated ``viewpoint`` (``KeyedLookup``, once per
+    viewpoint, #520). ``overlapping`` (``[lo, hi)``, ``None`` open) keeps versions whose
+    valid-time may meet it (#520: a keyed lookup's window, read in the query)."""
+    if not viewpoint_checked:
+        await check_viewpoint(conn, story_id, viewpoint)
+    f = _CANON
     where = _canon_where(
         f,
         story_id,
@@ -1158,6 +1178,7 @@ async def canon(
         ids=ids,
         written_in=written_in,
         member=member,
+        overlapping=overlapping,
     )
     query = _select(f).where(*where).order_by(f.c.valid_from.nulls_first(), f.c.id)
     if limit is not None:

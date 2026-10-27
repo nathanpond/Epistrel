@@ -9271,3 +9271,16 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision (Rule 3):** `DraftSketch.relation` was renamed to `predicate`.
   **Why:** at `d6ec95d`, `tests/test_ownership_rules.py::test_only_ownership_code_reads_relations` (#104 AC2) flagged `perception.py`. Its AST scan bans any `.relation == "<literal>"`, because that is how code would decide on an ownership relation's name. The field holds a core predicate name, so `predicate` is the accurate word. The gate stays as strict as it was.
   **Issue:** #582
+
+## Owner decisions — 2026-10-26 (/n8-verify M5, re-verify 3)
+
+- **Decision (owner):** NFR-QUAL-1: "Waiver + re-run think-leak". q04's live zero-leak row is waived for M5 on the #540 ruling (comment on PR #584). #540 stays open outside M5. `priv_think_leak` and `e01_viewpoint` are re-run live on `cydonia-24b-v4.3` at `ad7368b`, so that a report postdates the #562 and #575 oracle fixes. **Issue:** #179, #540
+- **Decision (owner):** #165 AC6: "Dispatch weekly now". `perf.yml` was dispatched with `suite=weekly` on `ad7368b` (run 40431295698) to measure P-02 on the 50k fixture. It also runs `weekly-multi` (#182). **Issue:** #165, #182
+- **Decision (owner):** #182's live three-character matrix row: "Run live after think-leak". It is run on cydonia once the think-leak run finishes, never alongside it, so that the latency numbers are clean. **Issue:** #182
+- **Decision (owner):** #523 takes option (c): "re-scope, carry #523 later". S-FAMILY's M5 part asserts the Brother's revision at the belief-operation level, which is what `test_s_family` already does. The played-turn version moves to a new **[M7: FR-SCN-8]** part, and §22's FR-SCN-8 row gains `S-FAMILY (M7)`. #523 becomes an M7 feature under epic #25, beside #580. #173's AC2 is amended to the engine-scoped reveal that #574 established, and its AC4 cites both moves. **Issue:** #173, #523
+
+## Ad-hoc — 2026-10-26
+
+- **Change:** S-FAMILY's played-turn "revision by observation" clause (FR-SCN-8) moved from M5 to M7. #523 (routing a player's observable act to the witnesses' beliefs) is now an M7 story under epic #25.
+  **Why:** the owner's decision on #523 (option c). No played turn can produce a belief about the player: FR-RESP-11's player authority denies a render's claim about the player, and the player's input is routed without claims.
+  **Affects:** M7 (epic #25 gains #523; whichever M7 story touches input routing or the player-authority boundary should account for it). Plans may be stale.

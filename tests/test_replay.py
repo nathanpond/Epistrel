@@ -11,8 +11,10 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.core.enums import BeliefConfidenceLevel
 from epistrel.core.epistemic import partitions, replay, transitions
 from epistrel.core.epistemic.replay import Known, NoPath, NotApplicable
 from epistrel.core.membership import Position
@@ -152,6 +154,83 @@ async def test_canon_implication_and_exposure_paths(
     assert isinstance(early, NoPath)
     assert early.nearest is not None
     assert early.nearest.ref_id == exposure_id
+
+
+def _statements(engine: AsyncEngine) -> tuple[list[str], Any]:
+    """The statements ``engine`` runs from now on (one-line SQL), and the listener to remove."""
+    found: list[str] = []
+
+    def heard(_conn: Any, _cursor: Any, statement: str, *_: Any) -> None:
+        found.append(" ".join(statement.split()))
+
+    event.listen(engine.sync_engine, "before_cursor_execute", heard)
+    return found, heard
+
+
+async def test_an_exposure_check_reads_each_thing_once(
+    engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#520: an exposure-path check over P-02's 50k fixture took 75 to 92 ms, three-quarters of
+    it in reads the check repeated or did not need: every keyed read reloaded the predicate
+    registry (two statements) and the cast (a viewpoint check), the holder's exposures were all
+    read to compare in Python, and the dry run read the witness's trust in the source (the frame's
+    relationships and three counts of its prior outcomes) although the default accepts a novel
+    claim at ``suspected`` at any trust. Given the caller's registry, the check now reads no
+    predicate, the cast once, its exposures on the target's predicate, and no trust.
+
+    Complement asserted: when the answer turns on the trust (``min_level = believed``: a novel
+    claim is believed only from a trusted source) the trust is read, and the answer is the
+    default's (``exposure.decide``)."""
+    from epistrel.core.epistemic import exposure
+    from epistrel.testing.fixtures.knowledge import partitioned
+
+    k = await _story(engine)
+    told = knocked(k, k.jenni)
+    exposure_id, _ = await xs.expose(engine, k.story_id, k.bobby, told, source=k.jenni)
+    (row,) = await rows(engine, "SELECT * FROM exposures WHERE id = :e", e=exposure_id)
+    at = Position.end_of(row.position_turn)
+    async with engine.connect() as conn:
+        registry = await predicates.load(conn, k.story_id)
+        settings = await partitioned(conn, k.story_id)
+    heard, listener = _statements(engine)
+    try:
+        found = await ask(engine, k, k.bobby, told, at, registry=registry, settings=settings)
+        reads = list(heard)
+        heard.clear()
+        strict = await ask(
+            engine,
+            k,
+            k.bobby,
+            told,
+            at,
+            registry=registry,
+            settings=settings,
+            min_level=BeliefConfidenceLevel.BELIEVED,
+        )
+        strict_reads = list(heard)
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", listener)
+    assert isinstance(found, Known)
+    assert (found.path.kind, found.path.ref_id) == ("exposure", exposure_id)
+
+    def counted(statements: list[str], needle: str) -> int:
+        return sum(needle in x for x in statements)
+
+    assert counted(reads, "FROM predicates") == 0, reads
+    assert counted(reads, "SELECT characters.id FROM characters WHERE") == 1, reads
+    exposure_reads = [x for x in reads if x.startswith("SELECT exposures.id")]
+    assert len(exposure_reads) == 1
+    assert "propositions.predicate_id IN" in exposure_reads[0]
+    assert counted(reads, "count(") == 0, reads
+    assert counted(reads, "story_minute_zero") == 0, reads
+
+    async with engine.connect() as conn:
+        (stored,) = await exposure.exposures_of(conn, k.story_id, ids=[exposure_id])
+        outcome = await exposure.decide(conn, stored, registry=registry)
+    believed = outcome.decision == "accept" and outcome.confidence is BeliefConfidenceLevel.BELIEVED
+    assert isinstance(strict, Known) is believed
+    assert counted(strict_reads, "count(") == 3, strict_reads
+    assert counted(strict_reads, "FROM predicates") == 0, strict_reads
 
 
 async def test_a_turns_checks_are_counted_and_memoized(engine: AsyncEngine) -> None:

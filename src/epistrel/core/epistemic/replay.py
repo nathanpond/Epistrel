@@ -26,7 +26,8 @@ predicate, object and qualifiers, canonical direction) and its polarity:
 - **an implication** of what it held at T under the story's declared rules (#131's ``imply``,
   over its beliefs about the same subject, at the registry's depth);
 - **an unresolved exposure** at or before T (#164): dry-run in its own frame by
-  ``exposure.decide`` (the default, nothing persisted). It licenses when the default accepts at
+  ``exposure.accepts`` (``exposure.decide``'s default, nothing persisted; the trust read only
+  when the answer turns on it, #520). It licenses when the default accepts at
   ``min_level`` or above (``Known(path = exposure)``).
 
 An **envelope** perception (a whisper heard as a whisper, a language not understood) is an
@@ -74,7 +75,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.enums import BeliefConfidenceLevel, ExposureState
 from epistrel.core.epistemic import exposure as exposures
-from epistrel.core.epistemic import partitions, testimony, transitions
+from epistrel.core.epistemic import partitions, transitions
 from epistrel.core.membership import Position
 from epistrel.core.propositions.codec import proposition_from_row
 from epistrel.core.propositions.model import Instant, Polarity, Proposition
@@ -339,6 +340,7 @@ async def _belief_records(
     holder: str,
     target: Proposition,
     at: Position,
+    registry: Registry,
 ) -> list[Acquisition]:
     """The holder's beliefs in the target's key, held at ``at`` and now, with their transitions
     as dated records."""
@@ -351,6 +353,7 @@ async def _belief_records(
             subjects=target.subject_id,
             object=target.object_id,
             through=through,
+            registry=registry,
         ):
             if _key(b.proposition) == _key(target):
                 held.setdefault(b.id, b)
@@ -379,7 +382,12 @@ async def _belief_records(
 
 
 async def _canon(
-    lookup: KeyedLookup, story_id: str, holder: str, target: Proposition, at: Position
+    lookup: KeyedLookup,
+    story_id: str,
+    holder: str,
+    target: Proposition,
+    at: Position,
+    registry: Registry,
 ) -> Known | None:
     facts = await lookup.canon_at(
         story_id,
@@ -389,6 +397,7 @@ async def _canon(
         window=_window(target),
         viewpoint=f"{CHARACTER_VIEWPOINT_PREFIX}{holder}",
         through_position=at,
+        registry=registry,
     )
     for f in facts:
         if _key(f.proposition) == _key(target) and f.proposition.polarity is target.polarity:
@@ -434,14 +443,25 @@ async def _exposed(
     at: Position,
     registry: Registry,
     min_level: Level,
-    read_set: StructuredReadSet,
+    lookup: KeyedLookup,
 ) -> tuple[Known | None, PathRef | None]:
     """An unresolved exposure at or before ``at`` the default would accept (``Known``), and the
     earliest after ``at`` (the nearest path)."""
-    floor = _rank(min_level)
     later: PathRef | None = None
+    # Only the exposures that can be on the target's key are read (a superset: the canonical key
+    # still decides): stored as its predicate or an inverse of it, naming one of its entities.
+    stored_as = [target.predicate_id] + [
+        p.id for p in registry.predicates.values() if p.inverse_of == target.predicate_id
+    ]
+    named = [x for x in (target.subject_id, target.object_id) if x is not None]
     for e in await exposures.exposures_of(
-        conn, story_id, holder, state=ExposureState.UNRESOLVED, as_of_turn=at.turn
+        conn,
+        story_id,
+        holder,
+        state=ExposureState.UNRESOLVED,
+        as_of_turn=at.turn,
+        predicates=stored_as,
+        entities_=named,
     ):
         stored = canonical(e.proposition, registry)
         if _key(stored) != _key(target) or stored.polarity is not target.polarity:
@@ -449,12 +469,7 @@ async def _exposed(
         if at.before(e.position):
             later = later or PathRef("exposure", e.id, e.position)
             continue
-        outcome = await exposures.decide(conn, e, registry=registry, read_set=read_set)
-        if (
-            outcome.decision == testimony.ACCEPT
-            and outcome.confidence is not None
-            and _rank(outcome.confidence) >= floor
-        ):
+        if await exposures.accepts(conn, e, floor=min_level, registry=registry, lookup=lookup):
             return Known(PathRef("exposure", e.id, e.position)), None
     return None, later
 
@@ -515,18 +530,18 @@ async def could_have_known(
         return _answered(memo_key, Known(PathRef("player")))
     reads = read_set if read_set is not None else StructuredReadSet()
     lookup = KeyedLookup(conn, reads)
-    records = await _belief_records(conn, lookup, story_id, character_id, target, at)
+    records = await _belief_records(conn, lookup, story_id, character_id, target, at, found)
     answer: Known | NoPath = replay(records, _key(target), target.polarity, at, min_level=min_level)
     if isinstance(answer, NoPath):
         answer = _staged(character_id, target, at, found) or answer
     if isinstance(answer, NoPath):
-        answer = (await _canon(lookup, story_id, character_id, target, at)) or answer
+        answer = (await _canon(lookup, story_id, character_id, target, at, found)) or answer
     if isinstance(answer, NoPath):
         implied = await _implied(conn, story_id, character_id, target, at, found, min_level)
         answer = implied or answer
     if isinstance(answer, NoPath):
         exposed, later = await _exposed(
-            conn, story_id, character_id, target, at, found, min_level, reads
+            conn, story_id, character_id, target, at, found, min_level, lookup
         )
         if exposed is not None:
             answer = exposed

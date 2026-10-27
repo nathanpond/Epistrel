@@ -250,7 +250,11 @@ def test_perf_runs_the_scale_suite_weekly_and_opens_a_docs_pr() -> None:
     wf = _workflow("perf.yml")
     triggers = _on(wf)
     assert {"cron": "0 3 * * 0"} in triggers["schedule"]
-    assert triggers["workflow_dispatch"]["inputs"]["suite"]["options"] == ["nightly", "weekly"]
+    assert triggers["workflow_dispatch"]["inputs"]["suite"]["options"] == [
+        "nightly",
+        "weekly",
+        "weekly-p04",
+    ]
     weekly, docs = wf["jobs"]["weekly"], wf["jobs"]["weekly-docs"]
     assert "'0 3 * * 0'" in weekly["if"]
     assert "'0 3 * * *'" not in weekly["if"]
@@ -270,6 +274,12 @@ def test_perf_runs_the_scale_suite_weekly_and_opens_a_docs_pr() -> None:
     assert "Weekly perf run failed" in report["run"]
     assert docs["needs"] == ["weekly", "weekly-structured", "weekly-multi"]
     assert "failure" in docs["if"]
+    # #587: `weekly-p04` runs P-04's two workloads without the scale suite, so the docs job
+    # (which needs its result) never runs on it.
+    assert "weekly-p04" not in weekly["if"]
+    assert "needs.weekly.result" in docs["if"]
+    for name in ("weekly-structured", "weekly-multi"):
+        assert "inputs.suite == 'weekly-p04'" in wf["jobs"][name]["if"]
     assert docs["permissions"] == {"contents": "write", "pull-requests": "write"}
     others = {n: j.get("permissions", {}) for n, j in wf["jobs"].items() if n != "weekly-docs"}
     assert all(p.get("contents") == "read" for p in others.values()), others

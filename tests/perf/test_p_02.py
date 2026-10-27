@@ -260,3 +260,25 @@ async def test_p_02__could_have_known_smoke(scale_1k_knowledge: ScaleRun) -> Non
     record("p_02_could_have_known_smoke", summary)
     found = summary["check_ms"]
     assert found["p50"] <= found["p95"] <= found["p99"] <= found["max"]
+
+
+@pytest.mark.perf_smoke
+@pytest.mark.part("M5", "NFR-PERF-2")
+async def test_p_02__knowledge_is_analyzed(scale_1k_knowledge: ScaleRun) -> None:
+    """Found by #520: the knowledge layer lands on an analyzed fixture, and without its own
+    ``ANALYZE`` the planner still read the belief and exposure tables as empty. A pooled
+    connection that had prepared the shared reads during the canon checks kept those plans,
+    so ``test_p_02__could_have_known`` measured 78 ms after ``test_p_02`` and 42 ms alone.
+    ``knowledge.apply`` now analyzes: the planner's row counts are the tables' own.
+
+    Complement asserted: the layer is not empty (the counts compared are not zero)."""
+    from sqlalchemy import text
+
+    async with scale_1k_knowledge.db.connect() as conn:
+        for table in ("beliefs", "exposures"):
+            rows = await conn.scalar(text(f"SELECT count(*) FROM {table}"))  # noqa: S608
+            planned = await conn.scalar(
+                text("SELECT reltuples::bigint FROM pg_class WHERE relname = :t"), {"t": table}
+            )
+            assert (rows or 0) > 0, table
+            assert planned == rows, (table, planned, rows)

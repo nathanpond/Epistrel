@@ -9302,3 +9302,9 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision:** `exposure.decide` is split into `_framed` (consistency, intent, act) and `_trust`. Its keyed reads keep their order (consistency, then trust), so a resolution's read set is unchanged. #164's context dry run still calls `decide`, because it needs the full outcome.
   **Why:** `accepts` and `decide` must read the same frame. Sharing the code is what keeps them equal.
   **Issue:** #520
+- **Decision (Rule 1):** `knowledge.apply` (the P-02/P-04 fixture's knowledge layer) now ends with `ANALYZE`. On the whole P-02 file, `test_p_02__could_have_known` measured 78 ms after `test_p_02` but 42 ms alone, with every path about twice as slow. The layer landed on an already-analyzed fixture, so the planner still read `beliefs` and `exposures` as empty. The pooled connection had prepared the shared reads during the canon checks and kept those plans. That is a fixture defect, and it likely inflated the original 89 ms as well. The guard is `test_p_02__knowledge_is_analyzed` (perf_smoke): the planner's row counts equal the tables' counts. It was mutation-checked: without the ANALYZE it reads 0 against 2,200.
+  **Why:** the scale builder already ends with `ANALYZE` for the same reason. A layer written after it needs its own.
+  **Issue:** #520
+- **Decision (Rule 1):** the static parts of the keyed reads' selects are built once: the belief row with its proposition (`partitions._SELECT`), canon's version row (`facts._CANON_SELECT`), and `_through`'s row-side tuple for the module's aliases. The stage profile showed a canon read at about 2.4 ms, only about 0.6 ms of it in the database. On the whole file, `could_have_known` then went from p95 48–51 ms to 39 ms.
+  **Why:** a select is generative (`.where` copies it), so sharing the base is safe. With 39 ms against the 50 ms bound, the gate is no longer decided by noise.
+  **Issue:** #520

@@ -427,17 +427,23 @@ k-th inter-turn slot after it, ``N⁺k``), or a full ``core.membership.Position`
 exposure frame bounds canon at its beat and step, FR-STORE-31)."""
 
 
-def _through(t: Any, position: Position) -> ColumnElement[bool]:
-    """Row ``t`` was written at or before ``position`` in ``(turn, slot_k, beat, step)`` order,
-    or has no position (FR-STORE-26). A ``(turn, slot_k)`` bound is the end of that turn or
-    slot, so it admits every beat and step of it."""
-    bound = bound_of(position)
-    key = tuple_(
+def _position_key(t: Any) -> Any:
+    return tuple_(
         t.c.narrative_turn,
         func.coalesce(t.c.slot_k, 0),
         func.coalesce(t.c.beat, 0),
         t.c.step,
     )
+
+
+def _through(t: Any, position: Position) -> ColumnElement[bool]:
+    """Row ``t`` was written at or before ``position`` in ``(turn, slot_k, beat, step)`` order,
+    or has no position (FR-STORE-26). A ``(turn, slot_k)`` bound is the end of that turn or
+    slot, so it admits every beat and step of it."""
+    bound = bound_of(position)
+    key = _POSITION_KEYS.get(t) if t is _CANON or t is _CLOSER else None
+    if key is None:
+        key = _position_key(t)
     return or_(
         t.c.narrative_turn.is_(None),
         key <= tuple_(*(literal(v) for v in bound.key())),
@@ -484,9 +490,21 @@ def _open(
 
 
 def _select(f: Any) -> Any:
+    if f is _CANON:
+        return _CANON_SELECT
+    return _build_select(f)
+
+
+def _build_select(f: Any) -> Any:
     return select(f, *_proposition_columns()).select_from(
         f.join(propositions, propositions.c.id == f.c.proposition_id)
     )
+
+
+_CANON_SELECT = _build_select(_CANON)
+"""``canon``'s version row with its proposition, built once (#520; ``.where`` copies it)."""
+_POSITION_KEYS = {_CANON: _position_key(_CANON), _CLOSER: _position_key(_CLOSER)}
+"""``_through``'s row side for the module's own aliases, built once (#520)."""
 
 
 async def _load(conn: AsyncConnection, story_id: str, fact_id: str) -> tuple[Fact, bool]:

@@ -1560,6 +1560,7 @@ async def check_with(
             window=window,
             viewpoint=canon_viewpoint,
             through_position=through_position,
+            registry=registry,
         )
         # #146: an introduced or pending fact is not settled, so it is no evidence yet.
         return [Record.of_fact(f) for f in facts if f.commit_state in EVIDENCE_STATES]
@@ -1583,6 +1584,7 @@ async def check_with(
             through=belief_through(position, through_position),
             levels=sorted(HELD_LEVELS),
             viewpoint=canon_viewpoint,
+            registry=registry,
         )
         return [Record.of_belief(b) for b in found]
 

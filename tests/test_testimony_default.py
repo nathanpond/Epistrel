@@ -3,6 +3,9 @@ the trust seed and nudges, and the guards on a model's decision. Pure: no databa
 
 from __future__ import annotations
 
+from hypothesis import given
+from hypothesis import strategies as st
+
 from epistrel.core.enums import BeliefConfidenceLevel as Level
 from epistrel.core.enums import BeliefTransitionKind as Kind
 from epistrel.core.epistemic import testimony as t
@@ -51,6 +54,45 @@ def test_the_decision_table() -> None:
     unsure = t.decide("w", _c(VerdictKind.UNCERTAIN), 0.9, "sincere")
     assert (unsure.decision, unsure.transition) == ("suspend", None)
     assert unsure.report()["decision"] == "suspend"
+
+
+def _accepts_at(outcome: t.TestimonyOutcome, floor: Level) -> bool:
+    levels = list(Level)
+    return (
+        outcome.decision == t.ACCEPT
+        and outcome.confidence is not None
+        and levels.index(outcome.confidence) >= levels.index(floor)
+    )
+
+
+@given(
+    verdict=st.sampled_from(list(VerdictKind)),
+    prior=st.none() | st.sampled_from(list(Level)),
+    intent=st.sampled_from(["sincere", "joking"]),
+    trusts=st.tuples(st.floats(0, 1), st.floats(0, 1)).map(sorted),
+    floor=st.sampled_from(list(Level)),
+)
+def test_more_trust_never_takes_an_acceptance_away(
+    verdict: VerdictKind,
+    prior: Level | None,
+    intent: t.PerceivedIntent,
+    trusts: list[float],
+    floor: Level,
+) -> None:
+    """#520: ``exposure.accepts`` reads a witness's trust only when the default answers
+    differently at no trust and full trust, which is sound only if the default is monotone in
+    trust: whatever it accepts at a level at some trust, it accepts at that level or above at
+    any higher trust.
+
+    Complement asserted: the bound is tight somewhere: a novel claim is accepted as believed at
+    full trust and not at none (so the reads are made when they matter)."""
+    low, high = trusts
+    consistency = _c(verdict, prior)
+    if _accepts_at(t.decide("w", consistency, low, intent), floor):
+        assert _accepts_at(t.decide("w", consistency, high, intent), floor)
+    novel = _c(VerdictKind.NOVEL)
+    assert _accepts_at(t.decide("w", novel, 1.0, "sincere"), Level.BELIEVED)
+    assert not _accepts_at(t.decide("w", novel, 0.0, "sincere"), Level.BELIEVED)
 
 
 def test_a_say_with_no_claim_is_the_speech_act_alone() -> None:

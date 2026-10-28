@@ -102,6 +102,15 @@ def _fact(found: structured.Plan, text_object: str) -> Any:
     return fact
 
 
+def _knowing(found: structured.Plan) -> dict[str, set[str]]:
+    """The holders of each relationship's planned beliefs, by the relationship's field."""
+    held: dict[str, set[str]] = {}
+    for b in _beliefs(found):
+        if ".relationships[" in b.act:
+            held.setdefault(b.act, set()).add(b.holder)
+    return held
+
+
 def _entry(found: structured.Plan, field_ref: str) -> Any:
     (entry,) = [e for e in found.entries if e.field_ref == field_ref]
     return entry
@@ -135,7 +144,9 @@ async def test_u_27__beliefs() -> None:
     **Seed attributes.** Every seeded item's author act carries its holder, audience and
     disclosure; ``acquaintances`` reaches exactly the roles the relationships and the family
     group say know the Sister (not the neighbour, never the player); the persona's name, age
-    and traits are held by the family only. **The publish check** refuses an unknown audience
+    and traits are held by the family only; a relationship is believed by exactly its knowing
+    roles (its two roles, the player's no news; an explicit ``audience`` names them all
+    instead), not by the rest of the family. **The publish check** refuses an unknown audience
     token and a world-held belief, and warns on ``acquaintances`` for a role nobody knows.
 
     Complements: without partitions no belief is planned and the belief seeds stay deferred; a
@@ -223,6 +234,20 @@ async def test_u_27__beliefs() -> None:
     sams = {b.holder for b in _beliefs(found) if b.proposition is None or b.subject}
     assert sams == {IDS[r] for r in sp.NPC_ROLES}
     assert not [b for b in _beliefs(found) if b.holder in (IDS["neighbour"], IDS["player"])]
+
+    # -- relationships: beliefs for the knowing roles only (its two roles, or its audience)
+    assert _knowing(found) == {
+        "cast.roles[0].relationships[0]": {IDS["mother"]},
+        "cast.roles[1].relationships[0]": {IDS["father"], IDS["mother"]},
+        "cast.roles[2].relationships[0]": {IDS["brother"]},
+        "cast.roles[3].relationships[0]": {IDS["sister"]},
+    }
+    told = sp.family()
+    told["cast"]["roles"][2]["relationships"][0]["audience"] = ["brother", "sister"]
+    assert _knowing(_plan(told))["cast.roles[2].relationships[0]"] == {
+        IDS["brother"],
+        IDS["sister"],
+    }
 
     # -- the publish check
     bad = sp.family()

@@ -9248,7 +9248,7 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision (owner):** #576 takes option (a): "2) a". S-FAMILY's only-child clause moves from its M5 part to a new **[M7: FR-SCN-7]** part in docs/04, and §22's FR-SCN-7 row gains `S-FAMILY (M7)`. The work is filed as #580 (M7, epic #25): a table-driven closed-set reading of background flavor for the genesis fact merge. `test_s_family.py`'s docstring cites the move. This meets #576's AC (docs/04 amended with the owner's words; the docstring cites it). #576 closes with PR #578. #173 AC4's S-FAMILY half is covered; its other half still waits on #523. **Issue:** #576, #580
 - **Decision (owner):** #579 keeps the strict behaviour (option a): "3) ok". An unplaced rendered character perceives none of the player's input under partitions, which follows docs/02 §4.4. **Issue:** #579
 
-## Ad-hoc — 2026-10-26
+## Ad-hoc — 2026-10-26 — reconciled by /n8-replan 2026-10-28
 
 - **Change:** S-FAMILY's only-child merge clause (FR-SCN-7) moved from M5 to M7, with the new story #580 in M7 under epic #25 (a closed-set reading of background flavor in `read_seed` for the genesis and Lite→Full fact merge).
   **Why:** the owner's decision on #576 (option a). The engine cannot read "only child" from prose, and M7 reruns the fact merge for the upgrade.
@@ -9325,8 +9325,22 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision (owner):** #182's live three-character matrix row: "Run live after think-leak". It is run on cydonia once the think-leak run finishes, never alongside it, so that the latency numbers are clean. **Issue:** #182
 - **Decision (owner):** #523 takes option (c): "re-scope, carry #523 later". S-FAMILY's M5 part asserts the Brother's revision at the belief-operation level, which is what `test_s_family` already does. The played-turn version moves to a new **[M7: FR-SCN-8]** part, and §22's FR-SCN-8 row gains `S-FAMILY (M7)`. #523 becomes an M7 feature under epic #25, beside #580. #173's AC2 is amended to the engine-scoped reveal that #574 established, and its AC4 cites both moves. **Issue:** #173, #523
 
-## Ad-hoc — 2026-10-26
+## Ad-hoc — 2026-10-26 — reconciled by /n8-replan 2026-10-28
 
 - **Change:** S-FAMILY's played-turn "revision by observation" clause (FR-SCN-8) moved from M5 to M7. #523 (routing a player's observable act to the witnesses' beliefs) is now an M7 story under epic #25.
   **Why:** the owner's decision on #523 (option c). No played turn can produce a belief about the player: FR-RESP-11's player authority denies a render's claim about the player, and the player's input is routed without claims.
   **Affects:** M7 (epic #25 gains #523; whichever M7 story touches input routing or the player-authority boundary should account for it). Plans may be stale.
+
+## /n8-replan M7 — 2026-10-28
+
+- **Cause:** M5 was executed (10-23 → 10-27, merged at `68d1575`) after M7's last replan (10-23), plus the two unreconciled Ad-hoc entries of 2026-10-26 (#580 FR-SCN-7 only-child closed set, #523 FR-SCN-8 played-turn revision, both moved from M5 into M7 under epic #25).
+- **Method:** three read-only subagents checked M7's 35 open issues and its description against the M5 decision log, the git history and the code at `68d1575`. The owner approved the combined change set.
+- **Owner decisions (2026-10-28):**
+  1. #232: while a gated module is off, inspection reads return 409 `module_off` (#178's shipped contract); the `dormant: true` flag is dropped.
+  2. #235: a q04 NFR-QUAL-1 hit whose asked character's context did not hold the fact (the guessed-answer case) is recorded and linked to #540 (M9) without holding M7 open; any other NFR-QUAL-1 hit is sev:high and blocks M7.
+  3. #225: there is no `POST /stories/{id}/entities/split`; a split is an ordinary NL rewrite amendment (FR-PROP-7's "recorded as amendments with the normal cascade" still holds). docs/02 §9 is amended to match.
+- **Issues edited (25):** #25 (epic AC gains the S-FAMILY M7 parts), #220, #221, #222, #223, #225, #226, #227, #228, #229, #230, #231, #232, #233, #235, #241, #243, #244, #245, #246, #247, #249, #250, #523 (completed as a story), #580. AC changed on #226, #227, #232, #235, #243, #244. Each carries a "Replanned 2026-10-28" comment.
+- **Edges added:** #228 blocked by #523; #231 blocked by #580.
+- **Milestone description:** outcome 7, coverage-map HOUSEKEEPING lines and phase 2 order gain #580 and #523; a "Replan 2026-10-28" note.
+- **Recurring themes:** beliefs have no provenance column and are written only through `transition()` (check-epistemic-separation); M5's append-only delete triggers (0068/0069/0072/0073) bind prune and backfill cancel; the `beliefs` ↔ `belief_transitions` deferred FK cycle binds export, import and prune; per-perceiver memories and per-viewpoint recomposition bind text rewrites; `tests/structured_turn_support.structured_story` pins Structured v1 (no partitions).
+- **Left for later:** M6 is unexecuted and was planned before M5 ran; it gets the same check (`/n8-replan M6`) before `/n8-exec M6`, and M7 is replanned again after M6 executes. #306 still waits on the owner's option. #588 (needs-triage) bears on #235's certification run.

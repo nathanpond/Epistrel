@@ -326,6 +326,11 @@ async def apply(
         op.add_commit_step(step)
         await op.commit()
     private = await privatize(db, story, knowledge.private_share, knowledge.seed)
+    # The layer lands on an analyzed fixture (``scale``'s last step), so the planner's statistics
+    # for the knowledge tables would still say empty: a plan a pooled connection cached before
+    # (P-02's canon checks, prepared first) is kept until an ``ANALYZE`` invalidates it (#520).
+    async with db.begin() as conn:
+        await conn.execute(text("ANALYZE"))
     return Written(private, counts["beliefs"], counts["exposures"], op.operation_id)
 
 

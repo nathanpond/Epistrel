@@ -28,7 +28,6 @@ from sqlalchemy import update
 
 from epistrel.config import Settings
 from epistrel.core.context import RequestContext
-from epistrel.core.db import make_engine
 from epistrel.core.tables import stories as stories_table
 from epistrel.engine import Engine
 from epistrel.testing import perf, structured_load
@@ -40,7 +39,7 @@ from perf.lite_smoke import (
     STRUCTURED_MEMORIES,
     Target,
 )
-from perf.lite_smoke.seed import StoryRef
+from perf.lite_smoke.seed import StoryRef, seed_engine
 
 SPEC = scale.ScaleSpec.scaled(STRUCTURED_MEMORIES, events=STRUCTURED_EVENTS)
 """One structured story: 10,000 memories, 20,000 events (5,000 turns, 10,000 facts)."""
@@ -74,7 +73,7 @@ async def seed(
     """Build ``stories`` structured stories of ``spec``, queue their turns and plant their
     canon; return them."""
     settings = seed_settings(target.dsn)
-    db = make_engine(settings)
+    db = seed_engine(settings, stories)
     epistrel = Engine(settings, db=db)
     ctx = RequestContext(principal=target.principal)
     try:

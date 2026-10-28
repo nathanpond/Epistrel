@@ -65,16 +65,19 @@ import pytest
 import yaml
 from perf.lite_smoke import RESULTS_DIR, Target, freshness, multi, report, structured
 from perf.lite_smoke import __main__ as smoke
-from perf.lite_smoke.seed import StoryRef
+from perf.lite_smoke import seed as seed_module
+from perf.lite_smoke.seed import SEED_CONNECT_TIMEOUT_S, SEED_POOL_HEADROOM, StoryRef, seed_engine
 from prometheus_client import REGISTRY
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
 from epistrel.core.context import RequestContext
-from epistrel.core.db import make_sync_engine
+from epistrel.core.db import make_engine, make_sync_engine
 from epistrel.observability import metrics
 from epistrel.observability.stages import MULTI_STAGES, STAGES, STRUCTURED_STAGES
 from epistrel.testing import structured_load
+from epistrel.testing.fixtures import scale
 from tests.auth_support import CREDENTIAL_A, auth_settings, forget_ledger
 from tests.conftest import alembic_config
 from tests.fixtures.key_room import key_room
@@ -517,6 +520,80 @@ def test_p_04__cleanup_tolerates_a_busy_story(monkeypatch: pytest.MonkeyPatch) -
     left = smoke.delete_stories(Target.from_env(), stories)
     assert left == ["busy", "slow"]
     assert deleted == ["/stories/a", "/stories/b"]
+
+
+SEED_STORIES = 7
+"""More stories than SQLAlchemy's default pool keeps (5)."""
+BURSTS = 4
+
+
+def _counting(db: AsyncEngine) -> list[int]:
+    """A one-element counter of the connections ``db`` opens from now on."""
+    opened = [0]
+
+    def connected(*_: Any) -> None:
+        opened[0] += 1
+
+    event.listen(db.sync_engine, "connect", connected)
+    return opened
+
+
+async def _bursts(db: AsyncEngine) -> None:
+    """``BURSTS`` rounds of ``SEED_STORIES`` transactions at once, every one returned between
+    rounds: the rise and fall of concurrency a seed has when one story's CPU-bound step holds
+    the event loop while the others' connections sit idle."""
+    from sqlalchemy import text
+
+    async def one() -> None:
+        async with db.begin() as conn:
+            await conn.execute(text("SELECT pg_sleep(0.02)"))
+
+    for _ in range(BURSTS):
+        await asyncio.gather(*(one() for _ in range(SEED_STORIES)))
+
+
+@pytest.mark.part("M5", "NFR-PERF-4")
+async def test_p_04__seed_keeps_its_connections(
+    pg_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Found by #587: every weekly structured and multi-character seed crashed 30 to 55 minutes
+    in, opening a connection, on psycopg's connect timeout. The seeders wrote ten stories at once
+    through the service's engine: a pool that keeps 5 connections and gives 2 s to open one. An
+    overflow connection closes when it is returned to a pool already holding 5 idle ones, so
+    each rise in concurrency opened backends again, and on the runner's busy Postgres one took
+    over 2 s. The seeders' engine (``seed_engine``) keeps a connection per story and allows 30 s
+    to open one: seeding more stories than the default pool holds, and rounds of that many
+    transactions at once, open no connection past the first round.
+
+    Complement asserted: the service's engine reopens connections on every round after the
+    first (the churn that crashed)."""
+    with _scratch_database(pg_url) as url:
+        asked: dict[str, Any] = {}
+
+        def built(settings: Settings, **options: Any) -> AsyncEngine:
+            asked.update(options)
+            return make_engine(settings, **options)
+
+        monkeypatch.setattr(seed_module, "make_engine", built)
+        engine = seed_engine(structured.seed_settings(url), SEED_STORIES)
+        try:
+            assert asked["connect_timeout"] == SEED_CONNECT_TIMEOUT_S >= 30
+            pool = engine.sync_engine.pool
+            assert pool.size() == SEED_STORIES + SEED_POOL_HEADROOM  # type: ignore[attr-defined]
+            opened = _counting(engine)
+            await scale.build_scale_stories(engine, scale.ScaleSpec.scaled(40), SEED_STORIES)
+            await _bursts(engine)
+            assert opened[0] <= SEED_STORIES + SEED_POOL_HEADROOM
+        finally:
+            await engine.dispose()
+        service = make_engine(structured.seed_settings(url))
+        try:
+            opened = _counting(service)
+            await _bursts(service)
+            churn = (SEED_STORIES - service.sync_engine.pool.size()) * (BURSTS - 1)  # type: ignore[attr-defined]
+            assert opened[0] == SEED_STORIES + churn
+        finally:
+            await service.dispose()
 
 
 # -- M5: the multi-character variant (#182) ---------------------------------------------------

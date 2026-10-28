@@ -259,10 +259,15 @@ def remove_belief_hook(hook: BeliefHook) -> None:
 _P = "p_"
 
 
+_SELECT = select(beliefs, *(c.label(f"{_P}{c.name}") for c in propositions.c)).select_from(
+    beliefs.join(propositions, propositions.c.id == beliefs.c.proposition_id)
+)
+"""A belief row with its proposition, built once (a select is generative: ``.where`` copies
+it); building it per read was most of a keyed belief read's cost (#520)."""
+
+
 def _select() -> Any:
-    return select(beliefs, *(c.label(f"{_P}{c.name}") for c in propositions.c)).select_from(
-        beliefs.join(propositions, propositions.c.id == beliefs.c.proposition_id)
-    )
+    return _SELECT
 
 
 def _scalar(value: Any) -> float | None:

@@ -9308,3 +9308,12 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision (Rule 1):** the static parts of the keyed reads' selects are built once: the belief row with its proposition (`partitions._SELECT`), canon's version row (`facts._CANON_SELECT`), and `_through`'s row-side tuple for the module's aliases. The stage profile showed a canon read at about 2.4 ms, only about 0.6 ms of it in the database. On the whole file, `could_have_known` then went from p95 48–51 ms to 39 ms.
   **Why:** a select is generative (`.where` copies it), so sharing the base is safe. With 39 ms against the 50 ms bound, the gate is no longer decided by noise.
   **Issue:** #520
+
+## /n8-exec M5 (verify fixes, pass 5) — 2026-10-27
+
+- **Decision:** Scope is #591 only, on branch `milestone/m5-verify-fixes-5` off `e21d58c`. Carried sev:low bugs (#585, #592, #593), owner PRs #586/#589 and needs-triage #588 are not touched.
+  **Why:** #591 is the only bug blocking M5 after re-verify 4.
+  **Issue:** #591
+- **Decision:** The guard goes into `tests/test_u_27_m5.py::test_u_27__beliefs` as a new section (helper `_knowing`), not into a new test function. It asserts the exact holder set per relationship act on the S-FAMILY plan (the Mother for `mother_of`, the Father and the Mother for `married_to`, the Brother and the Sister each for their own `sibling_of`). It also asserts that an explicit `audience` of Brother+Sister on the Brother's `sibling_of` yields exactly those two. The player is never a holder: the player is an endpoint, but there are no NPC beliefs for the player.
+  **Why:** AC1 of #173 is a U-27 M5 rule, and the existing test already carries the `[M5: FR-SCN-8]` part marker. A new function would need its own part marker for no gain. Asserting on the pure plan, not the DB write, is enough because I-27 M5 already asserts the plan is written as planned. Mutation-checked: the issue's widening mutation fails at the default-case assertion, and ignoring `audience` fails at the explicit-audience assertion.
+  **Issue:** #591

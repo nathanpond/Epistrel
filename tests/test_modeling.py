@@ -60,6 +60,40 @@ def test_interaction_verbs_find_the_other_party() -> None:
     assert _objects("do", "Jenni passes the jogger.") == []
     assert _objects("do", "Jenni passes the waiter a note.") == [(None, "the waiter")]
     assert _objects("do", "Jenni passes Mrs. Patel the salt.") == [(PATEL, "Mrs. Patel")]
+    # #573: a time or frequency phrase after the object is no second object.
+    assert _objects("do", "Jenni passes the jogger a second time.") == []
+    assert _objects("do", "Jenni passes the jogger an hour later.") == []
+    assert _objects("do", "Jenni passes the jogger the next morning.") == []
+    assert _objects("do", "Jenni passes the jogger a few minutes later.") == []
+    assert _objects("do", "Jenni passes Mrs. Patel every morning.") == []
+    assert _objects("do", "Jenni passes the waiter a second note.") == [(None, "the waiter")]
+    assert _objects("do", "Jenni passes the waiter a note the next morning.") == [
+        (None, "the waiter")
+    ]
+    # #583: the phrase's head noun decides; a time word as a modifier or a time adverb after a
+    # real second object is still a hand-over.
+    for after in (
+        "a note again",
+        "a note later",
+        "a note that morning",
+        "the salt again",
+        "the towel later on",
+        "the morning paper",
+        "the evening edition",
+        "a minute timer",
+    ):
+        assert _objects("do", f"Jenni passes the jogger {after}.") == [(None, "the jogger")], after
+    for after in (
+        "a second time",
+        "twice",
+        "again later that day",
+        "an hour later",
+        "on the way home",
+        "at dawn",
+    ):
+        assert _objects("do", f"Jenni passes the jogger {after}.") == [], after
+    passing = BeatView("do", 2, "Jenni passes the jogger a second time.", JENNI)
+    assert modeling.candidates([passing], ENTITIES) == []
     # "calls X over" summons them; "calls to X" addresses them.
     assert _objects("do", "Jenni calls the waiter over.") == [(None, "the waiter")]
     assert _objects("do", "Jenni calls out to the waiter.") == [(None, "the waiter")]

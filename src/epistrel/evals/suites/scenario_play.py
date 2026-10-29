@@ -4,9 +4,10 @@
 ``play(ctx, case)`` makes one scratch story: Wren (the player) and Bobby (who renders, with a
 full definition: E-13's voice reference). It runs the story on ``Structured (M4)``, or its
 ``gated`` variant (``CONFIG_DIALS``), plants the S-COAT canon (the coat on the hallway hook,
-the author's facts) and sets the drivers as the story's custom instructions. Then it plays each
-turn through ``Engine.respond``, with Bobby as the render character and the case's requested
-length, if any.
+the author's facts) with the cast in the parlor (#572: the profile routes perception, and an
+unplaced character perceives nothing of the player's line) and sets the drivers as the story's
+custom instructions. Then it plays each turn through ``Engine.respond``, with Bobby as the
+render character and the case's requested length, if any.
 
 For each turn it rebuilds the **first draft** (``first_draft``): the turn's raw renders in
 order, so a beat the repair ladder corrected is read back from its ``render_rejected`` event
@@ -185,9 +186,11 @@ class Played:
     places: tuple[str, ...]
 
 
-async def _plant(ctx: CaseContext, story_id: str) -> None:
+async def _plant(ctx: CaseContext, story_id: str, cast: Sequence[str]) -> None:
     """S-COAT's canon: the coat on the hook, the hook in the hallway, the armchair in the
-    parlor (the author's facts, so the two places are told apart)."""
+    parlor (the author's facts, so the two places are told apart), and ``cast`` in the parlor:
+    the seeded profile routes perception (#181), and an unplaced character perceives nothing,
+    so Bobby hears the player's line only when both are placed together (#572)."""
     async with ctx.engine.db.begin() as conn:
         found = {name: await store.add_entity(conn, story_id, "item", name) for name in ITEMS}
         for name in PLACES:
@@ -196,6 +199,7 @@ async def _plant(ctx: CaseContext, story_id: str) -> None:
         (found["hook"], LOCATED_IN, found["hallway"]),
         (found["armchair"], LOCATED_IN, found["parlor"]),
         (found["coat"], LOCATED_AT, found["hook"]),
+        *((character, LOCATED_AT, found["parlor"]) for character in cast),
     )
     for subject, predicate, obj in facts:
         await ctx.engine.commit_fact(
@@ -288,10 +292,10 @@ async def play(ctx: CaseContext, case: ScenarioCase) -> Played:
     created = await ctx.story(StorySpec(characters=list(CAST)))
     story_id = created.story_id
     await scenes.structured(ctx.engine, ctx.principal, story_id, CONFIG_DIALS[case.config])
-    # The seeded profile routes perception (#181): the scenes place no one, so the player reads
-    # the turn as the story does (``player_view = story``: every beat in full, FR-RESP-13).
+    # The seeded profile routes perception (#181): the player reads the turn as the story does
+    # (``player_view = story``: every beat in full, FR-RESP-13), and ``_plant`` places the cast.
     await ctx.engine.update_story_settings(ctx.principal, story_id, {"player_view": "story"})
-    await _plant(ctx, story_id)
+    await _plant(ctx, story_id, [c.id for c in created.characters])
     await ctx.engine.set_custom_instructions(
         ctx.principal, story_id, CustomInstructionsRequest(text=drivers_text(case.drivers))
     )

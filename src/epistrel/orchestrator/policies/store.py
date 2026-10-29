@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.config_changes import read_settings
 from epistrel.core.enums import StoryStatus
+from epistrel.core.epistemic.perception import RouteBeat
 from epistrel.core.epistemic.scene import Moves, placed_elsewhere
 from epistrel.core.errors import PolicyNotFound, StoryNotFound
 from epistrel.core.policies.model import (
@@ -347,18 +348,30 @@ async def guard_context(
     *,
     actors: Iterable[str] = (),
     moves: Moves | None = None,
+    beats: Sequence[RouteBeat] = (),
+    declared: Iterable[Any] = (),
+    everyone: bool = False,
 ) -> GuardContext:
     """The story's effective policies, cast and live threshold (``StoryNotFound`` if absent).
     Under perception routing (#161) a cast member authoritatively placed outside the turn's
     routing audience is marked not ``present`` (``core.epistemic.scene.placed_elsewhere``,
     #541): the union over the turn's beats of the co-located sets of the scene's location and
-    of ``actors`` (the turn's input actor and primaries), across the ``moves`` its beats stage;
-    with neither, the scene's location at the turn's start."""
+    of ``actors`` (the turn's input actor and primaries), across the ``moves`` its beats stage,
+    and everyone routing delivers the turn's ``beats`` to (#571: a located narration's room),
+    over the topology they ``declared``; with none, the scene's location at the turn's start.
+    ``everyone`` (#582: a draft declares topology the guard cannot read) marks the whole cast
+    present."""
     found = await effective_policies(db, story_id)
     async with db.connect() as conn, conn.begin():
         cast = await read_cast(conn, story_id)
         threshold = (await read_settings(conn)).minor_age_threshold
-        elsewhere = await placed_elsewhere(conn, story_id, actors, moves)
-    if elsewhere:
+        elsewhere = (
+            frozenset()
+            if everyone
+            else await placed_elsewhere(conn, story_id, actors, moves, beats, declared)
+        )
+    if everyone:
+        cast = tuple(replace(m, present=True) for m in cast)
+    elif elsewhere:
         cast = tuple(replace(m, present=m.character_id not in elsewhere) for m in cast)
     return GuardContext(policies=found, cast=cast, threshold=threshold)

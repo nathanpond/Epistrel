@@ -69,6 +69,7 @@ if TYPE_CHECKING:
     from epistrel.core.events.operation import Operation
     from epistrel.core.membership import Position, Through
     from epistrel.core.projections.structured import ProfileView, RelationshipView, SceneView
+    from epistrel.core.propositions.registry import Registry
 
 logger = logging.getLogger(__name__)
 
@@ -394,7 +395,27 @@ class KeyedLookup:
         self.conn = conn
         self.read_set = read_set
         self.memo: dict[Any, Any] = {}
-        """Derived reads computed once per lookup (#171's ``identities_for`` per holder)."""
+        """Derived reads computed once per lookup (#171's ``identities_for`` per holder, and
+        each viewpoint a canon read validated, #520)."""
+
+    async def _registry(self, story_id: str, registry: Registry | None) -> Registry:
+        """The caller's registry for ``story_id`` (the one it canonicalized with), else a read
+        (#520: a check passes its own, so each keyed read does not load it again)."""
+        from epistrel.core.propositions.registry import load
+
+        if registry is not None and registry.story_id == story_id:
+            return registry
+        return await load(self.conn, story_id)
+
+    async def _viewpoint(self, story_id: str, viewpoint: str) -> None:
+        """``canon.check_viewpoint``, once per (story, viewpoint) for this lookup (#520: the
+        cast read it makes was repeated by every canon read of a check)."""
+        from epistrel.core.canon import facts as canon
+
+        key = ("viewpoint", story_id, viewpoint)
+        if key not in self.memo:
+            await canon.check_viewpoint(self.conn, story_id, viewpoint)
+            self.memo[key] = True
 
     async def canon_at(
         self,
@@ -408,15 +429,16 @@ class KeyedLookup:
         viewpoint: str = OMNISCIENT,
         reading: Reading = "every",
         through_position: Through | None = None,
+        registry: Registry | None = None,
     ) -> list[Fact]:
         """The current canon facts of ``predicate`` for ``subjects`` (one id, a ``same_as``-
         expanded set, or ``None`` for any), with ``object`` (an entity id, a literal, or
         ``None`` for any), true at ``story_time`` (or overlapping ``window``, #140's widened
         fetch window; neither: at any time) as ``viewpoint`` may read them; the key and its
         result hash are recorded. Keys are canonicalized with the predicate's symmetric and
-        inverse rules (#131): facts are stored in the canonical direction."""
+        inverse rules (#131): facts are stored in the canonical direction. ``registry``: the
+        caller's, read when not given."""
         from epistrel.core.canon import facts as canon
-        from epistrel.core.propositions.registry import load
 
         if story_time is not None and window is not None:
             raise ValueError("a keyed lookup takes a story time or a window, not both")
@@ -429,7 +451,7 @@ class KeyedLookup:
         )
         object_id = object if isinstance(object, str) else None
         literal = object if isinstance(object, TypedLiteral) else None
-        found = (await load(self.conn, story_id)).get(predicate)
+        found = (await self._registry(story_id, registry)).get(predicate)
         symmetric = bool(found is not None and found.symmetric)
         inverse_objects: tuple[str, ...] | None = None
         if found is not None and found.inverse_of is not None and literal is None:
@@ -442,6 +464,10 @@ class KeyedLookup:
                 inverse_objects[0] if inverse_objects and len(inverse_objects) == 1 else None
             )
         bounds = _bounds(story_time, window)
+        # The window is read in the query (a superset of ``kept``'s, which still decides), so a
+        # subject's long history is not fetched to be dropped (#520).
+        overlap = bounds if story_time is None and bounds != (None, None) else None
+        await self._viewpoint(story_id, viewpoint)
         rows = await canon.canon(
             self.conn,
             story_id,
@@ -451,6 +477,8 @@ class KeyedLookup:
             predicate=predicate,
             subject=subject_set[0] if subject_set and len(subject_set) == 1 else None,
             reading=reading,
+            viewpoint_checked=True,
+            overlapping=overlap,
         )
         if symmetric and subject_set is not None:
             rows += [
@@ -463,6 +491,8 @@ class KeyedLookup:
                     viewpoint=viewpoint,
                     predicate=predicate,
                     reading=reading,
+                    viewpoint_checked=True,
+                    overlapping=overlap,
                 )
                 if r.proposition.object_id in subject_set and r.subject_id not in subject_set
             ]
@@ -514,15 +544,16 @@ class KeyedLookup:
         through: Position | None = None,
         levels: Sequence[Any] | None = None,
         viewpoint: str = OMNISCIENT,
+        registry: Registry | None = None,
     ) -> list[Belief]:
         """``holder``'s first-order beliefs (#159's ``partition``) of ``predicate`` for
         ``subjects`` (one id, a ``same_as``-expanded set, or ``None`` for any) with ``object``
         (an entity id, or ``None`` for any), whose valid-time may meet ``window``, held at
         ``through`` (``None``: now) at one of ``levels``; the key (holder
         ``belief:<holder>``) and its result hash are recorded, so a belief change of the holder
-        that matches it touches the turn's read set. Canonicalized like ``canon_at``."""
+        that matches it touches the turn's read set. Canonicalized like ``canon_at`` (with the
+        caller's ``registry`` when given)."""
         from epistrel.core.epistemic import partitions
-        from epistrel.core.propositions.registry import load
 
         subject_set = (
             None
@@ -532,7 +563,7 @@ class KeyedLookup:
             else tuple(sorted(set(subjects)))
         )
         object_id = object
-        found = (await load(self.conn, story_id)).get(predicate)
+        found = (await self._registry(story_id, registry)).get(predicate)
         symmetric = bool(found is not None and found.symmetric)
         inverse_objects: tuple[str, ...] | None = None
         if found is not None and found.inverse_of is not None:
@@ -543,8 +574,25 @@ class KeyedLookup:
                 inverse_objects[0] if inverse_objects and len(inverse_objects) == 1 else None
             )
         bounds = _bounds(None, window)
+        # The entities ``kept`` can match, read in the query (a superset: ``kept`` still
+        # decides), so the holder's whole partition of the predicate is not fetched (#520).
+        entities_: tuple[str, ...] | None = (
+            subject_set
+            if subject_set is not None
+            else inverse_objects
+            if inverse_objects is not None
+            else None
+            if object_id is None
+            else (object_id,)
+        )
         rows = await partitions.partition(
-            self.conn, story_id, holder, through=through, predicate=predicate, levels=levels
+            self.conn,
+            story_id,
+            holder,
+            through=through,
+            predicate=predicate,
+            levels=levels,
+            entities_=entities_,
         )
 
         def kept(belief: Belief) -> bool:
@@ -767,6 +815,7 @@ class KeyedLookup:
         through_position: Through,
         story_time: int | None = None,
         viewpoint: str = OMNISCIENT,
+        registry: Registry | None = None,
     ) -> list[tuple[Fact, str]]:
         """The current canon facts of the ``projection``-projecting predicates between
         ``holder`` and ``other`` (entity ids) written at or before ``through_position`` and
@@ -777,20 +826,21 @@ class KeyedLookup:
         #164's exposure frame reads trust's relationships here at the frame's full position
         (beat and step included) where the turn-granular projection cannot: one key per
         predicate and direction is recorded (``through`` the frame), an empty result
-        included, so the frame's read set is the proof."""
+        included, so the frame's read set is the proof. ``registry``: the caller's, read when
+        not given."""
         from epistrel.core.canon import facts as canon
         from epistrel.core.propositions.model import Polarity, TemporalKind
-        from epistrel.core.propositions.registry import load
 
-        registry = await load(self.conn, story_id)
+        found_registry = await self._registry(story_id, registry)
         wanted = [
             p
-            for p in registry.predicates.values()
+            for p in found_registry.predicates.values()
             if p.projection == projection and p.inverse_of is None
         ]
         if not wanted:
             return []
         ids = {p.id for p in wanted}
+        await self._viewpoint(story_id, viewpoint)
         rows: dict[str, list[Fact]] = {"out": [], "in": []}
         for direction, (subject, object_id) in (
             ("out", (holder, other)),
@@ -803,6 +853,7 @@ class KeyedLookup:
                 viewpoint=viewpoint,
                 subject=subject,
                 member=object_id,
+                viewpoint_checked=True,
             ):
                 if fact.predicate_id in ids and _object_matches(fact.proposition, object_id, None):
                     rows[direction].append(fact)

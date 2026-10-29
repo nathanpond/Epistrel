@@ -17,7 +17,8 @@ described this character doing, as requests to comply with or refuse), then
 character keeps its own beliefs; #168, ``steps_contract.j2``), the beat contract, the requested length as a target in words (#464) and, on a guardrail
 regeneration, one constraint line per violated output
 policy (#68). The director's notes never appear here (FR-SCN-11: the narrator's alone). The
-``user`` block is the player input, the final ``user`` message. The beats come back as the
+``user`` block is the player input as the character perceived it (#572: the words it perceived,
+an envelope such as "Wren whispers something to Marcus" as its line), the final ``user`` message. The beats come back as the
 call's ``response_schema`` (#53). -#}
 {% macro line(entry) -%}
 {% if entry.text %}{{ entry.text }}{% else %}{{ entry.name }}:{% if entry.say %} "{{ entry.say }}"{% endif %}{% if entry.do %} *{{ entry.do }}*{% endif %}{% endif %}
@@ -139,5 +140,10 @@ Give at least one `say` or `do`. Declare each factual claim a beat makes as a pr
 {% include "steering_resolution.j2" %}
 {% endblock %}
 {% block user %}
+{% for heard in player_input.heard %}
+{{ heard }}
+{% endfor %}
+{% if player_input.say or player_input.do or not player_input.heard %}
 {{ player_input.name }}:{% if player_input.say %} "{{ player_input.say }}"{% endif %}{% if player_input.do %} *{{ player_input.do }}*{% endif %}
+{% endif %}
 {% endblock %}

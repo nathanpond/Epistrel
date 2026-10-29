@@ -24,6 +24,10 @@
 # gated): the job fails on an error, a failed request or a lost or duplicated turn. It uploads
 # the report, its sidecar and Locust's HTML report; `weekly-docs` commits the report under
 # perf/results/ and summarises it in docs/perf.md.
+#
+# Dispatching `suite: weekly-p04` runs `weekly-structured` and `weekly-multi` alone (#587): no
+# scale suite, so `weekly-docs` (which needs its result) is skipped and the rolling PR is left
+# as it is. It exists to prove a P-04 change on a branch before it merges.
 name: Perf
 
 on:
@@ -33,11 +37,12 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: nightly (P-03) or weekly (the scale suite and its docs PR)
+        description: nightly (P-03), weekly (the scale suite and its docs PR) or weekly-p04 (P-04's structured and multi-character workloads alone, no docs PR)
         type: choice
         options:
           - nightly
           - weekly
+          - weekly-p04
         default: nightly
 
 permissions:
@@ -188,7 +193,7 @@ jobs:
           fi
 
   weekly-structured:
-    if: github.event.schedule == '0 3 * * 0' || (github.event_name == 'workflow_dispatch' && inputs.suite == 'weekly')
+    if: github.event.schedule == '0 3 * * 0' || (github.event_name == 'workflow_dispatch' && (inputs.suite == 'weekly' || inputs.suite == 'weekly-p04'))
     runs-on: ubuntu-latest
     timeout-minutes: 180
     permissions:
@@ -270,7 +275,7 @@ jobs:
 
   weekly-multi:
     needs: [weekly-structured]
-    if: always() && (github.event.schedule == '0 3 * * 0' || (github.event_name == 'workflow_dispatch' && inputs.suite == 'weekly'))
+    if: always() && (github.event.schedule == '0 3 * * 0' || (github.event_name == 'workflow_dispatch' && (inputs.suite == 'weekly' || inputs.suite == 'weekly-p04')))
     runs-on: ubuntu-latest
     timeout-minutes: 180
     permissions:

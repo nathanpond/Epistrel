@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import weakref
 from collections import defaultdict
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
@@ -40,9 +40,11 @@ from epistrel.core.epistemic.perception import (
     FULL,
     NONE,
     Level,
+    RouteBeat,
     SceneState,
     pair,
     turn_audience,
+    with_declared,
 )
 from epistrel.core.profiles.capabilities import level_at_least, module_on
 from epistrel.core.profiles.effective import effective_configuration
@@ -292,15 +294,20 @@ async def placed_elsewhere(
     story_id: str,
     actors: Iterable[str] = (),
     moves: Moves | None = None,
+    beats: Sequence[RouteBeat] = (),
+    declared: Iterable[Any] = (),
 ) -> frozenset[str]:
     """The characters authoritatively placed outside the routing audience of the story's next
     turn (#55's ``present`` set, FR-GUARD-11; #541: everyone else is present): the union over
     the turn's beats of routing's co-located set (``perception.turn_audience``) for the scene's
     location and the ``actors`` (the turn's player and primaries), before and after each
-    beat's staged ``moves``. Empty when routing is off (perception ``none``: everyone is
-    present, as under Lite) or neither the scene nor any actor has a location; an unplaced
-    character counts as present, so the minors policy errs toward applying."""
-    if await current_level(conn, story_id) == NONE:
+    beat's staged ``moves``, and (#571) everyone routing delivers the turn's ``beats`` to, over
+    the scene with the channels and barriers ``declared`` (``perception.with_declared``): a
+    located narration reaches its room. Empty when routing is off (perception ``none``:
+    everyone is present, as under Lite) or neither the scene nor any actor has a location; an
+    unplaced character counts as present, so the minors policy errs toward applying."""
+    level = await current_level(conn, story_id)
+    if level == NONE:
         return frozenset()
     turn = await conn.scalar(
         select(story_heads.c.next_turn_index).where(story_heads.c.story_id == story_id)
@@ -311,7 +318,9 @@ async def placed_elsewhere(
     wanted = tuple(actors)
     if scene.location is None and all(scene.at(a) is None for a in wanted):
         return frozenset()
-    audience = turn_audience(scene, wanted, moves)
+    routed = list(beats)
+    state = with_declared(scene, declared) if routed else scene
+    audience = turn_audience(state, wanted, moves, routed, level)
     return frozenset(c for c in scene.placements if c not in audience)
 
 

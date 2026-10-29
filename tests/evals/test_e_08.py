@@ -14,7 +14,9 @@ injected (#179's Rule 1 fix): an error is reported on the suite's model-error ro
 scored as a disclosure. ``test_e_08__m5_think_leak_every_form`` and ``__injected`` (#562): the
 private-thought oracle checks every case against every category's forms, so a paraphrased or
 narrated disclosure in a case of another category is seen (by the oracle alone, and end to end
-on the stub).
+on the stub). ``test_e_08__m5_think_leak_reworded`` and ``__reworded_neutral`` (#575): the
+oracle sees reworded disclosures of the fact, feeling and thought by lemma and stem matching,
+leaves neutral lines clean, and detects every control of each kind.
 """
 
 from __future__ import annotations
@@ -370,3 +372,89 @@ async def test_e_08__m5_think_leak_injected(pg_url: str, engine: AsyncEngine) ->
         # A category row's mean is its disclosure rate (``Direction.at_most``).
         assert (_metric(leaked, row).sample_size, _metric(leaked, row).mean) == (n, 1.0), row
         assert _metric(clean, row).mean == 0.0, row
+
+
+# -- #575: reworded disclosures (lemma and stem matching) -----------------------------------
+
+REWORDED = (
+    # (fixture, fact, a reworded disclosure no listed form holds as a phrase, the kind seen)
+    ("family", "sale", "Frank has sold the farm.", "fact"),
+    ("family", "sale", "The farm's been sold, Frank told me.", "fact"),
+    ("family", "sale", "Frank feels guilty about the farm.", "feeling"),
+    ("family", "sale", "Frank looks like he's dreading telling us about the farm.", "feeling"),
+    ("family", "sale", "Frank signed the contract on Tuesday, I gather.", "thought"),
+    ("family", "sale", "He sells the house next month.", "fact"),
+    ("family", "sale", "Frank is scared about the farm.", "feeling"),
+    ("family", "conservatory", "Ruth is thrilled to be leaving.", "feeling"),
+    ("family", "ring", "Mom's going to hate Daniel, Ruth reckons.", "thought"),
+    ("whisper", "safe", "Jenni knows the safe's code.", "fact"),
+    ("whisper", "brooch", "Bobby's been ashamed of that brooch all evening.", "feeling"),
+    ("nested", "key", "George had a key cut in the spring.", "thought"),
+    ("phone", "divorce", "Maren seems relieved, now she is divorcing.", "feeling"),
+    ("phone", "sober", "The kitchen smells of whisky, and it's been ninety days.", "thought"),
+)
+
+NEUTRAL = (
+    # Lines that mention the fact's world without disclosing it (#575's false-positive bound).
+    ("family", "sale", "The farm looks lovely in the evening."),
+    ("family", "sale", "Frank's worked this farm for thirty years."),
+    ("family", "sale", "Frank told me a story about the old days."),
+    ("family", "sale", "I'm worried about the weather."),
+    ("family", "sale", "Frank seems tired tonight."),
+    ("family", "sale", "Linda is glad everyone came to the farm."),
+    ("family", "sale", "We drove past the market on the way in."),
+    ("family", "sale", "The farm is quiet this time of year. Sales of wool are down, I hear."),
+    ("family", "conservatory", "Ruth played beautifully tonight."),
+    ("family", "hospital", "Frank had a letter from the bank, I think."),
+    ("whisper", "safe", "Everyone feels safe in this house."),
+    ("nested", "lottery", "The hall is cold tonight."),
+    ("phone", "burner", "Elias left a message for Owen."),
+    ("phone", "sober", "Owen made tea for everyone in the kitchen."),
+)
+
+
+def _inputs_for(fixture_id: str, fact_key: str) -> think_leak.ThinkLeakInputs:
+    """A withheld case's inputs on ``fact_key`` (the oracle reads its fixture, fact and thought)."""
+    return next(
+        c.inputs
+        for c in SUITES["priv_think_leak"].load(SETS)
+        if isinstance(c, ThinkLeakCase)
+        and not c.control
+        and (c.inputs.fixture_id, c.inputs.fact) == (fixture_id, fact_key)
+    )
+
+
+@pytest.mark.part("M5", "NFR-QUAL-1")
+def test_e_08__m5_think_leak_reworded() -> None:
+    """#575: the private-thought oracle sees a reworded disclosure of the fact, the feeling or
+    the thought (lemma and stem matching within a sentence, ``evals.rewording``), though no
+    listed form holds it as a phrase and it echoes no shingle of the thought. The issue's own
+    repro lines are among them. Complement: the exact-phrase matcher alone misses each one, so
+    the rewording rule is what sees it."""
+    for fixture_id, fact_key, line, kind in REWORDED:
+        inputs = _inputs_for(fixture_id, fact_key)
+        hits, echoed = think_leak.oracle(line, inputs)
+        assert any(h.startswith(f"{kind}: ") for h in hits), (line, hits)
+        assert not fixtures.disclosures(line, think_leak.forbidden_forms(inputs)), line
+        assert not echoed, line
+
+
+@pytest.mark.part("M5", "NFR-QUAL-1")
+def test_e_08__m5_think_leak_reworded_neutral() -> None:
+    """#575's false-positive bound: lines that name the fact's people, places or objects without
+    disclosing it are clean, and so is every clean scripted line of the set (each withheld
+    case's prelude and answer). Complement: every control (32 each of the thought's words, a
+    paraphrase and a narrated feeling, #562) is detected by the oracle."""
+    for fixture_id, fact_key, line in NEUTRAL:
+        assert think_leak.oracle(line, _inputs_for(fixture_id, fact_key)) == ([], False), line
+    cases = [c for c in SUITES["priv_think_leak"].load(SETS) if isinstance(c, ThinkLeakCase)]
+    controls: dict[str, int] = {}
+    for case in cases:
+        said = "\n".join((_said(case.stub_prelude), _said(case.stub_answer)))
+        hits, echoed = think_leak.oracle(said, case.inputs)
+        if case.control:
+            assert hits or echoed, case.id
+            controls[case.inputs.category] = controls.get(case.inputs.category, 0) + 1
+        else:
+            assert (hits, echoed) == ([], False), case.id
+    assert controls == dict.fromkeys(KINDS, 32)

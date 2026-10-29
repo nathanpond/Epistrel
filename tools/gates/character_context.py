@@ -16,7 +16,8 @@ under ``src/epistrel`` for:
 - every prompt section ``character_inputs`` passes to ``GenerationInputs`` (#544), against the
   declared map ``SECTIONS``: a section the map does not classify is a finding (a new section
   is classified before it reaches a character); a ``CONTEXT`` section must come from the
-  context (the first parameter, or a ``replace`` field set from it); an ``UNSCOPED`` one (turn
+  context (the first parameter, or a ``replace`` field set from it; #572: the player's input
+  among them, perception-routed, never the typed text); an ``UNSCOPED`` one (turn
   text with no viewpoint scope: the rolling summary, the text pins) must come only from
   ``replace`` fields that are empty when the context is ``partitioned``.
 
@@ -49,15 +50,18 @@ RENDERERS = frozenset({"render_beats", "prepare"})
 """The calls that render a character template when given ``variant=STRUCTURED``."""
 
 CONTEXT = "context"
-"""A section built by ``build_context``: what the character could know."""
+"""A section built by ``build_context``: what the character could know. #572: the player's
+input is one, perception-routed with its qualifiers (a whisper's non-target gets its envelope),
+never the typed text."""
 TURN = "turn"
 """Turn text every character may see: the guidance, the instructions and the shared scenario
-text, the character's own definition, the player's input, the policy and steering lines, and
-the turn's roles (#176, #180)."""
+text, the character's own definition, the policy and steering lines, and the turn's roles
+(#176, #180)."""
 UNSCOPED = "unscoped"
 """Turn text with no viewpoint scope (#544): a partitioned character never gets it."""
 SECTIONS: dict[str, str] = {
     "own_age": CONTEXT,
+    "player_input": CONTEXT,
     "beliefs": CONTEXT,
     "private_memories": CONTEXT,
     "scene": CONTEXT,
@@ -74,7 +78,6 @@ SECTIONS: dict[str, str] = {
     "resolution_steering": TURN,
     "length_target": TURN,
     "belief_steps": TURN,
-    "player_input": TURN,
     "others_present": TURN,
     "interjections": TURN,
     "player_requests": TURN,

@@ -30,7 +30,9 @@ It runs in two steps, so a refusal writes nothing:
      ``objective`` for a world seed and ``public`` for a role's; otherwise the characters it
      names (``self``: the holder; a role id; ``acquaintances``: the roles a relationship links
      to the holder), and ``engine`` when none resolves. A planned reveal's hidden truth is
-     ``engine`` (omniscient only) until per-character partitions arrive;
+     ``engine`` (omniscient only), under per-character partitions too and whatever its
+     ``kind`` (a ``belief`` or ``nested`` truth is read as canon, never seeded as beliefs;
+     #558, #574);
    - **relationships**: each role relationship's name through the registry and #140's alias
      table ("mother_of" is ``parent_of``), between the two roles' characters; one whose other
      role is unfilled or whose name is no registered predicate stays deferred;
@@ -515,6 +517,10 @@ def _seeds(build: _Builder) -> None:
             continue
         tracked = build.track(item, item.field_ref, item.location)
         kind = str(value.get("kind") or CANON)
+        if item.field_ref.startswith("drivers.") and kind in LIMITED_KINDS:
+            # #574: a planned reveal's truth stays with the director until a reveal beat (C-25
+            # M5, #558), whatever its kind: it is an engine-scoped canon fact, never a belief.
+            kind = CANON
         holder_role = value.get("holder")
         holder = (
             None if holder_role in (None, WORLD_HOLDER) else _characters(item).get(str(holder_role))

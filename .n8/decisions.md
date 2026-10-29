@@ -9277,7 +9277,7 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision (owner):** #576 takes option (a): "2) a". S-FAMILY's only-child clause moves from its M5 part to a new **[M7: FR-SCN-7]** part in docs/04, and §22's FR-SCN-7 row gains `S-FAMILY (M7)`. The work is filed as #580 (M7, epic #25): a table-driven closed-set reading of background flavor for the genesis fact merge. `test_s_family.py`'s docstring cites the move. This meets #576's AC (docs/04 amended with the owner's words; the docstring cites it). #576 closes with PR #578. #173 AC4's S-FAMILY half is covered; its other half still waits on #523. **Issue:** #576, #580
 - **Decision (owner):** #579 keeps the strict behaviour (option a): "3) ok". An unplaced rendered character perceives none of the player's input under partitions, which follows docs/02 §4.4. **Issue:** #579
 
-## Ad-hoc — 2026-10-26
+## Ad-hoc — 2026-10-26 — reconciled by /n8-replan 2026-10-28
 
 - **Change:** S-FAMILY's only-child merge clause (FR-SCN-7) moved from M5 to M7, with the new story #580 in M7 under epic #25 (a closed-set reading of background flavor in `read_seed` for the genesis and Lite→Full fact merge).
   **Why:** the owner's decision on #576 (option a). The engine cannot read "only child" from prose, and M7 reruns the fact merge for the upgrade.
@@ -9346,3 +9346,58 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision:** The guard goes into `tests/test_u_27_m5.py::test_u_27__beliefs` as a new section (helper `_knowing`), not into a new test function. It asserts the exact holder set per relationship act on the S-FAMILY plan (the Mother for `mother_of`, the Father and the Mother for `married_to`, the Brother and the Sister each for their own `sibling_of`). It also asserts that an explicit `audience` of Brother+Sister on the Brother's `sibling_of` yields exactly those two. The player is never a holder: the player is an endpoint, but there are no NPC beliefs for the player.
   **Why:** AC1 of #173 is a U-27 M5 rule, and the existing test already carries the `[M5: FR-SCN-8]` part marker. A new function would need its own part marker for no gain. Asserting on the pure plan, not the DB write, is enough because I-27 M5 already asserts the plan is written as planned. Mutation-checked: the issue's widening mutation fails at the default-case assertion, and ignoring `audience` fails at the explicit-audience assertion.
   **Issue:** #591
+
+## Owner decisions — 2026-10-26 (/n8-verify M5, re-verify 3)
+
+- **Decision (owner):** NFR-QUAL-1: "Waiver + re-run think-leak". q04's live zero-leak row is waived for M5 on the #540 ruling (comment on PR #584). #540 stays open outside M5. `priv_think_leak` and `e01_viewpoint` are re-run live on `cydonia-24b-v4.3` at `ad7368b`, so that a report postdates the #562 and #575 oracle fixes. **Issue:** #179, #540
+- **Decision (owner):** #165 AC6: "Dispatch weekly now". `perf.yml` was dispatched with `suite=weekly` on `ad7368b` (run 40431295698) to measure P-02 on the 50k fixture. It also runs `weekly-multi` (#182). **Issue:** #165, #182
+- **Decision (owner):** #182's live three-character matrix row: "Run live after think-leak". It is run on cydonia once the think-leak run finishes, never alongside it, so that the latency numbers are clean. **Issue:** #182
+- **Decision (owner):** #523 takes option (c): "re-scope, carry #523 later". S-FAMILY's M5 part asserts the Brother's revision at the belief-operation level, which is what `test_s_family` already does. The played-turn version moves to a new **[M7: FR-SCN-8]** part, and §22's FR-SCN-8 row gains `S-FAMILY (M7)`. #523 becomes an M7 feature under epic #25, beside #580. #173's AC2 is amended to the engine-scoped reveal that #574 established, and its AC4 cites both moves. **Issue:** #173, #523
+
+## Ad-hoc — 2026-10-26 — reconciled by /n8-replan 2026-10-28
+
+- **Change:** S-FAMILY's played-turn "revision by observation" clause (FR-SCN-8) moved from M5 to M7. #523 (routing a player's observable act to the witnesses' beliefs) is now an M7 story under epic #25.
+  **Why:** the owner's decision on #523 (option c). No played turn can produce a belief about the player: FR-RESP-11's player authority denies a render's claim about the player, and the player's input is routed without claims.
+  **Affects:** M7 (epic #25 gains #523; whichever M7 story touches input routing or the player-authority boundary should account for it). Plans may be stale.
+
+## /n8-replan M7 — 2026-10-28
+
+- **Cause:** M5 was executed (10-23 → 10-27, merged at `68d1575`) after M7's last replan (10-23), plus the two unreconciled Ad-hoc entries of 2026-10-26 (#580 FR-SCN-7 only-child closed set, #523 FR-SCN-8 played-turn revision, both moved from M5 into M7 under epic #25).
+- **Method:** three read-only subagents checked M7's 35 open issues and its description against the M5 decision log, the git history and the code at `68d1575`. The owner approved the combined change set.
+- **Owner decisions (2026-10-28):**
+  1. #232: while a gated module is off, inspection reads return 409 `module_off` (#178's shipped contract); the `dormant: true` flag is dropped.
+  2. #235: a q04 NFR-QUAL-1 hit whose asked character's context did not hold the fact (the guessed-answer case) is recorded and linked to #540 (M9) without holding M7 open; any other NFR-QUAL-1 hit is sev:high and blocks M7.
+  3. #225: there is no `POST /stories/{id}/entities/split`; a split is an ordinary NL rewrite amendment (FR-PROP-7's "recorded as amendments with the normal cascade" still holds). docs/02 §9 is amended to match.
+- **Issues edited (25):** #25 (epic AC gains the S-FAMILY M7 parts), #220, #221, #222, #223, #225, #226, #227, #228, #229, #230, #231, #232, #233, #235, #241, #243, #244, #245, #246, #247, #249, #250, #523 (completed as a story), #580. AC changed on #226, #227, #232, #235, #243, #244. Each carries a "Replanned 2026-10-28" comment.
+- **Edges added:** #228 blocked by #523; #231 blocked by #580.
+- **Milestone description:** outcome 7, coverage-map HOUSEKEEPING lines and phase 2 order gain #580 and #523; a "Replan 2026-10-28" note.
+- **Recurring themes:** beliefs have no provenance column and are written only through `transition()` (check-epistemic-separation); M5's append-only delete triggers (0068/0069/0072/0073) bind prune and backfill cancel; the `beliefs` ↔ `belief_transitions` deferred FK cycle binds export, import and prune; per-perceiver memories and per-viewpoint recomposition bind text rewrites; `tests/structured_turn_support.structured_story` pins Structured v1 (no partitions).
+- **Left for later:** M6 is unexecuted and was planned before M5 ran; it gets the same check (`/n8-replan M6`) before `/n8-exec M6`, and M7 is replanned again after M6 executes. #306 still waits on the owner's option. #588 (needs-triage) bears on #235's certification run.
+
+## /n8-replan M6 — 2026-10-28
+
+- **Cause:** M5 was executed (2026-10-23 → 10-27, merged at `68d1575`) after M6's last replan (2026-10-23, against `bf0db30`). No unreconciled Ad-hoc entry names M6; the drift is M5 as built: scope-only visibility (ADR-167), beliefs only through `transition()` (ADR-168), perception routing and per-perceiver memories (ADR-169), five-column positions with M5's render steps and the `N⁺k` truncate/fork boundary (#168), the ladder before the single commit with `TurnStage` staging (#174), P-primary turns and budgets, and the Structured v1/v2 constant split (0080).
+- **Method:** four read-only subagents (States, clock, providers, staged effects + milestone description) checked M6's 37 open issues against the M5 decision log, `git diff bf0db30..68d1575` and the code at `68d1575`. The owner approved the combined change set ("approve all"). The subagents prepared exact-once replacement bodies; the main session applied them with `--body-file`, re-fetched and diffed each, and commented "Replanned 2026-10-28" on every modified issue.
+- **Owner decisions (2026-10-28, all recommendations taken):**
+  1. #194: the pacing unit is the render, and `render.StepDecl` gains a `time` kind (FR-CLOCK-17's timing steps).
+  2. #200: a character's time belief is an M5 belief on a viewpoint-free core `current_time` predicate, written only through `transition()`; the awareness default is computed.
+  3. #200: a hedged time guess is belief-consistent, never canonized, and writes no belief for its speaker (self-attestation); hearers receive testimony.
+  4. #200: unconscious/asleep is a core fluent `unconscious(subject)` detected by #148 and honored by `route_perception`.
+  5. #201: a model error on e09 counts as an out-of-range estimate.
+  6. #214: S-CONFIG-RACE (g) is whole-turn regeneration (M5's #174 choice); docs/04 amended. Selective per-render rebase is not required.
+  7. #217: a late settlement writes exposures only at `N⁺k`; no memory row at a slot.
+  8. #423: no new test parts; the existing C-15 [M3] / C-03 [M2] tests cover new rows, as M4/M5 did.
+  9. #205/#207/#208: `external@` facts take `{scope: engine}` like true ages.
+  10. #206: under `Unknown`, testimony keeps ADR-170's semantics; only an observation or `observe` step of the exact value is blocked.
+  11. #187: `state_effects` per viewpoint follow visibility only (no audience filter).
+  12. #186: a named read of a hidden State under a character viewpoint is 404, like an unknown name.
+  13. #191: the player's typed input is not an observable act in M6 (#523 brings it in M7); no #191←#523 edge.
+  14. #191: with partitions off, first-person State claims take the objective path, hidden States protected by the index.
+  15. #203: v3 keeps v2's budgets (16 calls, 60 s); #214's O is reserved inside the cap. #203 alone flips `DELIVERED` for `states` and `clock` and lands last.
+- **Issues edited (35):** #185–#191, #193–#203, #204–#218, #423. AC changed on #186, #187, #188, #191, #194, #195 (minor), #196 (minor), #200, #203, #205, #206, #207, #208, #210, #211, #212, #214, #216, #217, #423. #218 and #191 got a test-name addendum. Unchanged: epics #22, #23 (no epic AC change), #192.
+- **Gaps folded in (no new issues):** CONFIG-REVALIDATION [M6: FR-CONC-16] had no M6 home → #187 (State validation and #188's permission check as `REBASE_CHECKS` entries); simultaneous shared-State conflicts → #188; completion-stage per-perceiver commit hooks and the deadline excluding the synchronous wait → #212; consciousness → #200.
+- **Edges added:** #195←#191, #200←#191, #201←#203, #203←#185/#186/#187/#188/#191 (no cycles).
+- **Test-part names:** about 15 planned names that derived no docs/04 test ID were remapped to existing IDs. docs/04 gained `R-02 [M6: FR-GUARD-3]` (R-02's M2 text now carries an explicit `[M2: FR-GUARD-3]` marker), `C-16 [M6: FR-PROF-12,13]`, `C-04 [M6: FR-MODEL-2,13]`, `U-22 [M6: FR-VERIFY-13]` and the matching §15 cells. check-assignment, check-lexicon, check-traceability and check-parts pass.
+- **Milestone description:** outcome 10 (v3, budgets kept, sole `DELIVERED` flip) and a "Replan 2026-10-28" note correcting the planning notes' ownership of `Position`/`slot_k`.
+- **Recurring themes for M6 executors:** next migration 0084, next predicate id `…0034` (seeded by migration as 0070 does); no plain FKs between story tables and no column containing "story" other than `story_id`; every new route needs an I-21 `CALLS` entry; partition tests use `tests/partition_support` (`structured_turn_support.structured_story` pins v1); a position-less record precedes everything in `core.antecedents`, so never cite one as an in-story antecedent; eval-set approval is a main merge gate, so ask the owner early.
+- **Left for later:** M7 is replanned again after M6 executes. PR #586 (owner) also appends to this file; the merge conflict is append-only.

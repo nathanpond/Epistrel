@@ -25,6 +25,23 @@
       "tier": "local"
     }
   ],
+  "failed_rows": [
+    {
+      "code": "model_unavailable",
+      "deadline_override_ms": 300000,
+      "measured_at": "2026-10-27",
+      "model": "cydonia-24b-v4.3",
+      "policies": "off",
+      "purpose": "generation",
+      "reason": "deadline",
+      "sha": "ad7368b-dirty",
+      "structural_errors": null,
+      "tier": "local",
+      "turn": 2,
+      "turn_kind": "three_character_sequential",
+      "turn_path": "three-character sequential respond (#174)"
+    }
+  ],
   "rows": [
     {
       "calls_per_turn": {

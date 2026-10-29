@@ -8,6 +8,7 @@ the procedure.
 
 | Date (UTC) | Model | Fingerprint | Host | Suites | NFR-QUAL-1 | NFR-QUAL-2 | NFR-QUAL-3 | NFR-QUAL-4 | NFR-QUAL-5 | NFR-QUAL-6 | NFR-QUAL-7 | NFR-QUAL-10 | NFR-QUAL-14 | NFR-QUAL-15 | Run |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 2026-10-27 | `cydonia-24b-v4.3` | `8e52632a413f` | local | `e01_viewpoint` pass, `priv_think_leak` pass | pass | pass | — | — | — | — | — | — | — | — | [pass](8e52632a413f-2026-10-27.md) |
 | 2026-10-25 | `cydonia-24b-v4.3` | `cbc7d954f0e8` | local | `priv_think_leak` fail, `q04` fail | fail | — | — | — | — | — | — | — | — | — | [fail](cbc7d954f0e8-2026-10-25.md) |
 | 2026-10-25 | `cydonia-24b-v4.3` | `cbc7d954f0e8` | local | `e01_viewpoint` pass, `priv_think_leak` pass, `q04` fail | fail | pass | — | — | — | — | — | — | — | — | [fail](cbc7d954f0e8-2026-10-25-2.md) |
 | 2026-10-24 | `cydonia-24b-v4.3` | `cbc7d954f0e8` | local | `e01_viewpoint` pass, `priv_think_leak` fail, `q04` fail | fail | pass | — | — | — | — | — | — | — | — | [fail](cbc7d954f0e8-2026-10-24.md) |

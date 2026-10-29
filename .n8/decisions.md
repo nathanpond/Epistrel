@@ -9344,3 +9344,31 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Milestone description:** outcome 7, coverage-map HOUSEKEEPING lines and phase 2 order gain #580 and #523; a "Replan 2026-10-28" note.
 - **Recurring themes:** beliefs have no provenance column and are written only through `transition()` (check-epistemic-separation); M5's append-only delete triggers (0068/0069/0072/0073) bind prune and backfill cancel; the `beliefs` ↔ `belief_transitions` deferred FK cycle binds export, import and prune; per-perceiver memories and per-viewpoint recomposition bind text rewrites; `tests/structured_turn_support.structured_story` pins Structured v1 (no partitions).
 - **Left for later:** M6 is unexecuted and was planned before M5 ran; it gets the same check (`/n8-replan M6`) before `/n8-exec M6`, and M7 is replanned again after M6 executes. #306 still waits on the owner's option. #588 (needs-triage) bears on #235's certification run.
+
+## /n8-replan M6 — 2026-10-28
+
+- **Cause:** M5 was executed (2026-10-23 → 10-27, merged at `68d1575`) after M6's last replan (2026-10-23, against `bf0db30`). No unreconciled Ad-hoc entry names M6; the drift is M5 as built: scope-only visibility (ADR-167), beliefs only through `transition()` (ADR-168), perception routing and per-perceiver memories (ADR-169), five-column positions with M5's render steps and the `N⁺k` truncate/fork boundary (#168), the ladder before the single commit with `TurnStage` staging (#174), P-primary turns and budgets, and the Structured v1/v2 constant split (0080).
+- **Method:** four read-only subagents (States, clock, providers, staged effects + milestone description) checked M6's 37 open issues against the M5 decision log, `git diff bf0db30..68d1575` and the code at `68d1575`. The owner approved the combined change set ("approve all"). The subagents prepared exact-once replacement bodies; the main session applied them with `--body-file`, re-fetched and diffed each, and commented "Replanned 2026-10-28" on every modified issue.
+- **Owner decisions (2026-10-28, all recommendations taken):**
+  1. #194: the pacing unit is the render, and `render.StepDecl` gains a `time` kind (FR-CLOCK-17's timing steps).
+  2. #200: a character's time belief is an M5 belief on a viewpoint-free core `current_time` predicate, written only through `transition()`; the awareness default is computed.
+  3. #200: a hedged time guess is belief-consistent, never canonized, and writes no belief for its speaker (self-attestation); hearers receive testimony.
+  4. #200: unconscious/asleep is a core fluent `unconscious(subject)` detected by #148 and honored by `route_perception`.
+  5. #201: a model error on e09 counts as an out-of-range estimate.
+  6. #214: S-CONFIG-RACE (g) is whole-turn regeneration (M5's #174 choice); docs/04 amended. Selective per-render rebase is not required.
+  7. #217: a late settlement writes exposures only at `N⁺k`; no memory row at a slot.
+  8. #423: no new test parts; the existing C-15 [M3] / C-03 [M2] tests cover new rows, as M4/M5 did.
+  9. #205/#207/#208: `external@` facts take `{scope: engine}` like true ages.
+  10. #206: under `Unknown`, testimony keeps ADR-170's semantics; only an observation or `observe` step of the exact value is blocked.
+  11. #187: `state_effects` per viewpoint follow visibility only (no audience filter).
+  12. #186: a named read of a hidden State under a character viewpoint is 404, like an unknown name.
+  13. #191: the player's typed input is not an observable act in M6 (#523 brings it in M7); no #191←#523 edge.
+  14. #191: with partitions off, first-person State claims take the objective path, hidden States protected by the index.
+  15. #203: v3 keeps v2's budgets (16 calls, 60 s); #214's O is reserved inside the cap. #203 alone flips `DELIVERED` for `states` and `clock` and lands last.
+- **Issues edited (35):** #185–#191, #193–#203, #204–#218, #423. AC changed on #186, #187, #188, #191, #194, #195 (minor), #196 (minor), #200, #203, #205, #206, #207, #208, #210, #211, #212, #214, #216, #217, #423. #218 and #191 got a test-name addendum. Unchanged: epics #22, #23 (no epic AC change), #192.
+- **Gaps folded in (no new issues):** CONFIG-REVALIDATION [M6: FR-CONC-16] had no M6 home → #187 (State validation and #188's permission check as `REBASE_CHECKS` entries); simultaneous shared-State conflicts → #188; completion-stage per-perceiver commit hooks and the deadline excluding the synchronous wait → #212; consciousness → #200.
+- **Edges added:** #195←#191, #200←#191, #201←#203, #203←#185/#186/#187/#188/#191 (no cycles).
+- **Test-part names:** about 15 planned names that derived no docs/04 test ID were remapped to existing IDs. docs/04 gained `R-02 [M6: FR-GUARD-3]` (R-02's M2 text now carries an explicit `[M2: FR-GUARD-3]` marker), `C-16 [M6: FR-PROF-12,13]`, `C-04 [M6: FR-MODEL-2,13]`, `U-22 [M6: FR-VERIFY-13]` and the matching §15 cells. check-assignment, check-lexicon, check-traceability and check-parts pass.
+- **Milestone description:** outcome 10 (v3, budgets kept, sole `DELIVERED` flip) and a "Replan 2026-10-28" note correcting the planning notes' ownership of `Position`/`slot_k`.
+- **Recurring themes for M6 executors:** next migration 0084, next predicate id `…0034` (seeded by migration as 0070 does); no plain FKs between story tables and no column containing "story" other than `story_id`; every new route needs an I-21 `CALLS` entry; partition tests use `tests/partition_support` (`structured_turn_support.structured_story` pins v1); a position-less record precedes everything in `core.antecedents`, so never cite one as an in-story antecedent; eval-set approval is a main merge gate, so ask the owner early.
+- **Left for later:** M7 is replanned again after M6 executes. PR #586 (owner) also appends to this file; the merge conflict is append-only.

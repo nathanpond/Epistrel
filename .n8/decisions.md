@@ -9441,8 +9441,22 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Milestone description:** appended "Replan 2026-10-30 (readiness audit)" (exit evidence, `current_milestone` 5→6, flake rule, E-09 permission, one-file-per-part rule, decisions, order).
 - **Not done here:** 28 milestone-less needs-triage issues remain for the owner's triage. #567 is sev:high and #516 touches turn commit; neither blocks M6.
 
-## Ad-hoc — 2026-10-30
+## Ad-hoc — 2026-10-30 — reconciled by /n8-replan 2026-10-30
 
 - **Change:** Co-author narration's knowledge check becomes configurable: new story setting `co_author_knowledge` ∈ {`confirm` (default), `free`}, new requirement FR-RESP-14 (M, first gated at M6), ADR-174 amending ADR-032 (2), FR-RESP-11, the FR-VERIFY-11 co_author exception, and the FR-CONC-14/15 and scenario-default setting lists. The check reads only an action's presuppositions, never the state the action brings about. A presupposition the narrated character could not know is accepted, recorded as an `author_fiat` acquisition, and, under `confirm`, returned as an `implausible_knowledge` notice that is built only from the player's words and is no oracle. While the turn is the latest, a new atomic correct operation (truncate + respond) can replace it once. Locks, State and external ownership, `think` exclusion and guardrails are unaffected. docs/04 S-PLAYER-AUTHORITY gains an [M6: FR-RESP-14] part.
   **Why:** The owner's decision on #565 (2026-10-30). #561's check rejected every co_author narration that creates the fact it states. Ad-hoc role play wants no restriction, and world building wants knowledge kept pure as information to the user, not as a rejection.
   **Affects:** M6: a new implementation story (filed with this change), #423 (REST/library parity gains the correct operation and the setting), and S-CONFIG-RACE (the setting is interpretive). M5's #561 test `test_s_player_authority__viewpoint` is revised by the new story. #564 should be re-read against ADR-174. The Console gains a notice surface.
+
+## /n8-replan M6 (ADR-174) — 2026-10-30
+
+- **Cause:** the 2026-10-30 Ad-hoc entry (the owner's decision on #565, PR #599: FR-RESP-14, `co_author_knowledge`, notices, the one-time `correct` operation). Git since the readiness audit holds only #599. #598's named files and symbols exist at `72f556d`.
+- **Decision:** #598 is homed under #23 (External-data providers & staged effects). It is blocked by #211 and blocks #423.
+  **Why:** Neither M6 epic is a natural fit. #23 already covers the response surface (FR-RESP-7), and the correction's external-effect rule (FR-EXT-14, `external_effects`) depends on #211's rewind rules. The owner approved it.
+- **Decision:** The mid-turn `co_author_knowledge` change is asserted in S-PLAYER-AUTHORITY's M6 part (#598). S-CONFIG-RACE (#214) is unchanged.
+- **Changed:**
+  - #423's AC (stale *what*): `POST /stories/{id}/correct`, `co_author_knowledge` in the settings schema, and `not_latest_turn`/`already_corrected` (409).
+  - #23's coverage claim gains FR-RESP-14 (epic-level, owner-approved).
+  - M6 description: claim and map gain FR-RESP-14 → #598, plus Outcome 12, Phase 2, and a "Replan 2026-10-30 (ADR-174)" section with a valid order.
+- **Not changed:** no closures. #564 (co_author label/repair mismatch) stays in triage outside M6.
+- **Tooling note:** `reference/github.md` names `gh issue edit --add-parent`, but gh 2.101.0 has `--parent`. The first apply failed before any write and was re-run with `--parent`.
+

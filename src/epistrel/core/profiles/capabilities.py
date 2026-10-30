@@ -186,11 +186,11 @@ CAPABILITY_MAP: tuple[CapabilityEntry, ...] = (
     _entry(
         "partitions",
         "Per-character partitions",
-        "FR-EPI; FR-BELIEF; NFR-PRIV-4; FR-MEM-11; FR-RESP-11; FR-COMMIT-4,11,13,14",
+        "FR-EPI; FR-BELIEF; NFR-PRIV-4; FR-MEM-11; FR-RESP-11,14; FR-COMMIT-4,11,13,14",
         PARTITIONS,
         notes="NFR-PRIV-4: structural isolation; a character's render then carries no rolling "
         "summary and no text pins, which are not viewpoint-scoped (the narrator's render keeps "
-        "them). FR-RESP-11: its viewpoint checks. FR-COMMIT: "
+        "them). FR-RESP-11: its viewpoint checks; FR-RESP-14: `co_author_knowledge`. FR-COMMIT: "
         "FR-COMMIT-4's observation, FR-COMMIT-11's could-have-known flag, FR-COMMIT-13's "
         "knocker-side commitment for a modeled character, and FR-COMMIT-14's knowledge "
         "obligations and epistemic checks (its position obligations hold with shared "

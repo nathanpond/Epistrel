@@ -452,7 +452,7 @@ def test_config_revalidation(pg_url: str) -> None:
     happened while turns were held and never caused a re-check, regeneration or conflict."""
     ConfigRevalidation.url = pg_url
     ConfigRevalidation.tally = Counter()
-    run_state_machine_as_test(  # type: ignore[no-untyped-call]
+    run_state_machine_as_test(
         ConfigRevalidation,
         settings=settings(
             max_examples=100,

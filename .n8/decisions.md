@@ -9469,3 +9469,21 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Changed:** the M11 description's M5 privacy emphasis now names `implausible_knowledge` notices as an oracle surface and `author_fiat` never widening another partition.
 - **Not changed:** the other M7 issues (#220, #223, #226 and #249 already cover the setting and acquisition kind generically), M8–M10, epic AC, and edges. No closures.
 
+
+## Ad-hoc — 2026-10-30
+
+- **Change:** Owner triage of the milestone-less `needs-triage` issues (decisions recorded on each issue). Scope moves: #518 (a fluent exit/move should supersede, not contradict) → M6, beside #193/#199; #564 (co_author sincere-error label/repair mismatch) → M6, fixed within #598 under ADR-174; #481 (paraphrase duplicates: an event-sourced `same_as` merge plus a duplicate-candidate notice at minting) → M7; #532 (eval runs over REST) → M7, beside #227/#233; #530 (a model error counts only in its label's metrics) → M9, before any floor verdict; new #602 (#456 items 1–2: deadline 422 pre-check, per-purpose latency estimates) and #603 (#588 (a): must three-voice turns fit cydonia) → M9. #456 item 6 (a `7 + G` default) is dropped: NFR-PERF-6's formula stays.
+  **Why:** The owner's decisions, 2026-10-30.
+  **Affects:** M6 (#518, #564 join; #564 rides #598), M7 (#481, #532 join; #481 needs a `same_as` merge story shape). M9 is unplanned and only gains issues.
+- **Change:** Erasure shape for story-only characters named in promoted catalog drafts (#504): catalog-scope erasure accepts `{kind: character, id, story}`, using that story's names and aliases. Story-scope erasure stays story-scoped, and its report lists drafts promoted from the story. This needs an FR-ADMIN-6 amendment and an ADR. Not yet placed in a milestone.
+  **Why:** The owner's decision, 2026-10-30. It keeps FR-ADMIN-2's boundary and makes the erasure completable.
+  **Affects:** M7 (#249 and any catalog-erasure surface), M11 (privacy audit of the erasure boundary).
+- **Change:** Pre-M6 fixes chosen: #519 option (c): `permission()` takes the transfer's giver; #515 option (a): `located_at` ⇒ `present_at` at the scene's place; #534: an omniscient operation read omits `result` instead of 409; #456 items 3–5 (`model_calls[].stage`, the `below_safety_minimum` warning on profile create/update and the impact report, two counters); #588 (b): the matrix deadline override scales with primaries.
+  **Why:** The owner's decisions, 2026-10-30. They touch verify, permission and the budget, which M6's #187, #189, #191 and #214 build on.
+  **Affects:** M6 (#214 extends the warning path; #187/#191 build on the permission and verify rules).
+- **Change:** The owner pulled the 23 issues triaged as ready into M6, to run first, before #185 and every other M6 story: flakes #537, #514, #517, #446, #468; M5 bugs #567, #566, #568, #516, #563, #483, #521; decided changes #519, #515, #456 (items 3–5), #588 (b); Console API additions #536, #533, #535, #526, #527, #531, #534. The M6 milestone description gains a "Pre-story fixes" section with this order. None of them adds an M6 requirement ID.
+  **Why:** The owner's decision, 2026-10-30. Fix the code M6 builds on, and the flakes that would otherwise disrupt an unattended run, before the feature stories.
+  **Affects:** M6 (the execution order now begins with these 23; #514/#517/#537's known-flake re-run rule lapses once they close).
+- **Change:** The remaining milestone-less issues: #482 closed (fixed by 004dd5d); #504 → M7; #522 (multi-character P-04 commit, retrieval and verify budgets; an engine cause) → M6; #502 (P-10 1M/5M capacity steps; compute, not a model) → M9, measured after #471. A new **v2** milestone holds future work outside the v1 roadmap, which `/n8-plan` and `/n8-exec` don't touch until the owner opens v2 planning. #253 is in it.
+  **Why:** The owner's decisions, 2026-10-30.
+  **Affects:** M6 (#522 joins, unordered), M7 (#504 joins, needing an FR-ADMIN-6 amendment and ADR), M9 (#502 after #471).

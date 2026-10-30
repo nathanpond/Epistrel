@@ -110,7 +110,7 @@ jobs:
             type=gha,scope=publish
             type=gha,scope=smoke
           cache-to: type=gha,mode=max,scope=smoke
-      - uses: astral-sh/setup-uv@v10.3.0  # exact: setup-uv publishes no floating major tag past v7
+      - uses: astral-sh/setup-uv@v10.3.2  # exact: setup-uv publishes no floating major tag past v7
         with:
           version: ${{ env.UV_VERSION }}
           python-version: "3.14"

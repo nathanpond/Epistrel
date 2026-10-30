@@ -9401,3 +9401,42 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Milestone description:** outcome 10 (v3, budgets kept, sole `DELIVERED` flip) and a "Replan 2026-10-28" note correcting the planning notes' ownership of `Position`/`slot_k`.
 - **Recurring themes for M6 executors:** next migration 0084, next predicate id `…0034` (seeded by migration as 0070 does); no plain FKs between story tables and no column containing "story" other than `story_id`; every new route needs an I-21 `CALLS` entry; partition tests use `tests/partition_support` (`structured_turn_support.structured_story` pins v1); a position-less record precedes everything in `core.antecedents`, so never cite one as an in-story antecedent; eval-set approval is a main merge gate, so ask the owner early.
 - **Left for later:** M7 is replanned again after M6 executes. PR #586 (owner) also appends to this file; the merge conflict is append-only.
+
+## /n8-replan M6 (readiness audit) — 2026-10-30
+
+- **Cause:** the owner asked for an audit that every M6 issue carries what an unattended `/n8-exec M6` needs. No Ad-hoc entry names M6, and nothing since the 2026-10-28 replan drifted: main gained only dependency bumps and #539's weekly-perf docs. The gaps were plan-completeness gaps:
+  - fields later stories rely on;
+  - test parts that a later story builds, or that no story builds;
+  - missing edges;
+  - unowned design choices.
+- **Method:** four read-only agents audited #185–#218 and #423 against HEAD `e2eff1c`, docs/03 §22, docs/04 §15 and the gates. They drafted replacement bodies; the main session reconciled the slices, applied every body with `--body-file`, verified each by re-fetch, and commented "Replanned 2026-10-30" on all 35 issues.
+- **Owner decisions (2026-10-30, "All recommended"):**
+  1. States can be defined and changed after creation, through core `update_definition()` (a configuration change; revision bumped) and `POST /stories/{id}/states` plus `PATCH …/states/{name}/definition` (#185, #186, #423).
+  2. Character renders see the declarable player-visible States (name, type, unit, aliases, effect syntax), with no values beyond the character's beliefs. Hidden-State effects come only from the director or narrator pass (#187).
+  3. `authorization.sources` governs consumer API sets and rules. A missing source returns 422 `state_unpermitted`. The default sources gain `rule` (#186, #188, #192).
+  4. docs/04 C-02 [M6: FR-EXT-1] drops "MCP tools registered as providers" (edited in this PR).
+  5. `value_path` is an in-house JSONPath subset; no new dependency (#204).
+  6. The `advisory` tier is `uncertain` both ways; a differing claim is hedged, not repaired (#207, #208).
+  7. No model-matrix provider row; C-07 M6 is covered by the adapter-swap test (#204).
+  8. The external clock value is story-minutes on the offset scale, and `world_clock` takes `owner = external` (#193, #209).
+  9. Provider URLs are https only, except loopback (#204).
+  10. Unit tests stay upstream; end-to-end scenario parts move to the downstream story that builds the missing piece (#212, #215, #216, #217, #218).
+  11. The 12 §15 M6 entries no story planned are homed in stories; docs/04 is not amended for them.
+  12. A new `operations.turn_stage` column; `status` stays `committed` from intent on (#212).
+  13. `safety_minimum(..., outcome=0)`; only story-aware surfaces pass O (#214).
+  14. Chaos exit evidence: `chaos.yml` dispatched with iterations=500 on the closing head (#213, milestone).
+  15. The executor may run E-09 live when `cydonia-24b-v4.3` is loaded on :1235; otherwise #201 gets `needs-owner-action` (#201).
+  16. The reference model is confirmed: `cydonia-24b-v4.3` on LM Studio :1235.
+  17. The `time_estimation` set is authored right after #199, with approval requested on #201; only the live run waits for #203.
+  18. The pacing-health signal is an informational live sample of `evals/sets/scenarios`.
+  19. Ingested turns advance no clock (#193, #194).
+  20. Known flakes #514, #517 and #537 get one logged re-run; a second failure is real.
+- **Planner reconciliations (no owner input):**
+  - A `world_clock` refusal is 422 `validation_error` with `reason: reserved_state`; no new code.
+  - #193's shared inter-turn slot opener is `open_inter_turn`.
+  - Predicate ids are `agreed_to` …0034, `state_value` …0035, `clock_anchor` …0036, #195's checks …0037–0039, and `current_time`/`unconscious` expected at …0040/…0041.
+  - #216's migration widens #185's append-only trigger for the hold and settle transitions.
+  - New code `state_name_taken` (409).
+- **Edges added:** #206←#207, #210←#209, #217←#209, #188←#186, #190←#189, #202←#197, #203←#192/#197/#198/#202, #212←#211, #217←#212. The graph is acyclic; a valid order is in the milestone note.
+- **Milestone description:** appended "Replan 2026-10-30 (readiness audit)" (exit evidence, `current_milestone` 5→6, flake rule, E-09 permission, one-file-per-part rule, decisions, order).
+- **Not done here:** 28 milestone-less needs-triage issues remain for the owner's triage. #567 is sev:high and #516 touches turn commit; neither blocks M6.

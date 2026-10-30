@@ -25,6 +25,13 @@ takes nothing else, and ``python -m tools.gates check-character-context`` checks
   player's input, the narrator's narration) are routed over the turn's scene the same way
   (``PendingBeat``). It never includes the request's ``scene_context.recent_messages``
   (FR-RESP-4): this function's signature has no way to receive them.
+- **The player's input** (#572, FR-MEM-11): the prompt's player-input section is the input as
+  the character perceived it, routed with its validated qualifiers (``whisper_to``) like the
+  working memory: the words it perceived in full (``player_say``, ``player_do``), and an
+  envelope or an eavesdropper's part as its line (``player_heard``: "Wren whispers something to
+  Marcus"); nothing of an input it did not perceive. With shared character knowledge (perception
+  ``none``) every character perceives the whole input, so it is the input as typed. The
+  retrieval query takes the perceived input, never the raw text.
 - **Just now** (#174): in a ``sequential`` turn, the beats the earlier primaries rendered and the
   engine verified (``TurnState.stage``, ``core.epistemic.stage.TurnStage``), routed the same way
   (``working_memory(…, stage=)``) and kept apart from the working memory: they count against
@@ -193,6 +200,13 @@ class CharacterContext:
     partitioned: bool = False
     """Built under per-character partitions: the render then takes no turn section that is not
     viewpoint-scoped (the rolling summary, the text pins; #544, ``prompt.character_inputs``)."""
+    player_say: str | None = None
+    """#572: the player's ``say`` as the character perceived it in full (``None`` otherwise)."""
+    player_do: str | None = None
+    """#572: the player's ``do`` as the character perceived it in full (``None`` otherwise)."""
+    player_heard: tuple[str, ...] = ()
+    """#572: what the character perceived of the input short of its words: an envelope ("Wren
+    whispers something to Marcus") or an eavesdropper's part, as working-memory lines."""
     needed: tuple[Needed, ...] = field(default=(), compare=False)
     """The exposures this context needed, which the turn's commit resolves."""
     retrieval: RetrievalResult | None = field(default=None, compare=False)
@@ -210,12 +224,15 @@ class CharacterContext:
 @dataclass(frozen=True, slots=True)
 class PendingBeat:
     """One of this turn's beats before the character renders (the player's input, the narrator's
-    narration), routed over the turn's scene like history."""
+    narration), routed over the turn's scene like history, with its validated qualifiers."""
 
     kind: Literal["say", "do", "narration"]
     actor: str | None
     text: str
     qualifiers: perception.Qualifiers = field(default_factory=perception.Qualifiers)
+    player: bool = False
+    """#572: the player's own input, which also fills the prompt's player-input section as the
+    character perceived it (``CharacterContext.player_say``, ``player_do``, ``player_heard``)."""
 
 
 Adjudicator = Callable[
@@ -228,8 +245,9 @@ exposure, or ``None`` (the default decides: adjudication off, capped or unafford
 
 @dataclass(frozen=True, slots=True)
 class TurnState:
-    """What the turn hands ``build_context``: the story, the turn, the effective settings, the
-    player's input, this turn's earlier beats, the authoritative scene (its location's name and
+    """What the turn hands ``build_context``: the story, the turn, the effective settings, this
+    turn's earlier beats (the player's input among them, #572: never as raw text), the
+    authoritative scene (its location's name and
     the entities present, as the turn's read set read them; ``scene_text`` the shared line), and
     the retrieval's ports. ``build_context`` does its own reads. There is no ``scene_context``
     field: consumer-supplied recent messages never reach a character context (FR-RESP-4)."""
@@ -237,8 +255,6 @@ class TurnState:
     story_id: str
     turn: int
     settings: ProfileSettings
-    say: str | None = None
-    do: str | None = None
     pending: tuple[PendingBeat, ...] = ()
     location_name: str | None = None
     present: tuple[str, ...] = ()
@@ -323,6 +339,9 @@ def compose(
     retrieval: RetrievalResult | None = None,
     report: Mapping[str, Any] | None = None,
     partitioned: bool = False,
+    player_say: str | None = None,
+    player_do: str | None = None,
+    player_heard: Sequence[str] = (),
 ) -> CharacterContext:
     """The context's sections from already-filtered inputs (see the module docstring). Pure."""
     if working.viewpoint != f"{CHARACTER_VIEWPOINT_PREFIX}{character_id}":
@@ -345,6 +364,9 @@ def compose(
         retrieval=retrieval,
         report=dict(report or {}),
         partitioned=partitioned,
+        player_say=player_say,
+        player_do=player_do,
+        player_heard=tuple(player_heard),
     )
 
 
@@ -390,6 +412,30 @@ async def _cast(conn: AsyncConnection, story_id: str) -> _Cast:
     return _Cast(names, ages, frozenset(players), entity_of, character_of, entity_names)
 
 
+PLAYER_PENDING = "pending:player_input"
+"""The ``event_id`` of a pending beat that is the player's input (#572; never a stored id)."""
+
+
+def _player_input(
+    window: Sequence[WorkingBeat], names: Mapping[str, str], own: str
+) -> tuple[str | None, str | None, tuple[str, ...]]:
+    """#572: the player's input as perceived, out of the routed pending beats: the ``say`` and
+    the ``do`` perceived in full, and the rest (an envelope, an eavesdropper's part) as lines."""
+    say: str | None = None
+    do: str | None = None
+    heard: list[str] = []
+    for b in window:
+        if b.event_id != PLAYER_PENDING:
+            continue
+        if b.fidelity == "content" and b.kind == "say":
+            say = b.text
+        elif b.fidelity == "content" and b.kind == "do":
+            do = b.text
+        else:
+            heard.append(memory_line(b, names, own))
+    return say, do, tuple(heard)
+
+
 async def _pending(
     conn: AsyncConnection,
     state: TurnState,
@@ -397,10 +443,11 @@ async def _pending(
     level: perception.Level,
 ) -> list[WorkingBeat]:
     """This turn's earlier beats as ``character_id`` perceives them (routed over the turn's
-    scene at ``level``; everything at ``none``)."""
+    scene at ``level``; everything at ``none``). The player's input beats carry
+    ``PLAYER_PENDING`` as their ``event_id`` (#572)."""
     beats = [
         WorkingBeat(
-            event_id="",
+            event_id=PLAYER_PENDING if p.player else "",
             narrative_turn=state.turn,
             turn_variant=None,
             beat=1 if p.kind != "narration" else 2 + n,
@@ -673,7 +720,13 @@ async def build_context(
     window = [b for b in window if not b.staged]
     window += await _pending(conn, state, character_id, level)
     own = [b.text for b in window if b.character_id == character_id and b.fidelity == "content"]
-    joined = " ".join(x for x in (state.say, state.do) if x)
+    player_say, player_do, player_heard = _player_input(window, cast.names, character_id)
+    # #572: the input as perceived (an envelope left out, like a staged one), never as typed.
+    joined = " ".join(
+        b.text
+        for b in window
+        if b.event_id == PLAYER_PENDING and b.fidelity != "envelope" and b.text
+    )
     # #174: what the earlier primaries just did, as perceived, joins the retrieval query.
     heard = [b.text for b in staged if b.fidelity != "envelope"]
     query = " ".join([joined, *heard, *own[-QUERY_BEATS:]])
@@ -755,12 +808,16 @@ async def build_context(
         retrieval=retrieval,
         report=report,
         partitioned=partitioned,
+        player_say=player_say,
+        player_do=player_do,
+        player_heard=player_heard,
     )
 
 
 __all__ = [
     "BELIEFS_MAX",
     "NESTED_MAX",
+    "PLAYER_PENDING",
     "PRIVATE_MAX",
     "QUERY_BEATS",
     "Adjudicator",

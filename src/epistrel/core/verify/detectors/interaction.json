@@ -1,7 +1,7 @@
 {
  "category": "interaction",
  "language": "en",
- "description": "Interaction verbs (#163, FR-EPI-9): a do or narration beat whose actor (or the phrase before the verb) and the phrase after the verb (directly, or after one of its prepositions) are a modeled character and an unmodeled person is a direct interaction, which models the person. 'direct': the verb takes its other party as its object ('greets the neighbor', 'hands the driver a tip'); 'preps': the prepositions that introduce it ('waves to the neighbor'); 'direct_then': when present, the words one of which must follow the direct object for it to count (#543: 'passes the waiter a note' hands something over, 'passes the jogger on the path' is motion past; 'calls the waiter over'). Mere appearance (a mention, a jogger seen) is never an interaction. A detector side-channel: it makes no claim.",
+ "description": "Interaction verbs (#163, FR-EPI-9): a do or narration beat whose actor (or the phrase before the verb) and the phrase after the verb (directly, or after one of its prepositions) are a modeled character and an unmodeled person is a direct interaction, which models the person. 'direct': the verb takes its other party as its object ('greets the neighbor', 'hands the driver a tip'); 'preps': the prepositions that introduce it ('waves to the neighbor'); 'direct_then': when present, the words one of which must follow the direct object for it to count (#543: 'passes the waiter a note' hands something over, 'passes the jogger on the path' is motion past; 'calls the waiter over'); a time or frequency phrase after the object is not a second object (#573: 'passes the jogger a second time', 'an hour later', 'the next morning' are motion past), told by the phrase's head noun (#583): the last word before a 'time_adverbs' word, a determiner or an 'articles' word, punctuation, or the third word, is a 'time_words' noun ('a second time', 'an hour later' are time phrases; 'a note again', 'the morning paper', 'a note that morning' hand something over). Mere appearance (a mention, a jogger seen) is never an interaction. A detector side-channel: it makes no claim.",
  "lemmas": [
   {
    "lemma": "greet",
@@ -653,5 +653,39 @@
   "waitress",
   "woman",
   "worker"
+ ],
+ "time_words": [
+  "time",
+  "times",
+  "moment",
+  "moments",
+  "while",
+  "seconds",
+  "minute",
+  "minutes",
+  "hour",
+  "hours",
+  "day",
+  "days",
+  "week",
+  "weeks",
+  "month",
+  "months",
+  "year",
+  "years",
+  "morning",
+  "mornings",
+  "afternoon",
+  "afternoons",
+  "evening",
+  "evenings",
+  "night",
+  "nights"
+ ],
+ "time_adverbs": [
+  "later",
+  "earlier",
+  "ago",
+  "again"
  ]
 }

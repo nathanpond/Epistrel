@@ -5,7 +5,9 @@ hand-built inputs, a ``CharacterContext`` built elsewhere, a ``character_inputs`
 something else first and a stray seal. A narrator render (no ``variant=STRUCTURED``) and prose
 are left alone. #544: every section ``character_inputs`` passes the template is classified
 (``SECTIONS``), and a partitioned character gets no unscoped turn text (the rolling summary, the
-text pins), statically and at run time."""
+text pins), statically and at run time. #572: the player's input is a context section
+(perception-routed, never the typed text): a render handed the raw input is a finding, and a
+whisper's non-target gets only the envelope."""
 
 from __future__ import annotations
 
@@ -14,6 +16,7 @@ from pathlib import Path
 
 from tools.gates.__main__ import main as gates_main
 from tools.gates.character_context import (
+    CONTEXT,
     CONTEXT_MODULE,
     SECTIONS,
     TURN,
@@ -98,6 +101,7 @@ def character_inputs(context: CharacterContext, sections):
         pinned_memories=list(s.pins),
         summary_segments=list(sections.segments),
         recent_messages=[],
+        player_input=_player(actor, say, do),
     )
 '''
 
@@ -117,14 +121,15 @@ def character_inputs(context: CharacterContext, sections):
         pinned_memories=list(s.pins),
         summary_segments=list(s.segments),
         rating_guidance=s.guidance,
+        player_input=_perceived_player(actor, context),
     )
 '''
 
 
 def test_every_section_given_a_character_is_classified(tmp_path: Path) -> None:
     """#544: a section the map does not classify, a context section read from the turn's
-    sections, and an unscoped section not emptied for a partitioned context are findings; the
-    shape ``character_inputs`` keeps is not."""
+    sections, the player's input as typed (#572), and an unscoped section not emptied for a
+    partitioned context are findings; the shape ``character_inputs`` keeps is not."""
     root = _tree(
         tmp_path,
         {
@@ -134,6 +139,7 @@ def test_every_section_given_a_character_is_classified(tmp_path: Path) -> None:
     )
     found = scan(root)
     assert sorted(f.split(": ", 1)[1].split(";")[0] for f in found) == [
+        "passes the context section 'player_input' from outside the context",
         "passes the context section 'working_memory' from outside the context",
         "passes the unclassified section 'recent_messages' to a character",
         "passes the unscoped section 'pinned_memories' to a partitioned character",
@@ -162,12 +168,32 @@ def _given(partitioned: bool) -> dict[str, object]:
         working_memory=("CONTEXT-memory",),
         scene="CONTEXT-scene",
         partitioned=partitioned,
+        player_say="CONTEXT-say",
     )
-    inputs = character_inputs(
-        context, _sections(), character, actor, say="hi", do=None, budget=1_000_000
-    )
+    inputs = character_inputs(context, _sections(), character, actor, budget=1_000_000)
     given: dict[str, object] = inputs.model_dump(exclude_defaults=True)
     return given
+
+
+def test_the_player_input_is_the_input_as_perceived() -> None:
+    """#572 (FR-MEM-11, NFR-PRIV-4): ``character_inputs`` takes the player's input only from the
+    context, as the character perceived it: a whisper's non-target gets the envelope line and
+    none of the words. Complement: the target's context carries the words."""
+    character = CastEntry(id="c-b", name="Bobby", definition="DEF", is_player=False)
+    actor = CastEntry(id="c-w", name="Wren", definition="", is_player=True)
+    assert SECTIONS["player_input"] == CONTEXT
+    envelope = CharacterContext(
+        character_id="c-b",
+        partitioned=True,
+        player_heard=("Wren whispers something to Marcus",),
+    )
+    given = character_inputs(envelope, RenderSections(), character, actor, budget=1_000_000)
+    assert given.player_input.say is None
+    assert given.player_input.heard == ["Wren whispers something to Marcus"]
+    words = CharacterContext(character_id="c-b", partitioned=True, player_say="the blue mat")
+    target = character_inputs(words, RenderSections(), character, actor, budget=1_000_000)
+    assert target.player_input.say == "the blue mat"
+    assert target.player_input.heard == []
 
 
 def test_a_partitioned_character_gets_only_its_context_and_the_turn_text() -> None:

@@ -33,7 +33,7 @@ jobs:
         with:
           ref: ${{ inputs.ref || '' }}
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v10.2.0  # exact: setup-uv publishes no floating major tag past v7
+      - uses: astral-sh/setup-uv@v10.3.2  # exact: setup-uv publishes no floating major tag past v7
         with:
           version: ${{ env.UV_VERSION }}
           python-version: "3.14"
@@ -112,7 +112,7 @@ jobs:
         with:
           ref: ${{ inputs.ref || '' }}
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v10.2.0  # exact: setup-uv publishes no floating major tag past v7
+      - uses: astral-sh/setup-uv@v10.3.2  # exact: setup-uv publishes no floating major tag past v7
         with:
           version: ${{ env.UV_VERSION }}
           python-version: "3.14"
@@ -179,7 +179,7 @@ jobs:
         with:
           ref: ${{ inputs.ref || '' }}
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v10.2.0  # exact: setup-uv publishes no floating major tag past v7
+      - uses: astral-sh/setup-uv@v10.3.2  # exact: setup-uv publishes no floating major tag past v7
         with:
           version: ${{ env.UV_VERSION }}
           python-version: "3.14"
@@ -250,7 +250,7 @@ jobs:
         with:
           ref: ${{ inputs.ref || '' }}
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v10.2.0  # exact: setup-uv publishes no floating major tag past v7
+      - uses: astral-sh/setup-uv@v10.3.2  # exact: setup-uv publishes no floating major tag past v7
         with:
           version: ${{ env.UV_VERSION }}
           python-version: "3.14"
@@ -291,7 +291,7 @@ jobs:
         with:
           ref: ${{ inputs.ref || '' }}
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v10.2.0  # exact: setup-uv publishes no floating major tag past v7
+      - uses: astral-sh/setup-uv@v10.3.2  # exact: setup-uv publishes no floating major tag past v7
         with:
           version: ${{ env.UV_VERSION }}
           python-version: "3.14"
@@ -328,14 +328,15 @@ jobs:
     # observed-zero rule passes only with no violation over at least 300 cases a seed. The stub
     # answers every case with its authored clean render, so this proves the plumbing; the
     # local-model run is the exit evidence (docs/evals/README.md).
+    # 60 min: #575 tripled think_leak's controls (32 -> 96); the 2026-10-25 run took 35 of 40.
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || '' }}
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v10.2.0  # exact: setup-uv publishes no floating major tag past v7
+      - uses: astral-sh/setup-uv@v10.3.2  # exact: setup-uv publishes no floating major tag past v7
         with:
           version: ${{ env.UV_VERSION }}
           python-version: "3.14"

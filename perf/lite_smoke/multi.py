@@ -40,7 +40,6 @@ from typing import Any
 from sqlalchemy import update
 
 from epistrel.core.context import RequestContext
-from epistrel.core.db import make_engine
 from epistrel.core.mutation import FactRequest
 from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Interval, Proposition
@@ -51,7 +50,7 @@ from epistrel.engine import Engine
 from epistrel.testing import perf, structured_load
 from epistrel.testing.fixtures import knowledge, scale
 from perf.lite_smoke import REPO_ROOT, STORIES, Target
-from perf.lite_smoke.seed import StoryRef
+from perf.lite_smoke.seed import StoryRef, seed_engine
 from perf.lite_smoke.structured import SPEC, seed_settings
 
 COMPOSE_FILE = REPO_ROOT / "perf" / "lite_smoke" / "compose.multi.yml"
@@ -138,7 +137,7 @@ async def seed(
     """Build ``stories`` structured stories of ``spec`` and make each a multi-character table
     with its knowledge (``known``); return them."""
     settings = seed_settings(target.dsn)
-    db = make_engine(settings)
+    db = seed_engine(settings, stories)
     epistrel = Engine(settings, db=db)
     ctx = RequestContext(principal=target.principal)
     try:

@@ -21,7 +21,12 @@ from datetime import UTC, datetime
 
 import pytest
 
-from epistrel.core.profiles.guarantees import GUARANTEE, Kind
+from epistrel.core.profiles.guarantees import (
+    GUARANTEE,
+    PRIVACY_CONTROL,
+    PRIVACY_CONTROL_DETAIL,
+    Kind,
+)
 from epistrel.core.seeds import profiles as seeds
 from epistrel.evals import SUITES, Rule, SeedTally, Verdict, judge
 from epistrel.evals.report import (
@@ -143,7 +148,9 @@ def test_c_14__guarantee_rows() -> None:
     private-thought suite), so their reports name the row. NFR-PRIV-4's structural isolation is
     ``structural_knowledge_separation``, deterministic. Under the seeded ``Structured`` (version
     2) both it and audience filtering are provided, and under Lite neither is, which the
-    published table states in prose; no milestone is named for any of them any more."""
+    published table states in prose; no milestone is named for any of them any more. The table
+    states NFR-PRIV-4's order of controls in docs/02's words (#170 AC5, #577): context assembly
+    is the primary privacy control, output scanning a secondary, measured one."""
     row = GUARANTEE["paraphrase_detection"]
     assert (row.kind, row.metric, row.delivered_in) == (Kind.model_dependent, "NFR-QUAL-1", None)
     for suite_name in METRICS.values():
@@ -158,6 +165,17 @@ def test_c_14__guarantee_rows() -> None:
         assert not GUARANTEE[row_id].provided(lite.effective()), row_id
     table = (REPO_ROOT / "docs" / "guarantees.md").read_text(encoding="utf-8")
     assert table == guarantee_tool.render()
+    primary = "context assembly is the primary privacy control"
+    secondary = "output scanning a secondary, measured one"
+    assert primary in PRIVACY_CONTROL
+    assert secondary in PRIVACY_CONTROL
+    assert f"**{PRIVACY_CONTROL}** {PRIVACY_CONTROL_DETAIL}" in table
+    architecture = " ".join(
+        (REPO_ROOT / "docs" / "02-technology-architecture.md").read_text(encoding="utf-8").split()
+    )
+    assert f"{primary}." in architecture
+    assert "Output scanning is a secondary control" in architecture
+    assert "is a secondary, measured control" in architecture
     lite_part = table.split(f"### {lite.name}\n", 1)[1].split("\n### ", 1)[0]
     assert "structural knowledge separation" in lite_part.split("**Not provided under", 1)[1]
     assert "(M5)" not in table

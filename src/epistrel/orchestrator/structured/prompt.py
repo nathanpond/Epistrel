@@ -10,10 +10,12 @@ and nothing else (#170, NFR-PRIV-4): its own age, belief state and private memor
 per-character partitions,
 the scene (#137: the place and who is present, with apparent age bands), its viewpoint-filtered
 working memory (FR-MEM-11: this turn's narration and the player's input included, as it
-perceived them), ``## Just now`` (#174: in a ``sequential`` turn, the verified beats the earlier
-primaries rendered, as it perceived them), #141's retrieved context and the canon retrieval
-found. Nothing from another character's private records is there, and the director's notes are
-the narrator's alone.
+perceived them), the player's input itself as it perceived it (#572: the words in full, else an
+envelope such as "Wren whispers something to Marcus"; ``CharacterContext.player_say``,
+``player_do``, ``player_heard``), ``## Just now`` (#174: in a ``sequential`` turn, the
+verified beats the earlier primaries rendered, as it perceived them), #141's retrieved context
+and the canon retrieval found. Nothing from another character's private records is there, and
+the director's notes are the narrator's alone.
 Under per-character partitions (``CharacterContext.partitioned``) a character render takes no
 turn section that is not viewpoint-scoped (#544): the rolling summary (written from the
 requester's composed view, a whisper to the player included) and the text pins (author text
@@ -134,14 +136,23 @@ def _player(actor: CastEntry, say: str | None, do: str | None) -> PlayerInput:
     return PlayerInput(name=actor.name, say=say, do=do)
 
 
+def _perceived_player(actor: CastEntry, context: CharacterContext) -> PlayerInput:
+    """#572 (FR-MEM-11, NFR-PRIV-4): the player's input as ``context``'s character perceived it,
+    routed with its qualifiers: never the typed text a whisper kept from it."""
+    return PlayerInput(
+        name=actor.name,
+        say=context.player_say,
+        do=context.player_do,
+        heard=list(context.player_heard),
+    )
+
+
 def character_inputs(
     context: CharacterContext,
     sections: RenderSections,
     character: CastEntry,
     actor: CastEntry,
     *,
-    say: str | None,
-    do: str | None,
     budget: int,
     others_present: Sequence[str] = (),
     interjections: bool = False,
@@ -150,7 +161,8 @@ def character_inputs(
     """The ``generation`` inputs of ``character``'s render (``structured_generation.j2``): the
     shared ``sections`` and ``context``'s knowledge sections (see the module docstring);
     #176: ``others_present``, the reactive characters it may narrate reactions for; #180:
-    ``player_requests``, what an ``own_character`` player's input asked of it."""
+    ``player_requests``, what an ``own_character`` player's input asked of it; #572: the
+    player's input as the character perceived it, from ``context``."""
     if context.character_id != character.id:
         raise ValueError("a character's render takes that character's own context")
     s = capped(
@@ -188,7 +200,7 @@ def character_inputs(
         resolution_steering=s.resolution_steering,
         length_target=s.length_target,
         belief_steps=s.belief_steps,
-        player_input=_player(actor, say, do),
+        player_input=_perceived_player(actor, context),
         scene=s.scene,
         working_memory=list(s.working_memory),
         just_now=list(s.just_now),

@@ -96,7 +96,7 @@ measures.
 | `e13` | E-13 (M4): text-quality signals per fingerprint: repetition, repeated openings, length accuracy (model-free), voice consistency and story-driver adherence (judge scores, uncalibrated in M4), and the Spearman correlation with users' ratings | report only (no gate) | `scenarios/` | #158 |
 | `e01_viewpoint` | E-01 (M5): a character's own claims through `Verifier.verify` against canon and its belief partition, with the declared intent: lies, false beliefs and belief-consistent claims, none of which may be repaired | false contradiction ≤ 2 %, false support ≤ 1 % (rate; NFR-QUAL-2's floors gate from M9, ADR-164); accuracy reported | `entailment_viewpoint/` (300) | #179 |
 | `q04` | Q-04: knowledge asymmetry. A character is asked about another character's private fact through `respond` (per-character partitions, perception `full`, the output read as the player's character); the player-facing answer must hold none of the fact's forbidden forms. Negative controls (the holder asked) show the oracle detects a disclosure. | 0 observed on ≥ 300 cases a seed (zero) | `asymmetry/` (384 + 32 controls) | #179 |
-| `priv_think_leak` | NFR-QUAL-1's private-thought metric: a scripted prelude plants a character's `think`, then another character answers the player; neither turn's player-facing output may disclose the thought (verbatim, paraphrased or as narrated inner state) | 0 observed on ≥ 300 cases a seed (zero) | `think_leak/` (345 + 32 controls) | #179 |
+| `priv_think_leak` | NFR-QUAL-1's private-thought metric: a scripted prelude plants a character's `think`, then another character answers the player; neither turn's player-facing output may disclose the thought (verbatim, paraphrased or as narrated inner state) | 0 observed on ≥ 300 cases a seed (zero) | `think_leak/` (345 + 96 controls) | #179 |
 
 `--check` lists NFR-QUAL-9 as pending until M6 delivers time estimation.
 
@@ -113,11 +113,28 @@ disclosure can happen.
 `priv_think_leak` checks every case against every form of its fact: the thought's words, the
 fact's names and paraphrases, and its narrated inner state, whatever the case's category
 (#562). Its category rows count each category's cases, and each sees a disclosure of any kind.
-The 32 controls are detected in whichever of those forms the thinker voices its thought. The
-reports of 2026-10-24 and 2026-10-25 predate this: each case was then checked against its own
+Its 96 controls (#575) voice the thought in each kind, 32 each: the thought's own words, a
+paraphrase of the fact, and its narrated feeling. The reports of 2026-10-24 and 2026-10-25 predate this: each case was then checked against its own
 category's forms only, so a paraphrased or narrated disclosure was looked for in about a third
 of the cases each, and their bound on `nfr_qual_1.think_leak` overstates the coverage of those
 two kinds. A new local run supersedes them.
+
+**Which phrasings the bound covers (#575).** The oracle (`priv_think_leak.oracle`) sees a
+disclosure in three ways. (1) One of the fact's listed forms, the thought's words or a listed
+feeling as a phrase (#148's whole-word folded matcher), or an echo of the thought's words
+(#152's shingle detector). (2) A rewording within one sentence, by lemma and stem matching
+(`src/epistrel/evals/rewording.py`; in-repo tables, no model or NLP library): every content word
+of a multi-word form in any order and inflection ("Frank has sold the farm", "the farm's been
+sold"); an emotion word of the same family as a listed feeling (fear, shame, pleasure, distress,
+intent) beside a word of the fact's topic ("Frank feels guilty about the farm"); or at least 60%
+of the thought's content words ("Frank signed the contract on Tuesday"). (3) A `think` or
+`latent` beat in the player-facing result. A clean run's "0 observed in n" and its upper bound
+cover those phrasings only. A paraphrase sharing no content word with a listed form, feeling or
+thought ("he's letting the place go to a developer"), a disclosure spread over several
+sentences, or a bare implication is not seen; there is no judged fallback. The rule can also
+over-read a sentence that pairs an emotion word with a topic word and discloses nothing, so a
+violation is read in its case's output before it is counted as a leak. The reports before #575
+matched the listed phrases only.
 
 CI runs both on the stub, full sets, two seeds, as the `evals-zero-leak` job (the `--all` job
 skips them). The M5 exit evidence is one local run of the three M5 suites, under one run id,

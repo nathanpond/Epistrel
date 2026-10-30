@@ -13,7 +13,7 @@ guarantees, and the guarantee table, are derived from the same map.
 | Area | Slug | Requirements | Needs | Modules delivered | Milestones |
 |---|---|---|---|---|---|
 | The `structured` pipeline | `structured_pipeline` | FR-TURN; FR-BITEMP; FR-PROP; FR-RET; FR-EMBED; FR-MEM-1,2,4,5,7,8; FR-STORE-3; FR-RESP-8; FR-DIRECT; FR-REWRITE; FR-CONC-3,7,11..13; FR-GUARD-4,5 | `pipeline` at `structured` | yes | M4, M5, M6, M7 |
-| Per-character partitions | `partitions` | FR-EPI; FR-BELIEF; NFR-PRIV-4; FR-MEM-11; FR-RESP-11; FR-COMMIT-4,11,13,14 | `partitions` | yes | M4, M5 |
+| Per-character partitions | `partitions` | FR-EPI; FR-BELIEF; NFR-PRIV-4; FR-MEM-11; FR-RESP-11,14; FR-COMMIT-4,11,13,14 | `partitions` | yes | M4, M5, M6 |
 | Per-character partitions: nested beliefs | `partitions_nested` | FR-EPI-2; FR-BELIEF-15 | `partitions`; `nested_beliefs` | yes | M5 |
 | Per-character partitions: lazy resolution | `partitions_lazy` | FR-BELIEF-5,6,9 | `partitions`; `lazy_resolution` | yes | M5 |
 | Per-character partitions: model adjudication of testimony | `partitions_testimony` | FR-BELIEF-3 | `partitions`; `testimony` at `model` | yes | M5 |
@@ -33,7 +33,7 @@ guarantees, and the guarantee table, are derived from the same map.
 ## Notes
 
 - `structured_pipeline`: FR-STORE-3: its projections of beliefs, relationships and placement. FR-CONC: the structured read set and rewrite parts (the Lite read set of FR-CONC-4 is floor). FR-GUARD: its memory parts.
-- `partitions`: NFR-PRIV-4: structural isolation; a character's render then carries no rolling summary and no text pins, which are not viewpoint-scoped (the narrator's render keeps them). FR-RESP-11: its viewpoint checks. FR-COMMIT: FR-COMMIT-4's observation, FR-COMMIT-11's could-have-known flag, FR-COMMIT-13's knocker-side commitment for a modeled character, and FR-COMMIT-14's knowledge obligations and epistemic checks (its position obligations hold with shared knowledge too).
+- `partitions`: NFR-PRIV-4: structural isolation; a character's render then carries no rolling summary and no text pins, which are not viewpoint-scoped (the narrator's render keeps them). FR-RESP-11: its viewpoint checks; FR-RESP-14: `co_author_knowledge`. FR-COMMIT: FR-COMMIT-4's observation, FR-COMMIT-11's could-have-known flag, FR-COMMIT-13's knocker-side commitment for a modeled character, and FR-COMMIT-14's knowledge obligations and epistemic checks (its position obligations hold with shared knowledge too).
 - `partitions_nested`: FR-EPI-2: its nested clause. Off, no nested belief is recorded, and claims about another character's beliefs get no nested-belief check.
 - `partitions_lazy`: Off, every witness's transition is resolved when the exposure is recorded.
 - `partitions_testimony`: At `defaulted`, every acceptance follows the deterministic default of trust, priors, and consistency.
@@ -62,7 +62,7 @@ FR-BITEMP-1, FR-BITEMP-2, FR-BITEMP-3, FR-BITEMP-4, FR-BITEMP-5, FR-CONC-3, FR-C
 
 ### Per-character partitions (`partitions`)
 
-FR-BELIEF-1, FR-BELIEF-2, FR-BELIEF-3, FR-BELIEF-4, FR-BELIEF-5, FR-BELIEF-6, FR-BELIEF-7, FR-BELIEF-8, FR-BELIEF-9, FR-BELIEF-10, FR-BELIEF-11, FR-BELIEF-12, FR-BELIEF-13, FR-BELIEF-14, FR-BELIEF-15, FR-COMMIT-4, FR-COMMIT-11, FR-COMMIT-13, FR-COMMIT-14, FR-EPI-1, FR-EPI-2, FR-EPI-3, FR-EPI-4, FR-EPI-5, FR-EPI-6, FR-EPI-7, FR-EPI-8, FR-EPI-9, FR-EPI-10, FR-EPI-11, FR-EPI-12, FR-EPI-13, FR-EPI-14, FR-MEM-11, FR-RESP-11, NFR-PRIV-4
+FR-BELIEF-1, FR-BELIEF-2, FR-BELIEF-3, FR-BELIEF-4, FR-BELIEF-5, FR-BELIEF-6, FR-BELIEF-7, FR-BELIEF-8, FR-BELIEF-9, FR-BELIEF-10, FR-BELIEF-11, FR-BELIEF-12, FR-BELIEF-13, FR-BELIEF-14, FR-BELIEF-15, FR-COMMIT-4, FR-COMMIT-11, FR-COMMIT-13, FR-COMMIT-14, FR-EPI-1, FR-EPI-2, FR-EPI-3, FR-EPI-4, FR-EPI-5, FR-EPI-6, FR-EPI-7, FR-EPI-8, FR-EPI-9, FR-EPI-10, FR-EPI-11, FR-EPI-12, FR-EPI-13, FR-EPI-14, FR-MEM-11, FR-RESP-11, FR-RESP-14, NFR-PRIV-4
 
 ### Per-character partitions: nested beliefs (`partitions_nested`)
 

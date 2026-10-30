@@ -20,7 +20,8 @@ the stranger and did not know him, holds that she does not know the stranger.
   canon (labelled ``sincere_error``, objective relation false), and never repaired.
 - **Merges are M7's**: a canon ``same_as`` between two characters is 422
   ``identity_merge_not_yet``; ``merge_entities`` raises it; ``entities/merge`` has no row in the
-  FR-API-6 route table and docs/02 §9 lists it, with ``entities/split``, as M7.
+  FR-API-6 route table and docs/02 §9 lists it as M7; a split has no route of its own (owner,
+  2026-10-28, #225).
 """
 
 from __future__ import annotations
@@ -337,7 +338,7 @@ async def test_s_entity_identity__m5(
     section = (ROOT / "docs/02-technology-architecture.md").read_text().split("## 9.")[1]
     section = section.split("\n## ")[0]
     assert "entities/merge" in section
-    assert "entities/split" in section
+    assert "has no route of its own" in section
     assert "M7" in section
 
 

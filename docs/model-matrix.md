@@ -112,6 +112,17 @@ from the p50 / p95 against it.
 | stub: stub-model (three-character, director order turns) | policies off | 2026-10-24 | `d680e09-dirty` | the stub adapter (no model) | in-process stub | three-character sequential respond (#174); turn deadline 300 s (override); profile Structured v2, perception full; no primary reduced or deferred; degradation composition_fallback 20, director_order_skipped 20 |
 | stub: stub-model (three-character sequential turns) | policies off | 2026-10-24 | `d680e09-dirty` | the stub adapter (no model) | in-process stub | three-character sequential respond (#174); turn deadline 300 s (override); profile Structured v2, perception full; no primary reduced or deferred; degradation composition_fallback 20 |
 
+## Failed runs
+
+A row whose turns stopped on a model failure partway. The run wrote the rows that finished
+before it, and kept this row's previous measurement (if any) in the tables above. The turn is
+numbered from 1 in the measured turns; turn 0 is the warm-up. The next run that measures the
+row clears its entry.
+
+| Tier | Policies | Measured | Engine SHA | Turn | Error | Turn path |
+|---|---|---|---|---|---|---|
+| local: cydonia-24b-v4.3 (three-character sequential turns) | policies off | 2026-10-27 | `ad7368b-dirty` | 2 | model_unavailable, purpose `generation`, reason `deadline` | three-character sequential respond (#174); turn deadline 300 s (override) |
+
 ## Embedding
 
 The embedding endpoint (the `embedding` port, #138), measured when the run names one:

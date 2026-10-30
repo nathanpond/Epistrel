@@ -156,12 +156,13 @@ async def trust(
     *,
     through: Position | None = None,
     lookup: KeyedLookup | None = None,
+    registry: Registry | None = None,
 ) -> float:
     """``witness``'s trust in ``speaker`` now, or as of ``through`` (#164's exposure frame: the
     relationships canon held at that full position, a later beat or step of its own turn
     excluded exactly like a later turn, read through ``lookup`` so each read is a key of the
     frame's read set, and only the outcomes recorded at or before it; see the module
-    docstring)."""
+    docstring). ``registry``: the caller's, read when not given."""
     from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX
 
     viewpoint = f"{CHARACTER_VIEWPOINT_PREFIX}{witness}"
@@ -183,6 +184,7 @@ async def trust(
             speaker,
             through,
             viewpoint,
+            registry,
         )
     seed = seed_trust(relations)
     t = belief_transitions.c
@@ -248,6 +250,7 @@ async def _relations_in_frame(
     speaker: str,
     through: Position,
     viewpoint: str,
+    registry: Registry | None = None,
 ) -> list[tuple[str, Mapping[str, Any]]]:
     """The ``(predicate name, qualifiers)`` of ``witness``'s relationships to ``speaker`` that
     seed trust in the frame through ``through``: what #137's projection answers, but read from
@@ -261,7 +264,8 @@ async def _relations_in_frame(
         select(stories.c.story_minute_zero).where(stories.c.id == story_id)
     )
     now = story_time_at(through.turn, TimeBasis(minute_zero=int(zero or 0)))
-    registry = await load(lookup.conn, story_id)
+    if registry is None or registry.story_id != story_id:
+        registry = await load(lookup.conn, story_id)
     found = await lookup.relations_between(
         story_id,
         witness,
@@ -270,6 +274,7 @@ async def _relations_in_frame(
         through_position=through,
         story_time=now,
         viewpoint=viewpoint,
+        registry=registry,
     )
     relations: list[tuple[str, Mapping[str, Any]]] = []
     for fact, direction in found:

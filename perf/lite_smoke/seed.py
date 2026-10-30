@@ -21,6 +21,8 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from sqlalchemy.ext.asyncio import AsyncEngine
+
 from epistrel.config import Settings
 from epistrel.core.context import RequestContext
 from epistrel.core.db import make_engine
@@ -55,6 +57,25 @@ def seed_settings(dsn: str) -> Settings:
     )
 
 
+SEED_CONNECT_TIMEOUT_S = 30
+"""The seeders' libpq connect timeout. The service's 2 s (``core.db``) keeps ``/health`` fast; a
+seeder writing ten stories at once into the runner's Postgres container can wait longer than that
+for a backend, which crashed every weekly P-04 seed (#587)."""
+SEED_POOL_HEADROOM = 2
+"""Pool connections beyond one per concurrently seeded story (the seeder's own reads)."""
+
+
+def seed_engine(settings: Settings, stories: int) -> AsyncEngine:
+    """The seeders' engine: a pool that keeps a connection for each of ``stories`` stories seeded
+    at once (and ``SEED_POOL_HEADROOM`` more), so no backend is opened after the first batch,
+    and ``SEED_CONNECT_TIMEOUT_S`` to open one (#587)."""
+    return make_engine(
+        settings,
+        pool_size=stories + SEED_POOL_HEADROOM,
+        connect_timeout=SEED_CONNECT_TIMEOUT_S,
+    )
+
+
 async def seed(
     target: Target,
     *,
@@ -64,7 +85,7 @@ async def seed(
 ) -> list[StoryRef]:
     """Seed ``stories`` reference stories and drain their summaries; return them."""
     settings = seed_settings(target.dsn)
-    db = make_engine(settings)
+    db = seed_engine(settings, stories)
     epistrel = Engine(settings, db=db)
     ctx = RequestContext(principal=target.principal)
     try:

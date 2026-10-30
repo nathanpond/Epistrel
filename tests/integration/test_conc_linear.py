@@ -322,7 +322,7 @@ def test_conc_linear(pg_url: str) -> None:
     FR-CONC-4 outcome, or the property says nothing about them."""
     ConcLinear.url = pg_url
     ConcLinear.tally = Tally()
-    run_state_machine_as_test(  # type: ignore[no-untyped-call]
+    run_state_machine_as_test(
         ConcLinear,
         settings=settings(
             max_examples=50,

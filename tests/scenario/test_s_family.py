@@ -11,7 +11,8 @@ from M5 on the owner's decision of 2026-10-26, #576): it needs the background re
 set (#580); the merge rule itself is U-27 M4's (``tests/test_u_27.py``). The Brother's revision by
 observation is a direct ``observation`` transition, not a played turn: no turn can make it yet
 (Sam is the player, so a render's claim about him is denied ``player_character``, and the
-player's own ``do`` is routed without claims; #523)."""
+player's own ``do`` is routed without claims). The played-turn version is S-FAMILY's M7 part
+(moved on the owner's decision of 2026-10-26, #523 option (c))."""
 
 from __future__ import annotations
 

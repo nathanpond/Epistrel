@@ -614,7 +614,7 @@ def test_conc_linear__structured(pg_url: str) -> None:
     every FR-CONC-4 outcome, a conflict past the budget, and regenerations caused by a lock."""
     ConcLinearStructured.url = pg_url
     ConcLinearStructured.tally = Counter()
-    run_state_machine_as_test(  # type: ignore[no-untyped-call]
+    run_state_machine_as_test(
         ConcLinearStructured,
         settings=settings(
             max_examples=100,

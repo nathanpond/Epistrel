@@ -4,11 +4,11 @@
 
 P-06's vector-scale curve (NFR-SCALE-1). Capacity is claimed **only for the measured range**: the budgets are gated up to ~50k memories in one story, and the 100k point is measured and reported but not gated. Any larger figure is an unvalidated estimate until a benchmark measures it. P-10 (`python -m epistrel.tools.capacity --up-to N`, informational and run by hand) extends the curve and writes `docs/capacity-exploration.md`. The dev/hobby concurrency target (NFR-PERF-4: 10 stories in active play on the reference host) is a separate statement, not a capacity figure.
 
-**Host: local-mac-loaded (not the reference host).** Postgres 16.15, pgvector 0.8.7, `shared_buffers` 128MB, `maintenance_work_mem` 1GB and no parallel workers for each index build (16 vCPU, 128.0 GB RAM). One story, 2,000 events, 200 queries a step; the index is rebuilt at each step the way a pin builds it.
+**Host: github-runner (not the reference host).** Postgres 16.15, pgvector 0.8.7, `shared_buffers` 128MB, `maintenance_work_mem` 1GB and no parallel workers for each index build (4 vCPU, 15.6 GB RAM). One story, 2,000 events, 200 queries a step; the index is rebuilt at each step the way a pin builds it.
 
 | Memories | HNSW build (s) | Index size (MiB) | p50 (ms) | p95 (ms) | p99 (ms) | Gated | Within 150 ms |
 |---|---|---|---|---|---|---|---|
-| 1,000 | 0.4 | 3.9 | 32.3 | 55.6 | 60.9 | yes | yes |
-| 10,000 | 9.2 | 39.1 | 44.1 | 63.0 | 69.2 | yes | yes |
-| 50,000 | 58.9 | 195.3 | 75.5 | 95.9 | 114.2 | yes | yes |
-| 100,000 | 130.5 | 390.6 | 95.3 | 130.2 | 137.5 | no (reported) | yes |
+| 1,000 | 0.4 | 3.9 | 51.6 | 86.9 | 92.1 | yes | yes |
+| 10,000 | 6.7 | 39.1 | 74.2 | 108.1 | 118.3 | yes | yes |
+| 50,000 | 50.8 | 195.3 | 134.9 | 182.8 | 205.0 | yes | **no** |
+| 100,000 | 113.8 | 390.6 | 189.2 | 263.7 | 273.5 | no (reported) | **no** |

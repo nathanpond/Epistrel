@@ -67,6 +67,7 @@ from sqlalchemy import exists, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.enums import (
+    BeliefConfidenceLevel,
     BeliefKind,
     ExposureFidelity,
     ExposureKind,
@@ -229,10 +230,17 @@ class Exposure:
 _P = "p_"
 
 
+_RESOLVER = operations.alias("resolver")
+_RESOLVED_EVENT = events.alias("resolved_event")
+_RESOLVED_BY = operations.alias("resolved_by")
+"""The resolution reads' rows, built once: an alias proxies every column when first read, and
+``exposures_of`` built three per call (#520). Each appears only in sibling subqueries."""
+
+
 def _stored_resolution(as_of_turn: int | None) -> Any:
     """The resolution the row stores (a salient witness's, made by the writing turn) is on the
     timeline (and in the record by ``as_of_turn``)."""
-    o = operations.alias("resolver")
+    o = _RESOLVER
     where = [
         exposures.c.state == ExposureState.RESOLVED.value,
         o.c.operation_id == exposures.c.resolution_operation_id,
@@ -247,8 +255,8 @@ def _resolution_event(as_of_turn: int | None) -> Any:
     """The active ``belief_resolved`` events naming the exposure: one per resolution made, each
     following its operation's membership, so a swap back to a chain that resolved it brings its
     resolution back while another chain's leaves with its operation."""
-    e = events.alias("resolved_event")
-    o = operations.alias("resolved_by")
+    e = _RESOLVED_EVENT
+    o = _RESOLVED_BY
     where = [
         e.c.story_id == exposures.c.story_id,
         e.c.type == BELIEF_RESOLVED,
@@ -322,10 +330,14 @@ async def exposures_of(
     state: ExposureState | None = None,
     ids: Sequence[str] | None = None,
     as_of_turn: int | None = None,
+    predicates: Sequence[str] | None = None,
+    entities_: Sequence[str] | None = None,
 ) -> list[Exposure]:
     """The story's active exposures (of ``witness``; in effective ``state``), oldest position
     first; ``as_of_turn`` reads the state as the record stood through that turn (a resolution
-    made by a later turn is not yet one: FR-BELIEF-14). A raw read: it never resolves anything
+    made by a later turn is not yet one: FR-BELIEF-14). ``predicates`` and ``entities_`` keep
+    only propositions of one of those predicates whose subject or object is one of those
+    entities (#520: the replay's read on a key). A raw read: it never resolves anything
     (inspection reads through here)."""
     x = exposures.c
     where: list[Any] = [x.story_id == story_id, active_only(exposures)]
@@ -337,6 +349,11 @@ async def exposures_of(
         where.append(_resolved(as_of_turn))
     elif state is ExposureState.UNRESOLVED:
         where.append(~_resolved(as_of_turn))
+    if predicates is not None:
+        where.append(propositions.c.predicate_id.in_(list(predicates)))
+    if entities_ is not None:
+        found = list(entities_)
+        where.append(or_(propositions.c.subject_id.in_(found), propositions.c.object_id.in_(found)))
     rows = await conn.execute(
         _select(as_of_turn)
         .where(*where)
@@ -480,6 +497,61 @@ async def _intent(conn: AsyncConnection, event_id: str) -> str | None:
     return payload.get("intent") if isinstance(payload, dict) else None
 
 
+_Framed = tuple[
+    Registry,
+    KeyedLookup,
+    list[testimony.Consistency],
+    testimony.PerceivedIntent,
+    testimony.SpeechAct,
+]
+
+
+async def _framed(
+    conn: AsyncConnection,
+    exposure: Exposure,
+    registry: Registry | None,
+    read_set: StructuredReadSet | None,
+    lookup: KeyedLookup | None = None,
+) -> _Framed:
+    """What the default rests on in ``exposure``'s frame, but the trust: the registry, the
+    frame's lookup, the consistency verdicts (the witness's partition and canon through the
+    exposure position), the perceived intent and the speech act."""
+    story_id = exposure.story_id
+    frame = exposure.position
+    found = registry or await load(conn, story_id)
+    witness = exposure.witness
+    if lookup is None:
+        lookup = KeyedLookup(conn, read_set if read_set is not None else StructuredReadSet())
+    consistency = await testimony.consistency_of(
+        lookup, story_id, witness, [exposure.proposition], registry=found, through=frame
+    )
+    intent = testimony.perceived(await _intent(conn, exposure.source_event_id))
+    act = testimony.SpeechAct(
+        speaker=exposure.source or witness,
+        beat=frame.beat,
+        propositions=(exposure.proposition,),
+        event_id=exposure.source_event_id,
+    )
+    return found, lookup, consistency, intent, act
+
+
+async def _trust(
+    conn: AsyncConnection, exposure: Exposure, lookup: KeyedLookup, registry: Registry
+) -> float:
+    """The witness's trust in the source as of the exposure position (neutral for no source)."""
+    if exposure.source is None:
+        return testimony.TRUST_NEUTRAL
+    return await testimony.trust(
+        conn,
+        exposure.story_id,
+        exposure.witness,
+        exposure.source,
+        through=exposure.position,
+        lookup=lookup,
+        registry=registry,
+    )
+
+
 async def decide(
     conn: AsyncConnection,
     exposure: Exposure,
@@ -489,32 +561,51 @@ async def decide(
 ) -> testimony.TestimonyOutcome:
     """#162's deterministic default for ``exposure``, decided in its frame (the witness's
     partition and canon through the exposure position, its trust in the source as of then).
-    It only reads, so ``resolve_exposure`` writes what it decides, and #165's could-have-known
-    replay dry-runs an unresolved exposure through it with nothing persisted."""
-    story_id = exposure.story_id
-    frame = exposure.position
-    found = registry or await load(conn, story_id)
-    witness = exposure.witness
-    lookup = KeyedLookup(conn, read_set if read_set is not None else StructuredReadSet())
-    consistency = await testimony.consistency_of(
-        lookup, story_id, witness, [exposure.proposition], registry=found, through=frame
+    It only reads, so ``resolve_exposure`` writes what it decides, and #164's context dry-runs
+    an unresolved exposure through it with nothing persisted."""
+    found, lookup, consistency, intent, act = await _framed(conn, exposure, registry, read_set)
+    trust = await _trust(conn, exposure, lookup, found)
+    (outcome,) = testimony.testimony(
+        exposure.witness, act, intent, consistency=consistency, trust=trust
     )
-    trust = (
-        testimony.TRUST_NEUTRAL
-        if exposure.source is None
-        else await testimony.trust(
-            conn, story_id, witness, exposure.source, through=frame, lookup=lookup
-        )
-    )
-    intent = testimony.perceived(await _intent(conn, exposure.source_event_id))
-    act = testimony.SpeechAct(
-        speaker=exposure.source or witness,
-        beat=frame.beat,
-        propositions=(exposure.proposition,),
-        event_id=exposure.source_event_id,
-    )
-    (outcome,) = testimony.testimony(witness, act, intent, consistency=consistency, trust=trust)
     return outcome
+
+
+async def accepts(
+    conn: AsyncConnection,
+    exposure: Exposure,
+    *,
+    floor: BeliefConfidenceLevel,
+    registry: Registry | None = None,
+    read_set: StructuredReadSet | None = None,
+    lookup: KeyedLookup | None = None,
+) -> bool:
+    """Whether ``decide`` accepts ``exposure`` at ``floor`` or above (#165's could-have-known dry
+    run), reading the trust only when the answer turns on it (#520). The default is monotone in
+    trust (more trust never takes an acceptance or a level away, which
+    ``tests/test_testimony_default.py`` pins), so when it agrees at no trust and at full trust,
+    every trust agrees and its reads (the frame's relationships and the witness's prior
+    outcomes with the source) are not made. ``lookup``: the caller's (its read set), so its
+    memo is shared."""
+    found, lookup, consistency, intent, act = await _framed(
+        conn, exposure, registry, read_set, lookup
+    )
+    least = partitions.LEVELS.index(floor)
+
+    def at(trust: float) -> bool:
+        (outcome,) = testimony.testimony(
+            exposure.witness, act, intent, consistency=consistency, trust=trust
+        )
+        return (
+            outcome.decision == testimony.ACCEPT
+            and outcome.confidence is not None
+            and partitions.LEVELS.index(outcome.confidence) >= least
+        )
+
+    low, high = at(0.0), at(1.0)
+    if low == high:
+        return low
+    return at(await _trust(conn, exposure, lookup, found))
 
 
 async def resolve_exposure(

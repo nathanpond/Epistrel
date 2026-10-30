@@ -243,7 +243,7 @@ def test_real_docs_agree_with_section_22_and_pass_today(tmp_path: Path) -> None:
         plan_path, spec, code_parts([p.to_json() for p in parts]), 0, write=False
     )
     assert findings == []
-    assert summary.startswith("438 §15 rows")
+    assert summary.startswith("439 §15 rows")
     assert summary.endswith("§15 and §22 agree on every milestone")
 
     # --write on a copy of the real plan at current_milestone = 0 is a byte-for-byte no-op.

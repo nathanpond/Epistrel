@@ -16,17 +16,17 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 
 | Area | Spec | ADRs |
 |---|---|---|
-| FR-RESP | §1 | 047, 071, 078, 087, 091, 144, 145 |
+| FR-RESP | §1 | 047, 071, 078, 087, 091, 144, 145, 174 |
 | FR-STORE | §2 | 045, 072, 075, 076, 079, 080, 122, 128, 129, 132, 138, 143, 144, 167 |
 | FR-CONC | §2.3 | 045, 052, 057, 062, 072, 144, 169 |
 | FR-MEM | §4 | 070, 071, 072, 075, 169 |
-| FR-EPI | §5 | 024, 167, 168, 171, 173 |
+| FR-EPI | §5 | 024, 167, 168, 171, 173, 174 |
 | FR-BELIEF | §5.1 | 026, 069, 075, 168, 170, 172, 173 |
 | FR-TURN | §6 | 043, 169, 170 |
 | FR-COMMIT | §7 | 018, 022, 043, 053, 129, 173 |
 | FR-RET | §8 | 129, 167 |
 | FR-PROP | §8.1 | 160, 162, 163, 165, 167 |
-| FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162, 163, 165, 173 |
+| FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162, 163, 165, 173, 174 |
 | FR-GUARD | §11 | 087, 095, 096, 114, 161, 169 |
 | FR-REWRITE | §12.1 | 144 |
 | FR-MODEL | §13 | 129, 136, 144, 150, 170 |
@@ -94,7 +94,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 029 | Optimistic concurrency, per-story turn policy, and idempotent mutations | Partly superseded | 040, 045, 052 |
 | 030 | Story States and owned values; authorities decide objective truth, not knowledge | Amended | 037, 038, 039, 060 |
 | 031 | Multi-character interaction modes, participation roles, and adjudication | Partly superseded | 047, 059, 126 |
-| 032 | Closing verification and input gaps: verified composition, explicit input contract, novelty permissions, typed dependencies | Amended | 036, 043, 047, 059, 065, 087 |
+| 032 | Closing verification and input gaps: verified composition, explicit input contract, novelty permissions, typed dependencies | Amended | 036, 043, 047, 059, 065, 087, 174 |
 | 033 | Consolidation scope, authorization, erasure boundary, and measurable acceptance | Partly superseded | 044, 045, 046, 070, 072, 071, 091, 103, 078 |
 | 034 | Belief antecedents: independently verified and earlier, not "a prior turn" | Current | — |
 | 035 | Normalized propositions, a layered predicate registry, and deterministic contradiction rules | Partly superseded | 048, 049, 050, 058 |
@@ -236,6 +236,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 171 | A character is modeled lazily by interaction or salience, at minor weight, and a minor's partition is sparse by rule | Current | — |
 | 172 | A non-salient witness's exposure is resolved lazily in its own frame, by the turn that needs it | Current | — |
 | 173 | Could-have-known is a replay of dated acquisitions; a thunk binding obliges its character's knowledge | Current | — |
+| 174 | Co-author narration is accepted on what its character could not know, with an optional notice and a one-time correction | Current | — |
 
 ---
 
@@ -494,7 +495,7 @@ Launch conservative (high continuity, more escalation), then **tighten data-driv
 
 ### ADR-032 — Closing verification and input gaps: verified composition, explicit input contract, novelty permissions, typed dependencies
 **Status:** Accepted.
-**Amended by:** ADR-036 — speech dimensions; ADR-043 — reactive narration is a named novelty exception; ADR-047/059 — composition checks are viewpoint-specific; ADR-065 — composition is re-run through full claim detection; ADR-087 — output claims are precise; Lite does no structured claim checking
+**Amended by:** ADR-036 — speech dimensions; ADR-043 — reactive narration is a named novelty exception; ADR-047/059 — composition checks are viewpoint-specific; ADR-065 — composition is re-run through full claim detection; ADR-087 — output claims are precise; Lite does no structured claim checking; ADR-174 — `co_author` narration's viewpoint check accepts what its character could not know, with a notice under `co_author_knowledge = confirm`
 **Context:** Four holes remained in the verification and input path. The final polish step could add claims, swap speakers, or leak thoughts after every beat had passed verification. Player moves had no authoritative entry point (recent messages are non-authoritative) and repeated ingestion had no deduplication. A `novel` verdict effectively authorized any invention, including another character's secrets, player actions, or game-owned values. And retcon cascades treated every dependency alike, so retconning a university risked rewriting an intentional lie about it.
 **Decision:** (1) **Composition is constrained and verified**: it may only order and join verified beats and add connective prose, then passes a final claim/attribution/privacy check, falling back to deterministic assembly on failure. (2) **Explicit input contract**: a player-input field enters history as the turn's first beat; an ingest operation records events without generating, deduplicated by client event ID; `player_authority` is per story (`own_character` default — input about other characters is a request the world resolves; `co_author` — players may narrate other characters' observable actions, viewpoint-checked, never their thoughts). (3) **Novelty requires permission** by asserter and subject owner; unpermitted novelty is repaired, not canonized. (4) **Typed dependency edges** — `causes`, `presupposes`, `derives`, `mentions`, `asserts` — with per-type cascade rules; speech acts stay as history and only their objective relation (and, if the speaker's belief changed, their belief relation) is re-evaluated — never their intent (ADR-036); testimony-acquired beliefs stay, observation-acquired beliefs cascade.
 **Consequences:** No unverified text reaches the player *[revised per ADR-065 and ADR-087: every detected claim is checked, under profiles that verify; Lite does no structured checking]*; player moves have one authoritative, idempotent path; the model can't use novelty to author things it doesn't own; retcons preserve what characters actually said and believed.
@@ -1812,6 +1813,25 @@ Everything else keeps the safe disposition: detector findings, the excluded reso
 - A knowledge proposition the character already held (it observed the binding narration in the same turn) is changed in place by #160's rule and keeps its `held_from`. The resolution's anchor at t is the transition's story-time.
 - Same-turn staged beats and render steps license only once #174's and #168's oracles exist; nested propositions replay against #167's rows; P-02's `could_have_known` span is #153's to measure.
 - Tests: `tests/property/test_could_have_known.py` (COULD-HAVE-KNOWN M5), `tests/test_u_19_m5.py` (U-19 M5), `tests/scenario/test_s_thunk_resolve_m5.py` (S-THUNK-RESOLVE M5), `tests/scenario/test_s_whisper.py::test_s_whisper__inference` (S-WHISPER M5), `tests/test_replay.py`.
+
+---
+
+### ADR-174 — Co-author narration is accepted on what its character could not know, with an optional notice and a one-time correction
+**Status:** Accepted. Amends ADR-032 (2).
+**Context:** Under `player_authority = co_author` with partitions on, #561's viewpoint check rejected `could_not_know` every narration that creates the fact it states ("Jenni puts the key in the drawer", "Jenni slides the key to Bobby"). The claim is `novel`, so the narrated character never has a prior path to it, and plain actions could not be narrated at all (#565). The owner's direction (2026-10-30): how strictly co-authoring is held to knowledge depends on the story. A quick, ad-hoc role play should not restrict what the co-author states as fact. World building and story writing want knowledge kept pure, but as information the user acts on, not as a rejection.
+**Decision:**
+- A story setting `co_author_knowledge` ∈ {`confirm`, `free`}, default `confirm`, applies under `co_author` with partitions on (FR-RESP-14). It is interpretive (FR-CONC-15), versioned (FR-CONC-14), and may be defaulted by a scenario.
+- The could-have-known check on co-author narration reads only the action's **presuppositions** (what must already hold, and statements about others that the action does not bring about), never the state the action brings about. This was option (c) on #565.
+- Under both values, a presupposition with no path is **accepted**. The character's knowledge is recorded as an `author_fiat` acquisition, so its later renders are verified as knowing it and are not flagged for acting on it.
+- Under `confirm`, the response also carries an `implausible_knowledge` **notice** per such presupposition. It is built only from the player's words and is raised whether or not canon settles the claim, so it is no oracle on canon or on who knows what (NFR-PRIV-4).
+- The turn commits. While it is the latest active turn, a **correct** operation atomically truncates to before it and replays `respond` with new input. The replaced turn is a dormant continuation, so the correction can be undone. A later turn makes it `not_latest_turn`, and only history rewrite reaches it. A corrected turn cannot be corrected again. A confirmed external effect is not undone (FR-EXT-14).
+- Neither value relaxes author-locked canon, State or external ownership, the `think` exclusion, or guardrails.
+**Alternatives considered:** Rejecting every narration whose claim has no prior path (option (a)) blocks plain actions. Checking only claims canon already settles (option (b)) removes the check in practice. A `strict` value that rejects was replaced by the notice: the user fixes, clarifies, or overrides. Holding the turn uncommitted until the user answers was rejected because rewind already exists and keeps the turn path simple. Free mode skipping locks, States, and ownership as well was rejected: those belong to the author and the game, not the player.
+**Consequences:**
+- `could_not_know` stops being a rejection of co-author input; #561's `test_s_player_authority__viewpoint` is revised to the notice.
+- S-PLAYER-AUTHORITY gains an M6 part. FR-RESP-14 is first gated at M6, beside M6's configuration-race scenario (S-CONFIG-RACE).
+- The Console shows notices with fix, clarify, and override actions.
+- A notice discloses nothing beyond the player's input, at the cost of noticing claims that canon happens to make true and false alike.
 
 ---
 

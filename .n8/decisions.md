@@ -9469,3 +9469,15 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Changed:** the M11 description's M5 privacy emphasis now names `implausible_knowledge` notices as an oracle surface and `author_fiat` never widening another partition.
 - **Not changed:** the other M7 issues (#220, #223, #226 and #249 already cover the setting and acquisition kind generically), M8–M10, epic AC, and edges. No closures.
 
+
+## Ad-hoc — 2026-10-30
+
+- **Change:** Owner triage of the milestone-less `needs-triage` issues (decisions recorded on each issue). Scope moves: #518 (a fluent exit/move should supersede, not contradict) → M6, beside #193/#199; #564 (co_author sincere-error label/repair mismatch) → M6, fixed within #598 under ADR-174; #481 (paraphrase duplicates: an event-sourced `same_as` merge plus a duplicate-candidate notice at minting) → M7; #532 (eval runs over REST) → M7, beside #227/#233; #530 (a model error counts only in its label's metrics) → M9, before any floor verdict; new #602 (#456 items 1–2: deadline 422 pre-check, per-purpose latency estimates) and #603 (#588 (a): must three-voice turns fit cydonia) → M9. #456 item 6 (a `7 + G` default) is dropped: NFR-PERF-6's formula stays.
+  **Why:** The owner's decisions, 2026-10-30.
+  **Affects:** M6 (#518, #564 join; #564 rides #598), M7 (#481, #532 join; #481 needs a `same_as` merge story shape). M9 is unplanned and only gains issues.
+- **Change:** Erasure shape for story-only characters named in promoted catalog drafts (#504): catalog-scope erasure accepts `{kind: character, id, story}`, using that story's names and aliases. Story-scope erasure stays story-scoped, and its report lists drafts promoted from the story. This needs an FR-ADMIN-6 amendment and an ADR. Not yet placed in a milestone.
+  **Why:** The owner's decision, 2026-10-30. It keeps FR-ADMIN-2's boundary and makes the erasure completable.
+  **Affects:** M7 (#249 and any catalog-erasure surface), M11 (privacy audit of the erasure boundary).
+- **Change:** Pre-M6 fixes chosen (no milestone; done ad hoc before `/n8-exec M6`): #519 option (c): `permission()` takes the transfer's giver; #515 option (a): `located_at` ⇒ `present_at` at the scene's place; #534: an omniscient operation read omits `result` instead of 409; #456 items 3–5 (`model_calls[].stage`, the `below_safety_minimum` warning on profile create/update and the impact report, two counters); #588 (b): the matrix deadline override scales with primaries.
+  **Why:** The owner's decisions, 2026-10-30. They touch verify, permission and the budget, which M6's #187, #189, #191 and #214 build on.
+  **Affects:** M6 (#214 extends the warning path; #187/#191 build on the permission and verify rules).

@@ -3733,6 +3733,18 @@
             ],
             "title": "Calendar"
           },
+          "external_value_name": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Value Name"
+          },
           "max_unprompted_skip_minutes": {
             "anyOf": [
               {
@@ -3785,6 +3797,31 @@
               }
             ],
             "title": "Pacing Table"
+          },
+          "provider_id": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Id"
+          },
+          "provider_value": {
+            "anyOf": [
+              {
+                "maxLength": 161,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#209: `\"<provider>.<value>\"`, shorthand for `provider_id` and `external_value_name` (an `external` clock's provider value).",
+            "title": "Provider Value"
           },
           "stop_at_due_events": {
             "anyOf": [
@@ -3839,6 +3876,18 @@
             "title": "Elapsed Tolerance Factor",
             "type": "number"
           },
+          "external_value_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#209: in `external` mode, the provider's value (a `number` of story-minutes from the story's start) the clock reads each turn (null otherwise).",
+            "title": "External Value Name"
+          },
           "grace_minutes": {
             "title": "Grace Minutes",
             "type": "integer"
@@ -3872,6 +3921,18 @@
             },
             "title": "Pacing Table",
             "type": "array"
+          },
+          "provider_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#209: in `external` mode, the provider whose value the clock is (null otherwise).",
+            "title": "Provider Id"
           },
           "stop_at_due_events": {
             "title": "Stop At Due Events",
@@ -35299,7 +35360,7 @@
         "type": "object"
       },
       "StateEffectModel": {
-        "description": "A State change a structured turn committed (#187, FR-RESP-7): the State, its scope key\n(the character, for a per-character State), the value it found and the one it left, the\nreason, its source (``turn``), contingency and status. A ``hidden`` State's appears only\nfor ``omniscient``.",
+        "description": "A State change a structured turn committed (#187, FR-RESP-7): the State, its scope key\n(the character, for a per-character State), the value it found and the one it left, the\nreason, its source (``turn``), contingency and status. A ``hidden`` State's appears only\nfor ``omniscient``. #209: a change asked of the consumer for a value a read-only provider\nowns is ``status: pending`` with ``owner: external`` and its ``effect_id``: never applied,\nits ``new_value`` null and its ``old_value`` the value pinned for the turn.",
         "properties": {
           "capped": {
             "anyOf": [
@@ -35333,6 +35394,22 @@
             "description": "#188: the amount the render declared before a cap repaired it down.",
             "title": "Declared"
           },
+          "delta": {
+            "description": "#209: a requested change's delta.",
+            "title": "Delta"
+          },
+          "effect_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#209: a requested change's stable id, which the consumer's outcome report names.",
+            "title": "Effect Id"
+          },
           "kind": {
             "anyOf": [
               {
@@ -35342,14 +35419,39 @@
                 "type": "null"
               }
             ],
-            "description": "#188: `transfer_in` or `transfer_out` for one side of a transfer; absent for a change.",
+            "description": "#188: `transfer_in` or `transfer_out` for one side of a transfer (#209: `time_advance` for an external clock's requested advance); absent for a change.",
             "title": "Kind"
+          },
+          "minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#209 (FR-CLOCK-5): a requested `time_advance`'s minutes (an external clock's pacing or skip).",
+            "title": "Minutes"
           },
           "new_value": {
             "title": "New Value"
           },
           "old_value": {
             "title": "Old Value"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "const": "external",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#209 (FR-EXT-9): `external` for a change requested of the consumer, which applies it to the value it owns (status `pending`); absent for a committed change.",
+            "title": "Owner"
           },
           "reason": {
             "title": "Reason",
@@ -35377,13 +35479,15 @@
           "status": {
             "title": "Status",
             "type": "string"
+          },
+          "value": {
+            "description": "#209: a requested change's value to set.",
+            "title": "Value"
           }
         },
         "required": [
           "state",
           "scope_key",
-          "old_value",
-          "new_value",
           "reason",
           "source",
           "contingency",
@@ -61574,7 +61678,7 @@
         ]
       },
       "patch": {
-        "description": "Change the world clock's settings (FR-CLOCK-5): `mode` (`paced`, the default: the pacing rule and validated skips advance it; `manual`: only explicit skips do; `external` needs a registered provider and is refused until it can have one), the `pacing_table`, `max_unprompted_skip_minutes` (0 disables a skip a render starts on its own), `stop_at_due_events`, `time_awareness`, the time-of-day `bands` and the `calendar`. A story configuration write: each changed setting records a `config_changes` row (`state:world_clock.<setting>`; `pacing_table` is prospective, the others interpretive, so a turn checked under the old value is re-checked) and the story's `config_revision` moves by one; setting the values it has changes nothing. 422 for an unknown setting or an invalid value; 409 `story_archived`.",
+        "description": "Change the world clock's settings (FR-CLOCK-5): `mode` (`paced`, the default: the pacing rule and validated skips advance it; `manual`: only explicit skips do; `external`: the clock is a registered provider's `number` value of story-minutes from the story's start, named by `provider_value` (`\"<provider>.<value>\"`) or by `provider_id` and `external_value_name`, read and pinned each turn; the story must be bound to the provider, else 422 `provider_unbound`; its pacing and skips are then requested of the consumer in `respond.state_effects` (`kind: time_advance`), never applied), the `pacing_table`, `max_unprompted_skip_minutes` (0 disables a skip a render starts on its own), `stop_at_due_events`, `time_awareness`, the time-of-day `bands` and the `calendar`. A story configuration write: each changed setting records a `config_changes` row (`state:world_clock.<setting>`; `pacing_table` is prospective, the others interpretive, so a turn checked under the old value is re-checked) and the story's `config_revision` moves by one; setting the values it has changes nothing. 422 for an unknown setting or an invalid value; 409 `story_archived`.",
         "operationId": "update_clock",
         "parameters": [
           {
@@ -61716,7 +61820,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `validation_error`."
+            "description": "Invalid request; nothing was written: `provider_unbound`, `validation_error`."
           },
           "423": {
             "content": {
@@ -61768,7 +61872,7 @@
     },
     "/stories/{story_id}/clock/advance": {
       "post": {
-        "description": "Move the world clock forward between turns, as the consumer (FR-CLOCK-13): `minutes` forward, or `to` a target, either an offset in minutes from the story's start or a time of day `\"HH:MM\"`, with a `reason`. The advance is an inter-turn slot after the last turn (a truncation to that turn or earlier discards it, and the clock with it) and is recorded with the source `consumer`. Answers the clock `before` and `after`. 422 `clock_backward` for a move backward (nothing is written; earlier story-time is reached by truncation or a rewrite), `clock_unanchored` for a `\"HH:MM\"` the clock's anchor cannot place (the anchor does not fix the exact time of day; once it does, the next such time); 409 `module_off` while the story runs the clock off, `story_archived`, `story_paused` or `revision_conflict`. A turn that was rejected or failed, and an ingested event, never advance the clock.",
+        "description": "Move the world clock forward between turns, as the consumer (FR-CLOCK-13): `minutes` forward, or `to` a target, either an offset in minutes from the story's start or a time of day `\"HH:MM\"`, with a `reason`. The advance is an inter-turn slot after the last turn (a truncation to that turn or earlier discards it, and the clock with it) and is recorded with the source `consumer`. Answers the clock `before` and `after`. 422 `clock_backward` for a move backward (nothing is written; earlier story-time is reached by truncation or a rewrite), `clock_unanchored` for a `\"HH:MM\"` the clock's anchor cannot place (the anchor does not fix the exact time of day; once it does, the next such time), `clock_external` while the clock is in `external` mode (it is the provider's value: the consumer advances its own clock); 409 `module_off` while the story runs the clock off, `story_archived`, `story_paused` or `revision_conflict`. A turn that was rejected or failed, and an ingested event, never advance the clock.",
         "operationId": "advance_clock",
         "parameters": [
           {
@@ -61910,7 +62014,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `clock_backward`, `clock_unanchored`, `validation_error`."
+            "description": "Invalid request; nothing was written: `clock_backward`, `clock_external`, `clock_unanchored`, `validation_error`."
           },
           "423": {
             "content": {

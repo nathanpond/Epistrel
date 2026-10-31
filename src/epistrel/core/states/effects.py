@@ -105,6 +105,10 @@ narrates (``core.states.completeness``): narrated by the render, else by one app
 AMOUNT: Final = "amount"
 """#190: the constraint of a ``state_undeclared`` finding whose beat declares an effect on the
 State that does not cover the narrated change (another amount, or the other direction)."""
+EXTERNAL_OUTCOME_UNCONFIRMED: Final = "external_outcome_unconfirmed"
+"""#209 (FR-EXT-9,15): a beat asserts the outcome of a change the turn asks an external value's
+owner to apply ("the purchase went through", "your balance is now 250") while no outcome is
+known: repaired to the attempt ("you hand over the coins"); the effect stays requested."""
 Tag = Literal[
     "state_constraint",
     "effect_unresolved",
@@ -113,6 +117,7 @@ Tag = Literal[
     "state_capped",
     "state_unnarrated",
     "time_stop",
+    "external_outcome_unconfirmed",
 ]
 TAGS: frozenset[str] = frozenset(
     {
@@ -123,8 +128,11 @@ TAGS: frozenset[str] = frozenset(
         STATE_CAPPED,
         STATE_UNNARRATED,
         TIME_STOP,
+        EXTERNAL_OUTCOME_UNCONFIRMED,
     }
 )
+PROSE_TAGS: frozenset[str] = frozenset({STATE_UNNARRATED, EXTERNAL_OUTCOME_UNCONFIRMED})
+"""The tags whose repair rewrites the prose only: the beat keeps its declared effects."""
 REFUSED_TAGS: frozenset[str] = frozenset({STATE_CONSTRAINT, STATE_UNPERMITTED})
 """The tags of a refused effect: the deterministic rung narrates the attempt as failing."""
 
@@ -611,6 +619,171 @@ def span_of(text: str, state: str, terms: Sequence[Terms]) -> tuple[int, int] | 
     return None
 
 
+# -- an external change's outcome (#209) --------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Pending:
+    """A change the turn asks an external value's owner to apply (FR-EXT-9): the State, its
+    scope key, the words prose names it by, its value as pinned for the turn and the value the
+    change would leave (``Undefined``: not known)."""
+
+    state: str
+    state_id: str | None
+    scope_key: str | None
+    words: tuple[str, ...]
+    current: Value | UndefinedType = Undefined
+    leaves: Value | UndefinedType = Undefined
+
+
+OUTCOME_NOUNS: tuple[str, ...] = (
+    "purchase",
+    "payment",
+    "transaction",
+    "sale",
+    "transfer",
+    "trade",
+    "deal",
+    "order",
+    "balance",
+    "account",
+    "withdrawal",
+    "deposit",
+)
+"""What a sentence names when it speaks of an exchange rather than of the value itself."""
+OUTCOME_VERBS: tuple[str, ...] = (
+    "succeeded",
+    "succeeds",
+    "successful",
+    "successfully",
+    "went through",
+    "goes through",
+    "gone through",
+    "completed",
+    "completes",
+    "is complete",
+    "confirmed",
+    "approved",
+    "processed",
+    "cleared",
+    "deducted",
+    "debited",
+    "credited",
+    "is done",
+)
+"""The words of an exchange's outcome ("the purchase went through")."""
+NOW_CUES: tuple[str, ...] = ("now", "left", "remaining", "remains", "down to", "up to")
+"""The words of a value's state after a change ("your balance is now 250")."""
+_NUMBER = re.compile(r"(?<![\w.])\d[\d,]*(?:\.\d+)?(?![\w])")
+
+
+def _numbers(sentence: str) -> list[Decimal]:
+    found: list[Decimal] = []
+    for hit in _NUMBER.finditer(sentence):
+        try:
+            found.append(Decimal(hit.group(0).replace(",", "")))
+        except ArithmeticError:  # pragma: no cover - the pattern is a decimal literal
+            continue
+    return found
+
+
+def _asserts_outcome(sentence: str, request: Pending) -> bool:
+    """Whether ``sentence`` says ``request``'s change happened (see ``unconfirmed_outcomes``)."""
+    names = _word_pattern(request.words).search(sentence) is not None if request.words else False
+    exchange = _word_pattern(OUTCOME_NOUNS).search(sentence) is not None
+    if (names or exchange) and _word_pattern(OUTCOME_VERBS).search(sentence) is not None:
+        return True
+    if not (names or exchange):
+        return False
+    amounts = [n for n in _numbers(sentence) if n != request.current]
+    if not amounts:
+        return False
+    if isinstance(request.leaves, Decimal) and request.leaves in amounts:
+        return True
+    return _word_pattern(NOW_CUES).search(sentence) is not None
+
+
+OUTCOME_KINDS: frozenset[str] = frozenset({"say", "do", "narration"})
+"""The beats whose prose is read for an external change's outcome."""
+
+
+def outcome_spans(text: str, pending: Sequence[Pending]) -> list[tuple[Pending, tuple[int, int]]]:
+    """The sentences of ``text`` asserting the outcome of one of ``pending``'s changes, each with
+    the change it is about: a sentence naming the State (or an exchange: a purchase, a payment,
+    the balance) with an outcome word ("went through", "succeeded", "confirmed"), or with an
+    amount other than the pinned value that is the value the change would leave, or that a
+    "now"/"left" cue gives as the value after it. A question, a negation, a conditional or a
+    modal (#148's cues) suppresses the sentence; so it never fires on an attempt ("you hand over
+    the coins") or a hope ("if the payment goes through")."""
+    found: list[tuple[Pending, tuple[int, int]]] = []
+    if not pending:
+        return found
+    for start, end in sentences(text):
+        sentence = text[start:end]
+        if sentence.rstrip().endswith("?") or suppressed(sentence):
+            continue
+        named = [
+            p for p in pending if p.words and _word_pattern(p.words).search(sentence) is not None
+        ]
+        for request in named or list(pending):
+            if _asserts_outcome(sentence, request):
+                found.append((request, (start, end)))
+                break
+    return found
+
+
+def unconfirmed_outcomes(
+    beat: int, kind: str, text: str, pending: Sequence[Pending]
+) -> list[Finding]:
+    """#209 (FR-EXT-15): one ``external_outcome_unconfirmed`` finding per sentence of ``text``
+    (beat ``beat`` of ``kind``) that asserts a requested change's outcome (``outcome_spans``):
+    no outcome is known while the turn is generated, so the beat may narrate the attempt only."""
+    if kind not in OUTCOME_KINDS:
+        return []
+    return [
+        Finding(
+            EXTERNAL_OUTCOME_UNCONFIRMED,
+            beat,
+            request.state,
+            request.state_id,
+            request.scope_key,
+            span=span,
+            current=request.current,
+            attempted=request.leaves,
+        )
+        for request, span in outcome_spans(text, pending)
+    ]
+
+
+def attempt_text(kind: str, actor: str | None, definition: StateDefinition | None) -> str:
+    """The deterministic rung's text for a beat whose every sentence asserted an unconfirmed
+    external outcome: the exchange narrated as an attempt, nothing said about how it ends."""
+    name = "it" if definition is None else f"the {label(definition)}"
+    if kind == "say":
+        return "Here, take it."
+    if kind == "do" and actor:
+        return f"{actor} offers {name}."
+    return f"{name[0].upper()}{name[1:]} is offered."
+
+
+def pending_line(payload: Mapping[str, Any], holder: str | None = None) -> str:
+    """One ``pending_outcomes`` line of the narrator's inputs (#209): a change asked of the game
+    (a ``requested_effect`` event's payload) whose outcome it has not reported, with whose value
+    it is (``holder``, a character's name) and why."""
+    name = str(payload.get("state", "")).replace("_", " ")
+    reason = str(payload.get("reason", ""))
+    if payload.get("kind") == "time_advance":
+        change = f"the clock forward by {payload.get('minutes')} minutes"
+    elif payload.get("delta") is not None:
+        delta = number(payload["delta"])
+        sign = "+" if isinstance(delta, Decimal) and delta > 0 else ""
+        change = f"{name} {sign}{payload['delta']}"
+    else:
+        change = f"{name} set to {payload.get('value')}"
+    held = f" ({holder}'s)" if holder else ""
+    return f"{change}{held}: {reason}" if reason else f"{change}{held}"
+
+
 # -- what a finding asks -----------------------------------------------------------------------
 
 
@@ -694,6 +867,12 @@ def constraint_line(finding: Finding, definition: StateDefinition | None, *, nar
             f"Name what this {name} pays for: declare the effect's `consideration` (the item "
             "the payment buys), or narrate the exchange of the item in the same beat, or remove "
             "the payment."
+        )
+    if finding.tag == EXTERNAL_OUTCOME_UNCONFIRMED:
+        return (
+            f"The game decides whether this change to {name} happens, and it has not said yet: "
+            "narrate only the attempt (handing it over, asking for it), never that it went "
+            f"through or what {name} is now. Keep the declared effect."
         )
     if finding.tag == STATE_UNNARRATED:
         return (
@@ -859,9 +1038,15 @@ __all__ = [
     "ANY_CHARACTER",
     "CHARACTER_SOURCE",
     "EFFECT_UNRESOLVED",
+    "EXTERNAL_OUTCOME_UNCONFIRMED",
     "EXTERNAL_VALUE",
     "INVALID_EFFECT",
     "NARRATED_KINDS",
+    "NOW_CUES",
+    "OUTCOME_KINDS",
+    "OUTCOME_NOUNS",
+    "OUTCOME_VERBS",
+    "PROSE_TAGS",
     "REFUSED_TAGS",
     "STATE_CAPPED",
     "STATE_CONSTRAINT",
@@ -875,10 +1060,12 @@ __all__ = [
     "Key",
     "Mention",
     "Passed",
+    "Pending",
     "Planned",
     "Tag",
     "Terms",
     "amount_before",
+    "attempt_text",
     "change_cue",
     "character_line",
     "constraint_line",
@@ -889,12 +1076,15 @@ __all__ = [
     "mentions",
     "narrated",
     "narrator_line",
+    "outcome_spans",
+    "pending_line",
     "refusal_text",
     "scope_of",
     "span_of",
     "suppressed",
     "syntax",
     "terms_of",
+    "unconfirmed_outcomes",
     "verb_hit",
     "visible_to_characters",
 ]

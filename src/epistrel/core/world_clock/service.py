@@ -13,7 +13,13 @@
 - ``update_clock(db, story_id, patch, *, principal)`` changes its settings: a story
   configuration write through ``core.states.update_definition`` (interpretive members, and
   ``pacing_table`` prospective; one ``config_changes`` row each, setting
-  ``state:world_clock.<member>``). ``mode = external`` waits for #209's providers (422).
+  ``state:world_clock.<member>``). #209: ``mode = external`` makes the clock a provider's
+  value (``core.world_clock.external_mode``): ``provider_id`` and ``external_value_name``, or
+  ``provider_value = "<provider>.<value>"`` for both, name a registered provider's ``number``
+  value (422 ``validation_error`` otherwise) the story is bound to (422 ``provider_unbound``);
+  the clock's ``owner``, ``provider_id`` and ``external_value_name`` change with ``mode``
+  (interpretive members, one ``config_changes`` row each), and leaving ``external`` makes it
+  the story's again. An external clock's advance is 422 ``clock_external``.
 - ``turn_clock(conn, story_id, turn, variant)`` is the clock before and after a committed turn
   (``respond``'s ``clock``; ``None`` with the clock off).
 """
@@ -29,9 +35,9 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, model_v
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import states
-from epistrel.core.enums import ClockMode, Provenance, StateChangeSource
-from epistrel.core.errors import ClockBackward, ClockUnanchored, InvalidRequest
+from epistrel.core import providers, states
+from epistrel.core.enums import ClockMode, Provenance, StateChangeSource, StateOwner
+from epistrel.core.errors import ClockBackward, ClockUnanchored, InvalidRequest, ProviderUnbound
 from epistrel.core.events.types import ClockAdvanced as ClockAdvancedEvent
 from epistrel.core.membership import POSITION_MAX, Position
 from epistrel.core.states.model import REASON_MAX, WORLD_CLOCK
@@ -43,6 +49,7 @@ from epistrel.core.world_clock import (
     anchor_at,
     clock_at,
     clock_level,
+    external_mode,
     require_clock,
     settings,
 )
@@ -58,8 +65,13 @@ PATCHABLE: tuple[str, ...] = (
     "time_awareness",
     "bands",
     "calendar",
+    "provider_value",
+    "provider_id",
+    "external_value_name",
 )
-"""The settings ``PATCH /clock`` takes."""
+"""The settings ``PATCH /clock`` takes (#209: the provider of an ``external`` clock)."""
+PROVIDER_VALUE = re.compile(r"^([^.\s]+)\.([^.\s]+)$")
+"""``provider_value``: ``"<provider>.<value>"``."""
 
 
 class ClockAdvanceRequest(BaseModel):
@@ -94,6 +106,15 @@ class ClockView:
     level: str
     mode: str
     settings: dict[str, Any]
+
+
+def _provider_members(definition: states.StateDefinition) -> dict[str, Any]:
+    """#209: an external clock's ``provider_id`` and ``external_value_name`` (``None``: the
+    story's clock)."""
+    return {
+        "provider_id": definition.provider_id,
+        "external_value_name": definition.external_value_name,
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +163,7 @@ def _settings_document(found: states.ClockSettings) -> dict[str, Any]:
 async def read_clock(db: AsyncEngine, story_id: str) -> ClockView:
     """The clock as the story stands (see the module docstring)."""
     async with db.connect() as conn:
+        definition = await states.definition(conn, story_id, WORLD_CLOCK)
         found = await settings(conn, story_id)
         value = await clock_at(conn, story_id, HEAD)
         level = await clock_level(conn, story_id)
@@ -151,7 +173,7 @@ async def read_clock(db: AsyncEngine, story_id: str) -> ClockView:
         anchor=value.anchor,
         level=level or "off",
         mode=found.mode.value,
-        settings=_settings_document(found),
+        settings={**_settings_document(found), **_provider_members(definition)},
     )
 
 
@@ -184,6 +206,8 @@ async def _precheck(
     time of day the anchor cannot place, and a backward target (the commit checks again).
     Answers the target offset of a time of day (``None`` for any other advance)."""
     await require_clock(conn, story_id)
+    # #209: an external clock is the provider's (422 clock_external, nothing written).
+    external_mode.refuse_advance(await states.definition(conn, story_id, WORLD_CLOCK), story_id)
     current = (await clock_at(conn, story_id, HEAD)).offset_minutes
     if isinstance(request.to, str):
         return await _time_of_day(conn, story_id, request.to, current)
@@ -277,15 +301,18 @@ async def update_clock(
             f"{unknown[0]!r} is not a clock setting PATCH /clock changes",
             {"field": unknown[0], "reason": "unknown"},
         )
-    if patch.get("mode") == ClockMode.EXTERNAL.value:
-        raise InvalidRequest(
-            "an external clock needs a registered provider (#209)",
-            {"field": "mode", "reason": "external_unavailable"},
-        )
+    wanted = dict(patch)
+    provider_id, value_name = _provider_of(wanted)
     async with db.begin() as conn:
         before = await states.definition(conn, story_id, WORLD_CLOCK)
+        owner = await _owner_patch(conn, story_id, before, wanted, provider_id, value_name)
         after = await states.update_definition(
-            conn, story_id, WORLD_CLOCK, dict(patch), principal=principal
+            conn,
+            story_id,
+            WORLD_CLOCK,
+            {**wanted, **owner},
+            principal=principal,
+            clock_owner=bool(owner),
         )
         row = (
             await conn.execute(
@@ -296,11 +323,85 @@ async def update_clock(
         ).one()
     assert after.clock is not None  # noqa: S101 - the clock's definition carries its settings
     return ClockSettingsWrite(
-        settings=_settings_document(after.clock),
+        settings={**_settings_document(after.clock), **_provider_members(after)},
         config_revision=int(row.config_revision),
         timeline_revision=int(row.timeline_revision),
         changed=after.document() != before.document(),
     )
+
+
+def _provider_of(patch: dict[str, Any]) -> tuple[str | None, str | None]:
+    """#209: the provider and value a ``PATCH`` names (``provider_value``, or ``provider_id``
+    and ``external_value_name``), taken out of ``patch``."""
+    shorthand = patch.pop("provider_value", None)
+    provider_id = patch.pop("provider_id", None)
+    value_name = patch.pop("external_value_name", None)
+    if shorthand is None:
+        return provider_id, value_name
+    found = PROVIDER_VALUE.match(str(shorthand))
+    if found is None:
+        raise InvalidRequest(
+            'provider_value is "<provider>.<value>"',
+            {"field": "provider_value", "reason": "format"},
+        )
+    if (provider_id is not None and provider_id != found.group(1)) or (
+        value_name is not None and value_name != found.group(2)
+    ):
+        raise InvalidRequest(
+            "provider_value names another provider or value than provider_id and "
+            "external_value_name",
+            {"field": "provider_value", "reason": "conflict"},
+        )
+    return found.group(1), found.group(2)
+
+
+async def _owner_patch(
+    conn: AsyncConnection,
+    story_id: str,
+    before: states.StateDefinition,
+    patch: dict[str, Any],
+    provider_id: str | None,
+    value_name: str | None,
+) -> dict[str, Any]:
+    """#209: the clock's owner members a ``PATCH`` changes (see the module docstring): to the
+    named provider's ``number`` value for ``mode = external`` (or a new provider for an
+    external clock), back to the story's on leaving ``external``; empty otherwise."""
+    mode = patch.get("mode")
+    was_external = before.owner is StateOwner.EXTERNAL
+    naming = provider_id is not None or value_name is not None
+    external = mode == ClockMode.EXTERNAL.value or (mode is None and was_external and naming)
+    if not external:
+        if naming:
+            raise InvalidRequest(
+                "a clock names a provider only in external mode",
+                {"field": "mode", "reason": "not_external"},
+            )
+        if mode is not None and was_external:
+            return {
+                "owner": StateOwner.STORY.value,
+                "provider_id": None,
+                "external_value_name": None,
+            }
+        return {}
+    provider_id = provider_id or before.provider_id
+    value_name = value_name or before.external_value_name
+    if provider_id is None or value_name is None:
+        raise InvalidRequest(
+            "an external clock names its provider's value: provider_value "
+            '"<provider>.<value>", or provider_id and external_value_name',
+            {"field": "provider_value", "reason": "required"},
+        )
+    await providers.check_external_value(conn, provider_id, value_name, external_mode.MANIFEST_TYPE)
+    if await providers.find_binding(conn, story_id, provider_id) is None:
+        raise ProviderUnbound(
+            f"the story is not bound to provider {provider_id!r}",
+            {"story_id": story_id, "providers": [provider_id]},
+        )
+    return {
+        "owner": StateOwner.EXTERNAL.value,
+        "provider_id": provider_id,
+        "external_value_name": value_name,
+    }
 
 
 async def turn_clock(

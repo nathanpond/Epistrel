@@ -61,6 +61,22 @@ scope_key, old_value, new_value, reason, source, contingency, status}``, a ``hid
 only for ``omniscient`` (C-12's rule; history's turn-level ``state_effects`` reads the same,
 ``core.states.turn_effects``).
 
+**Read-only external values** (#209, FR-EXT-9, FR-RESP-7's external half): an effect on a State
+owned by a provider that is not ``write_capable`` (``Book.read_only``; a transfer's own side, or
+its other side when that is one) is never applied: the turn stages a ``requested_effect`` event
+(``input``; ``{state, scope_key, delta|value, reason, effect_id, status: requested}``) at the
+declaring beat (``requested_of``, ``stage_requested``) and writes no ``state_changes`` row; the
+response lists it with ``owner: external``, ``status: pending`` and its ``effect_id`` (the key a
+consumer's outcome report names, #217). Its dry-run runs against the value pinned for the turn
+(``Book.pin``, #205), and the rebase re-check leaves it out (nothing of it is committed). A
+beat asserting such a change's outcome ("the purchase went through", "your balance is now
+250") is ``external_outcome_unconfirmed`` (``core.states.effects.unconfirmed_outcomes``),
+repaired to the attempt; the composed message is checked the same way (``outcome_check``,
+#152). The next turns' narrator inputs list the requests of the last ``PENDING_TURNS`` turns
+with no recorded outcome (``pending_outcomes``); no character's context does (FR-EXT-21 (e)).
+An external world clock's pacing and skips are requested the same way (``kind:
+time_advance``, ``time_requests``).
+
 Log lines carry counts only (invariant 3).
 """
 
@@ -77,12 +93,22 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from epistrel.core import providers as core_providers
 from epistrel.core import states
 from epistrel.core.concurrency import RebaseCheckFailed
-from epistrel.core.enums import StateChangeKind, StateChangeSource, StateOwner
+from epistrel.core.enums import (
+    Provenance,
+    StateChangeKind,
+    StateChangeSource,
+    StateOwner,
+    StateScope,
+    StateVisibility,
+)
 from epistrel.core.epistemic.conflicts import Conflict, StateClaim, detect_state_conflicts
 from epistrel.core.errors import ModuleOff, StateNotFound
-from epistrel.core.membership import Position, step_of
+from epistrel.core.events.types import REQUESTED_EFFECT, RequestedEffect
+from epistrel.core.ids import new_ulid
+from epistrel.core.membership import Position, active_operation, step_of
 from epistrel.core.profiles import schema
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.propositions.vocabulary import STATE_VALUE
@@ -101,8 +127,8 @@ from epistrel.core.states import preconditions as action_preconditions
 from epistrel.core.states import verify as state_verify
 from epistrel.core.states.authorize import Evidence, Source
 from epistrel.core.states.effects import Finding, Planned
-from epistrel.core.states.model import Value, to_json
-from epistrel.core.tables import characters, entities
+from epistrel.core.states.model import WORLD_CLOCK, Value, number, to_json
+from epistrel.core.tables import characters, entities, events, operations
 from epistrel.core.turns.beats import TurnBeat
 from epistrel.core.verify.detect import DetectedClaim
 from epistrel.core.verify.other_agent import PLAYER_NARRATOR
@@ -115,6 +141,7 @@ from epistrel.orchestrator.verify.verifier import VerifyResult
 if TYPE_CHECKING:
     from epistrel.core.epistemic.stage import TurnStage
     from epistrel.core.events.operation import Operation
+    from epistrel.core.world_clock.timing import TurnTiming
 
 log = logging.getLogger(__name__)
 
@@ -144,6 +171,18 @@ class Book:
     clock: Any = None
     """#194: the world clock as the attempt starts (``orchestrator.structured.clocking.
     ClockRead``; ``None``: the story does not run it): the render schemas read its level."""
+    read_only: frozenset[str] = frozenset()
+    """#209: the externally owned States whose provider is not ``write_capable``: an effect on
+    one is requested of the consumer, never applied (``requested_of``)."""
+
+    def pin(self, external: Mapping[tuple[str, str | None], Value | None]) -> None:
+        """#205, #209: the turn's pinned external values (``PinnedReads.by_name``), which the
+        dry-run reads as an externally owned State's value at the turn's start (``None``:
+        unknown)."""
+        self.external = dict(external)
+        for key, value in external.items():
+            if key[0] in self.definitions:
+                self.values[key] = Undefined if value is None else value
 
     @property
     def clock_level(self) -> str | None:
@@ -229,6 +268,13 @@ async def load(conn: AsyncConnection, story_id: str, settings: ProfileSettings) 
         select(characters.c.id, characters.c.name).where(characters.c.story_id == story_id)
     )
     book.names = {str(r.id): str(r.name) for r in rows}
+    read_only: set[str] = set()
+    for d in found:
+        if d.owner is StateOwner.EXTERNAL and d.provider_id is not None:
+            provider = await core_providers.find_provider(conn, d.provider_id)
+            if provider is None or not provider.write_capable:
+                read_only.add(d.name)
+    book.read_only = frozenset(read_only)
     tracked = [d.entity_id for d in found if d.entity_id is not None]
     if tracked:
         named = await conn.execute(
@@ -499,6 +545,7 @@ def findings(
             book.definitions,
         )
     found = _merged(book, found, completeness_of(book, beats, stage, claims), frozenset(by_number))
+    found += outcome_findings(book, beats, stage)
     if only is not None:
         found = [f for f in found if f.beat in only]
     return [_decorated(book, by_number[f.beat], f) for f in found]
@@ -511,12 +558,291 @@ def _decorated(book: Book, beat: TurnBeat, finding: Finding) -> Finding:
     if span is None:
         span = rules.span_of(beat.text, finding.state, book.terms(narrator=narrator))
     actor = None if beat.character_id is None else book.names.get(beat.character_id)
+    refusal = (
+        rules.attempt_text(beat.kind, actor, definition)
+        if finding.tag == rules.EXTERNAL_OUTCOME_UNCONFIRMED
+        else rules.refusal_text(beat.kind, actor, definition, finding.constraint)
+    )
     return replace(
         finding,
         span=span,
         line=rules.constraint_line(finding, definition, narrator=narrator),
-        refusal=rules.refusal_text(beat.kind, actor, definition, finding.constraint),
+        refusal=refusal,
     )
+
+
+# -- read-only external values (#209) ------------------------------------------------------------
+
+
+PENDING_TURNS = 3
+"""How many earlier turns' unanswered requests the narrator's inputs list (``pending_outcomes``)."""
+TIME_ADVANCE = "time_advance"
+"""A requested external clock advance's ``kind``."""
+
+
+@dataclass(frozen=True, slots=True)
+class Requested:
+    """One change the turn asks the consumer to apply (see the module docstring): its stable
+    ``effect_id``, ``kind`` (``change``, ``transfer``, ``time_advance``), the State and scope key,
+    the change (``delta`` or ``value``; ``minutes`` for a clock advance), the render's reason,
+    the declaring beat and step, the value pinned for the turn (``current``, for the response)
+    and whether the State is ``hidden`` (its request is listed for ``omniscient`` only)."""
+
+    effect_id: str
+    kind: str
+    state: str
+    scope_key: str | None
+    reason: str
+    beat: int
+    delta: Any = None
+    value: Any = None
+    minutes: int | None = None
+    step: int = 0
+    current: Any = None
+    hidden: bool = False
+
+    def payload(self) -> RequestedEffect:
+        """The ``requested_effect`` event's payload."""
+        return RequestedEffect(
+            effect_id=self.effect_id,
+            kind=self.kind,
+            state=self.state,
+            scope_key=self.scope_key,
+            delta=self.delta,
+            value=self.value,
+            minutes=self.minutes,
+            reason=self.reason,
+        )
+
+    def response(self) -> dict[str, Any]:
+        """The response's ``state_effects`` entry: pending, owned by the consumer."""
+        row: dict[str, Any] = {
+            "state": self.state,
+            "scope_key": self.scope_key,
+            "old_value": self.current,
+            "new_value": None,
+            "reason": self.reason,
+            "source": StateChangeSource.TURN.value,
+            "contingency": "unconditional",
+            "status": "pending",
+            "owner": StateOwner.EXTERNAL.value,
+            "effect_id": self.effect_id,
+        }
+        if self.kind == TIME_ADVANCE:
+            row["kind"] = TIME_ADVANCE
+            row["minutes"] = self.minutes
+        elif self.delta is not None:
+            row["delta"] = self.delta
+        else:
+            row["value"] = self.value
+        return row
+
+
+def _requested(
+    book: Book,
+    definition: StateDefinition,
+    scope_key: str | None,
+    p: Planned,
+    *,
+    kind: str,
+    delta: Any = None,
+    value: Any = None,
+) -> Requested:
+    current = book.values.get((definition.name, scope_key), Undefined)
+    return Requested(
+        effect_id=new_ulid(),
+        kind=kind,
+        state=definition.name,
+        scope_key=scope_key,
+        reason=p.effect.reason,
+        beat=p.beat,
+        delta=delta,
+        value=value,
+        current=None if isinstance(current, UndefinedType) else to_json(current),
+        hidden=definition.visibility is not StateVisibility.PLAYER_VISIBLE,
+    )
+
+
+def requested_of(book: Book, beats: Sequence[TurnBeat]) -> list[Requested]:
+    """The changes ``beats``' surviving effects ask the consumer to apply: each effect on a
+    read-only external State, and a transfer's other side when that is one (see the module
+    docstring), in beat order."""
+    if not book.on or not book.read_only:
+        return []
+    found: list[Requested] = []
+    for p in planned(beats):
+        definition = book.definitions.get(p.effect.state)
+        if definition is None:
+            continue
+        own_scope = rules.scope_of(p.effect, definition, p.actor)
+        transfer = p.effect.kind == permission.TRANSFER
+        if definition.name in book.read_only:
+            found.append(
+                _requested(
+                    book,
+                    definition,
+                    own_scope,
+                    p,
+                    kind="transfer" if transfer else "change",
+                    delta=p.effect.delta,
+                    value=None if p.effect.delta is not None else p.effect.value,
+                )
+            )
+        other = p.effect.counterparty
+        if not transfer or other is None or p.effect.delta is None:
+            continue
+        name, scope_key, declared = other
+        other_definition = book.definitions.get(name)
+        if other_definition is None or name not in book.read_only:
+            continue
+        moved = declared if declared is not None else to_json(-Decimal(str(p.effect.delta)))
+        found.append(
+            _requested(
+                book,
+                other_definition,
+                None if other_definition.scope is StateScope.STORY else scope_key,
+                p,
+                kind="transfer",
+                delta=moved,
+            )
+        )
+    return found
+
+
+def time_requests(timing: TurnTiming) -> list[Requested]:
+    """An external world clock's advances for the turn (#194's pacing increments and declared
+    skips, #196's stops already cut them) as requests of kind ``time_advance`` (FR-CLOCK-5): the
+    consumer's clock is never moved by Epistrel."""
+    return [
+        Requested(
+            effect_id=new_ulid(),
+            kind=TIME_ADVANCE,
+            state=WORLD_CLOCK,
+            scope_key=None,
+            reason=a.reason,
+            beat=a.beat_position,
+            minutes=int(a.minutes),
+            step=a.step_position,
+        )
+        for a in timing.advances
+        if a.minutes
+    ]
+
+
+def stage_requested(op: Operation, requested: Sequence[Requested]) -> list[Requested]:
+    """Stage one ``requested_effect`` event per request, at its beat and step (an effect's
+    step is its beat's, ``core.membership.step_of``); answers them with their steps."""
+    staged: list[Requested] = []
+    for r in requested:
+        step = r.step if r.kind == TIME_ADVANCE else step_of(r.beat, op.operation_id)
+        found = replace(r, step=step)
+        op.append(
+            REQUESTED_EFFECT,
+            found.payload(),
+            provenance=Provenance.ENGINE,
+            character_id=None,
+            beat=found.beat,
+            step=found.step,
+        )
+        staged.append(found)
+    return staged
+
+
+def is_requested(book: Book, p: Planned) -> bool:
+    """Whether ``p``'s own side is requested of the consumer, never applied."""
+    return p.effect.state in book.read_only
+
+
+def pending_of(
+    book: Book, beats: Sequence[TurnBeat], stage: TurnStage | None
+) -> list[rules.Pending]:
+    """The turn's requested changes as ``core.states.effects`` reads their outcome in prose."""
+    if not book.on or not book.read_only:
+        return []
+    found: list[rules.Pending] = []
+    for p in planned(beats, stage):
+        definition = book.definitions.get(p.effect.state)
+        if definition is None or definition.name not in book.read_only:
+            continue
+        key = (definition.name, rules.scope_of(p.effect, definition, p.actor))
+        current = book.values.get(key, Undefined)
+        leaves: Value | UndefinedType = Undefined
+        if p.effect.delta is not None and isinstance(current, Decimal):
+            leaves = current + Decimal(str(p.effect.delta))
+        elif p.effect.delta is None and p.effect.value is not None:
+            leaves = number(p.effect.value) or Undefined
+        found.append(
+            rules.Pending(
+                definition.name,
+                definition.id,
+                key[1],
+                rules.terms_of(definition, book.entity_names).words,
+                current,
+                leaves,
+            )
+        )
+    return found
+
+
+def outcome_findings(
+    book: Book, beats: Sequence[TurnBeat], stage: TurnStage | None = None
+) -> list[Finding]:
+    """Each beat's sentences asserting a requested change's outcome (FR-EXT-15; see the
+    module docstring)."""
+    pending = pending_of(book, beats, stage)
+    if not pending:
+        return []
+    found: list[Finding] = []
+    for b in beats:
+        if b.beat <= 1 or b.attempt:
+            continue
+        found += rules.unconfirmed_outcomes(b.beat, b.kind, b.text, pending)
+    return found
+
+
+def outcome_check(
+    book: Book, beats: Sequence[TurnBeat]
+) -> Callable[[str], list[tuple[int, int]]] | None:
+    """#152's check of a composed message (``orchestrator.compose.compose``): the spans of the
+    text asserting a requested change's outcome; ``None`` when the turn requests none."""
+    pending = pending_of(book, beats, None)
+    if not pending:
+        return None
+
+    def check(text: str) -> list[tuple[int, int]]:
+        return [span for _, span in rules.outcome_spans(text, pending)]
+
+    return check
+
+
+async def pending_outcomes(
+    conn: AsyncConnection, story_id: str, turn: int, names: Mapping[str, str]
+) -> tuple[str, ...]:
+    """The narrator's ``pending_outcomes`` for turn ``turn`` (FR-EXT-9, FR-EXT-21 (e)): the
+    requests of the ``PENDING_TURNS`` turns before it on the active timeline with no recorded
+    outcome (none is recorded before #217's intake, so every one), oldest first, one line each
+    (``core.states.effects.pending_line``; ``names`` the cast's names by id). A hint for the
+    narrator only; never a character's."""
+    e = events.c
+    rows = await conn.execute(
+        select(e.payload)
+        .select_from(events.join(operations, operations.c.operation_id == e.operation_id))
+        .where(
+            e.story_id == story_id,
+            e.type == REQUESTED_EFFECT,
+            e.narrative_turn >= turn - PENDING_TURNS,
+            e.narrative_turn < turn,
+            active_operation(operations),
+        )
+        .order_by(e.seq)
+    )
+    lines = []
+    for row in rows:
+        payload = dict(row.payload or {})
+        scope_key = payload.get("scope_key")
+        holder = names.get(str(scope_key)) if scope_key else None
+        lines.append(rules.pending_line(payload, holder))
+    return tuple(lines)
 
 
 _AMOUNT = r"(?<![\w.,]){}(?![\w]|[.,]\d)"
@@ -976,8 +1302,14 @@ async def apply_declared(
         own = _change(op, p, definition, role)
         other, counterparty = _other_change(own, p, book)
         written: list[states.Applied] | states.Applied | states.Violation
+        if is_requested(book, p):
+            # #209: requested of the consumer (``requested_of``), never applied; a transfer's
+            # tracked other side is the story's own and is written alone.
+            if other is None:
+                continue
+            own, other, counterparty = other, None, StateOwner.EXTERNAL.value
         try:
-            if p.effect.kind == permission.TRANSFER:
+            if p.effect.kind == permission.TRANSFER and own.state == definition.name:
                 written = await states.apply_transfer(conn, op, own, other)
             else:
                 written = await states.apply_change(conn, op, own)
@@ -989,8 +1321,8 @@ async def apply_declared(
         done.append(
             Committed(
                 p.beat,
-                definition.name,
-                rules.scope_of(p.effect, definition, p.actor),
+                own.state,
+                own.scope_key,
                 found,
                 other=rest[0] if rest else None,
                 counterparty=counterparty,
@@ -1019,7 +1351,8 @@ _RECORDED: dict[int, tuple[weakref.ref[StructuredReadSet], _Recorded]] = {}
 def remember(read_set: StructuredReadSet, book: Book, beats: Sequence[TurnBeat]) -> None:
     """Record the turn's State reads for its attempt: the effects it will commit and the
     interpretive members of each State they touch (``recheck``)."""
-    found = tuple(planned(beats))
+    # #209: a requested change commits nothing, so the rebase re-check leaves it out.
+    found = tuple(p for p in planned(beats) if not is_requested(book, p))
     touched = {p.effect.state for p in found}
     key = id(read_set)
     _RECORDED[key] = (
@@ -1112,6 +1445,7 @@ async def committed(
     *,
     omniscient: bool,
     done: Sequence[Committed] = (),
+    requested: Sequence[Requested] = (),
 ) -> list[dict[str, Any]]:
     """The response's ``state_effects`` (FR-RESP-7; see the module docstring); ``done`` the
     commit's effects, whose notes (#188: ``capped`` with the ``declared`` amount, a transfer's
@@ -1129,6 +1463,8 @@ async def committed(
             row["kind"] = e["kind"]
         row.update(notes.get(e["change_id"], {}))
         out.append(row)
+    # #209: the changes requested of the consumer, pending (a hidden State's for omniscient).
+    out += [r.response() for r in requested if omniscient or not r.hidden]
     return out
 
 
@@ -1148,9 +1484,12 @@ def report(book: Book, beats: Sequence[TurnBeat], repaired: Sequence[Finding]) -
 
 
 __all__ = [
+    "PENDING_TURNS",
     "STATE_EFFECTS",
+    "TIME_ADVANCE",
     "Book",
     "Committed",
+    "Requested",
     "apply_declared",
     "asserter_of",
     "breaks",
@@ -1163,9 +1502,14 @@ __all__ = [
     "evidence_of",
     "findings",
     "folded",
+    "is_requested",
     "is_state_claim",
     "level_of",
     "load",
+    "outcome_check",
+    "outcome_findings",
+    "pending_of",
+    "pending_outcomes",
     "planned",
     "read_preconditions",
     "recheck",
@@ -1174,9 +1518,12 @@ __all__ = [
     "refusal_of",
     "remember",
     "report",
+    "requested_of",
     "source_of",
+    "stage_requested",
     "state_claims",
     "state_conflicts",
     "tie_break_book",
     "tie_break_values",
+    "time_requests",
 ]

@@ -74,6 +74,14 @@ constraint lines (#68). The ``user`` block is the player input. -#}
 
 {% endif %}
 {% include "external_data.j2" %}
+{% if pending_outcomes %}
+## Awaiting the game
+The game was asked to make these changes and has not reported whether they happened; never narrate one as done:
+{% for line in pending_outcomes %}
+- {{ line }}
+{% endfor %}
+
+{% endif %}
 {% if open_references %}
 ## Settle now
 This turn left these open; narrate what settles each one, naming who or what it is, and declare it as a proposition:

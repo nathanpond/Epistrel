@@ -969,6 +969,10 @@ async def define_state(
 # -- updating a definition ---------------------------------------------------------------
 
 
+CLOCK_OWNER_MEMBERS: tuple[str, ...] = ("owner", "provider_id", "external_value_name")
+"""#209: the clock's members ``mode = external`` changes (``update_definition(clock_owner=)``)."""
+
+
 def _members(name: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """``(interpretive, prospective)``: the members an update of State ``name`` may change."""
     if name == WORLD_CLOCK:
@@ -1007,13 +1011,20 @@ async def update_definition(
     patch: Mapping[str, Any],
     *,
     principal: str,
+    clock_owner: bool = False,
 ) -> StateDefinition:
     """Change State ``name``'s declaration (see the module docstring); answers the declaration
     as it now stands. A patch that changes nothing writes nothing. The world clock's members
     are its settings (``CLOCK_INTERPRETIVE_MEMBERS``, ``CLOCK_PROSPECTIVE_MEMBERS``; #193's
-    ``PATCH /clock``); its State members are fixed."""
+    ``PATCH /clock``); its State members are fixed, but for ``clock_owner`` (#209's external
+    mode, ``core.world_clock.service.update_clock`` only): its ``owner``, ``provider_id`` and
+    ``external_value_name`` change too, as interpretive members."""
     interpretive, prospective = _members(name)
+    owners: tuple[str, ...] = CLOCK_OWNER_MEMBERS if clock_owner and name == WORLD_CLOCK else ()
+    interpretive = (*interpretive, *owners)
     for member in patch:
+        if member in owners:
+            continue
         if member in IMMUTABLE_MEMBERS or (
             name == WORLD_CLOCK and member not in (*interpretive, *prospective)
         ):
@@ -1040,7 +1051,8 @@ async def update_definition(
     before = current.document()
     after = merge_patch(before, patch)
     for member in IMMUTABLE_MEMBERS:
-        after[member] = before[member]
+        if member not in owners:
+            after[member] = before[member]
     # A State never becomes, or stops being, derived (#192): a derived State stores no change.
     if (current.rules.get("kind") == DERIVED) != (
         (after.get("rules") or {}).get("kind") == DERIVED

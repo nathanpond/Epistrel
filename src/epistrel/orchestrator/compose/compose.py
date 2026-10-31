@@ -86,7 +86,7 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, ClassVar, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -137,7 +137,14 @@ MIN_POLISH_TOKENS = 64
 DRAFT_MAX = 40_000
 
 FailureKind = Literal[
-    "untraced", "attribution", "think_leak", "fidelity_leak", "omitted", "order", "length"
+    "untraced",
+    "attribution",
+    "think_leak",
+    "fidelity_leak",
+    "omitted",
+    "order",
+    "length",
+    "external_outcome",
 ]
 Cause = Literal["check", "model", "output_policy", "length"]
 
@@ -860,6 +867,10 @@ class Composer:
     withheld: Sequence[VerifiedBeat] = field(default_factory=tuple)
     """#177: the beats the audience filter withheld from the viewpoint (an envelope's content,
     an unperceived beat): a text that discloses one fails with ``fidelity_leak``."""
+    outcome_check: Callable[[str], Sequence[tuple[int, int]]] | None = None
+    """#209 (FR-EXT-15): the spans of a text asserting the outcome of a change the turn asked
+    an external value's owner to apply (``structured.effects.outcome_check``): each fails the
+    check with ``external_outcome`` (``None``: the turn requested none)."""
 
 
 async def check_composition(
@@ -882,6 +893,13 @@ async def check_composition(
         registry=registry,
         withheld=composer.withheld,
     )
+    if composer.outcome_check is not None:
+        # #209: no outcome of a requested change is known while the turn is composed.
+        unconfirmed = tuple(
+            Failure("external_outcome", span) for span in composer.outcome_check(text)
+        )
+        if unconfirmed:
+            found = replace(found, failures=(*found.failures, *unconfirmed))
     return found, outcome
 
 

@@ -93,6 +93,7 @@ SECTIONS: dict[str, str] = {
     "pinned_memories": UNSCOPED,
     "summary_segments": UNSCOPED,
     "external_data": NARRATOR,
+    "pending_outcomes": NARRATOR,
 }
 """Every section a character's ``GenerationInputs`` may carry, classified (#544)."""
 

@@ -309,6 +309,13 @@ class GenerationInputs(InputSchema):
     """The narrator's ``## External data`` (#208, FR-EXT-5): one fenced block per value the turn
     pinned from a provider (``sanitize.render_block``); never in a character's render (#170,
     ``check-character-context``)."""
+    pending_outcomes: Annotated[list[str], C.TRACKED_VALUES] = Field(
+        default_factory=list, max_length=64
+    )
+    """The narrator's ``## Awaiting the game`` (#209, FR-EXT-9, FR-EXT-21 (e)): the changes the
+    last three turns asked the consumer to apply with no outcome reported yet, a hint never to
+    narrate one as done; never in a character's render (a character learns an outcome only by
+    perception; ``check-character-context``)."""
     """A structured character render's ``## The player asks of you`` (FR-RESP-11; #180): under
     ``player_authority = own_character``, what the player's input described this character
     doing, saying or (never written) thinking, as requests the render complies with or refuses

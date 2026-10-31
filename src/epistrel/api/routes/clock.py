@@ -76,6 +76,16 @@ class ClockSettingsBody(BaseModel):
     time_awareness: Literal["exact", "approximate", "none"]
     bands: list[list[str]]
     calendar: dict[str, Any]
+    provider_id: str | None = Field(
+        default=None,
+        description="#209: in `external` mode, the provider whose value the clock is (null "
+        "otherwise).",
+    )
+    external_value_name: str | None = Field(
+        default=None,
+        description="#209: in `external` mode, the provider's value (a `number` of "
+        "story-minutes from the story's start) the clock reads each turn (null otherwise).",
+    )
 
 
 class ClockBody(BaseModel):
@@ -137,6 +147,14 @@ class ClockPatch(BaseModel):
     time_awareness: Literal["exact", "approximate", "none"] | None = None
     bands: list[list[str]] | None = None
     calendar: Literal["gregorian"] | Calendar | None = None
+    provider_value: str | None = Field(
+        default=None,
+        max_length=161,
+        description='#209: `"<provider>.<value>"`, shorthand for `provider_id` and '
+        "`external_value_name` (an `external` clock's provider value).",
+    )
+    provider_id: str | None = Field(default=None, max_length=80)
+    external_value_name: str | None = Field(default=None, max_length=80)
 
 
 class ClockSettingsWriteBody(MutationResponse):
@@ -194,7 +212,9 @@ async def get_clock(story_id: StoryId, ctx: ContextDep, engine: EngineDep) -> Cl
         "422 `clock_backward` for a move backward (nothing is written; earlier story-time is "
         'reached by truncation or a rewrite), `clock_unanchored` for a `"HH:MM"` the clock\'s '
         "anchor cannot place (the anchor does not fix the exact time of day; once it does, "
-        "the next such time); 409 `module_off` while the story runs the clock off, "
+        "the next such time), `clock_external` while the clock is in `external` mode (it is "
+        "the provider's value: the consumer advances its own clock); 409 `module_off` while "
+        "the story runs the clock off, "
         "`story_archived`, `story_paused` or `revision_conflict`. A turn "
         "that was rejected or failed, and an ingested event, never advance the clock."
     ),
@@ -218,10 +238,14 @@ async def advance_clock(
     description=(
         "Change the world clock's settings (FR-CLOCK-5): `mode` (`paced`, the default: the "
         "pacing rule and validated skips advance it; `manual`: only explicit skips do; "
-        "`external` needs a registered provider and is refused until it can have one), the "
-        "`pacing_table`, `max_unprompted_skip_minutes` (0 disables a skip a render starts on "
-        "its own), `stop_at_due_events`, `time_awareness`, the time-of-day `bands` and the "
-        "`calendar`. A story configuration write: each changed setting records a "
+        "`external`: the clock is a registered provider's `number` value of story-minutes from "
+        'the story\'s start, named by `provider_value` (`"<provider>.<value>"`) or by '
+        "`provider_id` and `external_value_name`, read and pinned each turn; the story must be "
+        "bound to the provider, else 422 `provider_unbound`; its pacing and skips are then "
+        "requested of the consumer in `respond.state_effects` (`kind: time_advance`), never "
+        "applied), the `pacing_table`, `max_unprompted_skip_minutes` (0 disables a skip a "
+        "render starts on its own), `stop_at_due_events`, `time_awareness`, the time-of-day "
+        "`bands` and the `calendar`. A story configuration write: each changed setting records a "
         "`config_changes` row (`state:world_clock.<setting>`; `pacing_table` is prospective, "
         "the others interpretive, so a turn checked under the old value is re-checked) and "
         "the story's `config_revision` moves by one; setting the values it has changes "

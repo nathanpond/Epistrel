@@ -3422,6 +3422,7 @@ async def compose_turn(
     fallback: FallbackLines,
     reserved: bool,
     heard: Heard | None = None,
+    outcome_check: Callable[[str], Sequence[tuple[int, int]]] | None = None,
 ) -> composing.Composition:
     """The turn's message for ``viewpoint`` (``orchestrator.compose.compose``) from its
     post-repair beats: the polish under #68's output gate and the final check, or the
@@ -3512,6 +3513,7 @@ async def compose_turn(
         hidden=hidden,
         max_chars=length_chars(read.resolved.max_tokens),
         withheld=[] if heard is None else heard.withheld,
+        outcome_check=outcome_check,
     )
     return await composing.compose(shown, viewpoint, budget, composer=composer, reserved=reserved)
 
@@ -4617,15 +4619,25 @@ async def play(
                 if books[0].clock is None
                 else await stopping.read_schedule(conn, story_id, read.turn)
             ]
+            # #209: the changes the last turns asked of the consumer with no outcome yet, for
+            # the narrator alone (FR-EXT-21 (e)).
+            pending_lines = await state_effects.pending_outcomes(
+                conn, story_id, read.turn, books[0].names or dict(read.names)
+            )
         stop_marks.clear()
         surfacing.clear()
         clocking.attempt(story_id, books[0].clock)
         book = books[0]
         # #205: the attempt's external reads at the turn's input (every player-visible external
         # State in the actor's scope), outside any transaction; the narrator's tracked values
-        # list only what is pinned.
+        # list only what is pinned, and the dry-run reads an external State's pinned value.
         await pins.start(read.turn, read.actor.id)
-        book.external = pins.by_name()
+        book.pin(pins.by_name())
+        if book.clock is not None and book.clock.external:
+            # #209 (FR-CLOCK-5): an external clock is the value pinned for the turn.
+            async with db.connect() as conn:
+                book.clock = await clocking.read_clock(conn, story_id)
+            clocking.attempt(story_id, book.clock)
         tracked, tracked_syntax = book.narrator_section()
         by_draft: dict[int, Rendered] = {}
         joined = joined_input(say, do)
@@ -4661,6 +4673,8 @@ async def play(
             tracked_syntax=tracked_syntax,
             # #208: the pinned provider values, fenced data for the narrator alone.
             external=pins.blocks() if book.on else (),
+            # #209: the requests with no outcome yet, a hint for the narrator alone.
+            pending_outcomes=pending_lines,
             # #194: the time contract, when the story runs the world clock.
             clock_contract=books[0].clock is not None,
         )
@@ -5390,6 +5404,8 @@ async def play(
             fallback=lite._fallback_lines(read.inputs, cast_),
             reserved=reserved,
             heard=heard,
+            # #209 (FR-EXT-15): a composed sentence asserting a requested change's outcome fails.
+            outcome_check=state_effects.outcome_check(books[0], checked.beats),
         )
         clock.add("composition", time.perf_counter() - composing_at)
         # #182: reconcile + audience filter + compose, the polish's model time left out
@@ -5554,9 +5570,23 @@ async def play(
             character_id=None,
             beat=last + 1,
         )
+        requested: list[state_effects.Requested] = []
+        if books[0].on:
+            # #209 (FR-EXT-9): the effects on read-only external values, requested.
+            requested += state_effects.requested_of(books[0], checked.beats)
         if timings[0] is not None:
-            # #194: the turn's clock advances, the commit's first step.
-            op.add_commit_step(partial(record_clock, timing=timings[0]))
+            if books[0].clock is not None and books[0].clock.external:
+                # #209 (FR-CLOCK-5): an external clock's advances are requested, not written.
+                requested += state_effects.time_requests(timings[0])
+            else:
+                # #194: the turn's clock advances, the commit's first step.
+                op.add_commit_step(partial(record_clock, timing=timings[0]))
+        if requested:
+            owners = render_steps.beat_steps([b for b in checked.beats if not b.narrator])
+            with beat_steps(op.operation_id, owners):
+                fixed["requested"] = state_effects.stage_requested(op, requested)
+        else:
+            fixed.pop("requested", None)
         if books[0].on:
             # #187: the turn's State reads, for the rebase re-check; its effects, first.
             state_effects.remember(read_set, books[0], checked.beats)
@@ -6143,6 +6173,7 @@ async def play(
                 ),
                 "settled": len(state_settled),
                 "committed": len(fixed.get("state_effects", [])),
+                "requested": len(fixed.get("requested", [])),
                 "state_definitions": (op.config_revisions or {}).get("state_definitions"),
             }
         report["eval_hooks"] = eval_hooks(
@@ -6191,6 +6222,7 @@ async def play(
                 committed.operation_id,
                 omniscient=is_omniscient(viewpoint),
                 done=fixed.get("state_effects", ()),
+                requested=fixed.get("requested", ()),
             )
         else:
             async with conn.connect() as reading:
@@ -6200,6 +6232,7 @@ async def play(
                     committed.operation_id,
                     omniscient=is_omniscient(viewpoint),
                     done=fixed.get("state_effects", ()),
+                    requested=fixed.get("requested", ()),
                 )
         assert committed.narrative_turn is not None  # noqa: S101 - a committed turn's position
         assert committed.turn_variant is not None  # noqa: S101

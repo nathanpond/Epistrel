@@ -107,6 +107,10 @@ class RenderSections:
     clock_contract: bool = False
     """#194: the story runs the world clock, so the render's prompt carries ``## Time`` (time
     advances, ``time`` steps and ``flashback``)."""
+    pending_outcomes: tuple[str, ...] = ()
+    """#209: the narrator's ``## Awaiting the game``, the changes the last turns asked of the
+    consumer with no outcome yet (``effects.pending_outcomes``): counted against the cap, never
+    dropped by it, never a character's (``character_inputs`` empties it)."""
 
 
 RESOLUTION_STEERING = (
@@ -140,6 +144,7 @@ def _size(sections: RenderSections) -> int:
         *sections.tracked,
         sections.tracked_syntax,
         *sections.external,
+        *sections.pending_outcomes,
         *sections.retrieved,
         *sections.canon,
     )
@@ -206,6 +211,8 @@ def character_inputs(
             # #208: provider content is the narrator's alone; a character learns a value only
             # as a belief through build_context (#170).
             external=(),
+            # #209 (FR-EXT-21 (e)): a character learns an outcome only by perception.
+            pending_outcomes=(),
             retrieved=context.retrieved,
             canon=context.canon,
         ),
@@ -276,6 +283,7 @@ def narrator_inputs(
         tracked_values=list(s.tracked),
         tracked_syntax=s.tracked_syntax,
         external_data=list(s.external),
+        pending_outcomes=list(s.pending_outcomes),
         clock_contract=s.clock_contract,
     )
 

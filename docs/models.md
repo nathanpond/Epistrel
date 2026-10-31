@@ -76,6 +76,7 @@ Writes the reply of a Lite turn from the story's prompt sections; in a structure
 | `tracked_values` | `tracked_values` |
 | `tracked_syntax` | `tracked_values` |
 | `external_data` | `external_data` |
+| `pending_outcomes` | `tracked_values` |
 | `scene` | `scene` |
 | `working_memory` | `working_memory` |
 | `just_now` | `working_memory` |
@@ -399,6 +400,7 @@ Rewrites one beat of a structured render that contradicted canon or asserted wha
 | `tracked_values` | `tracked_values` |
 | `tracked_syntax` | `tracked_values` |
 | `external_data` | `external_data` |
+| `pending_outcomes` | `tracked_values` |
 | `scene` | `scene` |
 | `working_memory` | `working_memory` |
 | `just_now` | `working_memory` |

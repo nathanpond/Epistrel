@@ -39,6 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from epistrel.core import world_clock
 from epistrel.core.enums import ClockMode
 from epistrel.core.turns.beats import TurnBeat
+from epistrel.core.world_clock import external_mode
 from epistrel.core.world_clock.anchor import Anchor, Clockwork
 from epistrel.core.world_clock.pacing import PACED_KINDS, PacingTable, pacing_increment
 from epistrel.core.world_clock.timing import (
@@ -69,6 +70,15 @@ class ClockRead:
     anchor: Anchor
     clockwork: Clockwork
     minute: int | None
+    external: bool = False
+    """#209: the clock is a provider's value (``mode = external``): its offset is the turn's
+    pin, and its advances are requested of the consumer (paced like ``paced``)."""
+
+    @property
+    def pacing_mode(self) -> ClockMode:
+        """The mode the pacing rule reads: an external clock is paced (its increments are
+        proposed, never written)."""
+        return ClockMode.PACED if self.external else self.mode
 
     @property
     def fixed(self) -> bool:
@@ -81,7 +91,9 @@ async def read_clock(conn: AsyncConnection, story_id: str) -> ClockRead | None:
     level = await world_clock.clock_level(conn, story_id)
     if level is None:
         return None
-    found = await world_clock.settings(conn, story_id)
+    definition = await world_clock.clock_definition(conn, story_id)
+    found = definition.clock
+    assert found is not None  # noqa: S101 - the clock's definition carries its settings
     start = (await world_clock.clock_at(conn, story_id, world_clock.HEAD)).offset_minutes
     anchor = await world_clock.anchor_at(conn, story_id)
     return ClockRead(
@@ -92,6 +104,7 @@ async def read_clock(conn: AsyncConnection, story_id: str) -> ClockRead | None:
         anchor=anchor,
         clockwork=world_clock.clockwork(found),
         minute=minute_of_day(anchor, start),
+        external=external_mode.is_external(definition),
     )
 
 
@@ -219,7 +232,7 @@ def timed_renders(
             TimedBeat(
                 first,
                 last,
-                pacing=pacing_increment(lines, clock.table, mode=clock.mode),
+                pacing=pacing_increment(lines, clock.table, mode=clock.pacing_mode),
                 advances=tuple(a for b in render for a in _advances(clock, b)),
             )
         )

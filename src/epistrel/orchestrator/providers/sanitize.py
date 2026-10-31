@@ -73,7 +73,8 @@ STRIPPED_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp"})
 """Control, format (bidi overrides, zero-width), line- and paragraph-separator characters."""
 
 STATE_TYPES: dict[str, frozenset[StateType]] = {
-    "number": frozenset({StateType.NUMBER}),
+    # #209: an external world clock is a provider's number of story-minutes.
+    "number": frozenset({StateType.NUMBER, StateType.CLOCK}),
     "boolean": frozenset({StateType.BOOLEAN}),
     "enum": frozenset({StateType.ENUM}),
     "text": frozenset({StateType.TEXT}),

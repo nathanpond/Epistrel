@@ -297,6 +297,7 @@ ERROR_STATUS: dict[str, int] = {
     "state_derived": 422,
     "clock_backward": 422,
     "clock_unanchored": 422,
+    "clock_external": 422,
     "pin_limit_exceeded": 422,
     "key_mismatch": 422,
     "unknown_predicate": 422,
@@ -466,9 +467,11 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "module_off",
         "clock_backward",
         "clock_unanchored",
+        "clock_external",
         "erased_subject_referenced",
     ),
-    "update_clock": ("story_archived",),
+    # #209: an external clock names a provider the story is bound to.
+    "update_clock": ("story_archived", "provider_unbound"),
     # Scheduled events (#196): the list for a viewpoint, and writes at inter-turn slots.
     "list_scheduled_events": ("viewpoint_unresolved",),
     "create_scheduled_event": (

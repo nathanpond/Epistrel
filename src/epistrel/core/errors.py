@@ -1200,6 +1200,16 @@ class ClockUnanchored(EpistrelError):
     http_status = 422
 
 
+class ClockExternal(EpistrelError):
+    """A consumer's advance of a world clock in ``external`` mode (FR-CLOCK-5; #209): the clock is
+    a provider's value, read and pinned each turn, so Epistrel never moves it (the consumer
+    advances its own clock). ``details``: ``story_id`` and ``provider_id``. Nothing is
+    written."""
+
+    code = "clock_external"
+    http_status = 422
+
+
 class ScopeMismatch(EpistrelError):
     """A consolidation's inputs span viewpoint scopes no one output may combine (FR-MEM-9; #143):
     the intersection of their scopes is empty (two characters' private memories). Refused when

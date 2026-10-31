@@ -57,12 +57,14 @@ class StateEffectModel(BaseModel):
     """A State change a structured turn committed (#187, FR-RESP-7): the State, its scope key
     (the character, for a per-character State), the value it found and the one it left, the
     reason, its source (``turn``), contingency and status. A ``hidden`` State's appears only
-    for ``omniscient``."""
+    for ``omniscient``. #209: a change asked of the consumer for a value a read-only provider
+    owns is ``status: pending`` with ``owner: external`` and its ``effect_id``: never applied,
+    its ``new_value`` null and its ``old_value`` the value pinned for the turn."""
 
     state: str
     scope_key: str | None
-    old_value: Any
-    new_value: Any
+    old_value: Any = None
+    new_value: Any = None
     reason: str
     source: str
     contingency: str
@@ -70,7 +72,8 @@ class StateEffectModel(BaseModel):
     kind: str | None = Field(
         default=None,
         exclude_if=lambda v: v is None,
-        description="#188: `transfer_in` or `transfer_out` for one side of a transfer; absent "
+        description="#188: `transfer_in` or `transfer_out` for one side of a transfer (#209: "
+        "`time_advance` for an external clock's requested advance); absent "
         "for a change.",
     )
     capped: bool | None = Field(
@@ -89,6 +92,34 @@ class StateEffectModel(BaseModel):
         exclude_if=lambda v: v is None,
         description="#188 (FR-STATE-12): `untracked` or `external` when a transfer's other "
         "side is not a story State, so only this side was written.",
+    )
+    owner: Literal["external"] | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="#209 (FR-EXT-9): `external` for a change requested of the consumer, which "
+        "applies it to the value it owns (status `pending`); absent for a committed change.",
+    )
+    effect_id: str | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="#209: a requested change's stable id, which the consumer's outcome report "
+        "names.",
+    )
+    delta: Any = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="#209: a requested change's delta.",
+    )
+    value: Any = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="#209: a requested change's value to set.",
+    )
+    minutes: int | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="#209 (FR-CLOCK-5): a requested `time_advance`'s minutes (an external "
+        "clock's pacing or skip).",
     )
 
 

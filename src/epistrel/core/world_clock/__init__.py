@@ -52,6 +52,11 @@ on, ``time_basis`` carries the anchor and the bands, and its ``epoch`` is the on
 date-and-time anchor implies (never otherwise: month and year granules decide nothing on an
 unanchored story); ``stories.story_epoch`` stays the clock-off form.
 
+**External mode** (#209, FR-CLOCK-5; ``core.world_clock.external_mode``): the clock is a
+provider's value, pinned per turn; its pins are folded into the advance list (``_advances``), so
+every read above takes the pinned offset, and nothing here writes an advance for it
+(``advance`` and ``record_turn`` refuse or skip; the turn requests its pacing of the consumer).
+
 **The module gate** (``clock.level``, FR-PROF-2): ``off`` makes the clock inert (no advance is
 ever written, 409 ``module_off``; story-time is the stand-in), ``prompt_only`` (#203's Lite form)
 writes advances and verifies nothing, ``on`` runs it all. The clock is exempt from
@@ -94,7 +99,7 @@ from epistrel.core.states.model import (
 )
 from epistrel.core.tables import stories
 from epistrel.core.tables.states import state_changes, state_definitions
-from epistrel.core.world_clock import hooks
+from epistrel.core.world_clock import external_mode, hooks
 from epistrel.core.world_clock.anchor import Anchor, Clockwork, Statement
 from epistrel.core.world_clock.anchor import fold as fold_anchor
 
@@ -199,10 +204,25 @@ async def settings(conn: AsyncConnection, story_id: str) -> ClockSettings:
 
 
 async def _advances(
-    conn: AsyncConnection, story_id: str, *, view: states.View = states.View.ACTIVE
+    conn: AsyncConnection,
+    story_id: str,
+    *,
+    view: states.View = states.View.ACTIVE,
+    definition: StateDefinition | None = None,
 ) -> list[BasisAdvance]:
     """The clock's counted changes in a view, in position order, as ``(key, variant,
-    minutes)``."""
+    minutes)``; #209: the pins of an external clock (now or earlier) folded in
+    (``external_mode.merged``)."""
+    found = await _written(conn, story_id, view=view)
+    clock = definition or await clock_definition(conn, story_id)
+    pinned = await external_mode.pins(conn, story_id, clock, view=states.View(view))
+    return external_mode.merged(found, pinned)
+
+
+async def _written(
+    conn: AsyncConnection, story_id: str, *, view: states.View = states.View.ACTIVE
+) -> list[BasisAdvance]:
+    """The clock's counted ``state_changes`` in a view, in position order."""
     c, d = state_changes.c, state_definitions.c
     clock_id = select(d.id).where(d.story_id == story_id, d.name == WORLD_CLOCK).scalar_subquery()
     where: list[ColumnElement[bool]] = [
@@ -237,8 +257,12 @@ async def clock_at(
 ) -> ClockValue:
     """The clock at ``through`` (see the module docstring); ``as_recorded`` folds every advance
     ever recorded. The anchor is the one established through ``through`` (#195)."""
-    found = await settings(conn, story_id)
-    basis = TimeBasis(advances=tuple(await _advances(conn, story_id, view=states.View(view))))
+    clock = await clock_definition(conn, story_id)
+    found = clock.clock
+    assert found is not None  # noqa: S101 - the clock's definition carries its settings
+    basis = TimeBasis(
+        advances=tuple(await _advances(conn, story_id, view=states.View(view), definition=clock))
+    )
     offset = basis.through(through)
     anchor = await _fold(conn, story_id, found, as_position(through))
     if anchor.is_unanchored:
@@ -476,6 +500,8 @@ async def record_turn(
     reads the clock it leaves. Nothing when the story does not run the clock."""
     if await clock_level(conn, story_id) is None or op.narrative_turn is None:
         return []
+    if external_mode.is_external(await clock_definition(conn, story_id)):
+        return []  # #209: requested of the consumer instead (``requested_effect`` events)
     turn, variant = int(op.narrative_turn), int(op.turn_variant or 0)
     written = []
     for found in timing.advances:
@@ -558,6 +584,8 @@ async def advance(
             f"{source.value!r} is not a clock source", {"field": "source", "reason": "source"}
         )
     await require_clock(conn, story_id)
+    # #209: an external clock is the provider's: Epistrel never advances it.
+    external_mode.refuse_advance(await clock_definition(conn, story_id), story_id)
     current = (await clock_at(conn, story_id, position)).offset_minutes
     wanted = int(minutes) if minutes is not None else int(to_offset or 0) - current
     if wanted < 0:

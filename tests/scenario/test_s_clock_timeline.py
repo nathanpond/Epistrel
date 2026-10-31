@@ -31,6 +31,7 @@ clock at ``prompt_only`` (FR-LITE-5's form; delivered for the test):
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from typing import Any
 
@@ -55,6 +56,7 @@ from tests import clock_support as ck
 from tests import effect_support as es
 from tests import multi_support as ms
 from tests import perception_support as ps
+from tests import provider_support as pv
 from tests.auth_support import auth_settings
 from tests.event_support import rows
 from tests.respond_support import (
@@ -472,3 +474,170 @@ async def test_s_clock_timeline__anchor(
         gap = [["night", "00:00", "05:00"], ["day", "06:00", "24:00"]]
         refused = await client.patch(f"/stories/{branch}/clock", json={"bands": gap}, headers=WRITE)
         _refused(refused, 422, "validation_error")
+
+
+# -- #209: the external clock -------------------------------------------------------------------
+
+
+def _skip(minutes: int, reason: str = "they wait") -> dict[str, Any]:
+    return {"kind": "time_advance", "state": "world_clock", "minutes": minutes, "reason": reason}
+
+
+def _words(n: int) -> str:
+    return " ".join(["word"] * (n - 1) + ["end."])
+
+
+async def _external_turn(
+    client: httpx.AsyncClient,
+    stub: Any,
+    story: str,
+    cal: str,
+    *mira: dict[str, Any],
+    narration: str = "Rain taps.",
+    regenerated: str | None = None,
+) -> dict[str, Any]:
+    stub.reset()
+    es.narrator(stub, es.render(beat("narration", narration)))
+    ms.renders_for(stub, "Mira", es.render(*mira))
+    if regenerated is not None:
+        stub.script("regeneration", [json.dumps({"text": regenerated})])
+    answer = await respond(client, story, body(cal, None, do="waits"))
+    assert answer.status_code == 200, answer.text
+    found: dict[str, Any] = answer.json()
+    return found
+
+
+def _proposed(played: dict[str, Any]) -> list[int]:
+    """The turn's requested clock advances' minutes (each pending, owned by the consumer)."""
+    found = [e for e in played.get("state_effects", []) if e.get("kind") == "time_advance"]
+    for e in found:
+        assert (e["state"], e["owner"], e["status"]) == ("world_clock", "external", "pending")
+        assert e["effect_id"]
+    return [int(e["minutes"]) for e in found]
+
+
+@pytest.mark.part("M6", "FR-CLOCK-5")
+async def test_s_clock_timeline__external(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    stops_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#209's clause (owner decision 2026-10-30): ``PATCH /clock`` with ``mode = external`` and
+    ``provider_value`` makes the clock a bound provider's ``number`` of story-minutes on the
+    offset scale (unbound: 422 ``provider_unbound``; a text value: 422 ``validation_error``).
+    The offset is read and pinned per turn (600, then 700), ``respond``'s ``clock`` and
+    ``GET /clock`` read the pin, the pacing increments and the declared skip are requested
+    (``time_advance`` in ``state_effects``, ``requested_effect`` events) and never written,
+    ``/clock/advance`` is 422 ``clock_external``, and a due event's stop shortens the proposed
+    advance (from 700 with the bell at 720: 20 minutes). Complement: back in ``paced`` mode
+    the clock keeps its last pinned offset and a turn commits its advance."""
+    name = pv.unique_name("gameclock")
+    await pv.register(engine, pv.in_process_spec(name, {"elapsed": "number", "label": "text"}))
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        fake = pv.ScriptedProvider(name).attach(epistrel)
+        fake.script("elapsed", 600, 700)
+        story, ids = await structured_story(client, "Cal", "Mira")
+        cal, mira = ids["Cal"], ids["Mira"]
+        square = await ps.place_entity(engine, story, "the square")
+        for who in (cal, mira):
+            await ps.put(engine, story, who, square)
+        await ck.set_clock(engine, story, "on")
+        path = f"/stories/{story}/clock"
+        external = {"mode": "external", "provider_value": f"{name}.elapsed"}
+
+        # The provider must be bound, and its value a number.
+        _refused(await client.patch(path, json=external, headers=WRITE), 422, "provider_unbound")
+        await pv.bind(engine, story, name, {"player": "p-1"})
+        text_value = {"mode": "external", "provider_value": f"{name}.label"}
+        _refused(await client.patch(path, json=text_value, headers=WRITE), 422, "validation_error")
+        assert (await _clock(client, story))["mode"] == "paced"
+        patched = await client.patch(path, json=external, headers=WRITE)
+        assert patched.status_code == 200, patched.text
+        found = patched.json()["settings"]
+        assert (found["mode"], found["provider_id"], found["external_value_name"]) == (
+            "external",
+            name,
+            "elapsed",
+        )
+        changes = await _config_changes(engine, story)
+        for member in ("mode", "owner", "provider_id", "external_value_name"):
+            assert (f"state:world_clock.{member}", "interpretive") in changes
+
+        # The consumer's clock: Epistrel never advances it.
+        _refused(
+            await _advance(client, story, {"minutes": 30, "reason": "x"}), 422, "clock_external"
+        )
+        assert await ck.clock_changes(engine, story) == 0
+
+        # A turn: the offset pinned at 600; pacing and the skip proposed, never written.
+        played = await _external_turn(
+            client,
+            stub,
+            story,
+            cal,
+            beat("say", "We could wait here a while.", effects=[_skip(30)]),
+            narration=_words(60),
+        )
+        assert fake.reads[0][0] == "elapsed"
+        assert (played["clock"]["before"]["offset"], played["clock"]["after"]["offset"]) == (
+            600,
+            600,
+        )
+        proposed = _proposed(played)
+        assert 30 in proposed
+        assert sum(proposed) > 30  # the renders' pacing increments too
+        assert (await turn_report(engine, story))["clock"]["start"] == 600
+        assert await ck.clock_changes(engine, story) == 0
+        events = await rows(
+            engine,
+            "SELECT payload FROM events WHERE story_id = :s AND type = 'requested_effect' "
+            "ORDER BY seq",
+            s=story,
+        )
+        assert sorted(int(e.payload["minutes"]) for e in events) == sorted(proposed)
+        assert {(e.payload["kind"], e.payload["state"]) for e in events} == {
+            ("time_advance", "world_clock")
+        }
+        assert (await _clock(client, story))["offset"] == 600
+
+        # The next turn reads the provider again: 700.
+        played = await _external_turn(client, stub, story, cal, beat("say", "Hm."))
+        assert played["clock"]["before"]["offset"] == 700
+        assert (await _clock(client, story))["offset"] == 700
+
+        # A due event's stop shortens the proposed advance: the bell at 720, a 60-minute skip.
+        created = await client.post(
+            f"/stories/{story}/scheduled-events",
+            json={
+                "proposition": "the bell",
+                "planned": 720,
+                "participants": [mira],
+                "owner": "world",
+            },
+            headers=WRITE,
+        )
+        assert created.status_code == 201, created.text
+        played = await _external_turn(
+            client,
+            stub,
+            story,
+            cal,
+            beat("say", "Let us wait.", effects=[_skip(60)]),
+            regenerated="The bell rings out across the square.",
+        )
+        assert sum(_proposed(played)) == 20
+        assert await ck.clock_changes(engine, story) == 0
+
+        # Complement: paced again, the clock keeps its last pinned offset and commits a turn.
+        back = await client.patch(path, json={"mode": "paced"}, headers=WRITE)
+        assert back.status_code == 200, back.text
+        assert back.json()["settings"]["provider_id"] is None
+        assert (await _clock(client, story))["offset"] == 700
+        played = await _external_turn(
+            client, stub, story, cal, beat("say", "Hm."), narration=_words(60)
+        )
+        assert _proposed(played) == []
+        assert played["clock"]["after"]["offset"] > played["clock"]["before"]["offset"] == 700
+        assert await ck.clock_changes(engine, story) > 0

@@ -53,7 +53,11 @@ changes), and an unresolved or undeclared change loses its sentence (narrowing) 
 effect, else the beat becomes the fallback line. A fallback line never keeps an effect. #190: a
 declared effect nothing narrates (``state_unnarrated``) asks the regeneration to narrate the
 change (the rewrite keeps the beat's effects when it declares none), and the deterministic rung
-keeps the effect and appends one line built from its reason.
+keeps the effect and appends one line built from its reason. #209: a sentence asserting the
+outcome of a change asked of an external value's owner (``external_outcome_unconfirmed``) asks
+the regeneration for the attempt only (the rewrite keeps the beat's effects: the request
+stands); the deterministic rung removes the sentence (narrowing) and keeps the effects, else
+narrates the attempt (``attempt``, effects kept).
 
 **Acceptance** (FR-REPAIR-2, FR-GUARD-6). Every rung's output passes the output gate (the
 story's output policies, model-assisted ones included) and is detected again (#148: the
@@ -107,7 +111,14 @@ from epistrel.core.repair.rungs import (
 )
 from epistrel.core.resolution.context import load_time_basis
 from epistrel.core.settings_schema import NAME_PLACEHOLDER, OMNISCIENT, VerifySettings
-from epistrel.core.states.effects import REFUSED_TAGS, STATE_UNNARRATED, TIME_STOP, Finding
+from epistrel.core.states.effects import (
+    EXTERNAL_OUTCOME_UNCONFIRMED,
+    PROSE_TAGS,
+    REFUSED_TAGS,
+    STATE_UNNARRATED,
+    TIME_STOP,
+    Finding,
+)
 from epistrel.core.tables import entities
 from epistrel.core.tables.propositions import closed_sets
 from epistrel.core.turns.beats import BEAT_TEXT_MAX, TurnBeat
@@ -745,8 +756,9 @@ class RepairLadder:
                     inputs,
                     context,
                     budget,
-                    # #190: asked only to narrate them, the rewrite keeps the beat's effects.
-                    keep_effects=not stating or all(f.tag == STATE_UNNARRATED for f in stating),
+                    # #190, #209: asked only to rewrite the prose, the rewrite keeps the
+                    # beat's effects.
+                    keep_effects=not stating or all(f.tag in PROSE_TAGS for f in stating),
                 )
                 if made is None:
                     continue
@@ -937,6 +949,14 @@ def state_deterministic(beat: TurnBeat, findings: Sequence[Finding]) -> TurnBeat
     if any(f.tag == TIME_STOP for f in findings):
         # #196 (FR-CLOCK-16): nothing narrated past a due event's stop is committed.
         return None
+    outcomes = [f for f in findings if f.tag == EXTERNAL_OUTCOME_UNCONFIRMED]
+    if outcomes:
+        # #209: the asserted outcome goes; the requested effects stay.
+        found = _outcome_settled(beat, outcomes)
+        findings = [f for f in findings if f.tag != EXTERNAL_OUTCOME_UNCONFIRMED]
+        if found is None or not findings:
+            return found
+        beat = found
     unnarrated = [f for f in findings if f.tag == STATE_UNNARRATED and f.narration]
     rest = [f for f in findings if f.tag != STATE_UNNARRATED]
     settled = _state_settled(beat, rest) if rest else beat
@@ -952,6 +972,19 @@ def state_deterministic(beat: TurnBeat, findings: Sequence[Finding]) -> TurnBeat
         return settled
     text = " ".join(t for t in [base.text.strip(), *lines] if t)
     return replace(base, text=text, claims=(), mentions=())
+
+
+def _outcome_settled(beat: TurnBeat, findings: Sequence[Finding]) -> TurnBeat | None:
+    """#209: ``beat`` without the sentences asserting an unconfirmed external outcome, its
+    effects kept; when nothing else is left, the attempt narrated (``Finding.refusal``)."""
+    spans = [f.span for f in findings if f.span is not None]
+    text = narrow(beat.text, spans) if spans else None
+    if text is not None:
+        return replace(beat, text=text, claims=(), mentions=())
+    attempt = next((f.refusal for f in findings if f.refusal), "")
+    if not attempt:
+        return None
+    return replace(beat, text=attempt, claims=(), mentions=(), attempt=True)
 
 
 def _state_settled(beat: TurnBeat, findings: Sequence[Finding]) -> TurnBeat | None:

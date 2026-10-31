@@ -641,6 +641,34 @@ class ExternalRead(EventPayload):
     """#208: a ``text`` value was capped before it was pinned (only the capped value is kept)."""
 
 
+REQUESTED_EFFECT = "requested_effect"
+"""The event type of a change a turn asks an external value's owner to apply (#209)."""
+REQUESTED_KINDS: tuple[str, ...] = ("change", "transfer", "time_advance")
+"""``RequestedEffect.kind``: a declared ``change`` or one side of a ``transfer`` on an
+externally owned State, or a ``time_advance`` of an external world clock (pacing or a skip)."""
+
+
+@register(REQUESTED_EFFECT, category=EventCategory.INPUT)
+class RequestedEffect(EventPayload):
+    """A change a structured turn asks the consumer to apply to a value a read-only provider
+    owns (FR-EXT-9, FR-RESP-7, FR-CLOCK-5; #209): Epistrel never assumes it was applied. The
+    State (``state``, by name) and its ``scope_key``, the change (``delta`` or ``value``; a
+    ``time_advance``'s ``minutes``), the render's ``reason``, the stable ``effect_id`` the
+    consumer's outcome report names (#217's ``ingest {kind: outcome, effect_id}``) and its
+    ``status`` (``requested``). Positioned at the beat that declared it (an external clock's
+    pacing, at the advance's beat and step); no ``state_changes`` row is written for it."""
+
+    effect_id: str
+    kind: Literal["change", "transfer", "time_advance"] = "change"
+    state: str
+    scope_key: str | None = None
+    delta: JsonValue = Field(default=None, exclude_if=lambda v: v is None)
+    value: JsonValue = Field(default=None, exclude_if=lambda v: v is None)
+    minutes: int | None = Field(default=None, exclude_if=lambda v: v is None)
+    reason: str
+    status: Literal["requested"] = "requested"
+
+
 @register("belief_authored", category=EventCategory.CONTROL)
 class BeliefAuthored(EventPayload):
     """An author directed a character's belief (FR-EPI-7's author direction; #160's

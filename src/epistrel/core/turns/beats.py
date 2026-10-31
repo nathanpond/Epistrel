@@ -216,6 +216,12 @@ class DeclaredAdvance:
     to_offset: int | None = None
     """#196: a target the engine sets (a clock offset): a time stop's cutoff, which a beat
     regenerated under it reaches."""
+    source: str | None = None
+    """#199: an advance the engine supplied for the beat (``estimate``: a ``time_estimation``
+    proposal; ``player``: the amount the player's input stated); ``None``: declared."""
+    meta: Mapping[str, Any] | None = None
+    """#199: the change row's ``estimate_meta`` (the estimate's reason, confidence, model and
+    prompt hash; ``initiated_by``)."""
 
 
 @dataclass(frozen=True, slots=True)

@@ -39,7 +39,9 @@ operation (``Operation.turn_times``); while the operation commits (``turn_scope`
 ``time_basis`` carries it (``TimeBasis.in_turn``), so every record the turn writes, its events
 (stamped before the commit steps run) and every commit step's facts, transitions and exposures
 alike, takes its step's start, and ``record_turn`` writes the turn's advances (one per pacing
-increment or declared skip, ``source = pacing | declared_skip``) in the commit's first step.
+increment or declared skip, ``source = pacing | declared_skip``; #199: an estimated skip's
+``estimate`` with its ``estimate_meta``, the player's stated amount's ``player``) in the
+commit's first step.
 
 **The anchor** (#195; ``core.world_clock.anchor``): the clock's absolute time, never more than
 the story established. Each statement that establishes or refines it is a commitment, a fact on
@@ -513,7 +515,9 @@ async def record_turn(
                 minutes=found.minutes,
                 source=found.source,
                 position=Position(turn, variant, 0, found.beat_position, found.step_position),
-                reason=found.reason,
+                reason=found.reason[:200],
+                # #199: an estimate's reason, confidence, model and prompt hash; who initiated it.
+                estimate_meta=None if found.meta is None else dict(found.meta),
                 # #196: a due event's stop; an event the turn itself creates has no row yet.
                 stopped_by_event_id=found.stopped_by
                 if found.stopped_by is not None and _ULID.match(found.stopped_by)

@@ -36,12 +36,13 @@ purpose maps to that kind (``kind_of``: ``extraction_backstop`` is ``extraction`
 ``composed`` while ``charging(COMPOSED)``), and every other call sees them as spent
 (``can_afford``, ``can_afford_unreserved``). A named slot the turn did not use is released
 (``release_named``) and may then fund optional work. Optional work (``salience``,
-``entailment``, ``follow_up``, ``testimony`` (#162), ``repair``, ``polish``, in that
-priority) spends only what no reservation holds: the adapter refuses a first ``entailment``
-or ``salience_detection`` attempt that would dip below the line, and the pipeline asks
-``try_optional(kind, cost)`` before a follow-up render, a testimony adjudication, a model
-repair or the polish. ``pending`` pre-allocates the
-higher-priority salience calls so an earlier entailment call cannot starve them, and
+``time_estimation`` (#199), ``entailment``, ``follow_up``, ``testimony`` (#162),
+``repair``, ``polish``, in that priority) spends only what no reservation holds: the adapter
+refuses a first ``entailment`` or ``salience_detection`` attempt that would dip below the
+line, and the pipeline asks ``try_optional(kind, cost)`` before a time estimation, a
+follow-up render, a testimony adjudication, a model repair or the polish. ``pending``
+pre-allocates the higher-priority salience (and #199's time estimation) calls so an earlier
+entailment call cannot starve them, and
 ``latency_estimate_s`` treats a call that could not start before ``deadline - estimate`` as
 unaffordable (``can_start``). Once an optional kind is refused, no less important kind runs
 after it in the turn (``denied``), so the degradation follows NFR-PERF-7's order. A Lite
@@ -80,6 +81,10 @@ DIRECTOR_ORDER = "director_order"
 DIRECTOR_TIEBREAK = "director_tiebreak"
 """#175: the director's judgment of a simultaneous turn's conflicting actions (one
 ``generation`` call)."""
+TIME_ESTIMATION = "time_estimation"
+"""#199 (FR-CLOCK-7): an undeclared narrated skip's ``time_estimation`` call, pre-allocated
+(``pending``) once the turn finds the skip; given up after entailment (NFR-PERF-7 (4) → (5)):
+an unestimated skip is removed deterministically (``unestimated_skip_removed``)."""
 ENTAILMENT = "entailment"
 NARRATOR_RENDER = "narrator"
 """#456: the narrator's render in a structured turn (a ``generation`` call charged apart from the
@@ -94,6 +99,7 @@ OPTIONAL_PRIORITY = (
     SALIENCE,
     DIRECTOR_ORDER,
     DIRECTOR_TIEBREAK,
+    TIME_ESTIMATION,
     ENTAILMENT,
     FOLLOW_UP,
     TESTIMONY,
@@ -101,7 +107,8 @@ OPTIONAL_PRIORITY = (
     POLISH,
 )
 """Optional work, most important first: the pool is spent in this order (NFR-PERF-7 gives
-polish up first, then repairs, then testimony adjudication, then entailment)."""
+polish up first, then repairs, then testimony adjudication, then entailment, then time
+estimation)."""
 ADAPTER_GATED = frozenset({SALIENCE, ENTAILMENT})
 """The optional kinds no ``try_optional`` grant precedes: the Model Access Layer's
 ``affordable`` check is their only gate, so it keeps them off every reserved slot (#182)."""
@@ -110,6 +117,7 @@ PURPOSE_KINDS = {
     "entailment": ENTAILMENT,
     "belief_adjudication": TESTIMONY,
     "salience_detection": SALIENCE,
+    "time_estimation": TIME_ESTIMATION,
     "regeneration": REPAIR,
     "guardrail_check": "guardrail",
     "generation": "render",
@@ -460,6 +468,7 @@ __all__ = [
     "PURPOSE_KINDS",
     "REPAIR",
     "SALIENCE",
+    "TIME_ESTIMATION",
     "TurnBudget",
     "counted_embedder",
     "effective_max_calls",

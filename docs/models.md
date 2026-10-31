@@ -29,6 +29,7 @@ per model tier are in [model-matrix.md](model-matrix.md).
 | `salience_detection` | yes | `default` | `parse_validate_retry` | 8,192 tokens |
 | `extraction_backstop` | yes | `default` | `parse_validate_retry` | 8,192 tokens |
 | `regeneration` | yes | `generation` | `parse_validate_retry` | 8,192 tokens |
+| `time_estimation` | yes | `extraction_backstop` | `parse_validate_retry` | 8,192 tokens |
 
 ### `generation`
 
@@ -436,6 +437,26 @@ Rewrites one beat of a structured render that contradicted canon or asserted wha
 
 **Never receives:** `subject_true_age`, `checked_text`, `eval_text`
 
+### `time_estimation`
+
+Proposes a best-guess duration, with its reason and a confidence, for a narrated skip a beat implies but does not declare, from what the scene established; optional work within the turn budget (FR-CLOCK-7).
+
+- **Hot path:** yes
+- **Default model:** the `extraction_backstop` row of `model_config`, then the `default` row, per field, unless the purpose has its own
+- **Template:** `time_estimation.j2`
+- **Capability floor:** structured output: constrained `json_schema` decoding, or output reliable enough to parse, validate and retry; minimum context 8,192 tokens
+- **Returns:** `TimeEstimate` (`minutes`, `reason`, `confidence`), validated strictly; its free text is author-facing
+
+**Receives**
+
+| Field | Content category |
+|---|---|
+| `narrated_text` | `render_text` |
+| `activity_context` | `scene` |
+| `established_times` | `scene` |
+
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `tracked_values`, `external_data`
+
 ## Ports delivered
 
 A port is configured like a purpose but called through its own adapter, never as a chat
@@ -467,7 +488,6 @@ its floor and data-flow row, in the milestone that delivers it.
 
 | Purpose | Kind | Milestone | Defaults to | Description |
 |---|---|---|---|---|
-| `time_estimation` | purpose | M6 | `extraction_backstop` | Best-guess duration of a narrated skip. |
 | `image_prompt` | purpose | M8 | `generation` | Writes image prompts. |
 | `image_check` | purpose | M8 | — | Vision checks of image outputs; no default. |
 | `image_generation` | port | M8 | — | The image-generation port (FR-IMG-1). |

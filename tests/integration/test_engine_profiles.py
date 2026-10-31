@@ -120,6 +120,7 @@ from epistrel.orchestrator.models.registry import (
     REGENERATION,
     SALIENCE_DETECTION,
     STORY_PURPOSES,
+    TIME_ESTIMATION,
 )
 from epistrel.orchestrator.models.registry import RESERVED as RESERVED_PURPOSES
 from epistrel.testing import pauses
@@ -173,12 +174,14 @@ LITE_ROUTED = set(STORY_PURPOSES) - {
     SALIENCE_DETECTION.name,
     EXTRACTION_BACKSTOP.name,
     REGENERATION.name,
+    TIME_ESTIMATION.name,
 }
 """The story purposes the Lite preset names in ``models.purposes``: every one a Lite story calls.
 ``importance_scoring`` (#135) needs episodic memory, ``entailment`` (#142) verification at
 ``entailment``, ``consolidation`` (#143) the consolidation module, ``salience_detection``
 (#146) commitment, ``extraction_backstop`` (#148) verification at ``extraction`` and
-``regeneration`` (#151) the repair ladder, which Lite has off; unnamed, each inherits the
+``regeneration`` (#151) the repair ladder, which Lite has off, and ``time_estimation`` (#199) a
+structured turn's narrated skips; unnamed, each inherits the
 deployment's model configuration, as every purpose does under ``Structured (M4)``."""
 
 
@@ -1312,7 +1315,7 @@ async def test_settings_are_checked_at_the_boundary(
             "validation_error",
             "body.settings.models.purposes.generation.base_url",
         ),
-        ({"models": {"purposes": {"time_estimation": {"model": "m"}}}}, "invalid_profile", ""),
+        ({"models": {"purposes": {"image_prompt": {"model": "m"}}}}, "invalid_profile", ""),
         (
             nest("models.purposes.generation.model", "a\x00b"),
             "validation_error",
@@ -1336,7 +1339,7 @@ async def test_settings_are_checked_at_the_boundary(
                     {
                         "module": "models",
                         "level": None,
-                        "setting": "models.purposes.time_estimation",
+                        "setting": "models.purposes.image_prompt",
                     }
                 ]
             with pytest.raises((InvalidRequest, InvalidProfile)):

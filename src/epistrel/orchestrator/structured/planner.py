@@ -96,6 +96,10 @@ PRIMARIES_REDUCED = "primaries_reduced"
 PRIMARY_DEFERRED = "primary_deferred"
 """NFR-PERF-7 step 6 (#176): a fixed ``primary`` the budget could not plan was deferred to a
 later turn (never narrated reactively): the notice beside ``primaries_deferred``."""
+UNESTIMATED_SKIP_REMOVED = "unestimated_skip_removed"
+"""NFR-PERF-7 step 5 (#199): an undeclared narrated skip the turn could not estimate (no
+``time_estimation`` call fit, or none answered usably) was removed by deterministic span
+removal, no duration guessed; after entailment's safe disposition in the ladder."""
 TESTIMONY_DEFAULTED = "testimony_defaulted"
 """NFR-PERF-7 step 3 (#162): a salient witness's testimony adjudication the budget (or the
 per-turn cap) could not fit, decided by the rules' default instead."""
@@ -106,12 +110,13 @@ LADDER = (
     REPAIR_DETERMINISTIC,
     TESTIMONY_DEFAULTED,
     ENTAILMENT_SAFE_DISPOSITION,
+    UNESTIMATED_SKIP_REMOVED,
     PRIMARIES_REDUCED,
     PRIMARIES_DEFERRED,
     PRIMARY_DEFERRED,
     BEAT_REPLACED,
 )
-"""NFR-PERF-7's order as M5 has it: what goes first when the budget or the deadline runs
+"""NFR-PERF-7's order as M6 has it: what goes first when the budget or the deadline runs
 short (``safe_fallback`` stands in for ``repair_deterministic`` when no deterministic rung
 applied)."""
 
@@ -395,10 +400,11 @@ RANK = {
     SAFE_FALLBACK: 1,
     TESTIMONY_DEFAULTED: 2,
     ENTAILMENT_SAFE_DISPOSITION: 3,
-    PRIMARIES_REDUCED: 4,
-    PRIMARIES_DEFERRED: 4,
-    PRIMARY_DEFERRED: 4,
-    BEAT_REPLACED: 5,
+    UNESTIMATED_SKIP_REMOVED: 4,
+    PRIMARIES_REDUCED: 5,
+    PRIMARIES_DEFERRED: 5,
+    PRIMARY_DEFERRED: 5,
+    BEAT_REPLACED: 6,
 }
 
 
@@ -429,6 +435,7 @@ __all__ = [
     "SALIENCE_SKIPPED",
     "SKIP_POLISH",
     "TESTIMONY_DEFAULTED",
+    "UNESTIMATED_SKIP_REMOVED",
     "TurnPlan",
     "adjudicates",
     "budget_report",

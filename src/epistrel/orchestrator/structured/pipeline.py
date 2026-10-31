@@ -255,7 +255,7 @@ from epistrel.core.settings_schema import (
     state_tie_break_name,
 )
 from epistrel.core.states import external as external_values
-from epistrel.core.states.effects import TIME_STOP
+from epistrel.core.states.effects import TIME_STOP, UNESTIMATED_SKIP, UNPROMPTED_SKIP
 from epistrel.core.tables import entity_aliases, events, facts, operations, stories
 from epistrel.core.tables.characters import TRUE_AGE_MAX, TRUE_AGE_MIN
 from epistrel.core.tables.commitments import thunks
@@ -308,6 +308,8 @@ from epistrel.core.viewpoint import (
 )
 from epistrel.core.visibility import Visibility
 from epistrel.core.world_clock import schedule_statements
+from epistrel.core.world_clock import skips as skip_rules
+from epistrel.core.world_clock import timing as timing_rules
 from epistrel.core.world_clock.service import turn_clock_of
 from epistrel.core.world_clock.timing import SEQUENTIAL as SEQUENTIAL_MODE
 from epistrel.core.world_clock.timing import SIMULTANEOUS as SIMULTANEOUS_MODE
@@ -383,6 +385,7 @@ from epistrel.orchestrator.structured import roles as roles_rt
 from epistrel.orchestrator.structured import schedules as schedule_commit
 from epistrel.orchestrator.structured import simultaneous as simultaneous_rules
 from epistrel.orchestrator.structured import steps as render_steps
+from epistrel.orchestrator.structured import time_estimation as skipping
 from epistrel.orchestrator.structured.eval_hooks import StageClock, eval_hooks
 from epistrel.orchestrator.structured.render import (
     AGE_UNREPAIRED,
@@ -848,6 +851,9 @@ class TurnRead:
     characters: tuple[CastEntry, ...] = ()
     """#174: every primary in request order (``character`` is the one rendering: the first, or
     the current one inside a sequential turn's loop)."""
+    scene_doings: tuple[str, ...] = ()
+    """#199 (FR-CLOCK-8): the ``do`` beats of the working-memory window (the player's inputs'
+    included), oldest first: what the scene established as under way."""
 
 
 async def _deferred(conn: AsyncConnection, story_id: str, turn: int) -> bool:
@@ -960,6 +966,7 @@ async def read_turn(
         if b.kind not in ("think", "latent")
     )
     last_beats = tuple(b.text for b in mine if b.character_id == character.id)[-QUERY_BEATS:]
+    scene_doings = tuple(b.text for b in everyone if b.kind == "do")
     lookup = KeyedLookup(conn, read_set)
     location, scene = await _scene(lookup, story_id, head - 1)
     before, _ = await _scene(lookup, story_id, head - 2)
@@ -998,6 +1005,7 @@ async def read_turn(
         player_id=player,
         narrator_memory=narrator_memory,
         last_beats=last_beats,
+        scene_doings=scene_doings,
         scene=scene_text,
         present=present,
         director="\n\n".join(director),
@@ -4074,6 +4082,15 @@ async def play(
     """#196: the turn's final cut (``stops.Cut``) and its renders, once timed."""
     lifecycle_plan: list[stopping.Planned] = []
     """#196: the scheduled events' lifecycle steps the commit writes."""
+    skip_seen: set[int] = set()
+    """#199: the beats whose skips the turn has decided."""
+    skip_decisions: list[skipping.Decision] = []
+    """#199: what the turn decided for each skip (``turn_report.clock.skips``)."""
+    refused_skips: set[int] = set()
+    """#199: the beats whose model-initiated skip was refused (repaired to stay in the
+    present)."""
+    fluents: list[tuple[str, ...] | None] = [None]
+    """#199: the activities the scene's fluent facts establish, read once per attempt."""
     """#187: the attempt's States (``effects.load``)."""
     pins = PinnedReads(db, story_id, in_process=providers or InProcessRegistry())
     """#205: the turn's pinned external reads, shared by every primary; each attempt's read
@@ -4227,6 +4244,142 @@ async def play(
         target.beats = [
             stopping.reach(b, stop_marks[b.beat]) if b.beat in stop_marks else b
             for b in target.beats
+        ]
+
+    def scene_times(read_: TurnRead, before: Sequence[TurnBeat]) -> list[str]:
+        """#199: the times the scene established, for a ``time_estimation`` request: the clock
+        as the turn starts (when the anchor fixes it), then the scene's earlier ``do`` beats
+        and this turn's earlier beats that state a time or an amount."""
+        found: list[str] = []
+        read_clock = books[0].clock
+        if read_clock is not None and read_clock.minute is not None:
+            hours, minutes = divmod(read_clock.minute, 60)
+            found.append(f"The clock reads {hours:02d}:{minutes:02d}.")
+        stating = [
+            *read_.scene_doings,
+            *((typed_do,) if typed_do else ()),
+            *(b.text for b in before if b.kind in ("do", "narration")),
+        ]
+        for text in stating:
+            if skip_rules.stated_minutes(text) is not None or (
+                read_clock is not None and timing_rules.narrated_minutes(text)
+            ):
+                found.append(text)
+        return found
+
+    async def time_skips(read_: TurnRead, target: Checked, before: Sequence[TurnBeat]) -> None:
+        """#199 (FR-CLOCK-7,8; NFR-PERF-7 (5)): ``target``'s skips not yet decided, declared and
+        undeclared, classified and authorized (``time_estimation``): an accepted one stays on
+        (or joins) its beat with ``initiated_by``, an undeclared one estimated by one
+        ``time_estimation`` call each (optional work, pre-allocated); a refused one is a
+        ``unprompted_skip`` finding the turn's next repair fixes; an unestimated one is removed
+        at once by the deterministic rung (``unestimated_skip_removed``). Runs before the
+        due-event check (``time_stops``), which every accepted skip then meets."""
+        read_clock = books[0].clock
+        if read_clock is None:
+            return
+        fresh = [b for b in target.beats if b.beat not in skip_seen]
+        skip_seen.update(b.beat for b in fresh)
+        found = skipping.candidates(fresh, read_clock)
+        if not found:
+            budget.settle_optional(skipping.TIME_ESTIMATION_KIND)
+            return
+        player = " ".join(t for t in (typed_say, typed_do) if t)
+        directives = [read_.director] if read_.director else []
+        if fluents[0] is None:
+            async with db.connect() as conn:
+                registry = await load_registry(conn, story_id)
+                lookup = KeyedLookup(conn, read_set)
+                fluents[0] = tuple(
+                    await skipping.fluent_texts(
+                        lookup,
+                        story_id,
+                        registry,
+                        subjects=[c.id for c in story.cast],
+                        story_time=read_clock.start,
+                    )
+                )
+        everything = [*before, *target.beats]
+        route = routes_of(settings).get(skipping.TIME_ESTIMATION_PURPOSE)
+        decided: list[skipping.Decision] = []
+        for candidate in found:
+            earlier = [
+                *read_.scene_doings,
+                *((typed_do,) if typed_do else ()),
+                *(b.text for b in everything if b.kind == DO and 1 < b.beat < candidate.beat),
+            ]
+            known = skipping.established_activities(earlier, fluents[0] or ())
+            decision = skipping.decide(
+                candidate,
+                player_input=player,
+                directives=directives,
+                cap=read_clock.max_unprompted,
+                established=known,
+            )
+            if decision.outcome == "estimate":
+                held = budget.held
+                cause = "budget"
+                estimate: skipping.Estimate | None = None
+                if budget.try_optional(skipping.TIME_ESTIMATION_KIND, 1):
+                    cause = "time_estimation"
+                    try:
+                        mine = skip_rules.activities(candidate.text)
+                        estimate = await skipping.estimate(
+                            models,
+                            narrated_text=candidate.text,
+                            activity_context=" ".join(
+                                t for t in earlier if skip_rules.activities(t) & mine
+                            ),
+                            established_times=scene_times(
+                                read_, [b for b in everything if b.beat < candidate.beat]
+                            ),
+                            budget=budget,
+                            route=route,
+                        )
+                    finally:
+                        budget.release_to(min(budget.held, held))
+                if estimate is None:
+                    decision = skipping.unestimated(candidate, decision.classified)
+                    target.degradation.append((skipping.UNESTIMATED_SKIP_REMOVED, cause))
+                else:
+                    decision = skipping.decide(
+                        candidate,
+                        player_input=player,
+                        directives=directives,
+                        cap=read_clock.max_unprompted,
+                        established=known,
+                        estimated=estimate,
+                    )
+            decided.append(decision)
+        budget.settle_optional(skipping.TIME_ESTIMATION_KIND)
+        skip_decisions.extend(decided)
+        target.beats = [skipping.applied(b, decided) for b in target.beats]
+        by_number = {b.beat: b for b in target.beats}
+        refused = [skipping.finding_of(d) for d in decided if d.outcome == "refuse"]
+        refused_skips.update(f.beat for f in refused)
+        target.checked += state_effects.claims_of(
+            refused, [by_number[f.beat] for f in refused], f"{op.operation_id}:skip"
+        )
+        gone = [skipping.finding_of(d) for d in decided if d.outcome == "unestimated"]
+        for number in sorted({f.beat for f in gone}):
+            mine_ = [f for f in gone if f.beat == number]
+            beat = next(b for b in target.beats if b.beat == number)
+            claims = state_effects.claims_of(mine_, [beat], f"{op.operation_id}:unestimated")
+            _merge_repair(target, repair_ladder.settled(beat, claims))
+
+    def settle_skips(target: Checked) -> None:
+        """#199: each beat whose skip was refused stays in the present: one the ladder could
+        not run for (its repair module off) is settled by the deterministic rung (its skip's
+        sentence removed), and every such beat keeps no skip of its own."""
+        stuck: dict[int, list[CheckedClaim]] = {}
+        for c in target.checked:
+            finding = None if c.result is None else c.result.state_finding
+            if finding is not None and finding.tag == UNPROMPTED_SKIP and c.claim.beat is not None:
+                stuck.setdefault(c.claim.beat, []).append(c)
+        for b in [b for b in target.beats if b.beat in stuck]:
+            _merge_repair(target, repair_ladder.settled(b, stuck[b.beat]))
+        target.beats = [
+            skipping.stripped(b) if b.beat in refused_skips else b for b in target.beats
         ]
 
     async def stage_render(
@@ -4626,6 +4779,10 @@ async def play(
             )
         stop_marks.clear()
         surfacing.clear()
+        skip_seen.clear()
+        skip_decisions.clear()
+        refused_skips.clear()
+        fluents[0] = None
         clocking.attempt(story_id, books[0].clock)
         book = books[0]
         # #205: the attempt's external reads at the turn's input (every player-visible external
@@ -5054,6 +5211,12 @@ async def play(
                     )
                 if k == 0:
                     released[:] = [rendered_k]
+                wanted = 0 if books[0].clock is None else skipping.undeclared(rendered_k.beats)
+                if wanted:
+                    # #199: the render's undeclared skips' estimates, pre-allocated before its
+                    # verification so an earlier entailment call cannot starve them.
+                    kind = skipping.TIME_ESTIMATION_KIND
+                    budget.pending[kind] = budget.pending.get(kind, 0) + wanted
                 checked_k = await check_turn(
                     db,
                     models,
@@ -5107,6 +5270,9 @@ async def play(
                         do=do,
                         read_set=read_set,
                     )
+                if not last:
+                    # #199: the render's skips decided before the due events see them.
+                    await time_skips(read_k, checked_k, [] if merged is None else merged.beats)
                 if not last and not simultaneous:
                     # #196 (FR-CLOCK-17): the render's advances checked against the due events
                     # before it is staged, so a later primary renders after the cutoff.
@@ -5146,6 +5312,7 @@ async def play(
                         book=book,
                         stage=turn_stage,
                     )
+                    settle_skips(checked_k)
                     reach_stops(checked_k)
                     checked_k.staged = _restaged(() if merged is None else merged.staged, checked_k)
                     if simultaneous and k == 0:
@@ -5205,6 +5372,8 @@ async def play(
         # #187: the whole turn's effects, the follow-up's included, dry-run again.
         await read_states(checked, turn_stage, read_k.turn)
         check_states(checked, turn_stage)
+        # #199: the last render's and the follow-up's skips, decided before the due events.
+        await time_skips(read_k, checked, [])
         if not simultaneous:
             # #196: the last render's and the follow-up's advances against the due events.
             time_stops(
@@ -5249,6 +5418,7 @@ async def play(
             book=book,
             stage=turn_stage,
         )
+        settle_skips(checked)
         reach_stops(checked)
         clock.add("repair", time.perf_counter() - repairing)
         if simultaneous:
@@ -6089,6 +6259,9 @@ async def play(
             if report["clock"] is not None and cuts[0] is not None:
                 # #196: the turn's stops and lifecycle steps (offsets and counts only).
                 report["clock"]["stops"] = stopping.report(cuts[0][0], lifecycle_plan)
+            if report["clock"] is not None:
+                # #199: the turn's skips (counts only).
+                report["clock"]["skips"] = skipping.report(skip_decisions)
         if pins.policies:
             # #206 (FR-EXT-7): the unavailability policy each unanswered external read took.
             report[unavailability.REPORT_KEY] = pins.policy_report()
@@ -6163,7 +6336,7 @@ async def play(
                 for v in r.violations
                 if v.result is not None
                 and (f := v.result.state_finding) is not None
-                and f.tag != TIME_STOP
+                and f.tag not in (TIME_STOP, UNPROMPTED_SKIP, UNESTIMATED_SKIP)
             ]
             report[state_effects.STATE_EFFECTS] = {
                 **state_effects.report(

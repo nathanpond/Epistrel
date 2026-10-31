@@ -311,8 +311,9 @@ def count_repair(rung: int, repair_class: str) -> None:
 TURN_DEGRADATION = Counter(
     "epistrel_turn_degradation",
     "Degradation steps committed turns took, by step (NFR-PERF-7's ladder: skip_polish, "
-    "repair_deterministic, testimony_defaulted, entailment_safe_disposition, primaries_reduced, "
-    "primaries_deferred, beat_replaced_safe_fallback; and every other stage's: safe_fallback, "
+    "repair_deterministic, testimony_defaulted, entailment_safe_disposition, "
+    "unestimated_skip_removed, primaries_reduced, primaries_deferred, "
+    "beat_replaced_safe_fallback; and every other stage's: safe_fallback, "
     "salience_skipped, narrator_skipped, ...).",
     ("step",),
 )

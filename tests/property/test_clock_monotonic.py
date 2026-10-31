@@ -46,6 +46,7 @@ from epistrel.core.errors import ClockBackward
 from epistrel.core.events import Operation
 from epistrel.core.membership import POSITION_MAX, Position
 from epistrel.core.resolution.time import TimeBasis
+from epistrel.core.world_clock import skips as rules
 from epistrel.core.world_clock import stops
 from epistrel.core.world_clock.timing import (
     SEQUENTIAL,
@@ -55,6 +56,7 @@ from epistrel.core.world_clock.timing import (
     derive,
     time_turn,
 )
+from epistrel.orchestrator.structured import time_estimation as te
 from tests import canon_support as c
 from tests import clock_support as ck
 from tests import state_support as ss
@@ -513,3 +515,127 @@ def test_clock_monotonic__stops(
             for e in pending
         ]
         start = timing.turn_end
+
+
+# -- #199: skip authority --------------------------------------------------------------------
+
+PLAYER_LINES = (
+    "Tell me more.",
+    "I glance at Jenni.",
+    "We wait two hours.",
+    "I fall asleep on the couch.",
+    "Skip to the next day.",
+)
+SCENE_DOINGS = (
+    "I put on a movie for us.",
+    "She starts cooking supper.",
+    "I look around the room.",
+    "We drive north.",
+)
+SKIP_LINES = (
+    "They watch the rest of the movie in silence.",
+    "An hour later, the doorbell rings.",
+    "They fall asleep on the couch and wake at dawn.",
+    "She cooks on, and by the time the stew is ready the lamps are lit.",
+    "They drive for two hours.",
+)
+skip = st.tuples(
+    st.sampled_from(SKIP_LINES),
+    st.booleans(),  # declared (else estimated)
+    st.integers(1, 900),  # minutes
+    st.floats(0.0, 1.0),  # the estimate's confidence
+)
+
+
+@pytest.mark.part("M6", "FR-CLOCK-8,12")
+@settings(max_examples=EXAMPLES, deadline=None)
+@given(
+    st.lists(skip, min_size=1, max_size=5),
+    st.sampled_from(PLAYER_LINES),
+    st.lists(st.sampled_from(SCENE_DOINGS), max_size=3),
+    st.integers(0, 600),
+    st.integers(0, 2_000),
+)
+def test_clock_monotonic__skips(
+    found: list[tuple[str, bool, int, float]],
+    player: str,
+    doings: list[str],
+    cap: int,
+    start: int,
+) -> None:
+    """#199's clauses (FR-CLOCK-8,12): for any skips a render narrates (declared, or estimated
+    at any confidence), any player input and scene, and any ``max_unprompted_skip_minutes``,
+    the live turn's decisions (``orchestrator.structured.time_estimation.decide``) accept no
+    model-initiated skip that exceeds the cap (or meets a cap of 0) or narrates no established
+    activity; the clock moves by exactly the accepted skips (a refused or unestimated skip,
+    over the cap or not, is never in the fold); and replay (``derive`` from the recorded
+    advances) reproduces the clock, each estimate's source and meta, with no estimation call.
+    Complement: a player-initiated skip is accepted whatever its length."""
+    established = te.established_activities([*doings])
+    calls = Counter[str]()
+
+    def estimated(minutes: int, confidence: float) -> te.Estimate | None:
+        calls["time_estimation"] += 1
+        if confidence < rules.MIN_CONFIDENCE:
+            return None
+        return te.Estimate(minutes, "an estimate", confidence, "stub", "0" * 64)
+
+    advances: list[TimedAdvance] = []
+    accepted_minutes = 0
+    for n, (text, declared, minutes, confidence) in enumerate(found):
+        candidate = te.Candidate(
+            beat=2 + n,
+            index=0 if declared else None,
+            span=None,
+            text=text,
+            minutes=minutes if declared else None,
+        )
+        decision = te.decide(candidate, player_input=player, cap=cap, established=established)
+        if decision.outcome == "estimate":
+            made = estimated(minutes, confidence)
+            decision = (
+                te.unestimated(candidate, decision.classified)
+                if made is None
+                else te.decide(
+                    candidate,
+                    player_input=player,
+                    cap=cap,
+                    established=established,
+                    estimated=made,
+                )
+            )
+        classified = decision.classified
+        if decision.outcome != "accept":
+            assert isinstance(classified, rules.ModelInitiated) or decision.outcome == "unestimated"
+            continue
+        if declared:
+            moved, source = minutes, StateChangeSource.DECLARED_SKIP
+            meta: dict[str, Any] | None = {"initiated_by": classified.initiated_by}
+        else:
+            supplied = decision.advance
+            assert supplied is not None
+            assert supplied.minutes is not None
+            assert supplied.source is not None
+            moved, source = supplied.minutes, StateChangeSource(supplied.source)
+            meta = None if supplied.meta is None else dict(supplied.meta)
+        if isinstance(classified, rules.ModelInitiated):
+            # No accepted model-initiated skip exceeds the cap or lacks an established activity.
+            assert 0 < moved <= cap
+            assert classified.activities & established
+        else:
+            assert classified.initiated_by == "player"
+        advances.append(TimedAdvance(0, minutes=moved, source=source, meta=meta))
+        accepted_minutes += moved
+    beat = TimedBeat(2, 1 + len(found), 0, tuple(advances))
+    timing = time_turn([beat], {}, SEQUENTIAL, start)
+    # The clock moves by exactly the accepted skips: nothing refused is in the fold.
+    assert timing.turn_end == start + accepted_minutes
+    assert [a.minutes for a in timing.advances] == [a.minutes for a in advances]
+    # Replay from the recorded advances: the same clock, sources and meta; no estimate.
+    before = calls["time_estimation"]
+    replayed = derive(timing.advances, timing.layout, {}, SEQUENTIAL, start)
+    assert replayed.turn_end == timing.turn_end
+    assert [(a.source, a.meta) for a in replayed.advances] == [
+        (a.source, a.meta) for a in timing.advances
+    ]
+    assert calls["time_estimation"] == before

@@ -34,6 +34,7 @@ from epistrel.core.tables import operations
 from epistrel.core.verify import shadow
 from epistrel.core.verify.detect import DetectBeat
 from epistrel.core.verify.rules import VerdictKind
+from tests import clock_support as ck
 from tests import detection_support as ds
 from tests import effect_support as es
 from tests import multi_support as ms
@@ -329,6 +330,9 @@ async def test_s_extract_adversarial__f(
 # -- the M6 part (#190): tracked States ---------------------------------------------------------
 
 M6_POCKETS = "She pockets the key on her way out."
+SKIP = "She cooks on, and by the time the stew is ready the lamps are lit."
+"""(d): an implied time skip in a subordinate clause (#199)."""
+STEW = {"minutes": 45, "reason": "A stew takes about three quarters of an hour.", "confidence": 0.7}
 OFFER = "Forty silver, final offer."
 PRICED = f"Linda wipes the counter. Linda names her price: {OFFER}"
 
@@ -397,6 +401,7 @@ async def test_s_extract_adversarial__m6(
     engine: AsyncEngine,
     mode: str,
     states_delivered: None,
+    clock_delivered: None,
     drained_embedding_jobs: None,
 ) -> None:
     """(a') Linda's ``do`` "She pockets the key on her way out" declares no effect, but the key
@@ -411,8 +416,14 @@ async def test_s_extract_adversarial__m6(
     partition, a speech act): she saw the narration state 40, so against the ledger's 50 her
     offer is a sincere error that stands, never repaired as a mismatch with the ledger.
 
-    Under both ``extraction_mode = always`` and ``gated``. ((d), an implied time skip, is
-    #199's clause of this part.)"""
+    (d) (#199) With the world clock on, Linda starts cooking and then "cooks on, and by the time
+    the stew is ready the lamps are lit": an implied skip in a subordinate clause, with no time
+    advance declared. The ``time`` detector's ``elapsed`` hit makes it an undeclared skip (#190's
+    diff), routed to FR-CLOCK-7: one ``time_estimation`` call, whose answer (45 minutes) is
+    recorded as an ``estimate`` advance; the clause is not repaired (her cooking is established
+    in the scene, an earlier ``do``).
+
+    Under both ``extraction_mode = always`` and ``gated``."""
     settings = auth_settings(pg_url, model_adapter="stub")
     async with respond_client(settings, engine) as (client, epistrel):
         stub = epistrel.models.stub
@@ -483,3 +494,33 @@ async def test_s_extract_adversarial__m6(
         assert judged["speech"]["belief_relation"] == "consistent"
         assert not found["report"].get("repairs")
         assert OFFER in found["played"]["message"]["text"]
+
+        # -- (d) an implied time skip in a subordinate clause: detected, routed to FR-CLOCK-7.
+        await ck.set_level(engine, story, "on")
+        stub.reset()
+        ms.renders_for(
+            stub,
+            "Linda",
+            es.render(beat("do", "She starts cooking supper behind the stall."), beat("do", SKIP)),
+        )
+        stub.script("time_estimation", [json.dumps(STEW)])
+        answer = await respond(client, story, body(cal, "Hm?"))
+        assert answer.status_code == 200, answer.text
+        report = await turn_report(engine, story)
+        estimated = [
+            "\n".join(m.content for m in c.messages)
+            for c in stub.calls
+            if c.purpose == "time_estimation"
+        ]
+        assert len(estimated) == 1
+        assert SKIP.split(",")[1].strip() in estimated[0]
+        assert report["clock"]["skips"]["estimated"] == 1
+        assert not report.get("repairs")
+        assert SKIP in answer.json()["message"]["text"]
+        estimates = await rows(
+            engine,
+            "SELECT c.delta FROM state_changes c JOIN state_definitions d ON d.id = c.state_id "
+            "WHERE c.story_id = :s AND d.name = 'world_clock' AND c.source = 'estimate'",
+            s=story,
+        )
+        assert [e.delta for e in estimates] == [45]

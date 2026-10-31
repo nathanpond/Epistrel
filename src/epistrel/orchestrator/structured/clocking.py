@@ -16,8 +16,10 @@ After reconciliation, before the turn commits, ``timed_turn`` derives its timing
   the next such time once the anchor fixes the minute) at the step they name (else the beat's
   own), and each explicit time a ``say``, ``do`` or ``narration`` narrates ("at 15:10") at the
   beat's step, placed on the clock's day when the anchor fixes the minute (a time the anchor
-  cannot place moves nothing; #199 decides whether to estimate). A flashback beat's advances
-  are unchecked and move nothing.
+  cannot place moves nothing). A flashback beat's advances are unchecked and move nothing.
+  #199: an advance the engine supplied for an undeclared skip (an ``estimate``, or the
+  player's stated amount) carries its source and ``estimate_meta``
+  (``orchestrator.structured.time_estimation``).
 
 The commit's first step writes the timing's advances (``world_clock.record_turn``), and the
 operation carries the timing (``Operation.turn_times``) so every record the turn writes takes
@@ -37,7 +39,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core import world_clock
-from epistrel.core.enums import ClockMode
+from epistrel.core.enums import ClockMode, StateChangeSource
 from epistrel.core.turns.beats import TurnBeat
 from epistrel.core.world_clock import external_mode
 from epistrel.core.world_clock.anchor import Anchor, Clockwork
@@ -80,6 +82,10 @@ class ClockRead:
         proposed, never written)."""
         return ClockMode.PACED if self.external else self.mode
 
+    max_unprompted: int = 1440
+    """#199 (FR-CLOCK-8): the clock's ``max_unprompted_skip_minutes`` (0: no model-initiated
+    skip)."""
+
     @property
     def fixed(self) -> bool:
         """Whether the anchor fixes the time of day as the turn starts."""
@@ -105,6 +111,7 @@ async def read_clock(conn: AsyncConnection, story_id: str) -> ClockRead | None:
         clockwork=world_clock.clockwork(found),
         minute=minute_of_day(anchor, start),
         external=external_mode.is_external(definition),
+        max_unprompted=found.max_unprompted_skip_minutes,
     )
 
 
@@ -149,6 +156,9 @@ def _advances(clock: ClockRead, beat: TurnBeat) -> list[TimedAdvance]:
                     minutes=int(declared.minutes),
                     reason=declared.reason,
                     flashback=beat.flashback,
+                    # #199: an estimate's (or the player's stated amount's) source and meta.
+                    source=StateChangeSource(declared.source or StateChangeSource.DECLARED_SKIP),
+                    meta=declared.meta,
                 )
             )
         elif declared.to is not None and clock.minute is not None:
@@ -160,7 +170,13 @@ def _advances(clock: ClockRead, beat: TurnBeat) -> list[TimedAdvance]:
                 day_minutes=clock.clockwork.day_minutes,
             )
             found.append(
-                TimedAdvance(at, to_offset=target, reason=declared.reason, flashback=beat.flashback)
+                TimedAdvance(
+                    at,
+                    to_offset=target,
+                    reason=declared.reason,
+                    flashback=beat.flashback,
+                    meta=declared.meta,
+                )
             )
     if clock.minute is not None and beat.kind in PACED_KINDS:
         for minute in narrated_minutes(beat.text, clock.clockwork):

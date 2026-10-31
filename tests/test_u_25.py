@@ -214,13 +214,15 @@ async def station(
     return story, ids, made.json()["event"]["event_id"]
 
 
-async def play(client: Any, stub: Any, story: str, ids: dict[str, str]) -> dict[str, Any]:
+async def play(
+    client: Any, stub: Any, story: str, ids: dict[str, str], say: str = "We should hurry."
+) -> dict[str, Any]:
     answer = await respond(
         client,
         story,
         body(
             ids["Cal"],
-            "We should hurry.",
+            say,
             render_character_ids=[ids["Jenni"], ids["Bobby"]],
             interaction_mode="simultaneous",
         ),
@@ -260,7 +262,9 @@ async def test_u_25__turn(
                 ),
             ),
         )
-        found = await play(client, stub, story, ids)
+        # #199 (FR-CLOCK-8): the player's input invites the wait, so Bobby's skip is the
+        # player's, not one his render starts on its own.
+        found = await play(client, stub, story, ids, say="We wait for the train.")
         assert found["clock"]["after"]["offset"] == CUTOFF
         # One regeneration under the cutoff (the ladder's other repairs are its own).
         stopped = [p for p in es.regenerations(stub) if "Time stops at 15:10" in p]

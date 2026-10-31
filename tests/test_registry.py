@@ -66,7 +66,8 @@ def test_m2_purposes_are_delivered_with_tagged_schemas() -> None:
     # defaults to (#51's note), commitment's salience_detection (#146), claim detection's
     # extraction_backstop (#148) and the repair ladder's regeneration (#151), which shares
     # generation's row (docs/02 §5: usually the same model). M5 delivers testimony's
-    # belief_adjudication (#162), which defaults to entailment's row (FR-MODEL-2).
+    # belief_adjudication (#162), which defaults to entailment's row (FR-MODEL-2). M6 delivers
+    # the clock's time_estimation (#199), which defaults to extraction_backstop's row.
     assert set(DELIVERED) == {
         "generation",
         "guardrail_check",
@@ -80,6 +81,7 @@ def test_m2_purposes_are_delivered_with_tagged_schemas() -> None:
         "salience_detection",
         "extraction_backstop",
         "regeneration",
+        "time_estimation",
     }
     for purpose in DELIVERED.values():
         parents = {
@@ -87,6 +89,7 @@ def test_m2_purposes_are_delivered_with_tagged_schemas() -> None:
             "rating_suggestion": "guardrail_check",
             "lite_summary": "consolidation",
             "regeneration": "generation",
+            "time_estimation": "extraction_backstop",
         }
         expected = parents.get(purpose.name, "default")
         assert purpose.default_model_key == expected
@@ -111,14 +114,14 @@ def test_registry_enumerates_every_named_purpose() -> None:
 
 def test_reserved_and_unknown_purposes_are_refused() -> None:
     with pytest.raises(UnknownPurpose) as reserved:
-        get_delivered("time_estimation")
+        get_delivered("image_prompt")
     details = dict(reserved.value.details)
     assert len(details.pop("errors")) == 1
     assert details == {
         "field": "body",
-        "purpose": "time_estimation",
+        "purpose": "image_prompt",
         "reason": "reserved",
-        "milestone": "M6",
+        "milestone": "M8",
     }
     with pytest.raises(UnknownPurpose) as unknown:
         get_delivered("nope")

@@ -449,6 +449,8 @@ def completeness_of(
             None if _narrator(b) else b.character_id,
             _narrator(b),
             b.attempt,
+            len(b.advances),
+            b.flashback,
         )
         for b in beats
         if b.beat > 1

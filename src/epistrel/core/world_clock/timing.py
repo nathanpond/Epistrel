@@ -23,7 +23,8 @@ turn_start)`` derives, with no I/O and no model call:
   end. The turn ends at the last render's end (``sequential``) or the latest end
   (``simultaneous``): the clock value the turn commits.
 - **The recorded advances** (``TurnTiming.advances``, one per accepted advance and per non-zero
-  pacing increment, ``source = declared_skip | pacing``) and where each sits: in ``sequential``
+  pacing increment, ``source = declared_skip | pacing``; #199: an estimate's ``estimate``, the
+  player's stated amount ``player``, each with its ``meta``) and where each sits: in ``sequential``
   mode a step's advance just before the step (``(first_beat, step - 1)``; a step-0 advance after
   the previous beat), a pacing increment at the end of its render (``(last_beat,
   POSITION_MAX)``), so the clock's fold at a step's own position is its start; in
@@ -49,6 +50,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
 from epistrel.core.enums import StateChangeSource
 from epistrel.core.membership import POSITION_MAX
@@ -114,6 +116,12 @@ class TimedAdvance:
     reason: str = ""
     narrated: bool = False
     flashback: bool = False
+    source: StateChangeSource = StateChangeSource.DECLARED_SKIP
+    """#199: the advance's source: ``declared_skip``, an ``estimate`` (FR-CLOCK-7) or the
+    ``player``'s stated amount."""
+    meta: Mapping[str, Any] | None = None
+    """#199: what the change row records beside it (``estimate_meta``: an estimate's reason,
+    confidence, model and prompt hash; who initiated the skip, ``initiated_by``)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +163,8 @@ class Advance:
     step_position: int
     stopped_by: str | None = None
     """#196: the scheduled event whose stop cut this advance short (FR-CLOCK-16)."""
+    meta: Mapping[str, Any] | None = None
+    """#199: the change row's ``estimate_meta`` (``TimedAdvance.meta``)."""
 
     @property
     def position(self) -> tuple[int, int]:
@@ -234,13 +244,13 @@ def time_turn(
     beat_times: list[BeatTime] = []
     step_starts: list[tuple[tuple[int, int], int]] = []
     contradicted: list[tuple[int, TimedAdvance]] = []
-    accepted: list[list[tuple[int, int, str, str | None]]] = []
+    accepted: list[list[tuple[int, int, str, str | None, TimedAdvance]]] = []
     skipping: list[bool] = []
     cursor = turn_start
     for n, beat in enumerate(beats):
         start = turn_start if simultaneous else cursor
         at = start
-        mine: list[tuple[int, int, str, str | None]] = []
+        mine: list[tuple[int, int, str, str | None, TimedAdvance]] = []
         moving = False
         for step in _steps_of([*steps.get(beat.first_beat, ()), *(a.step for a in beat.advances)]):
             for advance in beat.advances:
@@ -263,7 +273,7 @@ def time_turn(
                 if moved == 0:
                     continue
                 at += moved
-                mine.append((step, moved, advance.reason, stopped))
+                mine.append((step, moved, advance.reason, stopped, advance))
             step_starts.append(((n, step), at))
         if moving:
             end = at
@@ -307,16 +317,16 @@ def _step_position(beat: TimedBeat, step: int) -> tuple[int, int]:
 def _recorded(
     beats: Sequence[TimedBeat],
     beat_times: Sequence[BeatTime],
-    accepted: Sequence[Sequence[tuple[int, int, str, str | None]]],
+    accepted: Sequence[Sequence[tuple[int, int, str, str | None, TimedAdvance]]],
     *,
     simultaneous: bool,
 ) -> tuple[Advance, ...]:
     def of(n: int, at: tuple[int, int] | None) -> list[Advance]:
         beat, found = beats[n], []
-        for step, moved, reason, stopped in accepted[n]:
+        for step, moved, reason, stopped, advance in accepted[n]:
             where = at if at is not None else _step_position(beat, step)
             found.append(
-                Advance(moved, StateChangeSource.DECLARED_SKIP, n, step, reason, *where, stopped)
+                Advance(moved, advance.source, n, step, reason, *where, stopped, meta=advance.meta)
             )
         minutes = beat_times[n].end - beat_times[n].start
         if not accepted[n] and minutes > 0:
@@ -391,7 +401,13 @@ def derive(
                 last,
                 pacing=sum(a.minutes for a in mine if a.step is None),
                 advances=tuple(
-                    TimedAdvance(step=int(a.step), minutes=a.minutes, reason=a.reason)
+                    TimedAdvance(
+                        step=int(a.step),
+                        minutes=a.minutes,
+                        reason=a.reason,
+                        source=a.source,
+                        meta=a.meta,
+                    )
                     for a in mine
                     if a.step is not None
                 ),

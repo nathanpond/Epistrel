@@ -1,0 +1,26 @@
+{#- Time estimation (FR-CLOCK-7; #199): one undeclared narrated skip. The model proposes how many
+    minutes the sentence lets pass, from what the scene established; the engine validates the
+    answer, records it with its reason and confidence, and still decides whether the skip may
+    stand (FR-CLOCK-8). -#}
+{% block system %}
+You estimate how much story time one sentence of a story lets pass. Use the activity the scene
+established and the times the story established (when something started, how long it runs,
+what time it is now); otherwise use ordinary knowledge of how long such things take. Count only
+the time the sentence itself skips, from now. Give a short reason. When nothing tells you how
+long it takes, give a low confidence. Answer only with a JSON object
+{"minutes": <whole minutes, 0 or more>, "reason": "<one short sentence>", "confidence": 0.0-1.0}.
+{% endblock %}
+{% block user %}
+## Established times
+{% for line in established_times %}
+- {{ line }}
+{% else %}
+- (none)
+{% endfor %}
+
+## Activity
+{{ activity_context or "(none established)" }}
+
+## Sentence
+{{ narrated_text }}
+{% endblock %}

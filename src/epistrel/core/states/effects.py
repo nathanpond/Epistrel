@@ -84,6 +84,16 @@ TIME_STOP: Final = "time_stop"
 """#196 (FR-CLOCK-16): a beat placed after a due scheduled event's stop: regenerated to end at
 or before the cutoff (the repair reason ``time_stop``); its deterministic rung is the fallback
 line, never the beat as it was."""
+UNPROMPTED_SKIP: Final = "unprompted_skip"
+"""#199 (FR-CLOCK-8): a model-initiated skip that narrates no established activity, exceeds
+``max_unprompted_skip_minutes`` or meets a cap of 0: its advance is removed and the beat
+repaired to stay in the present (the repair reason ``unprompted_skip``; its deterministic rung
+removes the skip's sentence)."""
+UNESTIMATED_SKIP: Final = "unestimated_skip"
+"""#199 (NFR-PERF-7 (5)): an undeclared skip the turn could not estimate (no budget, no answer,
+a confidence under ``core.world_clock.skips.MIN_CONFIDENCE``): its sentence is removed
+deterministically, no model repair and no guessed duration (degradation
+``unestimated_skip_removed``)."""
 INVALID_EFFECT = "invalid_effect"
 """The constraint of a repaired render's effect that names no State it may change."""
 UNDEFINED = "undefined"
@@ -118,6 +128,8 @@ Tag = Literal[
     "state_unnarrated",
     "time_stop",
     "external_outcome_unconfirmed",
+    "unprompted_skip",
+    "unestimated_skip",
 ]
 TAGS: frozenset[str] = frozenset(
     {
@@ -129,6 +141,8 @@ TAGS: frozenset[str] = frozenset(
         STATE_UNNARRATED,
         TIME_STOP,
         EXTERNAL_OUTCOME_UNCONFIRMED,
+        UNPROMPTED_SKIP,
+        UNESTIMATED_SKIP,
     }
 )
 PROSE_TAGS: frozenset[str] = frozenset({STATE_UNNARRATED, EXTERNAL_OUTCOME_UNCONFIRMED})
@@ -1056,6 +1070,8 @@ __all__ = [
     "TAGS",
     "TIME_STOP",
     "UNDEFINED",
+    "UNESTIMATED_SKIP",
+    "UNPROMPTED_SKIP",
     "Finding",
     "Key",
     "Mention",

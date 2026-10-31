@@ -38,6 +38,11 @@ detected claim's id kept on the finding), so one claim yields one ``state_undecl
 render to narrate the change, and the deterministic rung appends one line built from the
 effect's reason (``narration_line``).
 
+- **``skips``** (#199, FR-CLOCK-7): ``undeclared_skips`` over the turn's beats, a ``do`` or
+  narration beat that narrates elapsed time (the ``time`` detector's ``elapsed`` hit, in an
+  asserted sentence) with no time advance declared: the Orchestrator's ``time_estimation``
+  proposes its duration (``orchestrator.structured.time_estimation``).
+
 Pure: no I/O, no story text in any log (this module logs nothing).
 """
 
@@ -91,6 +96,10 @@ class Beat:
     actor: str | None = None
     narrator: bool = False
     attempt: bool = False
+    advances: int = 0
+    """#199: the time advances the beat declares (a skip it declares is not undeclared)."""
+    flashback: bool = False
+    """#199: a flashback's elapsed time is not the present's (no skip)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +145,23 @@ class Diff:
 
     undeclared: tuple[Undeclared, ...] = ()
     unnarrated: tuple[Declared, ...] = ()
+    skips: tuple[UndeclaredSkip, ...] = ()
+    """#199 (FR-CLOCK-7): ``undeclared_skips`` over the turn's beats."""
+
+
+@dataclass(frozen=True, slots=True)
+class UndeclaredSkip:
+    """#199 (FR-CLOCK-7): a beat narrating elapsed time (the ``time`` detector's ``elapsed``
+    hit, ``core.verify.detect.elapsed_spans``) with no time advance declared: the beat, the
+    sentence holding the hit (``span``) and the hit itself (``hit``)."""
+
+    beat: int
+    span: tuple[int, int]
+    hit: tuple[int, int]
+
+
+UNDECLARED_SKIP: Final = "undeclared_skip"
+"""#199: what ``diff`` calls an ``UndeclaredSkip`` (FR-CLOCK-7's flag)."""
 
 
 # -- reading prose -----------------------------------------------------------------------------
@@ -434,7 +460,35 @@ def diff(
         for d in declared_effects
         if needs_narration(d, definitions) and not narrated_by(d, definitions, prose, names)
     )
-    return Diff(tuple(undeclared), unnarrated)
+    return Diff(tuple(undeclared), unnarrated, undeclared_skips(beats))
+
+
+SKIP_KINDS: Final = frozenset({"do", "narration"})
+"""#199: the beats whose elapsed time moves the clock: a ``say``'s or a ``think``'s is talk
+("we could talk until six"), never the scene's time passing."""
+
+
+def undeclared_skips(beats: Sequence[Beat]) -> tuple[UndeclaredSkip, ...]:
+    """#199 (FR-CLOCK-7): each ``do`` or narration beat that narrates elapsed time
+    (``elapsed_spans``) in an asserted sentence (no question, negation, conditional or modal)
+    and declares no time advance: one ``UndeclaredSkip`` per beat, at its first such sentence.
+    A flashback and an attempt narrate no skip."""
+    from epistrel.core.verify.detect import elapsed_spans
+
+    found: list[UndeclaredSkip] = []
+    for beat in beats:
+        if beat.kind not in SKIP_KINDS or beat.advances or beat.flashback or beat.attempt:
+            continue
+        for start, end in sentences(beat.text):
+            sentence = beat.text[start:end]
+            if sentence.rstrip().endswith("?") or rules.suppressed(sentence):
+                continue
+            hits = elapsed_spans(sentence)
+            if hits:
+                hit = (start + hits[0][0], start + hits[0][1])
+                found.append(UndeclaredSkip(beat.beat, (start, end), hit))
+                break
+    return tuple(found)
 
 
 # -- the deterministic narration ---------------------------------------------------------------
@@ -463,12 +517,15 @@ __all__ = [
     "APPROXIMATION",
     "GAIN",
     "LOSS",
+    "SKIP_KINDS",
     "STATE_UNNARRATED",
+    "UNDECLARED_SKIP",
     "Beat",
     "Declared",
     "Diff",
     "StateRef",
     "Undeclared",
+    "UndeclaredSkip",
     "change_sentence",
     "covers",
     "diff",
@@ -476,4 +533,5 @@ __all__ = [
     "narrated_by",
     "narration_line",
     "needs_narration",
+    "undeclared_skips",
 ]

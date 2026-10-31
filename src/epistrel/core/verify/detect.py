@@ -142,6 +142,10 @@ RISK_CATEGORIES: frozenset[str] = frozenset(
     {"possession", "transfer", "quantity", "time", "protected_content"}
 )
 """A detector hit of one of these flags its beat for ``gated`` extraction."""
+ELAPSED = "elapsed"
+"""#199 (FR-CLOCK-7): the ``time`` detector's hit kind for a phrase narrating elapsed time
+(``BeatDetection.elapsed``): no claim and no flag; ``core.states.completeness.undeclared_skips``
+reads it as an undeclared skip when the beat declares no time advance."""
 INCOMPLETE = "incomplete"
 """The flag of a ``say``/``do`` beat that declared no proposition."""
 UNCOVERED_MENTION = "uncovered_mention"
@@ -476,6 +480,10 @@ class BeatDetection:
     hits: Mapping[str, int] = field(default_factory=dict)
     noise: int = 0
     flags: tuple[str, ...] = ()
+    elapsed: tuple[tuple[int, int], ...] = ()
+    """#199 (FR-CLOCK-7): the spans of the beat that narrate elapsed time (``elapsed_spans``; a
+    ``time`` hit of kind ``elapsed``, never a claim): none on a flashback, whose time is not the
+    present's."""
 
     @property
     def flagged(self) -> bool:
@@ -1044,6 +1052,70 @@ def _times(beat: _Beat, scene_entity: str | None) -> list[tuple[str, ClaimSketch
     return found
 
 
+_AMOUNT: Final = (
+    r"(?:a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|"
+    r"thirty|forty|forty-five|fifty|sixty|ninety|a\s+few|a\s+couple\s+of|several|\d+|"
+    r"half\s+an?|another)"
+)
+_DURATION: Final = rf"{_AMOUNT}\s+(?:more\s+)?(?:minute|hour|day|week|month|year)s?"
+_PASSING: Final = (
+    r"(?:later|pass(?:es|ed)?|go(?:es)?\s+by|went\s+by|slip(?:s|ped)?\s+(?:by|away)|"
+    r"drag(?:s|ged)?\s+(?:on|by)|wear(?:s)?\s+on|wore\s+on|crawl(?:s|ed)?\s+by)"
+)
+_ACTIVITIES: Final = (
+    r"(?:movie|film|show|episode|game|match|evening|night|day|afternoon|morning|meal|dinner|"
+    r"lunch|breakfast|drive|ride|trip|journey|flight|shift|concert|play|lecture|class|meeting|"
+    r"party|walk|hike|session|book|chapter|wait)"
+)
+ELAPSED_PATTERNS: Final = (
+    # "twenty minutes later", "two hours pass", "an hour goes by"
+    rf"\b{_DURATION}\s+{_PASSING}\b",
+    # "for an hour", "after twenty minutes", "over the next two hours"
+    rf"\b(?:for|after|over|within)\s+(?:the\s+next\s+|nearly\s+|almost\s+|about\s+)?"
+    rf"{_DURATION}\b",
+    # "the drive takes twenty minutes", "they spend an hour"
+    rf"\b(?:take|takes|took|taking|spend|spends|spent|spending|last|lasts|lasted)\s+"
+    rf"(?:about\s+|nearly\s+|almost\s+|around\s+|another\s+)?{_DURATION}\b",
+    # "hours later", "some time later", "a while later"
+    r"\b(?:hours|minutes|days|weeks|much|some\s+time|a\s+while|not\s+long)\s+later\b",
+    # "the rest of the movie"
+    rf"\bthe\s+rest\s+of\s+the\s+{_ACTIVITIES}\b",
+    # "later that night"
+    r"\blater\s+that\s+(?:night|evening|day|morning|afternoon)\b",
+    # "the next morning", "the following day"
+    r"\bthe\s+(?:next|following)\s+(?:morning|day|evening|night|afternoon|week)\b",
+    # "until the diner closes", "until dawn", "until 6"
+    r"\b(?:until|till)\s+(?:the\s+[\w'\u2019]+\s+(?:closes|close|closed|ends|end|ended|"
+    r"finishes|finish|finished|is\s+over|was\s+over|comes|came|arrives|arrived|rolls|roll|"
+    r"rolled|runs\s+out|ran\s+out)|dawn|daybreak|sunrise|sunset|dusk|nightfall|morning|"
+    r"midnight|noon|late|evening|the\s+small\s+hours|the\s+early\s+hours|"
+    r"\d{1,2}(?::\d{2})?(?:\s*[ap]\.?m\.?)?(?![\w:]))",
+    # a subordinate clause: "by the time the kettle has boiled twice"
+    r"\bby\s+the\s+time\b",
+    # "the night wears on", "the afternoon slips away"
+    rf"\b(?:the\s+)?(?:night|hours|minutes|evening|afternoon|day|morning)\s+{_PASSING}\b",
+    # "wake at dawn", "woke to the morning"
+    r"\b(?:wake|wakes|woke|waking)\s+(?:up\s+)?(?:at|with|to|in)\s+(?:dawn|daybreak|"
+    r"sunrise|the\s+morning|first\s+light|noon)\b",
+    # "through the night"
+    r"\bthrough\s+the\s+(?:night|evening|afternoon|day)\b",
+)
+"""#199 (FR-CLOCK-7): the phrases that narrate elapsed time beyond a beat's spoken length,
+the ``time`` detector's ``elapsed`` hits (English, like every detector table)."""
+
+
+@cache
+def _elapsed_pattern() -> re.Pattern[str]:
+    return re.compile("|".join(f"(?:{p})" for p in ELAPSED_PATTERNS), re.IGNORECASE)
+
+
+def elapsed_spans(text: str) -> tuple[tuple[int, int], ...]:
+    """#199: the ``[start, end)`` spans of ``text`` that narrate elapsed time ("they watch the
+    rest of the movie", "an hour later", "until the diner closes", "by the time …"), in text
+    order and never overlapping."""
+    return tuple(m.span() for m in _elapsed_pattern().finditer(text))
+
+
 _WEEKDAYS: Final = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 
 
@@ -1230,8 +1302,12 @@ def _detect_beat(
     _verb_hits(work, env.registry, env)
     lone = _quantities(work)
     clocked = _times(work, env.scene_entity)
+    elapsed: tuple[tuple[int, int], ...] = ()
     if not beat.flashback:
         lone += clocked
+        elapsed = elapsed_spans(beat.text)
+        for _ in elapsed:
+            work.hit(ELAPSED)
     if env.basis.advances is not None and not beat.flashback:
         lone += _clock_statements(work, env)
     mention_claims = _mentions(work, _declared_ids(beat), env.scene_entity, seed=seed)
@@ -1311,6 +1387,7 @@ def _detect_beat(
         hits=dict(work.hits),
         noise=work.noise,
         flags=tuple(flags),
+        elapsed=elapsed,
     )
 
 
@@ -1550,6 +1627,8 @@ def merge(
 
 __all__ = [
     "DETECTOR_CATEGORIES",
+    "ELAPSED",
+    "ELAPSED_PATTERNS",
     "INCOMPLETE",
     "LAYERS",
     "MESSAGE",
@@ -1572,6 +1651,7 @@ __all__ = [
     "detect_message",
     "detect_render",
     "detect_seed",
+    "elapsed_spans",
     "merge",
     "parse_number",
     "parse_quantities",

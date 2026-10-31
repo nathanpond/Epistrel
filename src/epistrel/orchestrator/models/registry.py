@@ -976,6 +976,43 @@ class EmbeddingInputs(InputSchema):
     text: Annotated[str, C.MEMORY_TEXT]
 
 
+TIME_ESTIMATE_MAX_MINUTES = 525_960 * 10
+"""The longest duration one ``time_estimation`` answer may propose (ten years: the render
+schema's ``MAX_SKIP_MINUTES``)."""
+TIME_ESTIMATION_TEXT_MAX = 2_000
+"""The longest narrated text, or activity context, one ``time_estimation`` request carries."""
+TIME_ESTIMATION_MAX_TIMES = 20
+"""The most established times one ``time_estimation`` request carries."""
+
+
+class TimeEstimationInputs(InputSchema):
+    """One undeclared narrated skip (FR-CLOCK-7; #199): the sentence that implies elapsed time,
+    what the scene established about the activity, and the times the story established ("the
+    clock reads 19:40", "the movie started at 19:10 and runs about two hours"). Never a
+    definition, a memory, a policy, an age, a provider's value or eval text."""
+
+    narrated_text: Annotated[str, C.RENDER_TEXT] = Field(max_length=TIME_ESTIMATION_TEXT_MAX)
+    activity_context: Annotated[str, C.SCENE] = Field(
+        default="", max_length=TIME_ESTIMATION_TEXT_MAX
+    )
+    established_times: Annotated[list[str], C.SCENE] = Field(
+        default_factory=list, max_length=TIME_ESTIMATION_MAX_TIMES
+    )
+
+
+class TimeEstimate(BaseModel):
+    """The structured result of one ``time_estimation`` call: the proposed duration in minutes,
+    a short reason and a confidence. The defaults (0 minutes at confidence 0) are the most
+    conservative answer: an estimate under ``core.world_clock.skips.MIN_CONFIDENCE`` is no
+    estimate, and the skip is removed (NFR-PERF-7 (5))."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    minutes: int = Field(default=0, ge=0, le=TIME_ESTIMATE_MAX_MINUTES)
+    reason: str = Field(default="", max_length=500)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
 # -- purposes ---------------------------------------------------------------------------------
 
 
@@ -1294,13 +1331,30 @@ REGENERATION = Purpose(
 """``regeneration`` (#151): the repair ladder's constrained rewrite of one beat. Its answer is a
 ``response_schema`` the ladder passes (``orchestrator.repair.ladder.RegeneratedBeat``)."""
 
-RESERVED_PURPOSES: tuple[ReservedPurpose, ...] = (
-    ReservedPurpose(
-        "time_estimation",
-        "Best-guess duration of a narrated skip.",
-        "M6",
-        defaults_to="extraction_backstop",
+TIME_ESTIMATION = Purpose(
+    name="time_estimation",
+    description=(
+        "Proposes a best-guess duration, with its reason and a confidence, for a narrated skip "
+        "a beat implies but does not declare, from what the scene established; optional work "
+        "within the turn budget (FR-CLOCK-7)."
     ),
+    # FR-MODEL-2: defaults to the extraction backstop's model (its own row, then the
+    # backstop's, then the default's).
+    default_model_key=EXTRACTION_BACKSTOP.name,
+    capability_floor=CapabilityFloor(structured_output=StructuredOutput.PARSE_VALIDATE_RETRY),
+    input_schema=TimeEstimationInputs,
+    template="time_estimation.j2",
+    hot_path=True,
+    # The skip's sentence and what the scene established only: never a definition, a belief, a
+    # memory, a policy, an age, a provider's value (#208: ``external_data`` stays out) or eval
+    # text.
+    never_receives=_EVERYTHING - {C.RENDER_TEXT, C.SCENE},
+    response_schema=TimeEstimate,
+)
+"""``time_estimation`` (#199): one call per undeclared narrated skip
+(``orchestrator.structured.time_estimation.estimate``)."""
+
+RESERVED_PURPOSES: tuple[ReservedPurpose, ...] = (
     ReservedPurpose("image_prompt", "Writes image prompts.", "M8", defaults_to="generation"),
     ReservedPurpose("image_check", "Vision checks of image outputs; no default.", "M8"),
     ReservedPurpose("image_generation", "The image-generation port (FR-IMG-1).", "M8", kind="port"),
@@ -1464,6 +1518,7 @@ DELIVERED: Mapping[str, Purpose] = _build(
         SALIENCE_DETECTION,
         EXTRACTION_BACKSTOP,
         REGENERATION,
+        TIME_ESTIMATION,
     )
 )
 """Purposes a model call may use now, by name."""
@@ -1517,6 +1572,10 @@ __all__ = [
     "SALIENCE_QUOTE_MAX",
     "STORY_PURPOSES",
     "SUBJECT_LABEL_PATTERN",
+    "TIME_ESTIMATE_MAX_MINUTES",
+    "TIME_ESTIMATION",
+    "TIME_ESTIMATION_MAX_TIMES",
+    "TIME_ESTIMATION_TEXT_MAX",
     "AdjudicationBelief",
     "AdjudicationDecision",
     "AdjudicationPriors",
@@ -1586,6 +1645,8 @@ __all__ = [
     "SuggestionPolicy",
     "TiebreakBeat",
     "TiebreakConflict",
+    "TimeEstimate",
+    "TimeEstimationInputs",
     "TranscriptLine",
     "declared_paths",
     "field_categories",

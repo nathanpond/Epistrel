@@ -132,6 +132,10 @@ async def turn(
     return found
 
 
+KEEP_TALKING = "Let's keep talking."
+"""A three-word line (paced like "Tell me more.") inviting the skip that follows (#199)."""
+
+
 def skip(minutes: int, reason: str = "they talk") -> dict[str, Any]:
     return {"kind": "time_advance", "state": "world_clock", "minutes": minutes, "reason": reason}
 
@@ -209,9 +213,13 @@ async def chat(
     ids: dict[str, str],
     minutes: int | None = None,
 ) -> dict[str, Any]:
-    """A turn whose render declares a ``minutes`` skip (none: a short exchange)."""
+    """A turn whose render declares a ``minutes`` skip (none: a short exchange). #199
+    (FR-CLOCK-8): Cal's line invites it (they keep talking), so the skip is the player's, not
+    one Jenni's render starts on its own."""
     effects = [] if minutes is None else [skip(minutes, "time passes")]
-    return await turn(client, stub, story, ids, beat("say", "Sure.", effects=effects))
+    return await turn(
+        client, stub, story, ids, beat("say", "Sure.", effects=effects), say=KEEP_TALKING
+    )
 
 
 @pytest.mark.integration
@@ -322,6 +330,7 @@ async def test_s_diner__lifecycle(
             story,
             ids,
             beat("say", "Another coffee?", effects=[skip(120)]),
+            say=KEEP_TALKING,
             regenerated=INTERRUPTED,
         )
         assert found["clock"]["after"]["offset"] == 8 * 60

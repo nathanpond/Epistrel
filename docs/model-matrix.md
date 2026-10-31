@@ -64,8 +64,10 @@ are pending until its next run (`--turn-kinds three_character_sequential`).
 **Turn deadline override (#454).** A row whose turn path says *turn deadline … s (override)*
 ran its turns under that per-story `budgets.deadline_ms` override, not its profile's own
 deadline (the `Structured (M4)` profile's is 45 s). The matrix measures how long a turn takes,
-so the profile's deadline must not cut it. Whether the profile's deadline fits a tier is read
-from the p50 / p95 against it.
+so the profile's deadline must not cut it. The override is 300 s per primary
+the turn renders, up to the profile's largest deadline of 600 s (#588), so
+a three-character row measured since #588 runs under 600 s.
+Whether the profile's deadline fits a tier is read from the p50 / p95 against it.
 
 ## Results
 

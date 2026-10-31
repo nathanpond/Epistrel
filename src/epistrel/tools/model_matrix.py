@@ -29,14 +29,16 @@ owning the lantern, so the repair ladder reaches rung 3 (a ``regeneration`` call
 stub's scripted contradictions, so only ``run_matrix(turn_kinds=…)`` on a stub Engine makes it
 (``tests/perf/test_p_08.py::test_p_08__structured``); a row's key carries its kind unless Lite.
 Structured and repair-heavy rows run under a recorded per-story turn deadline override of
-``TURN_DEADLINE_S`` (#454), so a slow tier is measured rather than cut by the profile's deadline.
+``TURN_DEADLINE_S`` (#454), so a slow tier is measured rather than cut by the profile's deadline;
+the override scales with the turn's primaries (``measurement_deadline_ms``, #588).
 
 **Three-character turns** (P-08 M5, #182). A ``three_character_sequential`` row plays
 ``ThreeCharacterDriver``'s turns: S-SEQUENTIAL's key room (Cal, the player, with Bobby and Jenni)
 plus Marcus, all four placed in the study, on the seeded ``Structured`` profile's latest version
 (per-character renders, perception ``full``); the player speaks and the three primaries render
 ``sequential``ly in request order, under a recorded story override of ``budgets.model_calls``
-(``THREE_CHARACTER_CALLS``) and the measurement deadline. Each turn's design is #156's plan for
+(``THREE_CHARACTER_CALLS``) and the measurement deadline scaled to three primaries
+(``THREE_CHARACTER_DEADLINE_MS``, #588). Each turn's design is #156's plan for
 three renders (``three_character_design``: a render and an extraction per primary, the composed
 message's detection, the salience pass per render and the polish, plus the reserved guardrail
 calls), so on the stub its calls per turn equal the plan. A ``three_character_director`` row adds
@@ -111,6 +113,7 @@ from epistrel.core.db import make_engine
 from epistrel.core.errors import EpistrelError, RevisionConflict
 from epistrel.core.policies.model import ModelAssistedRule, Policy
 from epistrel.core.policies.model import Target as PolicyTarget
+from epistrel.core.profiles.schema import MAX_DEADLINE_MS
 from epistrel.core.profiles.story import ProfileOverridesPatch
 from epistrel.core.stories import CharacterSpec, StorySpec, create_story_from
 from epistrel.engine import Engine
@@ -144,10 +147,22 @@ PG_IMAGE = "pgvector/pgvector:pg16"
 PRINCIPAL = "model-matrix"
 DEFAULT_TURNS = 20
 TURN_DEADLINE_S = 300.0
-MEASUREMENT_DEADLINE_MS = int(TURN_DEADLINE_S * 1000)
-"""The per-story ``budgets.deadline_ms`` override a structured row's turns run under (#454):
-the matrix measures how long a structured turn takes, so the seeded ``Structured`` profile's own
-deadline must not cut it. The row records it (``Row.deadline_override_ms``)."""
+"""The measurement deadline per rendered primary, in seconds (#454, #588)."""
+
+
+def measurement_deadline_ms(primaries: int) -> int:
+    """The per-story ``budgets.deadline_ms`` override a structured row's turns run under (#454):
+    the matrix measures how long a structured turn takes, so the seeded ``Structured`` profile's
+    own deadline must not cut it. It scales with the turn's primaries (#588, the owner's option
+    (b)), ``TURN_DEADLINE_S`` per primary, up to the profile schema's largest ``deadline_ms``
+    (``MAX_DEADLINE_MS``). The row records the override it used (``Row.deadline_override_ms``)."""
+    if primaries < 1:
+        raise ValueError("a structured turn renders at least one primary")
+    return min(round(TURN_DEADLINE_S * primaries * 1000), MAX_DEADLINE_MS)
+
+
+MEASUREMENT_DEADLINE_MS = measurement_deadline_ms(1)
+"""A single-character structured row's override (one primary): ``TURN_DEADLINE_S``."""
 TURN_PATH = "respond (#57)"
 GUARDED_REPLY_PATH = "guarded reply (#53), until respond (#57)"
 EX_UNAVAILABLE = 1
@@ -188,6 +203,9 @@ STUB_TIER = "stub"
 THREE_CHARACTER_CAST = ("Cal", "Bobby", "Jenni", "Marcus")
 """S-SEQUENTIAL's key room (Cal the player, Bobby and Jenni) and Marcus, the third primary."""
 THREE_CHARACTER_PRIMARIES = 3
+THREE_CHARACTER_DEADLINE_MS = measurement_deadline_ms(THREE_CHARACTER_PRIMARIES)
+"""A three-character row's override (#588): ``TURN_DEADLINE_S`` per primary, capped at the
+profile schema's largest ``deadline_ms``."""
 THREE_CHARACTER_CALLS = 16
 """The story override of ``budgets.model_calls`` the three-character rows run under (the planner's
 Discretion on #182; the seeded ``Structured`` v2's own cap, recorded as an override so the row
@@ -471,7 +489,7 @@ class ThreeCharacterDriver:
     beats were filtered at."""
 
     variant: ThreeCharacterVariant = "sequential"
-    deadline_override_ms: int | None = MEASUREMENT_DEADLINE_MS
+    deadline_override_ms: int | None = THREE_CHARACTER_DEADLINE_MS
     name: str = THREE_CHARACTER_PATH
     engine: Engine | None = None
     story_id: str = ""
@@ -1093,12 +1111,14 @@ THREE_CHARACTER_PENDING = """\
 are pending until its next run (`--turn-kinds three_character_sequential`).
 """
 
-DEADLINE_OVERRIDE_NOTE = """\
+DEADLINE_OVERRIDE_NOTE = f"""\
 **Turn deadline override (#454).** A row whose turn path says *turn deadline … s (override)*
 ran its turns under that per-story `budgets.deadline_ms` override, not its profile's own
 deadline (the `Structured (M4)` profile's is 45 s). The matrix measures how long a turn takes,
-so the profile's deadline must not cut it. Whether the profile's deadline fits a tier is read
-from the p50 / p95 against it.
+so the profile's deadline must not cut it. The override is {TURN_DEADLINE_S:g} s per primary
+the turn renders, up to the profile's largest deadline of {MAX_DEADLINE_MS / 1000:g} s (#588), so
+a three-character row measured since #588 runs under {THREE_CHARACTER_DEADLINE_MS / 1000:g} s.
+Whether the profile's deadline fits a tier is read from the p50 / p95 against it.
 """
 
 FAILED_NOTE = """\

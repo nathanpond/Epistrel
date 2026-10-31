@@ -355,7 +355,8 @@ async def test_structured_rows_run_under_a_recorded_deadline_override(
     """#454 (the owner's option (a)): a structured row's story overrides ``budgets.deadline_ms``
     with the matrix's measurement deadline (``TURN_DEADLINE_S``), so a slow tier's structured
     turn is measured rather than cut by the ``Structured (M4)`` profile's 45 s, and the row
-    records the override.
+    records the override. A three-character row's override scales with its primaries (#588):
+    ``TURN_DEADLINE_S`` per primary up to the profile's largest deadline, and the row records it.
 
     Complement asserted: the Lite rows run under no override and record none, and the
     structured story's profile is still ``Structured (M4)`` (only the deadline is overridden)."""
@@ -364,7 +365,10 @@ async def test_structured_rows_run_under_a_recorded_deadline_override(
         epistrel = Engine(settings, db=engine)
         try:
             rows = await mm.run_matrix(
-                epistrel, STUB_TARGET, turns=1, turn_kinds=("lite", "structured")
+                epistrel,
+                STUB_TARGET,
+                turns=1,
+                turn_kinds=("lite", "structured", "three_character_sequential"),
             )
             driver = mm.StructuredDriver()
             await mm.measure_turns(epistrel, driver, "off", 1)
@@ -382,7 +386,10 @@ async def test_structured_rows_run_under_a_recorded_deadline_override(
         ("lite", "minors"): None,
         ("structured", "off"): measured,
         ("structured", "minors"): measured,
+        ("three_character_sequential", "off"): 600_000,
+        ("three_character_sequential", "minors"): 600_000,
     }
+    assert mm.THREE_CHARACTER_DEADLINE_MS == 600_000
     assert config.profile.id == STRUCTURED_M4_PROFILE_ID
     assert config.overrides.settings == {"budgets": {"deadline_ms": measured}}
     assert config.effective["budgets"]["deadline_ms"] == measured

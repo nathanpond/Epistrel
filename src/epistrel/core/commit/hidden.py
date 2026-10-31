@@ -24,9 +24,11 @@ never "undetermined for Jenni", which is a global thunk's state (``core.commit.l
 
 **A reveal** (``reveal``). A sincere ``say`` or a ``do`` by a character the fact is scoped to,
 asserting it, widens the fact: ``supersede`` with the scope plus the beat's content-fidelity
-perceivers (an envelope or a partial eavesdrop is not access). Visibility is access, not
-acceptance: a hearer whose testimony rejects it still gains access; their transitions are
-#161's routing's and #162/#164's (nothing is written twice here). A ``deceptive`` ``say``
+perceivers (an envelope or a partial eavesdrop is not access); so does a narration stating it
+where others perceive it (#566, generalizing #546: the narrator reads every scope, so
+``reveal`` takes ``speaker = None`` for it). Visibility is access, not acceptance: a hearer
+whose testimony rejects it still gains access; their transitions are #161's routing's and
+#162/#164's (nothing is written twice here). A ``deceptive`` ``say``
 never widens, and a claim about one proposition widens only its fact. The reveal discharges
 the hidden fact's ledger entries (``lifecycle.discharge_hidden``) and marks the lies it settles
 (``divergences.revealed_by_event_id``, #166). Nothing here asks whether the claim is true: the
@@ -35,8 +37,7 @@ caller hands over claims that match the fact.
 **Identity** (``commit_identity``, #171): a narrated ``same_as`` is held, not shared: its canon
 fact is scoped to the narration's perceivers and the characters it names, so "the stranger is
 Bobby" is canon's and Bobby's, never Jenni's from elsewhere; a reveal widens it like any hidden
-fact, and so does a narration re-asserting it where others perceive it (#546, #171 AC4: the
-narrator reads every scope, so ``reveal`` takes ``speaker = None`` for it).
+fact, a narration re-asserting it where others perceive it included (#546, #171 AC4).
 
 ``hidden_facts`` is ``GET /stories/{id}/inspect/ledger``'s ``hidden_facts`` (omniscient only):
 the current canon facts scoped away from the shared view, the engine's true ages aside. Log

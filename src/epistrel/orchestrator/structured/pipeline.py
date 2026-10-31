@@ -3097,8 +3097,9 @@ async def reveals_committed(
     """The turn's reveals (#169): every rendered ``say`` (never a deceptive one) or ``do`` whose
     supported claims assert a hidden fact its actor reads, widened to the beat's content
     perceivers (``core.commit.hidden.reveal``; at perception ``none`` everyone in the scene).
-    #546 (#171 AC4): a narration's supported ``same_as`` claims too, the narrator reading every
-    scope: an identity re-asserted where others perceive it widens like a say or a do reveal."""
+    A narration's supported claims too (#546 for ``same_as``, #171 AC4; #566 for any
+    predicate), the narrator reading every scope: a hidden fact a narration states where others
+    perceive it widens like a say or a do reveal (scope only, ADR-167)."""
     content = _content_perceivers(results)
     everyone: frozenset[str] | None = None
     found: list[hidden.Reveal] = []
@@ -3111,10 +3112,7 @@ async def reveals_committed(
         claims = [
             c.proposition
             for c in beat.claims
-            if c.proposition is not None
-            and c.verdict == "supported"
-            and not c.attributed
-            and (not narrated or identity_rules.pair_of(c.proposition) is not None)
+            if c.proposition is not None and c.verdict == "supported" and not c.attributed
         ]
         if not claims:
             continue

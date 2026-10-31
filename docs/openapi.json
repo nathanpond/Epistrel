@@ -70789,7 +70789,7 @@
     },
     "/stories/{story_id}/reconciliation/{outbox_id}/settle-now": {
       "post": {
-        "description": "Settle a listed external effect now (FR-EXT-22): its transfer is re-verified against current state at this moment (the item still the seller's, no other hold on it, no other owner in canon, the State bounds) and applied at the next inter-turn slot as a late settlement, and the listing is resolved. 409 `settle_refused` (`reasons`) when re-verification fails: nothing changes. 404 `not_found` (`reason: no_listing`) unless the effect is listed `late_success_after_expiry`, `confirmed_discarded_origin` or `settlement_conflict`; 409 `module_off` while the story's configuration has States off.",
+        "description": "Settle a listed external effect now (FR-EXT-22): its transfer is re-checked against current state at this moment (the item still the seller's, no other hold on it, no other owner in canon, the State bounds) and applied at the next inter-turn slot as a late settlement, and the listing is resolved. 409 `settle_refused` (`reasons`) when re-verification fails: nothing changes. 404 `not_found` (`reason: no_listing`) unless the effect is listed `late_success_after_expiry`, `confirmed_discarded_origin` or `settlement_conflict`; 409 `module_off` while the story's configuration has States off.",
         "operationId": "settle_now",
         "parameters": [
           {

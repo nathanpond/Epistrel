@@ -3,7 +3,7 @@
 - ``GET /stories/{id}/reconciliation``: every effect dispatched to a write-capable provider that
   Epistrel cannot report as applied (``core.outbox.listings``).
 - ``POST /stories/{id}/reconciliation/{outbox_id}/settle-now``: the author settles a listed
-  late success, discarded-origin confirmation or settlement conflict now, re-verified at that
+  late success, discarded-origin confirmation or settlement conflict now, re-checked at that
   moment (#218).
 - ``POST /stories/{id}/reconciliation/{outbox_id}/compensate``: the author issues a
   compensating external effect (a refund) for it through the outbox (#218).
@@ -124,7 +124,7 @@ class CompensatedBody(MutationResponse):
     operation_id="settle_now",
     summary="Settle a listed effect now",
     description=(
-        "Settle a listed external effect now (FR-EXT-22): its transfer is re-verified against "
+        "Settle a listed external effect now (FR-EXT-22): its transfer is re-checked against "
         "current state at this moment (the item still the seller's, no other hold on it, no "
         "other owner in canon, the State bounds) and applied at the next inter-turn slot as a "
         "late settlement, and the listing is resolved. 409 `settle_refused` (`reasons`) when "

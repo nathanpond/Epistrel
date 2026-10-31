@@ -9896,3 +9896,9 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision:** The no-leak property is seeded random (3 seeds) and end to end through rendered prompts, not Hypothesis. **Why:** each example needs a database story and two turns; prompts are what `character_inputs` and `narrator_inputs` produce from `build_context`. **Issue:** #207
 - **Decision:** The I-21 entry for `inspect/external-facts` is `Call(200)`. **Why:** there is no partitions gate, so every requester gets an empty page. **Issue:** #207
 
+- **Decision:** #215's AC asks for versions "unique per `(story_id, state_id, scope_key, version)`". #205 already gives every turn's read version 1 (`READ_VERSION`), so that key fails at a story's second read. The executor scopes versions to their base read instead: unique per `(story_id, state_id, scope_key, base_event_id, version)`, adding only the source value. The AC's intent (a value is versioned after a confirmed effect, and a delta never applies to a stale read) is unchanged. The owner should confirm at verify.
+  **Why:** The AC's literal key contradicts the shipped #205 model. Re-keying preserves the intent, and the constraint can be replaced by a later migration. Found by the read-only planner.
+  **Issue:** #215
+- **Decision:** Stories created from a **scenario** get no `world_clock` row at HEAD: the clock is declared only on `core/stories.py`'s path, and `core/genesis/create.py` never declares it or runs `validate_state_tie_break`. #202, which owns scenario genesis of States and the clock, fixes it in its order (define the clock, create the States, seed the clock, then the tie-break check).
+  **Why:** It lies inside #202's scope, and #202 is unblocked soon. Until then, scenario stories have no clock.
+  **Issue:** #193, #202

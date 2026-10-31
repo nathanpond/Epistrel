@@ -1,6 +1,6 @@
 """S-EXTRACT-ADVERSARIAL, M4 part: valid structure, hidden claims (FR-VERIFY-13,14; docs/04 §7;
 #148). One file per scenario; the M5 part (protected content in a ``say``, reactive narration)
-and the M6 part join it.
+and the M6 part (tracked States, #190: see ``test_s_extract_adversarial__m6``) join it.
 
 Each render is structurally complete with empty or incomplete declarations. (a) Linda's ``do``
 "She pockets the key on her way out" declares no effect: the possession detector finds the claim
@@ -18,25 +18,35 @@ checked, what the sample missed. Detection and checking are separate metric seri
 
 from __future__ import annotations
 
+import json
+from typing import Any
+
 import pytest
 from prometheus_client import REGISTRY
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.core.enums import StateChangeSource
+from epistrel.core.propositions import store
 from epistrel.core.resolution.entities import NARRATOR
+from epistrel.core.states import StateDefinition
 from epistrel.core.tables import operations
 from epistrel.core.verify import shadow
 from epistrel.core.verify.detect import DetectBeat
 from epistrel.core.verify.rules import VerdictKind
 from tests import detection_support as ds
+from tests import effect_support as es
 from tests import multi_support as ms
+from tests import perception_support as ps
 from tests import reactive_support as rs
+from tests import state_support as ss
+from tests import testimony_support as ts
 from tests import verify_support as vs
 from tests.auth_support import auth_settings
 from tests.event_support import rows
-from tests.respond_support import respond_client
+from tests.respond_support import body, respond, respond_client
 from tests.secrets_support import play, secret, secret_story
-from tests.structured_turn_support import beat
+from tests.structured_turn_support import beat, structured_story, turn_report
 
 pytestmark = pytest.mark.integration
 
@@ -314,3 +324,162 @@ async def test_s_extract_adversarial__f(
                     )
                     == []
                 )
+
+
+# -- the M6 part (#190): tracked States ---------------------------------------------------------
+
+M6_POCKETS = "She pockets the key on her way out."
+OFFER = "Forty silver, final offer."
+PRICED = f"Linda wipes the counter. Linda names her price: {OFFER}"
+
+
+async def _m6_story(client: Any, engine: AsyncEngine, mode: str) -> tuple[str, dict[str, str]]:
+    """Cal (the player) and Linda at her stall, under per-character partitions, with
+    ``extraction_mode = mode`` and two tracked States: Linda's ``has_key`` (a boolean
+    possession State tracking the key) and the story's ``sword_price`` (40 silver, visible)."""
+    story, ids = await structured_story(client, "Cal", "Linda")
+    await ts.enable_testimony(engine, story, "defaulted", level="co_location")
+    await ss.set_level(engine, story, "on")
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "UPDATE story_profile_overrides SET settings = settings || CAST(:o AS jsonb), "
+                "revision = revision + 1 WHERE story_id = :s"
+            ),
+            {"s": story, "o": json.dumps({"verification": {"extraction_mode": mode}})},
+        )
+        key = await store.add_entity(conn, story, "item", "key")
+    stall = await ps.place_entity(engine, story, "stall")
+    for character in ids.values():
+        await ps.put(engine, story, character, stall)
+    await ss.define_all(
+        engine,
+        story,
+        StateDefinition.model_validate(
+            {
+                "name": "has_key",
+                "type": "boolean",
+                "scope": "character",
+                "initial_value": False,
+                "entity_id": key,
+            }
+        ),
+        StateDefinition.model_validate(
+            {
+                "name": "sword_price",
+                "type": "number",
+                "scope": "story",
+                "initial_value": 40,
+                "unit": "silver",
+            }
+        ),
+    )
+    return story, ids
+
+
+def _quantity_verdicts(report: dict[str, Any]) -> list[dict[str, Any]]:
+    """The verdicts of the turn's detected quantities (a claim's id ends in its index among
+    the beats' detected claims). A lone quantity that is no State's value stays ``uncertain``;
+    one that is (#191's ``state_value``) is decided by the State's owner."""
+    claims = [c for c in report["detection"]["claims"] if c["span"][0] is not None]
+    wanted = {n for n, c in enumerate(claims) if c["category"] == "quantity"}
+    return [
+        v
+        for v in report["verify"]["verdicts"]
+        if int(str(v["claim_id"]).rsplit(":", 1)[1]) in wanted
+    ]
+
+
+@pytest.mark.part("M6", "FR-STATE-13; FR-CLOCK-7")
+@pytest.mark.parametrize("mode", ["always", "gated"])
+async def test_s_extract_adversarial__m6(
+    pg_url: str,
+    engine: AsyncEngine,
+    mode: str,
+    states_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """(a') Linda's ``do`` "She pockets the key on her way out" declares no effect, but the key
+    is the entity a tracked boolean possession State (``has_key``) follows: the possession is
+    that State's change (#190's ``undeclared``, one ``state_undeclared`` repair), and the
+    regeneration declares ``has_key = true``, validated and committed.
+
+    (c) "Forty silver, final offer" is a quantity buried in dialogue, against the player-visible
+    story State ``sword_price`` (unit silver): detected as the State's value and verified against
+    its owner (#191). In narration with the State at 40 it is ``supported``; at 50 it is
+    ``contradicted`` and repaired. In Linda's own ``say`` it is judged on the belief path (her
+    partition, a speech act): she saw the narration state 40, so against the ledger's 50 her
+    offer is a sincere error that stands, never repaired as a mismatch with the ledger.
+
+    Under both ``extraction_mode = always`` and ``gated``. ((d), an implied time skip, is
+    #199's clause of this part.)"""
+    settings = auth_settings(pg_url, model_adapter="stub")
+    async with respond_client(settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids = await _m6_story(client, engine, mode)
+        cal, linda = ids["Cal"], ids["Linda"]
+
+        async def turn(
+            linda_beats: list[dict[str, Any]],
+            narration: str | None = None,
+            regenerated: tuple[dict[str, Any], ...] = (),
+        ) -> dict[str, Any]:
+            stub.reset()
+            ms.renders_for(stub, "Linda", es.render(*linda_beats))
+            if narration is not None:
+                es.narrator(stub, es.render(beat("narration", narration)))
+            stub.script("regeneration", [json.dumps(r) for r in regenerated])
+            request = body(cal, None, do="browses the stall") if narration else body(cal, "Hm?")
+            answer = await respond(client, story, request)
+            assert answer.status_code == 200, answer.text
+            return {"played": answer.json(), "report": await turn_report(engine, story)}
+
+        # -- (a') the pocketed key becomes a validated effect.
+        found = await turn(
+            [beat("do", M6_POCKETS)],
+            regenerated=(
+                {
+                    "text": M6_POCKETS,
+                    "effects": [es.effect("has_key", value=True, reason="pocketed the key")],
+                },
+            ),
+        )
+        state_repairs = [r for r in found["report"]["repairs"] if r["tag"] == "state_undeclared"]
+        assert [(r["rung"], r["accepted"]) for r in state_repairs] == [(3, True)]
+        assert [
+            (e["state"], e["scope_key"], e["new_value"]) for e in found["played"]["state_effects"]
+        ] == [("has_key", linda, True)]
+        assert await ss.value(engine, story, "has_key", linda) is True
+
+        # -- (c) in narration, at 40: supported, standing.
+        found = await turn([beat("say", "Take your time.")], narration=PRICED)
+        (judged,) = _quantity_verdicts(found["report"])
+        assert judged["kind"] == "supported"
+        assert not found["report"].get("repairs")
+        assert OFFER in found["played"]["message"]["text"]
+
+        # -- at 50: contradicted, and repaired.
+        await ss.change(
+            engine,
+            story,
+            ss.set_to("sword_price", 50, reason="a new list", source=StateChangeSource.CONSUMER),
+        )
+        found = await turn([beat("say", "Take your time.")], narration=PRICED)
+        (judged,) = _quantity_verdicts(found["report"])
+        assert judged["kind"] == "contradicted"
+        assert [r["accepted"] for r in found["report"]["repairs"]] == [True]
+        assert OFFER not in found["played"]["message"]["text"]
+        assert await ss.value(engine, story, "sword_price") == 50
+
+        # -- in Linda's say: the belief path (her partition), not a mismatch with the ledger.
+        found = await turn([beat("say", OFFER, intent="sincere")])
+        (judged,) = _quantity_verdicts(found["report"])
+        # She saw the narration state 40 (her belief), so against the ledger's 50 it is her
+        # sincere error: it stands, never repaired as a mismatch.
+        assert (judged["kind"], judged["speech"]["classification"]) == (
+            "contradicted",
+            "sincere_error",
+        )
+        assert judged["speech"]["belief_relation"] == "consistent"
+        assert not found["report"].get("repairs")
+        assert OFFER in found["played"]["message"]["text"]

@@ -95,11 +95,29 @@ _PRECONDITION_RULES: dict[str, str] = {
     "ownership": "what it pays for is not the seller's to sell",
 }
 """How a repair line and a refusal name an unmet precondition (no name, no value)."""
+STATE_UNNARRATED: Final = "state_unnarrated"
+"""#190 (FR-STATE-13): a declared effect on a player-visible State that nothing in the turn
+narrates (``core.states.completeness``): narrated by the render, else by one appended line."""
+AMOUNT: Final = "amount"
+"""#190: the constraint of a ``state_undeclared`` finding whose beat declares an effect on the
+State that does not cover the narrated change (another amount, or the other direction)."""
 Tag = Literal[
-    "state_constraint", "effect_unresolved", "state_undeclared", "state_unpermitted", "state_capped"
+    "state_constraint",
+    "effect_unresolved",
+    "state_undeclared",
+    "state_unpermitted",
+    "state_capped",
+    "state_unnarrated",
 ]
 TAGS: frozenset[str] = frozenset(
-    {STATE_CONSTRAINT, EFFECT_UNRESOLVED, STATE_UNDECLARED, STATE_UNPERMITTED, STATE_CAPPED}
+    {
+        STATE_CONSTRAINT,
+        EFFECT_UNRESOLVED,
+        STATE_UNDECLARED,
+        STATE_UNPERMITTED,
+        STATE_CAPPED,
+        STATE_UNNARRATED,
+    }
 )
 REFUSED_TAGS: frozenset[str] = frozenset({STATE_CONSTRAINT, STATE_UNPERMITTED})
 """The tags of a refused effect: the deterministic rung narrates the attempt as failing."""
@@ -136,6 +154,10 @@ class Finding:
     """The deterministic rung's text for a refused effect (``refusal_text``)."""
     amount: Decimal | None = None
     """``state_capped``: the signed delta the cap leaves (#188)."""
+    claim_id: str | None = field(default=None, compare=False)
+    """#190: the detected claim a ``state_undeclared`` finding merges (``completeness.diff``)."""
+    narration: str = field(default="", compare=False)
+    """#190: a ``state_unnarrated`` effect's line, which the deterministic rung appends."""
 
     def payload(self) -> dict[str, object]:
         """The verdict payload's part: codes and ids only."""
@@ -460,9 +482,42 @@ def _suppressors() -> re.Pattern[str]:
     return _word_pattern([*cues["negation"], *cues["conditionals"], *cues["modals"]])
 
 
+NOUN_CUES: tuple[str, ...] = (
+    "a",
+    "an",
+    "the",
+    "this",
+    "his",
+    "her",
+    "their",
+    "my",
+    "your",
+    "our",
+    "its",
+    "final",
+    "best",
+    "last",
+    "first",
+)
+"""#190: a word just before a change verb's form that makes it a noun ("final offer", "her
+pay"): no change."""
+_NOUN_BEFORE = re.compile(rf"(?<![\w'\u2019])(?:{'|'.join(NOUN_CUES)})\s+$", re.IGNORECASE)
+
+
+def verb_hit(pattern: re.Pattern[str], text: str) -> bool:
+    """Whether ``pattern`` (a verb's forms) matches ``text`` as a verb: a match right after a
+    determiner or an adjective of ``NOUN_CUES`` is the noun ("a final offer"), not a change."""
+    return any(_NOUN_BEFORE.search(text[: m.start()]) is None for m in pattern.finditer(text))
+
+
 def change_cue(text: str) -> bool:
-    """Whether ``text`` holds a change verb (possession, transfer or consumption)."""
-    return _change_verbs().search(text) is not None
+    """Whether ``text`` holds a change verb (possession, transfer or consumption), as a verb."""
+    return verb_hit(_change_verbs(), text)
+
+
+def suppressed(sentence: str) -> bool:
+    """Whether ``sentence`` holds a negation, a conditional or a modal (#148's cues)."""
+    return _suppressors().search(sentence) is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -475,7 +530,9 @@ class Mention:
     amount: Decimal | None
 
 
-def _amount(sentence: str, at: int) -> Decimal | None:
+def amount_before(sentence: str, at: int) -> Decimal | None:
+    """The number just before offset ``at`` of ``sentence`` ("two hundred and six gold"),
+    or ``None``."""
     from epistrel.core.verify.detect import parse_number
 
     before = re.findall(r"[\w,.'-]+", sentence[:at])[-_LOOKBACK:]
@@ -493,14 +550,16 @@ def mentions(text: str, terms: Sequence[Terms]) -> list[Mention]:
     patterns = [(t, _word_pattern(t.words)) for t in terms if t.words]
     for start, end in sentences(text):
         sentence = text[start:end]
-        if sentence.rstrip().endswith("?") or _suppressors().search(sentence):
+        if sentence.rstrip().endswith("?") or suppressed(sentence):
             continue
         if not change_cue(sentence):
             continue
         for term, pattern in patterns:
             hit = pattern.search(sentence)
             if hit is not None:
-                found.append(Mention(term.state, (start, end), _amount(sentence, hit.start())))
+                found.append(
+                    Mention(term.state, (start, end), amount_before(sentence, hit.start()))
+                )
     return found
 
 
@@ -522,8 +581,10 @@ def narrated(
         if m.state in covered or m.state in found:
             continue
         definition = definitions.get(m.state)
+        # #190: a boolean, enum or text State changes with no amount ("pockets the key").
+        amountless = definition is not None and definition.type is not StateType.NUMBER
         found[m.state] = Finding(
-            STATE_UNDECLARED if m.amount is not None else EFFECT_UNRESOLVED,
+            STATE_UNDECLARED if m.amount is not None or amountless else EFFECT_UNRESOLVED,
             beat,
             m.state,
             None if definition is None else definition.id,
@@ -627,6 +688,17 @@ def constraint_line(finding: Finding, definition: StateDefinition | None, *, nar
             f"Name what this {name} pays for: declare the effect's `consideration` (the item "
             "the payment buys), or narrate the exchange of the item in the same beat, or remove "
             "the payment."
+        )
+    if finding.tag == STATE_UNNARRATED:
+        return (
+            f"This beat changes {name}, but nothing in the turn says so: narrate the change "
+            "in this beat (say what happens to it), or declare no effect on it."
+        )
+    if finding.tag == STATE_UNDECLARED and finding.constraint == AMOUNT:
+        return (
+            f"This beat narrates a change to {name} that its declared effect does not match: "
+            "make the effect's amount and direction match what the beat says happens, or "
+            "remove the sentence that narrates it."
         )
     if finding.tag == EFFECT_UNRESOLVED:
         return (
@@ -777,6 +849,7 @@ def syntax(definitions: Sequence[StateDefinition], *, character: bool) -> str:
 
 
 __all__ = [
+    "AMOUNT",
     "ANY_CHARACTER",
     "CHARACTER_SOURCE",
     "EFFECT_UNRESOLVED",
@@ -787,6 +860,7 @@ __all__ = [
     "STATE_CAPPED",
     "STATE_CONSTRAINT",
     "STATE_UNDECLARED",
+    "STATE_UNNARRATED",
     "STATE_UNPERMITTED",
     "TAGS",
     "UNDEFINED",
@@ -797,6 +871,7 @@ __all__ = [
     "Planned",
     "Tag",
     "Terms",
+    "amount_before",
     "change_cue",
     "character_line",
     "constraint_line",
@@ -810,7 +885,9 @@ __all__ = [
     "refusal_text",
     "scope_of",
     "span_of",
+    "suppressed",
     "syntax",
     "terms_of",
+    "verb_hit",
     "visible_to_characters",
 ]

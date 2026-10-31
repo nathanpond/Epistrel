@@ -23,10 +23,16 @@ unpermitted one is ``state_unpermitted``, repaired like a refused one; one above
 rewritten down to it deterministically before anything else sees it (``cap``:
 ``state_capped``, its declared amount kept for the response). Each ``do`` and narration beat
 is read for a State change it narrates with no effect
-(``core.states.effects.narrated``). Each finding becomes a checked claim of its beat
-(``claims_of``) whose ``VerifyResult.state_finding`` makes it ``needs_repair`` with the
-finding's tag: ``state_constraint``, ``effect_unresolved`` or ``state_undeclared`` (a
-``state_change`` denial, #144's reserved slot). The repair ladder repairs it in character
+(``core.states.effects.narrated``). #190 (FR-STATE-13): completeness in both directions
+(``completeness_of``, ``core.states.completeness.diff``) over the turn's verified beats, their
+detected claims and declared effects: a narrated change no effect covers (another amount or
+direction too) is the same ``state_undeclared`` finding, merged by beat and State; a declared
+effect on a player-visible State nothing narrates is ``state_unnarrated``; and a value stated
+after an earlier beat's effect is judged against what that effect leaves (``folded``). Each
+finding becomes a checked claim of its beat (``claims_of``) whose
+``VerifyResult.state_finding`` makes it ``needs_repair`` with the finding's tag:
+``state_constraint``, ``effect_unresolved``, ``state_undeclared`` (a ``state_change`` denial,
+#144's reserved slot) or ``state_unnarrated``. The repair ladder repairs it in character
 (``orchestrator.repair.ladder``); a beat the ladder cannot run for (the repair module off,
 the turn the safe fallback) is settled deterministically (``ladder.settled``, the pipeline's
 ``settle_states``): a refused effect
@@ -79,12 +85,20 @@ from epistrel.core.errors import ModuleOff, StateNotFound
 from epistrel.core.membership import Position, step_of
 from epistrel.core.profiles import schema
 from epistrel.core.profiles.schema import ProfileSettings
+from epistrel.core.propositions.vocabulary import STATE_VALUE
 from epistrel.core.readset import StructuredReadSet, register_rebase_check
 from epistrel.core.resolution.entities import NARRATOR
-from epistrel.core.states import StateChange, StateDefinition, Undefined, UndefinedType
+from epistrel.core.states import (
+    StateChange,
+    StateDefinition,
+    Undefined,
+    UndefinedType,
+    completeness,
+)
 from epistrel.core.states import authorize as permission
 from epistrel.core.states import effects as rules
 from epistrel.core.states import preconditions as action_preconditions
+from epistrel.core.states import verify as state_verify
 from epistrel.core.states.authorize import Evidence, Source
 from epistrel.core.states.effects import Finding, Planned
 from epistrel.core.states.model import Value, to_json
@@ -93,7 +107,7 @@ from epistrel.core.turns.beats import TurnBeat
 from epistrel.core.verify.detect import DetectedClaim
 from epistrel.core.verify.other_agent import PLAYER_NARRATOR
 from epistrel.core.verify.permission import Asserter, state_change
-from epistrel.core.verify.rules import Verdict, VerdictKind
+from epistrel.core.verify.rules import OwnedValue, Verdict, VerdictKind
 from epistrel.orchestrator.structured.render import TrackedState
 from epistrel.orchestrator.verify.extraction import CheckedClaim
 from epistrel.orchestrator.verify.verifier import VerifyResult
@@ -351,6 +365,111 @@ async def read_preconditions(
     )
 
 
+def _declared(book: Book, beats: Sequence[TurnBeat]) -> list[completeness.Declared]:
+    """``beats``' declared effects as ``completeness.diff`` takes them (#190)."""
+    found: list[completeness.Declared] = []
+    kept = {b.beat for b in beats if b.beat > 1 and not b.attempt}
+    for p in planned(beats):
+        definition = book.definitions.get(p.effect.state)
+        if definition is None or p.beat not in kept:
+            continue
+        key = rules.scope_of(p.effect, definition, p.actor)
+        found.append(
+            completeness.Declared(
+                p.beat,
+                p.index,
+                replace(rules.effect_of(p.effect, definition, key), beat=p.beat),
+                p.effect.reason,
+                p.effect.silent,
+            )
+        )
+    return found
+
+
+def completeness_of(
+    book: Book,
+    beats: Sequence[TurnBeat],
+    stage: TurnStage | None = None,
+    claims: Sequence[CheckedClaim] = (),
+) -> completeness.Diff:
+    """#190 (FR-STATE-13): ``core.states.completeness.diff`` over the turn's verified beats
+    (``beats``; an earlier primary's staged beats are prose an effect's narration may sit in),
+    their detected claims and their declared effects; never a viewpoint-filtered message."""
+    views = [
+        completeness.Beat(
+            b.beat,
+            b.kind,
+            b.text,
+            None if _narrator(b) else b.character_id,
+            _narrator(b),
+            b.attempt,
+        )
+        for b in beats
+        if b.beat > 1
+    ]
+    numbers = {b.beat for b in beats}
+    staged = [] if stage is None else [s.text for s in stage.beats if s.beat not in numbers]
+    return completeness.diff(
+        [(c.claim_id, c.claim) for c in claims if not is_state_claim(c)],
+        _declared(book, beats),
+        book.definitions,
+        beats=views,
+        texts=staged,
+        entity_names=book.entity_names,
+    )
+
+
+def _merged(
+    book: Book, found: list[Finding], diff: completeness.Diff, numbers: frozenset[int]
+) -> list[Finding]:
+    """#190: ``found`` (the dry-run's and #187's narrated-change findings) with ``diff``'s:
+    an ``undeclared`` change is the same finding as #187's ``state_undeclared`` (by beat and
+    State: one claim, one repair), and an ``unnarrated`` effect is ``state_unnarrated`` unless
+    the dry-run already refused it."""
+    out = list(found)
+    at = {(f.beat, f.state): n for n, f in enumerate(out) if f.effect is None}
+    for u in diff.undeclared:
+        if u.ref.beat not in numbers:
+            continue
+        definition = book.definitions.get(u.ref.state)
+        merged = Finding(
+            rules.STATE_UNDECLARED,
+            u.ref.beat,
+            u.ref.state,
+            None if definition is None else definition.id,
+            span=u.ref.span,
+            constraint=rules.AMOUNT if u.mismatch else None,
+            claim_id=u.claim_id,
+        )
+        key = (u.ref.beat, u.ref.state)
+        if key in at:
+            earlier = out[at[key]]
+            if earlier.tag == rules.STATE_UNDECLARED and earlier.claim_id is None:
+                out[at[key]] = replace(
+                    merged, span=earlier.span or merged.span, constraint=merged.constraint
+                )
+            continue
+        at[key] = len(out)
+        out.append(merged)
+    refused = {(f.beat, f.effect) for f in found if f.effect is not None}
+    for d in diff.unnarrated:
+        if d.beat not in numbers or (d.beat, d.index) in refused:
+            continue
+        definition = book.definitions.get(d.effect.state)
+        out.append(
+            Finding(
+                rules.STATE_UNNARRATED,
+                d.beat,
+                d.effect.state,
+                None if definition is None else definition.id,
+                d.effect.scope_key,
+                effect=d.index,
+                narration=completeness.narration_line(d, definition),
+            )
+        )
+    return out
+
+
 def findings(
     book: Book,
     beats: Sequence[TurnBeat],
@@ -358,9 +477,11 @@ def findings(
     *,
     only: frozenset[int] | None = None,
     simultaneous: bool = False,
+    claims: Sequence[CheckedClaim] = (),
 ) -> list[Finding]:
-    """What the dry-run and the narrated-change read find in ``beats`` (those of ``only``,
-    when given), each with its repair line and refusal (see the module docstring)."""
+    """What the dry-run, the narrated-change read and #190's completeness diff (over
+    ``claims``, the beats' detected claims) find in ``beats`` (those of ``only``, when
+    given), each with its repair line and refusal (see the module docstring)."""
     if not book.on:
         return []
     refused = _dry_run(book, beats, stage, simultaneous=simultaneous)
@@ -377,6 +498,7 @@ def findings(
             book.terms(narrator=_narrator(b)),
             book.definitions,
         )
+    found = _merged(book, found, completeness_of(book, beats, stage, claims), frozenset(by_number))
     if only is not None:
         found = [f for f in found if f.beat in only]
     return [_decorated(book, by_number[f.beat], f) for f in found]
@@ -665,6 +787,70 @@ def covered(
                 out.append(replace(c, result=None))
                 continue
         out.append(c)
+    return out
+
+
+def _owned(
+    definition: StateDefinition, subject: str, value: Value | UndefinedType
+) -> OwnedValue | None:
+    if definition.id is None or isinstance(value, UndefinedType):
+        return None
+    return OwnedValue(
+        proposition=state_verify.proposition(
+            definition.id, subject, state_verify.value_literal(value)
+        ),
+        ref=f"{state_verify.REF_PREFIX}{definition.id}",
+        kind=definition.type.value,
+        tolerance=float(definition.constraints.tolerance),
+        entity_id=definition.entity_id,
+    )
+
+
+def folded(
+    claims: Sequence[CheckedClaim],
+    beats: Sequence[TurnBeat],
+    book: Book,
+    stage: TurnStage | None = None,
+) -> list[CheckedClaim]:
+    """#190 (#191's handoff): a value claim (``state_value``, on a canon holder's objective
+    path) in a beat after one whose effect changed that value in the same turn is judged
+    against the value those earlier effects leave, not the turn's starting value: the turn's
+    effects are not committed while it is verified ("Mira takes 300 gold." then "Cal has 200
+    gold left." is supported)."""
+    if not book.on:
+        return list(claims)
+    ordered = [replace(p, source=None) for p in planned(beats, stage)]
+    passed, _ = rules.dry_run(book.definitions, book.values, ordered)
+    if not passed:
+        return list(claims)
+    by_id = {d.id: d for d in book.definitions.values() if d.id is not None}
+    out: list[CheckedClaim] = []
+    for c in claims:
+        p = c.claim.proposition
+        result = c.result
+        beat = c.claim.beat
+        if (
+            p is None
+            or p.predicate_id != STATE_VALUE
+            or result is None
+            or result.speech is not None
+            or result.kind not in (VerdictKind.SUPPORTED, VerdictKind.CONTRADICTED)
+            or beat is None
+        ):
+            out.append(c)
+            continue
+        definition = by_id.get(state_verify.state_of(p) or "")
+        if definition is None:
+            out.append(c)
+            continue
+        key = (definition.name, None if definition.scope.value == "story" else p.subject_id)
+        earlier = [x for x in passed if x.key == key and x.beat < beat]
+        owned = None if not earlier else _owned(definition, p.subject_id, earlier[-1].new)
+        if owned is None:
+            out.append(c)
+            continue
+        verdict = state_verify.verdict(p, [owned])
+        out.append(replace(c, result=replace(result, verdict=verdict, kind=verdict.kind)))
     return out
 
 
@@ -972,9 +1158,11 @@ __all__ = [
     "capped_beat",
     "claims_of",
     "committed",
+    "completeness_of",
     "covered",
     "evidence_of",
     "findings",
+    "folded",
     "is_state_claim",
     "level_of",
     "load",

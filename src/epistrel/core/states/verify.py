@@ -53,7 +53,10 @@ unit, singular or plural) in a sentence that states a balance (``VALUE_CUES``: "
 "in all", "counts", …) and holds no price or change cue (``PRICE_CUES``, #148's possession,
 transfer and consumption verbs) is a ``state_value`` claim: the subject the sentence names
 before the amount (#139's resolution), which must be one of the story's characters for a
-per-character State. Anything else stays the lone quantity it was (``uncertain``).
+per-character State. #190: a story State (one value for the whole story, a price say) is
+stated by any sentence naming its amount with no change verb and no relative cue
+(``RELATIVE_CUES``): "forty silver, final offer" states ``sword_price``. Anything else stays the
+lone quantity it was (``uncertain``).
 
 **Hidden States in the protected index** (#148, U-22 M6). ``hidden_pairs`` gives each hidden
 State's current values: the speaker who holds no belief about one (no ``state_value`` belief of
@@ -295,6 +298,21 @@ def state_of(p: Proposition) -> str | None:
 # -- detection --------------------------------------------------------------------------------
 
 
+RELATIVE_CUES: tuple[str, ...] = ("more", "less", "another", "extra", "off", "discount")
+"""#190: words that make an amount relative to a story State's value, never the value."""
+_RELATIVE = _words_pattern(RELATIVE_CUES)
+
+
+def _story_value(state: TrackedState, sentence: str) -> bool:
+    """#190: whether ``sentence`` states story State ``state``'s value: no change verb, no
+    relative cue."""
+    from epistrel.core.states.effects import change_cue
+
+    if state.scope is not StateScope.STORY:
+        return False
+    return _RELATIVE.search(sentence) is None and not change_cue(sentence)
+
+
 def balance_sentence(sentence: str) -> bool:
     """Whether ``sentence`` states a balance (a ``VALUE_CUES`` word) and no price or change
     (``PRICE_CUES``, #148's possession, transfer and consumption verbs)."""
@@ -318,13 +336,17 @@ def state_claim(
     """A detected lone quantity (``amount`` of ``unit``) as a ``state_value`` claim, or
     ``None`` (see the module docstring's detection): exactly one number State names the unit,
     ``sentence`` states a balance, and a per-character State's subject is one of the story's
-    characters (``scope_keys``)."""
-    if not unit or not balance_sentence(sentence):
+    characters (``scope_keys``). #190: a story State (one value for the whole story, a price
+    say) is stated by any sentence naming its amount with no change verb and no relative cue
+    (``RELATIVE_CUES``): "forty silver, final offer" states ``sword_price``."""
+    if not unit:
         return None
     named = [s for s in states if s.type is StateType.NUMBER and names(s, unit)]
     if len(named) != 1:
         return None
     (state,) = named
+    if not balance_sentence(sentence) and not _story_value(state, sentence):
+        return None
     owner = state.subject(subject if subject in scope_keys else None)
     if owner is None:
         return None
@@ -647,6 +669,7 @@ __all__ = [
     "ADVISORY_TIER",
     "PRICE_CUES",
     "REF_PREFIX",
+    "RELATIVE_CUES",
     "STATE_LOOKUP",
     "STATE_QUALIFIER",
     "VALUE_CUES",

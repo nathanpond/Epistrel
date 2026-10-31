@@ -50,7 +50,10 @@ smaller one, a concrete amount, or the effect declared (``RegeneratedBeat.effect
 re-check dry-runs them again). The deterministic rung then answers instead of the fallback
 line: a refused effect is narrated as refused (``attempt``, every effect dropped, nothing
 changes), and an unresolved or undeclared change loses its sentence (narrowing) and its
-effect, else the beat becomes the fallback line. A fallback line never keeps an effect.
+effect, else the beat becomes the fallback line. A fallback line never keeps an effect. #190: a
+declared effect nothing narrates (``state_unnarrated``) asks the regeneration to narrate the
+change (the rewrite keeps the beat's effects when it declares none), and the deterministic rung
+keeps the effect and appends one line built from its reason.
 
 **Acceptance** (FR-REPAIR-2, FR-GUARD-6). Every rung's output passes the output gate (the
 story's output policies, model-assisted ones included) and is detected again (#148: the
@@ -104,7 +107,7 @@ from epistrel.core.repair.rungs import (
 )
 from epistrel.core.resolution.context import load_time_basis
 from epistrel.core.settings_schema import NAME_PLACEHOLDER, OMNISCIENT, VerifySettings
-from epistrel.core.states.effects import REFUSED_TAGS, Finding
+from epistrel.core.states.effects import REFUSED_TAGS, STATE_UNNARRATED, Finding
 from epistrel.core.tables import entities
 from epistrel.core.tables.propositions import closed_sets
 from epistrel.core.turns.beats import BEAT_TEXT_MAX, TurnBeat
@@ -738,7 +741,12 @@ class RepairLadder:
             attempts += 1
             try:
                 made = await self._regenerate(
-                    beat, inputs, context, budget, keep_effects=not stating
+                    beat,
+                    inputs,
+                    context,
+                    budget,
+                    # #190: asked only to narrate them, the rewrite keeps the beat's effects.
+                    keep_effects=not stating or all(f.tag == STATE_UNNARRATED for f in stating),
                 )
                 if made is None:
                     continue
@@ -924,7 +932,26 @@ def state_deterministic(beat: TurnBeat, findings: Sequence[Finding]) -> TurnBeat
     """#187: the deterministic rung of a beat whose only violations are State findings: a
     refused effect narrated as refused (every effect dropped: nothing changes); an unresolved or
     undeclared change without its sentence and its effect; ``None`` when nothing of the beat
-    would be left (the fallback line then)."""
+    would be left (the fallback line then). #190: an unnarrated effect keeps its effect and the
+    beat gains one line built from its reason (``Finding.narration``)."""
+    unnarrated = [f for f in findings if f.tag == STATE_UNNARRATED and f.narration]
+    rest = [f for f in findings if f.tag != STATE_UNNARRATED]
+    settled = _state_settled(beat, rest) if rest else beat
+    if not unnarrated or (settled is not None and settled.attempt):
+        return settled  # a refusal drops every effect: nothing is left to narrate
+    base = settled
+    if base is None:
+        gone = {f.state for f in rest}
+        base = replace(beat, text="", effects=tuple(e for e in beat.effects if e.state not in gone))
+    kept = {e.state for e in base.effects}
+    lines = [f.narration for f in unnarrated if f.state in kept]
+    if not lines:
+        return settled
+    text = " ".join(t for t in [base.text.strip(), *lines] if t)
+    return replace(base, text=text, claims=(), mentions=())
+
+
+def _state_settled(beat: TurnBeat, findings: Sequence[Finding]) -> TurnBeat | None:
     refused = [f for f in findings if f.tag in REFUSED_TAGS and f.refusal]
     if refused:
         return replace(

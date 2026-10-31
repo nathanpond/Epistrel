@@ -2585,10 +2585,11 @@ async def repair_turn(
                 b for b in state_effects.cap(book, [*others, made], stage)[0] if b.beat == made.beat
             )
             extra = state_effects.findings(
-                book, [*others, made], stage, only=frozenset({made.beat})
+                book, [*others, made], stage, only=frozenset({made.beat}), claims=found.checked
             )
             found.checked += state_effects.claims_of(extra, [made], operation_id)
             found.checked = state_effects.covered(found.checked, [made], book)
+            found.checked = state_effects.folded(found.checked, [*others, made], book, stage)
         return Recheck(
             beat=made,
             claims=found.checked,
@@ -4040,10 +4041,15 @@ async def play(
             state_capped[(f.beat, f.effect or 0)] = f
         target.checked = [c for c in target.checked if not state_effects.is_state_claim(c)]
         found = state_effects.findings(
-            books[0], target.beats, stage_, simultaneous=simultaneous_turn[0]
+            books[0],
+            target.beats,
+            stage_,
+            simultaneous=simultaneous_turn[0],
+            claims=target.checked,
         )
         target.checked += state_effects.claims_of(found, target.beats, op.operation_id)
         target.checked = state_effects.covered(target.checked, target.beats, books[0])
+        target.checked = state_effects.folded(target.checked, target.beats, books[0], stage_)
 
     async def read_states(target: Checked, stage_: TurnStage | None, turn: int) -> None:
         """#189 (FR-STATE-11): the canon the action preconditions of ``target``'s effects read

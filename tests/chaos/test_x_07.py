@@ -342,7 +342,7 @@ async def test_x_07__jobs(engine: AsyncEngine, registry: jt.Probe, moved: Movabl
     nothing. The lost claim's late commit is refused and writes nothing. Complement: the
     current claim's commit is accepted."""
     # 1. NOTIFY suppressed: polling alone claims the job within one interval. The loop's own
-    # record shows it, not the wall clock (#446): the first poll to start after the enqueue
+    # record shows it, not elapsed time (#446): the first poll to start after the enqueue
     # claims it (at most one poll, under way at the enqueue, misses it), and no idle wait from
     # the one the loop was in at the enqueue up to the claim is longer than the interval.
     worker = Worker(engine, jt._config())
@@ -445,7 +445,7 @@ async def test_x_07__timers(engine: AsyncEngine, quiet: Probe) -> None:
         finally:
             worker.stop()
             await run
-    # The loop's record, not the wall clock: the first pass that began once the timer was due
+    # The loop's record, not elapsed time: the first pass that began once the timer was due
     # fired it (every earlier pass began before it was due), after at most one idle wait of
     # at most the interval since the pass before.
     passes = [i for i, e in enumerate(log.entries) if e[0] == "fire"]

@@ -166,7 +166,7 @@ async def test_s_input_ingest__ingest(stub_settings: Settings, engine: AsyncEngi
         # Refused at once, not after waiting: it answered while the turn still holds the slot
         # (its generation is held until the release below), so it did not wait for the turn,
         # and the reason is ``in_flight``, not a lock wait that timed out. A causal check, not
-        # a wall-clock bound (#446).
+        # an elapsed-time bound (#446).
         assert not turn.done()
         assert busy.json()["error"]["code"] == "story_busy"
         assert busy.json()["error"]["details"]["reason"] == "in_flight"

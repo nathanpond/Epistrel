@@ -382,6 +382,51 @@ async def settle(
     return done
 
 
+async def conflicted(
+    conn: AsyncConnection, story_id: str, outcomes: Mapping[str, str]
+) -> list[Settled]:
+    """The ``conflict``s a settlement of ``outcomes`` left (#214), read back: each active
+    ``held`` or ``pending`` row that ``outcomes`` decide ``confirmed`` and that is still waiting
+    (a settlement converts or releases every other one), in position order. A resumed staged
+    turn's completion narrates them as held pending (#213)."""
+    from epistrel.core import states  # here: this module is part of ``core.states``
+
+    if not outcomes:
+        return []
+    c = state_changes.c
+    rows = list(
+        await conn.execute(
+            select(state_changes)
+            .where(
+                c.story_id == story_id,
+                c.status.in_(sorted(WAITING)),
+                active_only(state_changes),
+                c.prerequisite_effect_ids.overlap(sorted(outcomes)),
+            )
+            .order_by(c.narrative_turn, c.slot_k, c.beat, c.step, c.id)
+        )
+    )
+    if not rows:
+        return []
+    by_id = {d.id: d for d in await states.definitions(conn, story_id)}
+    found: list[Settled] = []
+    for row in rows:
+        definition = by_id.get(str(row.state_id))
+        if definition is None or decide(row.prerequisite_effect_ids, outcomes) != CONFIRMED:
+            continue
+        found.append(
+            Settled(
+                str(row.id),
+                definition.name,
+                None if row.scope_key is None else str(row.scope_key),
+                CONFLICT,
+                None,
+                tuple(str(p) for p in row.prerequisite_effect_ids),
+            )
+        )
+    return found
+
+
 async def _mark(conn: AsyncConnection, change_id: str, status: str, result: str) -> None:
     c = state_changes.c
     await conn.execute(
@@ -405,6 +450,7 @@ __all__ = [
     "Settled",
     "SettlementCheck",
     "classify",
+    "conflicted",
     "contingency_of",
     "decide",
     "held_amounts",

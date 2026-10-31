@@ -41,6 +41,19 @@ sword grant conditional on the payment (#216):
 
 Complement: a prospective change after intent (the sword's aliases) changes nothing.
 
+``test_s_config_race__m6_settled_later``, the same refusal where the settlement runs outside
+the request (#213, #217):
+
+- (k) **a late settlement** (#217, an ``asynchronous`` provider): the author revokes the
+  sword's source after the dispatcher's claim and before the confirmation settles; the slot's
+  settlement re-authorizes the grant (``rebase.revalidate_settlement``) and is refused
+  (``settlement_conflict``, nothing granted). Complement: an unrevoked purchase settles.
+- (l) **a resumed staged turn** (#213): the outcome transaction fails, the author revokes the
+  sword's source, and the resume records the outcome under the current configuration (the
+  payment kept, the grant held pending, ``settlement_conflict``); its deterministic completion
+  narrates the grant as held pending, whether the resume that completes it recorded the
+  outcome itself or found it recorded by an earlier one (``contingency.conflicted``).
+
 ``test_s_config_race__m6_cascade``, (g) the same-turn causal cascade: in a sequential turn Bobby
 whispers the secret to Cal in beat 2 with Jenni beside him (``co_location``: she hears it) and
 she answers it in beat 3. The author switches perception to ``full`` while the turn generates,
@@ -57,7 +70,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Awaitable, Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from typing import Any
 
 import pytest
@@ -75,9 +88,9 @@ from epistrel.core.propositions import registry as predicates
 from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Cardinality, Interval, Proposition
 from epistrel.core.settings_schema import ConfigClass, StorySettings, setting_class, untagged
-from epistrel.core.states import StateDefinition
+from epistrel.core.states import StateDefinition, contingency
 from epistrel.core.visibility import Visibility
-from epistrel.orchestrator.jobs import queue
+from epistrel.orchestrator.jobs import queue, settlement
 from epistrel.orchestrator.jobs.handlers import consolidation
 from epistrel.orchestrator.jobs.handlers import outbox as dispatcher
 from epistrel.orchestrator.providers import registry as provider_registry
@@ -86,6 +99,7 @@ from epistrel.orchestrator.structured import rebase
 from epistrel.orchestrator.structured import staged as staged_turns
 from tests import consolidation_support as cs
 from tests import effect_support as es
+from tests import late_settlement_support as ls
 from tests import multi_support as ms
 from tests import perception_support as pcs
 from tests import provider_support as ps
@@ -94,7 +108,7 @@ from tests import state_support as ss
 from tests import testimony_support as ts
 from tests.auth_support import auth_settings
 from tests.canon_support import commit
-from tests.event_support import rows
+from tests.event_support import execute_in_tx, rows
 from tests.policy_support import AUTHOR, story_item, words
 from tests.respond_support import body, respond, respond_client
 from tests.story_support import WRITE, override
@@ -637,6 +651,118 @@ async def test_s_config_race__m6_staged(
         assert "held pending" not in _outcome_prompt(stub)
         assert WENT in _texts(played)
         await _done(engine, story)
+
+
+# -- (k) and (l): the settlement outside the request ------------------------------------------
+
+HELD_PENDING = "The sword is held pending resolution."
+
+
+class Boom(Exception):
+    """Induced failure."""
+
+
+async def _lapse(engine: AsyncEngine, story: str) -> None:
+    """The story's turn slot lease lapses (the process running the turn is gone)."""
+    await execute_in_tx(
+        engine,
+        (
+            "UPDATE stories SET in_flight_lease_until = clock_timestamp() "
+            "- interval '1 second' WHERE id = :s",
+            {"s": story},
+        ),
+    )
+
+
+@pytest.mark.part("M6", "FR-CONC-16; FR-EXT-16")
+async def test_s_config_race__m6_settled_later(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """(k) and (l) (see the module docstring)."""
+    async with respond_client(stub_settings, engine) as (client, lib):
+        stub = lib.models.stub
+        registry = lib.in_process_providers
+
+        # -- (k) a late settlement: revoked after the claim, refused; unrevoked, settled.
+        for revoked in (True, False):
+            story, ids = await structured_story(client, "Cal", "Mira")
+            cal = ids["Cal"]
+            await ls.bank(engine, lib, story)
+            await ls.swords(engine, story)
+            payment = ls.payment_of(await ls.buy(client, stub, story, cal))
+            await ls.plain(client, stub, story, cal)
+            outcome = await ls.answer(engine, lib, payment)  # claimed under the old rules
+            if revoked:
+                await _patch_state(engine, story, "sword", REVOKED)
+            done = await ls.settle(engine, lib, outcome)
+            intent, *settled = await _swords(engine, story)
+            if revoked:
+                assert done.result == settlement.CONFLICTED
+                assert (intent.status, settled) == ("pending", [])  # held pending, not granted
+                assert await ls.sword_of(engine, story, cal) == 0
+                assert await ls.settlement_rows(engine, story) == []
+                assert (payment, "settlement_conflict") in await ls.listed(engine, story)
+            else:
+                assert done.result == settlement.SETTLED
+                assert (intent.status, [r.status for r in settled]) == ("converted", ["committed"])
+                assert await ls.sword_of(engine, story, cal) == 1
+                assert not {r for o, r in await ls.listed(engine, story) if o == payment}
+            await ls.drop_jobs(engine, story)
+            await ss.set_level(engine, story, None)
+
+        # -- (l) a resumed staged turn: the grant held pending, narrated as held pending.
+        for split in (False, True):
+            story, cal, _, fake = await _sword_shop(client, engine, lib)
+            original = contingency.settle
+
+            async def boom(*_: Any, **__: Any) -> Any:
+                raise Boom("the outcome transaction fails")
+
+            with pytest.MonkeyPatch.context() as patch:
+                patch.setattr(contingency, "settle", boom)
+                with suppress(Boom):
+                    await _buy(client, stub, story, cal, WENT)
+            assert contingency.settle is original
+            op = await sts.staged_op(engine, story)
+            assert (op.status, op.turn_stage) == ("committed", "awaiting_outcome")
+            await _patch_state(engine, story, "sword", REVOKED)
+            await _lapse(engine, story)
+            if split:
+                # The resume that records the outcome dies before its completion.
+                with pytest.MonkeyPatch.context() as patch:
+                    patch.setattr(staged_turns, "complete_deterministically", boom)
+                    with suppress(Boom):
+                        await staged_turns.resume(engine, op.operation_id, registry=registry)
+                op = await sts.staged_op(engine, story)
+                assert op.turn_stage == "outcome_recorded"
+                await _lapse(engine, story)
+            resumed = await staged_turns.resume(engine, op.operation_id, registry=registry)
+            assert resumed.stage == "completed"
+            (row,) = await ps.outbox_rows(engine, story)
+            assert row.status == "confirmed"  # the payment outcome is preserved
+            assert len(fake.writes) == 1  # never re-sent
+            (intent,) = await _swords(engine, story)
+            assert intent.status == "pending"
+            assert await ss.value(engine, story, "sword", cal) == 1
+            assert await _marks(engine, story) == [(str(row.id), "settlement_conflict")]
+            texts = [
+                str(t.text)
+                for t in await rows(
+                    engine,
+                    "SELECT payload->>'text' AS text FROM events WHERE operation_id = :o "
+                    "AND type = 'beat_narration' ORDER BY seq",
+                    o=op.operation_id,
+                )
+            ]
+            assert texts[-1] == HELD_PENDING
+            assert texts[-2].endswith(staged_turns.WENT_THROUGH + ".")
+            report = (await turn_report(engine, story))["staged"]
+            assert report["outcome_step"]["deterministic"] is True
+            assert [s["result"] for s in report["settled"]] == ["conflict"]
+            await _done(engine, story)
 
 
 # -- (g) the same-turn causal cascade, and what every change leaves recorded ---------------------

@@ -46,7 +46,9 @@ is handled with separate coordinates:
 2. **Re-verification and settlement**: #216's ``contingency.settle`` at the slot's position
    converts the effect's conditional and held rows into new committed rows there (or releases
    and drops them on a failure); each new row passes the State's bounds and integrity checks
-   against current state (#185, #188, as #189's checks run at commit). Any refusal is a
+   against current state (#185, #188, as #189's checks run at commit), and #214's
+   ``rebase.revalidate_settlement`` re-authorizes each render's grant under the current
+   configuration (as the outcome step's settlement does). Any refusal is a
    ``settlement_conflict``: the whole settlement is withdrawn (nothing is committed, the
    operation ends ``abandoned``) and the outbox effect is listed with its confirmed outcome.
 3. **The outcome at the slot**: #215's ``settle_value`` stages the ``external_outcome`` event at
@@ -548,8 +550,15 @@ async def _commit_step(
         raise _Done
     if not await _origin_active(conn, origin.operation_id):
         raise _Discarded
+    # here: ``structured`` imports the job handlers, which import this module
+    from epistrel.orchestrator.structured import rebase
+
     savepoint = await conn.begin_nested()
-    decided = await contingency.settle(conn, op, {record.effect: record.kind}, position)
+    # #214 (FR-CONC-16): the same settlement check as the outcome step's, so a grant #188 no
+    # longer admits under the current configuration is refused here too (a conflict).
+    decided = await contingency.settle(
+        conn, op, {record.effect: record.kind}, position, check=rebase.revalidate_settlement
+    )
     if any(s.result == contingency.CONFLICT for s in decided):
         await savepoint.rollback()
         raise _Conflict

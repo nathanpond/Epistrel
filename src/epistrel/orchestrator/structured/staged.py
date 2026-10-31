@@ -781,14 +781,22 @@ async def _place(db: AsyncEngine, story_id: str, turn: int, character_id: str | 
 
 
 async def complete_deterministically(
-    db: AsyncEngine, op: Operation, answers: Mapping[str, Answer], *, cause: str
+    db: AsyncEngine,
+    op: Operation,
+    answers: Mapping[str, Answer],
+    *,
+    cause: str,
+    recorded: Recorded | None = None,
 ) -> list[TurnBeat]:
     """Stage 4 without the request's render context (#213): the deterministic outcome
     narration at the actor's place, committed as later beats of the turn and routed per
     perceiver (``core.turns.staged.route_narration``), and the turn's message, the
     deterministic assembly of its committed beats as the stored request's output viewpoint
     receives them (``core.history.staged_message``, #177's audience filter); ``turn_stage =
-    completed``, ``revision + 1``, the slot given back."""
+    completed``, ``revision + 1``, the slot given back. ``recorded`` is what this process's
+    outcome transaction did; without it (the outcome committed by an earlier process) the
+    grants its settlement held pending (#214's ``conflict``s) are read back
+    (``contingency.conflicted``), so both narrate them as held pending."""
     story_id = op.story_id
     turn = op.narrative_turn
     assert story_id is not None  # noqa: S101 - a committed staged turn
@@ -796,7 +804,11 @@ async def complete_deterministically(
     actor_id, actor = await _actor(db, story_id, op.operation_id)
     start = await next_beat(db, op.operation_id)
     place = await _place(db, story_id, turn, actor_id)
-    beats = deterministic_outcome(answers, start, actor=actor, location=place)
+    if recorded is None:
+        async with db.connect() as conn:
+            held = await contingency.conflicted(conn, story_id, settlement_outcomes(answers))
+        recorded = Recorded(settled=held)
+    beats = deterministic_outcome(answers, start, actor=actor, location=place, recorded=recorded)
     viewpoint = op.viewpoint or OMNISCIENT
     async with db.connect() as conn:
         view = await story_player_view(conn, story_id)
@@ -837,7 +849,7 @@ async def complete_deterministically(
     op.add_commit_step(route)
     report = {
         "effects": [{"outbox_id": k, "status": a.status} for k, a in answers.items()],
-        "settled": [],
+        "settled": [{"state": x.state, "result": x.result} for x in recorded.settled],
         "outcome_step": {
             "beats": [b.beat for b in beats],
             "deterministic": True,
@@ -912,6 +924,7 @@ async def resume(
             log.info("staged turn: resuming from %s", op.turn_stage)
             synchronous, wait_s, statuses = await synchronous_rows(db, story_id, operation_id)
             claims = Claims((), {})
+            recorded: Recorded | None = None
             if op.turn_stage is StagedTurnStage.INTENT_COMMITTED:
                 claims = await claim_all(db, op, synchronous, registry=registry)
                 ran.append(CLAIM)
@@ -936,11 +949,15 @@ async def resume(
                 reads = pinned.PinnedReads(
                     db, story_id, in_process=registry or dispatcher.bound() or InProcessRegistry()
                 )
-                await record_outcomes(db, op, await _book(db, story_id), reads, answers, position)
+                recorded = await record_outcomes(
+                    db, op, await _book(db, story_id), reads, answers, position
+                )
                 ran.append(OUTCOME)
             if op.turn_stage is StagedTurnStage.OUTCOME_RECORDED:
                 answers = await read_answers(db, synchronous)
-                await complete_deterministically(db, op, answers, cause="resumed")
+                await complete_deterministically(
+                    db, op, answers, cause="resumed", recorded=recorded
+                )
                 ran.append(COMPLETION)
                 # #213: the completion committed, the response not stored.
                 crash.hit("staged.after_completion")

@@ -70,6 +70,7 @@ if TYPE_CHECKING:
     from epistrel.core.membership import Position, Through
     from epistrel.core.projections.structured import ProfileView, RelationshipView, SceneView
     from epistrel.core.propositions.registry import Registry
+    from epistrel.core.verify.rules import OwnedValue
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +115,10 @@ BELIEF_PREFIX = "belief:"
 rows are ``holder = 'belief'`` with the holder as ``speaker_id``."""
 
 ChangeKind = Literal["add", "supersede", "close"]
+
+OWNER_READING = "owner"
+"""The ``QueryKey.reading`` of an owner lookup (#191, ``KeyedLookup.owned``): the owner's values,
+apart from a canon read of the same predicate (which finds no fact)."""
 
 INTERSECTION_ENABLED = True
 """Off only under ``epistrel.testing.faults.readset_intersection_disabled`` (the negative run
@@ -627,6 +632,53 @@ class KeyedLookup:
             )
         )
         return result
+
+    async def owned(
+        self,
+        story_id: str,
+        predicate: str,
+        subjects: Sequence[str] | None,
+        through: Position | None,
+        viewpoint: str = OMNISCIENT,
+    ) -> list[OwnedValue]:
+        """The owner's values of an owner-lookup ``predicate`` (#191: ``state_value``, a story
+        State's fold, ``core.propositions.registry.owner_lookup``) for ``subjects`` (``None``:
+        any) at narrative position ``through`` (``None``: now), as ``viewpoint`` may read them
+        (a hidden State's value only ``omniscient``). The key is recorded with the
+        hash of what was found (refs and values), holder ``canon``; the owner's tables are no
+        part of the change index, so a changed value is caught by #140's rebase re-check, which
+        re-reads it. An unregistered predicate answers nothing."""
+        from epistrel.core.propositions.registry import owner_lookup
+
+        hook = owner_lookup(predicate)
+        if hook is None:
+            return []
+        found = await hook.read(self.conn, story_id, subjects, through, viewpoint)
+        pairs = sorted(
+            (
+                v.ref,
+                v.proposition.subject_id,
+                None if v.proposition.literal is None else literal_hash(v.proposition.literal),
+            )
+            for v in found
+        )
+        digest = (
+            EMPTY_RESULT
+            if not pairs
+            else hashlib.sha256(json.dumps(pairs, separators=(",", ":")).encode()).hexdigest()
+        )
+        self.read_set.record(
+            QueryKey(
+                subjects=None if subjects is None else tuple(subjects),
+                predicate_id=predicate,
+                holder=CANON,
+                viewpoint=viewpoint,
+                reading=OWNER_READING,
+                through=_through_key(through),
+                result_hash=digest,
+            )
+        )
+        return found
 
     async def canon_rows(
         self,

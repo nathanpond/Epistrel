@@ -63,7 +63,7 @@ import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import and_, func, insert, literal_column, select, update
@@ -110,6 +110,10 @@ from epistrel.core.tables import (
     stories,
 )
 from epistrel.core.tables.propositions import CORE_SCOPE
+
+if TYPE_CHECKING:
+    from epistrel.core.membership import Position
+    from epistrel.core.verify.rules import OwnedValue, Verdict
 
 log = logging.getLogger(__name__)
 
@@ -389,6 +393,50 @@ def imply(
         depth += 1
         derived.extend(fresh)
         known.extend(fresh)
+
+
+# -- owner lookups (#191) ----------------------------------------------------------------------
+
+
+class OwnerLookup(Protocol):
+    """The canon of an **owner-lookup** predicate (#191, ADR-160's owner paths): a value its owner
+    holds (a story State's fold, ``core.states.verify``; #195's clock and #207's external values
+    next), never a ``facts`` row. #140's ``check_with`` reads it for a canon holder only, through
+    ``core.readset.KeyedLookup.owned`` (keyed, re-checked at the rebase), as the holder's
+    viewpoint may read it (a value hidden from it is not read), and ``check`` hands the claim to
+    ``verdict``; a ``belief(A)`` holder never consults it (ADR-167). ``implied`` turns a
+    declared rule's consequence on the predicate (``holds ⇒ state_value``) into the value its
+    cause states, or ``None`` when it states none."""
+
+    async def read(
+        self,
+        conn: AsyncConnection,
+        story_id: str,
+        subjects: Sequence[str] | None,
+        through: Position | None,
+        viewpoint: str,
+    ) -> list[OwnedValue]: ...
+
+    def verdict(self, claim: Proposition, owned: Sequence[OwnedValue]) -> Verdict: ...
+
+    def implied(
+        self, consequence: Proposition, cause: Proposition, owned: Sequence[OwnedValue]
+    ) -> Proposition | None: ...
+
+
+OWNER_LOOKUPS: dict[str, OwnerLookup] = {}
+"""The owner lookups by predicate id (``register_owner_lookup``)."""
+
+
+def register_owner_lookup(predicate_id: str, lookup: OwnerLookup) -> OwnerLookup:
+    """Make ``predicate_id`` an owner-lookup predicate answered by ``lookup``."""
+    OWNER_LOOKUPS[predicate_id] = lookup
+    return lookup
+
+
+def owner_lookup(predicate_id: str) -> OwnerLookup | None:
+    """The owner lookup of ``predicate_id``, or ``None`` for a predicate whose canon is facts."""
+    return OWNER_LOOKUPS.get(predicate_id)
 
 
 # -- author declarations (#108's loose lists, typed) --------------------------------------------
@@ -1406,6 +1454,7 @@ __all__ = [
     "ENGINE_PRINCIPAL",
     "IDENTITY",
     "IMPLICATION_MAX_DEPTH",
+    "OWNER_LOOKUPS",
     "PROPOSABLE",
     "PROPOSAL_OBSERVATIONS",
     "ApproveRequest",
@@ -1415,6 +1464,7 @@ __all__ = [
     "Decision",
     "IdentityReason",
     "ImplicationRule",
+    "OwnerLookup",
     "PredicateDecl",
     "PredicateList",
     "PredicateNotFound",
@@ -1441,7 +1491,9 @@ __all__ = [
     "intersection",
     "list_predicates",
     "load",
+    "owner_lookup",
     "register_author",
+    "register_owner_lookup",
     "reject",
     "rules_from_deferred",
     "rules_from_snapshot",

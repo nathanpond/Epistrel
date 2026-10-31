@@ -102,7 +102,9 @@ from epistrel.core.resolution.entities import NARRATOR, PLAYER, ResolutionContex
 from epistrel.core.resolution.identity import speaker_identities
 from epistrel.core.resolution.time import Position, turn_of
 from epistrel.core.settings_schema import OMNISCIENT, VerifySettings
-from epistrel.core.tables import events, operations
+from epistrel.core.states import definitions as state_definitions
+from epistrel.core.states.verify import tracked
+from epistrel.core.tables import characters, events, operations
 from epistrel.core.tables.commitments import thunks
 from epistrel.core.verify import shadow
 from epistrel.core.verify.detect import (
@@ -257,7 +259,8 @@ async def load_env(
     resolution context and protected index of each speaker (remembered for the rebase
     re-check), the scene's place and placements, and the open thunks. ``addressed`` (#483):
     the turn's input actor, whom every context's ``you`` may name
-    (``ResolutionContext.addressed``)."""
+    (``ResolutionContext.addressed``). #191: the story's States and characters, which turn a
+    stated balance into a ``state_value`` claim."""
     config = config or await DetectionConfig.load(conn, story_id)
     registry = registry or await load(conn, story_id)
     basis = await load_time_basis(conn, story_id)
@@ -324,6 +327,19 @@ async def load_env(
         predicates={pid: p.name for pid, p in registry.predicates.items()},
     )
 
+    # #191: the story's States and characters, so a stated balance is a ``state_value`` claim.
+    states = tracked(await state_definitions(conn, story_id))
+    scope_keys = (
+        frozenset(
+            str(c)
+            for c in await conn.scalars(
+                select(characters.c.id).where(characters.c.story_id == story_id)
+            )
+        )
+        if states
+        else frozenset()
+    )
+
     def context_for(speaker: str) -> ResolutionContext:
         return contexts.get(speaker) or contexts[NARRATOR]
 
@@ -339,6 +355,8 @@ async def load_env(
         placement=placement,
         open_thunks=open_thunks,
         private=private,
+        states=states,
+        scope_keys=scope_keys,
     )
 
 

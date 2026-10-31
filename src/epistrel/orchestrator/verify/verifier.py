@@ -131,7 +131,7 @@ from epistrel.core.propositions.model import (
     Proposition,
     TemporalKind,
 )
-from epistrel.core.propositions.registry import Registry, load
+from epistrel.core.propositions.registry import Registry, load, owner_lookup
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.resolution.context import load_time_basis
 from epistrel.core.resolution.time import TimeBasis
@@ -1817,8 +1817,9 @@ class Verifier:
     def canon_requests(self) -> list[CanonRequest]:
         """The turn's permitted novel claims to canonize at its commit, in verification order
         (``core.canon.canonize.canonize_all`` dedupes identical ones): never a denied claim, a
-        ``think`` claim, or a ``say`` claim that is not about the speaker's own actions or
-        backstory."""
+        ``think`` claim, a ``say`` claim that is not about the speaker's own actions or
+        backstory, or a claim on an owner-lookup predicate (#191: ``state_value``, whose canon
+        is the State's fold)."""
         found: list[CanonRequest] = []
         for ref, r in self.results:
             permitted = r.permitted
@@ -1828,6 +1829,8 @@ class Verifier:
                 continue
             if not r.canonizes:  # #166: a lie, a joke or a hallucination never canonizes
                 continue
+            if owner_lookup(r.claim.predicate_id) is not None:
+                continue  # #191: an owner's value (a State's) is never a fact
             if ref.channel == SAY and permitted.basis is not Basis.OWN:
                 continue
             found.append(

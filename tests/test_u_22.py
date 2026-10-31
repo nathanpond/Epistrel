@@ -1,6 +1,7 @@
 """U-22 (M4): the deterministic claim detectors (FR-VERIFY-13; docs/04 §3; #148). One file per
 test ID and milestone; U-22's M5 part (an alias of a fact hidden from the speaker, another
-character's private ``think`` phrase) joins it.
+character's private ``think`` phrase) joins it, and so does its M6 part (#191, against a
+database: ``test_u_22__hidden_states``).
 
 Every test here runs with the stub adapter instrumented to fail on any call: the detectors are
 deterministic data tables and need no model. Detection is checked apart from verification: each
@@ -13,6 +14,7 @@ from collections.abc import Iterator
 from typing import Any, cast
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.core.propositions.model import (
     Granularity,
@@ -23,6 +25,7 @@ from epistrel.core.propositions.model import (
     Proposition,
 )
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME
+from epistrel.core.resolution.context import load_index
 from epistrel.core.resolution.entities import (
     NARRATOR,
     EntityEntry,
@@ -30,6 +33,8 @@ from epistrel.core.resolution.entities import (
     ResolutionContext,
 )
 from epistrel.core.resolution.time import TimeBasis
+from epistrel.core.states import StateDefinition
+from epistrel.core.states import verify as sv
 from epistrel.core.verify.detect import (
     UNCOVERED_MENTION,
     DeclaredClaim,
@@ -43,7 +48,12 @@ from epistrel.core.verify.detect import (
     unresolved,
 )
 from epistrel.core.verify.permission import EntityInfo
-from epistrel.core.verify.protected import PrivateRecord, build_index, term
+from epistrel.core.verify.protected import (
+    PrivateRecord,
+    build_index,
+    load_protected_index,
+    term,
+)
 from epistrel.core.verify.rules import VerdictKind, VerdictReason
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models.registry import ExtractionResult
@@ -55,6 +65,9 @@ from epistrel.orchestrator.verify.extraction import (
     verify_detected,
 )
 from epistrel.orchestrator.verify.verifier import RecordsSource, Verifier, VerifyConfig
+from tests import canon_support
+from tests import partition_support as parts
+from tests import state_support as ss
 from tests import verify_support as vs
 
 LINDA = "01JD0000000000000000000001"
@@ -540,3 +553,70 @@ async def test_u_22__m5() -> None:
         "think_leak",
     ]
     assert not any(r.canonizes for r in results if r is not None and r.think_leak)
+
+
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-VERIFY-13")
+async def test_u_22__hidden_states(engine: AsyncEngine, states_delivered: None) -> None:
+    """#191: the protected-content index holds each hidden State's current value, paired with
+    the State's name or an alias in one clause (#171's pairing), for every speaker holding no
+    belief about it: Bobby (no belief), Cal (the player's character) and the narrator, not Ann,
+    who believes it. Bobby stating the hidden trust score verbatim ("my regard for Cal stands
+    at three") is detected (the hit claims the score's ``state_value``) and repaired (novel to
+    him, its permission denied as protected content). Complements: "three" alone is no hit, a
+    player-visible State's value (Cal's 500 gold) is not protected, and Ann's same line is no
+    hit. No model is called."""
+    w = await canon_support.world(engine)
+    story = w.story_id
+    bobby, ann, cal = (w.characters[n] for n in ("Bobby", "Ann", "Cal"))
+    await ss.set_level(engine, story, "on")
+    declared = StateDefinition.model_validate(
+        {
+            "name": "trust",
+            "type": "number",
+            "scope": "story",
+            "initial_value": 3,
+            "visibility": "hidden",
+            "aliases": ("regard",),
+        }
+    )
+    trust, _ = await ss.define_all(engine, story, declared, ss.gold())
+    assert trust.id is not None
+    await ss.change(engine, story, ss.set_to("gold", 500, scope_key=cal))
+    score = sv.proposition(trust.id, trust.id, sv.number_literal(3))
+    await parts.believe(engine, story, ann, score)
+
+    async with engine.connect() as conn:
+        index = await load_index(conn, story)
+        built = {
+            who: await load_protected_index(conn, story, who, index=index)
+            for who in (bobby, ann, cal, NARRATOR)
+        }
+    for who, protects in ((bobby, True), (cal, True), (NARRATOR, True), (ann, False)):
+        found = built[who]
+        assert found is not None
+        pairs = [p for p in found.pairs if p.ref_kind == "state"]
+        assert bool(pairs) is protects, who
+        for pair in pairs:
+            assert (set(pair.left), pair.proposition) == ({"trust", "regard"}, score)
+            assert {"3", "three"} <= set(pair.right)
+        assert not found.match("You have 500 gold.")  # a player-visible value
+
+    line = "My regard for Cal stands at three."
+    beats = [
+        DetectBeat(1, "say", line, bobby),
+        DetectBeat(2, "say", "Three riders passed the gate.", bobby),
+        DetectBeat(3, "say", line, ann),
+    ]
+    detection = detect_render(beats, (3, 0), env(protected_for=lambda who: built.get(who)))
+    hits = [c for c in detection.claims if c.category == "protected_content"]
+    assert [(h.beat, h.proposition) for h in hits] == [(1, score)]
+    assert line[hits[0].span[1] : hits[0].span[2]] == "regard for Cal stands at three"
+    checked = await verify_detected(verifier(), _outcome(detection.with_claims(hits)), (3, 0))
+    (result,) = [c.result for c in checked]
+    assert result is not None
+    assert result.needs_repair
+    assert result.repair_tag == "unpermitted"
+    assert result.denied is not None
+    assert result.denied.reason.value == "protected_content"
+    assert result.permitted is None  # never a canon request

@@ -263,12 +263,15 @@ CLAUSE_END = re.compile(r"[.;!?\n]")
 @dataclass(frozen=True, slots=True)
 class ProtectedPair:
     """A hidden ``same_as`` (#171): the folded names of each side, the fact it protects and its
-    proposition (what a hit claims)."""
+    proposition (what a hit claims). A hidden State's value (#191) is a pair too: the State's
+    name and aliases on one side, its value's renderings on the other (``ref_kind``
+    ``state``)."""
 
     left: tuple[str, ...]
     right: tuple[str, ...]
     ref_id: str
     proposition: Proposition
+    ref_kind: str = "fact"
 
     @property
     def folded(self) -> str:
@@ -368,7 +371,9 @@ class ProtectedIndex:
                         (
                             start,
                             end,
-                            ProtectedTerm(pair.folded, "fact", pair.ref_id, pair.proposition),
+                            ProtectedTerm(
+                                pair.folded, pair.ref_kind, pair.ref_id, pair.proposition
+                            ),
                         )
                     )
                     break
@@ -545,6 +550,7 @@ async def load_protected_index(
                 texts += _names(index, entity)
         hidden_terms += [term(t, "fact", fact.id, p) for t in texts]
     hidden_terms += await _belief_terms(conn, story_id, viewpoint, known, index, cast)
+    pairs += await state_pairs(conn, story_id, viewpoint, through_position=through_position)
     candidate_terms: list[ProtectedTerm] = []
     t = thunks.alias("t")
     rows = await conn.execute(
@@ -570,6 +576,39 @@ async def load_protected_index(
         )
     log.debug("protected index: %d terms (truncated=%s)", len(built), built.truncated)
     return built
+
+
+async def state_pairs(
+    conn: AsyncConnection,
+    story_id: str,
+    viewpoint: str,
+    *,
+    through_position: tuple[int, int] | None = None,
+) -> list[ProtectedPair]:
+    """#191 (U-22 M6, FR-VERIFY-13): each hidden State's current value the viewpoint's
+    speaker holds no belief about (``core.states.verify.hidden_values``: the player's character
+    and the narrator hold none), as a pair: one of the State's names (its name, ``_`` as
+    spaces, and its aliases) and one of its value's renderings in one clause. A hit claims the
+    value's ``state_value``. A ``player_visible`` State is not protected."""
+    from epistrel.core.membership import bound_of
+    from epistrel.core.states.verify import hidden_values, value_renderings
+
+    speaker = (
+        viewpoint.removeprefix(CHARACTER_VIEWPOINT_PREFIX)
+        if viewpoint.startswith(CHARACTER_VIEWPOINT_PREFIX)
+        else None
+    )
+    through = None if through_position is None else bound_of(through_position)
+    found: list[ProtectedPair] = []
+    for hidden in await hidden_values(conn, story_id, speaker, through=through):
+        p = hidden.proposition
+        left = tuple(dict.fromkeys(term(n, "state", "", p).folded for n in hidden.state.names))
+        right = tuple(
+            dict.fromkeys(term(v, "state", "", p).folded for v in value_renderings(hidden.value))
+        )
+        ref = f"state:{hidden.state.id}:{p.subject_id}"
+        found.append(ProtectedPair(left, right, ref, p, "state"))
+    return found
 
 
 BELIEF_TERM_KINDS = frozenset({"person"})
@@ -871,6 +910,7 @@ __all__ = [
     "recheck",
     "recorded",
     "renderings",
+    "state_pairs",
     "term",
     "viewpoint_of",
 ]

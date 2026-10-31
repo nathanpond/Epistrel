@@ -119,3 +119,9 @@ does not name its only institution. An author declares such rules where they hol
 | `on_channel`<br>`01JPRED0000000000000000031` | person → str | multi per (subject) | fluent | — | — | — | — | The subject is on a remote channel (a call in progress, a radio link), named by a free-text token (a `str` literal, no entity). Perception routing (#161) lets a `remote_channel` qualifier reach exactly the channel's participants, wherever they are. |
 | `spoke_to`<br>`01JPRED0000000000000000032` | person → person | multi per (subject) | event | — | — | — | — | The subject said something to the object at the instant: the observable envelope of an utterance (FR-TURN-2), which a character perceives without its words. |
 | `spoke`<br>`01JPRED0000000000000000033` | person → none | multi per (subject) | event | — | — | — | — | The subject said something (no object, no addressee) at the instant: the envelope of an utterance addressed to no one in particular. |
+
+## Tracked values
+
+| Predicate | Subject → object | Cardinality | Temporal | Direction | Exclusions, containment | Qualifiers | Projection | Semantics |
+|---|---|---|---|---|---|---|---|---|
+| `state_value`<br>`01JPRED0000000000000000035` | any → any | functional per (subject, state) | fluent | — | — | `state` (id, key) | — | A story State's value (#191, FR-STATE-8, FR-VERIFY-7): the `state` qualifier is the State's id, the subject the character a per-character State belongs to (the State's own id for a story State), the object the value as a literal. Its canon is the State's fold at the claim's position (`core.states.verify`, an owner lookup), never a fact: an objective or narrator claim is `supported` when the fold equals it (a number within the State's tolerance) and `contradicted` otherwise. A character's belief about a value is an ordinary belief, acquired by observation or testimony. |

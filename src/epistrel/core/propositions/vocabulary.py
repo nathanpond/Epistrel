@@ -66,6 +66,7 @@ ADJACENT_TO = "01JPRED0000000000000000030"
 ON_CHANNEL = "01JPRED0000000000000000031"
 SPOKE_TO = "01JPRED0000000000000000032"
 SPOKE = "01JPRED0000000000000000033"
+STATE_VALUE = "01JPRED0000000000000000035"
 
 BARRIERS: tuple[str, ...] = ("none", "door_open", "door_closed", "window", "thin_wall", "wall")
 """The values of ``adjacent_to``'s ``barrier`` qualifier (#161): what stands between two
@@ -95,6 +96,7 @@ ATTRIBUTES = Family("attributes", "Basic attributes")
 SCHEDULES = Family("schedules", "Schedules")
 SCENE_TIME = Family("scene_time", "Scene time")
 COMMUNICATION = Family("communication", "Perception and communication")
+STATES = Family("states", "Tracked values")
 
 FAMILIES: tuple[Family, ...] = (
     IDENTITY,
@@ -110,6 +112,7 @@ FAMILIES: tuple[Family, ...] = (
     SCHEDULES,
     SCENE_TIME,
     COMMUNICATION,
+    STATES,
 )
 
 _FAMILY_OF: dict[str, Family] = {}
@@ -512,6 +515,22 @@ CORE_PREDICATES: tuple[Predicate, ...] = (
         docs="The subject said something (no object, no addressee) at the instant: the envelope "
         "of an utterance addressed to no one in particular.",
     ),
+    _core(
+        STATES,
+        id=STATE_VALUE,
+        name="state_value",
+        cardinality=_F,
+        temporal_kind=_FLUENT,
+        key_qualifiers=("state",),
+        qualifiers={"state": QualifierKind.ID},
+        docs="A story State's value (#191, FR-STATE-8, FR-VERIFY-7): the `state` qualifier is "
+        "the State's id, the subject the character a per-character State belongs to (the State's "
+        "own id for a story State), the object the value as a literal. Its canon is the State's "
+        "fold at the claim's position (`core.states.verify`, an owner lookup), never a fact: an "
+        "objective or narrator claim is `supported` when the fold equals it (a number within "
+        "the State's tolerance) and `contradicted` otherwise. A character's belief about a "
+        "value is an ordinary belief, acquired by observation or testimony.",
+    ),
 )
 """Every core predicate, in documentation order."""
 
@@ -540,6 +559,7 @@ __all__ = [
     "ON_CHANNEL",
     "SPOKE",
     "SPOKE_TO",
+    "STATE_VALUE",
     "Family",
     "family_of",
 ]

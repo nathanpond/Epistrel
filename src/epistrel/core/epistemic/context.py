@@ -286,7 +286,15 @@ class TurnState:
 
 
 def statement(p: Proposition, predicates: Mapping[str, str], names: Mapping[str, str]) -> str:
-    """A proposition as a context line's statement: ``<subject> [not] <predicate> <object>``."""
+    """A proposition as a context line's statement: ``<subject> [not] <predicate> <object>``;
+    a ``state_value`` (#191) as ``<subject>'s <State> is [not] <value>`` (a story State's as
+    ``the <State> is …``), its State named through ``names``."""
+    if predicates.get(p.predicate_id) == STATE_VALUE_NAME and p.literal is not None:
+        state = p.qualifiers.get("state")
+        label = names.get(state, "tracked value") if isinstance(state, str) else "tracked value"
+        owner = "the" if p.subject_id == state else f"{names.get(p.subject_id, p.subject_id)}'s"
+        negated = " not" if p.polarity.value == "negated" else ""
+        return f"{owner} {label} is{negated} {p.literal.value}"[:TEXT_MAX]
     words = [names.get(p.subject_id, p.subject_id)]
     if p.polarity.value == "negated":
         words.append("not")
@@ -442,6 +450,21 @@ async def _cast(conn: AsyncConnection, story_id: str) -> _Cast:
             entity_of[str(entity.character_id)] = str(entity.id)
             character_of[str(entity.id)] = str(entity.character_id)
     return _Cast(names, ages, frozenset(players), entity_of, character_of, entity_names)
+
+
+STATE_VALUE_NAME = "state_value"
+"""#191: the core predicate of a State's value, rendered as one (``statement``)."""
+
+
+async def _state_names(conn: AsyncConnection, story_id: str) -> dict[str, str]:
+    """#191: the story's States by id, as their ``state_value`` beliefs name them."""
+    from epistrel.core.states import definitions
+
+    return {
+        str(d.id): d.name.replace("_", " ")
+        for d in await definitions(conn, story_id)
+        if d.id is not None
+    }
 
 
 PLAYER_PENDING = "pending:player_input"
@@ -811,7 +834,7 @@ async def build_context(
     if partitioned:
         registry = await load(conn, story_id)
         predicates = {pid: p.name for pid, p in registry.predicates.items()}
-        names = {**cast.entity_names, **cast.names}
+        names = {**cast.entity_names, **cast.names, **await _state_names(conn, story_id)}
         about = list(dict.fromkeys((*retrieval.resolution.entities, *retrieval.participants)))
         needed = await _needed(conn, state, character_id, about, registry)
         pending_beliefs, pending_heard = _needed_lines(needed, predicates, names, cast.names)

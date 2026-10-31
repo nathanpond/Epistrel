@@ -31,7 +31,9 @@ its prose was declared. ``detect_render(beats, …)`` (once per render, every be
   ``do`` beat, a sentence-initial pronoun or none is the actor), the object the nearest one
   after it of the predicate's object type. A quantity in the clause of a possession, transfer or
   consumption claim is its ``quantity`` qualifier; alone it is a claim no predicate states yet
-  (``uncertain``, never a guess). A negation cue back to the clause start makes a claim
+  (``uncertain``, never a guess), unless it states a tracked State's balance (#191,
+  ``DetectionEnv.states``): then it is that State's ``state_value`` claim
+  (``core.states.verify.state_claim``). A negation cue back to the clause start makes a claim
   ``negated``; a question, a conditional or a modal suppresses the clause (nothing is asserted).
   A word the tables list is a noun, not a verb, after a determiner or a possessive ("her
   pocket"). A hit whose argument is an unresolved common noun ("the key" with no such entity) is
@@ -75,7 +77,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import cache
 from importlib import resources
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from epistrel.core.commit.sketch import ThunkSketch, fills
 from epistrel.core.propositions.model import (
@@ -100,6 +102,9 @@ from epistrel.core.verify.introduce import Introductions
 from epistrel.core.verify.normalize import ClaimSketch, Unnormalizable, normalize
 from epistrel.core.verify.protected import PrivateRecord, ProtectedIndex, match_thoughts
 from epistrel.core.verify.rules import VerdictReason
+
+if TYPE_CHECKING:
+    from epistrel.core.states.verify import TrackedState
 
 Layer = Literal["declared", "detector", "extraction"]
 LAYERS: tuple[Layer, ...] = ("declared", "detector", "extraction")
@@ -529,6 +534,11 @@ class DetectionEnv:
     private: tuple[PrivateRecord, ...] = ()
     """#172: the characters' private records (their ``think``s and belief statements) the
     thought side index and the inner-state check read (``core.verify.protected``)."""
+    states: tuple[TrackedState, ...] = ()
+    """#191: the story's States (``core.states.verify.tracked``): a lone quantity naming a
+    number State in a sentence that states a balance is a ``state_value`` claim."""
+    scope_keys: frozenset[str] = frozenset()
+    """#191: the story's characters, the scope keys of a per-character State."""
 
     def with_private(self, records: Sequence[PrivateRecord]) -> DetectionEnv:
         """This environment with ``records`` added to its private records (a render's
@@ -1132,6 +1142,10 @@ def _detect_beat(
     mention_claims = _mentions(work, _declared_ids(beat), env.scene_entity, seed=seed)
     found_claims: list[DetectedClaim] = []
     for i, (category, sketch, _span) in enumerate([*work.sketches, *lone]):
+        tracked = _state_value(work, sketch, env) if category == "quantity" else None
+        if tracked is not None:
+            found_claims.append(_claim(index, beat, category, sketch, tracked))
+            continue
         found = _normalize_one(sketch, beat.speaker, position, env, context)
         if isinstance(found, Unnormalizable) and sketch.literal is None:
             work.noise += 1  # an unresolved common noun: noise, never a claim
@@ -1202,6 +1216,37 @@ def _detect_beat(
         hits=dict(work.hits),
         noise=work.noise,
         flags=tuple(flags),
+    )
+
+
+def _state_value(beat: _Beat, sketch: ClaimSketch, env: DetectionEnv) -> Proposition | None:
+    """#191: a lone quantity as a ``state_value`` claim (``core.states.verify.state_claim``):
+    its subject the mention before it in its sentence (on a ``do`` beat with none, the actor),
+    negated by a negation cue in its clause; ``None`` when it is no State's balance."""
+    from epistrel.core.states.verify import state_claim
+
+    literal, span = sketch.literal, sketch.span
+    if (
+        not env.states
+        or literal is None
+        or span is None
+        or literal.kind is not LiteralKind.QUANTITY
+    ):
+        return None
+    at = _token_at(beat.tokens, span[0])
+    if at is None or isinstance(literal.value, str | bool):
+        return None
+    sentence = beat.tokens[at].sentence
+    words = [t for t in beat.tokens if t.sentence == sentence]
+    negated = _negated(beat.tokens, at)
+    return state_claim(
+        env.states,
+        literal.unit,
+        literal.value,
+        subject=_subject(beat, span[0], sentence),
+        scope_keys=env.scope_keys,
+        sentence=beat.text[words[0].start : words[-1].end],
+        polarity=Polarity.NEGATED if negated else Polarity.AFFIRMED,
     )
 
 

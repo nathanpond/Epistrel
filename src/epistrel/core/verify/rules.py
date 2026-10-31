@@ -139,6 +139,20 @@ Canon reads take only active, current versions (#130, #133): a dormant fact is n
 Closed sets are read from ``closed_sets``. In M4 the author writes them at genesis, before any
 turn, and canon's own (#145) will need keying when they land.
 
+**Owner-lookup predicates** (#191, ADR-160's owner paths). A predicate registered with an
+owner lookup (``registry.register_owner_lookup``: ``state_value``, whose canon is a story State's
+fold, ``core.states.verify``) takes part only through its lookup. For a canon holder,
+``check_with`` reads the owner's values at the claim's position (``KeyedLookup.owned``: a query
+key of the read set, re-checked at the rebase by ``recheck``) and ``check`` hands a claim on the
+predicate to the lookup's ``verdict`` (``supported`` when the value matches, ``contradicted``
+otherwise, citing the value's ``owner_ref``); no ``facts`` row is read for it, so a stale canon
+fact naming another number never supports it (FR-VERIFY-7). A forward-implication consequence
+on such a predicate (a declared rule ``holds ⇒ state_value``) is checked against the lookup's
+value too: the lookup's ``implied`` turns it into the value its cause states, and a different
+value is ``contradicted`` (``implication``, then ``functional_key`` with the owner's ref). A
+``belief(A)`` holder never consults the lookup: its record set is A's partition and the canon A
+may read (ADR-167), where a value is an ordinary belief.
+
 **``verify``** asks the story's effective profile first (#129). With ``verification`` off, it
 is inert: no lookup, no verdict. With ``contradiction_checking`` off, no contradiction rule runs.
 It records each verdict for the turn's read set. ``recheck``, which is registered with
@@ -190,6 +204,7 @@ from epistrel.core.propositions.registry import (
     cardinality_may_contradict,
     imply,
     load,
+    owner_lookup,
     same_event,
 )
 from epistrel.core.propositions.vocabulary import LOCATED_AT, PRESENT_AT, SAME_AS
@@ -373,6 +388,22 @@ class ClosedSetRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class OwnedValue:
+    """An owner's value of an owner-lookup predicate at a claim's position (#191): the
+    proposition it amounts to (its ``literal`` ``None`` when the owner holds no value yet), the
+    ``ref`` evidence cites (``state:<state id>``), how a claim compares with it (``kind``: the
+    State's type; ``tolerance``: how far a number may be and still match) and the entity the
+    value tracks (``entity_id``: a possession-style State's, read by a declared rule's
+    consequence)."""
+
+    proposition: Proposition
+    ref: str
+    kind: str
+    tolerance: float = 0.0
+    entity_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class Evidence:
     """One record a verdict rests on: the ``rule`` and the proposition (with its fact) or the
     closed set it cites. ``depth_capped`` marks the implication closure's depth stop, which cites
@@ -384,26 +415,31 @@ class Evidence:
     closed_set_id: str | None = None
     depth_capped: bool = False
     belief_id: str | None = None
+    owner_ref: str | None = None
+    """#191: the owner's value an owner-lookup verdict rests on (``state:<state id>``)."""
 
     @property
     def table(self) -> str | None:
-        """The table of the record cited: ``facts``, ``beliefs`` or ``closed_sets``."""
+        """The table of the record cited: ``facts``, ``beliefs``, ``closed_sets`` or, for an
+        owner's value, ``state_values``."""
         if self.fact_id is not None:
             return "facts"
         if self.belief_id is not None:
             return "beliefs"
         if self.closed_set_id is not None:
             return "closed_sets"
+        if self.owner_ref is not None:
+            return "state_values"
         return None
 
     @property
     def record_id(self) -> str | None:
         """The id of the record cited, in ``table``."""
-        return self.fact_id or self.belief_id or self.closed_set_id
+        return self.fact_id or self.belief_id or self.closed_set_id or self.owner_ref
 
     def as_payload(self) -> dict[str, Any]:
         found: dict[str, Any] = {"rule": self.rule.value}
-        for name in ("proposition_id", "fact_id", "belief_id", "closed_set_id"):
+        for name in ("proposition_id", "fact_id", "belief_id", "closed_set_id", "owner_ref"):
             value = getattr(self, name)
             if value is not None:
                 found[name] = value
@@ -557,6 +593,10 @@ class _Context:
     """Containment edges by containment predicate: ``"<pred>:<inner>"`` → outer objects."""
     placed: dict[str, set[str]]
     """Objects some containment fact of each containment predicate names, either side."""
+    owned: list[OwnedValue] = field(default_factory=list)
+    """#191: the owners' values (a canon holder's owner lookups)."""
+    canon: bool = True
+    """Whether the holder is canon: only a canon holder's checks consult an owner lookup."""
 
     @classmethod
     def build(
@@ -565,13 +605,16 @@ class _Context:
         closed: Sequence[ClosedSetRecord],
         registry: Registry,
         options: Options,
+        owned: Sequence[OwnedValue] = (),
+        *,
+        canon: bool = True,
     ) -> _Context:
         # #171: the holder's identities, depth 1 (``core.resolution.identity``): the records
         # are the holder's, so the expansion is holder-aware.
         reps = representatives(
             pair for r in records if (pair := pair_of(r.proposition)) is not None
         )
-        ctx = cls(registry, options, reps, [], list(closed), {}, {})
+        ctx = cls(registry, options, reps, [], list(closed), {}, {}, list(owned), canon)
         ctx.records = [(r, ctx.norm(r.proposition)) for r in records]
         containment = {
             p.containment_of for p in registry.predicates.values() if p.containment_of is not None
@@ -1229,6 +1272,21 @@ def _forward(claim: Proposition, predicate: Predicate, ctx: _Context) -> tuple[_
         consequent = ctx.registry.get(derived.predicate_id)
         if consequent is None:
             continue
+        hook = owner_lookup(derived.predicate_id)
+        if hook is not None:
+            # #191 (ADR-160): a consequence on an owner-lookup predicate is checked against the
+            # owner's value, never against records; only a canon holder reads the owner.
+            if not ctx.canon:
+                continue
+            implied = hook.implied(derived, claim, ctx.owned)
+            if implied is None:
+                continue
+            settled = hook.verdict(implied, ctx.owned)
+            if settled.kind is VerdictKind.CONTRADICTED:
+                used = _joins_used(derived, joins, reached)
+                out.evidence = [*(used or [Evidence(Rule.IMPLICATION)]), *settled.evidence]
+                return out, closure.truncated
+            continue
         for found in _consequence_rules(ctx.norm(derived), consequent, ctx):
             if found.evidence:
                 used = _joins_used(derived, joins, reached)
@@ -1451,13 +1509,23 @@ def check(
     holder: Holder = CANON,
     position: Any = None,
     options: Options = Options(),  # noqa: B008 - frozen
+    owned: Sequence[OwnedValue] = (),
 ) -> Verdict:
     """The verdict on ``claim`` over the holder's ``records`` and ``closed_sets`` (see the
-    module docstring). Pure: no I/O."""
+    module docstring) and, for a canon holder, the owners' values ``owned`` (#191). Pure: no
+    I/O."""
     predicate = registry.get(claim.predicate_id)
     if predicate is None:
         return uncertain(VerdictReason.UNRESOLVED_PREDICATE, holder=holder, position=position)
-    ctx = _Context.build(records, closed_sets, registry, options)
+    canon = holder.kind == "canon"
+    ctx = _Context.build(records, closed_sets, registry, options, owned, canon=canon)
+    hook = owner_lookup(predicate.id)
+    if hook is not None and canon:
+        # #191: an owner-lookup predicate takes part only through its lookup (FR-VERIFY-7).
+        settled = hook.verdict(ctx.norm(claim), ctx.owned)
+        if settled.kind is VerdictKind.CONTRADICTED and not options.contradictions:
+            settled = Verdict(VerdictKind.NOVEL)  # coverage only: no contradiction rule runs
+        return replace(settled, holder=holder, position=position)
     found = _check(ctx.norm(claim), predicate, ctx)
     return replace(found, holder=holder, position=position)
 
@@ -1616,6 +1684,29 @@ async def check_with(
         return [Record.of_belief(b) for b in found]
 
     canon_viewpoint = viewpoint
+    through = belief_through(position, through_position)
+
+    async def read_owned(predicate_id: str, subjects: Sequence[str] | None) -> list[OwnedValue]:
+        return await lookup.owned(story_id, predicate_id, subjects, through, canon_viewpoint)
+
+    if holder.kind != "belief" and owner_lookup(c.predicate_id) is not None:
+        # #191: a canon holder's claim on an owner-lookup predicate reads the owner's values
+        # (never a fact): the claim's subject, ``same_as``-expanded as any other read.
+        subjects = {c.subject_id}
+        for r in await read_canon(SAME_AS, c.subject_id, None):
+            p = r.proposition
+            if p.polarity is Polarity.AFFIRMED and p.object_id is not None:
+                subjects |= {p.subject_id, p.object_id}
+        owned = await read_owned(c.predicate_id, sorted(subjects))
+        log.debug("verify fetched %d owner values", len(owned))
+        return check(
+            claim,
+            registry=registry,
+            holder=holder,
+            position=position,
+            options=options,
+            owned=owned,
+        )
     if holder.kind == "belief":
         # The canon a belief holder may read: what its character sees (FR-RET-1).
         canon_viewpoint = f"{CHARACTER_VIEWPOINT_PREFIX}{holder.holder_id}"
@@ -1650,7 +1741,18 @@ async def check_with(
             position=position,
             options=options,
         )
-    records, closed = await _gather(lookup, story_id, c, predicate, registry, options, read_canon)
+    owned_found: list[OwnedValue] = []
+    records, closed = await _gather(
+        lookup,
+        story_id,
+        c,
+        predicate,
+        registry,
+        options,
+        read_canon,
+        read_owned=read_owned,
+        owned=owned_found,
+    )
     unique = _unique(records)
     if fetched is not None:
         fetched.extend(unique)
@@ -1663,6 +1765,7 @@ async def check_with(
         holder=holder,
         position=position,
         options=options,
+        owned=owned_found,
     )
 
 
@@ -1676,6 +1779,9 @@ Reader = Callable[
 ]
 """One holder read of ``check_with``: ``(predicate, subjects, window, object)``."""
 
+OwnedReader = Callable[[str, "Sequence[str] | None"], Awaitable[list[OwnedValue]]]
+"""A canon holder's owner read (#191): ``(predicate, subjects)``."""
+
 
 async def _gather(
     lookup: KeyedLookup,
@@ -1685,9 +1791,13 @@ async def _gather(
     registry: Registry,
     options: Options,
     read: Reader,
+    *,
+    read_owned: OwnedReader | None = None,
+    owned: list[OwnedValue] | None = None,
 ) -> tuple[list[Record], list[ClosedSetRecord]]:
     """Every read the verdict on ``c`` rests on, through ``read`` (see the module docstring's
-    fetch), and the closed sets it needs."""
+    fetch), and the closed sets it needs. A consequent with an owner lookup (#191) is read
+    through ``read_owned`` into ``owned`` (a canon holder's), never as records."""
     records: list[Record] = []
     subjects = {c.subject_id}
     objects = set() if c.object_id is None else {c.object_id}
@@ -1743,6 +1853,10 @@ async def _gather(
             for x in sorted(ends - {c.predicate_id}):
                 then = registry.get(x)
                 if then is None:
+                    continue
+                if owner_lookup(x) is not None:
+                    if read_owned is not None and owned is not None:
+                        owned += await read_owned(x, subject_set)
                     continue
                 records += await read(x, subject_set, _window(c.valid_time), None)
                 closed += await closed_sets_for(lookup.conn, story_id, x)
@@ -1893,6 +2007,9 @@ async def recheck(conn: AsyncConnection, op: Operation) -> bool:
 
 register_rebase_check(recheck)
 
+# #191: ``state_value``'s owner lookup registers itself on import (``core.states.verify``
+# imports this module, so it is imported here, after every name it reads is defined).
+from epistrel.core.states import verify as _state_verify  # noqa: E402, F401
 
 __all__ = [
     "CANON",
@@ -1904,6 +2021,7 @@ __all__ = [
     "Evidence",
     "Holder",
     "Options",
+    "OwnedValue",
     "Record",
     "Rule",
     "Span",

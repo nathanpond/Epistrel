@@ -484,6 +484,34 @@ async def current_values(
     return found
 
 
+async def folded_at(
+    conn: AsyncConnection,
+    story_id: str,
+    states: Sequence[StateDefinition],
+    *,
+    through: Position | None = None,
+) -> dict[Key, Folded]:
+    """Each of ``states``' folded value on the active timeline through ``through`` (``None``:
+    now), by ``(state id, scope key)``: only the keys a change was recorded for (any other key
+    holds its State's initial value). #191's owner lookup reads its values here."""
+    by_id = {s.id: s for s in states if s.id is not None}
+    if not by_id:
+        return {}
+    c = state_changes.c
+    where: list[ColumnElement[bool]] = [
+        c.story_id == story_id,
+        c.state_id.in_(sorted(by_id)),
+        active_only(state_changes),
+    ]
+    if through is not None:
+        where.append(_through(through))
+    grouped: dict[Key, list[ChangeRow]] = {}
+    for row in await conn.execute(select(state_changes).where(*where)):
+        key = (str(row.state_id), None if row.scope_key is None else str(row.scope_key))
+        grouped.setdefault(key, []).append(_change_of(by_id[key[0]].type, row))
+    return {key: fold(by_id[key[0]].initial_value, rows) for key, rows in grouped.items()}
+
+
 async def turn_effects(
     conn: AsyncConnection,
     story_id: str,
@@ -1048,6 +1076,7 @@ __all__ = [
     "derive",
     "fold",
     "fold_state",
+    "folded_at",
     "follow_operations",
     "refresh",
     "require_module",

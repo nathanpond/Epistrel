@@ -9750,3 +9750,26 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision:** #195 migration 0089 was re-chained to "0088" (#186) at integration. #186's 0088 was re-chained to "0087". The #186 cherry-pick conflicts (routes `__init__`, the `core.states` docstring and `__all__`, and the `tables/states` docstring) were merged keeping both sides, and `docs/openapi.json` was regenerated.
   **Why:** One linear Alembic head.
   **Issue:** #186, #195
+
+### #205 (feature)
+- **Decision:** The `external_read` payload names the provider's value `value_name` and the returned value `value`, and also carries `state_id`. **Why:** the AC lists `value` twice, and the projection fold is pure, so it needs the State id in the event. **Issue:** #205
+- **Decision:** Migration 0090 chains to 0087 at this base. **Why:** 0088 and 0089 are taken by #186 and #195 on sibling branches (main session instruction). **Issue:** #205
+- **Decision:** `external_values.source` is a Postgres enum (`external_value_source`) with a Python `ExternalValueSource`. **Why:** the plan names an enum, and `PG_ENUM_TYPES` keeps the two in sync. **Issue:** #205
+- **Decision:** The `external_values` PK is `event_id`, and the table carries `operation_id` but no membership column. Core's read joins `operations` with `active_operation`, which also honours a regenerate's `excluding`. **Why:** a row follows its turn's membership with no follower or flip code, and the projection stays a pure log fold. **Issue:** #205
+- **Decision:** In-flight pins reach Core through a ContextVar `PinSource` (`core.states.external.pinning`), set around `run_with_revalidation`. **Why:** a turn's events are written only at commit, so Core must see staged pins during verification and the rebase re-check without importing the Orchestrator. **Issue:** #205
+- **Decision:** Inside a turn, an external State not pinned this turn has no value (it is absent, so a claim on it is `novel`); there is no fallback to an earlier turn's read. Outside a turn, the latest recorded version at or before the position answers. **Why:** FR-EXT-2 says one value per turn and no speculative reads. **Issue:** #205
+- **Decision:** On-demand reads happen in `_check_turn` over all detected claims before any claim is verified, not inside the lookup. **Why:** a pin added mid-verification would change an owner key's hash within one attempt (`ReadSetInconsistent`), and Core must not do provider I/O. Step claims (#168 stepper) are not pre-scanned. **Issue:** #205
+- **Decision:** Turn-start reads run at the start of each attempt's `generate`, and the read phase (`begin`) only resets. **Why:** this keeps provider I/O out of the REPEATABLE READ snapshot transaction, and a rebase does not re-run `generate`. **Issue:** #205
+- **Decision:** `ensure` calls `get` for every claimed external value, so a pinned one is answered from the cache. **Why:** this makes "verification never re-reads" an exercised path that the call counter can detect (the first mutation run showed the cache otherwise went untested). **Issue:** #205
+- **Decision:** An adapter error raises from the `PinnedReads.unavailable` seam until #206. **Why:** the policy is #206's scope. **Issue:** #205
+- **Decision:** An external fact is written only for a `supported` `state_value` claim whose literal matches the pin (within tolerance), one per value per turn. **Why:** FR-EXT-4 is about committing a reference to the value; a mismatched claim (for example a belief-supported 500) must not create a fact. **Issue:** #205
+- **Decision:** The `external_read` stage is a new `EXTERNAL_STAGES` tuple, not part of `STRUCTURED_STAGES`. **Why:** P-04 asserts exact equality over `STRUCTURED_STAGES` counts. The plan's drift note maps `timings.external_read` to this stage. **Issue:** #205
+- **Decision:** `external_read` events use `provenance=system`. **Why:** a provider read is neither the player's nor a render's. **Issue:** #205
+- **Decision:** S-REBASE-VS-REGEN variant 2's read-set change is a custom-instructions edit, and the story's model-call cap is raised to 40 so one regeneration is affordable. **Why:** an author placement fact did not touch the turn's keyed reads (it rebased). The Lite instructions member is a guaranteed read-set member. **Issue:** #205
+
+- **Decision:** #205's migration 0090 was re-chained to "0089". The `core/events/types.py` conflict (#186's `state_defined`/`state_set` beside #205's `external_read`) kept both.
+  **Why:** One linear head.
+  **Issue:** #205
+- **Decision (Rule 1 on #193):** the clock's integer settings (`max_unprompted_skip_minutes`, `grace_minutes`, `time_statement_tolerance_minutes`) are capped at the INTEGER column's maximum, 2,147,483,647, in `ClockSettings` and `ClockPatch` (`952babb`, with `tests/test_clock_settings_bounds.py`). C-01 found `PATCH /clock` with 2147483648 answering 500. The #205 agent reported it, and it reproduced in the code.
+  **Why:** An overflow 500 on a validated input is a Rule 1 bug in #193's own route.
+  **Issue:** #193

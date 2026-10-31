@@ -22,14 +22,18 @@ and hands me the key."
   Jenni complies with the obvious action, "Jenni hands Cal the key." in her own render. The
   hand-over is her action (the player's character only receives it), so it survives without a
   repair and is canon.
-- ``test_s_player_authority__viewpoint`` (#561): under ``co_author`` with per-character
-  partitions, a narration breaking Jenni's viewpoint (``could_not_know``, ``contradicted``,
-  ``not_perceived``) is rejected and nothing is recorded; a narrated ``say`` her beliefs hold
-  and canon contradicts is a sincere error that stands.
+- ``test_s_player_authority__viewpoint`` (#561, revised by #598): under ``co_author`` with
+  per-character partitions, a narration breaking Jenni's viewpoint (``contradicted``,
+  ``not_perceived``) is rejected and nothing is recorded; one presupposing what she could not
+  know is accepted with a notice (FR-RESP-14); a narrated ``say`` her beliefs hold and canon
+  contradicts is a sincere error that stands.
+- ``test_s_player_authority__knowledge`` (#598, FR-RESP-14): ``co_author_knowledge``, the
+  presupposition split, the ``author_fiat`` acquisition, the notices and the correction.
 """
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -37,9 +41,12 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
 from epistrel.core.enums import OperationKind
+from epistrel.core.epistemic import replay
+from epistrel.core.membership import Position
 from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Interval, Proposition
-from epistrel.core.propositions.vocabulary import HOLDS, PRESENT_AT
+from epistrel.core.propositions.vocabulary import HOLDS, LOCATED_AT, PRESENT_AT
+from epistrel.core.visibility import Visibility
 from tests import partition_support as parts
 from tests import perception_support as ps
 from tests import structured_turn_support as st
@@ -346,11 +353,14 @@ async def test_s_player_authority__viewpoint(
     narration that breaks Jenni's viewpoint is rejected (a rung-1 ``render_rejected``, no model
     call) and nothing of it is recorded (no Jenni beat or utterance, no ``player`` fact):
 
-    - ``could_not_know``: Jenni nodding at Bobby "who holds the key", which nothing gave her a
-      path to (#165);
     - ``contradicted``: Jenni handing over a key canon says Bobby holds;
     - ``not_perceived``: Jenni in the scene (``present_at`` the parlor) but placed in the
       kitchen, out of sight of the player's input (#161).
+
+    #598 (FR-RESP-14, ADR-174) revised the third row: Jenni nodding at Bobby "who holds the
+    key", which nothing gave her a path to (#165), is no longer rejected ``could_not_know``. It
+    commits, as her narrated ``do``, with one ``implausible_knowledge`` notice holding the
+    player's words.
 
     The narrated ``say``'s sincere error: Jenni believes Bobby holds the key, canon says Cal
     does, and the player narrates her saying so. Her ``beat_say`` stands, labelled
@@ -358,7 +368,6 @@ async def test_s_player_authority__viewpoint(
     async with respond_client(stub_settings, engine) as (client, epistrel):
         stub = epistrel.models.stub
         for do, holder, away, code in (
-            (NODS, None, False, "could_not_know"),
             (HANDS, "Bobby", False, "contradicted"),
             (HANDS, None, True, "not_perceived"),
         ):
@@ -389,6 +398,27 @@ async def test_s_player_authority__viewpoint(
             assert jenni_beats == [], code
             assert await _player_facts(engine, story) == [], code
             assert "the key" not in answer.json()["message"]["text"], code
+            assert "notices" not in answer.json(), code
+
+        # #598: what Jenni could not know is accepted, with a notice; nothing is rejected.
+        story, ids, _ = await _viewpoint_room(client, engine)
+        jenni = ids["Jenni"]
+        stub.reset()
+        stub.script("generation", [st.render(st.beat("say", "Hm."))])
+        answer = await respond(
+            client, story, body(ids["Cal"], None, do=NODS, render_character_ids=[ids["Bobby"]])
+        )
+        assert answer.status_code == 200, answer.text
+        report = (await st.turn_report(engine, story))["player_authority"]
+        assert report["narrated"] == [{"beat": 2, "character_id": jenni, "kind": "do"}]
+        assert report["rejected"] == []
+        assert await _rejected(engine, story) == []
+        (notice,) = answer.json()["notices"]
+        assert (notice["kind"], notice["character_id"], notice["claim_text"]) == (
+            "implausible_knowledge",
+            jenni,
+            NODS,
+        )
 
         # The narrated say's sincere error stands, labelled.
         story, ids, key = await _viewpoint_room(client, engine, holder="Cal")
@@ -421,3 +451,362 @@ async def test_s_player_authority__viewpoint(
             c=jenni,
         )
         assert narrated.by == "player"
+
+
+PUTS = "Jenni puts the key in the drawer."
+TAKES = "Jenni takes the key from the drawer."
+SEARCHES = "Jenni searches the desk."
+KNOWS = "Bobby holds the key."
+
+
+async def _knowledge_room(
+    client: Any, engine: AsyncEngine, *, canon: str | None = None, knowledge: str | None = None
+) -> tuple[str, dict[str, str], str, str]:
+    """``_viewpoint_room`` (partitions on, ``co_author``) with a drawer, and what only Bobby
+    knows, if anything: the key in the drawer (``canon = "drawer"``, he hid it there) or in his
+    hands (``"bobby"``), scoped to him. ``knowledge`` sets ``co_author_knowledge``."""
+    story, ids, key = await _viewpoint_room(client, engine)
+    drawer = await ps.place_entity(engine, story, "drawer")
+    hidden = Visibility(scope="characters", characters=(ids["Bobby"],))
+    if canon == "drawer":
+        await commit(
+            engine,
+            story,
+            _forever(key, LOCATED_AT, drawer),
+            kind=OperationKind.CONTROL,
+            provenance="author",
+            visibility=hidden,
+        )
+    elif canon == "bobby":
+        await commit(
+            engine,
+            story,
+            _forever(ids["Bobby"], HOLDS, key),
+            kind=OperationKind.CONTROL,
+            provenance="author",
+            visibility=hidden,
+        )
+    if knowledge is not None:
+        patched = await client.patch(
+            f"/stories/{story}/settings", json={"co_author_knowledge": knowledge}, headers=WRITE
+        )
+        assert patched.status_code == 200, patched.text
+    return story, ids, key, drawer
+
+
+async def _narrate(client: Any, stub: Any, story: str, ids: dict[str, str], do: str) -> Any:
+    """The player (Cal) narrates ``do``; Bobby renders "Hm."."""
+    stub.reset()
+    stub.script("generation", [st.render(st.beat("say", "Hm."))])
+    return await respond(
+        client, story, body(ids["Cal"], None, do=do, render_character_ids=[ids["Bobby"]])
+    )
+
+
+async def _fiats(engine: AsyncEngine, story: str) -> list[tuple[str, str, str | None, str]]:
+    """Every ``author_fiat`` acquisition: holder, subject, object and polarity."""
+    found = await rows(
+        engine,
+        "SELECT t.holder_character_id AS holder, p.subject_id, p.object_id, "
+        "p.polarity::text AS polarity FROM belief_transitions t "
+        "JOIN beliefs b ON b.id = t.belief_id JOIN propositions p ON p.id = b.proposition_id "
+        "WHERE t.story_id = :s AND t.kind = 'author_fiat' ORDER BY t.id",
+        s=story,
+    )
+    return [(str(f.holder), str(f.subject_id), f.object_id, f.polarity) for f in found]
+
+
+def _masked(notice: dict[str, Any]) -> dict[str, Any]:
+    """A notice with its ids masked (each story has its own)."""
+    return {**notice, "id": "<id>", "character_id": "<id>"}
+
+
+async def _speech_of(engine: AsyncEngine, story: str) -> list[dict[str, Any]]:
+    report = await st.turn_report(engine, story)
+    return [v["speech"] for v in report["verify"]["verdicts"] if "speech" in v]
+
+
+async def _turn_of(engine: AsyncEngine, story: str) -> Any:
+    (row,) = await rows(
+        engine,
+        "SELECT attempts, config_revisions FROM operations WHERE story_id = :s "
+        "AND kind = 'turn' ORDER BY narrative_turn DESC LIMIT 1",
+        s=story,
+    )
+    return row
+
+
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-RESP-14")
+async def test_s_player_authority__knowledge(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#598, S-PLAYER-AUTHORITY's M6 part (ADR-174): partitions on, ``co_author``, Jenni never
+    saw Bobby hide the key in the drawer.
+
+    Under the default ``co_author_knowledge = confirm`` (``GET /stories/{id}`` echoes it):
+
+    - "Jenni puts the key in the drawer." raises no notice: the action brings the key's place
+      about, so nothing about it is checked against what she knew;
+    - "Jenni takes the key from the drawer." commits, records ``located_at(key, drawer)`` as
+      Jenni's ``author_fiat`` acquisition and returns one ``implausible_knowledge`` notice holding
+      only the player's words, stored with the turn (the history read returns it). A story
+      whose canon does not settle where the key was gives the same notice apart from ids (no
+      oracle);
+    - "Jenni nods at Bobby, who holds the key." raises a notice; Jenni's next render saying so
+      is verified as knowing it (sincere and belief-consistent, so not repaired as a
+      hallucination: only #144's permission check, Bobby's secret, may still steer it), where
+      without the narration it is a hallucination;
+    - correcting the "takes" turn with "Jenni searches the desk." replays it in one operation:
+      the original is dormant and swaps back; the replacement cannot be corrected again
+      (``already_corrected``); once a later turn commits, correcting is ``not_latest_turn``
+      and changes nothing.
+
+    Under ``free`` the same inputs commit with no notices (the fiats are written). Under both,
+    narration contradicting author-locked canon is still rejected (``contradicted``) and player
+    input never writes Jenni's ``think``. Under ``own_character`` the setting is inert.
+    Changing ``co_author_knowledge`` while a turn is held makes it fail its re-check and
+    regenerate under the new value."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+
+        # -- puts: the action's own result, no notice, no fiat.
+        story, ids, key, drawer = await _knowledge_room(client, engine, canon="drawer")
+        answer = await client.get(f"/stories/{story}", headers=READ)
+        assert answer.json()["settings"]["co_author_knowledge"] == "confirm"
+        answer = await _narrate(client, stub, story, ids, PUTS)
+        assert answer.status_code == 200, answer.text
+        assert "notices" not in answer.json()
+        report = (await st.turn_report(engine, story))["player_authority"]
+        assert report["narrated"] == [{"beat": 2, "character_id": ids["Jenni"], "kind": "do"}]
+        assert report["rejected"] == []
+        assert await _fiats(engine, story) == []
+
+        # -- takes: accepted, the fiat written, one notice of the player's words.
+        notices: list[dict[str, Any]] = []
+        for canon in ("drawer", None):
+            story, ids, key, drawer = await _knowledge_room(client, engine, canon=canon)
+            jenni = ids["Jenni"]
+            answer = await _narrate(client, stub, story, ids, TAKES)
+            assert answer.status_code == 200, answer.text
+            turn = answer.json()
+            (notice,) = turn["notices"]
+            assert notice == {
+                "id": notice["id"],
+                "kind": "implausible_knowledge",
+                "character_id": jenni,
+                "claim_text": TAKES,
+                "turn": turn["turn"],
+                "correctable": True,
+                "external_effects": False,
+            }
+            notices.append(_masked(notice))
+            report = (await st.turn_report(engine, story))["player_authority"]
+            assert report["narrated"] == [{"beat": 2, "character_id": jenni, "kind": "do"}]
+            assert report["rejected"] == []
+            assert await _fiats(engine, story) == [(jenni, key, drawer, "affirmed")]
+            (event,) = await _input_events(engine, story)
+            assert event.payload["notices"] == [
+                {k: v for k, v in notice.items() if k != "external_effects"}
+            ]
+            read = await client.get(
+                f"/stories/{story}/history", params={"viewpoint": "omniscient"}, headers=READ
+            )
+            assert read.status_code == 200, read.text
+            (summary,) = read.json()["turns"]
+            assert summary["notices"] == [notice]
+            # Her knowledge of where the key was, from the fiat on (#165's replay).
+            async with engine.connect() as conn:
+                known = await replay.could_have_known(
+                    conn,
+                    story,
+                    jenni,
+                    _before(key, LOCATED_AT, drawer),
+                    Position(turn["turn"] + 1, 0, 0, 1),
+                )
+            assert isinstance(known, replay.Known), canon
+        # No oracle: canon settling it or not, the same notice apart from ids.
+        assert notices[0] == notices[1]
+
+        # -- correct the "takes" turn (the canon-unsettled story's).
+        stub.reset()
+        stub.script("generation", [st.render(st.beat("say", "Hm."))])
+        corrected = await client.post(
+            f"/stories/{story}/correct",
+            json={"turn": 1, "player_input": {"do": SEARCHES}},
+            headers=WRITE,
+        )
+        assert corrected.status_code == 200, corrected.text
+        fixed = corrected.json()
+        assert (fixed["turn"], fixed["variant"], fixed["previous_variant"]) == (1, 2, 1)
+        assert "notices" not in fixed
+        found = await client.get(f"/stories/{story}/variants", headers=READ)
+        chains = {(c["turn"], c["variant"]): c["membership"] for c in found.json()["items"]}
+        assert chains == {(1, 1): "dormant", (1, 2): "active"}
+        (*_, replaced) = await _input_events(engine, story)
+        assert replaced.payload["do"] is None  # the narration only
+        assert replaced.payload["corrected_from"]
+        # A correction cannot itself be corrected.
+        again = await client.post(
+            f"/stories/{story}/correct",
+            json={"turn": 1, "player_input": {"do": PUTS}},
+            headers=WRITE,
+        )
+        assert again.status_code == 409, again.text
+        assert again.json()["error"]["code"] == "already_corrected"
+        # The original swaps back, with its notice (correctable again: it is no correction).
+        swapped = await client.post(
+            f"/stories/{story}/swap",
+            json={"to_variant_chain": {"turn": 1, "variant": 1}},
+            headers=WRITE,
+        )
+        assert swapped.status_code == 200, swapped.text
+        read = await client.get(
+            f"/stories/{story}/history", params={"viewpoint": "omniscient"}, headers=READ
+        )
+        (summary,) = read.json()["turns"]
+        assert [_masked(n) for n in summary["notices"]] == [notices[1]]
+        # A later turn: the turn is no longer the latest, and nothing changes.
+        stub.reset()
+        stub.script("generation", [st.render(st.beat("say", "Well."))])
+        later = await respond(
+            client, story, body(ids["Cal"], "Well?", render_character_ids=[ids["Bobby"]])
+        )
+        assert later.status_code == 200, later.text
+        revision = later.json()["timeline_revision"]
+        refused = await client.post(
+            f"/stories/{story}/correct",
+            json={"turn": 1, "player_input": {"do": SEARCHES}},
+            headers=WRITE,
+        )
+        assert refused.status_code == 409, refused.text
+        assert refused.json()["error"]["code"] == "not_latest_turn"
+        found = await client.get(f"/stories/{story}", headers=READ)
+        assert found.json()["timeline_revision"] == revision
+        found = await client.get(f"/stories/{story}/variants", headers=READ)
+        assert {(c["turn"], c["variant"]) for c in found.json()["items"]} == {(1, 1), (1, 2)}
+
+        # -- nods: a notice; her next render is verified as knowing it.
+        story, ids, key, _ = await _knowledge_room(client, engine, canon="bobby")
+        jenni = ids["Jenni"]
+        answer = await _narrate(client, stub, story, ids, NODS)
+        assert answer.status_code == 200, answer.text
+        (notice,) = answer.json()["notices"]
+        assert (notice["character_id"], notice["claim_text"]) == (jenni, NODS)
+        assert await _fiats(engine, story) == [(jenni, ids["Bobby"], key, "affirmed")]
+        stub.reset()
+        stub.script("generation", [st.render(st.beat("say", KNOWS, intent="sincere"))])
+        answer = await respond(
+            client, story, body(ids["Cal"], "Who has it?", render_character_ids=[jenni])
+        )
+        assert answer.status_code == 200, answer.text
+        speech = await _speech_of(engine, story)
+        assert {(s["classification"], s["belief_relation"]) for s in speech} == {
+            ("sincere", "consistent")
+        }
+        # Only the permission check (Bobby's secret, #144) may still steer it, never #166.
+        report = await st.turn_report(engine, story)
+        assert {r["tag"] for r in report.get("repairs", [])} <= {"unpermitted"}
+        # The complement: with no narration, the same render has no basis.
+        story, ids, key, _ = await _knowledge_room(client, engine, canon="bobby")
+        stub.reset()
+        stub.script(
+            "generation",
+            [
+                st.render(st.beat("say", KNOWS, intent="sincere")),
+                st.render(st.beat("say", "I couldn't say.", intent="sincere")),
+            ],
+        )
+        answer = await respond(
+            client, story, body(ids["Cal"], "Who has it?", render_character_ids=[ids["Jenni"]])
+        )
+        assert answer.status_code == 200, answer.text
+        assert "hallucination_repaired" in {
+            s["classification"] for s in await _speech_of(engine, story)
+        }
+
+        # -- free: the same inputs commit with no notices (the fiats are written).
+        for do, canon in ((TAKES, "drawer"), (NODS, "bobby")):
+            story, ids, _, _ = await _knowledge_room(client, engine, canon=canon, knowledge="free")
+            answer = await _narrate(client, stub, story, ids, do)
+            assert answer.status_code == 200, answer.text
+            assert "notices" not in answer.json(), do
+            report = (await st.turn_report(engine, story))["player_authority"]
+            assert report["rejected"] == [], do
+            assert len(await _fiats(engine, story)) == 1, do
+
+        # -- under both: locked canon still wins, and no ``think`` is ever written.
+        for knowledge in ("confirm", "free"):
+            story, ids, key, _ = await _knowledge_room(client, engine, knowledge=knowledge)
+            await commit(
+                engine,
+                story,
+                _forever(ids["Bobby"], HOLDS, key),
+                kind=OperationKind.CONTROL,
+                provenance="author",
+                author_locked=True,
+            )
+            answer = await _narrate(client, stub, story, ids, f"{HANDS} {THINKS}")
+            assert answer.status_code == 200, answer.text
+            assert "notices" not in answer.json(), knowledge
+            report = (await st.turn_report(engine, story))["player_authority"]
+            assert sorted(r["code"] for r in report["rejected"]) == [
+                "contradicted",
+                "player_cannot_write_think",
+            ], knowledge
+            assert await _thinks(engine, story, ids["Jenni"]) == 0
+            assert await _fiats(engine, story) == []
+
+        # -- own_character: the setting is inert (a request, no notice, no fiat).
+        story, ids, _, _ = await _knowledge_room(client, engine, canon="bobby")
+        patched = await client.patch(
+            f"/stories/{story}/settings", json={"player_authority": "own_character"}, headers=WRITE
+        )
+        assert patched.status_code == 200, patched.text
+        answer = await _narrate(client, stub, story, ids, NODS)
+        assert answer.status_code == 200, answer.text
+        assert "notices" not in answer.json()
+        report = (await st.turn_report(engine, story))["player_authority"]
+        assert [r["outcome"] for r in report["requests"]] == ["unresolved"]
+        assert await _fiats(engine, story) == []
+
+        # -- a change of the setting while the turn runs: re-checked, regenerated under it.
+        story, ids, _, _ = await _knowledge_room(client, engine, canon="bobby")
+        stub.reset()
+        stub.script("generation", [st.render(st.beat("say", "Hm."))] * 2)
+        latch = stub.hold("generation")
+        task = asyncio.ensure_future(
+            respond(
+                client,
+                story,
+                body(ids["Cal"], None, do=NODS, render_character_ids=[ids["Bobby"]]),
+            )
+        )
+        await asyncio.wait_for(latch.entered.wait(), 5)
+        patched = await client.patch(
+            f"/stories/{story}/settings", json={"co_author_knowledge": "free"}, headers=WRITE
+        )
+        assert patched.status_code == 200, patched.text
+        latch.release()
+        answer = await task
+        assert answer.status_code == 200, answer.text
+        row = await _turn_of(engine, story)
+        assert "notices" not in answer.json()
+        assert [(a["outcome"], a.get("recheck")) for a in row.attempts] == [
+            ("recheck", "failed"),
+            ("commit", None),
+        ]
+        assert "co_author_knowledge" in row.attempts[0]["config_changed"]
+        assert row.config_revisions["co_author_knowledge"] == "free"
+        (event,) = await _input_events(engine, story)
+        assert "notices" not in event.payload
+        assert len(await _fiats(engine, story)) == 1
+
+
+def _before(subject: str, predicate: str, obj: str) -> Proposition:
+    return Proposition(
+        subject_id=subject,
+        predicate_id=predicate,
+        object_id=obj,
+        valid_time=Interval.of(None, None),
+    )

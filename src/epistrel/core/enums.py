@@ -242,9 +242,10 @@ class BeliefKind(StrEnum):
 class BeliefTransitionKind(StrEnum):
     """The typed cause of a belief-set change (FR-EPI-7, FR-BELIEF-2; #160): the acquisition
     operations ``observation``, ``testimony``, ``inference``, ``discovery``, ``correction``,
-    ``forgetting`` and ``revision``, plus ``author`` (author direction, a seed) and ``resolution``
-    (a thunk binding's knowledge obligation, FR-COMMIT-14). Postgres enum
-    ``belief_transition_kind``."""
+    ``forgetting`` and ``revision``, plus ``author`` (author direction, a seed), ``resolution``
+    (a thunk binding's knowledge obligation, FR-COMMIT-14) and ``author_fiat`` (#598,
+    FR-RESP-14: a presupposition of the ``co_author`` player's narration the narrated character
+    had no path to, accepted as its knowledge). Postgres enum ``belief_transition_kind``."""
 
     OBSERVATION = "observation"
     TESTIMONY = "testimony"
@@ -255,6 +256,7 @@ class BeliefTransitionKind(StrEnum):
     REVISION = "revision"
     AUTHOR = "author"
     RESOLUTION = "resolution"
+    AUTHOR_FIAT = "author_fiat"
 
 
 class AntecedentKind(StrEnum):

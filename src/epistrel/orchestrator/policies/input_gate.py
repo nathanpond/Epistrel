@@ -70,6 +70,8 @@ class EntryPoint(StrEnum):
 
     RESPOND = "respond"
     REGENERATE = "regenerate"
+    CORRECT = "correct"
+    """A correction's replacement input (FR-RESP-14; #598)."""
     INGEST = "ingest"
     PINNED_MEMORIES = "pinned_memories"
     CUSTOM_INSTRUCTIONS = "custom_instructions"

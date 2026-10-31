@@ -976,6 +976,8 @@ def _settings(
         values["player_view"] = defaults.player_view
     if defaults.player_authority is not None:
         values["player_authority"] = defaults.player_authority
+    if defaults.co_author_knowledge is not None:
+        values["co_author_knowledge"] = defaults.co_author_knowledge
     if defaults.required_providers and is_used(SETTING_CAPABILITIES[REQUIRED_PROVIDERS]):
         # Live since #204 delivered ``providers``: a turn needs each one bound.
         values[REQUIRED_PROVIDERS] = list(defaults.required_providers)

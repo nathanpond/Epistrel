@@ -230,7 +230,7 @@ from epistrel.core.world_clock.scheduled import ScheduledEventCreate, ScheduledE
 from epistrel.core.world_clock.service import ClockAdvanceRequest
 from epistrel.engine import Engine, operations
 from epistrel.orchestrator.jobs.handlers.rebuild import RebuildQueued
-from epistrel.orchestrator.lite.schemas import RegenerateRequest, RespondRequest
+from epistrel.orchestrator.lite.schemas import CorrectRequest, RegenerateRequest, RespondRequest
 from epistrel.orchestrator.models.config import ConfigReplacement
 from epistrel.orchestrator.policies.schemas import PolicyFields, PolicyReplacement
 from epistrel.orchestrator.policies.seeds.policies import MINORS_POLICY_ID
@@ -1133,6 +1133,16 @@ def _steps() -> list[Step]:
                 viewpoint="omniscient",
                 variant=ChainRef(turn=ids["last_turn"], variant=2),
             ),
+        ),
+        # #598 (FR-RESP-14): the latest turn replaced with new input.
+        Step(
+            "correct",
+            lambda ids: Rest(
+                "POST",
+                f"{s}/correct",
+                {"turn": ids["last_turn"], "player_input": {"say": CORRECTION}},
+            ),
+            lambda e, ids: _correct(e, ids["story"], ids["last_turn"]),
         ),
         Step(
             "fork",
@@ -2663,6 +2673,15 @@ async def _feedback_exports(engine: Engine) -> dict[str, Any]:
 async def _regenerate(engine: Engine, story_id: str) -> dict[str, Any]:
     request = RegenerateRequest.model_validate({"prompt_params": {"length": "short"}})
     result = await engine.regenerate(CTX, story_id, request)
+    return dump(RegeneratedBody.of_regenerate(result))
+
+
+CORRECTION = "Again, then."
+
+
+async def _correct(engine: Engine, story_id: str, turn: int) -> dict[str, Any]:
+    request = CorrectRequest.model_validate({"turn": turn, "player_input": {"say": CORRECTION}})
+    result = await engine.correct(CTX, story_id, request)
     return dump(RegeneratedBody.of_regenerate(result))
 
 

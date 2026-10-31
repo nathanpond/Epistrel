@@ -275,6 +275,26 @@ class TurnMessageModel(BaseModel):
     text: str
 
 
+class NoticeBody(BaseModel):
+    """#598 (FR-RESP-14): an ``implausible_knowledge`` notice. Under ``player_authority =
+    co_author`` and ``co_author_knowledge = confirm``, the player narrated another character
+    acting on something it had no path to know: the turn committed anyway, and the character now
+    knows it (an ``author_fiat`` acquisition). ``claim_text`` is the player's own words: a notice
+    states nothing about canon, the claim's truth or who else knows it, and is raised whether or
+    not canon settles the claim. ``correctable``: the turn may be replaced while it is the
+    story's latest (``POST /stories/{id}/correct``); ``false`` on a turn a correction wrote.
+    ``external_effects``: the turn has a dispatched or confirmed external effect, which a
+    correction cannot undo (FR-EXT-14)."""
+
+    id: str
+    kind: Literal["implausible_knowledge"]
+    character_id: str
+    claim_text: str
+    turn: int = Field(ge=1)
+    correctable: bool
+    external_effects: bool = False
+
+
 class TurnSummaryModel(BaseModel):
     """A turn on the page and its reply; ``message`` is null for a reply-less turn."""
 
@@ -287,6 +307,13 @@ class TurnSummaryModel(BaseModel):
         description="The State changes the turn committed (#187, FR-RESP-7), a `hidden` "
         "State's only for `omniscient` (visibility only, no audience filter); absent when "
         "none.",
+    )
+    notices: list[NoticeBody] = Field(
+        default_factory=list,
+        exclude_if=lambda n: not n,
+        description="The turn's `implausible_knowledge` notices (#598, FR-RESP-14), as its "
+        "`respond` returned them, with `external_effects` as of the read; only when the read "
+        "returns the turn's input. Absent when none.",
     )
 
     @classmethod

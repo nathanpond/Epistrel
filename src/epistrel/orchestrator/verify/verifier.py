@@ -266,6 +266,9 @@ SAY = "say"
 DO = "do"
 MOVERS = frozenset({"character", "player"})
 """#518: the asserters whose own ``do`` may change their character's fluents (``mover_of``)."""
+CO_AUTHOR_ASSERTER = "co_author"
+"""#598: the ``co_author`` player's narration of another character (``mover_of``; #564's
+narrated ``say``, never a hallucination)."""
 PARTITIONS_MODULE = "partitions"
 """``character_knowledge.partitions``: the belief dimension runs only under it (#166)."""
 TIME_CLAIMS = "time_claims"
@@ -335,8 +338,14 @@ def mover_of(asserter: Asserter | None, channel: str | None, *, change: bool) ->
     (``change``: ``DetectedClaim.change_cue``, declared or found by the movement detector).
     ``None`` for anything else: a ``say`` (a lie moves no one), narration, reactive narration,
     an extraction-only claim and a claim about another character keep the contradiction rules'
-    answer."""
-    if not change or asserter is None or asserter.kind not in MOVERS or channel != DO:
+    answer. #598 (FR-RESP-14, ADR-174): a ``co_author`` player may narrate any character
+    acting, so the character its ``do`` beat narrates (``Asserter.narrates``) is that beat's
+    mover."""
+    if not change or asserter is None or channel != DO:
+        return None
+    if asserter.kind == CO_AUTHOR_ASSERTER:
+        return asserter.narrates
+    if asserter.kind not in MOVERS:
         return None
     return asserter.character_id
 
@@ -1718,7 +1727,10 @@ class Verifier:
             ):
                 result = denied
         if believer is not None and self.beliefs is not None:
-            result = await self._speech(result, claim, believer, intent, cites, position)
+            narrated = asserter is not None and asserter.kind == CO_AUTHOR_ASSERTER
+            result = await self._speech(
+                result, claim, believer, intent, cites, position, narrated=narrated
+            )
         if statement is not None:
             result = dataclasses.replace(result, schedule=statement)
         self.results.append((where, result))
@@ -1882,9 +1894,14 @@ class Verifier:
         intent: str | None,
         cites: Sequence[str],
         position: tuple[int, int] | None,
+        *,
+        narrated: bool = False,
     ) -> VerifyResult:
         """``result`` with the claim's belief dimension and classification (see the module
-        docstring)."""
+        docstring). ``narrated`` (#564, FR-RESP-14): the ``co_author`` player's narrated
+        ``say``, player authority: never a hallucination (it is never repaired), so a claim with
+        no legitimate basis in the speaker's beliefs is a ``sincere_error`` that stands, with no
+        belief written."""
         beliefs = self.beliefs
         at = None if beliefs is None else beliefs.position(position)
         if beliefs is None or at is None:
@@ -1934,6 +1951,11 @@ class Verifier:
         if speech_acts.needs_licence(inputs):
             licence = await beliefs.licence(claim, believer, at, cites)
         decision = speech_acts.classify(inputs, licensed=licence is not None)
+        if narrated and decision.hallucinated:
+            # #564: the player's narration stands as said; its label agrees (never repaired).
+            decision = dataclasses.replace(
+                decision, classification=speech_acts.SINCERE_ERROR, write=None
+            )
         speech = SpeechAct(
             believer, at, declared, found, decision, contrary, hidden, licence, known, inferred
         )

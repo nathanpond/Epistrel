@@ -14,7 +14,9 @@ Reads the ``transcript_messages`` projection (joined to each beat's event for a 
   ``message``; a ``player_input`` with both ``say`` and ``do`` yields two items sharing one
   ``message_id``. ``origin`` is ``ingested`` for a consumer's ``ingest`` (#58).
 - **Turns**: one summary per turn on the page with its reply (``message``), ``null`` for a
-  reply-less turn such as an ingested ``player_turn`` (#58).
+  reply-less turn such as an ingested ``player_turn`` (#58), and its ``implausible_knowledge``
+  notices (#598, FR-RESP-14: stored on its ``player_input``, returned when the read returns that
+  input, with ``external_effects`` as of the read, ``core.timeline_effects.with_effects``).
 - **Window**: ``as_of`` (default the head; > head or < 0 is 422) bounds the read; pages hold
   whole turns, newest first, up to ``limit`` items (default 200, max 1,000; a single larger turn
   is returned whole); ``before_turn`` pages backwards and ``next_before_turn`` names the next
@@ -86,6 +88,7 @@ from epistrel.core.summary import read_included_segments
 from epistrel.core.tables import characters, events, operations, stories, transcript_messages
 from epistrel.core.tables.base import ulid_type
 from epistrel.core.tables.memories import memories
+from epistrel.core.timeline_effects import with_effects
 from epistrel.core.turns.assembly import AssemblyBeat, deterministic_assembly
 from epistrel.core.variants import ChainRef, ChainSelection, chain_operations
 from epistrel.core.viewpoint import (
@@ -162,6 +165,9 @@ class TurnSummary:
     message: TurnMessage | None
     state_effects: list[dict[str, Any]] = field(default_factory=list)
     """#187 (FR-RESP-7): the State changes the turn committed (see the module docstring)."""
+    notices: list[dict[str, Any]] = field(default_factory=list)
+    """#598 (FR-RESP-14): the turn's ``implausible_knowledge`` notices, as its ``respond``
+    returned them, with ``external_effects`` as of the read (see the module docstring)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,6 +260,7 @@ async def read_history(
             heard,
             changed,
         )
+        noticed = await _notices(conn, story_id, rows, items)
         audit = (
             await _audit(conn, story_id, lower, upper, story.ages, chain) if include_audit else None
         )
@@ -270,7 +277,7 @@ async def read_history(
         timeline_revision=story.timeline_revision,
         output_viewpoint=resolved,
         as_of=through,
-        turns=_turns(items, changed),
+        turns=_turns(items, changed, noticed),
         audit=audit,
         next_before_turn=next_before,
         summary=summary,
@@ -874,9 +881,32 @@ def _items(
     return items
 
 
+async def _notices(
+    conn: AsyncConnection, story_id: str, rows: Sequence[Any], items: Sequence[HistoryItem]
+) -> dict[str, list[dict[str, Any]]]:
+    """#598 (FR-RESP-14): each turn's stored notices by operation (its ``player_input``
+    event's ``notices``), for a turn whose input the read returns, with ``external_effects``:
+    whether the turn has a dispatched or confirmed external effect now (FR-EXT-14)."""
+    shown = {i.operation_id for i in items if i.kind == INPUT_KIND}
+    found: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        payload = row.payload or {}
+        if row.kind != INPUT_KIND or not payload.get("notices") or row.operation_id not in shown:
+            continue
+        found[str(row.operation_id)] = [dict(n) for n in payload["notices"]]
+    if not found:
+        return {}
+    effects = await with_effects(conn, story_id, sorted(found))
+    return {
+        op: [{**n, "external_effects": op in effects} for n in notices]
+        for op, notices in found.items()
+    }
+
+
 def _turns(
     items: Sequence[HistoryItem],
     changed: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    noticed: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
 ) -> list[TurnSummary]:
     turns: dict[int, TurnSummary] = {}
     for item in items:
@@ -887,6 +917,7 @@ def _turns(
             item.variant,
             None,
             _turn_effects((changed or {}).get(item.operation_id, ())),
+            [dict(n) for n in (noticed or {}).get(item.operation_id, ())],
         )
         if summary.message is None and item.kind == REPLY_KIND:
             summary = dataclasses.replace(summary, message=TurnMessage(item.message_id, item.text))

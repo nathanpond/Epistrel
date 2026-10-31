@@ -429,6 +429,25 @@ class NothingToRegenerate(EpistrelError):
     http_status = 422
 
 
+class NotLatestTurn(EpistrelError):
+    """``correct`` named a turn that is not the story's latest active turn (FR-RESP-14; #598):
+    a later turn has committed (or the turn was rewound), so only history rewrite reaches it.
+    Nothing is written. ``details``: ``story_id``, ``turn`` (the one named) and ``latest``."""
+
+    code = "not_latest_turn"
+    http_status = 409
+
+
+class AlreadyCorrected(EpistrelError):
+    """``correct`` named a turn a correction wrote (FR-RESP-14; #598): a corrected turn cannot
+    be corrected again (swap back to the replaced one, or rewrite history). Nothing is written.
+    ``details``: ``story_id``, ``turn`` and ``corrected_from`` (the replaced turn's
+    operation)."""
+
+    code = "already_corrected"
+    http_status = 409
+
+
 class DatabaseUnavailable(EpistrelError):
     """The database kept refusing a transaction that cannot be retried by the caller: a fork's
     snapshot copy hit a serialization failure on every attempt (#67; ``details``: ``attempts``),

@@ -205,6 +205,10 @@ class Asserter:
     character_id: str | None = None
     reactor: str | None = None
     """#176: the character a ``reactive`` asserter narrates (FR-MULTI-9)."""
+    narrates: str | None = field(default=None, compare=False)
+    """#598 (from #518): the character a ``co_author`` asserter's beat narrates, whose own
+    change-cued action may change its fluents (``orchestrator.verify.verifier.mover_of``). Not
+    part of the asserter's identity: the permission check reads the claim's subject."""
 
     def __post_init__(self) -> None:
         if self.kind in ("character", "reactive", "player", "co_author") and not self.character_id:

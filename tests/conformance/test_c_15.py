@@ -737,6 +737,7 @@ CLASSES: dict[str, tuple[FieldClass, Use | None]] = {
     ),
     "story_settings_defaults.turn_concurrency": (FieldClass.configuration, Use.story_setting),
     "story_settings_defaults.player_authority": (FieldClass.configuration, Use.story_setting),
+    "story_settings_defaults.co_author_knowledge": (FieldClass.configuration, Use.story_setting),
     "story_settings_defaults.default_output_viewpoint": (
         FieldClass.configuration,
         Use.story_setting,

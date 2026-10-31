@@ -190,6 +190,7 @@ from epistrel.orchestrator.jobs.worker import (
 )
 from epistrel.orchestrator.lite import pipeline as lite
 from epistrel.orchestrator.lite.schemas import (
+    CorrectRequest,
     RegenerateRequest,
     RegenerateResult,
     RespondRequest,
@@ -286,6 +287,8 @@ CODECS: dict[str, ResultCodec[Any]] = {
         status=lambda result: 202 if isinstance(result, rating_change.RatingCheckStarted) else 201,
     ),
     "regenerate": ResultCodec.of(RegenerateResult),
+    # #598 (FR-RESP-14): the latest turn replaced with new input.
+    "correct": ResultCodec.of(RegenerateResult),
     "archive_story": ResultCodec.of(stories.StatusChange),
     # A predicate proposal's decision (#131): approving is a configuration change.
     "approve_predicate": ResultCodec.of(predicate_registry.Decision, revision_field=_CONFIG),
@@ -2695,6 +2698,78 @@ class Engine:
         return await self._keyed(
             ctx,
             "regenerate",
+            run,
+            story_id=story_id,
+            material={
+                "story_id": story_id,
+                "body": _body(request),
+                "viewpoint": ctx.viewpoint,
+            },
+        )
+
+    async def correct(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        request: CorrectRequest,
+        *,
+        output_viewpoint: str | None = None,
+    ) -> RegenerateResult:
+        """Replace the story's latest turn with new input (FR-RESP-14; #598, ADR-174): one
+        ``turn`` operation that rewinds to before ``request.turn`` and plays
+        ``request.player_input`` as its next variant, so a crash leaves the original active.
+        The replaced turn becomes a dormant continuation (``swap`` restores it); a confirmed
+        external effect of it is not undone, and comes back as ``reconciliation_required``
+        (FR-EXT-14). A turn that is not the latest is 409 ``not_latest_turn``, a turn a
+        correction wrote 409 ``already_corrected``, both with nothing written; the new turn's
+        notices are ``correctable: false``. The replacement is gated (#56); otherwise as
+        ``regenerate``: a busy story is 423 ``story_busy`` and queued turns fail with
+        ``timeline_changed``."""
+        principal = self.require_principal(ctx)
+        ctx = with_requested(ctx, output_viewpoint, request.output_viewpoint)
+
+        async def gate(budget: TurnBudget, text: str, actor: str, renders: list[str]) -> InputPass:
+            return await self.gate_input(
+                ctx,
+                story_id,
+                EntryPoint.CORRECT,
+                [GateText(lite.INPUT_LOCATOR, text)],
+                actor=actor,
+                budget=budget,
+                reserved=1,
+                reserve_output_for=renders,
+            )
+
+        async def run(ctx: RequestContext) -> RegenerateResult:
+            await provider_binding.require_bound(self.db, story_id)  # as respond's (#204)
+            regenerating = request.regenerating()
+            if await self._plays_structured(story_id):
+                return await structured_turn.regenerate(
+                    self.db,
+                    self.models,
+                    ctx,
+                    story_id,
+                    regenerating,
+                    principal=principal,
+                    gate=gate,
+                    lexical=lexical_backend(self.settings.lexical_backend),
+                    providers=self.in_process_providers,
+                    correction=request,
+                )
+            return await lite.regenerate(
+                self.db,
+                self.models,
+                ctx,
+                story_id,
+                regenerating,
+                principal=principal,
+                gate=gate,
+                correction=request,
+            )
+
+        return await self._keyed(
+            ctx,
+            "correct",
             run,
             story_id=story_id,
             material={

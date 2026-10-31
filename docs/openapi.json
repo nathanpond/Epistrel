@@ -4446,6 +4446,83 @@
         "title": "ContextItemBody",
         "type": "object"
       },
+      "CorrectRequest": {
+        "additionalProperties": false,
+        "description": "``POST /stories/{id}/correct`` and ``Engine.correct`` (FR-RESP-14; #598, ADR-174).\n\n``turn`` must be the story's latest active turn (409 ``not_latest_turn`` otherwise) and not\nitself a correction (409 ``already_corrected``). ``player_input`` replaces the turn's input:\nthe story is rewound to before the turn and the replacement played, in one operation, and\nthe replaced turn becomes a dormant continuation (``swap`` restores it). The actor is the\nturn's. ``render_character_ids``, ``output_viewpoint`` and ``prompt_params`` override the\nvalues the turn was played with; omitted, the recorded ones are reused. ``budget`` is this\ncall's own (#69).",
+        "examples": [
+          {
+            "player_input": {
+              "do": "Jenni searches the desk."
+            },
+            "turn": 3
+          }
+        ],
+        "properties": {
+          "budget": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BudgetOverride"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "output_viewpoint": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Viewpoint"
+          },
+          "player_input": {
+            "$ref": "#/components/schemas/PlayerInputBody"
+          },
+          "prompt_params": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GenerationSettings"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "render_character_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                  "type": "string"
+                },
+                "maxItems": 64,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Render Character Ids"
+          },
+          "turn": {
+            "minimum": 1.0,
+            "title": "Turn",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "turn",
+          "player_input"
+        ],
+        "title": "CorrectRequest",
+        "type": "object"
+      },
       "CouldHaveKnownFlagBody": {
         "description": "A could-have-known soft flag on the thunk's resolution (FR-COMMIT-11; #165): the bound\ncharacter, the severity (``mild`` under a story-day, ``moderate`` under 30, ``strong``\nbeyond) and the story-time gap in minutes. A warning, never a rejection.",
         "properties": {
@@ -4717,6 +4794,16 @@
             "default": null,
             "description": "How many days this story's audit records are kept before the ``retention_sweep`` deletes\nthem (FR-STORE-30; #71), 1 to 3650. ``None``: the deployment's ``audit_retention_days``\n(default 90). Never affects story history. Prospective.",
             "title": "Audit Retention Days"
+          },
+          "co_author_knowledge": {
+            "default": "confirm",
+            "description": "How ``co_author`` narration of another character is held to what that character could\nknow (FR-RESP-14; #598, ADR-174): the could-have-known check reads only what the narrated\naction presupposes, and a presupposition the character had no path to is accepted under both\nvalues, recorded as the character's ``author_fiat`` knowledge. Under ``confirm`` (the\ndefault) the response also carries one ``implausible_knowledge`` notice per such\npresupposition, built from the player's words only; under ``free`` there is none. No effect\nunder ``own_character``, under Lite, or without per-character partitions. Genesis copies the\nscenario's ``story_settings_defaults.co_author_knowledge``. Interpretive: the turn's notices\ndepend on it.",
+            "enum": [
+              "confirm",
+              "free"
+            ],
+            "title": "Co Author Knowledge",
+            "type": "string"
           },
           "default_output_viewpoint": {
             "anyOf": [
@@ -16465,6 +16552,52 @@
         "title": "NestedSeed",
         "type": "object"
       },
+      "NoticeBody": {
+        "description": "#598 (FR-RESP-14): an ``implausible_knowledge`` notice. Under ``player_authority =\nco_author`` and ``co_author_knowledge = confirm``, the player narrated another character\nacting on something it had no path to know: the turn committed anyway, and the character now\nknows it (an ``author_fiat`` acquisition). ``claim_text`` is the player's own words: a notice\nstates nothing about canon, the claim's truth or who else knows it, and is raised whether or\nnot canon settles the claim. ``correctable``: the turn may be replaced while it is the\nstory's latest (``POST /stories/{id}/correct``); ``false`` on a turn a correction wrote.\n``external_effects``: the turn has a dispatched or confirmed external effect, which a\ncorrection cannot undo (FR-EXT-14).",
+        "properties": {
+          "character_id": {
+            "title": "Character Id",
+            "type": "string"
+          },
+          "claim_text": {
+            "title": "Claim Text",
+            "type": "string"
+          },
+          "correctable": {
+            "title": "Correctable",
+            "type": "boolean"
+          },
+          "external_effects": {
+            "default": false,
+            "title": "External Effects",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "implausible_knowledge",
+            "title": "Kind",
+            "type": "string"
+          },
+          "turn": {
+            "minimum": 1.0,
+            "title": "Turn",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "character_id",
+          "claim_text",
+          "turn",
+          "correctable"
+        ],
+        "title": "NoticeBody",
+        "type": "object"
+      },
       "OffboardingActions": {
         "additionalProperties": false,
         "description": "The action for each type of entity the principal owns (``delete``, ``transfer`` or\n``keep``), and for the relations naming it on entities it does not own (``remove`` or\n``keep``). A type not named is ``keep``.",
@@ -27562,6 +27695,13 @@
             "title": "Model Calls",
             "type": "array"
           },
+          "notices": {
+            "items": {
+              "$ref": "#/components/schemas/NoticeBody"
+            },
+            "title": "Notices",
+            "type": "array"
+          },
           "order": {
             "items": {
               "type": "string"
@@ -28666,6 +28806,13 @@
               "$ref": "#/components/schemas/ModelCall"
             },
             "title": "Model Calls",
+            "type": "array"
+          },
+          "notices": {
+            "items": {
+              "$ref": "#/components/schemas/NoticeBody"
+            },
+            "title": "Notices",
             "type": "array"
           },
           "order": {
@@ -37800,6 +37947,21 @@
             ],
             "title": "Backfill Conflict Policy"
           },
+          "co_author_knowledge": {
+            "anyOf": [
+              {
+                "enum": [
+                  "confirm",
+                  "free"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Co Author Knowledge"
+          },
           "default_output_viewpoint": {
             "anyOf": [
               {
@@ -37968,6 +38130,23 @@
             "default": null,
             "description": "How many days this story's audit records are kept before the ``retention_sweep`` deletes\nthem (FR-STORE-30; #71), 1 to 3650. ``None``: the deployment's ``audit_retention_days``\n(default 90). Never affects story history. Prospective.",
             "title": "Audit Retention Days"
+          },
+          "co_author_knowledge": {
+            "anyOf": [
+              {
+                "enum": [
+                  "confirm",
+                  "free"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "How ``co_author`` narration of another character is held to what that character could\nknow (FR-RESP-14; #598, ADR-174): the could-have-known check reads only what the narrated\naction presupposes, and a presupposition the character had no path to is accepted under both\nvalues, recorded as the character's ``author_fiat`` knowledge. Under ``confirm`` (the\ndefault) the response also carries one ``implausible_knowledge`` notice per such\npresupposition, built from the player's words only; under ``free`` there is none. No effect\nunder ``own_character``, under Lite, or without per-character partitions. Genesis copies the\nscenario's ``story_settings_defaults.co_author_knowledge``. Interpretive: the turn's notices\ndepend on it.",
+            "title": "Co Author Knowledge"
           },
           "default_output_viewpoint": {
             "anyOf": [
@@ -39142,6 +39321,14 @@
                 "type": "null"
               }
             ]
+          },
+          "notices": {
+            "description": "The turn's `implausible_knowledge` notices (#598, FR-RESP-14), as its `respond` returned them, with `external_effects` as of the read; only when the read returns the turn's input. Absent when none.",
+            "items": {
+              "$ref": "#/components/schemas/NoticeBody"
+            },
+            "title": "Notices",
+            "type": "array"
           },
           "state_effects": {
             "description": "The State changes the turn committed (#187, FR-RESP-7), a `hidden` State's only for `omniscient` (visibility only, no audience filter); absent when none.",
@@ -63055,6 +63242,7 @@
                         "enum": [
                           "allow_new_arrivals",
                           "audit_retention_days",
+                          "co_author_knowledge",
                           "content_rating_id",
                           "default_output_viewpoint",
                           "engine_profile_id",
@@ -63651,6 +63839,212 @@
         "summary": "Read a rating check",
         "tags": [
           "settings"
+        ]
+      }
+    },
+    "/stories/{story_id}/correct": {
+      "post": {
+        "description": "Replace the story's latest turn with new player input (FR-RESP-14), typically after an `implausible_knowledge` notice: one operation rewinds the story to before `turn` and plays `player_input` as the next variant of that turn, so a failure leaves the original turn active. The replaced turn becomes `dormant` (swap back to it with `POST /stories/{id}/swap`). `turn` must be the latest turn: once a later turn has committed it is 409 `not_latest_turn` (only history rewrite reaches it). A turn a correction wrote cannot be corrected again (409 `already_corrected`) and its notices say `correctable: false`. Both refusals write nothing. A correction does not undo an external effect the replaced turn dispatched or confirmed: it is listed in `reconciliation_required` (FR-EXT-14). The replacement is checked by the input policies; the actor is the turn's, and `render_character_ids`, `output_viewpoint` and `prompt_params` default to the recorded ones. The answer is the respond body plus `previous_variant`. While another turn of the story runs it is 423 `story_busy` (never queued); queued turns fail with `timeline_changed`. `Idempotency-Key` and `X-Epistrel-Expected-Revision` are optional.",
+        "operationId": "correct",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The output viewpoint: `character:<id>` of the cast or `omniscient` (FR-RESP-12).",
+            "in": "query",
+            "name": "viewpoint",
+            "required": false,
+            "schema": {
+              "examples": [
+                "omniscient"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CorrectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegeneratedBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `already_corrected`, `erased_subject_referenced`, `idempotency_conflict`, `not_latest_turn`, `revision_conflict`, `story_archived`, `story_paused`, `timeline_changed`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `guardrail_violation`, `nothing_to_regenerate`, `provider_unbound`, `validation_error`, `viewpoint_unresolved`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `budget_exhausted`, `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `model_unavailable`, `original_in_flight_timeout`, `provider_unavailable`, `turn_interrupted`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Correct the latest turn with new input",
+        "tags": [
+          "timeline"
         ]
       }
     },
@@ -71197,7 +71591,7 @@
         ]
       },
       "patch": {
-        "description": "Change the story's settings with a JSON merge patch (RFC 7396): a key present sets that setting and `null` resets it to its default. A story's settings describe the story: `turn_concurrency` (`reject` | `queue`), `turn_queue_max` (1-50; `null`: the deployment's default, 5), `default_output_viewpoint` (`character:<id>` of the cast, never `omniscient`), `regenerate_retry_budget` (0-10), `lite_summary_chunk` (2-200 rows per summary segment), `audit_retention_days` (1-3650; `null`: the deployment's) and `allow_new_arrivals` (whether a director pass, or a render as scene texture, may introduce new arrivals; default `true`), `interaction_mode` (`sequential` | `simultaneous`: how a turn with several primaries renders them; `null`: the scenario's, else `sequential`), `sequence_order` (`request` | `director`: who orders a sequential turn's primaries; `null`: `request`) and `simultaneous_tie_break` (`request_order` | `director` | `state:<name>`: how a simultaneous turn settles conflicting actions; `null`: `request_order`; `state:<name>` names a number State of the story, else 422 `tie_break_state_invalid`), `reactive_interjections` (whether reactive narration may give a reactive character a brief interjection; default `false`), `player_view` (`character` | `story`: whether a character viewpoint's output holds only what that character perceived, the audience filter, or every beat; default `character`; a no-op where perception is `none`) and `player_authority` (`own_character` | `co_author`: whether player input describing another character is a request that character resolves or narration of its observable actions, checked against its viewpoint and never its thoughts; default `own_character`; a Lite story gets it as a prompt instruction only). An unknown key is 422. The engine's dials are the story's engine profile's, overridden per story with `PATCH /stories/{id}/profile-overrides` (FR-PROF-5): a key that moved there (`generation_settings`, `lite_window_messages`, `lite_summary_max_tokens`, `max_model_calls_per_turn`, `turn_deadline`, `guardrail_retry_budget`) is 422 with `details.reason: superseded` and the profile setting that replaced it in `details.replacement`. `policies` (optional) upserts the story's own policies; an item that would relax a policy refuses the whole request with 422 `cannot_relax` before anything is written.\n\nEvery setting but `default_output_viewpoint`, `allow_new_arrivals` and `player_authority` is prospective: it applies to requests that arrive after the write, never to a turn already running; those three are interpretive (a turn in flight is checked against them when it commits). A write that changes something moves the story's `config_revision`. The answer carries the budget the story's next turn plans with (`effective_budget`).",
+        "description": "Change the story's settings with a JSON merge patch (RFC 7396): a key present sets that setting and `null` resets it to its default. A story's settings describe the story: `turn_concurrency` (`reject` | `queue`), `turn_queue_max` (1-50; `null`: the deployment's default, 5), `default_output_viewpoint` (`character:<id>` of the cast, never `omniscient`), `regenerate_retry_budget` (0-10), `lite_summary_chunk` (2-200 rows per summary segment), `audit_retention_days` (1-3650; `null`: the deployment's) and `allow_new_arrivals` (whether a director pass, or a render as scene texture, may introduce new arrivals; default `true`), `interaction_mode` (`sequential` | `simultaneous`: how a turn with several primaries renders them; `null`: the scenario's, else `sequential`), `sequence_order` (`request` | `director`: who orders a sequential turn's primaries; `null`: `request`) and `simultaneous_tie_break` (`request_order` | `director` | `state:<name>`: how a simultaneous turn settles conflicting actions; `null`: `request_order`; `state:<name>` names a number State of the story, else 422 `tie_break_state_invalid`), `reactive_interjections` (whether reactive narration may give a reactive character a brief interjection; default `false`), `player_view` (`character` | `story`: whether a character viewpoint's output holds only what that character perceived, the audience filter, or every beat; default `character`; a no-op where perception is `none`) and `player_authority` (`own_character` | `co_author`: whether player input describing another character is a request that character resolves or narration of its observable actions, checked against its viewpoint and never its thoughts; default `own_character`; a Lite story gets it as a prompt instruction only) and `co_author_knowledge` (`confirm` | `free`: under `co_author` with per-character partitions, narration presupposing what its character could not know is accepted, with an `implausible_knowledge` notice under `confirm`, the default; no effect otherwise). An unknown key is 422. The engine's dials are the story's engine profile's, overridden per story with `PATCH /stories/{id}/profile-overrides` (FR-PROF-5): a key that moved there (`generation_settings`, `lite_window_messages`, `lite_summary_max_tokens`, `max_model_calls_per_turn`, `turn_deadline`, `guardrail_retry_budget`) is 422 with `details.reason: superseded` and the profile setting that replaced it in `details.replacement`. `policies` (optional) upserts the story's own policies; an item that would relax a policy refuses the whole request with 422 `cannot_relax` before anything is written.\n\nEvery setting but `default_output_viewpoint`, `allow_new_arrivals`, `player_authority` and `co_author_knowledge` is prospective: it applies to requests that arrive after the write, never to a turn already running; those four are interpretive (a turn in flight is checked against them when it commits). A write that changes something moves the story's `config_revision`. The answer carries the budget the story's next turn plans with (`effective_budget`).",
         "operationId": "update_story_settings",
         "parameters": [
           {

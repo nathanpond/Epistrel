@@ -15,6 +15,7 @@ from epistrel.api.routes.clock import TurnClockBody
 from epistrel.api.routes.history import (
     AudienceFilterValue,
     ItemModel,
+    NoticeBody,
     StateEffectModel,
     item_model,
 )
@@ -309,6 +310,10 @@ class RespondResponse(MutationResponse):
     clock: TurnClockBody | None = Field(default=None, exclude_if=lambda c: c is None)
     """The world clock before and after the turn (FR-CLOCK-13; #193): ``{before, after}``, each
     ``{offset, display}``; absent when the story runs the clock off."""
+    notices: list[NoticeBody] = Field(default_factory=list, exclude_if=lambda n: not n)
+    """#598 (FR-RESP-14): one ``implausible_knowledge`` notice per presupposition of the
+    ``co_author`` player's narration the narrated character could not know (under
+    ``co_author_knowledge = confirm``); absent when none."""
 
     @classmethod
     def of(cls, result: RespondResult) -> RespondResponse:
@@ -360,6 +365,7 @@ class RespondResponse(MutationResponse):
             reconciliation_required=[
                 RequiredEffectBody(**r) for r in result.reconciliation_required
             ],
+            notices=[NoticeBody(**n) for n in result.notices],
             budget=(
                 None
                 if result.budget is None

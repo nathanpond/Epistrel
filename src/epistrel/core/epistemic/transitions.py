@@ -3,8 +3,10 @@ docs/02 §4.4; #160).
 
 **Every belief has a cause.** A character's belief set changes only through a transition: one
 of the acquisition operations FR-EPI-7 names (``observation``, ``testimony``, ``inference``,
-``discovery``, ``correction``, ``forgetting``, ``revision``), author direction (``author``) or a
-thunk resolution's knowledge obligation (``resolution``). ``transition()`` is the only writer
+``discovery``, ``correction``, ``forgetting``, ``revision``), author direction (``author``), a
+thunk resolution's knowledge obligation (``resolution``) or the ``co_author`` player's fiat
+(``author_fiat``, #598: a presupposition of the narration the narrated character had no path
+to, FR-RESP-14). ``transition()`` is the only writer
 of ``beliefs`` (``partitions._insert_belief`` is module-private, and ``tools.gates
 check-epistemic-separation`` refuses any other caller); each call writes one
 ``belief_transitions`` row naming the belief it produced or changed, and a belief row's
@@ -331,9 +333,11 @@ KIND_ANTECEDENTS: Mapping[Kind, Mapping[AntecedentKind, frozenset[str]]] = {
     Kind.FORGETTING: {_A.RECORD: frozenset({"beliefs"})},
     Kind.AUTHOR: {_A.RECORD: frozenset({"events"})},
     Kind.RESOLUTION: {_A.RESOLUTION: frozenset()},
+    Kind.AUTHOR_FIAT: {_A.RECORD: frozenset({"events"})},
 }
 """Which antecedents each kind admits (for a ``record``, which tables). #168: an ``inference``
-may rest on a verified earlier ``believe`` step of the same render (a chain of reasoning)."""
+may rest on a verified earlier ``believe`` step of the same render (a chain of reasoning).
+#598: an ``author_fiat`` cites the turn's ``player_input`` event, the narration that stated it."""
 
 NESTED_ANTECEDENTS: Mapping[Kind, Mapping[AntecedentKind, frozenset[str]]] = {
     Kind.INFERENCE: {

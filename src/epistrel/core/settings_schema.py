@@ -223,6 +223,11 @@ PlayerAuthority = Literal["own_character", "co_author"]
 character (``own_character``: input about another character is a request) or narration of their
 observable actions (``co_author``), never their thoughts."""
 DEFAULT_PLAYER_AUTHORITY: PlayerAuthority = "own_character"
+CoAuthorKnowledge = Literal["confirm", "free"]
+"""FR-RESP-14 (#598, ADR-174): how the ``co_author`` player's narration of another character is
+held to what that character could know: a presupposition it had no path to is accepted under
+both, with an ``implausible_knowledge`` notice under ``confirm``."""
+DEFAULT_CO_AUTHOR_KNOWLEDGE: CoAuthorKnowledge = "confirm"
 DEFAULT_INTERACTION_MODE: InteractionMode = "sequential"
 TIE_BREAK_PATTERN = r"^(request_order|director|state:[a-z][a-z0-9_]{0,63})$"
 """FR-MULTI-8 (#175): a ``simultaneous`` turn's tie-break, ``request_order`` (the earlier-named
@@ -414,6 +419,17 @@ class StorySettings(BaseModel):
     viewpoint where partitions are on, and never their ``think``. Lite: an instruction in the
     prompt only. Genesis copies the scenario's ``story_settings_defaults.player_authority``.
     Interpretive: a structured turn's handling of its input depends on it (#64)."""
+
+    co_author_knowledge: Annotated[CoAuthorKnowledge, INTERPRETIVE] = DEFAULT_CO_AUTHOR_KNOWLEDGE
+    """How ``co_author`` narration of another character is held to what that character could
+    know (FR-RESP-14; #598, ADR-174): the could-have-known check reads only what the narrated
+    action presupposes, and a presupposition the character had no path to is accepted under both
+    values, recorded as the character's ``author_fiat`` knowledge. Under ``confirm`` (the
+    default) the response also carries one ``implausible_knowledge`` notice per such
+    presupposition, built from the player's words only; under ``free`` there is none. No effect
+    under ``own_character``, under Lite, or without per-character partitions. Genesis copies the
+    scenario's ``story_settings_defaults.co_author_knowledge``. Interpretive: the turn's notices
+    depend on it."""
 
     @field_validator("default_output_viewpoint")
     @classmethod

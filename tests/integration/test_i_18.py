@@ -523,6 +523,7 @@ def _story_settings(cast: list[str]) -> st.SearchStrategy[dict[str, Any]]:
         "reactive_interjections": st.booleans(),
         "player_view": st.sampled_from(["character", "story"]),  # #177
         "player_authority": st.sampled_from(["own_character", "co_author"]),  # #180
+        "co_author_knowledge": st.sampled_from(["confirm", "free"]),  # #598
     }
     return st.fixed_dictionaries(
         {

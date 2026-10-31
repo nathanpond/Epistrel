@@ -269,6 +269,7 @@ from epistrel.core.turns import (
     StoryCast,
     TurnInputs,
     joined_input,
+    read_correctable,
     read_regenerable,
     read_story_cast,
     read_turn_inputs,
@@ -340,6 +341,7 @@ from epistrel.orchestrator.lite.cast import ResolvedCast, resolve_cast
 from epistrel.orchestrator.lite.prompt import prompt_hash
 from epistrel.orchestrator.lite.schemas import (
     BudgetReport,
+    CorrectRequest,
     DegradationStep,
     FinishedMessage,
     RegenerateRequest,
@@ -727,13 +729,15 @@ async def regenerate(
     gate: lite.Gate,
     lexical: LexicalSearch | None = None,
     providers: InProcessRegistry | None = None,
+    correction: CorrectRequest | None = None,
 ) -> RegenerateResult:
     """Regenerate a structured story's head turn (FR-COMMIT-8, FR-STORE-12; #66, #154): the
     recorded input played again as a new variant, reading the story as it stood before the turn
     (``core.membership.excluding``); the commit retires the old variant to ``dormant``, and
     ``core.commit.boundary`` reverts what it committed (its facts ``revised``, the thunks it
     resolved open again) in the same transaction. The prechecks are Lite's
-    (``lite.regenerate``)."""
+    (``lite.regenerate``). ``correction`` (#598, FR-RESP-14): the regenerate a ``correct``
+    runs, with its replacement input (``core.turns.read_correctable``'s refusals)."""
     started = ctx.received_at if ctx.received_at is not None else time.monotonic()
     story = await read_story_cast(db, story_id)
     if story.status == StoryStatus.ARCHIVED.value:
@@ -741,8 +745,13 @@ async def regenerate(
             f"story {story_id} is archived; unarchive it to change it", {"story_id": story_id}
         )
     await pause.refuse(db, story_id, story.status)
-    recorded = await read_regenerable(db, story_id, request.turn)
-    replay = lite._replayed_request(recorded, request)
+    if correction is not None:
+        recorded = await read_correctable(db, story_id, correction.turn)
+    else:
+        recorded = await read_regenerable(db, story_id, request.turn)
+    replay = lite._replayed_request(
+        recorded, request, None if correction is None else correction.player_input
+    )
     concurrency = await turn_gate.read_concurrency(db, story_id)
     resolved_cast = resolve_structured_cast(
         story, replay, lite._captured(concurrency).settings, story_id
@@ -773,7 +782,7 @@ async def regenerate(
         gating = time.perf_counter()
         await gate(
             budget,
-            joined_input(recorded.say, recorded.do),
+            joined_input(replay.player_input.say_text, replay.player_input.do_text),
             resolved_cast.actor.id,
             resolved_cast.render_ids,
         )
@@ -811,6 +820,7 @@ async def regenerate(
                     providers=providers,
                     regenerating=recorded,
                     plan=plan,
+                    corrected_from=None if correction is None else recorded.operation_id,
                 )
         finally:
             if op.status is None:  # took the slot but never began
@@ -1993,8 +2003,9 @@ async def _check_turn(
         def asserter_of(claim: DetectedClaim) -> Any:
             beat = scopes.get(claim.beat or -1)
             if beat is not None and authority_rules.is_narrated(beat):
-                # #180 (FR-RESP-11): the co_author player's narration of another character.
-                return Asserter("co_author", read.actor.id)
+                # #180 (FR-RESP-11): the co_author player's narration of another character;
+                # #598: the narrated character is its ``do``'s mover (#518's fluent change).
+                return Asserter("co_author", read.actor.id, narrates=beat.character_id)
             # #176 (FR-MULTI-9): a narrated reaction's claims are the reactive exception's.
             found = reactive_asserter(claim)
             return found or extraction.asserter_for(claim, read.player_id)
@@ -4034,10 +4045,13 @@ async def play(
     providers: InProcessRegistry | None = None,
     regenerating: RecordedTurn | None = None,
     plan: planner.TurnPlan | None = None,
+    corrected_from: str | None = None,
 ) -> RespondResult:
     """The structured turn itself (see the module docstring), under ``configuration``.
     ``regenerating``: the head turn this one replaces (#154; ``regenerate``). ``plan``: the
-    turn's plan (#156; ``planner.plan_structured``), whose reservations ``budget`` holds."""
+    turn's plan (#156; ``planner.plan_structured``), whose reservations ``budget`` holds.
+    ``corrected_from`` (#598, ``correct``): the operation of the replaced turn, whose
+    replacement input this turn plays (FR-RESP-14)."""
     timing = timing if timing is not None else lite.TurnTiming(front=budget.started)
     say, do = request.player_input.say_text, request.player_input.do_text
     settings = configuration.settings
@@ -4718,6 +4732,15 @@ async def play(
             if multi.per_character(settings)
             else None,
         )
+        # #598 (FR-RESP-14): how its narration is held to what the narrated character knows,
+        # as the attempt captured it (a regeneration after a change runs under the new value).
+        captured_knowledge = (op.config_revisions or {}).get("co_author_knowledge")
+        split.knowledge = (
+            str(captured_knowledge)
+            if captured_knowledge in authority_rules.KNOWLEDGE
+            else authority_rules.knowledge_of(story.settings)
+        )
+        split.corrected = corrected_from is not None
         authority[:] = [split]
         say, do = split.say, split.do
         input_qualifiers[:] = [perception.Qualifiers()]
@@ -5272,7 +5295,10 @@ async def play(
                         actor_id=read.actor.id,
                         player_id=read.player_id,
                         read_set=read_set,
+                        names={c.id: c.name for c in story.cast},
                     )
+                    # #598: the value the attempt accepted presuppositions under (its rebase).
+                    authority_rules.remember(read_set, split)
                 if turn_roles is not None:
                     # #176: each reaction checked against its reactor's viewpoint.
                     await roles_rt.verify(
@@ -5678,6 +5704,8 @@ async def play(
                 mentions=tuple(checked.input_mentions),
                 perception=input_qualifiers[0].payload() or None,
                 requests=authority[0].payloads() if authority else (),
+                notices=authority[0].notices(read.turn) if authority else (),
+                corrected_from=corrected_from,
             ),
             provenance=Provenance.PLAYER,
             character_id=read.actor.id,
@@ -6074,6 +6102,17 @@ async def play(
                     settings=settings,
                     registry=registry,
                     resolutions_left=exposure_records.max_lazy_resolutions(settings) - used,
+                )
+            if partitioned and authority and authority[0].fiats:
+                # #598 (FR-RESP-14): each presupposition of the co-author's narration the
+                # narrated character had no path to, as its ``author_fiat`` knowledge.
+                await authority_rules.fiats_committed(
+                    conn,
+                    op,
+                    authority[0],
+                    input_event_id=ids.get(1),
+                    settings=settings,
+                    registry=registry,
                 )
             if checked.verifier is not None and checked.verifier.beliefs is not None:
                 # #168: each render's verified steps: observations (with their memories) and
@@ -6474,6 +6513,12 @@ async def play(
                 for r in committed.effects.reconciliation_required
             ],
         }
+        noticed = authority[0].notices(committed.narrative_turn) if authority else ()
+        if noticed:
+            # #598 (FR-RESP-14): the turn's notices, with whether it has external effects.
+            fields["notices"] = await authority_rules.notices_of(
+                conn, story_id, committed.operation_id, noticed
+            )
         steps = _degradation(
             outcome, released[0] if released else None, found[0] if found else None
         )

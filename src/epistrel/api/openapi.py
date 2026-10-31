@@ -218,6 +218,8 @@ ERROR_STATUS: dict[str, int] = {
     "client_event_conflict": 409,
     "idempotency_conflict": 409,
     "nothing_to_undo": 409,
+    "not_latest_turn": 409,
+    "already_corrected": 409,
     "revision_conflict": 409,
     "story_archived": 409,
     "story_paused": 409,
@@ -443,6 +445,20 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "story_busy",
         "viewpoint_unresolved",
         "nothing_to_regenerate",
+    ),
+    # #598 (FR-RESP-14): a correction of the latest turn; a later turn, or a turn a correction
+    # wrote, is refused.
+    "correct": (
+        *_GATED,
+        *_TURN,
+        "provider_unbound",
+        "story_archived",
+        "story_paused",
+        "story_busy",
+        "viewpoint_unresolved",
+        "nothing_to_regenerate",
+        "not_latest_turn",
+        "already_corrected",
     ),
     "ingest": (
         *_GATED,
@@ -795,7 +811,9 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
 QUEUEING_OPERATIONS = frozenset({"respond", "ingest"})
 """Operations a ``queue`` story answers with 202 ``QueuedTurn`` (and ``Prefer: respond-async``)."""
 
-VIEWPOINT_OPERATIONS = frozenset({"respond", "regenerate", "history", "get_story", "get_operation"})
+VIEWPOINT_OPERATIONS = frozenset(
+    {"respond", "regenerate", "correct", "history", "get_story", "get_operation"}
+)
 """Operations that read the output viewpoint from ``?viewpoint=`` (FR-RESP-12)."""
 
 PRINCIPAL_READS = frozenset({"get_feedback"})

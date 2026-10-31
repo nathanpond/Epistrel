@@ -187,6 +187,28 @@ async def pending_in_source(
     ]
 
 
+async def with_effects(
+    conn: AsyncConnection, story_id: str, operation_ids: Sequence[str]
+) -> set[str]:
+    """#598 (FR-RESP-14, FR-EXT-14): which of ``operation_ids`` have a dispatched or confirmed
+    external effect (an executable row ``claimed``, ``unknown`` or ``confirmed``): a correction
+    of such a turn cannot undo it, and its notices say so (``external_effects``)."""
+    if not operation_ids:
+        return set()
+    o = external_effect_outbox.c
+    found = await conn.scalars(
+        select(o.operation_id)
+        .where(
+            o.story_id == story_id,
+            o.operation_id.in_(list(operation_ids)),
+            o.executable.is_(True),
+            o.status.in_(sorted(IRREVERSIBLE)),
+        )
+        .distinct()
+    )
+    return {str(i) for i in found}
+
+
 __all__ = [
     "CANCELLED_ON_REACTIVATION",
     "IRREVERSIBLE",
@@ -198,4 +220,5 @@ __all__ = [
     "classify_discarded",
     "collecting",
     "pending_in_source",
+    "with_effects",
 ]

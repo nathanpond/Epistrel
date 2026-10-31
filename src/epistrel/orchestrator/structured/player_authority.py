@@ -32,16 +32,54 @@ memory and canonization see). Each claim:
   character, its backstory, is ``player_authority``, never canonized) and ``verify`` checks the
   beat against that character's viewpoint after detection, like its own render: a ``do`` whose
   claim needs repair is dropped (``contradicted``), as is one the character could not perceive
-  being in (``not_perceived``) or whose claims about anything but the character and the player it
-  could not have known (#165, ``could_not_know``, under per-character partitions). A narrated
-  ``say`` the speaker's beliefs contradict is a sincere error: labelled by #166, never repaired,
-  never a lie. Narrated beats never go to the repair ladder; a dropped one is a ``render_rejected``
-  record (rung 1, no model call).
+  being in (``not_perceived``). A narrated ``say`` the speaker's beliefs contradict is player
+  authority (#564, FR-RESP-14): never repaired, so labelled a sincere error (never a
+  hallucination, never a lie) and the speaker's beliefs unchanged. Narrated beats never go to
+  the repair ladder; a dropped one is a ``render_rejected`` record (rung 1, no model call).
+
+**Co-author knowledge** (FR-RESP-14; #598, ADR-174). Under per-character partitions, a narrated
+``do`` is held to what its character could know (#165's ``replay.could_have_known``) only
+through what the action **presupposes** (``presuppositions``), never through what it brings
+about:
+
+- **brought about** (exempt): #148's detectors' results of the action: a transfer the character
+  takes part in (giver or recipient), a state result (``consumption``, ``injury``,
+  ``consciousness``), the scene participation of what the action mentions (``entity_mention``),
+  and anything about the character itself or the player;
+- **presupposed** (checked): every other claim about the world or another character ("Jenni
+  nods at Bobby, who holds the key": ``holds(Bobby, key)``), and what the action's results
+  need to have held before it: a transfer's giver held the item, and an item the character
+  takes *from* a place or a person was there ("Jenni takes the key from the drawer":
+  ``located_at(key, drawer)``; from a character: ``holds(that character, key)``), up to the
+  beat.
+
+A ``protected_content`` hit (#148: the player's words match a record hidden from the character)
+is no presupposition and does not drop the beat under partitions: it stays denied, never
+canonized, and the presuppositions the words state are judged as when canon settles nothing, so
+neither the beat's fate nor its notices answer whether such a record exists (NFR-PRIV-4).
+
+A presupposition the character has no path to is **accepted** under both values of the story's
+``co_author_knowledge``: the beat commits and the character's knowledge of it is written in the
+turn's commit as an ``author_fiat`` transition citing the turn's ``player_input`` event at the
+narrated beat (``fiats_committed``), so its later renders are verified as knowing it (and later
+renders of the same turn, through ``replay.stage_path``). Under ``confirm`` (the default) each
+one also gives one ``implausible_knowledge`` notice ``{id, kind, character_id, claim_text,
+turn, correctable}``: ``claim_text`` is the player's own span, so a notice says nothing of canon,
+of the claim's truth, or of who else knows it, and is raised whether or not canon settles the
+claim (NFR-PRIV-4). It is stored on the turn's ``player_input`` event (``notices``) and
+returned by ``respond`` and the history read, which add ``external_effects`` (whether the turn
+has dispatched or confirmed effects, FR-EXT-14). A turn written by ``correct`` (``corrected``)
+has notices with ``correctable: false``. ``free`` writes the fiats and no notice.
+``co_author_knowledge`` is interpretive (FR-CONC-15): a turn that accepted a presupposition and
+whose story's value changed while it ran fails its rebase check (``recheck``, a
+``core.readset.REBASE_CHECKS`` entry) and regenerates under the new value.
 
 ``turn_report.player_authority`` = ``{mode, requests: [{text, character_id, kind, outcome}],
-narrated: [{beat, character_id, kind}], rejected: [{text, character_id, code}]}``; the counter
-``epistrel_player_authority_total{mode, outcome}``. An input that only narrates others leaves the
-player's own beat empty (its event kept, with its ``requests``). Logs carry ids and counts only
+narrated: [{beat, character_id, kind}], rejected: [{text, character_id, code}]}``, plus, when the
+turn accepted a presupposition, ``fiats: [{beat, character_id}]`` and ``notices: [{kind,
+character_id, correctable}]``; the counter ``epistrel_player_authority_total{mode,
+outcome}`` (``author_fiat`` per fiat). An input that only narrates others leaves the player's
+own beat empty (its event kept, with its ``requests``). Logs carry ids and counts only
 (invariant 3).
 """
 
@@ -49,23 +87,42 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Mapping, Sequence
+import weakref
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from epistrel.core import timeline_effects
+from epistrel.core.enums import BeliefConfidenceLevel
 from epistrel.core.epistemic import perception, replay
 from epistrel.core.epistemic import roles as role_rules
 from epistrel.core.epistemic import scene as scene_loader
 from epistrel.core.epistemic import transitions as belief_transitions
+from epistrel.core.epistemic.errors import (
+    AntecedentInvalid,
+    ConfidenceInconsistent,
+    SelfAttestation,
+)
+from epistrel.core.errors import InvalidRequest
 from epistrel.core.events.types import RenderRejected
-from epistrel.core.membership import Position
+from epistrel.core.ids import new_ulid
+from epistrel.core.membership import Position, step_of
 from epistrel.core.profiles.capabilities import module_on
 from epistrel.core.profiles.schema import ProfileSettings
+from epistrel.core.propositions.model import Interval, Polarity, Proposition
+from epistrel.core.propositions.registry import Registry
 from epistrel.core.propositions.registry import load as load_registry
-from epistrel.core.readset import StructuredReadSet
-from epistrel.core.settings_schema import DEFAULT_PLAYER_AUTHORITY, StorySettings
+from epistrel.core.propositions.vocabulary import HOLDS, LOCATED_AT
+from epistrel.core.readset import StructuredReadSet, register_rebase_check
+from epistrel.core.settings_schema import (
+    DEFAULT_CO_AUTHOR_KNOWLEDGE,
+    DEFAULT_PLAYER_AUTHORITY,
+    StorySettings,
+)
+from epistrel.core.tables import stories
 from epistrel.core.turns import CastEntry
 from epistrel.core.turns.beats import TurnBeat
 from epistrel.core.verify import other_agent
@@ -95,6 +152,26 @@ CODES: tuple[str, ...] = (
 )
 """Why a span of player input about another character was dropped."""
 
+CONFIRM, FREE = "confirm", "free"
+KNOWLEDGE: tuple[str, ...] = (CONFIRM, FREE)
+"""#598: the values of ``co_author_knowledge`` (FR-RESP-14)."""
+IMPLAUSIBLE_KNOWLEDGE = "implausible_knowledge"
+"""#598: the kind of a co-author knowledge notice."""
+AUTHOR_FIAT = "author_fiat"
+"""#598: the ``epistrel_player_authority_total`` outcome of an accepted presupposition."""
+RESULT_CATEGORIES: frozenset[str] = frozenset(
+    {"consumption", "injury", "consciousness", "entity_mention"}
+)
+"""#598: the detector categories whose claims a narrated action brings about (its state
+results and the scene participation of what it mentions); a ``transfer`` the character takes
+part in is one too (``presuppositions``)."""
+TRANSFER = "transfer"
+ACQUIRING: frozenset[str] = frozenset({"possession", TRANSFER})
+"""#598: the categories whose affirmed ``holds`` of the character is an acquisition, whose source
+(``from`` a place or a person) it presupposes."""
+_SOURCE = re.compile(r"\b(?:from|out of|off of|off)\s+(?:(?:the|a|an|his|her|their)\s+)?", re.I)
+"""A source marker and its determiner, before the mention of where an item is taken from."""
+
 COMPLIED, REFUSED, UNRESOLVED = "complied", "refused", "unresolved"
 REJECTED = "player_authority"
 """The ``render_rejected`` constraint kind of a dropped narrated beat."""
@@ -110,6 +187,36 @@ def mode_of(story: StorySettings) -> str:
     """The story's effective ``player_authority`` (``own_character`` unless set)."""
     found = getattr(story, "player_authority", None)
     return str(found) if found in MODES else DEFAULT_PLAYER_AUTHORITY
+
+
+def knowledge_of(story: StorySettings) -> str:
+    """The story's effective ``co_author_knowledge`` (``confirm`` unless set; #598)."""
+    found = getattr(story, "co_author_knowledge", None)
+    return str(found) if found in KNOWLEDGE else DEFAULT_CO_AUTHOR_KNOWLEDGE
+
+
+@dataclass(frozen=True, slots=True)
+class Fiat:
+    """#598: one presupposition of a narrated beat its character had no path to, accepted as
+    its ``author_fiat`` knowledge: the beat, the character, the proposition, the player's span
+    (``text``, as typed) and the id of its notice under ``confirm``."""
+
+    beat: int
+    character_id: str
+    proposition: Proposition
+    text: str
+    notice_id: str = field(default_factory=new_ulid)
+
+    def notice(self, turn: int, *, correctable: bool) -> dict[str, Any]:
+        """The ``implausible_knowledge`` notice: the player's words only (NFR-PRIV-4)."""
+        return {
+            "id": self.notice_id,
+            "kind": IMPLAUSIBLE_KNOWLEDGE,
+            "character_id": self.character_id,
+            "claim_text": self.text,
+            "turn": turn,
+            "correctable": correctable,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,6 +276,12 @@ class Split:
     rejected: list[Rejection] = field(default_factory=list)
     outcomes: list[str] = field(default_factory=list)
     counted: bool = False
+    knowledge: str = DEFAULT_CO_AUTHOR_KNOWLEDGE
+    """#598: the story's ``co_author_knowledge`` the turn ran under."""
+    fiats: list[Fiat] = field(default_factory=list)
+    """#598: the accepted presuppositions (``verify``), written by ``fiats_committed``."""
+    corrected: bool = False
+    """#598: the turn is a correction (``correct``): its notices are not correctable."""
 
     @property
     def active(self) -> bool:
@@ -186,8 +299,14 @@ class Split:
         """The ``player_input`` event's ``requests``."""
         return tuple(r.payload() for r in self.requests)
 
+    def notices(self, turn: int) -> tuple[dict[str, Any], ...]:
+        """#598: the turn's ``implausible_knowledge`` notices (none under ``free``)."""
+        if self.knowledge != CONFIRM:
+            return ()
+        return tuple(f.notice(turn, correctable=not self.corrected) for f in self.fiats)
+
     def report(self) -> dict[str, Any]:
-        return {
+        found: dict[str, Any] = {
             "mode": self.mode,
             "requests": [
                 {
@@ -204,6 +323,14 @@ class Split:
             ],
             "rejected": [r.report() for r in self.rejected],
         }
+        if self.fiats:
+            # #598: ids and flags only (the notice's text is the player's, in the event).
+            found["fiats"] = [{"beat": f.beat, "character_id": f.character_id} for f in self.fiats]
+            found["notices"] = [
+                {k: v for k, v in n.items() if k in ("kind", "character_id", "correctable")}
+                for n in self.notices(0)
+            ]
+        return found
 
     def count(self) -> None:
         """``epistrel_player_authority_total`` for the turn (once)."""
@@ -217,6 +344,8 @@ class Split:
             PLAYER_AUTHORITY.labels(mode=self.mode, outcome="narrated").inc()
         for r in self.rejected:
             PLAYER_AUTHORITY.labels(mode=self.mode, outcome=r.code).inc()
+        for _ in self.fiats:
+            PLAYER_AUTHORITY.labels(mode=self.mode, outcome=AUTHOR_FIAT).inc()
 
 
 def _others(cast_: Sequence[CastEntry], actor_id: str) -> dict[str, str]:
@@ -372,6 +501,126 @@ def outcomes(found: Split, beats: Sequence[TurnBeat], names: Sequence[str]) -> N
         found.outcomes.append(COMPLIED if complied else REFUSED)
 
 
+def _before(proposition: Proposition) -> Proposition:
+    """``proposition`` held up to its start: what an action's result needed beforehand."""
+    found = proposition.valid_time
+    if isinstance(found, Interval) and found.start is not None:
+        return proposition.model_copy(update={"valid_time": Interval(end=found.start)})
+    return proposition
+
+
+def _sources(text: str, beat_claims: Sequence[Any], names: Mapping[str, str]) -> list[str]:
+    """The entities ``text`` takes something *from* (``_SOURCE``): a mention the detector
+    resolved (its ``entity_mention`` claim) or a cast member's name right after the marker."""
+    found: list[str] = []
+    lowered = text.casefold()
+    for match in _SOURCE.finditer(text):
+        at = match.end()
+        source: str | None = None
+        for c in beat_claims:
+            claim = c.claim
+            if (
+                claim.category == "entity_mention"
+                and claim.proposition is not None
+                and at <= claim.span[1] <= at + 1
+            ):
+                source = claim.proposition.subject_id
+                break
+        if source is None:
+            source = next(
+                (
+                    cid
+                    for cid, name in names.items()
+                    if name and lowered.startswith(name.casefold(), at)
+                ),
+                None,
+            )
+        if source is not None and source not in found:
+            found.append(source)
+    return found
+
+
+def presuppositions(
+    beat: Any,
+    beat_claims: Sequence[Any],
+    *,
+    exempt: Collection[str],
+    names: Mapping[str, str] | None = None,
+) -> list[Proposition]:
+    """What the narrated ``do`` ``beat`` presupposes (see the module docstring): its claims
+    (``beat_claims``, the pipeline's checked claims) about anything but ``exempt`` (the narrated
+    character, the player, the actor) that the action does not bring about, and what its
+    results needed to hold before it. ``names``: the cast's names by id (a source named by a
+    character)."""
+    cid = str(beat.character_id)
+    transfers = [
+        c.claim
+        for c in beat_claims
+        if c.claim.category == TRANSFER and c.claim.proposition is not None
+    ]
+    takes_part = any(
+        t.giver == cid or (t.proposition is not None and t.proposition.subject_id == cid)
+        for t in transfers
+    )
+    found: list[Proposition] = []
+
+    def add(proposition: Proposition) -> None:
+        if proposition.subject_id in exempt:
+            return
+        if any(_same(proposition, p) for p in found):
+            return
+        found.append(proposition)
+
+    for c in beat_claims:
+        claim = c.claim
+        proposition = claim.proposition
+        if proposition is None or claim.protected:
+            continue  # a hidden record the words match: canon's, never the player's claim
+        if claim.category in RESULT_CATEGORIES or (claim.category == TRANSFER and takes_part):
+            if (
+                claim.category == TRANSFER
+                and proposition.predicate_id == HOLDS
+                and proposition.polarity is Polarity.NEGATED
+            ):
+                # The giver held the item until the transfer.
+                add(_before(proposition.model_copy(update={"polarity": Polarity.AFFIRMED})))
+            continue
+        add(proposition)
+    for c in beat_claims:
+        claim = c.claim
+        proposition = claim.proposition
+        if (
+            proposition is None
+            or claim.category not in ACQUIRING
+            or proposition.subject_id != cid
+            or proposition.predicate_id != HOLDS
+            or proposition.polarity is not Polarity.AFFIRMED
+            or proposition.object_id is None
+        ):
+            continue
+        item = proposition.object_id
+        for source in _sources(beat.text, beat_claims, names or {}):
+            if source in (cid, item):
+                continue
+            if source in (names or {}):
+                held = proposition.model_copy(update={"subject_id": source})
+            else:
+                held = proposition.model_copy(
+                    update={"subject_id": item, "predicate_id": LOCATED_AT, "object_id": source}
+                )
+            add(_before(held))
+    return found
+
+
+def _same(a: Proposition, b: Proposition) -> bool:
+    return (a.subject_id, a.predicate_id, a.object_id, a.polarity) == (
+        b.subject_id,
+        b.predicate_id,
+        b.object_id,
+        b.polarity,
+    )
+
+
 async def verify(
     db: AsyncEngine,
     story_id: str,
@@ -383,15 +632,19 @@ async def verify(
     actor_id: str,
     player_id: str | None,
     read_set: StructuredReadSet | None = None,
+    names: Mapping[str, str] | None = None,
 ) -> None:
     """Check each narrated beat of ``checked`` (the pipeline's ``Checked``) against its
-    character's viewpoint and drop the failing ones (see the module docstring)."""
+    character's viewpoint and drop the failing ones; accept each presupposition its character
+    could not know as a fiat (``found.fiats``; see the module docstring). ``names``: the cast's
+    names by id."""
     narrated = [b for b in checked.beats if is_narrated(b)]
     if not narrated:
         return
     level = scene_loader.level_of(settings)
     partitions = module_on(settings, belief_transitions.PARTITIONS_MODULE)
     failed: dict[int, str] = {}
+    texts = {n.beat: n.claim.text for n in found.narrated}
     async with db.connect() as conn:
         scene = None
         if level != perception.NONE:
@@ -401,7 +654,10 @@ async def verify(
             cid = str(beat.character_id)
             mine = [c for c in checked.checked if c.claim.beat == beat.beat]
             if beat.kind == "do" and any(
-                c.result is not None and c.result.needs_repair for c in mine
+                c.result is not None
+                and c.result.needs_repair
+                and not (partitions and c.claim.protected)
+                for c in mine
             ):
                 failed[beat.beat] = CONTRADICTED
                 continue
@@ -413,24 +669,28 @@ async def verify(
                     continue
             if not partitions or beat.kind != "do":
                 continue
-            for c in mine:
-                proposition = c.claim.proposition
-                if proposition is None or proposition.subject_id in (cid, player_id, actor_id):
-                    continue
+            exempt = {cid, actor_id, *([player_id] if player_id else [])}
+            at = Position(turn, 0, 0, beat.beat)
+            for proposition in presuppositions(beat, mine, exempt=exempt, names=names or {}):
                 answer = await replay.could_have_known(
                     conn,
                     story_id,
                     cid,
                     proposition,
-                    Position(turn, 0, 0, beat.beat),
+                    at,
                     min_level=replay.Level.BELIEVED,
                     settings=settings,
                     registry=registry,
                     read_set=read_set,
                 )
                 if isinstance(answer, replay.NoPath):
-                    failed[beat.beat] = COULD_NOT_KNOW
-                    break
+                    # FR-RESP-14: accepted, as the character's knowledge by the author's fiat.
+                    found.fiats.append(
+                        Fiat(beat.beat, cid, proposition, texts.get(beat.beat, beat.text))
+                    )
+                    replay.stage_path(cid, proposition, at, f"{AUTHOR_FIAT}:{beat.beat}")
+    if found.fiats:
+        log.debug("player authority: %d presuppositions accepted", len(found.fiats))
     if not failed:
         return
     by_beat = {b.beat: b for b in checked.beats}
@@ -445,6 +705,103 @@ async def verify(
         checked.mentions.pop(number, None)
         checked.salient = [s for s in checked.salient if s[0].index != number]
     log.debug("player authority: %d narrated beats dropped", len(failed))
+
+
+async def fiats_committed(
+    conn: AsyncConnection,
+    op: Any,
+    found: Split | None,
+    *,
+    input_event_id: str | None,
+    settings: Any,
+    registry: Registry,
+) -> int:
+    """Write each accepted presupposition (``found.fiats``) as its character's ``author_fiat``
+    knowledge in the turn's commit (see the module docstring): a ``believed`` transition citing
+    the turn's ``player_input`` event at the narrated beat. Returns how many were written; a
+    refusal by the antecedent guard is counted, never raised."""
+    if found is None or not found.fiats or input_event_id is None:
+        return 0
+    turn = int(op.narrative_turn or 0)
+    variant = int(op.turn_variant or 0)
+    wrote = 0
+    for fiat in found.fiats:
+        try:
+            await belief_transitions.transition(
+                conn,
+                op,
+                holder=fiat.character_id,
+                kind=belief_transitions.Kind.AUTHOR_FIAT,
+                proposition=fiat.proposition,
+                antecedent=belief_transitions.Antecedent.record("events", input_event_id),
+                position=Position(
+                    turn, variant, 0, fiat.beat, step_of(fiat.beat, str(op.operation_id))
+                ),
+                confidence=belief_transitions.Confidence(BeliefConfidenceLevel.BELIEVED),
+                settings=settings,
+                registry=registry,
+            )
+        except SelfAttestation, AntecedentInvalid, ConfidenceInconsistent:
+            continue  # counted as refused by transition() itself
+        except InvalidRequest:
+            belief_transitions.refused()
+            continue
+        wrote += 1
+    log.debug("player authority: %d fiats written", wrote)
+    return wrote
+
+
+_ASSUMED: dict[int, tuple[weakref.ref[StructuredReadSet], int, str]] = {}
+
+
+def remember(read_set: StructuredReadSet, found: Split) -> None:
+    """#598: the ``co_author_knowledge`` a structured turn's current attempt accepted a
+    presupposition under (nothing when it accepted none), for ``recheck``."""
+    key = id(read_set)
+    if not found.fiats:
+        _ASSUMED.pop(key, None)
+        return
+    _ASSUMED[key] = (
+        weakref.ref(read_set, lambda _: _ASSUMED.pop(key, None)),
+        read_set.attempt,
+        found.knowledge,
+    )
+
+
+async def recheck(conn: AsyncConnection, op: Any) -> bool:
+    """The rebase re-check of co-author knowledge (``core.readset.REBASE_CHECKS``; FR-CONC-16):
+    a turn whose attempt accepted a presupposition under one ``co_author_knowledge`` and whose
+    story now has the other regenerates, so its notices follow the new value."""
+    source = op.read_set_source
+    if not isinstance(source, StructuredReadSet) or op.story_id is None:
+        return True
+    entry = _ASSUMED.get(id(source))
+    if entry is None or entry[0]() is not source or entry[1] != source.attempt:
+        return True
+    found = await conn.scalar(select(stories.c.settings).where(stories.c.id == op.story_id))
+    return knowledge_of(StorySettings.from_row(found)) == entry[2]
+
+
+register_rebase_check(recheck)
+
+
+async def notices_of(
+    db: AsyncConnection | AsyncEngine,
+    story_id: str,
+    operation_id: str,
+    notices: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """#598: a turn's stored notices as a response returns them, with ``external_effects``:
+    whether the turn has a dispatched or confirmed external effect, which a correction cannot
+    undo (FR-EXT-14; ``core.timeline_effects.with_effects``)."""
+    if not notices:
+        return []
+    if isinstance(db, AsyncConnection):
+        effects = await timeline_effects.with_effects(db, story_id, [operation_id])
+    else:
+        async with db.connect() as conn:
+            effects = await timeline_effects.with_effects(conn, story_id, [operation_id])
+    return [{**n, "external_effects": operation_id in effects} for n in notices]
 
 
 def rejected_events(found: Split | None) -> list[tuple[str, Any]]:
@@ -477,25 +834,37 @@ def present_of(cast_: Sequence[CastEntry], present_names: Sequence[str]) -> froz
 
 
 __all__ = [
+    "AUTHOR_FIAT",
     "CODES",
     "COMPLIED",
+    "CONFIRM",
     "CO_AUTHOR",
+    "FREE",
+    "IMPLAUSIBLE_KNOWLEDGE",
+    "KNOWLEDGE",
     "MODES",
     "OWN_CHARACTER",
     "PLAYER_CANNOT_WRITE_THINK",
     "REFUSED",
     "UNRESOLVED",
+    "Fiat",
     "Narrated",
     "Rejection",
     "Request",
     "Split",
     "claims_of",
+    "fiats_committed",
     "is_narrated",
+    "knowledge_of",
     "mode_of",
     "narrated_beats",
+    "notices_of",
     "outcomes",
     "present_of",
+    "presuppositions",
+    "recheck",
     "rejected_events",
+    "remember",
     "requested_renders",
     "split",
     "verify",

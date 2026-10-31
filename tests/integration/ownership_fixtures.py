@@ -639,6 +639,10 @@ CALLS: dict[tuple[str, str], Call] = {
     # -- stories: writes
     ("POST", f"{S}/respond"): Call(200, respond_body),
     ("POST", f"{S}/regenerate"): Call(200, {}, prepare=_played),
+    # #598 (FR-RESP-14): the played turn replaced with new input.
+    ("POST", f"{S}/correct"): Call(
+        200, {"turn": 1, "player_input": {"say": "Hello again."}}, prepare=_played
+    ),
     ("POST", f"{S}/ingest"): Call(
         201,
         {"events": [{"client_event_id": "evt-1", "kind": "narration", "text": "Rain falls."}]},

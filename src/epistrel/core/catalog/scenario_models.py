@@ -222,6 +222,7 @@ ChannelId = Annotated[str, Field(min_length=1, max_length=ALIAS_MAX), AfterValid
 Trust = Annotated[float, Strict(), Field(ge=0, le=1, allow_inf_nan=False)]
 InteractionMode = Literal["sequential", "simultaneous"]
 PlayerAuthority = Literal["own_character", "co_author"]
+CoAuthorKnowledge = Literal["confirm", "free"]
 RetconTiming = Literal["include_if_possible", "ask_author"]
 BackfillConflictPolicy = Literal["last_mention", "first_mention", "ask"]
 
@@ -762,6 +763,13 @@ class StorySettingsDefaults(ScenarioModel):
     player_authority: Annotated[
         PlayerAuthority | None, FieldClass.configuration, Use.story_setting
     ] = None
+    co_author_knowledge: Annotated[
+        CoAuthorKnowledge | None, FieldClass.configuration, Use.story_setting
+    ] = None
+    """How ``co_author`` narration is held to what the narrated character could know
+    (FR-RESP-14; #598): ``confirm`` (a notice per implausible presupposition) or ``free``.
+    ``null`` leaves the story's default (``confirm``). No effect under Lite or without
+    per-character partitions, so applied to every story."""
     default_output_viewpoint: Annotated[
         Slug | None, FieldClass.configuration, Use.story_setting
     ] = None

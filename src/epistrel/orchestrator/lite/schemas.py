@@ -254,6 +254,45 @@ class RegenerateRequest(BaseModel):
     budget: BudgetOverride | None = None
 
 
+class CorrectRequest(BaseModel):
+    """``POST /stories/{id}/correct`` and ``Engine.correct`` (FR-RESP-14; #598, ADR-174).
+
+    ``turn`` must be the story's latest active turn (409 ``not_latest_turn`` otherwise) and not
+    itself a correction (409 ``already_corrected``). ``player_input`` replaces the turn's input:
+    the story is rewound to before the turn and the replacement played, in one operation, and
+    the replaced turn becomes a dormant continuation (``swap`` restores it). The actor is the
+    turn's. ``render_character_ids``, ``output_viewpoint`` and ``prompt_params`` override the
+    values the turn was played with; omitted, the recorded ones are reused. ``budget`` is this
+    call's own (#69)."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        json_schema_extra={
+            "examples": [{"turn": 3, "player_input": {"do": "Jenni searches the desk."}}]
+        },
+    )
+
+    turn: StrictInt = Field(ge=1)
+    player_input: PlayerInputBody
+    render_character_ids: list[Ulid] | None = Field(
+        default=None, min_length=1, max_length=MAX_RENDER_CHARACTERS
+    )
+    output_viewpoint: str | None = Field(default=None, max_length=MAX_ID_CHARS + 16)
+    prompt_params: GenerationSettings | None = None
+    budget: BudgetOverride | None = None
+
+    def regenerating(self) -> RegenerateRequest:
+        """The regenerate of the latest turn this correction runs, with replacement input."""
+        return RegenerateRequest(
+            turn=self.turn,
+            render_character_ids=self.render_character_ids,
+            output_viewpoint=self.output_viewpoint,
+            prompt_params=self.prompt_params,
+            budget=self.budget,
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class FinishedMessage:
     """The finished reply: the ``message_rendered`` event's id and its text; for a structured
@@ -413,6 +452,11 @@ class RespondResult:
     """#211 (FR-EXT-14): the claimed, ``unknown`` or confirmed external effects of the turns
     the commit took out of the active timeline (a regenerate's retired variant, a rewound tail
     written over), ``{outbox_id, provider, status, value?}``; empty when none."""
+    notices: list[dict[str, Any]] = field(default_factory=list)
+    """#598 (FR-RESP-14): a structured turn under ``player_authority = co_author`` and
+    ``co_author_knowledge = confirm``, one ``implausible_knowledge`` notice per presupposition of
+    the player's narration the narrated character had no path to, ``{id, kind, character_id,
+    claim_text, turn, correctable, external_effects}``; empty when none."""
     """#187 (FR-RESP-7): the State changes a structured turn committed, ``{state, scope_key,
     old_value, new_value, reason, source, contingency, status}``, a ``hidden`` State's only for
     ``omniscient``; empty otherwise."""
@@ -434,6 +478,7 @@ __all__ = [
     "TURN_OVERRIDES",
     "BudgetOverride",
     "BudgetReport",
+    "CorrectRequest",
     "DegradationStep",
     "FinishedMessage",
     "GuardrailReport",

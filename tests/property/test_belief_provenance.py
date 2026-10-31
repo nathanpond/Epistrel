@@ -72,6 +72,8 @@ PERMITTED = {
     Kind.FORGETTING: {AntecedentKind.RECORD},
     Kind.AUTHOR: {AntecedentKind.RECORD},
     Kind.RESOLUTION: {AntecedentKind.RESOLUTION},
+    # #598 (FR-RESP-14): the co-author's fiat cites the narration that stated it.
+    Kind.AUTHOR_FIAT: {AntecedentKind.RECORD},
 }
 """FR-BELIEF-2's acquisition operations and FR-EPI-14's antecedents, stated on their own."""
 

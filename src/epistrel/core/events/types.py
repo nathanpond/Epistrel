@@ -201,6 +201,14 @@ class PlayerInput(EventPayload):
     ``character_id``, ``text`` and ``span`` (``[channel, start, end]`` in the input as typed).
     They are not part of ``text``/``say``/``do`` (the player's own), never fact and never in
     working memory. Absent when the input asked nothing of anyone."""
+    notices: tuple[dict[str, JsonValue], ...] = Field(default=(), exclude_if=lambda v: not v)
+    """#598 (FR-RESP-14): under ``player_authority = co_author`` and ``co_author_knowledge =
+    confirm``, one ``implausible_knowledge`` notice per presupposition of the narration the
+    narrated character had no path to, ``{id, kind, character_id, claim_text, turn,
+    correctable}`` (``claim_text``: the player's span as typed). Absent when none."""
+    corrected_from: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    """#598 (FR-RESP-14): a turn written by ``correct``, the operation of the turn it replaced
+    (now a dormant continuation); such a turn cannot be corrected again. Absent otherwise."""
 
 
 @register("message_rendered", category=EventCategory.NARRATIVE_STATE)

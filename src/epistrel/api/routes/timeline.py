@@ -7,6 +7,9 @@ regenerate the latest reply, and swap continuations.
   most recent truncation, by a swap when newer turns were written over it.
 - ``POST /stories/{id}/regenerate`` plays the latest turn again as a new variant; the old one
   goes dormant.
+- ``POST /stories/{id}/correct`` with ``{turn, player_input}`` (#598, FR-RESP-14) replaces the
+  latest turn with new input the same way, in one operation; a later turn is
+  ``not_latest_turn``, a corrected one ``already_corrected``.
 - ``POST /stories/{id}/swap`` with ``{to_variant_chain: {turn, variant}}`` makes that chain
   active and the current continuation dormant.
 - ``GET /stories/{id}/variants`` lists the story's chains.
@@ -45,7 +48,7 @@ from epistrel.core.timeline import (
     Untruncation,
 )
 from epistrel.core.variants import Chain, ChainRef, SwapRequest
-from epistrel.orchestrator.lite.schemas import RegenerateRequest, RegenerateResult
+from epistrel.orchestrator.lite.schemas import CorrectRequest, RegenerateRequest, RegenerateResult
 
 router = APIRouter(prefix="/stories", tags=["timeline"])
 
@@ -433,6 +436,40 @@ async def regenerate(
     body: Annotated[RegenerateRequest | None, Body()] = None,
 ) -> RegeneratedBody:
     result = await engine.regenerate(ctx, story_id, body or RegenerateRequest())
+    return answered(RegeneratedBody.of_regenerate(result), ctx, response, replayed=result.replayed)
+
+
+@router.post(
+    "/{story_id}/correct",
+    response_model=RegeneratedBody,
+    operation_id="correct",
+    summary="Correct the latest turn with new input",
+    description=(
+        "Replace the story's latest turn with new player input (FR-RESP-14), typically after an "
+        "`implausible_knowledge` notice: one operation rewinds the story to before `turn` and "
+        "plays `player_input` as the next variant of that turn, so a failure leaves the "
+        "original turn active. The replaced turn becomes `dormant` (swap back to it with "
+        "`POST /stories/{id}/swap`). `turn` must be the latest turn: once a later turn has "
+        "committed it is 409 `not_latest_turn` (only history rewrite reaches it). A turn a "
+        "correction wrote cannot be corrected again (409 `already_corrected`) and its notices "
+        "say `correctable: false`. Both refusals write nothing. A correction does not undo an "
+        "external effect the replaced turn dispatched or confirmed: it is listed in "
+        "`reconciliation_required` (FR-EXT-14). The replacement is checked by the input "
+        "policies; the actor is the turn's, and `render_character_ids`, `output_viewpoint` and "
+        "`prompt_params` default to the recorded ones. The answer is the respond body plus "
+        "`previous_variant`. While another turn of the story runs it is 423 `story_busy` (never "
+        "queued); queued turns fail with `timeline_changed`. `Idempotency-Key` and "
+        "`X-Epistrel-Expected-Revision` are optional."
+    ),
+)
+async def correct(
+    story_id: StoryId,
+    body: CorrectRequest,
+    response: Response,
+    ctx: ContextDep,
+    engine: EngineDep,
+) -> RegeneratedBody:
+    result = await engine.correct(ctx, story_id, body)
     return answered(RegeneratedBody.of_regenerate(result), ctx, response, replayed=result.replayed)
 
 

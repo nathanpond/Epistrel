@@ -72,6 +72,12 @@ operation at N that makes everything the old variant held ``dormant`` and fails 
 queued turns with ``timeline_changed``, all in one transaction. A failure leaves the old variant
 active.
 
+``correct`` (#598, FR-RESP-14) is that regenerate with replacement input: the named turn must be
+the latest (409 ``not_latest_turn``) and not a correction itself (409 ``already_corrected``;
+``core.turns.read_correctable``), the replacement is gated, and the turn's ``player_input``
+records ``corrected_from`` (the replaced operation, now a dormant continuation ``swap``
+restores).
+
 Scene context is validated by the request model and the cast check, then dropped (FR-RESP-4).
 This module must not import ``orchestrator.policies.admin`` (import-linter): the Engine passes
 the gate in as ``gate``.
@@ -121,6 +127,7 @@ from epistrel.core.turns import (
     RecordedTurn,
     TurnInputs,
     joined_input,
+    read_correctable,
     read_regenerable,
     read_story_cast,
     read_turn_inputs,
@@ -142,6 +149,7 @@ from epistrel.orchestrator.lite.schemas import (
     TURN_OVERRIDES,
     BudgetOverride,
     BudgetReport,
+    CorrectRequest,
     DegradationStep,
     FinishedMessage,
     GuardrailReport,
@@ -453,8 +461,10 @@ async def regenerate(
     *,
     principal: str,
     gate: Gate,
+    correction: CorrectRequest | None = None,
 ) -> RegenerateResult:
-    """Regenerate the head turn of ``story_id``; see the module docstring."""
+    """Regenerate the head turn of ``story_id``; see the module docstring. ``correction``
+    (#598): the regenerate a ``correct`` runs, with its replacement input."""
     started = ctx.received_at if ctx.received_at is not None else time.monotonic()
     story = await read_story_cast(db, story_id)
     if story.status == StoryStatus.ARCHIVED.value:
@@ -462,8 +472,13 @@ async def regenerate(
             f"story {story_id} is archived; unarchive it to change it", {"story_id": story_id}
         )
     await pause.refuse(db, story_id, story.status)
-    recorded = await read_regenerable(db, story_id, request.turn)
-    replay = _replayed_request(recorded, request)
+    if correction is not None:
+        recorded = await read_correctable(db, story_id, correction.turn)
+    else:
+        recorded = await read_regenerable(db, story_id, request.turn)
+    replay = _replayed_request(
+        recorded, request, None if correction is None else correction.player_input
+    )
     cast = resolve_cast(story, replay)
     await check_expected_revision(db, story_id, ctx.expected_revision)
     viewpoint = resolve_viewpoint(
@@ -486,7 +501,10 @@ async def regenerate(
     timing = TurnTiming(front=started)
     with recording() as calls, reporting_costs(calls, budget), _routed(concurrency):
         gating = time.perf_counter()
-        await gate(budget, joined_input(recorded.say, recorded.do), cast.actor.id, cast.render_ids)
+        said = replay.player_input
+        await gate(
+            budget, joined_input(said.say_text, said.do_text), cast.actor.id, cast.render_ids
+        )
         timing.policy_check_s += time.perf_counter() - gating
         budget.release_to(1 + budget.reserved.get(GUARDRAIL_OUTPUT, 0))
         op = Operation(
@@ -517,6 +535,7 @@ async def regenerate(
                     configuration=_captured(concurrency),
                     timing=timing,
                     regenerating=recorded,
+                    corrected_from=None if correction is None else recorded.operation_id,
                 )
         finally:
             if op.status is None:  # took the slot but never began
@@ -525,9 +544,14 @@ async def regenerate(
     return played
 
 
-def _replayed_request(recorded: RecordedTurn, request: RegenerateRequest) -> RespondRequest:
-    """The respond request a regenerate replays: the recorded input, with the request's
-    overrides (render set, prompt parameters) or else the recorded resolved values."""
+def _replayed_request(
+    recorded: RecordedTurn,
+    request: RegenerateRequest,
+    replacement: PlayerInputBody | None = None,
+) -> RespondRequest:
+    """The respond request a regenerate replays: the recorded input (a correction's
+    ``replacement``, #598), with the request's overrides (render set, prompt parameters) or
+    else the recorded resolved values."""
     params = request.prompt_params
     if params is None and recorded.generation_settings is not None:
         params = GenerationSettings(
@@ -540,7 +564,7 @@ def _replayed_request(recorded: RecordedTurn, request: RegenerateRequest) -> Res
         renders = list(recorded.render_character_ids)
     return RespondRequest(
         actor_character_id=recorded.actor_character_id,
-        player_input=PlayerInputBody(say=recorded.say, do=recorded.do),
+        player_input=replacement or PlayerInputBody(say=recorded.say, do=recorded.do),
         render_character_ids=renders,
         prompt_params=params,
     )
@@ -560,6 +584,7 @@ async def _play(
     configuration: StoryProfile,
     timing: TurnTiming | None = None,
     regenerating: RecordedTurn | None = None,
+    corrected_from: str | None = None,
 ) -> RespondResult:
     """The turn itself: one ``turn`` operation under #47's revision protocol (steps 3 and 4 of
     the module docstring), under ``configuration`` (captured at the turn's start, #113).
@@ -679,6 +704,7 @@ async def _play(
             finish_reason=outcome.draft.finish_reason,
             fallback_used=outcome.fallback_used,
             rejected=[rejected_event(r) for r in outcome.rejected],
+            corrected_from=corrected_from,
         )
         if regenerating is not None:
             op.add_commit_step(fail_queue)

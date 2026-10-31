@@ -1,5 +1,5 @@
 """OUTBOX-SAFETY — external effects follow their turn's membership and are never sent twice
-where that is unsafe (FR-EXT-12, FR-EXT-18; docs/04 §6; #210's dispatch clauses).
+where that is unsafe (FR-EXT-12,13,18; docs/04 §6; #210's dispatch clauses, #211's fork clause).
 
 Hypothesis draws an interleaving of steps over one story whose turns write outbox rows for two
 in-process providers (one that deduplicates dispatch by idempotency key, one that does not),
@@ -12,14 +12,18 @@ with each provider's answers drawn (``confirmed``, ``failed``, ``unknown``):
 - ``swap``: make another chain active again (the chain swapped away from ``dormant``);
 - ``dispatch``: the dispatcher's claim and send of a row (``outbox.dispatch``);
 - ``claim``: a claim whose worker dies before it sends (``outbox.claim`` alone);
-- ``expire``: the row's lease timer at the lease's end (``outbox.expire``).
+- ``expire``: the row's lease timer at the lease's end (``outbox.expire``);
+- ``fork`` (``test_outbox_safety__fork`` only): fork the story at a drawn turn.
 
 Asserted per example, against Postgres:
 
 - no effect is ever sent whose operation was not ``active`` when it was claimed (the claim's
-  membership re-read, in the claim's transaction);
+  membership re-read, in the claim's transaction, and #211's cancellation in the flip's own
+  transaction);
 - every claimed effect is recorded with an outcome or listed by the reconciliation status, and
-  none is ever ``cancelled``;
+  none is ever ``cancelled``; one whose turn left the active timeline after its claim is listed
+  ``reconciliation_required`` (#211), and a cancelled one whose turn came back is listed
+  ``cancelled_on_reactivation``;
 - no effect is sent twice to the provider that does not deduplicate;
 - a retry under one idempotency key never produces a second dispatch: every send carries its
   row's id, and a row is sent once per claim (a repeated dispatch job of a claimed or settled
@@ -29,6 +33,14 @@ The complement (``CASES``, one explicit example each, #514's pattern): an active
 sent exactly once and confirmed; a row whose turn was rewound past is cancelled unsent; a
 claimed row's lease lapsing with the provider that does not deduplicate makes it ``unknown``
 once; and with the one that does, it is re-sent under the same key.
+
+``test_outbox_safety__fork`` (#211, FR-EXT-13) adds ``fork`` steps and asserts the fork clause:
+no fork ever holds an executable copy of an effect. Every fork's copies are records
+(``executable = false``) under new ids (never a source idempotency key), no dispatch or recovery
+sweep ever sends or enqueues one, a fork lists nothing for reconciliation, and the fork's
+``effects_pending_in_source`` is exactly the source's ``intended``, ``claimed`` and ``unknown``
+rows of the copied turns. Its complement cases: a fork over an undispatched effect lists it
+pending, and a fork after a confirmed one lists nothing.
 """
 
 from __future__ import annotations
@@ -50,6 +62,7 @@ from epistrel.core import outbox as core_outbox
 from epistrel.core.db import make_engine
 from epistrel.core.enums import OperationKind, Provenance
 from epistrel.core.events import Operation
+from epistrel.core.fork import ForkRequest, fork
 from epistrel.core.ids import new_ulid
 from epistrel.core.variants import ChainRef, SwapRequest, list_chains
 from epistrel.orchestrator.jobs.handlers import outbox
@@ -59,6 +72,8 @@ from tests.auth_support import auth_settings
 from tests.event_support import new_story
 
 PRINCIPAL = "p-test"
+PENDING = ("intended", "claimed", "unknown")
+"""The statuses a fork's response lists as pending in its source (#211)."""
 EXAMPLES = 40
 OUTCOMES = ("confirmed", "failed", "unknown")
 
@@ -99,6 +114,9 @@ class Tally:
     dormant: int = 0
     unknown: int = 0
     resent: int = 0
+    forks: int = 0
+    fork_pending: int = 0
+    fork_quiet: int = 0
 
     def add(self, other: Tally) -> None:
         for f in fields(self):
@@ -121,7 +139,8 @@ CASES: dict[str, tuple[str, Drawn]] = {
         ),
     ),
     # Turn 1 regenerated, then swapped back to: the regenerated variant's rows (dormant after
-    # the swap) are cancelled, never sent, while the restored turn's own rows are sent.
+    # the swap) are cancelled, never sent, and so are the restored turn's own (#211: cancelled
+    # when the regeneration retired them, listed ``cancelled_on_reactivation``, never re-sent).
     "dormant": (
         "dormant",
         (
@@ -151,6 +170,22 @@ CASES: dict[str, tuple[str, Drawn]] = {
 }
 """One explicit example per complement case, with the tally field it must raise."""
 
+FORK_KINDS = (*KINDS, "fork", "fork")
+"""``test_outbox_safety__fork``'s step kinds."""
+FORK_CASES: dict[str, tuple[str, Drawn]] = {
+    # A fork over the first turn's undispatched rows: both listed pending; the source still
+    # sends its own, never the fork's copies.
+    "fork_pending": (
+        "fork_pending",
+        ([("fork", 1), ("dispatch", 0)], ["confirmed"], ["confirmed"]),
+    ),
+    # Both rows confirmed, then a fork: nothing pending in the source.
+    "fork_quiet": (
+        "fork_quiet",
+        ([("dispatch", 0), ("dispatch", 1), ("fork", 1)], ["confirmed"], ["confirmed"]),
+    ),
+}
+
 
 @dataclass
 class World:
@@ -161,6 +196,8 @@ class World:
     dedupes: dict[str, bool]
     claimed_active: dict[str, bool] = field(default_factory=dict)
     """Each row ever claimed: whether its operation was active at that claim."""
+    forks: list[str] = field(default_factory=list)
+    """Every fork of the story (#211)."""
 
 
 async def _providers(engine: AsyncEngine) -> tuple[str, str]:
@@ -221,10 +258,43 @@ async def _head(engine: AsyncEngine, story: str) -> int:
     return int(found or 0)
 
 
+async def _fork(w: World, pick: int, tally: Tally) -> None:
+    """Fork the story at a drawn turn; the fork clause holds for the copy at once (#211)."""
+    engine, story = w.engine, w.story
+    head = await _head(engine, story)
+    at = pick % (head + 1)
+    forked = await fork(engine, story, ForkRequest(at_turn=at), principal=PRINCIPAL)
+    w.forks.append(forked.story_id)
+    tally.forks += 1
+    source = await _rows(engine, story)
+    copied = {
+        r.id
+        for r in source
+        if r.origin == "active" and (r.narrative_turn is None or r.narrative_turn <= at)
+    }
+    pending = [r.id for r in source if r.id in copied and r.status in PENDING]
+    assert sorted(p.outbox_id for p in forked.effects_pending_in_source) == sorted(pending)
+    for listed in forked.effects_pending_in_source:
+        assert listed.status in PENDING
+    if pending:
+        tally.fork_pending += 1
+    elif copied:
+        tally.fork_quiet += 1
+    copies = await _rows(engine, forked.story_id)
+    assert len(copies) == len(copied)
+    assert {r.id for r in copies}.isdisjoint({r.id for r in source})
+    for row in copies:
+        assert row.executable is False
+        assert await outbox.dispatch(engine, row.id, registry=w.registry) == outbox.SKIPPED
+
+
 async def _step(w: World, kind: str, pick: int, tally: Tally) -> None:
     engine, story = w.engine, w.story
     if kind == "turn":
         await _turn(w)
+        return
+    if kind == "fork":
+        await _fork(w, pick, tally)
         return
     if kind in ("truncate", "regenerate"):
         head = await _head(engine, story)
@@ -281,8 +351,10 @@ async def _step(w: World, kind: str, pick: int, tally: Tally) -> None:
     sent = Counter(k for f in w.fakes.values() for k in f.idempotency_keys) - sent_before
     if status == "intended" and done not in (outbox.CANCELLED, outbox.SKIPPED, outbox.HELD):
         w.claimed_active[row.id] = active
-    if done == outbox.CANCELLED:
-        assert not active
+    if done == outbox.CANCELLED or status == "cancelled":
+        # Cancelled by the claim's re-read, or (#211) by the flip that took its turn out; a
+        # turn brought back later keeps its rows cancelled, never sent.
+        assert done != outbox.CANCELLED or not active
         assert not sent
         tally.cancelled += 1
         tally.dormant += row.origin == "dormant"
@@ -309,14 +381,55 @@ async def _check(w: World) -> None:
             assert sends <= rows[key].attempts, (key, sends, rows[key].attempts)
             if not w.dedupes[name]:
                 assert sends == 1, key
+    marks = await _marks(w.engine, w.story)
     for row in rows.values():
         if row.attempts:
             assert row.status != "cancelled", row.id
             if row.status != "confirmed":
                 assert row.id in listed, row.id
-                assert listed[row.id].reason in ("unconfirmed", "failed", "unknown")
+                assert listed[row.id].reason in (
+                    "unconfirmed",
+                    "failed",
+                    "unknown",
+                    "reconciliation_required",
+                )
+            marked = "reconciliation_required" in marks.get(row.id, ())
+            if row.origin != "active" and row.status in ("claimed", "unknown", "confirmed"):
+                # #211: claimed before its turn left the timeline (a failed one was settled
+                # first and stays ``failed``): listed, never compensated.
+                assert marked, row.id
+            if marked:
+                assert listed[row.id].reason == "reconciliation_required", row.id
         if row.status == "cancelled":
             assert row.attempts == 0
+            if row.origin == "active" and row.id in listed:
+                assert listed[row.id].reason == "cancelled_on_reactivation", row.id
+        if row.status == "intended":
+            # #211: a pending row whose turn is out was cancelled in the flip's transaction.
+            assert row.origin == "active", row.id
+    for forked in w.forks:
+        # The fork clause: no fork ever holds an executable copy of an effect.
+        copies = await _rows(w.engine, forked)
+        assert not any(r.executable for r in copies), forked
+        assert (await core_outbox.listings(w.engine, forked)).listings == []
+        for fake in w.fakes.values():
+            assert {r.id for r in copies}.isdisjoint(fake.idempotency_keys)
+
+
+async def _marks(engine: AsyncEngine, story: str) -> dict[str, set[str]]:
+    """Each row's open reconciliation marks (#211)."""
+    async with engine.connect() as conn:
+        found = await conn.execute(
+            text(
+                "SELECT outbox_id, reason FROM reconciliation_marks WHERE story_id = :s "
+                "AND resolved_by IS NULL"
+            ),
+            {"s": story},
+        )
+        marks: dict[str, set[str]] = {}
+        for outbox_id, reason in found:
+            marks.setdefault(str(outbox_id), set()).add(str(reason))
+        return marks
 
 
 async def _example(url: str, providers: tuple[str, str], drawn: Drawn, tally: Tally) -> None:
@@ -338,6 +451,10 @@ async def _example(url: str, providers: tuple[str, str], drawn: Drawn, tally: Ta
         for kind, pick in script:
             await _step(w, kind, pick, tally)
             await _check(w)
+        if w.forks:
+            await outbox.recover(engine)
+            for forked in w.forks:
+                assert await ps.outbox_jobs(engine, forked) == []
         tally.examples += 1
         await ps.drop_outbox_jobs(engine, story)
     finally:
@@ -378,8 +495,58 @@ def test_outbox_safety(pg_url: str) -> None:
         safety = example(drawn=case)(safety)
     safety()
     covered = {counter for counter, _ in CASES.values()}
-    assert covered == {f.name for f in fields(Tally)} - {"examples"}
+    assert covered == {f.name for f in fields(Tally)} - {"examples", *FORK_TALLIES}
     for name, (counter, _) in CASES.items():
         assert by_case[name].examples >= 1, name
         assert getattr(by_case[name], counter) > 0, (name, by_case[name])
     assert tally.examples == EXAMPLES + len(CASES)
+
+
+FORK_TALLIES = ("forks", "fork_pending", "fork_quiet")
+FORK_EXAMPLES = 20
+fork_steps = st.lists(
+    st.tuples(st.sampled_from(FORK_KINDS), st.integers(min_value=0, max_value=50)),
+    min_size=3,
+    max_size=12,
+)
+fork_examples = st.tuples(fork_steps, answers, answers)
+
+
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-EXT-13")
+def test_outbox_safety__fork(pg_url: str) -> None:
+    """See the module docstring (the fork clause, #211)."""
+    tally = Tally()
+    by_case = {name: Tally() for name in FORK_CASES}
+
+    async def setup() -> tuple[str, str]:
+        engine = make_engine(auth_settings(pg_url))
+        try:
+            return await _providers(engine)
+        finally:
+            await engine.dispose()
+
+    providers = asyncio.run(setup())
+
+    @settings(
+        max_examples=FORK_EXAMPLES,
+        deadline=None,
+        suppress_health_check=[HealthCheck.function_scoped_fixture, HealthCheck.too_slow],
+    )
+    @given(drawn=fork_examples)
+    def safety(drawn: Drawn) -> None:
+        one = Tally()
+        asyncio.run(_example(pg_url, providers, drawn, one))
+        tally.add(one)
+        for name, (_, case) in FORK_CASES.items():
+            if drawn == case:
+                by_case[name].add(one)
+
+    for _, case in FORK_CASES.values():
+        safety = example(drawn=case)(safety)
+    safety()
+    for name, (counter, _) in FORK_CASES.items():
+        assert by_case[name].examples >= 1, name
+        assert getattr(by_case[name], counter) > 0, (name, by_case[name])
+    assert tally.forks > 0
+    assert tally.examples == FORK_EXAMPLES + len(FORK_CASES)

@@ -276,6 +276,8 @@ ORDER: dict[str, str] = {
         "t.provider_name, t.value_name, t.status, t.created_at"
     ),
     "outbox_outcomes": f"{_STORY_RANK}, t.received_at, t.kind",
+    # Reconciliation marks (#211): by when they were marked, then reason.
+    "reconciliation_marks": f"{_STORY_RANK}, t.since, t.reason, t.resolved_by NULLS FIRST",
     # Engine-proposed States (#192): by name.
     "state_proposals": f"{_STORY_RANK}, t.name",
     # The read set's change index (#136): by revision, then valid window and change kind.

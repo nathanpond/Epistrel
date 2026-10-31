@@ -47,6 +47,11 @@ independent copy under new ids, isolated from the source from the moment it exis
   mention (accepted). Then the ``post_commit`` membership hooks run on the fork with cause
   ``fork`` (#65's registry): one change per source membership of the copied operations, each
   now ``active``.
+- **External effects** (#211, FR-EXT-13): the outbox rows of the copied operations are copied
+  as records (``executable = false``: never claimed, never swept), with new ids (so a copy never
+  shares the source's idempotency key) and their outcome records; the response lists the
+  source's rows still ``intended``, ``claimed`` or ``unknown`` at the snapshot
+  (``effects_pending_in_source``).
 
 ``at_turn`` defaults to the head (the chain's tip); above it, or below zero, is 422. An unknown
 or ambiguous chain is 409 ``unknown_chain`` (#66). The expected revision, when given, is the
@@ -79,7 +84,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import idempotency, pause, projections, timeline
+from epistrel.core import idempotency, pause, projections, timeline, timeline_effects
 from epistrel.core.enums import (
     Authority,
     EventCategory,
@@ -123,6 +128,7 @@ from epistrel.core.tables import (
     story_heads,
     transcript_messages,
 )
+from epistrel.core.timeline_effects import PendingEffect
 from epistrel.core.variants import ChainRef, ChainSelection, ChainSelector, fork_selection
 from epistrel.testing import crash
 
@@ -290,6 +296,11 @@ class Forked:
     forked_from: ForkOrigin
     characters: tuple[ForkCharacter, ...] = ()
     counts: dict[str, int] = field(default_factory=dict)
+    effects_pending_in_source: tuple[PendingEffect, ...] = ()
+    """#211 (FR-EXT-13): the source's external effects the copied turns wrote that were still
+    ``intended``, ``claimed`` or ``unknown`` at the fork's snapshot, with the source's outbox
+    ids: they may still happen in the source. The fork's copies are records only, never
+    dispatched."""
     replayed: bool = False
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
 
@@ -414,6 +425,7 @@ async def _copy(
     counts.update(await _rebuild_structured(conn, fork_id))
 
     cast = await _cast(conn, fork_id)
+    pending = await timeline_effects.pending_in_source(conn, source, [op for op, _ in copied])
     origin = ForkOrigin(
         story_id=source,
         revision=revision,
@@ -439,6 +451,7 @@ async def _copy(
         forked_from=origin,
         characters=cast,
         counts=counts,
+        effects_pending_in_source=tuple(pending),
     )
 
 
@@ -754,9 +767,13 @@ OVERRIDES: dict[str, dict[str, str]] = {
             "WITH ORDINALITY AS s(id, n) ORDER BY s.n) AS char(26)[])"
         ),
     },
-    # The outbox (#210, FR-EXT-13): a fork never copies an executable effect; its copies
-    # are records only (#211 lists the ones pending at the fork point).
-    "external_effect_outbox": {"executable": "false"},
+    # The outbox (#210, #211; FR-EXT-13): a fork never copies an executable effect; its copies
+    # are records only (the fork's response lists the ones pending at the fork point), and a
+    # settlement's outcome event (#217) is the fork's copy, or none when it was not copied.
+    "external_effect_outbox": {
+        "executable": "false",
+        "outcome_event_id": _mapped_or_null("outcome_event_id"),
+    },
     # Speech acts (#150): the propositions an utterance asserts are the fork's copies.
     "utterances": {
         "proposition_ids": (

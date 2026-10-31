@@ -467,6 +467,9 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
     fake = provider_support.ScriptedProvider(bank)
     registry.register(bank, read=fake.read, write=fake.write)
     assert await outbox_job.dispatch(engine, outbox_id, registry=registry) == "confirmed"
+    # Its reconciliation mark (#211): a confirmed effect listed for reconciliation.
+    async with engine.begin() as conn:
+        assert await core_outbox.mark(conn, story_id, outbox_id, "reconciliation_required")
 
 
 def _due() -> datetime:

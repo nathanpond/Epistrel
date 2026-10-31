@@ -210,7 +210,13 @@ from epistrel.core.tables.media import (
     subject_references,
 )
 from epistrel.core.tables.memories import memories
-from epistrel.core.tables.outbox import CANCELLED, INTENDED, external_effect_outbox
+from epistrel.core.tables.outbox import (
+    CANCELLED,
+    CLAIMED,
+    INTENDED,
+    UNKNOWN,
+    external_effect_outbox,
+)
 from epistrel.core.tables.ownership import EntityType
 from epistrel.core.tables.propositions import (
     closed_sets,
@@ -1281,10 +1287,13 @@ async def _erase_outbox(
     tally: _Tally,
     run: _StoryRun,
 ) -> None:
-    """The outbox (#210; FR-EXT-14): an ``intended`` row that names the subject (its effect's
-    text, or a value scoped to an erased character) is cancelled before the erasure, never
-    sent; every row that names the subject has its effect redacted in place (a claimed or
-    settled one stays listed for reconciliation)."""
+    """The outbox (#210, #211; FR-EXT-14,21): an ``intended`` row that names the subject (its
+    effect's text, or a value scoped to an erased character) is cancelled before the erasure,
+    never sent; a ``claimed`` or ``unknown`` one (it may have reached the provider) stays
+    listed, redacted to ``{outbox_id, provider, status}``: its effect emptied and ``erased_at``
+    set, so its dispatch, if in flight, abandons and it is never sent again; every other row
+    that names the subject has its effect redacted in place. Nothing of the effect reaches the
+    ledger or a marker (the tally counts the table)."""
     named = sorted(refs.get(external_effect_outbox.name, set()))
     if not named:
         return
@@ -1294,6 +1303,11 @@ async def _erase_outbox(
             update(external_effect_outbox)
             .where(o.id.in_(named), o.status == INTENDED)
             .values(status=CANCELLED)
+        )
+        await conn.execute(
+            update(external_effect_outbox)
+            .where(o.id.in_(named), o.status.in_((CLAIMED, UNKNOWN)))
+            .values(effect={}, erased_at=func.transaction_timestamp())
         )
     await _redact_json_rows(
         conn, external_effect_outbox, o.id, named, ("effect",), redactor, tally, write=run.write

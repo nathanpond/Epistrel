@@ -1,5 +1,6 @@
-"""``external_effect_outbox`` and ``outbox_outcomes``: the transactional outbox of write-capable
-providers (FR-EXT-10,12,16..18; docs/02 §4.8; #210, migration 0095).
+"""``external_effect_outbox``, ``outbox_outcomes`` and ``reconciliation_marks``: the
+transactional outbox of write-capable providers (FR-EXT-10,12,16..18; docs/02 §4.8; #210,
+migration 0095; #211, migration 0098).
 
 - **``external_effect_outbox``** — one row per effect a turn asks a write-capable provider to
   apply, written ``intended`` in the turn's own transaction (``core.outbox.write_intended``). Its
@@ -24,7 +25,20 @@ providers (FR-EXT-10,12,16..18; docs/02 §4.8; #210, migration 0095).
   update may change). A trigger refuses every other update and delete outside erasure and
   story deletion, and any TRUNCATE (0068's pattern).
 
-Neither table has a foreign key to another story table (``outbox_id`` is a plain column; the
+- **``reconciliation_marks``** (#211, migration 0098) — why a row is listed when its status
+  alone does not say: ``reconciliation_required`` (a claimed, unknown or confirmed row whose
+  turn left the active timeline), ``cancelled_on_reactivation`` (a row cancelled while its turn
+  was out, whose turn is active again), and the later stories' reasons (#216, #217, #218).
+  ``since`` is when it was marked and ``resolved_by`` the explicit action that resolved it
+  (#218; null while open). One open mark per row and reason (a partial unique index). Ids and
+  reason codes only, no story content; a fork does not copy it (the fork's outbox copies are
+  records, never listed).
+
+``external_effect_outbox.erased_at`` (#211) is set when an erasure redacted a claimed or
+``unknown`` row (listed as ``{outbox_id, provider, status}`` only), or abandoned its dispatch
+mid-flight: such a row is never sent again.
+
+None of the tables has a foreign key to another story table (``outbox_id`` is a plain column; the
 outbox's ``operation_id`` is the derived columns' reference to ``operations``); in
 ``core.stories.STORY_TABLES`` the outcomes come before the outbox, both before ``operations``.
 """
@@ -102,6 +116,7 @@ external_effect_outbox = Table(
     Column("outcome_event_id", ulid_type(), nullable=True),
     Column("attempts", Integer, nullable=False, server_default=text("0")),
     Column("executable", Boolean, nullable=False, server_default=text("true")),
+    Column("erased_at", TIMESTAMP(timezone=True), nullable=True),
     Column(
         "created_at",
         TIMESTAMP(timezone=True),
@@ -142,6 +157,50 @@ outbox_outcomes = Table(
 Index("ix_outbox_outcomes_outbox", outbox_outcomes.c.outbox_id, outbox_outcomes.c.received_at)
 Index("ix_outbox_outcomes_story", outbox_outcomes.c.story_id)
 
+REASONS: tuple[str, ...] = (
+    "unconfirmed",
+    "failed",
+    "unknown",
+    "reconciliation_required",
+    "cancelled_on_reactivation",
+    "confirmed_unsettled",
+    "confirmed_discarded_origin",
+    "settlement_conflict",
+    "late_success_after_expiry",
+    "outcome_conflict",
+    "reservation_expired",
+)
+"""Every reconciliation reason (``core.outbox.REASONS``; a mark's reason is one of them)."""
+
+reconciliation_marks = Table(
+    "reconciliation_marks",
+    metadata,
+    Column("id", ulid_type(), primary_key=True),
+    Column("story_id", ulid_type(), nullable=False),
+    Column("outbox_id", ulid_type(), nullable=False),
+    Column("reason", Text, nullable=False),
+    Column(
+        "since",
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("transaction_timestamp()"),
+    ),
+    Column("resolved_by", Text, nullable=True),
+    CheckConstraint(_in("reason", REASONS), name="reason"),
+)
+Index(
+    "ix_reconciliation_marks_story",
+    reconciliation_marks.c.story_id,
+    reconciliation_marks.c.outbox_id,
+)
+Index(
+    "uq_reconciliation_marks_open",
+    reconciliation_marks.c.outbox_id,
+    reconciliation_marks.c.reason,
+    unique=True,
+    postgresql_where=reconciliation_marks.c.resolved_by.is_(None),
+)
+
 EXTERNAL_EFFECT_OUTBOX = register_derived(DerivedTable(external_effect_outbox))
 """``external_effect_outbox`` in ``core.membership.DERIVED_TABLES``: truncation, untruncation,
 swap, regenerate and fork move each row with the turn that wrote it."""
@@ -158,10 +217,12 @@ __all__ = [
     "INTENDED",
     "OUTBOX_STATUSES",
     "OUTCOME_KINDS",
+    "REASONS",
     "RECEIVED_VIA",
     "UNKNOWN",
     "VIA_DISPATCHER",
     "VIA_INGEST",
     "external_effect_outbox",
     "outbox_outcomes",
+    "reconciliation_marks",
 ]

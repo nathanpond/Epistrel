@@ -203,6 +203,27 @@ class ReconciliationCountBody(BaseModel):
     count: int = Field(ge=0)
 
 
+class RequiredEffectBody(BaseModel):
+    """#211 (FR-EXT-14): an external effect a timeline edit could not undo, or would not
+    re-send: the outbox row (the provider idempotency key), its provider and status, and the
+    value it changes (absent on a row an erasure redacted). It stays in the reconciliation
+    status (``GET /stories/{id}/reconciliation``) until resolved; nothing is compensated."""
+
+    outbox_id: str
+    provider: str
+    status: str
+    value: str | None = Field(default=None, exclude_if=lambda v: v is None)
+
+    @classmethod
+    def of(cls, effect: Any) -> RequiredEffectBody:
+        return cls(
+            outbox_id=effect.outbox_id,
+            provider=effect.provider,
+            status=effect.status,
+            value=effect.value,
+        )
+
+
 class RespondResponse(MutationResponse):
     """One finished turn: the reply, the turn's beats for the resolved viewpoint, its position,
     the story's new revision, the model calls it made, where its time went, and the
@@ -279,6 +300,12 @@ class RespondResponse(MutationResponse):
     """#210 (FR-EXT-10): ``{count}``, how many effects the story's reconciliation status lists
     (``GET /stories/{id}/reconciliation``); absent while the story has never dispatched an
     effect to a write-capable provider."""
+    reconciliation_required: list[RequiredEffectBody] = Field(
+        default_factory=list, exclude_if=lambda r: not r
+    )
+    """#211 (FR-EXT-14): a regenerate's (or a turn written over a rewound tail's) claimed,
+    ``unknown`` or confirmed external effects of the turns it took out of the active timeline;
+    absent when none."""
     clock: TurnClockBody | None = Field(default=None, exclude_if=lambda c: c is None)
     """The world clock before and after the turn (FR-CLOCK-13; #193): ``{before, after}``, each
     ``{offset, display}``; absent when the story runs the clock off."""
@@ -330,6 +357,9 @@ class RespondResponse(MutationResponse):
             reconciliation=None
             if result.reconciliation is None
             else ReconciliationCountBody(**result.reconciliation),
+            reconciliation_required=[
+                RequiredEffectBody(**r) for r in result.reconciliation_required
+            ],
             budget=(
                 None
                 if result.budget is None

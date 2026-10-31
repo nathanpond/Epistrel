@@ -10828,6 +10828,13 @@
             "title": "Counts",
             "type": "object"
           },
+          "effects_pending_in_source": {
+            "items": {
+              "$ref": "#/components/schemas/PendingEffectBody"
+            },
+            "title": "Effects Pending In Source",
+            "type": "array"
+          },
           "forked_from": {
             "$ref": "#/components/schemas/ForkedFromBody"
           },
@@ -10878,7 +10885,8 @@
           "name",
           "forked_from",
           "characters",
-          "counts"
+          "counts",
+          "effects_pending_in_source"
         ],
         "title": "ForkedBody",
         "type": "object"
@@ -14557,12 +14565,19 @@
       },
       "Listing": {
         "additionalProperties": false,
-        "description": "One effect the consumer must reconcile: the outbox row (its id is the provider\nidempotency key), the provider and value, its status, why it is listed, since when, the\neffect, and the latest outcome recorded for it, if any.",
+        "description": "One effect the consumer must reconcile: the outbox row (its id is the provider\nidempotency key), the provider and value, its status, why it is listed, since when, the\neffect, and the latest outcome recorded for it, if any. A row an erasure redacted (#211)\nis listed as ``{outbox_id, provider, status}`` with its reason and since only.",
         "properties": {
           "effect": {
-            "additionalProperties": true,
-            "title": "Effect",
-            "type": "object"
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effect"
           },
           "outbox_id": {
             "title": "Outbox Id",
@@ -14609,18 +14624,23 @@
             "type": "string"
           },
           "value": {
-            "title": "Value",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
           }
         },
         "required": [
           "outbox_id",
           "provider",
-          "value",
           "status",
           "reason",
-          "since",
-          "effect"
+          "since"
         ],
         "title": "Listing",
         "type": "object"
@@ -18554,6 +18574,31 @@
           "role"
         ],
         "title": "ParticipationSpec",
+        "type": "object"
+      },
+      "PendingEffectBody": {
+        "description": "#211 (FR-EXT-13): a source effect pending at the fork's boundary: the source's outbox id,\nits status (``intended``, ``claimed`` or ``unknown``) and the effect.",
+        "properties": {
+          "effect": {
+            "additionalProperties": true,
+            "title": "Effect",
+            "type": "object"
+          },
+          "outbox_id": {
+            "title": "Outbox Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "outbox_id",
+          "status",
+          "effect"
+        ],
+        "title": "PendingEffectBody",
         "type": "object"
       },
       "PendingErasureBody": {
@@ -27592,6 +27637,13 @@
               }
             ]
           },
+          "reconciliation_required": {
+            "items": {
+              "$ref": "#/components/schemas/RequiredEffectBody"
+            },
+            "title": "Reconciliation Required",
+            "type": "array"
+          },
           "reduced_characters": {
             "items": {
               "type": "string"
@@ -28100,6 +28152,41 @@
           "source_fact_id"
         ],
         "title": "RelationshipBody",
+        "type": "object"
+      },
+      "RequiredEffectBody": {
+        "description": "#211 (FR-EXT-14): an external effect a timeline edit could not undo, or would not\nre-send: the outbox row (the provider idempotency key), its provider and status, and the\nvalue it changes (absent on a row an erasure redacted). It stays in the reconciliation\nstatus (``GET /stories/{id}/reconciliation``) until resolved; nothing is compensated.",
+        "properties": {
+          "outbox_id": {
+            "title": "Outbox Id",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "outbox_id",
+          "provider",
+          "status"
+        ],
+        "title": "RequiredEffectBody",
         "type": "object"
       },
       "RequiredSetting": {
@@ -28651,6 +28738,13 @@
                 "type": "null"
               }
             ]
+          },
+          "reconciliation_required": {
+            "items": {
+              "$ref": "#/components/schemas/RequiredEffectBody"
+            },
+            "title": "Reconciliation Required",
+            "type": "array"
           },
           "reduced_characters": {
             "items": {
@@ -37935,6 +38029,13 @@
           "active_chain": {
             "$ref": "#/components/schemas/ChainRefBody"
           },
+          "cancelled_on_reactivation": {
+            "items": {
+              "$ref": "#/components/schemas/RequiredEffectBody"
+            },
+            "title": "Cancelled On Reactivation",
+            "type": "array"
+          },
           "dormant_operations": {
             "title": "Dormant Operations",
             "type": "integer"
@@ -37965,6 +38066,13 @@
             ],
             "title": "Operation Id"
           },
+          "reconciliation_required": {
+            "items": {
+              "$ref": "#/components/schemas/RequiredEffectBody"
+            },
+            "title": "Reconciliation Required",
+            "type": "array"
+          },
           "timeline_revision": {
             "title": "Timeline Revision",
             "type": "integer"
@@ -37976,7 +38084,9 @@
           "next_turn_index",
           "active_chain",
           "activated_operations",
-          "dormant_operations"
+          "dormant_operations",
+          "reconciliation_required",
+          "cancelled_on_reactivation"
         ],
         "title": "SwappedBody",
         "type": "object"
@@ -38294,6 +38404,13 @@
             "title": "Operation Id",
             "type": "string"
           },
+          "reconciliation_required": {
+            "items": {
+              "$ref": "#/components/schemas/RequiredEffectBody"
+            },
+            "title": "Reconciliation Required",
+            "type": "array"
+          },
           "timeline_revision": {
             "title": "Timeline Revision",
             "type": "integer"
@@ -38308,7 +38425,8 @@
           "operation_id",
           "next_turn_index",
           "to_turn",
-          "discarded_operations"
+          "discarded_operations",
+          "reconciliation_required"
         ],
         "title": "TruncatedBody",
         "type": "object"
@@ -38562,6 +38680,13 @@
               }
             ]
           },
+          "cancelled_on_reactivation": {
+            "items": {
+              "$ref": "#/components/schemas/RequiredEffectBody"
+            },
+            "title": "Cancelled On Reactivation",
+            "type": "array"
+          },
           "dormant_operations": {
             "title": "Dormant Operations",
             "type": "integer"
@@ -38584,6 +38709,13 @@
           "operation_id": {
             "title": "Operation Id",
             "type": "string"
+          },
+          "reconciliation_required": {
+            "items": {
+              "$ref": "#/components/schemas/RequiredEffectBody"
+            },
+            "title": "Reconciliation Required",
+            "type": "array"
           },
           "restored_operations": {
             "title": "Restored Operations",
@@ -38610,7 +38742,9 @@
           "restored_operations",
           "swapped",
           "active_chain",
-          "dormant_operations"
+          "dormant_operations",
+          "reconciliation_required",
+          "cancelled_on_reactivation"
         ],
         "title": "UntruncatedBody",
         "type": "object"

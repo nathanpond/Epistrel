@@ -32,7 +32,7 @@ from pydantic import BaseModel
 from epistrel.api.deps import ContextDep, EngineDep, StoryId
 from epistrel.api.idempotency import answered
 from epistrel.api.responses import MutationResponse
-from epistrel.api.routes.respond import RespondResponse
+from epistrel.api.routes.respond import RequiredEffectBody, RespondResponse
 from epistrel.api.routes.story_rating import CHECK_PATH, RatingCheckStartedBody
 from epistrel.core.enums import Membership
 from epistrel.core.fork import Forked, ForkRequest
@@ -85,6 +85,10 @@ def _check_started(
     return JSONResponse(body.model_dump(mode="json"), status_code=202, headers=headers)
 
 
+def _bodies(effects: Any) -> list[RequiredEffectBody]:
+    return [RequiredEffectBody.of(r) for r in effects]
+
+
 class TruncatedBody(MutationResponse):
     """A committed truncation: its operation, the story's revision and next turn index after
     it, and how many operations it discarded."""
@@ -94,6 +98,10 @@ class TruncatedBody(MutationResponse):
     to_turn: int
     discarded_operations: int
     """How many operations the truncation discarded."""
+    reconciliation_required: list[RequiredEffectBody]
+    """#211 (FR-EXT-14): the claimed, ``unknown`` or confirmed external effects of the
+    discarded turns. They cannot be undone: each stays in the reconciliation status until
+    resolved, and nothing is compensated. Their ``intended`` effects are cancelled, never sent."""
 
     @classmethod
     def of(cls, done: Truncation) -> TruncatedBody:
@@ -103,6 +111,7 @@ class TruncatedBody(MutationResponse):
             next_turn_index=done.next_turn_index,
             to_turn=done.to_turn,
             discarded_operations=done.discarded_operations,
+            reconciliation_required=_bodies(done.reconciliation_required),
         )
 
 
@@ -131,6 +140,12 @@ class UntruncatedBody(MutationResponse):
     the newer one dormant (``dormant_operations``), nothing lost."""
     active_chain: ChainRefBody | None
     dormant_operations: int
+    reconciliation_required: list[RequiredEffectBody]
+    """#211: a swap's claimed, ``unknown`` or confirmed external effects of the turns it made
+    dormant (see ``truncate``)."""
+    cancelled_on_reactivation: list[RequiredEffectBody]
+    """#211: the external effects of the turns it made active again that were cancelled while
+    they were out; never re-sent, listed for reconciliation."""
 
     @classmethod
     def of(cls, done: Untruncation) -> UntruncatedBody:
@@ -143,6 +158,8 @@ class UntruncatedBody(MutationResponse):
             swapped=done.swapped,
             active_chain=None if done.active_chain is None else ChainRefBody.of(done.active_chain),
             dormant_operations=done.dormant_operations,
+            reconciliation_required=_bodies(done.reconciliation_required),
+            cancelled_on_reactivation=_bodies(done.cancelled_on_reactivation),
         )
 
 
@@ -156,6 +173,12 @@ class SwappedBody(MutationResponse):
     active_chain: ChainRefBody
     activated_operations: int
     dormant_operations: int
+    reconciliation_required: list[RequiredEffectBody]
+    """#211: the claimed, ``unknown`` or confirmed external effects of the turns it made
+    dormant (see ``truncate``)."""
+    cancelled_on_reactivation: list[RequiredEffectBody]
+    """#211: the external effects of the turns it made active that were cancelled while they
+    were out; never re-sent, listed for reconciliation."""
 
     @classmethod
     def of(cls, done: Swapped) -> SwappedBody:
@@ -166,6 +189,8 @@ class SwappedBody(MutationResponse):
             active_chain=ChainRefBody.of(done.active_chain),
             activated_operations=done.activated_operations,
             dormant_operations=done.dormant_operations,
+            reconciliation_required=_bodies(done.reconciliation_required),
+            cancelled_on_reactivation=_bodies(done.cancelled_on_reactivation),
         )
 
 
@@ -241,6 +266,15 @@ class ForkCharacterBody(BaseModel):
     source_id: str
 
 
+class PendingEffectBody(BaseModel):
+    """#211 (FR-EXT-13): a source effect pending at the fork's boundary: the source's outbox id,
+    its status (``intended``, ``claimed`` or ``unknown``) and the effect."""
+
+    outbox_id: str
+    status: str
+    effect: dict[str, Any]
+
+
 class ForkedBody(MutationResponse):
     """The new story (``timeline_revision`` is the fork's: 1), its genesis operation, where it
     came from, its cast, and how many rows were copied per table."""
@@ -252,6 +286,10 @@ class ForkedBody(MutationResponse):
     forked_from: ForkedFromBody
     characters: list[ForkCharacterBody]
     counts: dict[str, int]
+    effects_pending_in_source: list[PendingEffectBody]
+    """#211 (FR-EXT-13): the source's external effects the copied turns wrote that were still
+    pending at the fork; they may still happen in the source. The fork holds only
+    non-executable records of them: nothing is dispatched from the fork."""
 
     @classmethod
     def of(cls, done: Forked) -> ForkedBody:
@@ -275,6 +313,10 @@ class ForkedBody(MutationResponse):
                 for c in done.characters
             ],
             counts=dict(done.counts),
+            effects_pending_in_source=[
+                PendingEffectBody(outbox_id=p.outbox_id, status=p.status, effect=dict(p.effect))
+                for p in done.effects_pending_in_source
+            ],
         )
 
 

@@ -38,6 +38,12 @@ Both edits commit against current state: the payload staged from the read phase 
 recomputed under the story lock, and if the timeline moved meanwhile the same operation
 re-reads and restages (up to ``EDIT_RETRY_BUDGET`` times, then 409 ``revision_conflict``).
 
+**External effects** (#211, ``core.timeline_effects``): the outbox rows of operations an edit
+takes out of the active timeline are classified in its transaction (``intended`` rows
+cancelled); the claimed, ``unknown`` or confirmed ones come back as ``reconciliation_required``,
+and the cancelled rows of operations an edit makes active again as
+``cancelled_on_reactivation`` (never re-sent).
+
 **Membership hooks.** ``on_membership_change(hook, phase=...)`` registers a coroutine
 ``hook(conn, change)`` run for every membership change these edits make: ``in_transaction``
 hooks run inside the commit (a failure rolls the edit back); ``post_commit`` hooks run after it
@@ -83,6 +89,7 @@ from epistrel.core.membership import POSITION_MAX, Position, follow_membership_c
 from epistrel.core.projections import structured
 from epistrel.core.stories import require_writable
 from epistrel.core.tables import events, operations, stories
+from epistrel.core.timeline_effects import RequiredEffect
 from epistrel.core.variants import (
     ChainRef,
     SwapPlan,
@@ -199,6 +206,10 @@ class Truncation:
     next_turn_index: int
     to_turn: int
     discarded_operations: int
+    reconciliation_required: tuple[RequiredEffect, ...] = ()
+    """#211 (FR-EXT-14): the claimed, ``unknown`` or confirmed external effects of the
+    operations it took out of the active timeline. They cannot be undone: each stays in the
+    reconciliation status until an explicit action resolves it; nothing is compensated."""
     replayed: bool = False
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
 
@@ -217,6 +228,13 @@ class Untruncation:
     active_chain: ChainRef | None = None
     dormant_operations: int = 0
     """How many operations a swap made dormant (0 for a reactivation)."""
+    reconciliation_required: tuple[RequiredEffect, ...] = ()
+    """#211 (FR-EXT-14): the claimed, ``unknown`` or confirmed external effects of the
+    operations it took out of the active timeline. They cannot be undone: each stays in the
+    reconciliation status until an explicit action resolves it; nothing is compensated."""
+    cancelled_on_reactivation: tuple[RequiredEffect, ...] = ()
+    """#211: the external effects of the operations it made active again that were cancelled
+    while they were out; never re-sent, listed for reconciliation."""
     replayed: bool = False
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
 
@@ -232,6 +250,13 @@ class Swapped:
     active_chain: ChainRef
     activated_operations: int = 0
     dormant_operations: int = 0
+    reconciliation_required: tuple[RequiredEffect, ...] = ()
+    """#211 (FR-EXT-14): the claimed, ``unknown`` or confirmed external effects of the
+    operations it took out of the active timeline. They cannot be undone: each stays in the
+    reconciliation status until an explicit action resolves it; nothing is compensated."""
+    cancelled_on_reactivation: tuple[RequiredEffect, ...] = ()
+    """#211: the external effects of the operations it made active again that were cancelled
+    while they were out; never re-sent, listed for reconciliation."""
     replayed: bool = False
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
 
@@ -744,6 +769,7 @@ async def truncate(
         next_turn_index=planned.payload.to_turn + 1,
         to_turn=planned.payload.to_turn,
         discarded_operations=len(planned.payload.operation_ids),
+        reconciliation_required=tuple(op.effects.reconciliation_required),
     )
 
 
@@ -812,6 +838,8 @@ async def untruncate(
             swapped=True,
             active_chain=planned.swap.active_chain,
             dormant_operations=len(payload.dormant_operation_ids),
+            reconciliation_required=tuple(op.effects.reconciliation_required),
+            cancelled_on_reactivation=tuple(op.effects.cancelled_on_reactivation),
         )
     for change in _changes(story_id, op, planned.payload):
         await _run_post_commit(db, change)
@@ -821,6 +849,7 @@ async def untruncate(
         next_turn_index=planned.payload.restored_head.next_turn_index,
         truncate_operation_id=planned.payload.truncate_operation_id,
         restored_operations=len(planned.payload.operation_ids),
+        cancelled_on_reactivation=tuple(op.effects.cancelled_on_reactivation),
     )
 
 
@@ -898,6 +927,8 @@ async def swap(
         active_chain=planned.active_chain,
         activated_operations=len(planned.payload.activated_operation_ids),
         dormant_operations=len(planned.payload.dormant_operation_ids),
+        reconciliation_required=tuple(op.effects.reconciliation_required),
+        cancelled_on_reactivation=tuple(op.effects.cancelled_on_reactivation),
     )
 
 

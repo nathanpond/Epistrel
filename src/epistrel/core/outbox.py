@@ -1,6 +1,6 @@
 """The transactional outbox's rows and the reconciliation status (FR-EXT-10,12,14,16..18;
 docs/02 §4.8; #210). The dispatcher that drives them is the Orchestrator's
-(``orchestrator.jobs.handlers.outbox``); every write to the two tables goes through here.
+(``orchestrator.jobs.handlers.outbox``); every write to the outbox tables goes through here.
 
 **Intent** (``write_intended``). A turn's effect on a value a write-capable provider owns is
 never applied by Epistrel: it is written as an ``external_effect_outbox`` row, ``intended``, in
@@ -24,10 +24,20 @@ confirmed | failed`` included); a later answer to a settled row is recorded as `
 first terminal outcome wins, FR-EXT-22). ``release`` puts a claimed row back to ``intended``
 when the adapter proved nothing was sent (``ProviderUnavailable`` before the request).
 
+**The timeline and erasure** (#211; ``core.timeline_effects`` drives them): ``locked_of``
+locks the rows of operations a membership flip moved, ``cancel_all`` cancels their
+``intended`` rows, and ``mark`` lists a row with a reason its status does not carry (a
+``reconciliation_marks`` row, open until an explicit action resolves it, #218).
+``erased_since`` and ``abandon`` are the dispatcher's erasure-specific mid-flight check and
+its outcome: ``unknown``, no payload recorded, ``erased_at`` set (never sent again).
+
 **Reconciliation** (``listings``, ``count``): what the consumer must look at, one listing per
 row: ``unconfirmed`` (``intended`` with its operation active, or ``claimed``), ``failed`` and
-``unknown`` here; the other ``REASONS`` are listed by later stories (#211, #216, #217, #218).
-A row that is ``confirmed`` or ``cancelled`` is not listed. Nothing here bumps a revision.
+``unknown`` by status, and any row with an open mark under the mark's reason (#211:
+``reconciliation_required``, ``cancelled_on_reactivation``; #216, #217, #218 add theirs). A
+``confirmed`` or ``cancelled`` row without a mark is not listed; a fork's copies never are. A
+row an erasure reached (``erased_at``) is listed as ``{outbox_id, provider, status}`` with
+its reason and since only. Nothing here bumps a revision.
 
 Log lines carry ids and counts only (invariant 3).
 """
@@ -41,7 +51,8 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import Row, and_, exists, func, insert, or_, select, update
+from sqlalchemy import Row, and_, exists, func, insert, literal, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.enums import StoryStatus
@@ -51,7 +62,7 @@ from epistrel.core.erasure.records import outbox_record
 from epistrel.core.errors import StoryNotFound
 from epistrel.core.ids import new_ulid
 from epistrel.core.membership import active_operation, insert_derived
-from epistrel.core.tables import operations, stories
+from epistrel.core.tables import erasure_ledger, operations, stories
 from epistrel.core.tables.outbox import (
     CANCELLED,
     CLAIMED,
@@ -64,7 +75,9 @@ from epistrel.core.tables.outbox import (
     VIA_DISPATCHER,
     external_effect_outbox,
     outbox_outcomes,
+    reconciliation_marks,
 )
+from epistrel.core.tables.outbox import REASONS as MARK_REASONS
 from epistrel.observability.logging import get_logger
 
 if TYPE_CHECKING:
@@ -75,20 +88,9 @@ log = get_logger(__name__)
 TERMINAL = frozenset({CONFIRMED, FAILED})
 """A settled row's statuses: a later answer never changes them."""
 
-REASONS: tuple[str, ...] = (
-    "unconfirmed",
-    "failed",
-    "unknown",
-    "reconciliation_required",
-    "cancelled_on_reactivation",
-    "confirmed_unsettled",
-    "confirmed_discarded_origin",
-    "settlement_conflict",
-    "late_success_after_expiry",
-    "outcome_conflict",
-    "reservation_expired",
-)
-"""Every reconciliation reason (the full enum; #210 lists the first three)."""
+REASONS: tuple[str, ...] = MARK_REASONS
+"""Every reconciliation reason (the full enum; #210 lists the first three, #211 marks
+``reconciliation_required`` and ``cancelled_on_reactivation``)."""
 
 Reason = Literal[
     "unconfirmed",
@@ -168,13 +170,18 @@ async def write_intended(conn: AsyncConnection, op: Operation, rows: Sequence[In
 
 
 async def claimable(conn: AsyncConnection, outbox_id: str) -> Row[Any] | None:
-    """Lock outbox row ``outbox_id`` when it is ``intended`` and executable (``SKIP LOCKED``:
-    ``None`` while another transaction holds it, or when it is not claimable)."""
+    """Lock outbox row ``outbox_id`` when it is ``intended``, executable and not erased (``SKIP
+    LOCKED``: ``None`` while another transaction holds it, or when it is not claimable)."""
     o = external_effect_outbox.c
     return (
         await conn.execute(
             select(external_effect_outbox)
-            .where(o.id == outbox_id, o.status == INTENDED, o.executable.is_(True))
+            .where(
+                o.id == outbox_id,
+                o.status == INTENDED,
+                o.executable.is_(True),
+                o.erased_at.is_(None),
+            )
             .with_for_update(skip_locked=True)
         )
     ).one_or_none()
@@ -257,6 +264,86 @@ async def mark_unknown(conn: AsyncConnection, outbox_id: str, now: datetime, why
         update(external_effect_outbox)
         .where(external_effect_outbox.c.id == outbox_id)
         .values(status=UNKNOWN, claim_lease_until=None)
+    )
+
+
+# -- the timeline and erasure (#211) -------------------------------------------------------------
+
+
+async def locked_of(
+    conn: AsyncConnection, story_id: str | None, operation_ids: Sequence[str]
+) -> list[Row[Any]]:
+    """Lock the executable rows the operations ``operation_ids`` wrote (``FOR UPDATE``: waits
+    for a claim in flight, then reads the row as it committed), in id order."""
+    if not operation_ids:
+        return []
+    o = external_effect_outbox.c
+    query = select(external_effect_outbox).where(
+        o.operation_id.in_(list(operation_ids)), o.executable.is_(True)
+    )
+    if story_id is not None:
+        query = query.where(o.story_id == story_id)
+    return list(await conn.execute(query.order_by(o.id).with_for_update()))
+
+
+async def cancel_all(conn: AsyncConnection, outbox_ids: Sequence[str]) -> int:
+    """``intended → cancelled`` for the (locked) rows ``outbox_ids``: never sent."""
+    if not outbox_ids:
+        return 0
+    o = external_effect_outbox.c
+    result = await conn.execute(
+        update(external_effect_outbox)
+        .where(o.id.in_(list(outbox_ids)), o.status == INTENDED)
+        .values(status=CANCELLED, claim_lease_until=None)
+    )
+    return int(result.rowcount)
+
+
+async def mark(conn: AsyncConnection, story_id: str, outbox_id: str, reason: str) -> bool:
+    """List row ``outbox_id`` with ``reason`` until an explicit action resolves it (#218):
+    a ``reconciliation_marks`` row, unless one is open for that row and reason already.
+    Answers whether it wrote one."""
+    if reason not in REASONS:
+        raise ValueError(f"{reason!r} is not a reconciliation reason")
+    m = reconciliation_marks.c
+    written = await conn.scalar(
+        pg_insert(reconciliation_marks)
+        .values(id=new_ulid(), story_id=story_id, outbox_id=outbox_id, reason=reason)
+        .on_conflict_do_nothing(
+            index_elements=[m.outbox_id, m.reason], index_where=m.resolved_by.is_(None)
+        )
+        .returning(m.id)
+    )
+    return written is not None
+
+
+async def erased_since(conn: AsyncConnection, story_id: str, at: datetime | None) -> bool:
+    """Whether a story-scope erasure of ``story_id`` was applied after ``at`` (its ledger row,
+    #124/#125): the erasure-specific mid-flight check, never ``timeline_revision``."""
+    if at is None:
+        return False
+    e = erasure_ledger.c
+    found = await conn.scalar(
+        select(literal(True))
+        .where(e.story_ref == story_id, e.scope == "story", e.copied_from.is_(None), e.at > at)
+        .limit(1)
+    )
+    return bool(found)
+
+
+async def abandon(conn: AsyncConnection, outbox_id: str, now: datetime) -> None:
+    """An erasure landed while the row's dispatch was in flight: ``unknown``, with an outcome
+    record that holds no payload, ``erased_at`` set (listed redacted, never sent again)."""
+    await _insert_outcome(conn, outbox_id, UNKNOWN, {}, "", VIA_DISPATCHER, now)
+    o = external_effect_outbox.c
+    await conn.execute(
+        update(external_effect_outbox)
+        .where(o.id == outbox_id)
+        .values(
+            status=UNKNOWN,
+            claim_lease_until=None,
+            erased_at=func.coalesce(o.erased_at, func.transaction_timestamp()),
+        )
     )
 
 
@@ -359,17 +446,18 @@ class OutcomeView(BaseModel):
 class Listing(BaseModel):
     """One effect the consumer must reconcile: the outbox row (its id is the provider
     idempotency key), the provider and value, its status, why it is listed, since when, the
-    effect, and the latest outcome recorded for it, if any."""
+    effect, and the latest outcome recorded for it, if any. A row an erasure redacted (#211)
+    is listed as ``{outbox_id, provider, status}`` with its reason and since only."""
 
     model_config = ConfigDict(extra="forbid")
 
     outbox_id: str
     provider: str
-    value: str
+    value: str | None = Field(default=None, exclude_if=lambda v: v is None)
     status: str
     reason: Reason
     since: datetime
-    effect: dict[str, Any]
+    effect: dict[str, Any] | None = Field(default=None, exclude_if=lambda v: v is None)
     outcome: OutcomeView | None = Field(default=None, exclude_if=lambda v: v is None)
 
 
@@ -381,19 +469,25 @@ class Reconciliation(BaseModel):
     listings: list[Listing]
 
 
+def _open_mark() -> Any:
+    m = reconciliation_marks.c
+    return exists().where(m.outbox_id == external_effect_outbox.c.id, m.resolved_by.is_(None))
+
+
 def _listed() -> Any:
-    """The rows the status lists: unconfirmed (``intended`` with an active origin, or
-    ``claimed``), ``failed`` and ``unknown``; executable rows only."""
+    """The rows the status lists, executable rows only: unconfirmed (``intended`` with an
+    active origin, or ``claimed``), ``failed``, ``unknown``, and every row with an open mark
+    (#211: ``reconciliation_required``, ``cancelled_on_reactivation``, and later reasons)."""
     o = external_effect_outbox.c
     active = exists().where(
-        operations.c.operation_id == o.operation_id,
-        active_operation(operations),
+        operations.c.operation_id == o.operation_id, active_operation(operations)
     )
     return and_(
         o.executable.is_(True),
         or_(
             and_(o.status == INTENDED, active),
             o.status.in_((CLAIMED, FAILED, UNKNOWN)),
+            _open_mark(),
         ),
     )
 
@@ -401,6 +495,23 @@ def _listed() -> Any:
 async def _require_story(conn: AsyncConnection, story_id: str) -> None:
     if await conn.scalar(select(stories.c.id).where(stories.c.id == story_id)) is None:
         raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
+
+
+async def _marks(conn: AsyncConnection, story_id: str, ids: Sequence[str]) -> dict[str, Any]:
+    """Each row's latest open mark."""
+    if not ids:
+        return {}
+    m = reconciliation_marks.c
+    found = await conn.execute(
+        select(m.outbox_id, m.reason, m.since)
+        .where(m.story_id == story_id, m.outbox_id.in_(list(ids)), m.resolved_by.is_(None))
+        .order_by(m.since, m.id)
+    )
+    return {str(r.outbox_id): r for r in found}
+
+
+def _status_reason(status: str) -> Reason:
+    return "unconfirmed" if status in (INTENDED, CLAIMED) else status  # type: ignore[return-value]
 
 
 async def listings_in(conn: AsyncConnection, story_id: str) -> Reconciliation:
@@ -424,15 +535,34 @@ async def listings_in(conn: AsyncConnection, story_id: str) -> Reconciliation:
         )
         for answer in found:
             latest[str(answer.outbox_id)] = answer
+    marked = await _marks(conn, story_id, [str(r.id) for r in rows])
     listed: list[Listing] = []
     for row in rows:
         status = str(row.status)
         outcome = latest.get(str(row.id))
-        reason: Reason = "unconfirmed" if status in (INTENDED, CLAIMED) else status  # type: ignore[assignment]
-        if outcome is not None and status in (FAILED, UNKNOWN):
-            since = outcome.received_at
+        found_mark = marked.get(str(row.id))
+        reason: Reason
+        if found_mark is not None:
+            reason = found_mark.reason
+            since = found_mark.since
         else:
-            since = row.claimed_at if status == CLAIMED and row.claimed_at else row.created_at
+            reason = _status_reason(status)
+            if outcome is not None and status in (FAILED, UNKNOWN):
+                since = outcome.received_at
+            else:
+                since = row.claimed_at if status == CLAIMED and row.claimed_at else row.created_at
+        if row.erased_at is not None:
+            # #211: an erasure redacted the row (or abandoned its dispatch): ids only.
+            listed.append(
+                Listing(
+                    outbox_id=str(row.id),
+                    provider=str(row.provider_name),
+                    status=status,
+                    reason=reason,
+                    since=since,
+                )
+            )
+            continue
         listed.append(
             Listing(
                 outbox_id=str(row.id),
@@ -496,12 +626,17 @@ __all__ = [
     "Reason",
     "Reconciliation",
     "Recorded",
+    "abandon",
     "cancel",
+    "cancel_all",
     "claimable",
     "count",
+    "erased_since",
     "listings",
     "listings_in",
     "locked",
+    "locked_of",
+    "mark",
     "mark_claimed",
     "mark_sent",
     "mark_unknown",

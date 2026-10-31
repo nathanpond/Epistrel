@@ -409,6 +409,10 @@ class RespondResult:
     reconciliation: dict[str, int] | None = None
     """#210 (FR-EXT-10): ``{count}``, how many effects the story's reconciliation status lists
     (``GET /stories/{id}/reconciliation``); ``None`` when the story has no outbox row."""
+    reconciliation_required: list[dict[str, Any]] = field(default_factory=list)
+    """#211 (FR-EXT-14): the claimed, ``unknown`` or confirmed external effects of the turns
+    the commit took out of the active timeline (a regenerate's retired variant, a rewound tail
+    written over), ``{outbox_id, provider, status, value?}``; empty when none."""
     """#187 (FR-RESP-7): the State changes a structured turn committed, ``{state, scope_key,
     old_value, new_value, reason, source, contingency, status}``, a ``hidden`` State's only for
     ``omniscient``; empty otherwise."""

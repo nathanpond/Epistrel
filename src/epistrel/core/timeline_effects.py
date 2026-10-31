@@ -1,0 +1,201 @@
+"""External effects follow the timeline that made them (FR-EXT-12,13,14; docs/02 §4.8; #211).
+
+A write-capable provider's effect is an ``external_effect_outbox`` row (#210) written by a turn.
+When that turn leaves the active timeline, or comes back to it, the row is classified here, in
+the transaction of the membership flip:
+
+- **Leaving** (``classify_discarded`` with ``to`` ``discarded`` or ``dormant``: a truncation, a
+  regeneration retiring the active variant, a swap away, a turn written over a rewound tail):
+  an ``intended`` row becomes ``cancelled`` and is never sent. The rows are locked first
+  (``FOR UPDATE``), so a dispatcher claim racing the flip either took the lock first (the row
+  is ``claimed`` when the flip reads it, and is treated as claimed) or skips the locked row
+  (``SKIP LOCKED``) and, once the flip commits, finds it ``cancelled``. A ``claimed``,
+  ``unknown`` or ``confirmed`` row cannot be undone: it is marked ``reconciliation_required``
+  (``core.outbox.mark``), so the reconciliation status lists it until an explicit action
+  resolves it (#218), and it is collected for the operation's response.
+- **Coming back** (``to`` ``active``: an untruncate, a swap back): a ``cancelled`` row is not
+  sent again (nothing re-dispatches a cancelled row); it is marked and collected as
+  ``cancelled_on_reactivation``.
+
+Nothing here writes an outbox row: no compensation is ever issued automatically. ``superseded``
+never arrives through a flip (``core.membership.FLIP_TARGETS``): only #143's reflections are
+superseded, and they write no effect. A fork's copies (``executable = false``) are records and
+are never classified.
+
+**The collector.** A follower returns nothing (``core.membership.Follower``), so what it
+classified reaches the operation through ``collecting()``, a context variable each
+``Operation.commit`` attempt opens around its transaction: the committed operation's
+``effects`` holds the rows (``Collected``), which truncate, untruncate, swap and regenerate
+return as ``reconciliation_required`` and ``cancelled_on_reactivation``.
+
+``pending_in_source`` lists, for a fork's response, the source's ``intended``, ``claimed`` and
+``unknown`` rows the copied operations wrote (``effects_pending_in_source``).
+
+Log lines carry counts only (invariant 3).
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncConnection
+
+from epistrel.core import outbox as core_outbox
+from epistrel.core.enums import Membership
+from epistrel.core.membership import register_follower
+from epistrel.core.tables.outbox import (
+    CANCELLED,
+    CLAIMED,
+    CONFIRMED,
+    INTENDED,
+    UNKNOWN,
+    external_effect_outbox,
+)
+from epistrel.observability.logging import get_logger
+
+log = get_logger(__name__)
+
+RECONCILIATION_REQUIRED = "reconciliation_required"
+CANCELLED_ON_REACTIVATION = "cancelled_on_reactivation"
+IRREVERSIBLE = frozenset({CLAIMED, UNKNOWN, CONFIRMED})
+"""The statuses a timeline edit cannot undo: the effect may have reached the provider."""
+PENDING = (INTENDED, CLAIMED, UNKNOWN)
+"""The statuses a fork's response lists as pending in its source."""
+
+
+@dataclass(frozen=True, slots=True)
+class RequiredEffect:
+    """An effect a timeline edit could not undo (or would not re-send): the outbox row (its id
+    is the provider idempotency key), its provider, value and status. ``value`` is ``None`` on
+    a row an erasure redacted."""
+
+    outbox_id: str
+    provider: str
+    status: str
+    value: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PendingEffect:
+    """A source effect pending at a fork's boundary: the source's outbox id, its status and
+    its effect document."""
+
+    outbox_id: str
+    status: str
+    effect: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class Collected:
+    """What the followers of one commit classified."""
+
+    reconciliation_required: list[RequiredEffect] = field(default_factory=list)
+    cancelled_on_reactivation: list[RequiredEffect] = field(default_factory=list)
+    cancelled: int = 0
+
+
+_COLLECTED: ContextVar[Collected | None] = ContextVar("epistrel_timeline_effects", default=None)
+
+
+@contextmanager
+def collecting() -> Iterator[Collected]:
+    """Collect what ``classify_discarded`` does inside the block (a fresh ``Collected``)."""
+    found = Collected()
+    token = _COLLECTED.set(found)
+    try:
+        yield found
+    finally:
+        _COLLECTED.reset(token)
+
+
+def _required(row: Any) -> RequiredEffect:
+    return RequiredEffect(
+        outbox_id=str(row.id),
+        provider=str(row.provider_name),
+        status=str(row.status),
+        value=None if row.erased_at is not None else str(row.value_name),
+    )
+
+
+async def classify_discarded(
+    conn: AsyncConnection, story_id: str | None, operation_ids: Sequence[str], to: Membership
+) -> None:
+    """``core.membership``'s follower: classify the outbox rows of ``operation_ids`` after
+    their flip to ``to`` (see the module docstring)."""
+    rows = await core_outbox.locked_of(conn, story_id, operation_ids)
+    if not rows:
+        return
+    found = _COLLECTED.get()
+    if Membership(to) is Membership.ACTIVE:
+        for row in rows:
+            if str(row.status) != CANCELLED:
+                continue
+            await core_outbox.mark(conn, str(row.story_id), str(row.id), CANCELLED_ON_REACTIVATION)
+            if found is not None:
+                found.cancelled_on_reactivation.append(_required(row))
+        return
+    cancelled = await core_outbox.cancel_all(
+        conn, [str(r.id) for r in rows if str(r.status) == INTENDED]
+    )
+    required = [r for r in rows if str(r.status) in IRREVERSIBLE]
+    for row in required:
+        await core_outbox.mark(conn, str(row.story_id), str(row.id), RECONCILIATION_REQUIRED)
+    if found is not None:
+        found.cancelled += cancelled
+        found.reconciliation_required.extend(_required(r) for r in required)
+    if cancelled or required:
+        log.debug(
+            "timeline effects: %d cancelled, %d listed reconciliation_required",
+            cancelled,
+            len(required),
+        )
+
+
+register_follower(classify_discarded)
+
+
+async def pending_in_source(
+    conn: AsyncConnection, story_id: str, operation_ids: Sequence[str]
+) -> list[PendingEffect]:
+    """The executable rows of ``story_id`` that ``operation_ids`` wrote and that are still
+    ``intended``, ``claimed`` or ``unknown`` (read in ``conn``'s snapshot), oldest first."""
+    if not operation_ids:
+        return []
+    o = external_effect_outbox.c
+    found = await conn.execute(
+        select(o.id, o.status, o.effect, o.erased_at)
+        .where(
+            o.story_id == story_id,
+            o.operation_id.in_(list(operation_ids)),
+            o.executable.is_(True),
+            o.status.in_(PENDING),
+        )
+        .order_by(o.created_at, o.id)
+    )
+    return [
+        PendingEffect(
+            outbox_id=str(r.id),
+            status=str(r.status),
+            effect={} if r.erased_at is not None else dict(r.effect or {}),
+        )
+        for r in found
+    ]
+
+
+__all__ = [
+    "CANCELLED_ON_REACTIVATION",
+    "IRREVERSIBLE",
+    "PENDING",
+    "RECONCILIATION_REQUIRED",
+    "Collected",
+    "PendingEffect",
+    "RequiredEffect",
+    "classify_discarded",
+    "collecting",
+    "pending_in_source",
+]

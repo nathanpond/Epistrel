@@ -856,6 +856,8 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "provider's typed value and positions, refolded by erasure's rebuilt stage (#205)",
     "outbox_outcomes": "a provider's answers for outbox rows (#210): kinds, the typed resulting "
     "values or why an answer is unknown, hashes and times; never the raw body or story prose",
+    "reconciliation_marks": "why an outbox row is listed for reconciliation (#211): ids, reason "
+    "codes, times and the resolving action's id; no story text",
     # Deployment tables (#334: the coverage test enumerates every table with text or JSON).
     "alembic_version": "the schema migration's revision id",
     "schema_meta": "schema bookkeeping keys and values",

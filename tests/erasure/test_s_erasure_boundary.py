@@ -22,26 +22,31 @@ import json
 import logging
 import secrets
 from collections.abc import Iterator
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.api import create_app
 from epistrel.config import Settings
-from epistrel.core import projections
+from epistrel.core import clock, projections
+from epistrel.core import outbox as core_outbox
 from epistrel.core.db import make_engine
-from epistrel.core.enums import OperationKind
+from epistrel.core.enums import OperationKind, Provenance
 from epistrel.core.erasure import boundary, guard
 from epistrel.core.erasure.ledger import LedgerFile
+from epistrel.core.events.operation import Operation
+from epistrel.core.ids import new_ulid
 from epistrel.core.media.sweep import collect_blob
 from epistrel.core.memory.consolidation import Window
 from epistrel.observability import logging as telemetry_logging
-from epistrel.orchestrator.jobs.handlers import consolidation
+from epistrel.orchestrator.jobs.handlers import consolidation, outbox
 from epistrel.orchestrator.jobs.handlers.consolidation import consolidate_window
+from epistrel.orchestrator.providers.in_process import InProcessRegistry
 from epistrel.testing import pauses
 from epistrel.testing.determinism import differences, state
 from epistrel.tools import backup
@@ -53,6 +58,7 @@ from tests import genesis_support as g
 from tests import ledger_support as ledger
 from tests import media_support as media
 from tests import partition_support as ps
+from tests import provider_support as providers
 from tests import scenario_support as scenarios
 from tests import state_support as ss
 from tests.auth_support import MEDIA_ROOT, auth_settings
@@ -977,3 +983,153 @@ async def test_s_erasure_boundary__m6_states(
     (story_change,) = [r for r in left if r.scope_key is None]
     assert not e.naming(story_change.reason, ["Bobby"])
     assert "[erased]" in story_change.reason
+
+
+async def _outbox_turn(
+    engine: AsyncEngine, story: str, provider: str, effects: list[tuple[str | None, str]]
+) -> list[str]:
+    """A turn writing one ``intended`` outbox row per ``(scope_key, reason)``; their ids."""
+    ids = [new_ulid() for _ in effects]
+    async with Operation(engine, story_id=story, kind=OperationKind.TURN, principal="p-test") as op:
+        op.append("player_input", {"text": "pay them"}, provenance=Provenance.PLAYER)
+        op.append("message_rendered", {"text": "the coins change hands"})
+
+        async def write(conn: AsyncConnection) -> None:
+            await core_outbox.write_intended(
+                conn,
+                op,
+                [
+                    core_outbox.Intended(
+                        id=row_id,
+                        provider_name=provider,
+                        value_name="gold",
+                        scope_key=scope,
+                        effect={"kind": "change", "state": "gold", "delta": -5, "reason": why},
+                        beat=2,
+                    )
+                    for row_id, (scope, why) in zip(ids, effects, strict=True)
+                ],
+            )
+
+        op.add_commit_step(write)
+        await op.commit()
+    return ids
+
+
+@pytest.mark.part("M6", "FR-ADMIN-6,9; FR-EXT-21")
+async def test_s_erasure_boundary__m6_outbox(
+    erasure_settings: Settings, engine: AsyncEngine, states_delivered: None
+) -> None:
+    """M6 (#211; S-EFFECT-LIFECYCLE (f)): erasing Bobby, whom four outbox effects name (a
+    value scoped to him, or a reason that names him):
+
+    - the ``intended`` one is cancelled before the erasure and never sent;
+    - the ``claimed`` one whose worker died stays listed, redacted to ``{outbox_id, provider,
+      status}``, and its lease lapsing (a provider that deduplicates) never re-sends it;
+    - the one whose dispatch is in flight when the erasure lands (the erasure commits while
+      the provider is answering) is abandoned at outcome recording: ``unknown``, an outcome
+      record with no payload, listed redacted, never re-sent at its lease's end;
+    - the confirmed one has its reason redacted in place.
+
+    The erasure ledger holds counts and keyed hashes only, and no marker names the effects.
+    Complement: Ann's effect, claimed after the erasure, is confirmed although an ordinary turn
+    committed between its claim and its outcome (only an erasure abandons a dispatch)."""
+    w = await c.world(engine)
+    story, bobby, ann = w.story_id, w.characters["Bobby"], w.characters["Ann"]
+    name = providers.unique_name("bank")
+    await providers.register(engine, providers.write_capable_spec(name, dedupes=True))
+    await providers.bind(engine, story, name, {"player": "p-1"})
+    fake = providers.ScriptedProvider(name)
+    registry = InProcessRegistry()
+    erasing: list[Any] = []
+
+    async def write(effect: Any, binding: Any) -> Any:
+        if erasing and effect.idempotency_key == erasing[1]:
+            await erasing[0]()  # the erasure lands while the provider answers
+        return await fake.write(effect, binding)
+
+    registry.register(name, read=fake.read, write=write)
+    confirmed, claimed, inflight, pending = await _outbox_turn(
+        engine,
+        story,
+        name,
+        [
+            (None, "paid Bobby for the fence"),
+            (bobby, "wages"),
+            (None, "Bobby's school fees"),
+            (bobby, "pocket money"),
+        ],
+    )
+    assert await outbox.dispatch(engine, confirmed, registry=registry) == "confirmed"
+    assert isinstance(await outbox.claim(engine, claimed, registry=registry), outbox.Claimed)
+    in_flight = await outbox.claim(engine, inflight, registry=registry)
+    assert isinstance(in_flight, outbox.Claimed)
+
+    async with respond_client(erasure_settings, engine) as (client, _):
+
+        async def erase() -> None:
+            await e.erase(client, "character", bobby, story, confirm_all=True)
+
+        erasing[:] = [erase, inflight]
+        assert await outbox.send(engine, in_flight) == outbox.ABANDONED
+    assert fake.idempotency_keys == [confirmed, inflight]
+
+    found = {r.id: r for r in await providers.outbox_rows(engine, story)}
+    assert found[pending].status == "cancelled"
+    assert found[pending].erased_at is None
+    assert (found[claimed].status, found[claimed].effect) == ("claimed", {})
+    assert found[claimed].erased_at is not None
+    assert (found[inflight].status, found[inflight].effect) == ("unknown", {})
+    assert found[inflight].erased_at is not None
+    assert found[confirmed].status == "confirmed"
+    assert not e.naming(found[confirmed].effect["reason"], ["Bobby"])
+    assert "[erased]" in found[confirmed].effect["reason"]
+    outcomes = await providers.outbox_outcomes(engine, story)
+    (abandoned,) = [o for o in outcomes if o.outbox_id == inflight]
+    assert (abandoned.kind, abandoned.payload, abandoned.raw_hash) == ("unknown", {}, "")
+
+    listed = (await core_outbox.listings(engine, story)).listings
+    redacted = {
+        entry.outbox_id: entry.model_dump(mode="json", exclude={"since", "reason"})
+        for entry in listed
+    }
+    assert redacted == {
+        claimed: {"outbox_id": claimed, "provider": name, "status": "claimed"},
+        inflight: {"outbox_id": inflight, "provider": name, "status": "unknown"},
+    }
+
+    # Never re-sent: the leases lapse (a provider that deduplicates) and nothing is sent.
+    later = clock.now() + outbox.CLAIM_LEASE + timedelta(seconds=1)
+    with clock.frozen_at(later):
+        for row_id in (claimed, inflight, pending):
+            assert await outbox.expire(engine, row_id, registry=registry) in ("unknown", "settled")
+    assert await outbox.dispatch(engine, pending, registry=registry) == outbox.SKIPPED
+    assert fake.idempotency_keys == [confirmed, inflight]
+    statuses = {r.id: r.status for r in await providers.outbox_rows(engine, story)}
+    assert statuses[claimed] == "unknown"
+
+    # The ledger and the markers hold no outbox content.
+    (entry,) = await rows(
+        engine,
+        "SELECT counts::text AS counts, scan_term_hashes FROM erasure_ledger WHERE story_ref = :s",
+        s=story,
+    )
+    for held in (entry.counts, " ".join(entry.scan_term_hashes)):
+        assert not e.naming(held, ["Bobby"])
+        assert "fence" not in held
+        assert "school fees" not in held
+    marked = await rows(
+        engine,
+        "SELECT payload::text AS body FROM events WHERE story_id = :s AND type = 'erasure_marker'",
+        s=story,
+    )
+    assert all("fence" not in m.body and "pocket money" not in m.body for m in marked)
+
+    # Complement: an ordinary turn between a claim and its outcome does not abandon it.
+    (aunt,) = await _outbox_turn(engine, story, name, [(ann, "Ann's wages")])
+    ann_claim = await outbox.claim(engine, aunt, registry=registry)
+    assert isinstance(ann_claim, outbox.Claimed)
+    await _outbox_turn(engine, story, name, [])
+    assert await outbox.send(engine, ann_claim) == "confirmed"
+    assert fake.idempotency_keys[-1] == aunt
+    await providers.drop_outbox_jobs(engine, story)

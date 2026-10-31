@@ -162,7 +162,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from functools import partial
 from types import SimpleNamespace
 from typing import Any, cast
@@ -6467,6 +6467,11 @@ async def play(
             ),
             # #210 (FR-EXT-10): how many effects the reconciliation status lists.
             "reconciliation": await core_outbox.summary(conn, story_id),
+            # #211 (FR-EXT-14): what the commit's flips could not undo.
+            "reconciliation_required": [
+                {k: v for k, v in asdict(r).items() if v is not None}
+                for r in committed.effects.reconciliation_required
+            ],
         }
         steps = _degradation(
             outcome, released[0] if released else None, found[0] if found else None

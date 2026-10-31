@@ -576,7 +576,8 @@ async def test_requested_and_outbox_effects_are_erased(
     and an outbox row's ``effect`` (one dispatched to a write-capable provider) are story text:
     both are indexed, and an erasure of Marisol Quenby leaves no residue in ``events`` or
     ``external_effect_outbox``. The ``intended`` row naming her is cancelled before the erasure
-    (never sent, FR-EXT-14); the claimed one keeps its status, redacted, and stays listed.
+    (never sent, FR-EXT-14); the claimed one keeps its status and stays listed, redacted to
+    ``{outbox_id, provider, status}`` (#211).
     Complement: before the erasure the scan finds her in both tables."""
     name = ps.unique_name("bank")
     await ps.register(engine, ps.write_capable_spec(name))
@@ -641,7 +642,9 @@ async def test_requested_and_outbox_effects_are_erased(
     assert (left["events"], left["external_effect_outbox"]) == (0, 0)
     found = {r.id: r for r in await ps.outbox_rows(engine, story)}
     assert (found[rows[0]].status, found[rows[1]].status) == ("cancelled", "claimed")
-    assert "Marisol" not in found[rows[1]].effect["reason"]
+    # #211: the claimed row is redacted to its id, provider and status (its effect emptied).
+    assert found[rows[1]].effect == {}
+    assert found[rows[1]].erased_at is not None
     listed = (await core_outbox.listings(engine, story)).listings
     assert [entry.outbox_id for entry in listed] == [rows[1]]
     await ps.drop_outbox_jobs(engine, story)

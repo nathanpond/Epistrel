@@ -45,7 +45,11 @@ from epistrel.core.tables.memories import memories
 from epistrel.core.tables.model_config import model_config
 from epistrel.core.tables.offboarding import offboarding_jobs
 from epistrel.core.tables.operations import operations
-from epistrel.core.tables.outbox import external_effect_outbox, outbox_outcomes
+from epistrel.core.tables.outbox import (
+    external_effect_outbox,
+    outbox_outcomes,
+    reconciliation_marks,
+)
 from epistrel.core.tables.ownership import entity_relations, ownership_events
 from epistrel.core.tables.personas import personas
 from epistrel.core.tables.policies import policies
@@ -145,6 +149,7 @@ __all__ = [
     "proposition_changes",
     "propositions",
     "rating_check_jobs",
+    "reconciliation_marks",
     "recurring_tasks",
     "relationships",
     "scenario_catalog",

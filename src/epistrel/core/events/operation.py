@@ -92,6 +92,7 @@ from epistrel.core import (
     projections,
     readset,
     summary_port,
+    timeline_effects,
     turn_gate,
 )
 from epistrel.core.commit import boundary as _boundary  # noqa: F401 - registers #154
@@ -139,6 +140,7 @@ from epistrel.core.membership import Position, follow
 from epistrel.core.ratings.stamp import guardrail_stamp
 from epistrel.core.settings_schema import StorySettings
 from epistrel.core.tables import events, operations, stories, turn_queue
+from epistrel.core.timeline_effects import Collected
 from epistrel.observability import context as telemetry
 from epistrel.observability import stages, tracing
 from epistrel.testing import crash
@@ -453,6 +455,10 @@ class Operation:
         self._followed: list[str] = []
         """Operations this commit made ``dormant`` (a regenerate, a rewound tail), for the
         structured projections (#137)."""
+        self.effects: Collected = Collected()
+        """The external effects the commit's membership flips classified (#211,
+        ``core.timeline_effects``): the rows it could not undo (``reconciliation_required``)
+        and the cancelled rows it brought back (``cancelled_on_reactivation``)."""
 
     # -- lifecycle ---------------------------------------------------------------------------
 
@@ -769,7 +775,12 @@ class Operation:
             raise InvalidRequest("only a story operation with a base revision revalidates")
         started = time.perf_counter()
         try:
-            with tracing.span("commit", self._span_attributes()):
+            with (
+                tracing.span("commit", self._span_attributes()),
+                timeline_effects.collecting() as collected,
+            ):
+                # Filled as the flips run: a result built inside the commit reads it (#211).
+                self.effects = collected
                 async with self._connection() as conn, conn.begin():
                     await set_lock_timeout(conn)
                     await self._write(conn, decide)

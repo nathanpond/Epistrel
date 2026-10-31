@@ -20,9 +20,14 @@ job for it (``coalesce_key`` ``outbox:<id>``; the enqueue's NOTIFY wakes a worke
    may have left is ``unknown`` too. ``ProviderUnavailable`` means nothing was sent: the claim
    is released (``intended`` again).
 3. The outcome is recorded in its own transaction (``core.outbox.record_outcome``): an
-   ``outbox_outcomes`` row and the row's status. A terminal outcome cancels the lease timer; an
-   ``unknown`` one keeps it for a provider that deduplicates (re-sent at the lease's end) and
-   cancels it for one that does not (the row stays ``unknown``, listed, never re-sent).
+   ``outbox_outcomes`` row and the row's status. First the row is re-read ``FOR UPDATE``: when
+   an erasure redacted it (``erased_at``) or a story-scope erasure was applied after the claim
+   (#211; the erasure ledger, never ``timeline_revision``), the dispatch is **abandoned**: the
+   row becomes ``unknown`` with an outcome record that holds no payload, stays listed
+   redacted, and is never sent again (the lease timer is cancelled, and ``expire`` refuses
+   it). A terminal outcome cancels the lease timer; an ``unknown`` one keeps it for a provider
+   that deduplicates (re-sent at the lease's end) and cancels it for one that does not (the row
+   stays ``unknown``, listed, never re-sent).
 
 ``outbox_lease`` (the lease timer, ``expire``): a row still ``claimed`` (or ``unknown``) when
 its lease lapses is re-sent under the same key when the provider deduplicates (at most
@@ -196,6 +201,7 @@ HELD = "held"
 SKIPPED = "skipped"
 CANCELLED = "cancelled"
 RELEASED = "released"
+ABANDONED = "abandoned"
 
 
 async def _resolve(
@@ -279,6 +285,14 @@ async def send(db: AsyncEngine, claimed: Claimed) -> str:
     status = outcome_status(outcome)
     async with db.begin() as conn:
         await core_outbox.mark_sent(conn, claimed.outbox_id, started)
+        if await _erased_meanwhile(conn, claimed):
+            # #211 (FR-ADMIN-9, FR-EXT-21): an erasure landed while the dispatch was in
+            # flight. Its answer is not recorded; the row is unknown, listed redacted, and
+            # never sent again.
+            await core_outbox.abandon(conn, claimed.outbox_id, clock.now())
+            await timers.cancel(conn, OUTBOX_LEASE, claimed.outbox_id)
+            logger.info("outbox row %s abandoned: erased mid-flight", claimed.outbox_id)
+            return ABANDONED
         recorded = await core_outbox.record_outcome(
             conn,
             claimed.outbox_id,
@@ -291,6 +305,17 @@ async def send(db: AsyncEngine, claimed: Claimed) -> str:
             await timers.cancel(conn, OUTBOX_LEASE, claimed.outbox_id)
     logger.info("outbox row %s: %s", claimed.outbox_id, recorded.status)
     return recorded.status
+
+
+async def _erased_meanwhile(conn: Any, claimed: Claimed) -> bool:
+    """The erasure-specific mid-flight check (#211), on the row locked ``FOR UPDATE``: the
+    erasure pass redacted it (``erased_at``), or a story-scope erasure was applied after the
+    claim (its ledger row is newer than ``claimed_at``). Never ``timeline_revision``, which
+    every ordinary turn moves."""
+    row = await core_outbox.locked(conn, claimed.outbox_id)
+    if row is None or row.erased_at is not None:
+        return True
+    return await core_outbox.erased_since(conn, claimed.story_id, row.claimed_at)
 
 
 async def dispatch(
@@ -327,6 +352,13 @@ async def expire(
         now = clock.now()
         if row.claim_lease_until is None or row.claim_lease_until > now:
             return "settled"
+        if row.erased_at is not None or await core_outbox.erased_since(
+            conn, str(row.story_id), row.claimed_at
+        ):
+            # #211: an erasure reached the row, or landed after its claim: never re-sent.
+            if str(row.status) == CLAIMED:
+                await core_outbox.abandon(conn, outbox_id, now)
+            return UNKNOWN
         provider = await core_providers.find_provider(conn, str(row.provider_name))
         if provider is None or not provider.dedupes_dispatch:
             if str(row.status) == CLAIMED:
@@ -427,6 +459,7 @@ OUTBOX_RECOVERY_TASK = RecurringTask(OUTBOX_RECOVERY, RECOVERY_INTERVAL)
 
 
 __all__ = [
+    "ABANDONED",
     "CLAIM_LEASE",
     "MAX_ATTEMPTS",
     "OUTBOX_DISPATCH",

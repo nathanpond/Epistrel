@@ -20,6 +20,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from tests import provider_support as ps
 from tests import state_support as st
 from tests.auth_support import auth_settings
 from tests.event_support import rows
@@ -216,10 +217,12 @@ async def test_s_state_schema__api(
             "attempted": -1,
             "current": 7,
         }
+        ledger = ps.unique_name("ledger")
+        await ps.register(engine, ps.in_process_spec(ledger, {"bank": "number"}))
         await _defined(
             client,
             story,
-            {"name": "bank", "type": "number", "owner": "external", "provider_id": "ledger"},
+            {"name": "bank", "type": "number", "owner": "external", "provider_id": ledger},
         )
         before = await _revisions(engine, story)
         _refused(await _put(client, story, "bank", {"value": 5}), 422, "state_readonly_external")

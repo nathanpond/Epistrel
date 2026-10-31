@@ -81,6 +81,10 @@ DIRECTOR_TIEBREAK = "director_tiebreak"
 """#175: the director's judgment of a simultaneous turn's conflicting actions (one
 ``generation`` call)."""
 ENTAILMENT = "entailment"
+NARRATOR_RENDER = "narrator"
+"""#456: the narrator's render in a structured turn (a ``generation`` call charged apart from the
+characters' ``render`` so ``model_calls[].stage`` and ``used_by_kind`` tell them apart; it holds
+and spends the same slots a render does)."""
 FOLLOW_UP = "follow_up"
 TESTIMONY = "testimony"
 """#162: a salient witness's ``belief_adjudication`` call."""
@@ -449,6 +453,7 @@ __all__ = [
     "MAX_CALLS_PER_TURN",
     "MIN_CALLS_PER_TURN",
     "MIN_DEADLINE_S",
+    "NARRATOR_RENDER",
     "OPTIONAL_PRIORITY",
     "PER_PRIMARY_CALLS",
     "POLISH",

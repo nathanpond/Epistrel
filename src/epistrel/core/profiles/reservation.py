@@ -13,6 +13,12 @@ its detection makes no call, #152). A Lite turn reserves its generation and G (#
 when a profile's explicit ``budgets.model_calls`` is below it (``below_safety_minimum``), for
 Lite and structured alike. Pure: the Orchestrator's planner and the profile validator share
 it.
+
+``SafetyFacts`` (#456) carries what the minimum needs beside the settings (the deployment's
+model-assisted policies, G) to every surface that warns: profile create, copy and update
+responses and the impact reports of a profile edit, a story's assignment, its overrides and the
+impact preview, as ``POST /engine-profiles/{id}/validate`` does. A later reservation term is a
+new field here, so those call sites do not change.
 """
 
 from __future__ import annotations
@@ -117,10 +123,33 @@ def budget_warnings(
     ]
 
 
+@dataclass(frozen=True, slots=True)
+class SafetyFacts:
+    """What the safety minimum needs beside a profile's settings (#456): the model-assisted
+    policies G counts, ``guardrail_input`` and ``guardrail_output`` (the deployment's global
+    ones where no story is in view, as the validator counts them)."""
+
+    guardrail_input: int = 0
+    guardrail_output: int = 0
+
+    def minimum(self, settings: ProfileSettings) -> int:
+        """``safety_minimum`` of ``settings`` with these facts."""
+        return safety_minimum(
+            settings, guardrail_input=self.guardrail_input, guardrail_output=self.guardrail_output
+        )
+
+    def warnings(self, settings: ProfileSettings) -> list[dict[str, Any]]:
+        """``budget_warnings`` of ``settings`` with these facts."""
+        return budget_warnings(
+            settings, guardrail_input=self.guardrail_input, guardrail_output=self.guardrail_output
+        )
+
+
 __all__ = [
     "BELOW_SAFETY_MINIMUM",
     "EXTRACTION_LEVELS",
     "Reservation",
+    "SafetyFacts",
     "budget_warnings",
     "extraction_on",
     "reservation",

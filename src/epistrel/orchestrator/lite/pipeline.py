@@ -129,6 +129,7 @@ from epistrel.core.turns import (
 from epistrel.core.viewpoint import resolve_viewpoint, try_resolve
 from epistrel.observability import stages
 from epistrel.observability.logging import get_logger
+from epistrel.observability.metrics import count_degradation
 from epistrel.orchestrator.budget import GUARDRAIL_OUTPUT, TurnBudget, plan_lite_budget
 from epistrel.orchestrator.lite.cast import ResolvedCast, resolve_cast
 from epistrel.orchestrator.lite.prompt import assemble, model_params, prompt_hash
@@ -700,6 +701,7 @@ async def _play(
             # regeneration of that variant's message from it. A turn written over a rewound
             # tail also has ``turn_variant > 1``, and is no regeneration.
             report[REGENERATED_VARIANT] = regenerating.variant
+        count_degradation(report["degradation"])  # #456, at the commit as the report is
         await conn.execute(
             update(operations)
             .where(operations.c.operation_id == op.operation_id)

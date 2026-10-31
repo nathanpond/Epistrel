@@ -368,6 +368,9 @@ class ModelAccessLayer:
             if not budget.affordable(purpose, first=first):
                 raise BudgetExhausted(purpose, budget.used, budget.max_calls)
         limit, reason = await self._timeout(purpose, params), "timeout"
+        # #456: the stage the budget charges the call to (``TurnBudget.kind_of``: render,
+        # narrator, extraction, polish, repair, ...), reported on its ``model_calls`` entry.
+        stage = None if budget is None else budget.kind_of(purpose)
         if budget is not None:
             limit, reason = budget.clamp(limit)
             budget.debit(claim=first, purpose=purpose)
@@ -383,17 +386,17 @@ class ModelAccessLayer:
                 raise
             log.warning("model call failed purpose=%s reason=%s", purpose, reason)
             error = ModelUnavailable(purpose, reason)
-            self._record_failure(purpose, model, attempt, started, error)
+            self._record_failure(purpose, model, attempt, started, error, stage)
             raise error from None
         except asyncio.CancelledError as exc:
-            self._record_failure(purpose, model, attempt, started, exc)
+            self._record_failure(purpose, model, attempt, started, exc, stage)
             raise
         except Exception as exc:
             mapped = map_provider_error(purpose, exc)
             if mapped is None:
                 raise
             if _attempted(mapped):
-                self._record_failure(purpose, model, attempt, started, mapped)
+                self._record_failure(purpose, model, attempt, started, mapped, stage)
             elif budget is not None:
                 budget.refund(purpose)  # nothing was sent: the budget counts recorded calls only
             # ``from None``: the provider's message can echo the prompt (invariant 3).
@@ -412,6 +415,7 @@ class ModelAccessLayer:
                 cost=result.cost,
                 request_id=result.request_id,
                 finish_reason=result.finish_reason,
+                stage=stage,
             )
         )
         return result
@@ -425,7 +429,12 @@ class ModelAccessLayer:
 
     @staticmethod
     def _record_failure(
-        purpose: str, model: str, attempt: int, started: float, error: BaseException
+        purpose: str,
+        model: str,
+        attempt: int,
+        started: float,
+        error: BaseException,
+        stage: str | None = None,
     ) -> None:
         record(
             ModelCall(
@@ -436,6 +445,7 @@ class ModelAccessLayer:
                 latency_ms=_elapsed_ms(started),
                 tokens_in=0,
                 tokens_out=0,
+                stage=stage,
             )
         )
 

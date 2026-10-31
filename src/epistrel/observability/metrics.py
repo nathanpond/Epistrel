@@ -47,7 +47,13 @@ The registry holds:
   verdict (``true``, ``false``, ``none``), and, for an escalation a proposed tightening would
   have skipped, whether skipping agreed;
 - ``epistrel_multi_turns_total{mode}`` and ``epistrel_director_order_total{outcome}``: #174's
-  sequential turns with several primaries and the director's ordering of them.
+  sequential turns with several primaries and the director's ordering of them;
+- ``epistrel_turn_degradation_total{step}`` (#456): each degradation step a committed turn took
+  (NFR-PERF-7's and every other stage's, the names its ``degradation`` lists), counted at the
+  turn's commit (``count_degradation``); a name outside the identifier grammar is ``other``;
+- ``epistrel_budget_rejected_total`` (#456): calls and queued turns refused 422
+  ``budget_below_safety_minimum`` before any model call (counted once per unit of work by
+  ``observability.instrument``).
 
 Label values are enums, ULIDs, route names, HTTP statuses or sanitised model names (#44's rule),
 never content. prometheus-client's default process, platform and GC collectors are removed.
@@ -59,7 +65,7 @@ import asyncio
 import contextlib
 import re
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 
 from fastapi import APIRouter, Response
 from prometheus_client import (
@@ -302,6 +308,42 @@ def count_repair(rung: int, repair_class: str) -> None:
     REPAIRS.labels(rung=REPAIR_RUNGS[rung], **{"class": repair_class}).inc()
 
 
+TURN_DEGRADATION = Counter(
+    "epistrel_turn_degradation",
+    "Degradation steps committed turns took, by step (NFR-PERF-7's ladder: skip_polish, "
+    "repair_deterministic, testimony_defaulted, entailment_safe_disposition, primaries_reduced, "
+    "primaries_deferred, beat_replaced_safe_fallback; and every other stage's: safe_fallback, "
+    "salience_skipped, narrator_skipped, ...).",
+    ("step",),
+)
+BUDGET_REJECTED = Counter(
+    "epistrel_budget_rejected",
+    "Calls and queued turns refused with budget_below_safety_minimum before any model call "
+    "(the budget could not cover the calls the safety reservation needs).",
+)
+_STEP_LABEL = re.compile(r"^[a-z][a-z_]{0,63}$")
+OTHER_STEP = "other"
+
+
+def step_label(step: str) -> str:
+    """A degradation step's name as a label value: the step names are code constants (snake
+    case identifiers); anything else is ``other``, so a label never carries content (#44)."""
+    return step if _STEP_LABEL.match(step) else OTHER_STEP
+
+
+def count_degradation(steps: Iterable[str]) -> None:
+    """Count each degradation step a committed turn took
+    (``epistrel_turn_degradation_total{step}``; #456)."""
+    for step in steps:
+        TURN_DEGRADATION.labels(step=step_label(step)).inc()
+
+
+def count_budget_rejected() -> None:
+    """Count one call or queued turn refused ``budget_below_safety_minimum``
+    (``epistrel_budget_rejected_total``; #456)."""
+    BUDGET_REJECTED.inc()
+
+
 HOT_SCOPES = ("character", "story")
 
 _GAUGES_SQL = text(
@@ -460,6 +502,7 @@ __all__ = [
     "ADJUDICATIONS",
     "BELIEF_TRANSITIONS",
     "BELIEF_TRANSITIONS_REFUSED",
+    "BUDGET_REJECTED",
     "CHARACTERS_MODELED",
     "COULD_HAVE_KNOWN",
     "COULD_HAVE_KNOWN_FLAGS",
@@ -473,6 +516,7 @@ __all__ = [
     "MINIMAL_COMMITS",
     "MULTI_TURNS",
     "OPERATIONS",
+    "OTHER_STEP",
     "PERCEPTION_REPAIRS",
     "PERCEPTION_REPAIR_REASONS",
     "PLAYER_AUTHORITY",
@@ -486,9 +530,13 @@ __all__ = [
     "SANITIZES",
     "TESTIMONY_OUTCOMES",
     "THUNKS",
+    "TURN_DEGRADATION",
     "SchedulerGauges",
+    "count_budget_rejected",
+    "count_degradation",
     "count_perception_repair",
     "count_repair",
     "render_metrics",
     "router",
+    "step_label",
 ]

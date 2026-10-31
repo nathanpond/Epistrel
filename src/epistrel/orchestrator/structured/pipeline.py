@@ -292,12 +292,14 @@ from epistrel.observability import stages
 from epistrel.observability.logging import get_logger
 from epistrel.observability.metrics import (
     CHARACTERS_MODELED,
+    count_degradation,
     count_perception_repair,
     count_repair,
 )
 from epistrel.orchestrator.budget import (
     EXTRACTION,
     FOLLOW_UP,
+    NARRATOR_RENDER,
     SALIENCE,
     TurnBudget,
     counted_embedder,
@@ -4397,19 +4399,20 @@ async def play(
                     narrator_inputs = prompts.narrator_inputs(
                         sections, read.actor, say=say, do=do, budget=budget_tokens
                     )
-                    narr, n = await render_beats(
-                        models,
-                        narrator_inputs,
-                        render_schema(
-                            actor_id=None,
-                            player_id=read.player_id,
-                            cast_ids=cast_ids,
-                            max_beats=max_beats,
-                        ),
-                        variant=NARRATOR_VARIANT,
-                        params=params,
-                        budget=budget,
-                    )
+                    with budget.charging(NARRATOR_RENDER):
+                        narr, n = await render_beats(
+                            models,
+                            narrator_inputs,
+                            render_schema(
+                                actor_id=None,
+                                player_id=read.player_id,
+                                cast_ids=cast_ids,
+                                max_beats=max_beats,
+                            ),
+                            variant=NARRATOR_VARIANT,
+                            params=params,
+                            budget=budget,
+                        )
                     retries += n
                     narr, used, _ = hold_length(narr, max_chars, hidden=hidden)
                     made, found_sketches = _beats_of(
@@ -5535,6 +5538,7 @@ async def play(
         extraction.record_metrics([*checked.outcomes, *message_outcomes], checked.checked)
         for repaired in checked.repairs:
             count_repair(repaired.rung, repaired.repair_class.value)
+        count_degradation(report["degradation"])  # #456
         await conn.execute(
             update(operations)
             .where(operations.c.operation_id == op.operation_id)

@@ -29,7 +29,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from epistrel.core.errors import InvalidProfile, InvalidRequest
 from epistrel.core.profiles import schema
-from epistrel.core.profiles.reservation import budget_warnings
+from epistrel.core.profiles.reservation import SafetyFacts, budget_warnings
 from epistrel.core.profiles.schema import ProfileSettings, Purposes
 
 
@@ -222,6 +222,16 @@ def validate_profile(
     )
 
 
+def safety_warnings(
+    settings: ProfileSettings, facts: SafetyFacts | None
+) -> list[ProfileValidationWarning]:
+    """The validator's budget warnings for ``settings`` (``below_safety_minimum``, #156), as a
+    profile write and an impact report carry them (#456); none without ``facts``."""
+    if facts is None:
+        return []
+    return [ProfileValidationWarning.model_validate(w) for w in facts.warnings(settings)]
+
+
 def refusal(result: ProfileValidation) -> InvalidProfile:
     """The 422 ``invalid_profile`` for an invalid result, naming every finding."""
     names = [item.module for item in result.undelivered] + [
@@ -264,6 +274,7 @@ __all__ = [
     "parse_settings",
     "refusal",
     "require_valid",
+    "safety_warnings",
     "undelivered_settings",
     "validate_profile",
 ]

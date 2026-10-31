@@ -113,7 +113,7 @@ from epistrel.core.profiles import store as profiles
 from epistrel.core.profiles import story as story_profile
 from epistrel.core.profiles.fingerprint import RuntimeFacts
 from epistrel.core.profiles.impact import ImpactPreviewRequest, ImpactReport, TwoStageResult
-from epistrel.core.profiles.reservation import safety_minimum
+from epistrel.core.profiles.reservation import SafetyFacts, safety_minimum
 from epistrel.core.profiles.schema import Purposes
 from epistrel.core.profiles.validate import ProfileValidation
 from epistrel.core.projections import structured as structured_projections
@@ -4539,14 +4539,23 @@ class Engine:
         else the requesting principal (FR-AUTH-5). Its settings may name any delivered module;
         what they leave out takes the default. 422 ``validation_error`` for their shape, 422
         ``invalid_profile`` for an undelivered module or level or a missing dependency
-        (FR-PROF-2,4); nothing is written."""
+        (FR-PROF-2,4); nothing is written. The answer warns (``warnings``:
+        ``below_safety_minimum``, #456) as ``validate_profile`` does."""
         principal = self.require_principal(ctx)
+
+        async def run(_: RequestContext) -> profiles.ProfileWrite:
+            return await profiles.create(
+                self.db,
+                request,
+                principal=principal,
+                purposes=self.purposes,
+                safety=await self._safety_facts(),
+            )
+
         return await self._keyed(
             ctx,
             "create_profile",
-            lambda _: profiles.create(
-                self.db, request, principal=principal, purposes=self.purposes
-            ),
+            run,
             material={"body": _body(request)},
         )
 
@@ -4613,6 +4622,7 @@ class Engine:
                 principal=principal,
                 facts=await self._runtime_facts(),
                 purposes=self.purposes,
+                safety=await self._safety_facts(),
             )
 
         return await self._keyed(
@@ -4634,14 +4644,23 @@ class Engine:
         """A new profile, owned by ``request.owner`` or else the requesting principal, at
         version 1 with the settings of the profile's latest version (``version``: that one's).
         A preset or a deleted profile copies like any other; 404 for an unknown profile or
-        version."""
+        version. The answer warns as a creation's does (#456)."""
         principal = self.require_principal(ctx)
+
+        async def run(_: RequestContext) -> profiles.ProfileWrite:
+            return await profiles.copy_profile(
+                self.db,
+                profile_id,
+                request,
+                principal=principal,
+                version=version,
+                safety=await self._safety_facts(),
+            )
+
         return await self._keyed(
             ctx,
             "copy_profile",
-            lambda _: profiles.copy_profile(
-                self.db, profile_id, request, principal=principal, version=version
-            ),
+            run,
             material={"profile_id": profile_id, "version": version, "body": _body(request)},
         )
 
@@ -4695,6 +4714,13 @@ class Engine:
 
     # -- a story's configuration: fingerprint, preview (FR-PROF-5,7,16; #109) ------------------
 
+    async def _safety_facts(self) -> SafetyFacts:
+        """What a profile's safety minimum counts beside its settings, for the budget warnings
+        of profile writes and impact reports (#456): the deployment's global model-assisted
+        policies, as ``validate_profile`` counts them."""
+        gi, go = await policy_store.deployment_guardrail_calls(self.db)
+        return SafetyFacts(guardrail_input=gi, guardrail_output=go)
+
     async def _runtime_facts(self) -> RuntimeFacts:
         """The model each delivered purpose resolves to and the prompt templates' hashes: what
         a fingerprint needs from the Orchestrator."""
@@ -4717,6 +4743,7 @@ class Engine:
             request,
             facts=await self._runtime_facts(),
             purposes=self.purposes,
+            safety=await self._safety_facts(),
         )
 
     @refuses_nul()
@@ -4764,6 +4791,7 @@ class Engine:
                 principal=principal,
                 facts=await self._runtime_facts(),
                 purposes=self.purposes,
+                safety=await self._safety_facts(),
             )
 
         return await self._keyed(
@@ -4799,6 +4827,7 @@ class Engine:
                 principal=principal,
                 facts=await self._runtime_facts(),
                 purposes=self.purposes,
+                safety=await self._safety_facts(),
             )
 
         return await self._keyed(

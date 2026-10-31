@@ -438,9 +438,12 @@ async def test_c_16__crud(scratch: Space) -> None:
         )
         assert (created["version"], created["current_version"]) == (1, 1)
         assert (created["settings"], created["config_revision"]) == (SETTINGS, revision)
+        assert created["warnings"] == []  # #456: the validator's, on the write's answer only
         read = await ok(await client.get(f"{PROFILES}/{profile}", headers=READ))
         assert read == {
-            k: v for k, v in created.items() if k not in ("config_revision", "idempotency_key")
+            k: v
+            for k, v in created.items()
+            if k not in ("config_revision", "idempotency_key", "warnings")
         }
         listed = await ok(await client.get(PROFILES, headers=READ))
         assert [item["id"] for item in listed["items"]] == [profile, *SEEDED_PROFILES]

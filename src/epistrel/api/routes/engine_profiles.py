@@ -74,7 +74,7 @@ from epistrel.core.profiles.store import (
     ProfileWarning,
     ProfileWrite,
 )
-from epistrel.core.profiles.validate import ProfileValidation
+from epistrel.core.profiles.validate import ProfileValidation, ProfileValidationWarning
 from epistrel.core.settings_schema import ConfigClass
 from epistrel.core.tables.ownership import EntityType
 
@@ -90,13 +90,27 @@ VersionQuery = Annotated[
 
 class ProfileBody(EngineProfile, DeploymentMutationResponse):
     """The profile after a create or a copy, at its latest version, with the deployment's
-    ``config_revision`` (which a create or a copy leaves as it is)."""
+    ``config_revision`` (which a create or a copy leaves as it is) and the validator's
+    ``warnings`` for its settings (#456)."""
 
     model_config = ConfigDict(frozen=False)
 
+    warnings: list[ProfileValidationWarning] = Field(
+        default_factory=list,
+        description="What does not make the profile invalid but would refuse its turns, as "
+        "`POST /engine-profiles/{id}/validate` answers it: `below_safety_minimum` when "
+        "`budgets.model_calls` is below a turn's single-primary safety minimum with the "
+        "deployment's model-assisted policies (NFR-PERF-6, FR-PROF-7). The profile is written "
+        "all the same.",
+    )
+
     @classmethod
     def of(cls, write: ProfileWrite) -> ProfileBody:
-        return cls(**write.profile.model_dump(), config_revision=write.config_revision)
+        return cls(
+            **write.profile.model_dump(),
+            config_revision=write.config_revision,
+            warnings=list(write.warnings),
+        )
 
 
 class ProfileEditBody(DeploymentMutationResponse):
@@ -339,7 +353,9 @@ async def get_profile(
         "refused whatever `ignore_warnings` says, and so is an edit under which a following "
         "story's overrides could not run: 422 `invalid_profile` naming those stories in "
         "`details.stories` (at most 1,000; `details.count` counts them all), with nothing "
-        "written."
+        "written. The report's `budget_warnings` carry the validator's `below_safety_minimum` "
+        "for the new settings, as `POST /engine-profiles/{id}/validate` answers it; they do "
+        "not hold the edit."
         "\n\nA new version is a configuration change (FR-PROF-6): every story that follows "
         "the profile runs under it from its next turn, and a turn already running finishes "
         "under the configuration it started with. The answer's `config_revision`, the "

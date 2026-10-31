@@ -12447,6 +12447,14 @@
             "title": "Affected Stories",
             "type": "array"
           },
+          "budget_warnings": {
+            "description": "The profile validator's warnings for the configuration after the change (#456): `below_safety_minimum` when its `budgets.model_calls` is below a turn's single-primary safety minimum with the deployment's model-assisted policies, so every turn would be refused (NFR-PERF-6, FR-PROF-7), as `POST /engine-profiles/{id}/validate` answers it. Informational: it does not hold the change for confirmation.",
+            "items": {
+              "$ref": "#/components/schemas/ProfileValidationWarning"
+            },
+            "title": "Budget Warnings",
+            "type": "array"
+          },
           "capabilities_after": {
             "anyOf": [
               {
@@ -14426,6 +14434,18 @@
               }
             ],
             "title": "Request Id"
+          },
+          "stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The turn stage the call's budget charged it to (#456), from the budget's per-kind accounting (`turn_report.budget.used_by_kind` counts the same keys): `render` (a character's render), `narrator` (the narrator's render), `extraction`, `composed` (the composed message's claim detection), `guardrail`, `salience`, `entailment`, `testimony`, `repair`, `polish`, `follow_up`, `director_order`, `director_tiebreak`, `age_repair`, or the call's purpose for a call no stage names. Absent for a call made outside a turn's budget.",
+            "title": "Stage"
           },
           "tokens_in": {
             "minimum": 0.0,
@@ -18727,7 +18747,7 @@
         "type": "object"
       },
       "ProfileBody": {
-        "description": "The profile after a create or a copy, at its latest version, with the deployment's\n``config_revision`` (which a create or a copy leaves as it is).",
+        "description": "The profile after a create or a copy, at its latest version, with the deployment's\n``config_revision`` (which a create or a copy leaves as it is) and the validator's\n``warnings`` for its settings (#456).",
         "properties": {
           "config_revision": {
             "title": "Config Revision",
@@ -19474,6 +19494,14 @@
           "version": {
             "title": "Version",
             "type": "integer"
+          },
+          "warnings": {
+            "description": "What does not make the profile invalid but would refuse its turns, as `POST /engine-profiles/{id}/validate` answers it: `below_safety_minimum` when `budgets.model_calls` is below a turn's single-primary safety minimum with the deployment's model-assisted policies (NFR-PERF-6, FR-PROF-7). The profile is written all the same.",
+            "items": {
+              "$ref": "#/components/schemas/ProfileValidationWarning"
+            },
+            "title": "Warnings",
+            "type": "array"
           }
         },
         "required": [
@@ -48915,7 +48943,7 @@
         ]
       },
       "put": {
-        "description": "Replace the profile's name and settings. A new version is made only when the settings differ from the latest version's; a name-only edit makes none, and an edit that changes nothing records nothing. A preset is edited like any profile (FR-PROF-3). A deleted profile cannot be edited (422 `profile_deleted`; copy it instead). The settings may name any delivered module and level (`GET /engine-profiles/schema`); what they leave out takes the default. A shape error is 422 `validation_error` at the field; a module or level this deployment has not delivered, or a module whose dependencies are off (FR-PROF-4), is 422 `invalid_profile` naming each (`details.undelivered`, `details.missing_dependencies`), and nothing is written.\n\nAn edit runs in two stages (FR-PROF-7). Its `impact` report lists every story that follows the profile's latest version: the capabilities each gains and loses, its fingerprint before and after with the capabilities enabled and the quality status after (FR-PROF-16), whether a backfill would be needed and whether its upgrade is unavailable. The report's own `fingerprint_before`, `fingerprint_after`, `capabilities_after` and `quality_status_after` are null, since each entry states its story's, unless no story follows the profile: then they state the profile's own, before and after the edit. When the report has `warnings` and the body does not set `ignore_warnings` (`ignoreWarnings`), nothing is written and the answer is 200 with `applied: false` and the report; the `Idempotency-Key` is not kept, so the confirmation may reuse it. With `ignore_warnings`, or a report without warnings, the edit applies: `applied: true`, the report, and the profile in `result`. A data-producing increase (none is delivered in M3) cannot apply to a following story with history (a committed turn still on its timeline): that story keeps the version it ran on, and every other story moves to the new one. Each story's entry is the change it sees through its own overrides (`PATCH /stories/{id}/profile-overrides`): a setting a story overrides keeps the story's value. Settings that cannot run are refused whatever `ignore_warnings` says, and so is an edit under which a following story's overrides could not run: 422 `invalid_profile` naming those stories in `details.stories` (at most 1,000; `details.count` counts them all), with nothing written.\n\nA new version is a configuration change (FR-PROF-6): every story that follows the profile runs under it from its next turn, and a turn already running finishes under the configuration it started with. The answer's `config_revision`, the deployment's, moves by one, and `GET /admin/config-changes` lists, at that revision, an `engine_profile:<id>` row (the old and new version numbers, with the strongest class among the changed settings) and one `engine_profile:<id>.<setting>` row per setting whose value over the deployment's `profile_defaults` changed, each with its class. A name-only edit changes no configuration and leaves `config_revision` as it is.",
+        "description": "Replace the profile's name and settings. A new version is made only when the settings differ from the latest version's; a name-only edit makes none, and an edit that changes nothing records nothing. A preset is edited like any profile (FR-PROF-3). A deleted profile cannot be edited (422 `profile_deleted`; copy it instead). The settings may name any delivered module and level (`GET /engine-profiles/schema`); what they leave out takes the default. A shape error is 422 `validation_error` at the field; a module or level this deployment has not delivered, or a module whose dependencies are off (FR-PROF-4), is 422 `invalid_profile` naming each (`details.undelivered`, `details.missing_dependencies`), and nothing is written.\n\nAn edit runs in two stages (FR-PROF-7). Its `impact` report lists every story that follows the profile's latest version: the capabilities each gains and loses, its fingerprint before and after with the capabilities enabled and the quality status after (FR-PROF-16), whether a backfill would be needed and whether its upgrade is unavailable. The report's own `fingerprint_before`, `fingerprint_after`, `capabilities_after` and `quality_status_after` are null, since each entry states its story's, unless no story follows the profile: then they state the profile's own, before and after the edit. When the report has `warnings` and the body does not set `ignore_warnings` (`ignoreWarnings`), nothing is written and the answer is 200 with `applied: false` and the report; the `Idempotency-Key` is not kept, so the confirmation may reuse it. With `ignore_warnings`, or a report without warnings, the edit applies: `applied: true`, the report, and the profile in `result`. A data-producing increase (none is delivered in M3) cannot apply to a following story with history (a committed turn still on its timeline): that story keeps the version it ran on, and every other story moves to the new one. Each story's entry is the change it sees through its own overrides (`PATCH /stories/{id}/profile-overrides`): a setting a story overrides keeps the story's value. Settings that cannot run are refused whatever `ignore_warnings` says, and so is an edit under which a following story's overrides could not run: 422 `invalid_profile` naming those stories in `details.stories` (at most 1,000; `details.count` counts them all), with nothing written. The report's `budget_warnings` carry the validator's `below_safety_minimum` for the new settings, as `POST /engine-profiles/{id}/validate` answers it; they do not hold the edit.\n\nA new version is a configuration change (FR-PROF-6): every story that follows the profile runs under it from its next turn, and a turn already running finishes under the configuration it started with. The answer's `config_revision`, the deployment's, moves by one, and `GET /admin/config-changes` lists, at that revision, an `engine_profile:<id>` row (the old and new version numbers, with the strongest class among the changed settings) and one `engine_profile:<id>.<setting>` row per setting whose value over the deployment's `profile_defaults` changed, each with its class. A name-only edit changes no configuration and leaves `config_revision` as it is.",
         "operationId": "update_profile",
         "parameters": [
           {

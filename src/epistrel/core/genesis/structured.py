@@ -60,6 +60,30 @@ It runs in two steps, so a refusal writes nothing:
    the seed memories (``core.memory.records.write_seed``; a fact's memory is caused by the
    fact's event, a free-text memory by ``story_created``) and stamps ``materialized_at``.
 
+**States, the clock and scheduled events (#202; FR-STATE-3, FR-CLOCK-3,9).** With the story's
+``clock`` at ``on``, the plan reads the starting clock (``starting_state.clock``: its settings
+and its anchor, ``core.catalog.starting_state.clock_settings``), which genesis declares the
+``world_clock`` with (``clock_definition``) before anything else is written, and the scheduled
+events (``starting_state.scheduled_events``): each a canon ``scheduled`` fact (``provenance =
+seed``; its subject the given role, else the owning role's character, else the first
+participant, else the event; its object the event, a world item or an ``event`` entity of its
+name, one per name) with the visibility ``_seed_visibility`` gives its audience (default
+``public`` for the world's, ``self`` for a role's), and a ``pending`` event of #196 owned by the
+world or the role's character, at position 0. A time of day is placed by the starting anchor
+(#197: held at its frame minute, ``possibly_due``, while the anchor does not fix it). **Same
+event** (U-27): two seeds whose subject and event resolve to the same entities are one event;
+``scheduled`` is multi-valued, so ``merge_layers`` would keep both, and a pre-pass before it
+keeps the world's over a role's (then document order) and reports a different planned time as
+``merge_conflict`` with rule ``scheduled_same_event``. Under partitions a role's event is also
+an ``author`` belief (``known``) of each member of its audience. A ``scheduled`` seed (a text
+seed of that kind) is read as a canon seed, and a planned reveal's ``scheduled`` truth as
+``engine`` canon (#574). With ``states`` at ``on``, the plan reads the States
+(``starting_state.states``, mapped by ``starting_state.definition_of``) and each role's initial
+values; ``write_states`` declares them (``created_by = genesis``; a derived State after its
+inputs) and writes each role's value as a ``set`` change (``source = seed``, position 0) of its
+character's scope (a role left unfilled gets none). Every row a capability the story has
+consumed gets ``materialized_at``; with the capability off the rows stay deferred (#122).
+
 The director's notes (guidance, hooks, objectives, milestones, endings, a reveal's conditions)
 are never read here: they enter the director's context only (FR-SCN-11). Log lines carry
 identifiers and counts only (invariant 3).
@@ -78,18 +102,45 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.canon.facts import Visibility, commit_fact
 from epistrel.core.catalog.report import Entry, EntryLocation, Outcome
-from epistrel.core.catalog.scenario_models import WORLD_HOLDER, FieldClass
-from epistrel.core.enums import MemoryKind, RecordProvenance
+from epistrel.core.catalog.scenario_models import (
+    WORLD_HOLDER,
+    FieldClass,
+    ScenarioClock,
+    ScenarioScheduledEvent,
+    ScenarioState,
+)
+from epistrel.core.catalog.starting_state import (
+    clock_settings,
+    definition_of,
+    genesis_order,
+    planned_at,
+    starting_anchor,
+)
+from epistrel.core.enums import (
+    MemoryKind,
+    RecordProvenance,
+    StateChangeKind,
+    StateChangeSource,
+)
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.events.operation import Operation
 from epistrel.core.genesis import epistemic, merge
 from epistrel.core.genesis.epistemic import AuthorAct, EpistemicPlan, MemberMemory, SeededBelief
-from epistrel.core.genesis.materialize import PARTITIONS, STRUCTURED
+from epistrel.core.genesis.materialize import CLOCK, PARTITIONS, STATES, STRUCTURED
 from epistrel.core.genesis.models import DeferredItem, MaterializedEntry, MaterializedOutcome
 from epistrel.core.ids import new_ulid
+from epistrel.core.membership import Position
 from epistrel.core.memory.records import SeedMemory, write_seed
+from epistrel.core.profiles.capabilities import level_at_least
 from epistrel.core.propositions import store
-from epistrel.core.propositions.model import Interval, LiteralKind, Proposition, TypedLiteral
+from epistrel.core.propositions.model import (
+    Granularity,
+    Instant,
+    Interval,
+    LiteralKind,
+    Proposition,
+    TypedLiteral,
+)
 from epistrel.core.propositions.registry import (
     AuthorLayer,
     Registry,
@@ -99,14 +150,16 @@ from epistrel.core.propositions.registry import (
     load,
     register_author,
 )
-from epistrel.core.propositions.vocabulary import CORE_BY_NAME, LOCATED_IN
+from epistrel.core.propositions.vocabulary import CORE_BY_NAME, LOCATED_IN, SCHEDULED
 from epistrel.core.resolution.entities import (
     NARRATOR,
     EntitySpec,
     ResolutionContext,
     scenario_entity_specs,
 )
+from epistrel.core.states.model import ClockSettings, StateDefinition, world_clock_definition
 from epistrel.core.tables import events, genesis_deferred
+from epistrel.core.tables.scheduled_events import OWNER_WORLD
 from epistrel.core.verify.merge import MergeResult, SeedFact, SeedLayer
 from epistrel.core.verify.normalize import ClaimSketch, normalize
 from epistrel.core.verify.rules import ClosedSetRecord
@@ -120,7 +173,14 @@ EPISODIC: Final = "episodic"
 module name)."""
 UNNORMALIZABLE: Final = "seed_unnormalizable"
 DEFERRED_KINDS: Final = frozenset({"belief", "nested", "scheduled"})
-"""Seed kinds whose structured form needs a capability M4 does not deliver."""
+"""Seed kinds whose structured form needs a capability M4 does not deliver (``scheduled`` is
+read as canon once the story runs the clock, #202)."""
+SCHEDULED_KIND: Final = "scheduled"
+SAME_EVENT_RULE: Final = "scheduled_same_event"
+"""U-27 (#202): the rule a scheduled seed that lost to the same event at another time names."""
+SEED_REASON: Final = "seeded by the scenario"
+"""The reason of a role's initial value (a ``set`` change with ``source = seed``)."""
+CLOCK_ITEM: Final = "starting_state.clock"
 SHARED: Final = frozenset({"public", "perceivable"})
 SELF: Final = "self"
 ACQUAINTANCES: Final = "acquaintances"
@@ -128,6 +188,7 @@ UNNORMALIZABLE_RULE: Final = (
     "a canon seed normalizes to registered predicates with entities of the story (FR-PROP-12)"
 )
 RULES_RULE: Final = "a story rule declares a predicate the registry can hold (FR-PROP-4)"
+CLOCK_RULE: Final = "the starting clock and its scheduled events are valid (FR-CLOCK-3,9)"
 BACKGROUND_FIELDS: Final = ("appearance", "personality", "values_motivations", "background_flavor")
 
 _SEED = re.compile(r"(\.seeded_memories\[\d+\]|^drivers\.planned_reveals\[\d+\]\.truth)$")
@@ -135,6 +196,9 @@ _RULE = re.compile(r"^starting_state\.(predicates|closed_sets|rules)\[(\d+)\]$")
 _RELATIONSHIP = re.compile(r"^cast\.roles\[\d+\]\.relationships\[\d+\]$")
 _LOCATION = re.compile(r"^world\.locations\[\d+\]$")
 _CHANNEL = re.compile(r"^starting_state\.channels\[\d+\]$")
+_STATE = re.compile(r"^starting_state\.states\[(\d+)\]$")
+_INITIAL = re.compile(r"^cast\.roles\[\d+\]\.state_initial_values$")
+_EVENT = re.compile(r"^starting_state\.scheduled_events\[(\d+)\]$")
 PERSONA_ITEM: Final = "persona.audience"
 LIMITED_KINDS: Final = frozenset({"belief", "nested"})
 
@@ -183,12 +247,45 @@ def background_of(
 
 
 @dataclass(frozen=True, slots=True)
+class PlannedEvent:
+    """A seeded scheduled event (#202): its owner (``world`` or a character id), participants
+    (character ids), place (an entity id), planned clock offset, and the frame minute #197 holds
+    it at (``None``: the offset is exact)."""
+
+    owner: str
+    participants: tuple[str, ...]
+    place: str | None
+    planned: int
+    at: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class PlannedFact:
-    """A fact to commit: the merge key it came from, its proposition and visibility."""
+    """A fact to commit: the merge key it came from, its proposition and visibility; a
+    ``scheduled`` fact of a seeded event also creates the event (#202)."""
 
     key: str
     proposition: Proposition
     visibility: Visibility
+    event: PlannedEvent | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PlannedState:
+    """A State genesis declares (#202): its item and its declaration input."""
+
+    field_ref: str
+    definition: Mapping[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class PlannedValue:
+    """A role's initial value (#202): the State, the role's character (its scope key) and the
+    value as the scenario gives it."""
+
+    state: str
+    character_id: str
+    value: Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,6 +325,14 @@ class Plan:
     """A duplicate fact's merge key → the key of the one fact written for it (#173)."""
     settings: Any = None
     """The story's effective settings (what the belief writes check their modules against)."""
+    clock: ClockSettings | None = None
+    """The starting clock's settings (#202; ``None``: the defaults, or the clock off)."""
+    states: list[PlannedState] = field(default_factory=list)
+    initial_values: list[PlannedValue] = field(default_factory=list)
+    seeded: set[str] = field(default_factory=set)
+    """The ``field_ref`` of each ``states`` or ``clock`` row ``write_states`` stamps (#202)."""
+    capabilities: tuple[str, ...] = (STRUCTURED,)
+    """The capabilities whose rows ``write`` stamps."""
 
     @property
     def conflicts(self) -> int:
@@ -292,6 +397,10 @@ class _Builder:
     beliefs: list[tuple[_Item, SeededBelief]] = field(default_factory=list)
     member_memories: list[tuple[_Item, MemberMemory]] = field(default_factory=list)
     epistemic: EpistemicPlan = field(default_factory=EpistemicPlan)
+    states_on: bool = False
+    clock_on: bool = False
+    event_keys: set[str] = field(default_factory=set)
+    """The merge keys of the seeded events' facts (#202), kept outside ``merge_layers``."""
 
     def believe(self, tracked: _Item, belief: SeededBelief) -> None:
         n = sum(1 for _, b in self.beliefs if b.act == belief.act and b.holder == belief.holder)
@@ -300,8 +409,10 @@ class _Builder:
 
     def consumed(self, item: DeferredItem) -> bool:
         """Whether this genesis materializes ``item``'s capability."""
-        return item.capability_needed == STRUCTURED or (
-            self.partitions and item.capability_needed == PARTITIONS
+        return (
+            item.capability_needed == STRUCTURED
+            or (self.partitions and item.capability_needed == PARTITIONS)
+            or (self.clock_on and item.capability_needed == CLOCK)
         )
 
     def track(self, item: DeferredItem | None, field_ref: str, location: EntryLocation) -> _Item:
@@ -520,6 +631,10 @@ def _seeds(build: _Builder) -> None:
         if item.field_ref.startswith("drivers.") and kind in LIMITED_KINDS:
             # #574: a planned reveal's truth stays with the director until a reveal beat (C-25
             # M5, #558), whatever its kind: it is an engine-scoped canon fact, never a belief.
+            kind = CANON
+        elif kind == SCHEDULED_KIND and build.clock_on:
+            # #202: read as a canon seed once the story runs the clock (a reveal's truth too:
+            # ``_seed_visibility`` keeps it ``engine``).
             kind = CANON
         holder_role = value.get("holder")
         holder = (
@@ -1004,6 +1119,244 @@ def _identity(build: _Builder) -> None:
         )
 
 
+# -- States, the clock and scheduled events (#202) ---------------------------------------
+
+
+def _clock(build: _Builder) -> None:
+    """The starting clock's settings, when the story runs the clock."""
+    if not build.clock_on:
+        return
+    for item in build.items:
+        if item.field_ref != CLOCK_ITEM or item.capability_needed != CLOCK:
+            continue
+        tracked = build.track(item, item.field_ref, item.location)
+        try:
+            build.plan.clock = clock_settings(ScenarioClock.model_validate(_value(item)))
+        except (InvalidRequest, ValueError) as exc:
+            details = getattr(exc, "details", None) or {}
+            build.error(
+                f"{CLOCK_ITEM}.{details.get('field') or 'anchor'}",
+                item.location,
+                str(details.get("reason") or "invalid"),
+                CLOCK_RULE,
+            )
+            continue
+        tracked.add("clock")
+        build.plan.seeded.add(item.field_ref)
+
+
+def _states(build: _Builder) -> None:
+    """The States and each role's initial values, when the story runs ``states``."""
+    if not build.states_on:
+        return
+    characters = {role: m.character_id for role, m in build.by_role.items()}
+    entities = {**characters, **build.places}
+    found: list[tuple[DeferredItem, ScenarioState]] = []
+    for item in build.items:
+        match = _STATE.match(item.field_ref)
+        if match is None or item.capability_needed != STATES:
+            continue
+        found.append((item, ScenarioState.model_validate(_value(item))))
+    found.sort(key=lambda pair: int(_STATE.match(pair[0].field_ref).group(1)))  # type: ignore[union-attr]
+    for index in genesis_order([state for _, state in found]):
+        item, state = found[index]
+        build.track(item, item.field_ref, item.location).add("state")
+        build.plan.states.append(
+            PlannedState(
+                item.field_ref, definition_of(state, characters=characters, entities=entities)
+            )
+        )
+        build.plan.seeded.add(item.field_ref)
+    for item in build.items:
+        if not _INITIAL.match(item.field_ref) or item.capability_needed != STATES:
+            continue
+        member = build.by_role.get(item.location.role or "")
+        value = _value(item)
+        tracked = build.track(item, item.field_ref, item.location)
+        build.plan.seeded.add(item.field_ref)
+        if member is None or not isinstance(value, Mapping):
+            tracked.add("deferred")  # a role left unfilled gets no value (#202's Discretion)
+            continue
+        for name, raw in value.items():
+            build.plan.initial_values.append(PlannedValue(str(name), member.character_id, raw))
+        tracked.add("state")
+
+
+def _event_entities(build: _Builder) -> dict[str, str]:
+    """Each world item's entity by its names (canonical and aliases, case-folded, a leading
+    "the" dropped): what an event's name resolves to before a new ``event`` entity is made."""
+    found: dict[str, str] = {}
+    for entity_id, spec in build.plan.entities:
+        for name in (spec.canonical_name, *(alias for alias, _ in spec.aliases)):
+            found.setdefault(_event_name(name), entity_id)
+    return found
+
+
+def _event_name(name: str) -> str:
+    folded = " ".join(name.casefold().split())
+    return folded.removeprefix("the ")
+
+
+@dataclass(slots=True)
+class _Scheduled:
+    tracked: _Item
+    item: DeferredItem
+    order: int
+    layer: SeedLayer
+    key: str
+    proposition: Proposition
+    visibility: Visibility
+    event: PlannedEvent
+    holder: str | None
+    value: Mapping[str, Any]
+
+
+def _scheduled(build: _Builder) -> None:
+    """The scheduled events (see the module docstring), the same-event pre-pass run before the
+    fact merge."""
+    if not build.clock_on:
+        return
+    anchor = starting_anchor(build.plan.clock or ClockSettings())
+    named = _event_entities(build)
+    made: dict[str, str] = {}
+    found: list[_Scheduled] = []
+    for item in build.items:
+        match = _EVENT.match(item.field_ref)
+        if match is None or item.capability_needed != CLOCK:
+            continue
+        event = ScenarioScheduledEvent.model_validate(_value(item))
+        tracked = build.track(item, item.field_ref, item.location)
+        owner_role = None if event.owner in (None, WORLD_HOLDER) else event.owner
+        owner = None if owner_role is None else build.by_role.get(owner_role)
+        if owner_role is not None and owner is None:
+            tracked.add(epistemic.UNFILLED)
+            tracked.add("deferred")  # its owner's role is unfilled: nobody owns the plan
+            continue
+        participants = [
+            build.by_role[r].character_id for r in event.participants or () if r in build.by_role
+        ]
+        name = _event_name(event.proposition)
+        entity = named.get(name) or made.get(name)
+        if entity is None:
+            entity = made[name] = new_ulid()
+            build.plan.entities.append(
+                (entity, EntitySpec(kind="event", canonical_name=event.proposition.strip()))
+            )
+        subject_role = event.subject or owner_role
+        if subject_role is not None and subject_role in build.by_role:
+            subject = build.by_role[subject_role].character_id
+        elif subject_role is not None and subject_role in build.places:
+            subject = build.places[subject_role]
+        elif participants:
+            subject = participants[0]
+        else:
+            subject = entity
+        try:
+            planned, at = planned_at(event.planned, anchor)
+        except InvalidRequest:
+            build.error(f"{item.field_ref}.planned", item.location, "planned", CLOCK_RULE)
+            continue
+        place = None if event.place is None else build.places.get(event.place)
+        qualifiers: dict[str, Any] = {}
+        if participants:
+            qualifiers["participants"] = participants
+        if place is not None:
+            qualifiers["place"] = place
+        audience = event.audience or (["self"] if owner_role is not None else ["public"])
+        value = {
+            "holder": owner_role or WORLD_HOLDER,
+            "audience": audience,
+            "disclosure": event.disclosure or "open",
+        }
+        holder = None if owner is None else owner.character_id
+        found.append(
+            _Scheduled(
+                tracked=tracked,
+                item=item,
+                order=int(match.group(1)),
+                layer=SeedLayer.WORLD if owner is None else SeedLayer.ROLE,
+                key=f"event:{item.field_ref}",
+                proposition=Proposition(
+                    subject_id=subject,
+                    predicate_id=SCHEDULED,
+                    object_id=entity,
+                    qualifiers=qualifiers,
+                    # Genesis' story-minute zero is the story's start (``stories`` default 0).
+                    valid_time=Instant.of(planned, Granularity.MINUTE),
+                ),
+                visibility=_seed_visibility(build, value, holder, item),
+                event=PlannedEvent(
+                    owner=OWNER_WORLD if owner is None else owner.character_id,
+                    participants=tuple(dict.fromkeys(participants)),
+                    place=place,
+                    planned=planned,
+                    at=at,
+                ),
+                holder=holder,
+                value=value,
+            )
+        )
+    _same_event(build, found)
+
+
+_LAYER_ORDER: Final = {SeedLayer.WORLD: 0, SeedLayer.ROLE: 1, SeedLayer.CHARACTER: 2}
+
+
+def _same_event(build: _Builder, found: Sequence[_Scheduled]) -> None:
+    """The U-27 pre-pass (see the module docstring): one event per subject and event entity,
+    the world's over a role's, then document order; a loser planned at another time is a
+    ``merge_conflict`` (``scheduled_same_event``), one at the same time a duplicate."""
+    groups: dict[tuple[str | None, str | None], list[_Scheduled]] = {}
+    for seeded in found:
+        key = (seeded.proposition.subject_id, seeded.proposition.object_id)
+        groups.setdefault(key, []).append(seeded)
+    for group in groups.values():
+        winner, *losers = sorted(group, key=lambda s: (_LAYER_ORDER[s.layer], s.order))
+        for loser in losers:
+            same = (loser.event.planned, loser.event.at) == (winner.event.planned, winner.event.at)
+            if same:
+                loser.tracked.add("canon")
+            else:
+                loser.tracked.add("merge_conflict")
+                if loser.tracked.loser is None:
+                    loser.tracked.winner = winner.item.field_ref
+                    loser.tracked.loser = loser.item.field_ref
+                    loser.tracked.rule = SAME_EVENT_RULE
+            build.plan.materialized.add(loser.item.field_ref)
+        build.event_keys.add(winner.key)
+        build.plan.facts.append(
+            PlannedFact(winner.key, winner.proposition, winner.visibility, event=winner.event)
+        )
+        winner.tracked.add("canon")
+        winner.tracked.add("event")
+        build.plan.materialized.add(winner.item.field_ref)
+        if build.partitions and winner.holder is not None:
+            _event_beliefs(build, winner)
+
+
+def _event_beliefs(build: _Builder, seeded: _Scheduled) -> None:
+    """A role's event as an ``author`` belief (``known``) of each member of its audience (the
+    owner's with the event's disclosure, the others' ``open``)."""
+    audience = _audience(build, seeded.value)
+    _unfilled(seeded.tracked, audience)
+    if not audience.characters:
+        return
+    act = _act(build, seeded.item, seeded.value, seeded.holder)
+    for member in audience.characters:
+        build.believe(
+            seeded.tracked,
+            SeededBelief(
+                act=act,
+                holder=member,
+                proposition=seeded.proposition,
+                level=epistemic.Level.KNOWN,
+                disclosure=str(seeded.value["disclosure"]) if member == seeded.holder else "open",
+                layer=seeded.layer,
+                fact_key=seeded.key,
+            ),
+        )
+
+
 def plan(
     scenario_id: str,
     version: int,
@@ -1028,6 +1381,13 @@ def plan(
     build.nested = build.partitions and epistemic.nested_on(settings)
     build.groups = dict(groups or {})
     build.plan.settings = settings
+    build.states_on = settings is not None and level_at_least(settings, STATES, "on")
+    build.clock_on = settings is not None and level_at_least(settings, CLOCK, "on")
+    build.plan.capabilities = tuple(
+        c
+        for c, on in ((STRUCTURED, True), (PARTITIONS, build.partitions), (CLOCK, build.clock_on))
+        if on
+    )
     _entities(build)
     layer = _rules(build)
     entities = [(m.character_id, m.spec) for m in cast] + list(build.plan.entities)
@@ -1042,6 +1402,9 @@ def plan(
     _backgrounds(build)
     _persona(build)
     _opening(build, *opening)
+    _clock(build)
+    _scheduled(build)  # the same-event pre-pass, before the fact merge (U-27, #202)
+    _states(build)
     result = _merged(build)
     kept = {fact.seed_id for fact in result.kept}
     candidates = [
@@ -1101,7 +1464,7 @@ def plan(
                 )
             )
     if build.partitions:
-        _beliefs(build, kept, lost_audience)
+        _beliefs(build, kept | build.event_keys, lost_audience)
     _identity(build)
     build.plan.entries = [t.entry() for t in build.tracked if t.outcomes]
     return build.plan
@@ -1201,6 +1564,8 @@ async def write(conn: AsyncConnection, story_id: str, operation: Operation, foun
             operation=operation,
             registry=registry,
         )
+        if planned.event is not None:
+            await _create_event(conn, story_id, operation, written[planned.key], planned.event)
     origin = await _story_created(conn, operation.operation_id)
     memories: list[SeedMemory] = []
     for memory in found.memories:
@@ -1236,16 +1601,7 @@ async def write(conn: AsyncConnection, story_id: str, operation: Operation, foun
             registry=registry,
         )
     if found.materialized:
-        capabilities = [STRUCTURED] if found.epistemic is None else [STRUCTURED, PARTITIONS]
-        await conn.execute(
-            update(genesis_deferred)
-            .where(
-                genesis_deferred.c.story_id == story_id,
-                genesis_deferred.c.capability_needed.in_(capabilities),
-                genesis_deferred.c.field_ref.in_(sorted(found.materialized)),
-            )
-            .values(materialized_at=func.transaction_timestamp())
-        )
+        await _stamp(conn, story_id, found.capabilities, found.materialized)
     log.info(
         "structured genesis",
         story_id=story_id,
@@ -1254,6 +1610,102 @@ async def write(conn: AsyncConnection, story_id: str, operation: Operation, foun
         memories=len(memories),
         materialized=len(found.materialized),
         conflicts=found.conflicts,
+    )
+
+
+async def _stamp(
+    conn: AsyncConnection, story_id: str, capabilities: Iterable[str], refs: Iterable[str]
+) -> None:
+    """``materialized_at`` on the story's rows of ``capabilities`` named by ``refs``."""
+    await conn.execute(
+        update(genesis_deferred)
+        .where(
+            genesis_deferred.c.story_id == story_id,
+            genesis_deferred.c.capability_needed.in_(sorted(capabilities)),
+            genesis_deferred.c.field_ref.in_(sorted(refs)),
+        )
+        .values(materialized_at=func.transaction_timestamp())
+    )
+
+
+async def _create_event(
+    conn: AsyncConnection, story_id: str, operation: Operation, fact: Any, event: PlannedEvent
+) -> None:
+    """A seeded event of #196, ``pending`` at position 0 (#197: held at its frame minute, and
+    ``possibly_due`` at once, while the starting anchor does not fix its time)."""
+    from epistrel.core.world_clock import HEAD, anchor_at, stops
+
+    position = Position(0)
+    created = await stops.create(
+        conn,
+        operation,
+        story_id,
+        proposition_id=fact.proposition_id,
+        planned=event.planned,
+        owner=event.owner,
+        participants=event.participants,
+        place_id=event.place,
+        position=position,
+    )
+    if event.at is not None:
+        await stops.place_event(
+            conn,
+            operation,
+            story_id,
+            created.event,
+            at=event.at,
+            anchor=await anchor_at(conn, story_id, HEAD),
+            offset=0,
+            position=replace(position, step=position.step + 1),
+        )
+
+
+def clock_definition(found: Plan | None) -> StateDefinition:
+    """The ``world_clock`` genesis declares (#193): the built-in one, with the scenario's
+    starting settings and anchor when the story runs the clock (#202)."""
+    builtin = world_clock_definition()
+    if found is None or found.clock is None:
+        return builtin
+    return builtin.model_copy(update={"clock": found.clock})
+
+
+async def write_states(
+    conn: AsyncConnection, story_id: str, operation: Operation, found: Plan
+) -> None:
+    """Declare ``found``'s States and write each role's initial value (see the module
+    docstring), then stamp the ``states`` and ``clock`` rows the plan consumed."""
+    from epistrel.core import states
+
+    for planned in found.states:
+        await states.define_state(conn, operation, story_id, planned.definition)
+    for value in found.initial_values:
+        written = await states.apply_change(
+            conn,
+            operation,
+            states.StateChange(
+                state=value.state,
+                reason=SEED_REASON,
+                source=StateChangeSource.SEED,
+                kind=StateChangeKind.SET,
+                value=value.value,
+                scope_key=value.character_id,
+                position=Position(0),
+            ),
+        )
+        if isinstance(written, states.Violation):  # pragma: no cover - publish checked it
+            raise InvalidRequest(
+                f"a role's initial value of State {value.state!r} breaks its "
+                f"{written.constraint} constraint",
+                {"field": "state_initial_values", "reason": written.constraint},
+            )
+    if found.seeded:
+        await _stamp(conn, story_id, (STATES, CLOCK), found.seeded)
+    log.info(
+        "states genesis",
+        story_id=story_id,
+        states=len(found.states),
+        values=len(found.initial_values),
+        clock=found.clock is not None,
     )
 
 
@@ -1291,14 +1743,21 @@ async def deferred_items(conn: AsyncConnection, story_id: str) -> list[DeferredI
 
 __all__ = [
     "EPISODIC",
+    "SAME_EVENT_RULE",
+    "SEED_REASON",
     "UNNORMALIZABLE",
     "CastInput",
     "Plan",
+    "PlannedEvent",
     "PlannedFact",
     "PlannedMemory",
+    "PlannedState",
+    "PlannedValue",
     "background_of",
     "by_outcome",
+    "clock_definition",
     "deferred_items",
     "plan",
     "write",
+    "write_states",
 ]

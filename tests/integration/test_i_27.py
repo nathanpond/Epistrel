@@ -225,6 +225,7 @@ async def test_i_27__lite(stub_settings: Settings, engine: AsyncEngine) -> None:
             # with its name as an alias; the role overrides add "Mum" and "Tommy".
             "entities": 4,
             "entity_aliases": 6,
+            **lg.BUILT_IN_ROWS,
         }
         async with engine.connect() as conn:
             entity_rows = (

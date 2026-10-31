@@ -270,12 +270,13 @@ def test_the_checks_and_the_capabilities() -> None:
 
 
 async def test_capability_checks_never_pass_silently() -> None:
-    """Even given its capability, a capability-gated check not implemented yet lists itself
-    (the State-schema check, M6), so none can pass a scenario silently; the seed checks #149
-    implements run and find nothing to report in an empty scenario."""
+    """Even given its capability, a capability-gated check not implemented yet would list
+    itself, so none can pass a scenario silently; every gated check is implemented now (the
+    seed checks #149 implements and #202's), and each runs and finds nothing to report in an
+    empty scenario."""
     gated = [check for check in validation.CHECKS if check.capability is not None]
     context = _context(DEPLOYMENT_CAPABILITIES | {"structured", "states"})
-    implemented = {"seed_normalization", "fact_consistency"}
+    implemented = {"seed_normalization", "fact_consistency", "state_schema"}
     for check in gated:
         found = await check.run(_subject({}, EntityType.SCENARIO), context)
         listed = [] if check.name in implemented else [check.name]
@@ -453,3 +454,34 @@ def test_provider_names_are_found_at_any_depth() -> None:
         )
     )
     assert found == [("s[0].provider", "weather"), ("s[1].steps[0].provider", "news")]
+
+
+def test_typed_starting_state_keeps_every_indexed_path() -> None:
+    """#202 types the starting state's States, clock and scheduled events (and each role's
+    initial values): the stored document is what the author wrote, and the subject index reads
+    the same paths and texts from it as the generic walk over the raw JSON did before the
+    typing (#323's ``text_fields``), for the complete scenario and for the family's allowance,
+    clock and dinner."""
+    from epistrel.core.catalog.scenarios import indexed_fields
+    from epistrel.core.erasure.records import text_fields
+    from tests import seeded_clock_support
+
+    groups = ("states", "clock", "scheduled_events")
+    for raw in (COMPLETE, seeded_clock_support.family()):
+        draft = ScenarioDraft.model_validate(raw)
+        stored = draft.document()
+        before: dict[str, str | None] = {}
+        for name in groups:
+            assert stored["starting_state"][name] == raw["starting_state"][name]
+            before.update(text_fields(raw["starting_state"][name], f"starting_state.{name}"))
+        for index, role in enumerate(raw["cast"]["roles"]):
+            values = role.get("state_initial_values")
+            before.update(text_fields(values, f"cast.roles[{index}].state_initial_values"))
+        after = {
+            path: text
+            for path, text in indexed_fields(draft).items()
+            if path.startswith(tuple(f"starting_state.{name}" for name in groups))
+            or ".state_initial_values" in path
+        }
+        assert before, "the fixture names something to index"
+        assert after == before

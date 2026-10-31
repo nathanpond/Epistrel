@@ -2,8 +2,9 @@
 FR-STATE-3,7,9, FR-STORE-31; #186).
 
 Every S-STATE-SCHEMA M6 part lives in this file: #186's API (``__api``), declaration
-(``__define``), ingest (``__ingest``) and source (``__unpermitted``) parts, and #192's proposal
-(``__proposals``) and rules (``__rules``) parts.
+(``__define``), ingest (``__ingest``) and source (``__unpermitted``) parts, #192's proposal
+(``__proposals``) and rules (``__rules``) parts, and #202's publish part (``__publish``: a
+scenario's declarations checked at publish).
 
 Played through the REST app with the stub adapter on a Lite story running States at
 ``prompt_only`` (FR-LITE-5's form; the module delivered for the test, ``states_delivered``).
@@ -31,6 +32,8 @@ from tests import canon_support as c
 from tests import clock_support as ck
 from tests import embedding_support
 from tests import provider_support as ps
+from tests import scenario_support as scenarios
+from tests import seeded_clock_support as sc
 from tests import state_support as st
 from tests.auth_support import auth_settings
 from tests.event_support import rows
@@ -981,3 +984,147 @@ async def test_s_state_schema__rules(
         await _advance(client, story, 60)
         assert await _value(client, story, "fatigue") == 1
         assert len(await _rule_changes(engine, story, "fatigue")) == 1
+
+
+# -- the scenario's States at publish (#202) --------------------------------------------------
+
+
+def _family(**changes: Any) -> dict[str, Any]:
+    """The Sunday Dinner of ``seeded_clock_support`` with ``changes`` to its starting state
+    (``roles``: role id → that role's changes)."""
+    roles = changes.pop("roles", {})
+    body = sc.family(**changes)
+    for role in body["cast"]["roles"]:
+        role.update(roles.get(role["id"], {}))
+    return body
+
+
+async def _published(client: httpx.AsyncClient, body: dict[str, Any]) -> httpx.Response:
+    created = await scenarios.create(client, body)
+    return await client.post(
+        f"{scenarios.BASE}/{created['id']}/publish",
+        json={"draft_revision": created["draft_revision"]},
+        headers=WRITE,
+    )
+
+
+def _errors(response: httpx.Response) -> list[tuple[str, str | None, str | None]]:
+    """``(code, field, source)`` of each error of a refused publish's report."""
+    error = _refused(response, 422, "publish_invalid")
+    return [
+        (e["code"], e["location"]["field"], e.get("source"))
+        for e in error["details"]["report"]["errors"]
+    ]
+
+
+INVALID = "state_schema_invalid"
+MOOD = {"name": "mood", "type": "enum", "constraints": {"allowed_values": ["calm", "tense"]}}
+PUBLISH_CASES: list[tuple[dict[str, Any], list[tuple[str, str | None, str | None]]]] = [
+    (
+        _family(states=[sc.ALLOWANCE, {**sc.GROCERIES, "name": "2groceries"}]),
+        [(INVALID, "starting_state.states[1].name", "name")],
+    ),
+    (
+        _family(states=[sc.ALLOWANCE, {"name": "mood", "type": "enum"}]),
+        [(INVALID, "starting_state.states[1].constraints.allowed_values", "required")],
+    ),
+    (
+        _family(states=[sc.ALLOWANCE, {"name": "world_clock", "type": "number"}]),
+        [(INVALID, "starting_state.states[1].name", "reserved_state")],
+    ),
+    (
+        _family(states=[{**sc.ALLOWANCE, "initial_value": -5}]),
+        [(INVALID, "starting_state.states[0].initial_value", "non_negative")],
+    ),
+    (
+        _family(roles={"mother": {"state_initial_values": {"savings": 3}}}),
+        [(INVALID, "cast.roles[0].state_initial_values.savings", "unknown_state")],
+    ),
+    (
+        _family(
+            states=[sc.ALLOWANCE, {**MOOD, "scope": "character"}, sc.GROCERIES],
+            roles={"mother": {"state_initial_values": {"groceries": 3, "mood": "giddy"}}},
+        ),
+        [
+            (INVALID, "cast.roles[0].state_initial_values.groceries", "not_character_scoped"),
+            (INVALID, "cast.roles[0].state_initial_values.mood", "allowed_values"),
+        ],
+    ),
+    (
+        _family(states=[{**sc.ALLOWANCE, "authorization": {"sources": ["role:uncle", "author"]}}]),
+        [(INVALID, "starting_state.states[0].authorization.sources", "unknown_role")],
+    ),
+    (
+        _family(
+            states=[
+                sc.ALLOWANCE,
+                sc.GROCERIES,
+                {**sc.TOTAL, "authorization": {"sources": ["author"]}},
+            ]
+        ),
+        [("state_unpermitted", "starting_state.states[2].authorization.sources", "source")],
+    ),
+    (
+        _family(
+            states=[
+                sc.ALLOWANCE,
+                {**sc.TOTAL, "rules": {"kind": "derived", "expression": "spent + 1"}},
+                {
+                    **sc.TOTAL,
+                    "name": "spent",
+                    "rules": {"kind": "derived", "expression": "budget_left + 1"},
+                },
+            ]
+        ),
+        [(INVALID, "starting_state.states[1].rules", "rules_cycle")],
+    ),
+    (
+        _family(clock={"anchor": {"band": "morning", "time": "18:00"}}),
+        [(INVALID, "starting_state.clock.anchor.time", "anchor")],
+    ),
+    (
+        _family(scheduled_events=[{**sc.DINNER, "owner": "uncle"}]),
+        [(INVALID, "starting_state.scheduled_events[0].owner", "unknown_role")],
+    ),
+    (
+        _family(
+            closed_sets=[{"predicate": "state_value", "subject": "mother", "members": ["kitchen"]}]
+        ),
+        [("owner_lookup_closed_set", "starting_state.closed_sets[0].predicate", "owner_lookup")],
+    ),
+]
+"""One broken declaration per check, and what its publish reports."""
+
+
+@pytest.mark.part("M6", "FR-STATE-3")
+async def test_s_state_schema__publish(
+    stub_settings: Settings, engine: AsyncEngine, seeded_clock_delivered: None
+) -> None:
+    """The author declares the scenario's States, and publishing checks them (the
+    ``state_schema`` check, which runs once ``states`` is delivered): the Sunday Dinner with its
+    allowance, a derived State declared before the one it reads, its starting clock and its
+    dinner publishes, and each broken declaration (``PUBLISH_CASES``) is refused 422
+    ``publish_invalid`` with the report naming it:
+
+    - shape: a name that is not a State name; an enum with no allowed values; the reserved
+      ``world_clock``; an initial value that breaks the State's bounds;
+    - a role's initial value of an unknown State, of a story-scoped one, and of an enum value
+      the State does not allow;
+    - an ``authorization.sources`` ``role:<slug>`` naming no role;
+    - ``rules`` whose sources omit ``rule`` (``state_unpermitted``); derived States reading each
+      other in a cycle;
+    - a starting anchor whose time lies outside its band; a scheduled event owned by no role;
+    - a closed set over ``state_value`` (``owner_lookup_closed_set``).
+
+    Complement: the providers check is unchanged (an externally owned State naming an
+    undeclared provider is ``provider_undeclared``)."""
+    async with respond_client(stub_settings, engine) as (client, _lib):
+        published = await _published(client, _family(states=[sc.ALLOWANCE, sc.TOTAL, sc.GROCERIES]))
+        assert published.status_code == 201, published.text
+        for body, expected in PUBLISH_CASES:
+            assert _errors(await _published(client, body)) == expected, body["starting_state"]
+        rain = {"name": "rain", "type": "number", "owner": "external", "provider_id": "weather"}
+        undeclared = _family(states=[sc.ALLOWANCE, rain])
+        assert _errors(await _published(client, undeclared)) == [
+            ("provider_undeclared", "starting_state.states[1].provider_id", None)
+        ]

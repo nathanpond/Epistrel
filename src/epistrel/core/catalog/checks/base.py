@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.catalog.report import Entry, EntryLocation, Outcome, VersionLabel
 from epistrel.core.ports import Ports
-from epistrel.core.profiles.schema import DELIVERED
+from epistrel.core.profiles import schema
 from epistrel.core.settings_schema import DeploymentSettings
 from epistrel.core.tables.ownership import EntityType
 
@@ -44,7 +44,7 @@ def delivered_capabilities() -> frozenset[str]:
     name, except the pipeline, which is named by each of its delivered levels; and
     ``providers`` (#204)."""
     found: set[str] = {PROVIDERS}
-    for module, levels in DELIVERED.items():
+    for module, levels in schema.DELIVERED.items():
         if module == PIPELINE:
             found.update(levels)
         else:
@@ -118,13 +118,14 @@ class Preparation:
 class ValidationContext:
     """What a check's run may consult: the caller's connection (inside a publish's transaction,
     the entry locked; a dry run's read-only connection otherwise), the deployment's settings,
-    the ports to the Orchestrator (#103), the capabilities checks may run with, and what each
-    check prepared, by check name."""
+    the ports to the Orchestrator (#103), the capabilities checks may run with (by default what
+    the deployment delivers now, read when the context is made: #202, so ``state_schema`` runs
+    once ``states`` is delivered), and what each check prepared, by check name."""
 
     conn: AsyncConnection
     settings: DeploymentSettings
     ports: Ports = field(default_factory=Ports)
-    capabilities: frozenset[str] = DEPLOYMENT_CAPABILITIES
+    capabilities: frozenset[str] = field(default_factory=delivered_capabilities)
     prepared: Mapping[str, Any] = field(default_factory=dict)
 
 

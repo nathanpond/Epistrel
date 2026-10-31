@@ -21,9 +21,12 @@ from epistrel.core.ratings import RatingReplacement, get_rating, update_rating
 from tests.scenario_support import BASE, WRITE, plant_character, role, seed
 
 PROVIDER = "weather_feed"
-"""A provider the fixture's scheduled item names."""
-PROVIDER_FIELD = "starting_state.scheduled_events[0].provider"
-"""Where ``with_provider`` puts the provider's name."""
+"""A provider the fixture's externally owned starting value names."""
+PROVIDER_FIELD = "starting_state.states[0].provider_id"
+"""Where ``with_provider`` puts the provider's name (#202 types the starting values: an
+externally owned one names its provider by ``provider_id``)."""
+ALSO_FIELD = "starting_state.states[1].provider_id"
+"""Where ``with_provider(also=)`` puts the second provider's name."""
 
 COUNTED = {
     "operations": "SELECT count(*) FROM operations",
@@ -195,13 +198,22 @@ def filled(role_id: str, fill: str, character_id: str, **fields: Any) -> dict[st
 
 
 def with_provider(
-    body: Mapping[str, Any], name: str = PROVIDER, *, declared: Iterable[str] = ()
+    body: Mapping[str, Any],
+    name: str = PROVIDER,
+    *,
+    declared: Iterable[str] = (),
+    also: str | None = None,
 ) -> dict[str, Any]:
-    """``body`` with a scheduled item naming provider ``name`` (at ``PROVIDER_FIELD``) and
+    """``body`` with an externally owned starting value naming provider ``name`` (at
+    ``PROVIDER_FIELD``), a second naming ``also`` when given (at ``ALSO_FIELD``), and
     ``declared`` as its required providers."""
     found = copy.deepcopy(dict(body))
     start = dict(found.get("starting_state", {}))
-    start["scheduled_events"] = [{"at": "18:00", "what": "dinner", "provider": name}]
+    owned = [("rainfall", name)] + ([] if also is None else [("tide", also)])
+    start["states"] = [
+        {"name": value, "type": "number", "owner": "external", "provider_id": provider}
+        for value, provider in owned
+    ]
     found["starting_state"] = start
     found["story_settings_defaults"] = {"required_providers": list(declared)}
     return found
@@ -225,6 +237,7 @@ def codes(found: Iterable[Mapping[str, Any]]) -> list[tuple[str, str | None]]:
 
 
 __all__ = [
+    "ALSO_FIELD",
     "COUNTED",
     "PROVIDER",
     "PROVIDER_FIELD",

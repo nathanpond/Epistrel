@@ -14786,7 +14786,10 @@
                 "nested",
                 "belief_conflict",
                 "visibility_conflict",
-                "seed_audience_unfilled"
+                "seed_audience_unfilled",
+                "state",
+                "clock",
+                "event"
               ],
               "type": "string"
             },
@@ -29403,6 +29406,87 @@
         "title": "SanitizeRequest",
         "type": "object"
       },
+      "ScenarioAnchor": {
+        "additionalProperties": false,
+        "description": "The starting clock's anchor (FR-CLOCK-3; #195's components): what the author fixes of\nthe absolute time at the story's start — the date (``year``, ``month``, ``day``), the\n``weekday`` (a calendar weekday's name), the exact ``time`` of day, or only its ``band``\n(\"evening\"). What is left out stays unknown.",
+        "properties": {
+          "band": {
+            "anyOf": [
+              {
+                "maxLength": 60,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Band"
+          },
+          "day": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Day"
+          },
+          "month": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Month"
+          },
+          "time": {
+            "anyOf": [
+              {
+                "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Time"
+          },
+          "weekday": {
+            "anyOf": [
+              {
+                "maxLength": 60,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weekday"
+          },
+          "year": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Year"
+          }
+        },
+        "title": "ScenarioAnchor",
+        "type": "object"
+      },
       "ScenarioCard": {
         "additionalProperties": false,
         "description": "A scenario's public card (``projection=card``, the default; FR-SCN-10): the entry's\nenvelope, the name, public description, media, labels and content rating, and each role's\npublic label and setup description with its kind and fill mode — never a world\ndescription, seed, secret, director guidance or any other private field. ``version`` is the\nversion shown (a draft read shows the draft with the latest published version, ``null``\nbefore the first publish); ``companion_of`` names the character whose companion this is\n(#116).",
@@ -29700,6 +29784,127 @@
           "id"
         ],
         "title": "ScenarioChannel",
+        "type": "object"
+      },
+      "ScenarioClock": {
+        "additionalProperties": false,
+        "description": "The starting clock (FR-CLOCK-3,5,8; #193): its ``anchor`` (``null``: unanchored) and the\nsettings genesis seeds onto the story's ``world_clock`` (the rest keep their defaults).",
+        "properties": {
+          "anchor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScenarioAnchor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "bands": {
+            "anyOf": [
+              {
+                "items": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bands"
+          },
+          "calendar": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Calendar"
+          },
+          "max_unprompted_skip_minutes": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Unprompted Skip Minutes"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "paced",
+                  "manual"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
+          "pacing_table": {
+            "anyOf": [
+              {
+                "items": {
+                  "items": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "type": "array"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pacing Table"
+          },
+          "stop_at_due_events": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stop At Due Events"
+          },
+          "time_awareness": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TimeAwareness"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "ScenarioClock",
         "type": "object"
       },
       "ScenarioCreate": {
@@ -31140,7 +31345,27 @@
           "state_initial_values": {
             "anyOf": [
               {
-                "additionalProperties": true,
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "maxProperties": 200,
+                "propertyNames": {
+                  "maxLength": 120,
+                  "minLength": 1
+                },
                 "type": "object"
               },
               {
@@ -31159,9 +31384,124 @@
         "title": "ScenarioRole",
         "type": "object"
       },
+      "ScenarioScheduledEvent": {
+        "additionalProperties": false,
+        "description": "A pre-scheduled event (FR-CLOCK-9; #196): the event (``proposition``: its name, \"the\ndinner\"), its ``subject`` (a role; default the owning role, else the first participant, else\nthe event itself), when it is ``planned`` (an offset in minutes from the story's start, or a\ntime of day ``\"HH:MM\"`` the starting anchor places), its ``participants`` (roles), its\n``place`` (a world location) and its ``owner``: ``world`` (the default) or a role, whose\ncharacter owns it. ``audience`` and ``disclosure`` say who knows of it, as a seed's do\n(default: ``public`` for the world's, ``self`` for a role's).",
+        "properties": {
+          "audience": {
+            "anyOf": [
+              {
+                "items": {
+                  "pattern": "^[a-z0-9_]([a-z0-9 _-]{0,58}[a-z0-9_])?$",
+                  "type": "string"
+                },
+                "maxItems": 40,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audience"
+          },
+          "disclosure": {
+            "anyOf": [
+              {
+                "enum": [
+                  "open",
+                  "guarded",
+                  "secret"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disclosure"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z0-9_]{1,40}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner"
+          },
+          "participants": {
+            "anyOf": [
+              {
+                "items": {
+                  "pattern": "^[a-z0-9_]{1,40}$",
+                  "type": "string"
+                },
+                "maxItems": 32,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Participants"
+          },
+          "place": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z0-9_]{1,40}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Place"
+          },
+          "planned": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$",
+                "type": "string"
+              }
+            ],
+            "title": "Planned"
+          },
+          "proposition": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Proposition",
+            "type": "string"
+          },
+          "subject": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z0-9_]{1,40}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject"
+          }
+        },
+        "required": [
+          "proposition",
+          "planned"
+        ],
+        "title": "ScenarioScheduledEvent",
+        "type": "object"
+      },
       "ScenarioStartingState": {
         "additionalProperties": false,
-        "description": "The story's starting state: seeded world memories, State trackers with initial values,\nthe starting clock, pre-scheduled events, author-declared predicates, closed sets and rules\n(each stored as given in M3), and the opening.",
+        "description": "The story's starting state: seeded world memories, State trackers with initial values,\nthe starting clock, pre-scheduled events (typed since #202), author-declared predicates,\nclosed sets and rules (#131's declarations, stored as given), and the opening.",
         "properties": {
           "channels": {
             "items": {
@@ -31174,14 +31514,12 @@
           "clock": {
             "anyOf": [
               {
-                "additionalProperties": true,
-                "type": "object"
+                "$ref": "#/components/schemas/ScenarioClock"
               },
               {
                 "type": "null"
               }
-            ],
-            "title": "Clock"
+            ]
           },
           "closed_sets": {
             "items": {
@@ -31215,8 +31553,7 @@
           },
           "scheduled_events": {
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/components/schemas/ScenarioScheduledEvent"
             },
             "maxItems": 200,
             "title": "Scheduled Events",
@@ -31232,8 +31569,7 @@
           },
           "states": {
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/components/schemas/ScenarioState"
             },
             "maxItems": 200,
             "title": "States",
@@ -31241,6 +31577,208 @@
           }
         },
         "title": "ScenarioStartingState",
+        "type": "object"
+      },
+      "ScenarioState": {
+        "additionalProperties": false,
+        "description": "A State the story tracks from genesis (FR-STATE-3; #185's ``StateDefinition`` as an\nauthor writes it): ``name``, ``type`` and the optional members. ``entity_id`` names a role\nor a world location or entity, and ``authorization.sources`` name roles as ``role:<slug>``;\ngenesis maps both to the story's ids. The declaration's shape rules are checked at publish\n(``state_schema``).",
+        "properties": {
+          "aliases": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aliases"
+          },
+          "authorization": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Authorization"
+          },
+          "constraints": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StateConstraints"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "entity_id": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z0-9_]{1,40}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entity Id"
+          },
+          "external_value_name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Value Name"
+          },
+          "initial_value": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Initial Value"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StateOwner"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider_id": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Id"
+          },
+          "reservation_expiry_minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reservation Expiry Minutes"
+          },
+          "rules": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rules"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StateScope"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "silent": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Silent"
+          },
+          "transfer": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transfer"
+          },
+          "type": {
+            "$ref": "#/components/schemas/StateType"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "visibility": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StateVisibility"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "type"
+        ],
+        "title": "ScenarioState",
         "type": "object"
       },
       "ScenarioStatusBody": {
@@ -34931,6 +35469,82 @@
         "title": "StateBody",
         "type": "object"
       },
+      "StateConstraints": {
+        "additionalProperties": false,
+        "description": "A State's bounds (#185's ``Constraints``, as JSON).",
+        "properties": {
+          "allowed_values": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Values"
+          },
+          "max": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max"
+          },
+          "min": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min"
+          },
+          "non_negative": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Non Negative"
+          },
+          "tolerance": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tolerance"
+          }
+        },
+        "title": "StateConstraints",
+        "type": "object"
+      },
       "StateConstraintsBody": {
         "additionalProperties": false,
         "description": "A State's bounds: ``min``, ``max`` and ``non_negative`` for a number, the\n``allowed_values`` of an enum, and a number's ``tolerance``.",
@@ -35751,6 +36365,15 @@
         "title": "StateEffectModel",
         "type": "object"
       },
+      "StateOwner": {
+        "description": "Who holds a tracked value (FR-STATE-2): Epistrel (``story``) or a registered provider\n(``external``, FR-EXT). Postgres enum ``state_owner``.",
+        "enum": [
+          "story",
+          "external"
+        ],
+        "title": "StateOwner",
+        "type": "string"
+      },
       "StateProposalApproveRequest": {
         "additionalProperties": false,
         "description": "``POST /stories/{id}/state-proposals/{pid}/approve``: the ``definition`` members that\noverride the proposal's suggestions (none: declare it as suggested).",
@@ -35891,6 +36514,15 @@
         "title": "StateProposalsBody",
         "type": "object"
       },
+      "StateScope": {
+        "description": "Whether a State has one value for the ``story`` or one per ``character`` (the player's\ngold apart from Jenni's). Postgres enum ``state_scope``.",
+        "enum": [
+          "story",
+          "character"
+        ],
+        "title": "StateScope",
+        "type": "string"
+      },
       "StateSetRequest": {
         "additionalProperties": false,
         "description": "``PUT /stories/{id}/states/{name}``: a new ``value``, or a signed ``delta`` for a number\nState, for one character's value of a per-character State (``scope_key``), with a\n``reason``.",
@@ -35961,6 +36593,18 @@
         "title": "StateSetRequest",
         "type": "object"
       },
+      "StateType": {
+        "description": "A State's value type (FR-STATE-1; #185): a number (``numeric``, never a float), a\n    boolean, one of the definition's ``allowed_values`` (``enum``), or short text (at most 200\n    characters), or the built-in world ``clock`` (#193: an offset in minutes from the story's\nstart, changed only by its advances). Postgres enum ``state_type``.",
+        "enum": [
+          "number",
+          "boolean",
+          "enum",
+          "text",
+          "clock"
+        ],
+        "title": "StateType",
+        "type": "string"
+      },
       "StateViewBody": {
         "description": "One State through `as_of` (`null`: the story as it stands).",
         "properties": {
@@ -35995,6 +36639,15 @@
         ],
         "title": "StateViewBody",
         "type": "object"
+      },
+      "StateVisibility": {
+        "description": "Who sees a State: the player (``player_visible``, gold) or nobody but the narrator and an\n``omniscient`` read (``hidden``, an NPC's trust score). Postgres enum ``state_visibility``.",
+        "enum": [
+          "player_visible",
+          "hidden"
+        ],
+        "title": "StateVisibility",
+        "type": "string"
       },
       "StateWrittenBody": {
         "description": "A set: the State's `old_value` and `new_value` (`null`: undefined), its inter-turn slot\n`position` (`N⁺k`; `slot` the full position), the slot's `operation_id`, the `change_id`\nit wrote and the story's revision after it.",
@@ -38283,6 +38936,16 @@
           "expired"
         ],
         "title": "ThunkState",
+        "type": "string"
+      },
+      "TimeAwareness": {
+        "description": "How precisely the story's characters know the time (#200; set through #193's\n``PATCH /clock``): ``exact``, ``approximate`` or ``none``. Postgres enum ``time_awareness``.",
+        "enum": [
+          "exact",
+          "approximate",
+          "none"
+        ],
+        "title": "TimeAwareness",
         "type": "string"
       },
       "TransitionBody": {

@@ -758,7 +758,7 @@ async def create_story_from(
         # #188 (FR-MULTI-8): a state:<name> tie-break names a number State the genesis made
         # (#202 creates a scenario's States before this check).
         await validate_state_tie_break(
-            conn, story_id, _tie_break(settings), field="body.settings.simultaneous_tie_break"
+            conn, story_id, stored_tie_break(settings), field="body.settings.simultaneous_tie_break"
         )
 
     op = Operation(
@@ -806,7 +806,7 @@ async def create_story_from(
     )
 
 
-def _tie_break(settings: Mapping[str, Any]) -> Any:
+def stored_tie_break(settings: Mapping[str, Any]) -> Any:
     """The stored ``simultaneous_tie_break``: the story's own, else the one genesis kept
     ``inactive`` (#181)."""
     found = settings.get("simultaneous_tie_break")

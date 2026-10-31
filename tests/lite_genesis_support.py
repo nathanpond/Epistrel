@@ -169,6 +169,12 @@ def inactive_of(report: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     }
 
 
+BUILT_IN_ROWS: dict[str, int] = {"state_definitions": 1}
+"""What every story's genesis declares whatever its scenario: the built-in world clock (#193;
+#202 declares it for a story created from a scenario too), inert while the profile runs it
+off."""
+
+
 async def story_table_counts(engine: AsyncEngine) -> dict[str, int]:
     """Rows of every public table with a ``story_id`` column, and of ``stories``: what a
     creation may add to, enumerated from ``information_schema``."""
@@ -241,6 +247,7 @@ def copy_of(body: Mapping[str, Any]) -> dict[str, Any]:
 
 __all__ = [
     "BELIEF_HEADING",
+    "BUILT_IN_ROWS",
     "DIRECTOR_HEADING",
     "LABEL_PHRASE",
     "NEVER_DEFERRED",

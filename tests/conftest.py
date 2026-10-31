@@ -357,6 +357,25 @@ async def time_claims_delivered(
             await conn.execute(clock_support.CLOCK_OFF)
 
 
+@pytest.fixture
+async def seeded_clock_delivered(
+    monkeypatch: pytest.MonkeyPatch, engine: AsyncEngine
+) -> AsyncIterator[None]:
+    """The ``states`` module, the ``clock`` and its ``scheduled_stops`` delivered for the test
+    (#202's genesis; #203 delivers them for real), and no story left with a ``states`` or
+    ``clock`` override afterwards (as ``states_delivered``)."""
+    from tests import clock_support, state_support
+
+    clock_support.deliver_stops(monkeypatch)
+    state_support.deliver(monkeypatch)
+    try:
+        yield
+    finally:
+        async with engine.begin() as conn:
+            await conn.execute(_STATES_OFF)
+            await conn.execute(clock_support.CLOCK_OFF)
+
+
 # -- embedding jobs on the shared database (#138) -------------------------------------------------
 
 EMBEDDING_JOB_KINDS = ("embed", "reembed")

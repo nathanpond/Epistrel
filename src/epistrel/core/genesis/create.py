@@ -89,6 +89,15 @@ with the guardrail set in force (#118). A scenario with no opening (a companion 
 FR-CAT-10) has no turn 1. Under an idempotent call both operations bind the key (the first is
 its operation). Any failure rolls the whole transaction back.
 
+**The clock and States (#202).** The genesis operation's commit declares the story's
+``world_clock`` first (FR-CLOCK-1; #193: every story has one, inert while its profile runs the
+clock off), with the scenario's starting settings and anchor when the story runs the clock
+(``structured.clock_definition``); then the structured writer (facts, the seeded scheduled
+events); then the scenario's States and each role's initial values
+(``structured.write_states``); and last #188's ``validate_state_tie_break``, so a
+``state:<name>`` tie-break may name a State the scenario declares (422 ``validation_error``,
+``reason: tie_break_state_invalid``, otherwise).
+
 Nothing here consults an owner, a relation or a listing status (FR-AUTH-8).
 """
 
@@ -173,8 +182,8 @@ from epistrel.core.events.types import (
 from epistrel.core.genesis import epistemic, merge, render, structured
 from epistrel.core.genesis.epistemic import SEED_MATERIALIZED
 from epistrel.core.genesis.materialize import (
-    PARTITIONS,
-    STRUCTURED,
+    CLOCK,
+    STATES,
     CastRole,
     Materialized,
     materialize,
@@ -229,6 +238,7 @@ from epistrel.core.ratings.change import (
 )
 from epistrel.core.resolution.entities import EntitySpec, add_entities, character_spec
 from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX, StorySettings
+from epistrel.core.states import define_state, validate_state_tie_break
 from epistrel.core.stories import (
     CharacterRef,
     CreatedStory,
@@ -236,6 +246,7 @@ from epistrel.core.stories import (
     rating_ref,
     resolve_story_rating,
     split_settings,
+    stored_tie_break,
 )
 from epistrel.core.tables import (
     character_catalog,
@@ -1203,16 +1214,18 @@ def creation_report_of(
 def deferred_of(found: Plan) -> list[DeferredItem]:
     """What the story keeps deferred: every item under Lite; under ``structured``, the items it
     did not materialize and the seed memories waiting for ``episodic`` (#149); with partitions,
-    the ``partitions`` items its branch consumed are not deferred either (#173)."""
+    the ``partitions`` items its branch consumed are not deferred either (#173), nor, with
+    States and the clock on, the ``states`` and ``clock`` items it seeded (#202)."""
     items = list(found.materialized.deferred)
     plan_ = found.structured
     if plan_ is None:
         return items
-    consumed = {STRUCTURED} if plan_.epistemic is None else {STRUCTURED, PARTITIONS}
+    consumed = set(plan_.capabilities)
     kept = [
         item
         for item in items
         if not (item.capability_needed in consumed and item.field_ref in plan_.materialized)
+        and not (item.capability_needed in (STATES, CLOCK) and item.field_ref in plan_.seeded)
     ]
     return [*kept, *plan_.deferred]
 
@@ -1512,6 +1525,34 @@ def _structured_step(
     return step
 
 
+def _clock_step(
+    story_id: str, op: Operation, planned: structured.Plan | None
+) -> Callable[[AsyncConnection], Awaitable[None]]:
+    """The story's ``world_clock`` (#193), seeded from the scenario when it runs the clock
+    (#202): the first commit step, before any fact or State."""
+
+    async def step(conn: AsyncConnection) -> None:
+        await define_state(conn, op, story_id, structured.clock_definition(planned), builtin=True)
+
+    return step
+
+
+def _states_step(
+    story_id: str, op: Operation, planned: structured.Plan | None, tie_break: Any
+) -> Callable[[AsyncConnection], Awaitable[None]]:
+    """The scenario's States and initial values (#202), then #188's tie-break check, which
+    reads them."""
+
+    async def step(conn: AsyncConnection) -> None:
+        if planned is not None:
+            await structured.write_states(conn, story_id, op, planned)
+        await validate_state_tie_break(
+            conn, story_id, tie_break, field="body.settings.simultaneous_tie_break"
+        )
+
+    return step
+
+
 def _opening_step(
     turn: Operation, seeded: epistemic.EpistemicPlan
 ) -> Callable[[AsyncConnection], Awaitable[None]]:
@@ -1766,12 +1807,17 @@ async def genesis(
                     ),
                 )
             await insert_deferred(conn, story_id, op.operation_id, found)
+            # #202: the world clock first (seeded from the scenario), the States last.
+            op.add_commit_step(_clock_step(story_id, op, found.structured))
             if found.structured is not None:
                 seeded = found.structured.epistemic
                 for act in () if seeded is None else seeded.acts:
                     # #173: each seeded item's author act, which its beliefs cite.
                     op.append(SEED_MATERIALIZED, SeedMaterialized(**act.payload()))
                 op.add_commit_step(_structured_step(story_id, op, found.structured))
+            op.add_commit_step(
+                _states_step(story_id, op, found.structured, stored_tie_break(found.settings))
+            )
             await op.write_in(conn)
             await conn.execute(
                 update(operations)

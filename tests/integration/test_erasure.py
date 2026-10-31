@@ -834,9 +834,12 @@ def _stored_as_given(name: str, *, objects: bool = True, policies: bool = True) 
     body["cast"]["roles"][0]["state_initial_values"] = {"mood": f"{at}'s calm"}
     body["starting_state"].update(
         {
-            "states": [{"name": f"{at}'s trust", "initial": "wary"}],
-            "clock": {"start": "1987-10-24T18:00:00", "note": f"{at} winds the clocks."},
-            "scheduled_events": [{"at": "1987-10-24T21:00:00", "what": f"{at} meets Bobby."}],
+            # Typed since #202: a State's alias, a band's name and an event's name hold her.
+            "states": [
+                {"name": "mood", "type": "text", "scope": "character", "aliases": [f"{at}'s trust"]}
+            ],
+            "clock": {"bands": [[f"{at}'s hour", "00:00", "24:00"]]},
+            "scheduled_events": [{"proposition": f"{at} meets Bobby.", "planned": 180}],
             "predicates": [{"name": "trusts", "docs": f"{at} trusts Bobby."}],
             "closed_sets": [{"predicate": "trusts", "subject": "mother", "members": [at, "Bobby"]}],
             # Typed since #149's publish check (#131's declarations): a rule names predicates
@@ -860,9 +863,9 @@ def _stored_as_given(name: str, *, objects: bool = True, policies: bool = True) 
 OBJECT_PATHS = frozenset(
     {
         "cast.roles[0].state_initial_values.mood",
-        "starting_state.states[0].name",
-        "starting_state.clock.note",
-        "starting_state.scheduled_events[0].what",
+        "starting_state.states[0].aliases[0]",
+        "starting_state.clock.bands[0][0]",
+        "starting_state.scheduled_events[0].proposition",
         "starting_state.predicates[0].docs",
         "starting_state.closed_sets[0].members[0]",
     }
@@ -948,9 +951,9 @@ async def _erased_from_the_scenario(
         start = document["starting_state"]
         policy = document["story_settings_defaults"]["policies"][0]
         assert document["cast"]["roles"][0]["state_initial_values"]["mood"] == f"{at}'s calm"
-        assert start["states"][0]["name"] == f"{at}'s trust"
-        assert start["clock"]["note"] == f"{at} winds the clocks."
-        assert start["scheduled_events"][0]["what"] == f"{at} meets Bobby."
+        assert start["states"][0]["aliases"] == [f"{at}'s trust"]
+        assert start["clock"]["bands"][0][0] == f"{at}'s hour"
+        assert start["scheduled_events"][0]["proposition"] == f"{at} meets Bobby."
         assert start["predicates"][0]["docs"] == f"{at} trusts Bobby."
         assert start["closed_sets"][0]["members"] == [at, "Bobby"]
         assert start["rules"][0] == {"when": "trusts", "then": "knows"}

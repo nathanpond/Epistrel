@@ -295,9 +295,21 @@ COMPLETE: dict[str, Any] = {
                 "disclosure": "open",
             }
         ],
-        "states": [{"name": "harvest_mood", "initial": "tense"}],
-        "clock": {"start": "1987-10-24T18:00:00", "time_awareness": "loose"},
-        "scheduled_events": [{"at": "1987-10-24T21:00:00", "what": "the reading of the will"}],
+        # Typed since #202 (``ScenarioState``, ``ScenarioClock``, ``ScenarioScheduledEvent``).
+        "states": [
+            {
+                "name": "harvest_mood",
+                "type": "enum",
+                "constraints": {"allowed_values": ["calm", "tense"]},
+                "initial_value": "tense",
+            },
+            {"name": "composure", "type": "number", "scope": "character"},
+        ],
+        "clock": {
+            "anchor": {"year": 1987, "month": 10, "day": 24, "time": "18:00"},
+            "time_awareness": "approximate",
+        },
+        "scheduled_events": [{"proposition": "the reading of the will", "planned": "21:00"}],
         "predicates": [{"name": "inherits", "subject_type": "person", "cardinality": "multi"}],
         "closed_sets": [],
         "rules": [{"when": "inherits", "then": "owns"}],

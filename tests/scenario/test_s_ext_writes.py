@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.config import Settings
 from epistrel.core import clock
 from epistrel.core.ids import new_ulid
+from epistrel.core.outbox import public_effect
 from epistrel.orchestrator.jobs.handlers import outbox as outbox_job
 from tests import effect_support as es
 from tests import multi_support as ms
@@ -248,7 +249,15 @@ async def test_s_ext_writes__outbox(
         assert (row.id, row.status, row.member) == (effect["outbox_id"], "intended", "active")
         assert (row.narrative_turn, row.beat) == (played["turn"], do_beat["beat"])
         assert (row.value_name, row.scope_key, row.attempts) == ("gold", cal, 0)
-        assert row.effect == {"kind": "change", "state": "gold", "delta": -50, "reason": REASON}
+        assert public_effect(row.effect) == {
+            "kind": "change",
+            "state": "gold",
+            "delta": -50,
+            "reason": REASON,
+        }
+        # #214: what #188 authorized at intent (Mira's render, on gold), for the claim's check.
+        assert row.effect["authorized"]["state"] == "gold"
+        assert row.effect["authorized"]["source"].startswith("character:")
         (job,) = await ps.outbox_jobs(engine, story)
         assert (job.status, job.payload, job.coalesce_key) == (
             "queued",

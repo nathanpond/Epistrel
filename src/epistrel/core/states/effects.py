@@ -819,14 +819,19 @@ OUTCOME_KINDS: frozenset[str] = frozenset({"say", "do", "narration"})
 """The beats whose prose is read for an external change's outcome."""
 
 
-def outcome_spans(text: str, pending: Sequence[Pending]) -> list[tuple[Pending, tuple[int, int]]]:
+def outcome_spans(
+    text: str, pending: Sequence[Pending], *, exchange_settled: bool = False
+) -> list[tuple[Pending, tuple[int, int]]]:
     """The sentences of ``text`` asserting the outcome of one of ``pending``'s changes, each with
     the change it is about: a sentence naming the State (or an exchange: a purchase, a payment,
     the balance) with an outcome word ("went through", "succeeded", "confirmed"), or with an
     amount other than the pinned value that is the value the change would leave, or that a
     "now"/"left" cue gives as the value after it. A question, a negation, a conditional or a
     modal (#148's cues) suppresses the sentence; so it never fires on an attempt ("you hand over
-    the coins") or a hope ("if the payment goes through")."""
+    the coins") or a hope ("if the payment goes through"). ``exchange_settled`` (#214: a staged
+    turn's outcome step once every external change it asked for is confirmed): a sentence that
+    names no State speaks of that exchange ("the payment went through"), never of a conditional
+    grant still held pending, which only a sentence naming it asserts."""
     found: list[tuple[Pending, tuple[int, int]]] = []
     if not pending:
         return found
@@ -837,7 +842,8 @@ def outcome_spans(text: str, pending: Sequence[Pending]) -> list[tuple[Pending, 
         named = [
             p for p in pending if p.words and _word_pattern(p.words).search(sentence) is not None
         ]
-        for request in named or list(pending):
+        unnamed = [p for p in pending if not p.grant] if exchange_settled else list(pending)
+        for request in named or unnamed:
             if _asserts_outcome(sentence, request):
                 found.append((request, (start, end)))
                 break
@@ -845,7 +851,7 @@ def outcome_spans(text: str, pending: Sequence[Pending]) -> list[tuple[Pending, 
 
 
 def unconfirmed_outcomes(
-    beat: int, kind: str, text: str, pending: Sequence[Pending]
+    beat: int, kind: str, text: str, pending: Sequence[Pending], *, exchange_settled: bool = False
 ) -> list[Finding]:
     """#209 (FR-EXT-15): one ``external_outcome_unconfirmed`` finding per sentence of ``text``
     (beat ``beat`` of ``kind``) that asserts a requested change's outcome (``outcome_spans``):
@@ -863,7 +869,7 @@ def unconfirmed_outcomes(
             current=request.current,
             attempted=request.leaves,
         )
-        for request, span in outcome_spans(text, pending)
+        for request, span in outcome_spans(text, pending, exchange_settled=exchange_settled)
     ]
 
 

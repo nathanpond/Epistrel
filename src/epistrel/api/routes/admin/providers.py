@@ -29,11 +29,12 @@ from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Path, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from epistrel.api.deps import ContextDep, EngineDep, StoryId
 from epistrel.api.idempotency import answered, no_content
 from epistrel.api.responses import DeploymentMutationResponse, MutationResponse
+from epistrel.core.profiles.validate import ProfileValidationWarning
 from epistrel.core.providers import (
     PROVIDER_NAME_PATTERN,
     BindingRequest,
@@ -141,9 +142,19 @@ class BindingBody(BaseModel):
 
 class BindingMutation(BindingBody, MutationResponse):
     """The binding as stored, with the story's (unchanged) ``timeline_revision`` and, when the
-    binding made the story's ``required_providers`` live (#204), that list."""
+    binding made the story's ``required_providers`` live (#204), that list; ``warnings`` (#214):
+    the profile validator's ``below_safety_minimum`` when the provider confirms ``synchronous``
+    and the story's effective call cap is below a turn's minimum with its outcome step."""
 
     activated_required_providers: list[str] | None = None
+    warnings: list[ProfileValidationWarning] = Field(
+        default_factory=list,
+        description=(
+            "Binding a `synchronous` write-capable provider (#214): `below_safety_minimum` when "
+            "the story's `budgets.model_calls` is below a turn's minimum counting the outcome "
+            "step its turns may now need (the binding is stored either way)."
+        ),
+    )
 
 
 class BindingList(BaseModel):
@@ -253,6 +264,7 @@ async def bind_provider(
     answer = BindingMutation(
         timeline_revision=write.timeline_revision,
         activated_required_providers=write.activated,
+        warnings=[ProfileValidationWarning.model_validate(w) for w in write.warnings],
         **BindingBody.of(write.binding).model_dump(),
     )
     return answered(answer, ctx, response, replayed=write.replayed)

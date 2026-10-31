@@ -221,7 +221,11 @@ from epistrel.core.memory import records
 from epistrel.core.policies.evaluate import evaluate
 from epistrel.core.policies.model import ModelAssistedRule, Target
 from epistrel.core.profiles.capabilities import level_at_least, module_on
-from epistrel.core.profiles.effective import ProfileVersionRef, StoryProfile
+from epistrel.core.profiles.effective import (
+    ProfileVersionRef,
+    StoryProfile,
+    effective_configuration,
+)
 from epistrel.core.profiles.fingerprint import Stamp
 from epistrel.core.profiles.reservation import extraction_on
 from epistrel.core.profiles.schema import ProfileSettings
@@ -384,6 +388,7 @@ from epistrel.orchestrator.structured import clocking, multi, planner, stopping
 from epistrel.orchestrator.structured import effects as state_effects
 from epistrel.orchestrator.structured import player_authority as authority_rules
 from epistrel.orchestrator.structured import prompt as prompts
+from epistrel.orchestrator.structured import rebase as structured_rebase
 from epistrel.orchestrator.structured import reconcile as reconcile_rules
 from epistrel.orchestrator.structured import roles as roles_rt
 from epistrel.orchestrator.structured import schedules as schedule_commit
@@ -4748,13 +4753,27 @@ async def play(
         return found
 
     async def generate(op: Operation, read: TurnRead) -> None:
-        nonlocal say, do
+        nonlocal say, do, settings
+        captured_level = (op.config_revisions or {}).get("perception_level")
+        if captured_level is not None and captured_level != scene_loader.level_of(settings):
+            # #214 (S-CONFIG-RACE (g), FR-CONC-16): a perception change re-checked the turn and
+            # regenerates it, so its renders route what they hear under the new rules (the
+            # interpretive perception settings, as captured again; nothing prospective moves).
+            async with db.connect() as conn:
+                now = (await effective_configuration(conn, story_id, validate=False)).settings
+            settings = settings.model_copy(
+                update={
+                    "perception": now.perception,
+                    "character_knowledge": now.character_knowledge,
+                }
+            )
         # #180 (FR-RESP-11): the input's spans about other characters, per the story's
         # ``player_authority``, out of the player's own text before anything renders.
         split = authority_rules.split(
             typed_say,
             typed_do,
-            mode=authority_rules.mode_of(story.settings),
+            # #214: the mode the attempt captured (a regeneration runs under a changed one).
+            mode=authority_rules.captured_mode(op, story.settings),
             cast_=story.cast,
             actor_id=read.actor.id,
             present=authority_rules.present_of(story.cast, read.present),
@@ -4772,6 +4791,8 @@ async def play(
         )
         split.corrected = corrected_from is not None
         authority[:] = [split]
+        # #214: the mode the attempt split its input under, for the rebase re-check.
+        authority_rules.remember_mode(read_set, split)
         say, do = split.say, split.do
         input_qualifiers[:] = [perception.Qualifiers()]
         input_repairs.clear()
@@ -5591,7 +5612,11 @@ async def play(
             budget=budget,
             sections=base,
         )
-        scene_loader.remember_level(read_set, scene_loader.level_of(settings))
+        # #214 (S-CONFIG-RACE (g)): a sequential turn's later renders answered its earlier
+        # ones as routed now, so a level change regenerates it whole.
+        scene_loader.remember_level(
+            read_set, scene_loader.level_of(settings), cascade=len(order) > 1 and not simultaneous
+        )
         checked = await validate_perception(db, story_id, read, checked, settings)
         # #177: the player's whisper's repairs, validated before the renders (#572).
         checked.perception_repairs[:0] = list(input_repairs)
@@ -5618,6 +5643,10 @@ async def play(
         # (its intent). Its message is composed at completion, over every committed beat, and
         # its response is stored then (stage 5), not by the intent's commit.
         staged_turn[0] = books[0].on and staged_turns.plans_staged(books[0], checked.beats)
+        if not staged_turn[0]:
+            # #214: the turn's last render finished without a synchronous effect, so the
+            # outcome step's reservation (O) goes back to the pool; the polish may use it.
+            planner.release_outcome(budget)
         if call is not None:
             call.result_in_commit = None if staged_turn[0] else result
         composing_at = time.perf_counter()
@@ -5857,6 +5886,8 @@ async def play(
         if books[0].on:
             # #187: the turn's State reads, for the rebase re-check; its effects, first.
             state_effects.remember(read_set, books[0], checked.beats)
+            # #214: how its effects on external States are routed, for the rebase re-check.
+            structured_rebase.remember(read_set, books[0], checked.beats)
             if any(b.effects for b in checked.beats):
                 op.add_commit_step(partial(apply_effects, beats=list(checked.beats)))
         op.add_commit_step(partial(write_turn, read=read, rendered=rendered, checked=checked))
@@ -6647,6 +6678,9 @@ async def play(
             read_.resolved.max_tokens,
         )
         rendering = time.perf_counter()
+        # #214: the outcome step spends O, reserved at planning: its render and output check
+        # held, its extraction the owner-only extraction slot.
+        planner.draw_outcome(budget, plan)
         with budget.charging(NARRATOR_RENDER):
             narr, retries = await render_beats(
                 models,
@@ -6715,7 +6749,9 @@ async def play(
             first_claim=len(ctx.checked.checked),
             introductions=ctx.checked.introductions,
         )
-        unsettled = state_effects.outcome_step_findings(book, checked_out.beats, pending)
+        unsettled = state_effects.outcome_step_findings(
+            book, checked_out.beats, pending, exchange_settled=staged_turns.all_confirmed(answers)
+        )
         if unsettled:
             # FR-EXT-15: an outcome the game did not confirm, or a grant not committed, is
             # repaired like an intent beat's (#209's external_outcome_unconfirmed).
@@ -6771,18 +6807,30 @@ async def play(
             try:
                 out = await render_outcome_step(answers, recorded, start, pending, places)
                 cause = None if out is not None else "empty"
+                if out is not None and not await output_passes(
+                    models,
+                    [" ".join(b.text for b in out[1].beats if b.text)],
+                    ctx.context,
+                    budget=budget,
+                    render_ids=cast_.render_ids,
+                ):
+                    # #214: the outcome step's own output check (the second output checkpoint,
+                    # O's G_out): a narration the output policies refuse is not committed.
+                    out, cause = None, "guardrail"
             except Exception as exc:
                 # FR-EXT-17: a failed outcome render never undoes the outcome; the turn
                 # completes with the deterministic narration instead.
                 log.warning("staged turn: outcome render failed: %s", type(exc).__name__)
                 cause = "render_failed"
         if out is None:
-            # #213 (FR-EXT-17): the deterministic outcome narration, at the actor's place.
+            # #213 (FR-EXT-17): the deterministic outcome narration, at the actor's place;
+            # #214: plus a sentence per grant the settlement held pending.
             beats = staged_turns.deterministic_outcome(
                 answers,
                 start,
                 actor=read_.names.get(read_.actor.id) or read_.actor.name,
                 location=await actor_place(),
+                recorded=recorded,
             )
             out = (
                 Rendered(
@@ -6807,6 +6855,8 @@ async def play(
                 ),
             )
         rendered_out, checked_out = out
+        # #214: what the outcome step held and did not spend goes back before the composition.
+        budget.release_to(0)
         merged = _merge_checked(_copy_checked(ctx.checked), checked_out)
         heard = await audience_of(
             db,
@@ -6840,7 +6890,9 @@ async def play(
             reserved=ctx.reserved,
             heard=heard,
             # FR-EXT-15: the completed message may state only what the game confirmed.
-            outcome_check=state_effects.pending_check(pending),
+            outcome_check=state_effects.pending_check(
+                pending, exchange_settled=staged_turns.all_confirmed(answers)
+            ),
         )
         clock.add("composition", time.perf_counter() - composing_at)
         composed[:] = [composition]

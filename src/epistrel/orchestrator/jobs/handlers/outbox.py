@@ -8,8 +8,10 @@ job for it (``coalesce_key`` ``outbox:<id>``; the enqueue's NOTIFY wakes a worke
    then its operation's ``membership`` re-read in the same transaction. No longer ``active``
    (``discarded``, ``dormant``, ``superseded``): ``cancelled``, never sent. A provider no
    longer registered or no longer write-capable (#212, FR-CONC-16: the dispatcher re-reads the
-   registration at claim) cancels the row too, listed ``reconciliation_required`` (a staged
-   turn's outcome step narrates the attempt as not carried out). A story
+   registration at claim), or an effect #188's authorization no longer admits under the current
+   configuration (#214, ``orchestrator.structured.rebase.revalidate_claim``: its State's
+   sources, or its State gone), cancels the row too, listed ``reconciliation_required`` (a
+   staged turn's outcome step narrates the attempt as not carried out). A story
    ``blocked_by_erasure`` (#125), an ``in_process`` provider with no write callable in this
    process (#204) or a story with no binding to it leave the row ``intended`` (the recovery
    sweep tries again). Otherwise the row
@@ -95,6 +97,7 @@ from epistrel.orchestrator.providers.port import (
     WriteOutcome,
 )
 from epistrel.orchestrator.providers.registry import provider_for
+from epistrel.orchestrator.structured import rebase
 from epistrel.testing import crash
 
 logger = logging.getLogger(__name__)
@@ -268,15 +271,14 @@ async def claim(
             await core_outbox.cancel(conn, outbox_id)
             logger.info("outbox row %s cancelled: its operation is no longer active", outbox_id)
             return CANCELLED
-        registered = await core_providers.find_provider(conn, str(row.provider_name))
-        if registered is None or not registered.write_capable:
-            # #212 (FR-CONC-16): the registration, re-read at claim, no longer lets the effect
-            # be sent: cancelled, never sent, and listed for reconciliation.
+        refused = await rebase.revalidate_claim(conn, row)
+        if refused is not None:
+            # #212, #214 (FR-CONC-16): the registration and #188's authorization, re-read at
+            # claim under the current configuration, no longer let the effect be sent:
+            # cancelled, never sent, and listed for reconciliation.
             await core_outbox.cancel(conn, outbox_id)
             await core_outbox.mark(conn, story_id, outbox_id, RECONCILIATION_REQUIRED)
-            logger.info(
-                "outbox row %s cancelled: its provider is no longer write-capable", outbox_id
-            )
+            logger.info("outbox row %s cancelled at claim: %s", outbox_id, refused)
             return CANCELLED
         resolved = await _resolve(conn, row, found, transport)
         if resolved is None:

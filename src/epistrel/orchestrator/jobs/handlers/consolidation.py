@@ -66,6 +66,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from epistrel.core import clock, timeline
 from epistrel.core.enums import Membership, MemoryKind, OperationKind, Provenance
 from epistrel.core.epistemic import transitions
+from epistrel.core.epistemic.scene import PERCEPTION_INPUT
 from epistrel.core.errors import ScopeMismatch
 from epistrel.core.events.operation import Operation
 from epistrel.core.events.types import (
@@ -488,6 +489,9 @@ async def _read(ctx: JobContext, story_id: str, payload: ConsolidationPayload) -
         for i in planned.inputs:
             keys += [i.key, input_key(operations.name, i.operation_id)]
         keys += [input_key(operations.name, c.operation_id) for c in replaced]
+        # #214 (FR-CONC-15): the visibility rules the outputs are derived under; a change
+        # while the run is out drops it and requeues it (the rerun recomputes).
+        keys.append(input_key(PERCEPTION_INPUT, story_id))
         await ctx.declare_inputs(conn, keys)
         superseded = await core.outputs_of(conn, story_id, [c.operation_id for c in replaced])
         names = await core.character_names(conn, story_id)

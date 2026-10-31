@@ -78,9 +78,14 @@ def script_purchase(stub: Any, cal: str, outcome: str = WENT) -> None:
     es.narrator(stub, es.render(beat("narration", COUNTS)))
 
 
+def buy_body(cal: str) -> dict[str, Any]:
+    """The request body of Cal's purchase."""
+    return body(cal, None, do="buys the sword")
+
+
 async def buy(client: Any, story: str, cal: str) -> Any:
     """``respond`` for Cal's purchase (the answer, whatever its status)."""
-    return await respond(client, story, body(cal, None, do="buys the sword"))
+    return await respond(client, story, buy_body(cal))
 
 
 async def revision(engine: AsyncEngine, story: str) -> int:
@@ -120,6 +125,7 @@ __all__ = [
     "TAKES",
     "WENT",
     "buy",
+    "buy_body",
     "event_types",
     "outcome_step",
     "purchase",

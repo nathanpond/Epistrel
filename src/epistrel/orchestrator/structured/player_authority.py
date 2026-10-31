@@ -797,6 +797,49 @@ async def recheck(conn: AsyncConnection, op: Any) -> bool:
 register_rebase_check(recheck)
 
 
+_MODES: dict[int, tuple[weakref.ref[StructuredReadSet], int, str]] = {}
+
+
+def remember_mode(read_set: StructuredReadSet, found: Split) -> None:
+    """#214 (S-CONFIG-RACE (c)): the ``player_authority`` a structured turn's current attempt
+    split its input under, when the split applied it (a request, a narrated beat or a dropped
+    span), for ``recheck_mode``."""
+    key = id(read_set)
+    if not found.active:
+        _MODES.pop(key, None)
+        return
+    _MODES[key] = (
+        weakref.ref(read_set, lambda _: _MODES.pop(key, None)),
+        read_set.attempt,
+        found.mode,
+    )
+
+
+async def recheck_mode(conn: AsyncConnection, op: Any) -> bool:
+    """The rebase re-check of ``player_authority`` (``core.readset.REBASE_CHECKS``;
+    FR-CONC-16, #214): a turn whose attempt split its input about another character under one
+    mode, and whose story now has the other, regenerates under the new one (a ``co_author``
+    narration becomes a request under ``own_character``, and the reverse)."""
+    source = op.read_set_source
+    if not isinstance(source, StructuredReadSet) or op.story_id is None:
+        return True
+    entry = _MODES.get(id(source))
+    if entry is None or entry[0]() is not source or entry[1] != source.attempt:
+        return True
+    found = await conn.scalar(select(stories.c.settings).where(stories.c.id == op.story_id))
+    return mode_of(StorySettings.from_row(found)) == entry[2]
+
+
+register_rebase_check(recheck_mode)
+
+
+def captured_mode(op: Any, story: Any) -> str:
+    """The ``player_authority`` the attempt runs under: the value its configuration captured
+    (#214: a regeneration after a change runs under the new one), else the story's."""
+    found = (getattr(op, "config_revisions", None) or {}).get("player_authority")
+    return str(found) if found in MODES else mode_of(story)
+
+
 async def notices_of(
     db: AsyncConnection | AsyncEngine,
     story_id: str,

@@ -988,7 +988,7 @@
         "type": "object"
       },
       "BindingMutation": {
-        "description": "The binding as stored, with the story's (unchanged) ``timeline_revision`` and, when the\nbinding made the story's ``required_providers`` live (#204), that list.",
+        "description": "The binding as stored, with the story's (unchanged) ``timeline_revision`` and, when the\nbinding made the story's ``required_providers`` live (#204), that list; ``warnings`` (#214):\nthe profile validator's ``below_safety_minimum`` when the provider confirms ``synchronous``\nand the story's effective call cap is below a turn's minimum with its outcome step.",
         "properties": {
           "activated_required_providers": {
             "anyOf": [
@@ -1034,6 +1034,14 @@
           "timeline_revision": {
             "title": "Timeline Revision",
             "type": "integer"
+          },
+          "warnings": {
+            "description": "Binding a `synchronous` write-capable provider (#214): `below_safety_minimum` when the story's `budgets.model_calls` is below a turn's minimum counting the outcome step its turns may now need (the binding is stored either way).",
+            "items": {
+              "$ref": "#/components/schemas/ProfileValidationWarning"
+            },
+            "title": "Warnings",
+            "type": "array"
           }
         },
         "required": [

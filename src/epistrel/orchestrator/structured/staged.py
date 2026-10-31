@@ -26,7 +26,11 @@ revision}``:
    ``external_outcome`` event per row with an outcome (``confirmed``, ``failed`` or
    ``unknown``), #215's post-effect version of its value (``pinned.settle_value``), and #216's
    settlement of the conditional effects and reservations (``contingency.settle``), all at the
-   outcome step's first position; ``turn_stage = outcome_recorded``; ``revision + 1``. A row
+   outcome step's first position; ``turn_stage = outcome_recorded``; ``revision + 1``. The
+   settlement runs under the configuration current then (#214, FR-CONC-16:
+   ``rebase.revalidate_settlement``): a grant the State's declaration now refuses (its bounds,
+   or #188's sources) is not committed, stays pending, and its prerequisite effect is listed
+   ``settlement_conflict``; the outcome is preserved either way. A row
    still without an outcome stays ``claimed`` (its send is abandoned here; the lease timer and
    #217 take it from there), its contingent rows pending or held. Effects on ``asynchronous``
    providers in the same turn take #210's ordinary path and never settle here.
@@ -116,6 +120,7 @@ from epistrel.orchestrator.providers import pinned
 from epistrel.orchestrator.providers.in_process import InProcessRegistry
 from epistrel.orchestrator.providers.port import WriteOutcome
 from epistrel.orchestrator.structured import effects as state_effects
+from epistrel.orchestrator.structured import rebase
 from epistrel.testing import crash
 
 log = logging.getLogger(__name__)
@@ -139,6 +144,9 @@ SYNCHRONOUS = "synchronous"
 
 OUTCOME_STEP = "## Outcome step"
 """The first line of the outcome render's constraints (``lines``)."""
+SETTLEMENT_CONFLICT = "settlement_conflict"
+"""#214: the reconciliation reason of a confirmed effect whose conditional change the outcome
+transaction could not commit under the current configuration (#210's full enum)."""
 
 
 def is_staged_turn(found: Operation | StagedTurnStage | str | None) -> bool:
@@ -386,6 +394,11 @@ class Recorded:
         """The conditional and held changes the settlement committed (State, scope key)."""
         return {(s.state, s.scope_key) for s in self.settled if s.result == contingency.CONVERTED}
 
+    def conflicts(self) -> list[contingency.Settled]:
+        """#214: the changes the settlement could not commit under the current configuration
+        (``conflict``): still held pending, their prerequisites listed ``settlement_conflict``."""
+        return [s for s in self.settled if s.result == contingency.CONFLICT]
+
 
 def settlement_outcomes(answers: Mapping[str, Answer]) -> dict[str, str]:
     """``contingency.settle``'s ``{effect_id: confirmed | failed | unknown}``: a cancelled
@@ -441,7 +454,14 @@ async def record_outcomes(
     outcomes = settlement_outcomes(answers)
 
     async def settle(conn: Any) -> None:
-        done.settled[:] = await contingency.settle(conn, op, outcomes, position)
+        done.settled[:] = await contingency.settle(
+            conn, op, outcomes, position, check=rebase.revalidate_settlement
+        )
+        for found in done.conflicts():
+            # #214 (FR-CONC-16): the outcome stands; the grant waits, listed for resolution.
+            for outbox_id in found.prerequisites:
+                if outbox_id in outcomes:
+                    await core_outbox.mark(conn, story_id, outbox_id, SETTLEMENT_CONFLICT)
 
     if outcomes:
         op.add_commit_step(settle)
@@ -472,6 +492,12 @@ def _version_value(found: Any) -> Any:
     return value
 
 
+def all_confirmed(answers: Mapping[str, Answer]) -> bool:
+    """#214: every synchronous effect of the turn was confirmed (its exchange went through,
+    whatever became of a grant conditional on it)."""
+    return bool(answers) and all(a.status == CONFIRMED for a in answers.values())
+
+
 def lines(
     answers: Mapping[str, Answer], recorded: Recorded, names: Mapping[str, str]
 ) -> tuple[str, ...]:
@@ -497,6 +523,13 @@ def lines(
             found.append(f"- {change}: not carried out; narrate the attempt as not carried out.")
         else:
             found.append(f"- {change}: no answer yet; narrate it as still pending, never as done.")
+    for held in recorded.conflicts():
+        # #214: a grant the current configuration refused at settlement: held pending.
+        holder = names.get(str(held.scope_key)) if held.scope_key else None
+        what = f"{held.state} for {holder}" if holder else held.state
+        found.append(
+            f"- the {what}: held pending resolution; narrate it as held pending, never as given."
+        )
     return tuple(found)
 
 
@@ -523,14 +556,25 @@ def outcome_sentence(actor: str, answer: Answer) -> str:
     return f"{actor}'s {action} {ending}."
 
 
-def deterministic_texts(answers: Mapping[str, Answer], actor: str) -> list[str]:
+def deterministic_texts(
+    answers: Mapping[str, Answer], actor: str, recorded: Recorded | None = None
+) -> list[str]:
     """``deterministic_outcome``'s narration: one sentence per effect (``outcome_sentence``),
-    in claim order (``answers``' order), stating no value."""
-    return [outcome_sentence(actor, a) for a in answers.values()]
+    in claim order (``answers``' order), stating no value; #214: then one per change
+    ``recorded`` holds pending (a settlement conflict), narrated as held, never as given."""
+    found = [outcome_sentence(actor, a) for a in answers.values()]
+    for held in [] if recorded is None else recorded.conflicts():
+        found.append(f"The {held.state.replace('_', ' ')} is held pending resolution.")
+    return found
 
 
 def deterministic_outcome(
-    answers: Mapping[str, Answer], start: int, *, actor: str, location: str | None = None
+    answers: Mapping[str, Answer],
+    start: int,
+    *,
+    actor: str,
+    location: str | None = None,
+    recorded: Recorded | None = None,
 ) -> list[TurnBeat]:
     """The deterministic outcome narration (FR-EXT-17, #213): one narrator ``narration`` beat
     per effect from ``start`` (``deterministic_texts``), located at the actor's ``location``,
@@ -546,7 +590,7 @@ def deterministic_outcome(
             narrator=True,
             qualifiers=qualifiers,
         )
-        for n, text in enumerate(deterministic_texts(answers, actor))
+        for n, text in enumerate(deterministic_texts(answers, actor, recorded))
     ]
 
 
@@ -1089,6 +1133,7 @@ __all__ = [
     "POLL_S",
     "RECORDED",
     "RESPONSE",
+    "SETTLEMENT_CONFLICT",
     "STAGES",
     "STILL_PENDING",
     "SYNCHRONOUS",
@@ -1098,6 +1143,7 @@ __all__ = [
     "Recorded",
     "Resumed",
     "StagedTurnStage",
+    "all_confirmed",
     "await_outcomes",
     "claim_all",
     "complete_deterministically",

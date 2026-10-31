@@ -125,7 +125,7 @@ from epistrel.core.profiles import store as profiles
 from epistrel.core.profiles import story as story_profile
 from epistrel.core.profiles.fingerprint import RuntimeFacts
 from epistrel.core.profiles.impact import ImpactPreviewRequest, ImpactReport, TwoStageResult
-from epistrel.core.profiles.reservation import SafetyFacts, safety_minimum
+from epistrel.core.profiles.reservation import SafetyFacts, outcome_calls, safety_minimum
 from epistrel.core.profiles.schema import Purposes
 from epistrel.core.profiles.validate import ProfileValidation
 from epistrel.core.projections import structured as structured_projections
@@ -2362,18 +2362,30 @@ class Engine:
         guardrail calls G it reserves (the input check of a turn whose actor has no
         character-scoped input policy) and the safety minimum: ``1 + G`` for Lite, ``1 + B + C +
         G`` for a structured story (#156: its render's extraction and its composed message's
-        detection, ``core.profiles.reservation``)."""
+        detection, ``core.profiles.reservation``), ``+ O`` for one whose turns may be staged
+        (#214: a bound synchronous write-capable provider; the formula's cap counts O too)."""
         concurrency = await turn_gate.read_concurrency(self.db, story_id)
         guardrails = await policy_store.story_guardrails(self.db, story_id)
         reserved = {
             GUARDRAIL_INPUT: guardrails.calls_input,
             GUARDRAIL_OUTPUT: guardrails.calls_output,
         }
+        outcome = 0
+        if concurrency.configuration is not None:
+            async with self.db.connect() as conn:
+                synchronous = await core_providers.synchronous_bound(conn, story_id)
+            outcome = outcome_calls(
+                concurrency.configuration.settings,
+                synchronous=synchronous,
+                guardrail_output=guardrails.calls_output,
+            )
         cap, source = effective_max_calls(
             concurrency.max_model_calls_per_turn, None, sum(reserved.values())
         )
         if concurrency.max_model_calls_per_turn is not None:
             source = concurrency.calls_source
+        else:
+            cap += outcome
         return EffectiveBudget(
             max_model_calls_per_turn=cap,
             source=source,
@@ -2386,6 +2398,7 @@ class Engine:
                     concurrency.configuration.settings,
                     guardrail_input=guardrails.calls_input,
                     guardrail_output=guardrails.calls_output,
+                    outcome=outcome,
                 )
             ),
         )
@@ -5501,12 +5514,18 @@ class Engine:
 
     # -- a story's configuration: fingerprint, preview (FR-PROF-5,7,16; #109) ------------------
 
-    async def _safety_facts(self) -> SafetyFacts:
+    async def _safety_facts(self, story_id: str | None = None) -> SafetyFacts:
         """What a profile's safety minimum counts beside its settings, for the budget warnings
         of profile writes and impact reports (#456): the deployment's global model-assisted
-        policies, as ``validate_profile`` counts them."""
+        policies, as ``validate_profile`` counts them; for a story's own report (``story_id``,
+        #214), whether it has a bound synchronous write-capable provider, so its minimum counts
+        the outcome step (O). A profile surface passes no story: O = 0 there."""
         gi, go = await policy_store.deployment_guardrail_calls(self.db)
-        return SafetyFacts(guardrail_input=gi, guardrail_output=go)
+        synchronous = False
+        if story_id is not None:
+            async with self.db.connect() as conn:
+                synchronous = await core_providers.synchronous_bound(conn, story_id)
+        return SafetyFacts(guardrail_input=gi, guardrail_output=go, synchronous=synchronous)
 
     async def _runtime_facts(self) -> RuntimeFacts:
         """The model each delivered purpose resolves to and the prompt templates' hashes: what
@@ -5530,7 +5549,7 @@ class Engine:
             request,
             facts=await self._runtime_facts(),
             purposes=self.purposes,
-            safety=await self._safety_facts(),
+            safety=await self._safety_facts(story_id),
         )
 
     @refuses_nul()
@@ -5578,7 +5597,7 @@ class Engine:
                 principal=principal,
                 facts=await self._runtime_facts(),
                 purposes=self.purposes,
-                safety=await self._safety_facts(),
+                safety=await self._safety_facts(story_id),
             )
 
         return await self._keyed(
@@ -5614,7 +5633,7 @@ class Engine:
                 principal=principal,
                 facts=await self._runtime_facts(),
                 purposes=self.purposes,
-                safety=await self._safety_facts(),
+                safety=await self._safety_facts(story_id),
             )
 
         return await self._keyed(

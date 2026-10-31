@@ -232,7 +232,7 @@ async def pending_in_source(
         PendingEffect(
             outbox_id=str(r.id),
             status=str(r.status),
-            effect={} if r.erased_at is not None else dict(r.effect or {}),
+            effect={} if r.erased_at is not None else core_outbox.public_effect(r.effect),
         )
         for r in found
     ]

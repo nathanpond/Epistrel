@@ -8,6 +8,18 @@ most important first (salience, entailment, the follow-up render, a model repair
 ``minimum`` is ``1 + B + C + G``: one model-assisted policy on input and output makes it
 exactly 5 (render, extraction, composed-message detection, input check, output check).
 
+**O** (#214, NFR-PERF-6, FR-EXT-15,16): a story with a bound ``synchronous`` write-capable
+provider for an external State, with ``states`` on, may stage its turn (#212), so the plan
+reserves the outcome step: its render, its extraction and its output check (O = 2 + G_out with
+extraction on; ``core.profiles.reservation.outcome_calls``), per turn however many synchronous
+effects it declares. The minimum is then ``P + B + C + G + O`` (one primary and one
+model-assisted output-only policy: exactly 7) and the formula's default ``4 + 5·P + G + O`` (13).
+O is the named slot ``outcome`` (``budget.OUTCOME``) inside the cap, explicit or not: the
+director, an escalation, a re-hold and optional work never spend it. It is released
+(``release_outcome``) once the turn's last render, escalations included, has finished without a
+synchronous effect (polish may then use it), or drawn into the outcome step's own slots
+(``draw_outcome``) when the turn is staged.
+
 ``plan_budget`` turns the plan into the turn's ``TurnBudget``: the cap is the request's
 ``budget.max_calls`` (never above the story's), else the story's ``budgets.model_calls`` from
 the configuration captured at the turn's start, else NFR-PERF-6's formula ``4 + 5 per primary
@@ -45,12 +57,13 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.core import providers as core_providers
 from epistrel.core.epistemic import roles
 from epistrel.core.epistemic.roles import Participation
 from epistrel.core.errors import BudgetBelowSafetyMinimum, InvalidRequest
 from epistrel.core.profiles.capabilities import module_on
 from epistrel.core.profiles.effective import StoryProfile
-from epistrel.core.profiles.reservation import Reservation, reservation
+from epistrel.core.profiles.reservation import Reservation, outcome_calls, reservation
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.orchestrator.budget import (
     COMPOSED,
@@ -61,6 +74,7 @@ from epistrel.orchestrator.budget import (
     GUARDRAIL_INPUT,
     GUARDRAIL_OUTPUT,
     OPTIONAL_PRIORITY,
+    OUTCOME,
     POLISH,
     REPAIR,
     SALIENCE,
@@ -142,10 +156,11 @@ class TurnPlan:
 
     @property
     def minimum(self) -> int:
-        """The minimum: ``P + B + C + G`` (one primary: ``1 + B + C + G``)."""
+        """The minimum: ``P + B + C + G + O`` (one primary: ``1 + B + C + G + O``)."""
         return self.primaries + self.reservation.total
 
     def payload(self) -> dict[str, Any]:
+        outcome = self.reservation.outcome
         return {
             **({"deferred": list(self.deferred)} if self.deferred else {}),
             **({"reduced": list(self.reduced)} if self.reduced else {}),
@@ -155,6 +170,8 @@ class TurnPlan:
                 "extraction": self.reservation.extraction,
                 "composed": self.reservation.composed,
                 "guardrail": self.reservation.guardrail,
+                # #214: O, when the story's turns may be staged.
+                **({"outcome": outcome} if outcome else {}),
             },
             "optional": list(self.optional),
             "minimum": self.minimum,
@@ -204,12 +221,15 @@ def plan_turn(
     guardrail_output: int,
     primaries: int = PRIMARIES,
     director: bool = False,
+    outcome: int = 0,
 ) -> TurnPlan:
     """The turn's plan under ``effective`` (the configuration captured at its start):
     ``primaries`` renders (#174: one per primary of a ``sequential`` turn; the cast check,
     ``resolve_structured_cast``, decides how many), each with its extraction (B) and its first
     output check (``guardrail_output`` per render); ``director``: the ordering call is
-    pre-allocated as optional work."""
+    pre-allocated as optional work; ``outcome``: O, the outcome step a staged turn needs
+    (``outcome_of``; #214), whatever the number of primaries (the completed message is checked
+    once)."""
     del request
     settings = effective.settings
     count = max(1, primaries)
@@ -224,15 +244,26 @@ def plan_turn(
             guardrail_input=guardrail_input,
             guardrail_output=guardrail_output * count,
             renders=count,
+            outcome=outcome,
         ),
         optional=optional,
         director=director and count > 1,
     )
 
 
+def outcome_of(effective: StoryProfile, *, synchronous: bool, guardrail_output: int) -> int:
+    """O for a turn under ``effective`` (#214): ``reservation.outcome_calls``, with
+    ``guardrail_output`` the model-assisted output policies of one output checkpoint."""
+    return outcome_calls(
+        effective.settings, synchronous=synchronous, guardrail_output=guardrail_output
+    )
+
+
 def default_calls(plan: TurnPlan) -> int:
-    """NFR-PERF-6's default cap for the plan: ``4 + 5 per primary + G`` (#69's formula)."""
-    return lite_default_calls(plan.reservation.guardrail, plan.primaries)
+    """NFR-PERF-6's default cap for the plan: ``4 + 5 per primary + G + O`` (#69's formula;
+    #214's O)."""
+    found = plan.reservation
+    return lite_default_calls(found.guardrail, plan.primaries, found.outcome)
 
 
 def held_after_input(plan: TurnPlan | None, budget: TurnBudget) -> int:
@@ -277,7 +308,8 @@ def plan_budget(
         raise BudgetBelowSafetyMinimum(
             f"the turn's model budget of {max_calls} calls cannot cover the {plan.minimum} calls "
             "it must reserve (its render, the claim detection of its render and its composed "
-            "message, and the model-assisted guardrail checks)",
+            "message, the model-assisted guardrail checks, and the outcome step of a turn that "
+            "waits on the game)",
             {
                 "minimum_required": plan.minimum,
                 "max_calls": max_calls,
@@ -297,6 +329,7 @@ def plan_budget(
     budget.held = plan.primaries + found.guardrail
     budget.reserve(EXTRACTION, found.extraction)
     budget.reserve(COMPOSED, found.composed)
+    budget.reserve(OUTCOME, found.outcome)
     if SALIENCE in plan.optional:
         budget.pending[SALIENCE] = plan.primaries
     if plan.director:
@@ -329,6 +362,9 @@ async def plan_structured(
     context = await guard_context(db, story_id)
     guardrail_input = len(model_assisted(input_policies(context, actor=cast.actor.id)))
     guardrail_output = output_reservation(context, cast.render_ids)
+    async with db.connect() as conn:
+        synchronous = await core_providers.synchronous_bound(conn, story_id)
+    outcome = outcome_of(configuration, synchronous=synchronous, guardrail_output=guardrail_output)
     ids = list(cast.render_ids)
     count = max(1, len(ids))
     while True:
@@ -339,6 +375,7 @@ async def plan_structured(
             guardrail_output=guardrail_output,
             primaries=count,
             director=director,
+            outcome=outcome,
         )
         try:
             budget = plan_budget(
@@ -363,6 +400,30 @@ async def plan_structured(
                 deferred_fixed=tuple(c for c, fixed in cut.deferred if fixed),
             )
         return plan, budget
+
+
+def release_outcome(budget: TurnBudget) -> int:
+    """#214: the turn's last render (escalations included) finished without a synchronous
+    effect, so O goes back to the pool (polish may use it); answers how many slots. Optional
+    work refused while O was held (salience, say) is not retried, but it no longer bars the
+    work still ahead from what came back (``TurnBudget.denied``)."""
+    released = budget.release_named(OUTCOME)
+    if released:
+        budget.denied.clear()
+    return released
+
+
+def draw_outcome(budget: TurnBudget, plan: TurnPlan | None) -> int:
+    """#214: the staged turn's outcome step takes O: its render and its output check held (as
+    any render's are), its extraction the owner-only ``extraction`` slot. Answers how many
+    slots it drew (0: no O was reserved)."""
+    drawn = budget.draw(OUTCOME)
+    if drawn <= 0:
+        return 0
+    extraction = 1 if plan is not None and plan.reservation.extraction and drawn > 1 else 0
+    budget.reserve(EXTRACTION, extraction)
+    budget.hold(drawn - extraction)
+    return drawn
 
 
 def reserve_narrator(budget: TurnBudget, plan: TurnPlan) -> bool:

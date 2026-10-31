@@ -433,6 +433,55 @@ async def needed(conn: AsyncConnection, story_id: str) -> list[str]:
     return sorted(str(name) for name in named)
 
 
+SYNCHRONOUS = "synchronous"
+"""A write-capable provider's ``confirmation`` whose effects make a staged turn (#212)."""
+
+
+async def routes(conn: AsyncConnection, story_id: str) -> list[tuple[str, str, bool, str | None]]:
+    """How each active externally owned State of the story is routed now (FR-CONC-14,16,
+    #214): ``(state, provider, write_capable, confirmation)`` by State name; a provider that is
+    not registered reads ``(state, provider, False, None)``. A change of a provider's write
+    capability or confirmation mode changes it (``config_dependencies``' ``provider_routes``)."""
+    d, p = state_definitions.c, external_providers.c
+    found = await conn.execute(
+        select(d.name, d.provider_id, p.write_capable, p.confirmation)
+        .select_from(state_definitions.outerjoin(external_providers, p.name == d.provider_id))
+        .where(
+            d.story_id == story_id,
+            d.owner == StateOwner.EXTERNAL.value,
+            d.provider_id.is_not(None),
+            active_only(state_definitions),
+        )
+        .order_by(d.name)
+    )
+    return [(str(r.name), str(r.provider_id), bool(r.write_capable), r.confirmation) for r in found]
+
+
+async def synchronous_bound(conn: AsyncConnection, story_id: str) -> bool:
+    """Whether the story has a bound ``synchronous`` write-capable provider for any active
+    externally owned State (#214): a turn of it could be staged, so its plan reserves the
+    outcome step (O, ``core.profiles.reservation.outcome_calls``)."""
+    d, p, b = state_definitions.c, external_providers.c, story_provider_bindings.c
+    found = await conn.scalar(
+        select(d.id)
+        .select_from(
+            state_definitions.join(external_providers, p.name == d.provider_id).join(
+                story_provider_bindings,
+                (b.provider_name == d.provider_id) & (b.story_id == d.story_id),
+            )
+        )
+        .where(
+            d.story_id == story_id,
+            d.owner == StateOwner.EXTERNAL.value,
+            active_only(state_definitions),
+            p.write_capable.is_(True),
+            p.confirmation == SYNCHRONOUS,
+        )
+        .limit(1)
+    )
+    return found is not None
+
+
 async def unbound(conn: AsyncConnection, story_id: str) -> list[str]:
     """The providers a turn of the story needs (``needed``) that it has no binding to."""
     wanted = await needed(conn, story_id)
@@ -454,6 +503,7 @@ __all__ = [
     "READ_PLACEHOLDERS",
     "REQUIRED_PROVIDERS",
     "SECRET_NAME_PATTERN",
+    "SYNCHRONOUS",
     "WRITE_PLACEHOLDERS",
     "BindingRequest",
     "Placeholder",
@@ -477,7 +527,9 @@ __all__ = [
     "placeholder",
     "placeholders_in",
     "require_registered",
+    "routes",
     "stories_naming",
     "strings_in",
+    "synchronous_bound",
     "unbound",
 ]

@@ -55,6 +55,7 @@ from epistrel.core.epistemic.perception import (
     turn_audience,
     with_declared,
 )
+from epistrel.core.input_versions import register_version_reader
 from epistrel.core.profiles.capabilities import level_at_least, module_on
 from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.profiles.schema import ProfileSettings
@@ -93,6 +94,25 @@ async def current_level(conn: AsyncConnection, story_id: str) -> Level:
     under the story lock, so a level changed mid-turn routes under the new one: FR-CONC-16)."""
     found = await effective_configuration(conn, story_id, validate=False)
     return level_of(found.settings)
+
+
+PERCEPTION_INPUT = "perception_level"
+"""#214 (FR-CONC-15, docs/04 S-CONFIG-RACE): a background job's input ``perception_level:<story
+id>``, versioned by the story's perception level (``current_level``). A job that derives
+visibility from the routing rules (``consolidation``) declares it, so a visibility-rule change
+while it runs drops its output and requeues it; the rerun recomputes under the new rules."""
+
+
+async def _level_version(conn: AsyncConnection, story_id: str) -> str | None:
+    from epistrel.core.errors import StoryNotFound
+
+    try:
+        return await current_level(conn, story_id)
+    except StoryNotFound:
+        return None
+
+
+register_version_reader(PERCEPTION_INPUT, _level_version)
 
 
 START_SLOT = 32_767
@@ -446,17 +466,20 @@ async def unconscious_kinds(
     }
 
 
-_ASSUMED: dict[int, tuple[weakref.ref[StructuredReadSet], int, Level]] = {}
+_ASSUMED: dict[int, tuple[weakref.ref[StructuredReadSet], int, Level, bool]] = {}
 
 
-def remember_level(read_set: StructuredReadSet, level: Level) -> None:
+def remember_level(read_set: StructuredReadSet, level: Level, *, cascade: bool = False) -> None:
     """Record the perception level a structured turn's current attempt generated under (its
-    qualifiers were validated at it), for ``recheck``."""
+    qualifiers were validated at it), for ``recheck``; ``cascade`` (#214): a later render of
+    the attempt saw an earlier render's beats as routed at that level (a ``sequential`` turn of
+    several primaries, FR-MULTI-11)."""
     key = id(read_set)
     _ASSUMED[key] = (
         weakref.ref(read_set, lambda _: _ASSUMED.pop(key, None)),
         read_set.attempt,
         level,
+        cascade,
     )
 
 
@@ -464,15 +487,22 @@ async def recheck(conn: AsyncConnection, op: Operation) -> bool:
     """The rebase re-check of perception (``core.readset.REBASE_CHECKS``; FR-CONC-16): a turn
     whose attempt generated under per-character partitions (``co_location`` or ``full``) and
     whose story has none now (perception ``none``) regenerates, since its beats were rendered
-    for partitions that no longer exist. Any other level change passes: the commit routes
-    under the level current then (``current_level``)."""
+    for partitions that no longer exist. #214 (S-CONFIG-RACE (g), FR-MULTI-11, FR-EPI-14): so
+    does a same-turn causal cascade under any level change, since a later render answered an
+    earlier one's beat as it was routed then (a whisper heard in full may now be only its
+    envelope); the whole turn is regenerated (owner, 2026-10-28: no per-render rebase). Any
+    other level change passes: the commit routes under the level current then
+    (``current_level``)."""
     source = op.read_set_source
     if not isinstance(source, StructuredReadSet) or op.story_id is None:
         return True
     entry = _ASSUMED.get(id(source))
     if entry is None or entry[0]() is not source or entry[1] != source.attempt:
         return True
-    return not (entry[2] != NONE and await current_level(conn, op.story_id) == NONE)
+    now = await current_level(conn, op.story_id)
+    if entry[3] and now != entry[2]:
+        return False
+    return not (entry[2] != NONE and now == NONE)
 
 
 register_rebase_check(recheck)
@@ -515,6 +545,7 @@ async def placed_elsewhere(
 
 __all__ = [
     "PARTITIONS_MODULE",
+    "PERCEPTION_INPUT",
     "PERCEPTION_MODULE",
     "START_SLOT",
     "Moves",

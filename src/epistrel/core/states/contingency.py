@@ -34,7 +34,10 @@ side, else every external effect of the turn.
   prerequisites and ``settles_change_id`` naming it. Settlement never backdates: a view through
   any position before ``position`` never includes the change, and discarding the settling
   operation drops it. A new row the State's bounds now refuse is ``conflict`` (#217 lists it
-  ``settlement_conflict``) and nothing changes;
+  ``settlement_conflict``) and nothing changes; so is one the caller's ``check`` refuses (#214:
+  #212's outcome transaction revalidates the grant's authorization under the current
+  configuration, ``orchestrator.structured.rebase.revalidate_settlement``, and lists the
+  conflict ``settlement_conflict`` itself);
 - any prerequisite ``failed``: ``held → released``, ``pending → dropped``; no new row;
 - otherwise (``unknown``, a timeout, or a prerequisite not decided yet): the row is left as it
   is.
@@ -52,10 +55,10 @@ Codes and ids only; this module logs nothing.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 from sqlalchemy import ColumnElement, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -67,7 +70,13 @@ from epistrel.core.enums import (
     StateContingency,
 )
 from epistrel.core.membership import Position, active_only
-from epistrel.core.states.model import ADDITIVE, StateChange, Violation, from_json
+from epistrel.core.states.model import (
+    ADDITIVE,
+    StateChange,
+    StateDefinition,
+    Violation,
+    from_json,
+)
 from epistrel.core.tables.states import state_changes, state_definitions
 
 if TYPE_CHECKING:
@@ -266,6 +275,13 @@ class Settled:
     scope_key: str | None
     result: str
     settlement_id: str | None = None
+    prerequisites: tuple[str, ...] = ()
+    """The intent row's prerequisite effect ids (a ``conflict``'s are listed, #214)."""
+
+
+SettlementCheck = Callable[[AsyncConnection, Any, StateDefinition], Awaitable[bool]]
+"""``check(conn, row, definition)``: whether intent row ``row``, its prerequisites confirmed, may
+be settled under ``definition`` as it is now (#214); ``False`` is a ``conflict``."""
 
 
 async def settle(
@@ -273,10 +289,13 @@ async def settle(
     op: Operation,
     outcomes: Mapping[str, str],
     position: Position,
+    *,
+    check: SettlementCheck | None = None,
 ) -> list[Settled]:
     """Settle every active ``held`` or ``pending`` row of ``op``'s story whose prerequisites
     ``outcomes`` (``{effect_id: confirmed | failed | unknown}``) decide, in ``op``'s
-    transaction (see the module docstring); answers what it did, in position order."""
+    transaction (see the module docstring); answers what it did, in position order. ``check``
+    (#214) revalidates a converting row under the current configuration."""
     from epistrel.core import states  # here: this module is part of ``core.states``
 
     story_id = op.story_id
@@ -308,6 +327,7 @@ async def settle(
             continue
         scope_key = None if row.scope_key is None else str(row.scope_key)
         status = str(getattr(row.status, "value", row.status))
+        prerequisites = tuple(str(p) for p in row.prerequisite_effect_ids)
         at = Position(
             int(row.narrative_turn), int(row.turn_variant), int(row.slot_k), int(row.beat)
         )
@@ -317,7 +337,14 @@ async def settle(
             result = RELEASED if status == StateChangeStatus.HELD.value else DROPPED
             await _mark(conn, str(row.id), status, result)
             touched.add((str(row.state_id), scope_key))
-            done.append(Settled(str(row.id), definition.name, scope_key, result))
+            done.append(
+                Settled(str(row.id), definition.name, scope_key, result, None, prerequisites)
+            )
+            continue
+        if check is not None and not await check(conn, row, definition):
+            done.append(
+                Settled(str(row.id), definition.name, scope_key, CONFLICT, None, prerequisites)
+            )
             continue
         kind = StateChangeKind(row.kind)
         change = StateChange(
@@ -331,19 +358,25 @@ async def settle(
             position=position,
             contingency=StateContingency(row.contingency),
             status=StateChangeStatus.COMMITTED,
-            prerequisite_effect_ids=tuple(str(p) for p in row.prerequisite_effect_ids),
+            prerequisite_effect_ids=prerequisites,
             settles_change_id=str(row.id),
         )
         savepoint = await conn.begin_nested()
         applied = await states.apply_change(conn, op, change)
         if isinstance(applied, Violation):
             await savepoint.rollback()
-            done.append(Settled(str(row.id), definition.name, scope_key, CONFLICT))
+            done.append(
+                Settled(str(row.id), definition.name, scope_key, CONFLICT, None, prerequisites)
+            )
             continue
         await savepoint.commit()
         await _mark(conn, str(row.id), status, CONVERTED)
         touched.add((str(row.state_id), scope_key))
-        done.append(Settled(str(row.id), definition.name, scope_key, CONVERTED, applied.change_id))
+        done.append(
+            Settled(
+                str(row.id), definition.name, scope_key, CONVERTED, applied.change_id, prerequisites
+            )
+        )
     if touched:
         await states.refresh(conn, story_id, sorted(touched, key=lambda k: (k[0], k[1] or "")))
     return done
@@ -370,6 +403,7 @@ __all__ = [
     "Classified",
     "Outcome",
     "Settled",
+    "SettlementCheck",
     "classify",
     "contingency_of",
     "decide",

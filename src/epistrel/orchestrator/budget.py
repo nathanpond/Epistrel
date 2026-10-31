@@ -31,13 +31,15 @@ call is counted in ``TurnBudget.embedding_calls``, apart from the call cap.
 
 **Named reservations** (#156, a structured turn; ``orchestrator.structured.planner`` plans
 them). Beside the held pool, ``named`` holds owner-only slots: ``extraction`` (B, one per
-planned render) and ``composed`` (C). Only their owner may spend one: a first attempt whose
-purpose maps to that kind (``kind_of``: ``extraction_backstop`` is ``extraction``, or
-``composed`` while ``charging(COMPOSED)``), and every other call sees them as spent
-(``can_afford``, ``can_afford_unreserved``). A named slot the turn did not use is released
-(``release_named``) and may then fund optional work. Optional work (``salience``,
-``time_estimation`` (#199), ``entailment``, ``follow_up``, ``testimony`` (#162),
-``repair``, ``polish``, in that priority) spends only what no reservation holds: the adapter
+planned render), ``composed`` (C) and ``outcome`` (O, #214: a staged turn's outcome step, which
+no call spends directly: it is released, or ``draw``n into the outcome step's own slots).
+Only their owner may spend one: a first attempt whose purpose maps to that kind (``kind_of``:
+``extraction_backstop`` is ``extraction``, or ``composed`` while ``charging(COMPOSED)``), and
+every other call sees them as spent (``can_afford``, ``can_afford_unreserved``). A named slot
+the turn did not use is released (``release_named``) and may then fund optional work.
+Optional work (``salience``, ``time_estimation`` (#199), ``entailment``, ``follow_up``,
+``testimony`` (#162), ``repair``, ``polish``, in that priority) spends only what no
+reservation holds (O included): the adapter
 refuses a first ``entailment`` or ``salience_detection`` attempt that would dip below the
 line, and the pipeline asks ``try_optional(kind, cost)`` before a time estimation, a
 follow-up render, a testimony adjudication, a model repair or the polish. ``pending``
@@ -75,6 +77,12 @@ EXTRACTION = "extraction"
 """B: the planned renders' extraction calls (owner: ``extraction_backstop``)."""
 COMPOSED = "composed"
 """C: the composed message's detection (owner: ``extraction_backstop`` while charging it)."""
+OUTCOME = "outcome"
+"""O (#214): a staged turn's outcome step (its render, its extraction and its output check),
+an owner-only named slot no call is charged to: nothing else may spend it (not the director,
+an escalation, a re-hold or any optional work). It is either released once the turn's last
+render has finished without a synchronous effect, or drawn (``draw``) into the outcome step's
+own slots when the turn is staged."""
 SALIENCE = "salience"
 DIRECTOR_ORDER = "director_order"
 """#174: the director's ordering of a sequential turn's primaries (one ``generation`` call)."""
@@ -125,10 +133,16 @@ PURPOSE_KINDS = {
 """What kind of call a purpose's call is, unless the caller is ``charging`` another kind."""
 
 
-def lite_default_calls(guardrail_calls: int, primaries: int = 1) -> int:
-    """The default ``max_model_calls_per_turn``: ``4 + 5 per primary + G`` (O = 0; one primary
-    under Lite, #174's B under a sequential structured turn)."""
-    return LITE_BASE_CALLS + PER_PRIMARY_CALLS * (max(1, primaries) - 1) + guardrail_calls
+def lite_default_calls(guardrail_calls: int, primaries: int = 1, outcome: int = 0) -> int:
+    """The default ``max_model_calls_per_turn``: NFR-PERF-6's ``4 + 5 per primary + G + O``
+    (one primary under Lite, where O = 0; #174's P under a sequential structured turn; #214's
+    ``outcome`` O for a story whose turns may be staged)."""
+    return (
+        LITE_BASE_CALLS
+        + PER_PRIMARY_CALLS * (max(1, primaries) - 1)
+        + guardrail_calls
+        + max(0, outcome)
+    )
 
 
 @dataclass
@@ -320,6 +334,12 @@ class TurnBudget:
             self.released += dropped
         return dropped
 
+    def draw(self, kind: str) -> int:
+        """Take every unspent ``kind`` slot out of the named reservation to fund the work it was
+        reserved for (#214: the outcome step's render, extraction and output check, which then
+        hold them as any render's do); not counted as ``released``. Answers how many."""
+        return self.named.pop(kind, 0)
+
     def settle_optional(self, kind: str) -> None:
         """``kind``'s optional work is done (or skipped): its pre-allocation goes back."""
         self.pending.pop(kind, None)
@@ -491,6 +511,7 @@ __all__ = [
     "MIN_DEADLINE_S",
     "NARRATOR_RENDER",
     "OPTIONAL_PRIORITY",
+    "OUTCOME",
     "PER_PRIMARY_CALLS",
     "POLISH",
     "PURPOSE_KINDS",

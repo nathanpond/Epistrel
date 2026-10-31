@@ -37,6 +37,12 @@ input about other characters (M6's rebase case needs it). #598 adds ``co_author_
 ``model.INTERPRETIVE_MEMBERS``,
 like ``author_locks``): an interpretive definition update re-checks the turn under the new
 definition (#187's ``REBASE_CHECKS``); a prospective one (aliases, unit) does not move it.
+#214 adds ``provider_routes`` (a hash of how each active externally owned State is routed:
+its provider, that provider's write capability and confirmation mode,
+``core.providers.routes``): an operator who flips a provider to read-only, or changes its
+confirmation mode, re-checks the turn, whose
+``orchestrator.structured.rebase.recheck_routes`` (a ``REBASE_CHECKS`` entry) regenerates it
+when an effect it routed is routed otherwise now.
 
 The set values are hashes (``hash_member``), so detection at commit is a compare. At commit,
 under the story lock, ``changed`` names the dependencies whose value moved since the capture:
@@ -85,9 +91,10 @@ STRUCTURED_DEPENDENCIES = (
     "player_authority",
     "co_author_knowledge",
     "state_definitions",
+    "provider_routes",
 )
 """What a structured turn's commit is re-checked against when it changes (#136, #144, #161,
-#180, #185, #598)."""
+#180, #185, #598, #214)."""
 
 VERIFICATION_PREFIX = "verification."
 
@@ -242,6 +249,12 @@ async def capture(
         )
     if "state_definitions" in members:
         captured["state_definitions"] = await state_definitions_hash(conn, story_id)
+    if "provider_routes" in members:
+        from epistrel.core.providers import routes  # here: providers import the tables
+
+        captured["provider_routes"] = hash_member(
+            [list(route) for route in await routes(conn, story_id)]
+        )
     if "default_output_viewpoint" in members:
         captured["default_output_viewpoint"] = StorySettings.from_row(
             story.settings

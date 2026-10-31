@@ -119,6 +119,16 @@ Reason = Literal[
 
 # -- intent --------------------------------------------------------------------------------------
 
+INTERNAL_EFFECT_KEYS = frozenset({"authorized"})
+"""#214: the effect document's keys kept for the Engine alone (what #188 authorized at intent,
+re-checked at claim), never listed nor sent to a provider."""
+
+
+def public_effect(effect: Mapping[str, Any] | None) -> dict[str, Any]:
+    """An outbox row's effect document as a listing shows it (``INTERNAL_EFFECT_KEYS`` left
+    out)."""
+    return {k: v for k, v in dict(effect or {}).items() if k not in INTERNAL_EFFECT_KEYS}
+
 
 @dataclass(frozen=True, slots=True)
 class Intended:
@@ -787,7 +797,7 @@ async def listings_in(conn: AsyncConnection, story_id: str) -> Reconciliation:
                 status=status,
                 reason=reason,
                 since=since,
-                effect=dict(row.effect or {}),
+                effect=public_effect(row.effect),
                 outcome=None
                 if outcome is None
                 else OutcomeView(
@@ -834,6 +844,7 @@ async def summary(db: AsyncEngine | AsyncConnection, story_id: str) -> dict[str,
 
 
 __all__ = [
+    "INTERNAL_EFFECT_KEYS",
     "REASONS",
     "TERMINAL",
     "Intended",
@@ -861,6 +872,7 @@ __all__ = [
     "mark_unknown",
     "origin_active",
     "outcome",
+    "public_effect",
     "record_effect_outcome",
     "record_outcome",
     "release",

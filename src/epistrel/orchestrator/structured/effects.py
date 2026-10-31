@@ -695,6 +695,11 @@ class Requested:
     planned_index: int | None = None
     """#216: which of the turn's planned effects (``planned(beats)``'s order) it is a side of:
     a contingent story-owned side of the same effect waits on it."""
+    authorized: tuple[str, str] | None = None
+    """#214: the declared effect it is a side of, as #188 authorized it at intent: ``(State,
+    source)`` (the declared State, not a transfer's other side; ``source`` an
+    ``authorization.sources`` entry), so a claim can re-authorize it under the current
+    configuration (``rebase.revalidate_claim``)."""
 
     def payload(self) -> RequestedEffect:
         """The ``requested_effect`` event's payload."""
@@ -760,6 +765,7 @@ def _requested(
         hidden=definition.visibility is not StateVisibility.PLAYER_VISIBLE,
         dispatch=definition.name in book.outbox,
         planned_index=planned_index,
+        authorized=None if p.source is None else (p.effect.state, p.source.name),
     )
 
 
@@ -990,29 +996,39 @@ def unsettled(
 
 
 def outcome_step_findings(
-    book: Book, beats: Sequence[TurnBeat], pending: Sequence[rules.Pending]
+    book: Book,
+    beats: Sequence[TurnBeat],
+    pending: Sequence[rules.Pending],
+    *,
+    exchange_settled: bool = False,
 ) -> list[Finding]:
     """#212: the outcome step's sentences asserting a change in ``pending`` (``unsettled``):
-    #209's ``external_outcome_unconfirmed``, repaired like an intent beat's."""
+    #209's ``external_outcome_unconfirmed``, repaired like an intent beat's. #214:
+    ``exchange_settled`` when every external change the turn asked for was confirmed (a grant
+    may still be held pending, by a settlement conflict): a sentence naming no State then speaks
+    of the exchange, never of the grant (``rules.outcome_spans``)."""
     if not pending:
         return []
     by_number = {b.beat: b for b in beats}
     found: list[Finding] = []
     for b in beats:
-        found += rules.unconfirmed_outcomes(b.beat, b.kind, b.text, pending)
+        found += rules.unconfirmed_outcomes(
+            b.beat, b.kind, b.text, pending, exchange_settled=exchange_settled
+        )
     return [_decorated(book, by_number[f.beat], f) for f in found]
 
 
 def pending_check(
-    pending: Sequence[rules.Pending],
+    pending: Sequence[rules.Pending], *, exchange_settled: bool = False
 ) -> Callable[[str], list[tuple[int, int]]] | None:
     """#152's composed-message check over ``pending`` (``outcome_check``'s, for a staged turn's
-    completed message: ``unsettled``)."""
+    completed message: ``unsettled``; ``exchange_settled`` as ``outcome_step_findings``)."""
     if not pending:
         return None
 
     def check(text: str) -> list[tuple[int, int]]:
-        return [span for _, span in rules.outcome_spans(text, pending)]
+        found = rules.outcome_spans(text, pending, exchange_settled=exchange_settled)
+        return [span for _, span in found]
 
     return check
 
@@ -1172,6 +1188,9 @@ def outbox_rows(book: Book, requested: Sequence[Requested]) -> list[core_outbox.
             effect["delta"] = r.delta
         else:
             effect["value"] = r.value
+        if r.authorized is not None:
+            # #214: what #188 authorized at intent, re-checked at claim (never sent on).
+            effect["authorized"] = {"state": r.authorized[0], "source": r.authorized[1]}
         found.append(
             core_outbox.Intended(
                 id=r.effect_id,

@@ -430,6 +430,16 @@ class DetectedClaim:
         return self.category == "protected_content"
 
     @property
+    def change_cue(self) -> bool:
+        """#518: the claim states a change, so it may change its speaker's own fluent from its
+        start (``core.verify.rules``' ``fluent_change``): the render declared it, or the movement
+        detector found it (a verb of motion). An extraction-only claim ("never set foot in the
+        cellar") states no change: it keeps the contradiction rules' answer."""
+        return self.layer == "declared" or (
+            self.category == "movement" and "detector" in (self.layer, *self.merged)
+        )
+
+    @property
     def matches(self) -> int:
         """How many findings of the other layers matched this declared claim (``merged``)."""
         return len(self.merged) if self.layer == "declared" else 0

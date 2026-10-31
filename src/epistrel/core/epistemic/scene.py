@@ -157,7 +157,16 @@ async def load_scene(
                 current[str(row["entity_id"])] = row
     placements = {by_entity[e]: str(r["location_id"]) for e, r in current.items()}
     moves: dict[int, list[tuple[str, str | None]]] = defaultdict(list)
+    # #518: what is left of a placement the turn closed (its piece before a fluent change,
+    # ``core.canon.facts``' remainder: the same entity, place and start) is no move.
+    kept = {
+        (r["entity_id"], r["location_id"], r["valid_from"])
+        for r in rows
+        if r["closed_turn"] == turn and not r["closed_slot"]
+    }
     for row in sorted(rows, key=_since):
+        if (row["entity_id"], row["location_id"], row["valid_from"]) in kept:
+            continue
         if row["since_turn"] == turn and not row["since_slot"] and row["closed_by_fact_id"] is None:
             moves[int(row["since_beat"] or 0)].append(
                 (by_entity[str(row["entity_id"])], str(row["location_id"]))

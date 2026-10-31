@@ -226,6 +226,9 @@ ANCHORS = frozenset({"director", "author"})
 ENGINE = Visibility(scope="engine")
 """Beat channels whose claims never canonize."""
 SAY = "say"
+DO = "do"
+MOVERS = frozenset({"character", "player"})
+"""#518: the asserters whose own ``do`` may change their character's fluents (``mover_of``)."""
 PARTITIONS_MODULE = "partitions"
 """``character_knowledge.partitions``: the belief dimension runs only under it (#166)."""
 
@@ -236,6 +239,19 @@ UNNORMALIZED_SHAPE = PredicateShape("auto", UNKNOWN, UNKNOWN, UNKNOWN)
 NEIGHBORHOOD_DEPTH = 1
 """The neighborhood an entailment call adds to the fetched records: the claim subject's own
 facts, in both directions."""
+
+
+def mover_of(asserter: Asserter | None, channel: str | None, *, change: bool) -> str | None:
+    """#518 (FR-PROP-9): the character whose own fluents a claim may change from its start
+    (``core.verify.rules``' ``fluent_change``): the acting character of a ``do`` beat, a
+    character's render or the player's own action, when the claim states a change
+    (``change``: ``DetectedClaim.change_cue``, declared or found by the movement detector).
+    ``None`` for anything else: a ``say`` (a lie moves no one), narration, reactive narration,
+    an extraction-only claim and a claim about another character keep the contradiction rules'
+    answer."""
+    if not change or asserter is None or asserter.kind not in MOVERS or channel != DO:
+        return None
+    return asserter.character_id
 
 
 # -- settings --------------------------------------------------------------------------------
@@ -545,6 +561,7 @@ class ClaimSource(Protocol):
         holder: Holder,
         viewpoint: str,
         position: tuple[int, int] | None,
+        mover: str | None = None,
     ) -> tuple[Verdict, list[Record]] | None: ...
 
     async def neighbors(
@@ -604,6 +621,7 @@ class RecordsSource:
         holder: Holder,
         viewpoint: str,
         position: tuple[int, int] | None,
+        mover: str | None = None,
     ) -> tuple[Verdict, list[Record]] | None:
         del viewpoint
         found = rules.check(
@@ -614,6 +632,7 @@ class RecordsSource:
             holder=holder,
             position=position,
             options=self.options,
+            mover=mover,
         )
         return found, list(self.records)
 
@@ -694,6 +713,7 @@ class CanonSource:
         holder: Holder,
         viewpoint: str,
         position: tuple[int, int] | None,
+        mover: str | None = None,
     ) -> tuple[Verdict, list[Record]] | None:
         fetched: list[Record] = []
         found = await rules.verify(
@@ -707,6 +727,7 @@ class CanonSource:
             viewpoint=viewpoint,
             remember=self.remember,
             fetched=fetched,
+            mover=mover,
         )
         return None if found is None else (found, fetched)
 
@@ -1493,6 +1514,7 @@ class Verifier:
         intent: str | None = None,
         cites: Sequence[str] = (),
         giver: str | None = None,
+        change: bool = False,
     ) -> VerifyResult | None:
         """``claim``'s verdict as ``viewpoint`` may know it, at narrative ``position`` (canon
         written at or before it); ``None`` when the story's verification is off. A claim that
@@ -1501,19 +1523,22 @@ class Verifier:
         #146's resolution exemption; ``giver``: a detected transfer's giver, #519's hand-over
         exception) before it can be canonized or repaired. ``believer`` (#166:
         the speaker of a first-person ``say``) adds the belief dimension and the classification,
-        with the beat's declared ``intent`` and its ``think``'s ``cites``."""
+        with the beat's declared ``intent`` and its ``think``'s ``cites``. ``change`` (#518): the
+        claim states a change, so the ``do`` beat's actor may change its own fluent
+        (``mover_of``)."""
         if not self.config.on:
             return None
         checking = time.perf_counter()
+        where = ref or ClaimRef()
+        mover = mover_of(asserter, where.channel, change=change)
         found = await self.source.deterministic(
-            claim, holder=holder, viewpoint=viewpoint, position=position
+            claim, holder=holder, viewpoint=viewpoint, position=position, mover=mover
         )
         if found is None:
             return None
         # NFR-PERF-2's span: the deterministic path alone, before any model fallback (#153).
         stages.observe("verify", time.perf_counter() - checking)
         verdict, fetched = found
-        where = ref or ClaimRef()
         at = _At(viewpoint, position, holder)
         result = await self._settle(claim, verdict, fetched, at, where, top=True)
         if (
@@ -1522,7 +1547,7 @@ class Verifier:
             and believer is None
             and where.channel not in (SAY, *NEVER_CANONIZES)
         ):
-            result = await self._hidden(result, claim, holder, position)
+            result = await self._hidden(result, claim, holder, position, mover)
         if asserter is not None and result.kind is VerdictKind.NOVEL:
             result = await self._permit(
                 result, claim, asserter, at, protected=protected, resolves=resolves, giver=giver
@@ -1564,12 +1589,14 @@ class Verifier:
         claim: Proposition,
         holder: Holder,
         position: tuple[int, int] | None,
+        mover: str | None = None,
     ) -> VerifyResult:
         """#169 (FR-EPI-8): a novel claim that canon hidden from its viewpoint contradicts (the
         engine's check, not the character's) would give a determined fact a second value: it
-        is ``contradicted``, citing nothing (``HIDDEN_CONFLICT``)."""
+        is ``contradicted``, citing nothing (``HIDDEN_CONFLICT``). #518: the engine's check
+        takes the same ``mover``, so a fluent change is one in both."""
         found = await self.source.deterministic(
-            claim, holder=holder, viewpoint=OMNISCIENT, position=position
+            claim, holder=holder, viewpoint=OMNISCIENT, position=position, mover=mover
         )
         if found is None or found[0].kind is not VerdictKind.CONTRADICTED:
             return result

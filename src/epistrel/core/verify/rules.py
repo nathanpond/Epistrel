@@ -50,6 +50,30 @@ rule's evidence lists every conflicting record it found.
    - Overlap that the approximate bounds cannot decide is ``uncertain(approximate_bounds)``,
      unless a contradiction rule below is conclusive.
 
+**A fluent change comes before the contradiction rules** (``fluent_change``; FR-PROP-9; #518).
+A claim that changes a fluent "from now on" does not conflict with the value it replaces: two
+values of a functional fluent (or a fluent and its negation) in non-overlapping intervals are
+not in conflict. It applies when all of these hold:
+
+- the check names a ``mover`` (``check``'s argument: the character acting in the beat, a
+  render's own ``do`` or the player's own action, when the claim states a change: the
+  Orchestrator's ``verifier.mover_of``) and the claim's subject is that character;
+- the predicate is a fluent (never permanent, never an event);
+- the claim holds from an exact start ``t`` and is open-ended (``[t, ∞)``: a claim that states
+  no time, at its beat's story-time);
+- a holder record would conflict with it by polarity (the identical proposition, the other
+  polarity) or by the functional key (an affirmed other object under the same key, not related
+  through containment), and that record is open-ended and starts before ``t`` in every reading.
+
+Each such record is taken as closed at ``t`` (``[its start, t)``) and the claim is checked
+again over the record set so closed: ``novel`` there is ``novel`` here, its evidence citing
+each record it closes (rule ``fluent_change``, ``Verdict.supersedes``), and any other answer
+(a contradiction by another rule, an undecided overlap) stands. The commit closes those facts
+the same way (``core.canon.facts.commit_fact`` splits an overlapping conflicting fact, keeping
+what came before ``t``). A claim about another subject, one that starts at or before the
+record, a bounded claim and a permanent predicate keep the rules' answer: a stale
+re-assertion of a placement the subject has left is still ``contradicted``.
+
 2. **Polarity** (``polarity``): the identical normalized proposition (subject, predicate,
    object and every qualifier) with the opposite polarity, over time that overlaps in every
    admissible reading. It applies to every predicate, weak ones included (FR-PROP-4); a
@@ -188,6 +212,7 @@ from epistrel.core.membership import Through, bound_of
 from epistrel.core.profiles.capabilities import level_at_least, module_on
 from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.propositions.model import (
+    Bound,
     Cardinality,
     Instant,
     Interval,
@@ -292,9 +317,11 @@ class Rule(StrEnum):
     EXCLUSION = "exclusion"
     IMPLICATION = "implication"
     INSTANT_IDENTITY = "instant_identity"
+    FLUENT_CHANGE = "fluent_change"
+    """#518: a ``novel`` claim's change of a fluent, citing each record it closes."""
 
 
-CONTRADICTION_RULES = frozenset(Rule) - {Rule.COVERAGE}
+CONTRADICTION_RULES = frozenset(Rule) - {Rule.COVERAGE, Rule.FLUENT_CHANGE}
 
 CONFIDENCE: Mapping[VerdictReason, float] = {
     VerdictReason.PARTIAL_COVERAGE: 1.0,
@@ -494,6 +521,15 @@ class Verdict:
     def depth_capped(self) -> bool:
         return any(e.depth_capped for e in self.evidence)
 
+    @property
+    def supersedes(self) -> tuple[str, ...]:
+        """#518: the facts a fluent change closes at the claim's start (``fluent_change``)."""
+        return tuple(
+            e.fact_id
+            for e in self.evidence
+            if e.rule is Rule.FLUENT_CHANGE and e.fact_id is not None
+        )
+
     def cited(self) -> tuple[str, ...]:
         """The proposition and closed-set ids the evidence cites, in order."""
         return tuple(
@@ -619,6 +655,8 @@ class _Context:
     """#191: the owners' values (a canon holder's owner lookups)."""
     canon: bool = True
     """Whether the holder is canon: only a canon holder's checks consult an owner lookup."""
+    mover: str | None = None
+    """#518: the character acting in the claim's beat, whose own fluents it may change."""
 
     @classmethod
     def build(
@@ -630,6 +668,7 @@ class _Context:
         owned: Sequence[OwnedValue] = (),
         *,
         canon: bool = True,
+        mover: str | None = None,
     ) -> _Context:
         # #171: the holder's identities, depth 1 (``core.resolution.identity``): the records
         # are the holder's, so the expansion is holder-aware.
@@ -637,6 +676,7 @@ class _Context:
             pair for r in records if (pair := pair_of(r.proposition)) is not None
         )
         ctx = cls(registry, options, reps, [], list(closed), {}, {}, list(owned), canon)
+        ctx.mover = None if mover is None else ctx.rep(mover)
         ctx.records = [(r, ctx.norm(r.proposition)) for r in records]
         containment = {
             p.containment_of for p in registry.predicates.values() if p.containment_of is not None
@@ -1422,6 +1462,71 @@ def _weak_conflict(
     )
 
 
+def _change_start(claim: Proposition, predicate: Predicate, ctx: _Context) -> int | None:
+    """#518: the story-minute a claim changes its subject's fluent from (see the module
+    docstring), or ``None`` when it is no fluent change of the beat's mover."""
+    vt = claim.valid_time
+    if (
+        ctx.mover is None
+        or claim.subject_id != ctx.mover
+        or predicate.temporal_kind is not TemporalKind.FLUENT
+        or not isinstance(vt, Interval)
+        or vt.start is None
+        or not vt.start.exact
+        or vt.end is not None
+    ):
+        return None
+    return vt.start.inner
+
+
+def _replaced(claim: Proposition, predicate: Predicate, record: Proposition, ctx: _Context) -> bool:
+    """Whether ``record`` holds a value the claim replaces: the identical proposition with the
+    other polarity, or an affirmed other object under the claim's functional key."""
+    if record.polarity is not claim.polarity and _identical(claim, record):
+        return True
+    if (
+        predicate.cardinality is not Cardinality.FUNCTIONAL
+        or claim.polarity is Polarity.NEGATED
+        or record.polarity is Polarity.NEGATED
+        or predicate.uniqueness_key(claim) != predicate.uniqueness_key(record)
+        or _object_within(claim, record)
+    ):
+        return False
+    return not (
+        claim.object_id is not None
+        and record.object_id is not None
+        and ctx.related(predicate, claim.object_id, record.object_id)
+    )
+
+
+def _fluent_change(
+    claim: Proposition, predicate: Predicate, ctx: _Context
+) -> tuple[list[Record], _Context] | None:
+    """#518 (FR-PROP-9): the records a fluent change closes and the record set with them closed
+    at the change's start; ``None`` when the claim changes nothing (see the module docstring)."""
+    start = _change_start(claim, predicate, ctx)
+    if start is None:
+        return None
+    closed: list[Record] = []
+    records: list[tuple[Record, Proposition]] = []
+    for r, p in ctx.records:
+        vt = p.valid_time
+        if (
+            p.predicate_id == claim.predicate_id
+            and p.subject_id == claim.subject_id
+            and isinstance(vt, Interval)
+            and vt.end is None
+            and (vt.start is None or vt.start.inner < start)
+            and _replaced(claim, predicate, p, ctx)
+        ):
+            closed.append(r)
+            p = p.model_copy(update={"valid_time": vt.model_copy(update={"end": Bound.at(start)})})
+        records.append((r, p))
+    if not closed:
+        return None
+    return closed, replace(ctx, records=records)
+
+
 # -- check ------------------------------------------------------------------------------------
 
 
@@ -1434,6 +1539,21 @@ def _check(
     skip_support: bool = False,
 ) -> Verdict:
     same = ctx.by(claim.predicate_id, claim.subject_id)
+    change = _fluent_change(claim, predicate, ctx) if ctx.options.contradictions else None
+    if change is not None:
+        closed, after = change
+        found = _check(
+            claim,
+            predicate,
+            replace(after, mover=None),
+            remainder=remainder,
+            skip_support=skip_support,
+        )
+        if found.kind is not VerdictKind.NOVEL:
+            return found
+        return replace(
+            found, evidence=(*(_ev(Rule.FLUENT_CHANGE, r) for r in closed), *found.evidence)
+        )
     pending: VerdictReason | None = None
     if not skip_support:
         support = _support(claim, predicate, [*same, *_placements(claim, ctx)])
@@ -1534,15 +1654,17 @@ def check(
     position: Any = None,
     options: Options = Options(),  # noqa: B008 - frozen
     owned: Sequence[OwnedValue] = (),
+    mover: str | None = None,
 ) -> Verdict:
     """The verdict on ``claim`` over the holder's ``records`` and ``closed_sets`` (see the
-    module docstring) and, for a canon holder, the owners' values ``owned`` (#191). Pure: no
-    I/O."""
+    module docstring) and, for a canon holder, the owners' values ``owned`` (#191). ``mover``
+    (#518): the character acting in the claim's beat, whose own fluent a claim may change from
+    its start (``fluent_change``). Pure: no I/O."""
     predicate = registry.get(claim.predicate_id)
     if predicate is None:
         return uncertain(VerdictReason.UNRESOLVED_PREDICATE, holder=holder, position=position)
     canon = holder.kind == "canon"
-    ctx = _Context.build(records, closed_sets, registry, options, owned, canon=canon)
+    ctx = _Context.build(records, closed_sets, registry, options, owned, canon=canon, mover=mover)
     hook = owner_lookup(predicate.id)
     if hook is not None and canon and (ctx.owned or not conditional_owner(predicate.id)):
         # #191: an owner-lookup predicate takes part only through its lookup (FR-VERIFY-7).
@@ -1649,6 +1771,7 @@ async def check_with(
     registry: Registry | None = None,
     options: Options = Options(),  # noqa: B008 - frozen
     fetched: list[Record] | None = None,
+    mover: str | None = None,
 ) -> Verdict:
     """Fetch what ``claim`` needs through ``lookup`` (each read a query key of the turn's read
     set) and ``check`` it. ``viewpoint`` filters canon (a character's claim is checked only
@@ -1656,7 +1779,8 @@ async def check_with(
     records are #150's to fetch and pass to ``check``. A ``belief(A)`` holder's records are A's
     partition at the claim's position (``belief_through``) and the canon A may read, the belief
     winning (see the module docstring). ``fetched``, when given, receives the records the
-    verdict was decided over (#142's entailment call is shown exactly those)."""
+    verdict was decided over (#142's entailment call is shown exactly those). ``mover``: see
+    ``check``."""
     if holder.kind == "utterance":
         raise ValueError("check_with reads canon; pass an utterance holder's records to check()")
     registry = registry or await load(lookup.conn, story_id)
@@ -1729,6 +1853,7 @@ async def check_with(
             holder=holder,
             position=position,
             options=options,
+            mover=mover,
             owned=owned,
         )
     if holder.kind == "belief":
@@ -1745,6 +1870,7 @@ async def check_with(
             holder=holder,
             position=position,
             options=options,
+            mover=mover,
         )
         if verdict.kind is not VerdictKind.NOVEL or await owner_belief_only(
             lookup.conn, story_id, c
@@ -1768,6 +1894,7 @@ async def check_with(
             holder=holder,
             position=position,
             options=options,
+            mover=mover,
         )
     owned_found: list[OwnedValue] = []
     records, closed = await _gather(
@@ -1794,6 +1921,7 @@ async def check_with(
         position=position,
         options=options,
         owned=owned_found,
+        mover=mover,
     )
 
 
@@ -1930,6 +2058,7 @@ class _Call:
     through_position: tuple[int, int] | None
     viewpoint: str
     kind: VerdictKind
+    mover: str | None = None
 
 
 _CALLS: dict[int, tuple[weakref.ref[StructuredReadSet], list[_Call]]] = {}
@@ -1979,11 +2108,12 @@ async def verify(
     viewpoint: str = OMNISCIENT,
     remember: bool = True,
     fetched: list[Record] | None = None,
+    mover: str | None = None,
 ) -> Verdict | None:
     """The deterministic verdict on ``claim`` under the story's effective profile, its reads
     keyed in ``read_set``; ``None`` (inert, nothing read) when verification is off. The verdict
     is recorded for the turn's rebase re-check unless ``remember`` is off. ``fetched`` receives
-    the records it was decided over (``check_with``)."""
+    the records it was decided over (``check_with``). ``mover``: see ``check`` (#518)."""
     options = await options_for(conn, story_id)
     if options is None:
         return None
@@ -1997,6 +2127,7 @@ async def verify(
         viewpoint=viewpoint,
         options=options,
         fetched=fetched,
+        mover=mover,
     )
     if remember:
         _remember(
@@ -2009,6 +2140,7 @@ async def verify(
                 through_position,
                 viewpoint,
                 verdict.kind,
+                mover,
             ),
         )
     return verdict
@@ -2032,6 +2164,7 @@ async def recheck(conn: AsyncConnection, op: Operation) -> bool:
             through_position=call.through_position,
             viewpoint=call.viewpoint,
             remember=False,
+            mover=call.mover,
         )
         if again is None or again.kind is not call.kind:
             log.debug("rebase re-check: a verdict changed (%d checked)", len(calls))

@@ -437,6 +437,17 @@ async def test_r_07__same_draft_topology(
             assert subject_checks(stub)
             assert all(ELSEWHERE in c for c in subject_checks(stub))
 
+        def away(played: Any, held: list[str], text: str) -> None:
+            """#518: the walk to the shed commits (a move of Ilse's own), so what she does there
+            is out of the cabin's sight: the player is not shown it, and the guard passes."""
+            assert played.status_code == 200, played.text
+            assert played.json()["guardrail"]["fallback_used"] is False
+            assert text not in played.json()["message"]["text"]
+            assert "walks out to the shed" in played.json()["message"]["text"]
+            assert not [t for t in held if "make love" in t]
+            assert subject_checks(stub)
+            assert all(ELSEWHERE in c for c in subject_checks(stub))
+
         # V5: the call is opened in the very draft that uses it (by name, and by "she").
         withheld(*await _same_draft(engine, client, stub, _call()), CALLED)
         withheld(*await _same_draft(engine, client, stub, _call(subject="she")), CALLED)
@@ -461,7 +472,7 @@ async def test_r_07__same_draft_topology(
             CALLED,
         )
         # A move the draft declares: into the barn reaches her; into the empty shed does not.
-        for room, check in (("barn", withheld), ("shed", passed)):
+        for room, check in (("barn", withheld), ("shed", away)):
             moving = render(
                 beat(
                     "do",

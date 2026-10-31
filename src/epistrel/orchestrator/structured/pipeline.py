@@ -1325,6 +1325,7 @@ class StagedSource:
             registry=await self.inner.registry(),
             holder=kwargs.get("holder", verdict.holder),
             position=kwargs.get("position"),
+            mover=kwargs.get("mover"),  # #518: a fluent change over the overlay too
         )
         if staged.kind in (VerdictKind.SUPPORTED, VerdictKind.CONTRADICTED):
             return staged, [*fetched, *self.staged]

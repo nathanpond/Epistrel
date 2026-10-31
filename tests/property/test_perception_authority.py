@@ -52,8 +52,9 @@ from epistrel.core.propositions.vocabulary import BARRIERS, LOCATED_AT
 from tests import canon_support
 from tests import perception_support as ps
 from tests.auth_support import auth_settings
+from tests.event_support import rows, scalar
 from tests.respond_support import body, respond, respond_client
-from tests.structured_turn_support import beat, render, structured_story
+from tests.structured_turn_support import beat, render, structured_story, turn_report
 
 CHARACTERS = tuple(f"C{i}" for i in range(6))
 PLACES = tuple(f"P{i}" for i in range(4))
@@ -266,3 +267,79 @@ async def test_perception_authority__exit(
         assert after.of(ids["Bobby"]) is None
         _, together = route_turn(beats, scene, CO_LOCATION, mode="simultaneous")
         assert together.of(ids["Bobby"]) is not None
+
+
+TURN = "SELECT max(narrative_turn) FROM operations WHERE story_id = :s AND status = 'committed'"
+PLACEMENTS = (
+    "SELECT p.polarity, f.valid_from, f.valid_to FROM facts f "
+    "JOIN propositions p ON p.id = f.proposition_id WHERE f.story_id = :s AND f.subject_id = :b "
+    "AND f.predicate_id = :l AND f.tx_to IS NULL AND f.membership = 'active' "
+    "ORDER BY f.valid_from NULLS FIRST"
+)
+
+
+@pytest.mark.integration
+async def test_perception_authority__exit_committed(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """#518 (FR-PROP-9; regression, no part): a render's own exit from the room its character is
+    placed in ("Bobby leaves the study.", the detector's negated ``located_at``) is a fluent
+    change from its beat's story-time, not a polarity contradiction of the open-ended placement:
+    it is verified ``novel`` (rule ``fluent_change``, citing the placement), commits with no
+    repair, and canon holds the placement up to the exit and the negation from it, so the scene
+    routes Bobby out at beat 2 and has him nowhere next turn (``__exit``'s reading). Complement:
+    a stale re-assertion of the old placement (the player's ``say``, not Bobby's own action) is
+    still ``contradicted`` by the negation, and Bobby's own return is a fluent change again."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        story, ids = await structured_story(client, "Cal", "Bobby")
+        bobby = ids["Bobby"]
+        study = await ps.place_entity(engine, story, "study")
+        await ps.put(engine, story, ids["Cal"], study)
+        placed = await ps.put(engine, story, bobby, study)
+        stub = epistrel.models.stub
+        stub.script("generation", [render(beat("do", "Bobby leaves the study."))])
+        response = await respond(client, story, body(ids["Cal"], "Goodnight, Bobby."))
+        assert response.status_code == 200, response.text
+        report = await turn_report(engine, story)
+        [verdict] = report["verify"]["verdicts"]
+        assert (verdict["kind"], verdict["rule"]) == ("novel", "fluent_change")
+        assert verdict["evidence_ids"] == [placed.proposition_id]
+        assert verdict["permission"] == "permitted:own"
+        assert report.get("repairs", []) == []
+        assert report["commit"]["canonized"] == 1
+        # Canon: the placement closed at the exit, the negation from it (one lineage each).
+        found = await rows(engine, PLACEMENTS, s=story, b=bobby, l=LOCATED_AT)
+        assert [r.polarity for r in found] == ["affirmed", "negated"]
+        (_, lo, cut), (_, start, hi) = found
+        assert (lo, hi) == (None, None)
+        assert cut == start is not None
+        # The placement projection follows: an exit to nowhere at beat 2, unplaced next turn.
+        turn = int(await scalar(engine, TURN, s=story))
+        async with engine.connect() as conn:
+            scene, moves = await scene_loader.load_scene(conn, story, turn)
+            later, _ = await scene_loader.load_scene(conn, story, turn + 1)
+        assert scene.at(bobby) == study
+        assert moves == {2: ((bobby, None),)}
+        assert later.at(bobby) is None
+
+        # A stale re-assertion of the old placement is still contradicted, by the negation.
+        stub.script("generation", [render(beat("do", "Bobby nods."))])
+        response = await respond(client, story, body(ids["Cal"], "Bobby walks into the study."))
+        assert response.status_code == 200, response.text
+        [stale] = (await turn_report(engine, story))["verify"]["verdicts"]
+        assert (stale["kind"], stale["rule"]) == ("contradicted", "polarity")
+        assert await rows(engine, PLACEMENTS, s=story, b=bobby, l=LOCATED_AT) == found
+
+        # Bobby's own return is a fluent change again, closing the negation.
+        stub.script("generation", [render(beat("do", "Bobby walks back into the study."))])
+        response = await respond(client, story, body(ids["Cal"], "Welcome back."))
+        assert response.status_code == 200, response.text
+        report = await turn_report(engine, story)
+        [back] = report["verify"]["verdicts"]
+        assert (back["kind"], back["rule"]) == ("novel", "fluent_change")
+        assert report.get("repairs", []) == []
+        again = await rows(engine, PLACEMENTS, s=story, b=bobby, l=LOCATED_AT)
+        assert [r.polarity for r in again] == ["affirmed", "negated", "affirmed"]
+        assert again[1].valid_to == again[2].valid_from is not None

@@ -154,7 +154,7 @@ from epistrel.core.config_changes import ConfigScope
 from epistrel.core.context import RequestContext
 from epistrel.core.db import make_engine
 from epistrel.core.deployment import SettingsPatch
-from epistrel.core.enums import MemoryKind
+from epistrel.core.enums import MemoryKind, StoryStatus
 from epistrel.core.epistemic.author import BeliefRequest
 from epistrel.core.errors import EpistrelError
 from epistrel.core.feedback import FeedbackRequest
@@ -789,6 +789,15 @@ def _steps() -> list[Step]:
             "list_stories",
             lambda ids: Rest("GET", "/stories", params={"status": "active"}),
             lambda e, ids: _listed(e),
+        ),
+        Step(
+            "list_stories",
+            lambda ids: Rest(
+                "GET",
+                "/stories",
+                params={"status": "active", "engine_profile": LITE_PRESET_ID},
+            ),
+            lambda e, ids: _listed_by(e, status=StoryStatus.ACTIVE, engine_profile=LITE_PRESET_ID),
         ),
         Step(
             "get_story",
@@ -2306,7 +2315,6 @@ async def _created(engine: Engine) -> dict[str, Any]:
 
 
 async def _listed(engine: Engine) -> dict[str, Any]:
-    from epistrel.core.enums import StoryStatus
 
     return dump(StoryList.of(await engine.list_stories(CTX, status=StoryStatus.ACTIVE)))
 

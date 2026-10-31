@@ -107,7 +107,7 @@ from epistrel.core.media.assets import assert_referenceable
 from epistrel.core.membership import Position
 from epistrel.core.ownership import Owner, RelationFilter
 from epistrel.core.profiles import store as profiles
-from epistrel.core.profiles.effective import ProfileVersionRef
+from epistrel.core.profiles.effective import ProfileVersionRef, StoryProfileRef
 from epistrel.core.profiles.impact import ImpactReport
 from epistrel.core.ratings import require_assignable
 from epistrel.core.resolution.entities import add_entities, character_spec
@@ -579,9 +579,10 @@ class StoryView:
     archived_at: datetime | None
     owner_principal: str
     characters: tuple[CharacterView, ...] = ()
-    engine_profile: ProfileVersionRef | None = None
+    engine_profile: StoryProfileRef | None = None
     """The engine profile the story runs under and the version it runs on (#113): its pin, else
-    the profile's latest. Read by ``get_story`` only (a list leaves it ``None``)."""
+    the profile's latest, and whether it is pinned. Read by ``get_story`` and ``list_stories``
+    (#527)."""
     pause: dict[str, Any] | None = None
     """While the story is paused (#118): ``{job_id, cause, progress {done, total}}``, the check
     that paused it. Read by ``get_story`` only."""
@@ -1550,7 +1551,13 @@ async def _delete_story_rows(conn: AsyncConnection, story_id: str) -> dict[str, 
 # -- read -----------------------------------------------------------------------------------
 
 
+_runs_on = func.coalesce(stories.c.engine_profile_version_pin, engine_profiles.c.current_version)
+"""The profile version a story runs on: its pin, else the profile's latest (#113)."""
+
+
 def _story_columns() -> tuple[Any, ...]:
+    """A story's columns for a read, with its rating's and its engine profile's: a query of them
+    selects from ``_stories_from()``."""
     return (
         stories.c.id,
         stories.c.name,
@@ -1566,11 +1573,26 @@ def _story_columns() -> tuple[Any, ...]:
         stories.c.content_rating_id,
         content_ratings.c.current_version_id,
         content_ratings.c.name.label("rating_name"),
+        stories.c.engine_profile_id,
+        _runs_on.label("profile_version"),
+        stories.c.engine_profile_version_pin,
+    )
+
+
+def _stories_from() -> Any:
+    """``stories`` with its rating and its engine profile, what ``_story_columns`` reads."""
+    return stories.join(content_ratings, content_ratings.c.id == stories.c.content_rating_id).join(
+        engine_profiles, engine_profiles.c.id == stories.c.engine_profile_id
     )
 
 
 def _view(row: Any, cast: tuple[CharacterView, ...] = ()) -> StoryView:
     return StoryView(
+        engine_profile=StoryProfileRef(
+            id=str(row.engine_profile_id),
+            version=int(row.profile_version),
+            pinned=row.engine_profile_version_pin is not None,
+        ),
         id=row.id,
         name=row.name,
         status=StoryStatus(row.status),
@@ -1620,21 +1642,11 @@ def _modeled_at(row: Any) -> Position:
 async def get_story(db: AsyncEngine, story_id: str, *, omniscient: bool = False) -> StoryView:
     """The story with its cast in order and its engine profile at the version it runs on. True
     ages only when ``omniscient`` (FR-CAT-12)."""
-    runs_on = func.coalesce(
-        stories.c.engine_profile_version_pin, engine_profiles.c.current_version
-    ).label("profile_version")
     async with db.connect() as conn, conn.begin():
         row = (
             await conn.execute(
-                select(
-                    *_story_columns(),
-                    stories.c.engine_profile_id,
-                    stories.c.scenario_id,
-                    stories.c.scenario_version,
-                    runs_on,
-                )
-                .join(content_ratings, content_ratings.c.id == stories.c.content_rating_id)
-                .join(engine_profiles, engine_profiles.c.id == stories.c.engine_profile_id)
+                select(*_story_columns(), stories.c.scenario_id, stories.c.scenario_version)
+                .select_from(_stories_from())
                 .where(stories.c.id == story_id)
             )
         ).one_or_none()
@@ -1690,13 +1702,12 @@ async def get_story(db: AsyncEngine, story_id: str, *, omniscient: bool = False)
             for c in cast
         ),
     )
-    profile = ProfileVersionRef(id=str(row.engine_profile_id), version=int(row.profile_version))
     scenario = (
         None
         if row.scenario_id is None
         else ScenarioOrigin(id=str(row.scenario_id), version=int(row.scenario_version))
     )
-    return dataclasses.replace(view, engine_profile=profile, pause=paused, scenario=scenario)
+    return dataclasses.replace(view, pause=paused, scenario=scenario)
 
 
 async def list_stories(
@@ -1705,15 +1716,30 @@ async def list_stories(
     status: StoryStatus | None = None,
     owner: str | None = None,
     relations: Sequence[RelationFilter] = (),
+    engine_profile: str | None = None,
+    engine_profile_version: int | None = None,
 ) -> list[StoryView]:
-    """The deployment's stories, newest first (no cast): every story, unless the request filters
-    by ``status``, by ``owner``, or by ``relations`` (a relation name, with or without its
-    principal; several must all hold). Nothing else narrows the list (FR-AUTH-8)."""
-    query = select(*_story_columns()).join(
-        content_ratings, content_ratings.c.id == stories.c.content_rating_id
-    )
+    """The deployment's stories, newest first (no cast), each with the engine profile it runs
+    under: every story, unless the request filters by ``status``, by ``owner``, by
+    ``relations`` (a relation name, with or without its principal; several must all hold), or by
+    ``engine_profile`` (any version it runs on, or only ``engine_profile_version``; #527).
+    Nothing else narrows the list (FR-AUTH-8). 422 for a version without its profile, or one
+    outside 1 to ``VERSION_MAX``."""
+    if engine_profile_version is not None:
+        field = {"field": "query.engine_profile_version"}
+        if engine_profile is None:
+            raise InvalidRequest("engine_profile_version needs engine_profile", field)
+        if not 1 <= engine_profile_version <= profiles.VERSION_MAX:
+            raise InvalidRequest(
+                f"engine_profile_version must be 1 to {profiles.VERSION_MAX}", field
+            )
+    query = select(*_story_columns()).select_from(_stories_from())
     if status is not None:
         query = query.where(stories.c.status == status.value)
+    if engine_profile is not None:
+        query = query.where(stories.c.engine_profile_id == engine_profile)
+    if engine_profile_version is not None:
+        query = query.where(_runs_on == engine_profile_version)
     filters = ownership.list_filters(
         EntityType.STORY, stories.c.id, stories.c.owner_principal, owner=owner, relations=relations
     )

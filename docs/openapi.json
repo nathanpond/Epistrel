@@ -32525,7 +32525,7 @@
             "type": "array"
           },
           "engine_profile": {
-            "$ref": "#/components/schemas/ProfileVersionRef"
+            "$ref": "#/components/schemas/StoryProfileRef"
           },
           "id": {
             "title": "Id",
@@ -32604,9 +32604,9 @@
           "content_rating",
           "created_at",
           "archived_at",
+          "engine_profile",
           "characters",
           "settings",
-          "engine_profile",
           "undo_available",
           "dormant_chains",
           "variant_chains"
@@ -33167,6 +33167,30 @@
           "message"
         ],
         "title": "StoryPolicyItem",
+        "type": "object"
+      },
+      "StoryProfileRef": {
+        "description": "The engine profile a story runs under and the version it runs on (``GET /stories`` and\n``GET /stories/{id}``; #527). ``pinned``: the story keeps an earlier version (its pin)\nrather than following the profile's latest.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "pinned": {
+            "title": "Pinned",
+            "type": "boolean"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "version",
+          "pinned"
+        ],
+        "title": "StoryProfileRef",
         "type": "object"
       },
       "StoryProfileWriteBody": {
@@ -33973,7 +33997,7 @@
         "type": "string"
       },
       "StorySummaryBody": {
-        "description": "A story as the list returns it: its owner, status, revision, next turn index and\nrating.",
+        "description": "A story as the list returns it: its owner, status, revision, next turn index, rating\nand engine profile.",
         "properties": {
           "archived_at": {
             "anyOf": [
@@ -33994,6 +34018,9 @@
             "format": "date-time",
             "title": "Created At",
             "type": "string"
+          },
+          "engine_profile": {
+            "$ref": "#/components/schemas/StoryProfileRef"
           },
           "id": {
             "title": "Id",
@@ -34035,7 +34062,8 @@
           "next_turn_index",
           "content_rating",
           "created_at",
-          "archived_at"
+          "archived_at",
+          "engine_profile"
         ],
         "title": "StorySummaryBody",
         "type": "object"
@@ -55870,7 +55898,7 @@
     },
     "/stories": {
       "get": {
-        "description": "Every story, newest first, unless the request filters: by `status`, by `owner` (the owner principal, `system` included), or by `relation` (`name:principal`, or `name:` for any principal; repeat it and every one must hold). Owners and relations narrow a list only when a request asks: they gate nothing (FR-AUTH-8). A story held `blocked_by_erasure` after a restore is listed with a `null` `name` until its erasure is reapplied (FR-ADMIN-7).",
+        "description": "Every story, newest first, unless the request filters: by `status`, by `owner` (the owner principal, `system` included), by `relation` (`name:principal`, or `name:` for any principal; repeat it and every one must hold), or by `engine_profile` (any version the story runs on, or only `engine_profile_version`). Each item names its `engine_profile` `{id, version, pinned}`. Owners and relations narrow a list only when a request asks: they gate nothing (FR-AUTH-8). A story held `blocked_by_erasure` after a restore is listed with a `null` `name` until its erasure is reapplied (FR-ADMIN-7).",
         "operationId": "list_stories",
         "parameters": [
           {
@@ -55912,6 +55940,29 @@
               },
               "title": "Relation",
               "type": "array"
+            }
+          },
+          {
+            "description": "Only the stories running under this engine profile, at any version.",
+            "in": "query",
+            "name": "engine_profile",
+            "required": false,
+            "schema": {
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Engine Profile",
+              "type": "string"
+            }
+          },
+          {
+            "description": "With `engine_profile`: only the stories running on this version of it (422 without `engine_profile`).",
+            "in": "query",
+            "name": "engine_profile_version",
+            "required": false,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Engine Profile Version",
+              "type": "integer"
             }
           }
         ],

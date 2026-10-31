@@ -222,7 +222,12 @@ if TYPE_CHECKING:
         Relations,
         RelationWrite,
     )
-    from epistrel.core.profiles.effective import EffectiveConfig, OverridesRef, ProfileVersionRef
+    from epistrel.core.profiles.effective import (
+        EffectiveConfig,
+        OverridesRef,
+        ProfileVersionRef,
+        StoryProfileRef,
+    )
     from epistrel.core.profiles.fingerprint import QualityStatus
     from epistrel.core.profiles.impact import (
         AffectedStory,
@@ -435,6 +440,7 @@ _EXPORTS: dict[str, str] = {
     "EffectiveConfig": "epistrel.core.profiles.effective",
     "OverridesRef": "epistrel.core.profiles.effective",
     "ProfileVersionRef": "epistrel.core.profiles.effective",
+    "StoryProfileRef": "epistrel.core.profiles.effective",
     "Feedback": "epistrel.core.feedback",
     "FeedbackContext": "epistrel.core.feedback",
     "FeedbackHistoryEntry": "epistrel.core.feedback",
@@ -759,6 +765,7 @@ __all__ = [
     "StoryNotFound",
     "StoryPaused",
     "StoryPolicyItem",
+    "StoryProfileRef",
     "StorySpec",
     "StoryView",
     "SubjectKind",

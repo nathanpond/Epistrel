@@ -2627,13 +2627,18 @@ class Engine:
         status: StoryStatus | None = None,
         owner: str | None = None,
         relation: str | Sequence[str] = (),
+        engine_profile: str | None = None,
+        engine_profile_version: int | None = None,
     ) -> list[stories.StoryView]:
-        """Every story, newest first, unless the request filters: by ``status``, by ``owner``
-        (a principal), or by ``relation`` (each ``name:principal``, or ``name:`` for any
-        principal; repeated filters all hold). Owners and relations narrow a list only when
-        asked (FR-AUTH-8). A story the erasure reconciler holds blocked is listed with its
-        status but without its name and settings until the reapply settles it (#348): every
-        call naming it is refused, and the list must not serve what the erasure removes."""
+        """Every story, newest first, each with its ``engine_profile`` ``{id, version,
+        pinned}``, unless the request filters: by ``status``, by ``owner`` (a principal), by
+        ``relation`` (each ``name:principal``, or ``name:`` for any principal; repeated filters
+        all hold), or by ``engine_profile`` (the stories running under it at any version, or
+        only at ``engine_profile_version``, which needs ``engine_profile``; #527). Owners and
+        relations narrow a list only when asked (FR-AUTH-8). A story the erasure reconciler
+        holds blocked is listed with its status but without its name and settings until the
+        reapply settles it (#348): every call naming it is refused, and the list must not serve
+        what the erasure removes."""
         if not self._erasure_marked:
             await self._mark_erasures()
         found = await stories.list_stories(
@@ -2641,6 +2646,8 @@ class Engine:
             status=status,
             owner=ownership.owner_filter(owner),
             relations=[ownership.parse_relation_filter(value) for value in relation],
+            engine_profile=engine_profile,
+            engine_profile_version=engine_profile_version,
         )
         return [
             dataclasses.replace(story, name=None, settings={})

@@ -78,8 +78,9 @@ from epistrel.core.ids import ULID_PATTERN
 from epistrel.core.ingest import IngestRequest, IngestResult
 from epistrel.core.ownership import RELATION_FILTER_PATTERN, relation_filter_problem
 from epistrel.core.policies.model import Policy, PolicyKind, Scope, Target, WithheldPolicy
-from epistrel.core.profiles.effective import ProfileVersionRef
+from epistrel.core.profiles.effective import ProfileVersionRef, StoryProfileRef
 from epistrel.core.profiles.impact import ImpactReport
+from epistrel.core.profiles.store import VERSION_MAX
 from epistrel.core.settings_schema import DEFAULT_PLAYER_AUTHORITY, ConfigClass, StorySettings
 from epistrel.core.stories import (
     AdHocCharacter,
@@ -320,8 +321,8 @@ class StoryCreatedBody(MutationResponse):
 
 
 class StorySummaryBody(BaseModel):
-    """A story as the list returns it: its owner, status, revision, next turn index and
-    rating."""
+    """A story as the list returns it: its owner, status, revision, next turn index, rating
+    and engine profile."""
 
     id: str
     name: str | None
@@ -332,10 +333,15 @@ class StorySummaryBody(BaseModel):
     content_rating: StoryRatingBody
     created_at: datetime
     archived_at: datetime | None
+    engine_profile: StoryProfileRef
+    """The engine profile the story runs under, the version it runs on (its pin, else the
+    profile's latest), and whether that version is pinned (#527)."""
 
     @classmethod
     def fields_of(cls, story: StoryView) -> dict[str, Any]:
+        assert story.engine_profile is not None  # noqa: S101 - every story read reads it
         return {
+            "engine_profile": story.engine_profile,
             "id": story.id,
             "name": story.name,
             "owner_principal": story.owner_principal,
@@ -388,7 +394,6 @@ class StoryBody(StorySummaryBody):
     settings: dict[str, Any]
     """The stored settings; ``player_authority`` (#180, FR-RESP-11) always present (a story
     created before it reads ``own_character``)."""
-    engine_profile: ProfileVersionRef
     undo_available: bool
     """Whether ``POST /stories/{id}/untruncate`` has a truncation to revert (by reactivation,
     or by a swap when newer turns exist)."""
@@ -402,12 +407,10 @@ class StoryBody(StorySummaryBody):
 
     @classmethod
     def of(cls, story: StoryView, undo: UndoState, chains: list[Chain]) -> StoryBody:
-        assert story.engine_profile is not None  # noqa: S101 - get_story reads it
         return cls(
             **StorySummaryBody.fields_of(story),
             characters=[_character(c) for c in story.characters],
             settings={PLAYER_AUTHORITY: DEFAULT_PLAYER_AUTHORITY, **story.settings},
-            engine_profile=story.engine_profile,
             undo_available=undo.undo_available,
             dormant_chains=[
                 DormantChainBody(
@@ -865,8 +868,10 @@ an object's pairs) would read as a principal over the wire."""
     summary="List stories",
     description=(
         "Every story, newest first, unless the request filters: by `status`, by `owner` (the "
-        "owner principal, `system` included), or by `relation` (`name:principal`, or `name:` "
-        "for any principal; repeat it and every one must hold). Owners and relations narrow a "
+        "owner principal, `system` included), by `relation` (`name:principal`, or `name:` "
+        "for any principal; repeat it and every one must hold), or by `engine_profile` (any "
+        "version the story runs on, or only `engine_profile_version`). Each item names its "
+        "`engine_profile` `{id, version, pinned}`. Owners and relations narrow a "
         "list only when a request asks: they gate nothing (FR-AUTH-8). A story held "
         "`blocked_by_erasure` after a restore is listed with a `null` `name` until its erasure "
         "is reapplied (FR-ADMIN-7)."
@@ -889,8 +894,33 @@ async def list_stories(
         ),
         WithJsonSchema(RELATION_FILTERS_SCHEMA),
     ] = None,
+    engine_profile: Annotated[
+        str | None,
+        Query(
+            pattern=ULID_PATTERN,
+            description="Only the stories running under this engine profile, at any version.",
+        ),
+        WithJsonSchema({"type": "string", "pattern": ULID_PATTERN}),
+    ] = None,
+    engine_profile_version: Annotated[
+        int | None,
+        Query(
+            ge=1,
+            le=VERSION_MAX,
+            description="With `engine_profile`: only the stories running on this version of it "
+            "(422 without `engine_profile`).",
+        ),
+        WithJsonSchema({"type": "integer", "minimum": 1, "maximum": VERSION_MAX}),
+    ] = None,
 ) -> StoryList:
-    found = await engine.list_stories(ctx, status=status, owner=owner, relation=relation or ())
+    found = await engine.list_stories(
+        ctx,
+        status=status,
+        owner=owner,
+        relation=relation or (),
+        engine_profile=engine_profile,
+        engine_profile_version=engine_profile_version,
+    )
     return StoryList.of(found)
 
 

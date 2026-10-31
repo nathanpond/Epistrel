@@ -788,6 +788,14 @@ class ProfileVersionRef(BaseModel):
     version: int
 
 
+class StoryProfileRef(ProfileVersionRef):
+    """The engine profile a story runs under and the version it runs on (``GET /stories`` and
+    ``GET /stories/{id}``; #527). ``pinned``: the story keeps an earlier version (its pin)
+    rather than following the profile's latest."""
+
+    pinned: bool
+
+
 class ProfileRef(BaseModel):
     """The engine profile a story runs under and the version it runs on. ``pinned``: the story
     keeps an earlier version, because a data-producing edit could not apply to its history
@@ -883,6 +891,7 @@ __all__ = [
     "ResolutionCache",
     "Source",
     "StoryProfile",
+    "StoryProfileRef",
     "assignable",
     "check_document",
     "check_patch",

@@ -394,7 +394,7 @@ async def test_assignment_runs_in_two_stages(stub_settings: Settings, engine: As
         again = await _assign(client, story, quiet, key, ignoreWarnings=True)
         assert (again.headers.get("Idempotent-Replay"), again.json()) == ("true", done)
         shown = await ok(await client.get(f"/stories/{story}", headers=READ))
-        assert shown["engine_profile"] == {"id": quiet, "version": 1}
+        assert shown["engine_profile"] == {"id": quiet, "version": 1, "pinned": False}
         played = await ok(await _play(client, story, actor))
         assert played["profile"] == {"id": quiet, "version": 1}
         # The turn reports the story's configuration revision at its start: the assignment's.
@@ -875,7 +875,11 @@ async def test_a_data_producing_edit_keeps_only_the_followers_it_raises(scratch:
         assert {r[0]: r[1] for r in pins} == {plain: 1, polished: None}
         for story, version in ((plain, 1), (polished, 2)):
             shown = await ok(await client.get(f"/stories/{story}", headers=READ))
-            assert shown["engine_profile"] == {"id": profile, "version": version}, story
+            assert shown["engine_profile"] == {
+                "id": profile,
+                "version": version,
+                "pinned": story == plain,
+            }, story
 
 
 # -- M3's interim rule on a story's own writes ---------------------------------------------------
@@ -994,7 +998,7 @@ async def test_a_story_write_whose_upgrade_is_unavailable_writes_nothing(scratch
                 assert "polish" not in result["capabilities"]
             assert tuple(await _story_row(scratch.db, lived)) == tuple(start)
             shown = await ok(await client.get(f"/stories/{lived}", headers=READ))
-            assert shown["engine_profile"] == {"id": shared, "version": 1}
+            assert shown["engine_profile"] == {"id": shared, "version": 1, "pinned": True}
 
             # -- complement: the same writes reach a story without history
             for story, send in ((patched, patch), (moved, assign)):

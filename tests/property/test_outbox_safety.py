@@ -62,6 +62,7 @@ second turn or dispatch, and no committed stage is rolled back by a later stage'
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from collections import Counter
 from dataclasses import dataclass, field, fields
@@ -79,6 +80,7 @@ from epistrel.core import clock, timeline, world_clock
 from epistrel.core import outbox as core_outbox
 from epistrel.core.db import make_engine
 from epistrel.core.enums import OperationKind, Provenance, StateChangeStatus, StateContingency
+from epistrel.core.errors import UnknownChain
 from epistrel.core.events import Operation
 from epistrel.core.fork import ForkRequest, fork
 from epistrel.core.ids import new_ulid
@@ -340,12 +342,15 @@ async def _step(w: World, kind: str, pick: int, tally: Tally) -> None:
         if not others:
             return
         chosen = others[pick % len(others)]
-        await timeline.swap(
-            engine,
-            story,
-            SwapRequest(to_variant_chain=ChainRef(turn=chosen.turn, variant=chosen.variant)),
-            principal=PRINCIPAL,
-        )
+        # A dormant chain that continues in more than one way is refused (409 ``unknown_chain``):
+        # a refused swap changes nothing, so the step is a no-op.
+        with contextlib.suppress(UnknownChain):
+            await timeline.swap(
+                engine,
+                story,
+                SwapRequest(to_variant_chain=ChainRef(turn=chosen.turn, variant=chosen.variant)),
+                principal=PRINCIPAL,
+            )
         return
     rows = await _rows(engine, story)
     if not rows:

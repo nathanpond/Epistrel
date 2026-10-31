@@ -17,7 +17,8 @@ its prose was declared. ``detect_render(beats, …)`` (once per render, every be
   language; quantities (number words 0-999 and thousand/million multiples, digits, a unit or
   currency); time expressions (#139's ``find_time_expressions`` and a clock-time table);
   entity and alias mentions no declared proposition covers; and **protected-content** matching
-  (``core.verify.protected``: names, aliases and values hidden from the speaker). Each hit is a
+  (``core.verify.protected``: names, aliases and values hidden from the speaker; never over the
+  player's own input, whose text asserts only what it states, #567). Each hit is a
   #140 ``ClaimSketch`` and goes through ``normalize``: possession → ``holds``; transfer →
   ``holds`` for the recipient (and a negated ``holds`` for the giver); consumption →
   ``consumed``; injury → ``injured`` (its cause a qualifier); movement → ``located_at`` (a
@@ -1142,9 +1143,14 @@ def _detect_beat(
             continue
         found = _normalize_one(sketch_or_reason, beat.speaker, position, env, context)
         found_claims.append(_claim(index, beat, "entity_mention", sketch_or_reason, found))
-    # Every channel is scanned for protected content but a speaker's own ``think``.
+    # Every channel is scanned for protected content but a speaker's own ``think`` and the
+    # player's own input (#567): a hit claims the hidden record's proposition, which the
+    # player's text never states ("Who has the deed?" is no "Tom holds the deed"), and the
+    # input is never repaired, so the hit would stand as its assertion and reach every hearer
+    # by testimony. The composed message the player's character reads is still scanned.
     if not seed and not (beat.channel == "think" and beat.speaker != NARRATOR):
-        found_claims += _protected(work, env.protected_for(beat.speaker))
+        if message or beat.speaker != PLAYER:
+            found_claims += _protected(work, env.protected_for(beat.speaker))
         found_claims += _private(work, env, message=message)
     # A detector claim with a declared claim's shape is that claim (declared > detector).
     by_shape = {

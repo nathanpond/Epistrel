@@ -298,3 +298,130 @@ async def test_s_family(
         assert {str(w.witness_character_id) for w in witnesses} == {
             by_role[r] for r in ("mother", "father", "brother")
         }
+
+
+DEED = "Tom keeps the deed."
+"""#567's planned reveal: an ``engine``-scoped truth no character may read."""
+
+
+def _with_deed() -> dict[str, Any]:
+    """The Sunday Dinner with a deed and #567's planned reveal of who keeps it."""
+    found = sp.family()
+    found["world"]["entities"].append({"id": "deed", "name": "The deed", "kind": "item"})
+    found["drivers"] = {
+        "planned_reveals": [
+            {
+                "truth": {
+                    "text": DEED,
+                    "holder": "world",
+                    "audience": ["self"],
+                    "disclosure": "secret",
+                },
+                "allowed_roles": ["player"],
+                "conditions": "When the will is read.",
+            }
+        ]
+    }
+    return found
+
+
+async def _about(engine: AsyncEngine, story: str, item: str) -> set[str]:
+    """The ids of every belief whose proposition names ``item`` (any holder, any kind)."""
+    rows = await sp.rows_of(
+        engine,
+        "SELECT b.id FROM beliefs b JOIN propositions p ON p.id = b.proposition_id "
+        "WHERE b.story_id = :s AND (p.object_id = :i OR p.subject_id = :i)",
+        s=story,
+        i=item,
+    )
+    return {str(r.id) for r in rows}
+
+
+@pytest.mark.part("M5", "FR-SCN-2,3,6,7,8,9; FR-CAT-2,6; FR-EPI-2; FR-BELIEF-15")
+async def test_s_family__open_question(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """#567 (NFR-PRIV-1, FR-EPI-5): the player's open question asserts nothing.
+
+    Sam asks "Who has the deed?" (the planned reveal's ``engine``-scoped truth) and "Who has
+    the love letters?" (the Mother's ``characters:[mother]`` secret) in front of the Mother,
+    the Father and the Brother. Neither question is stored as an assertion: the input carries
+    no proposition, no hearer gets any belief (speech act, nested, attributed or first-order)
+    about either item, and no later render context says who holds it. Complement: Sam's
+    declarative "Tom keeps the deed." is his own assertion and still reaches the Father as
+    testimony."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        profile = await sp.partitioned_profile(client, "Sunday questions")
+        scenario_id, _ = await g.published_scenario(client, _with_deed())
+        made = await g.create_from(client, sp.request(scenario_id, await sp.cast(client), profile))
+        story = made["story_id"]
+        by_role = {c["role_id"]: c["id"] for c in made["characters"]}
+        sam = by_role["player"]
+        ents = await sp.entity_ids(engine, story)
+        deed, letters = ents["The deed"], ents["The love letters"]
+        hidden = await sp.rows_of(
+            engine,
+            "SELECT f.visibility, p.object_id FROM facts f "
+            "JOIN propositions p ON p.id = f.proposition_id "
+            "WHERE f.story_id = :s AND p.object_id IN (:d, :l)",
+            s=story,
+            d=deed,
+            l=letters,
+        )
+        assert sorted((str(r.object_id), r.visibility["scope"]) for r in hidden) == sorted(
+            [(deed, "engine"), (letters, "characters")]
+        )
+        seeded = {item: await _about(engine, story, item) for item in (deed, letters)}
+        assert seeded[deed] == set()  # the reveal is canon only: nobody believes it yet
+
+        for question in ("Who has the deed?", "Who has the love letters?"):
+            stub.calls.clear()
+            stub.script("generation", [render(beat("do", "Frank nods."))])
+            answer = await respond(
+                client, story, body(sam, question, render_character_ids=[by_role["father"]])
+            )
+            assert answer.status_code == 200, answer.text
+            report = await turn_report(engine, story)
+            assert not report["epistemic"]["testimony"].get("outcomes_by_kind"), question
+            assert not report["verify"].get("denied"), question
+        asked = await sp.rows_of(
+            engine,
+            "SELECT payload->'propositions' AS props FROM events "
+            "WHERE story_id = :s AND type = 'player_input' AND payload->>'say' LIKE 'Who has%'",
+            s=story,
+        )
+        assert len(asked) == 2
+        assert all(not r.props for r in asked)
+        for item in (deed, letters):
+            assert await _about(engine, story, item) == seeded[item]
+
+        for role, name in (("father", "Frank"), ("brother", "Tom"), ("mother", "Linda")):
+            seen = await _context(client, stub, story, sam, by_role[role], name)
+            assert "holds The deed" not in seen, role
+            if role != "mother":  # her own secret is hers to know
+                assert "holds The love letters" not in seen, role
+
+        # -- the complement: a declarative is the player's own claim, routed as testimony
+        stub.calls.clear()
+        stub.script("generation", [render(beat("do", "Frank nods."))])
+        told = await respond(
+            client,
+            story,
+            body(sam, "Tom keeps the deed.", render_character_ids=[by_role["father"]]),
+        )
+        assert told.status_code == 200, told.text
+        heard = await sp.rows_of(
+            engine,
+            "SELECT DISTINCT b.holder_character_id AS holder FROM beliefs b "
+            "JOIN propositions p ON p.id = b.proposition_id "
+            "JOIN belief_transitions t ON t.belief_id = b.id "
+            "WHERE b.story_id = :s AND p.object_id = :d AND p.subject_id = :t "
+            "AND b.kind = 'first_order' AND t.kind = 'testimony'",
+            s=story,
+            d=deed,
+            t=by_role["brother"],
+        )
+        assert by_role["father"] in {str(r.holder) for r in heard}

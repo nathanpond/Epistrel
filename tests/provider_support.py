@@ -217,6 +217,15 @@ class Timeout:
     seconds: float = 0.05
 
 
+@dataclass(frozen=True)
+class Hang:
+    """A scripted write that does not answer until ``release`` is set (``None``: never; #212's
+    provider that never answers), then answers ``then``."""
+
+    release: asyncio.Event | None = None
+    then: Any = "confirmed"
+
+
 @dataclass
 class ScriptedProvider:
     """An in-process provider for tests (see the module docstring). ``name`` is the provider it
@@ -233,6 +242,8 @@ class ScriptedProvider:
     writes: list[Effect] = field(default_factory=list)
     idempotency_keys: list[str] = field(default_factory=list)
     deduped: int = 0
+    hanging: asyncio.Event = field(default_factory=asyncio.Event)
+    """Set once a write met a ``Hang``."""
     _first: dict[str, WriteOutcome] = field(default_factory=dict)
 
     @property
@@ -245,7 +256,8 @@ class ScriptedProvider:
         self.scripts[(value, story_id)] = list(items)
 
     def script_writes(self, value: str, *outcomes: Any) -> None:
-        """Script ``value``'s write outcomes (a status, a ``WriteOutcome`` or a ``Fail``)."""
+        """Script ``value``'s write outcomes (a status, a ``WriteOutcome``, a ``Fail`` or a
+        ``Hang``)."""
         self.outcomes[value] = list(outcomes)
 
     def _next(self, queue: list[Any]) -> Any:
@@ -275,6 +287,10 @@ class ScriptedProvider:
             return self._first[effect.idempotency_key]
         queue = self.outcomes.get(effect.value)
         item: Any = self._next(queue) if queue else "confirmed"
+        if isinstance(item, Hang):
+            self.hanging.set()
+            await (item.release or asyncio.Event()).wait()
+            item = item.then
         if isinstance(item, Fail):
             raise ProviderUnavailable(self.name, effect.value, item.reason)
         outcome = item if isinstance(item, WriteOutcome) else WriteOutcome(status=item)

@@ -31,12 +31,14 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
 from epistrel.orchestrator.jobs.handlers import outbox as outbox_job
+from epistrel.orchestrator.structured import staged
 from tests import effect_support as es
 from tests import multi_support as ms
 from tests import provider_support as ps
 from tests import state_support as ss
 from tests.auth_support import auth_settings
 from tests.respond_support import AUTHOR, body, respond, respond_client
+from tests.story_support import override
 from tests.structured_turn_support import beat, structured_story, turn_report
 
 pytestmark = pytest.mark.integration
@@ -224,5 +226,105 @@ async def test_s_effect_prose__async(
         listed = (await epistrel.reconciliation(AUTHOR, story)).listings
         assert [e.outbox_id for e in listed] == [effect["outbox_id"]]
         assert fake.idempotency_keys == [effect["outbox_id"], second["outbox_id"]]
+        await ps.drop_outbox_jobs(engine, story)
+        await ss.set_level(engine, story, None)
+
+
+REFUSED = "The smith shakes his head: the payment is refused."
+MODEL_CALLS = 40
+FORGE = "The forge glows."
+
+
+def _outcome_step(stub: Any, *beats: dict[str, Any]) -> None:
+    """The outcome step's narrator render (#212) answers ``beats`` (its prompt alone carries
+    ``## Outcome step``; registered before ``es.narrator``, the first match wins)."""
+    stub.when(staged.OUTCOME_STEP, es.render(*beats), purpose="generation")
+
+
+@pytest.mark.part("M6", "FR-EXT-15; FR-RESP-8")
+async def test_s_effect_prose__sync(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#212's part (a ``synchronous`` write-capable provider, FR-EXT-15): the turn is staged.
+
+    1. **Confirmed.** Mira's beat narrates the attempt ("Mira takes the coins."); the intent
+       commits it with no message. The game confirms the purchase, and only then the outcome
+       step narrates it ("The purchase went through.", a later beat of the same turn): the
+       reply states the outcome after the attempt, never before.
+    2. **Failed.** The game refuses: the outcome step's "The purchase went through." asserts
+       an outcome the game did not confirm (#209's ``external_outcome_unconfirmed``) and is
+       repaired to the failed attempt the repair narrates ("the payment is refused"); the reply
+       never states the purchase went through.
+    3. **Before confirmation.** Prose asserting the outcome at intent is repaired to the
+       attempt there, before anything is sent."""
+    name = ps.unique_name("bank")
+    await ps.register(engine, ps.write_capable_spec(name, confirmation="synchronous"))
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        fake = ps.ScriptedProvider(name, default=300).attach(epistrel)
+        story, ids = await structured_story(client, "Cal", "Mira")
+        cal = ids["Cal"]
+        # Room for the outcome step's repair (#214 reserves the outcome render itself).
+        await override(client, story, {"budgets": {"model_calls": MODEL_CALLS}})
+        await ss.set_level(engine, story, "on")
+        await ps.external_gold(engine, story, name, authorization=es.ANY_CHARACTER)
+
+        # 1. Confirmed: the outcome is narrated after the attempt, by the outcome step.
+        stub.reset()
+        fake.script_writes("gold", "confirmed")
+        _outcome_step(stub, beat("narration", WENT))
+        ms.renders_for(stub, "Mira", _mira(cal, TAKES))
+        es.narrator(stub, es.render(beat("narration", FORGE)))
+        answer = await respond(client, story, body(cal, None, do="buys the sword"))
+        assert answer.status_code == 200, answer.text
+        played = answer.json()
+        texts = [b["text"] for b in played["beats"]]
+        assert TAKES in texts
+        assert WENT in texts
+        assert texts.index(TAKES) < texts.index(WENT)
+        message = played["message"]["text"]
+        assert message.index(TAKES) < message.index(WENT)
+        report = await turn_report(engine, story)
+        assert [e["status"] for e in report["staged"]["effects"]] == ["confirmed"]
+        assert report["staged"]["outcome_step"]["deterministic"] is False
+
+        # 2. Failed: the outcome step may narrate only a failed attempt.
+        stub.reset()
+        fake.script_writes("gold", "failed")
+        _outcome_step(stub, beat("narration", WENT))
+        ms.renders_for(stub, "Mira", _mira(cal, TAKES))
+        es.narrator(stub, es.render(beat("narration", FORGE)))
+        stub.script("regeneration", [json.dumps({"text": REFUSED, "effects": []})])
+        answer = await respond(client, story, body(cal, None, do="buys another sword"))
+        assert answer.status_code == 200, answer.text
+        played = answer.json()
+        texts = [b["text"] for b in played["beats"]]
+        assert REFUSED in texts
+        assert not any("went through" in t for t in texts)
+        assert "went through" not in played["message"]["text"]
+        report = await turn_report(engine, story)
+        assert [e["status"] for e in report["staged"]["effects"]] == ["failed"]
+        assert [(r["tag"], r["rung"]) for r in report["staged"]["outcome_step"]["repairs"]] == [
+            ("external_outcome_unconfirmed", 3)
+        ]
+
+        # 3. At intent, before anything is sent, the outcome is never narrated.
+        stub.reset()
+        fake.script_writes("gold", "confirmed")
+        _outcome_step(stub, beat("narration", "The coins change hands."))
+        ms.renders_for(stub, "Mira", _mira(cal, f"{TAKES} {WENT}"))
+        es.narrator(stub, es.render(beat("narration", FORGE)))
+        stub.script("regeneration", [json.dumps({"text": ATTEMPT, "effects": []})])
+        answer = await respond(client, story, body(cal, None, do="buys a third sword"))
+        assert answer.status_code == 200, answer.text
+        played = answer.json()
+        texts = [b["text"] for b in played["beats"]]
+        assert ATTEMPT in texts
+        assert "The coins change hands." in texts
+        assert not any("went through" in t for t in texts)
+        assert _tags(await turn_report(engine, story)) == [("external_outcome_unconfirmed", 3)]
         await ps.drop_outbox_jobs(engine, story)
         await ss.set_level(engine, story, None)

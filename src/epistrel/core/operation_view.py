@@ -31,6 +31,14 @@ reached it (null while pending); an erasure's summary regeneration can also be `
   ``regenerated`` and ``rebuilt`` are ``skipped``; a story erasure's later stages are
   ``pending`` until the work after its commit records them.
 
+- a staged turn (#212, FR-EXT-16; label ``staged_turn``, ``staged: true``): ``intent``,
+  ``claim``, ``outcome``, ``completion`` and ``response`` from ``operations.stage_log``, each
+  with the story's ``revision`` once the stage committed (the claim and the stored response
+  change no story truth, so they carry the revision they left unchanged). The stage after the
+  last recorded one is ``running`` while the turn is unfinished; the rest are ``pending``. A
+  turn a discard abandoned (``turn_stage = abandoned``) shows its unrecorded stages
+  ``skipped``.
+
 Any other operation has no label and ``stages: []``.
 
 **The read set (#136).** An operation that captured one reports ``read_set``: ``keys_count`` (the
@@ -55,7 +63,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core.enums import OperationKind, OperationStatus
+from epistrel.core.enums import OperationKind, OperationStatus, StagedTurnStage
 from epistrel.core.errors import EpistrelError, IdempotencyConflict
 from epistrel.core.idempotency import StoredResult, stored_result
 from epistrel.core.readset import read_set_counts, stored_keys
@@ -84,6 +92,8 @@ class Stage:
     name: str
     status: StageStatus
     at: datetime | None
+    revision: int | None = None
+    """#212: a staged turn's stage only, the story's revision once the stage committed."""
 
 
 class OperationLabel(StrEnum):
@@ -94,11 +104,15 @@ class OperationLabel(StrEnum):
     REACTIVATION_CHECK = "reactivation_check"
     OFFBOARDING = "offboarding"
     ERASURE = "erasure"
+    STAGED_TURN = "staged_turn"
+    """#212: a turn that commits in stages (an effect on a ``synchronous`` provider)."""
 
 
 GENESIS_STAGES = ("validated", "snapshotted", "materialized")
 ERASURE_STAGES = ("redacted", "ledger_written", "regenerated", "rebuilt")
 STORY_ONLY_ERASURE_STAGES = frozenset({"regenerated", "rebuilt"})
+TURN_STAGES = ("intent", "claim", "outcome", "completion", "response")
+"""#212: a staged turn's stages, in order (``stage_log`` names)."""
 
 
 class OperationNotFound(EpistrelError):
@@ -152,6 +166,8 @@ class OperationView:
     eval_hooks: dict[str, Any] | None = None
     """A structured turn's eval hooks (#155), its verdicts expanded, returned only to a read
     naming the ``omniscient`` viewpoint."""
+    staged: bool = False
+    """#212: a staged turn (``operations.turn_stage`` set)."""
 
 
 INGESTED = "ingested"
@@ -219,6 +235,7 @@ async def read_operation(
         stages=stages,
         read_set=_read_set(row.read_set, viewpoint),
         eval_hooks=expanded_eval_hooks(row.turn_report) if _omniscient(viewpoint) else None,
+        staged=row.turn_stage is not None,
     )
 
 
@@ -259,6 +276,8 @@ def _read_set(document: Any, viewpoint: str | None) -> ReadSetView | None:
 
 async def _stages(conn: AsyncConnection, row: Any) -> tuple[OperationLabel | None, list[Stage]]:
     """The label and stages of ``row``'s operation (see the module docstring)."""
+    if row.turn_stage is not None:
+        return OperationLabel.STAGED_TURN, _turn_stages(row)
     if str(row.kind) == OperationKind.GENESIS.value:
         return OperationLabel.GENESIS, _genesis_stages(row)
     if str(row.kind) != OperationKind.CONTROL.value:
@@ -373,6 +392,35 @@ def _erasure_stages(row: Any, logged: list[dict[str, Any]]) -> list[Stage]:
     return stages
 
 
+def _turn_stages(row: Any) -> list[Stage]:
+    """A staged turn's recorded stages in their order (#212; see the module docstring)."""
+    logged = [s for s in (row.stage_log or []) if isinstance(s, dict)]
+    recorded = {str(s.get("stage")): s for s in logged if s.get("stage") in TURN_STAGES}
+    abandoned = str(row.turn_stage) == StagedTurnStage.ABANDONED.value
+    stages: list[Stage] = []
+    running = False
+    for name in TURN_STAGES:
+        entry = recorded.get(name)
+        if entry is not None:
+            revision = entry.get("revision")
+            stages.append(
+                Stage(
+                    name,
+                    _recorded(entry.get("status")),
+                    _at(entry, row),
+                    revision if isinstance(revision, int) else None,
+                )
+            )
+        elif abandoned:
+            stages.append(Stage(name, StageStatus.SKIPPED, None))
+        elif not running:
+            running = True
+            stages.append(Stage(name, StageStatus.RUNNING, None))
+        else:
+            stages.append(Stage(name, StageStatus.PENDING, None))
+    return stages
+
+
 def _recorded(value: Any) -> StageStatus:
     """A recorded stage's status (an unknown value reads as ``failed``)."""
     try:
@@ -409,6 +457,7 @@ def _report_ms(report: Any, name: str) -> int | None:
 __all__ = [
     "ERASURE_STAGES",
     "GENESIS_STAGES",
+    "TURN_STAGES",
     "OperationLabel",
     "OperationNotFound",
     "OperationView",

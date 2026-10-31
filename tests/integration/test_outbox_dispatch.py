@@ -132,21 +132,33 @@ async def test_a_row_that_cannot_be_sent_from_here_stays_intended(setup: Setup) 
     await _sql(engine, "DELETE FROM story_provider_bindings WHERE story_id = :s", s=story)
     assert await outbox.dispatch(engine, row, registry=setup.registry) == outbox.HELD
     await ps.bind(engine, story, setup.name, {"player": "p-1"})
-    # The provider no longer write-capable.
+    assert await _status(engine, row) == "intended"
+    assert setup.fake.idempotency_keys == []
+    assert await outbox.dispatch(engine, row, registry=setup.registry) == "confirmed"
+
+
+async def test_a_row_whose_provider_is_no_longer_write_capable_is_cancelled(setup: Setup) -> None:
+    # #212 (FR-CONC-16): the claim re-reads the registration: cancelled, never sent, listed.
+    engine, story = setup.engine, setup.story
+    (row,) = await _turn(engine, story, setup.name)
     await _sql(
         engine, "UPDATE external_providers SET write_capable = false WHERE name = :n", n=setup.name
     )
     try:
-        assert await outbox.dispatch(engine, row, registry=setup.registry) == outbox.HELD
+        assert await outbox.dispatch(engine, row, registry=setup.registry) == outbox.CANCELLED
     finally:
         await _sql(
             engine,
             "UPDATE external_providers SET write_capable = true WHERE name = :n",
             n=setup.name,
         )
-    assert await _status(engine, row) == "intended"
+    assert await _status(engine, row) == "cancelled"
     assert setup.fake.idempotency_keys == []
-    assert await outbox.dispatch(engine, row, registry=setup.registry) == "confirmed"
+    listed = (await core_outbox.listings(engine, story)).listings
+    assert [(e.outbox_id, e.reason, e.status) for e in listed] == [
+        (row, "reconciliation_required", "cancelled")
+    ]
+    assert await outbox.dispatch(engine, row, registry=setup.registry) == outbox.SKIPPED
 
 
 async def test_a_refusal_before_sending_releases_the_claim(setup: Setup) -> None:

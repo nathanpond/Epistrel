@@ -6,10 +6,13 @@ job for it (``coalesce_key`` ``outbox:<id>``; the enqueue's NOTIFY wakes a worke
 
 1. ``claim`` — one transaction: the row ``FOR UPDATE SKIP LOCKED`` (``core.outbox.claimable``),
    then its operation's ``membership`` re-read in the same transaction. No longer ``active``
-   (``discarded``, ``dormant``, ``superseded``): ``cancelled``, never sent. A story
-   ``blocked_by_erasure`` (#125), a provider no longer registered or no longer write-capable, an
-   ``in_process`` provider with no write callable in this process (#204) or a story with no
-   binding to it leave the row ``intended`` (the recovery sweep tries again). Otherwise the row
+   (``discarded``, ``dormant``, ``superseded``): ``cancelled``, never sent. A provider no
+   longer registered or no longer write-capable (#212, FR-CONC-16: the dispatcher re-reads the
+   registration at claim) cancels the row too, listed ``reconciliation_required`` (a staged
+   turn's outcome step narrates the attempt as not carried out). A story
+   ``blocked_by_erasure`` (#125), an ``in_process`` provider with no write callable in this
+   process (#204) or a story with no binding to it leave the row ``intended`` (the recovery
+   sweep tries again). Otherwise the row
    is ``claimed`` with a lease (``CLAIM_LEASE``) and an ``outbox_lease`` timer is set for the
    lease's end; the commit is the in-flight point (FR-EXT-12).
 2. ``send`` — after that commit, the adapter's ``write`` with the row id as the idempotency key
@@ -71,6 +74,7 @@ from epistrel.core.tables.outbox import (
     UNKNOWN,
     external_effect_outbox,
 )
+from epistrel.core.timeline_effects import RECONCILIATION_REQUIRED
 from epistrel.orchestrator.jobs import queue, timers
 from epistrel.orchestrator.jobs.recurring import NoPayload, RecurringTask, recording
 from epistrel.orchestrator.jobs.types import JobContext, JobHandler, JobOutput
@@ -241,7 +245,8 @@ async def claim(
 ) -> Claimed | str:
     """Claim row ``outbox_id`` (see the module docstring); answers the claim, or why there is
     none: ``skipped`` (not ``intended``, or another worker holds it), ``cancelled`` (its
-    operation is no longer active) or ``held`` (left ``intended``)."""
+    operation is no longer active, or its provider no longer write-capable) or ``held`` (left
+    ``intended``)."""
     found = _registry(registry)
     async with db.begin() as conn:
         row = await core_outbox.claimable(conn, outbox_id)
@@ -254,6 +259,16 @@ async def claim(
         if not await core_outbox.origin_active(conn, str(row.operation_id)):
             await core_outbox.cancel(conn, outbox_id)
             logger.info("outbox row %s cancelled: its operation is no longer active", outbox_id)
+            return CANCELLED
+        registered = await core_providers.find_provider(conn, str(row.provider_name))
+        if registered is None or not registered.write_capable:
+            # #212 (FR-CONC-16): the registration, re-read at claim, no longer lets the effect
+            # be sent: cancelled, never sent, and listed for reconciliation.
+            await core_outbox.cancel(conn, outbox_id)
+            await core_outbox.mark(conn, story_id, outbox_id, RECONCILIATION_REQUIRED)
+            logger.info(
+                "outbox row %s cancelled: its provider is no longer write-capable", outbox_id
+            )
             return CANCELLED
         resolved = await _resolve(conn, row, found, transport)
         if resolved is None:

@@ -84,8 +84,11 @@ instead of a ``requested_effect`` event, the commit writes an ``external_effect_
 in the turn's own transaction (``write_outbox``; ``core.outbox``,
 ``orchestrator.jobs.handlers.outbox``). The response lists it ``pending`` with its
 ``outbox_id`` (the consumer does not apply it), and its outcome prose is held back like a
-read-only one's until a confirmation is recorded. Until #212's staged turns, a
-``synchronous`` provider's effects take this asynchronous path too.
+read-only one's until a confirmation is recorded. #212: an effect on a ``synchronous``
+provider's State (``Book.synchronous``) makes the turn a staged turn
+(``orchestrator.structured.staged``): its row is written the same way at intent, and the turn
+waits on its outcome before its outcome step narrates it (``unsettled``,
+``outcome_step_findings``, ``pending_check``).
 
 **Contingent effects** (#216, FR-STATE-14, FR-STATE-12 across systems): in a turn that requests
 an external effect (either kind above), each story-owned side the commit writes is classified
@@ -110,7 +113,7 @@ from __future__ import annotations
 import logging
 import re
 import weakref
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
@@ -209,6 +212,9 @@ class Book:
     held: dict[rules.Key, Decimal] = field(default_factory=dict)
     """#216: each value's held decreases from earlier turns (negative): not in the value, but
     not available to spend again (``available``)."""
+    synchronous: dict[str, int] = field(default_factory=dict)
+    """#212: the ``outbox`` States whose provider confirms ``synchronous``, each with the
+    provider's ``confirm_wait_max_seconds``: an effect on one makes the turn a staged turn."""
 
     def available(self) -> dict[rules.Key, Value | UndefinedType]:
         """The values the dry-run spends from: ``values`` less the holds of earlier turns."""
@@ -335,6 +341,9 @@ async def load(conn: AsyncConnection, story_id: str, settings: ProfileSettings) 
             else:
                 # #210: a write-capable provider's value goes through the outbox.
                 outbox.add(d.name)
+                if provider.confirmation == "synchronous":
+                    # #212: the turn waits on its outcome (a staged turn).
+                    book.synchronous[d.name] = int(provider.confirm_wait_max_seconds)
     book.read_only = frozenset(read_only)
     book.outbox = frozenset(outbox)
     # #216: the reservations of earlier turns, held against what the turn may spend.
@@ -955,6 +964,56 @@ def outcome_findings(
             continue
         found += rules.unconfirmed_outcomes(b.beat, b.kind, b.text, pending)
     return found
+
+
+def unsettled(
+    book: Book,
+    beats: Sequence[TurnBeat],
+    requested: Sequence[Requested],
+    *,
+    confirmed: Collection[str],
+    granted: Collection[tuple[str, str | None]],
+) -> list[rules.Pending]:
+    """#212 (FR-EXT-15): what a staged turn's outcome step still may not narrate as done: the
+    pending changes of the intent's ``beats`` (``pending_of``), less each requested change whose
+    effect ``confirmed`` names (by State and scope key) and each conditional grant the outcome
+    stage committed (``granted``: its State and scope key)."""
+    done = {(r.state, r.scope_key) for r in requested if r.effect_id in confirmed}
+    return [
+        p
+        for p in pending_of(book, beats, None)
+        if (
+            (p.state, p.scope_key) not in granted if p.grant else (p.state, p.scope_key) not in done
+        )
+    ]
+
+
+def outcome_step_findings(
+    book: Book, beats: Sequence[TurnBeat], pending: Sequence[rules.Pending]
+) -> list[Finding]:
+    """#212: the outcome step's sentences asserting a change in ``pending`` (``unsettled``):
+    #209's ``external_outcome_unconfirmed``, repaired like an intent beat's."""
+    if not pending:
+        return []
+    by_number = {b.beat: b for b in beats}
+    found: list[Finding] = []
+    for b in beats:
+        found += rules.unconfirmed_outcomes(b.beat, b.kind, b.text, pending)
+    return [_decorated(book, by_number[f.beat], f) for f in found]
+
+
+def pending_check(
+    pending: Sequence[rules.Pending],
+) -> Callable[[str], list[tuple[int, int]]] | None:
+    """#152's composed-message check over ``pending`` (``outcome_check``'s, for a staged turn's
+    completed message: ``unsettled``)."""
+    if not pending:
+        return None
+
+    def check(text: str) -> list[tuple[int, int]]:
+        return [span for _, span in rules.outcome_spans(text, pending)]
+
+    return check
 
 
 def outcome_check(
@@ -1804,6 +1863,8 @@ __all__ = [
     "outbox_rows",
     "outcome_check",
     "outcome_findings",
+    "outcome_step_findings",
+    "pending_check",
     "pending_of",
     "pending_outcomes",
     "planned",
@@ -1822,5 +1883,6 @@ __all__ = [
     "tie_break_book",
     "tie_break_values",
     "time_requests",
+    "unsettled",
     "write_outbox",
 ]

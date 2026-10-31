@@ -36,7 +36,12 @@ OPERATION_DESCRIPTION = (
     "`reactivation_check` (`checking`, then `applied`/`reactivated` or `refused`); an "
     "`offboarding` (one stage per entity type, in processing order); and an `erasure` "
     "(`redacted`, `ledger_written`, `regenerated`, `rebuilt`; a catalog erasure skips the last "
-    "two). Every other operation has a null `label` and no stages."
+    "two). A staged turn (a turn with an effect on a `synchronous` write-capable provider, "
+    "FR-EXT-16) carries `staged: true` and the label `staged_turn`, with the stages `intent`, "
+    "`claim`, `outcome`, `completion` and `response`, each also carrying the story's "
+    "`revision` once it committed; the stage after the last recorded one is `running` while "
+    "the turn is incomplete, and a turn a discard abandoned shows the rest `skipped`. Every "
+    "other operation has a null `label` and no stages."
     "\n\nAn operation that captured a read set reports `read_set`: `keys_count` (the query "
     "keys a structured turn's verdict, precondition and blocker lookups recorded, empty "
     "results included; 0 for a Lite turn), `retrieved_count` (rows read as generation context "
@@ -72,10 +77,16 @@ class StageBody(BaseModel):
     name: str
     status: StageStatus
     at: datetime | None
+    revision: int | None = Field(
+        default=None,
+        exclude_if=lambda r: r is None,
+        description="A staged turn's stage only: the story's timeline revision once the stage "
+        "committed (absent otherwise).",
+    )
 
     @classmethod
     def of(cls, stage: Stage) -> StageBody:
-        return cls(name=stage.name, status=stage.status, at=stage.at)
+        return cls(name=stage.name, status=stage.status, at=stage.at, revision=stage.revision)
 
 
 class QueryKeyBody(BaseModel):
@@ -155,6 +166,11 @@ class OperationBody(BaseModel):
     stages: list[StageBody] = []
     read_set: ReadSetBody | None = None
     eval_hooks: EvalHooksBody | None = None
+    staged: bool = Field(
+        default=False,
+        exclude_if=lambda s: not s,
+        description="A staged turn (#212, FR-EXT-16): `true`; absent for every other operation.",
+    )
 
     @classmethod
     def of(cls, view: OperationView) -> OperationBody:
@@ -194,6 +210,7 @@ class OperationBody(BaseModel):
             eval_hooks=None
             if view.eval_hooks is None
             else EvalHooksBody.model_validate(view.eval_hooks),
+            staged=view.staged,
             result=(
                 StoredResultBody(status=view.result.status, body=view.result.body)
                 if view.result is not None

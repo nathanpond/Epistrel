@@ -131,6 +131,7 @@ from epistrel.core.tables import (
     transcript_messages,
 )
 from epistrel.core.timeline_effects import PendingEffect
+from epistrel.core.turns.staged import close_in_fork
 from epistrel.core.variants import ChainRef, ChainSelection, ChainSelector, fork_selection
 from epistrel.testing import crash
 
@@ -443,6 +444,9 @@ async def _copy(
     # A fork copies no subject-reference rows: its copied records are indexed again, under
     # their new ids (FR-ADMIN-6; #123).
     await reindex_story(conn, fork_id)
+    # #212 (FR-EXT-19): a staged turn copied incomplete is closed in the fork ("outcome not
+    # known in this story"); its effect is held only as a non-executable record, and listed.
+    await close_in_fork(conn, fork_id, principal)
     for statement in _TEARDOWN:
         await conn.exec_driver_sql(statement)
     if call is not None:

@@ -480,6 +480,32 @@ class ExternalValueSource(StrEnum):
     POST_EFFECT_READ = "post_effect_read"
 
 
+class StagedTurnStage(StrEnum):
+    """Where a staged turn is (FR-EXT-16,19; #212): a turn with an effect on a ``synchronous``
+    write-capable provider commits as a workflow of atomic stages, tracked on its operation
+    (``operations.turn_stage``; ``NULL`` for every ordinary turn and every other operation).
+    ``operations.status`` is ``committed`` from the intent commit on. Not ``TurnStage``: that
+    name is #174's same-turn overlay (``core.epistemic.stage``). Postgres enum ``turn_stage``."""
+
+    INTENT_COMMITTED = "intent_committed"
+    AWAITING_OUTCOME = "awaiting_outcome"
+    OUTCOME_RECORDED = "outcome_recorded"
+    COMPLETED = "completed"
+    ABANDONED = "abandoned"
+
+
+UNFINISHED_TURN_STAGES: frozenset[StagedTurnStage] = frozenset(
+    {
+        StagedTurnStage.INTENT_COMMITTED,
+        StagedTurnStage.AWAITING_OUTCOME,
+        StagedTurnStage.OUTCOME_RECORDED,
+    }
+)
+"""A staged turn that has not completed (nor been abandoned): it still holds its story's turn
+slot, history reads it ``incomplete``, and the lapsed-lease reclaim and the orphan sweep leave
+it alone (#213 resumes it)."""
+
+
 PG_ENUM_TYPES: dict[str, type[StrEnum]] = {
     "event_category": EventCategory,
     "operation_kind": OperationKind,
@@ -522,6 +548,7 @@ PG_ENUM_TYPES: dict[str, type[StrEnum]] = {
     "time_awareness": TimeAwareness,
     "external_value_source": ExternalValueSource,
     "scheduled_status": ScheduledStatus,
+    "turn_stage": StagedTurnStage,
 }
 """Postgres enum type name (``<schema>.<name>`` outside ``public``) → the Python enum whose
 values it holds (creation order)."""

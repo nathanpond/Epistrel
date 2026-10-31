@@ -697,6 +697,15 @@ class IdempotentCall:
             ],
         )
 
+    async def store(self, conn: AsyncConnection, value: Any) -> None:
+        """Store ``value`` as the key's result in ``conn``'s transaction, after the call's
+        operation committed (a staged turn's response stage, #212): ``finish`` then answers it
+        without storing again."""
+        if self.claimed:
+            await self._store(conn, self.codec.store(value), revision_of(value))
+        self.committed_value = value
+        self.stored_in_commit = True
+
     async def finish(self, value: Any) -> Any:
         """Store ``value`` as the key's result (unless the commit already did) and return the
         value the caller gets (the one built in the commit, when there is one)."""

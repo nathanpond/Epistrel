@@ -315,6 +315,13 @@ class TurnSummaryModel(BaseModel):
         "`respond` returned them, with `external_effects` as of the read; only when the read "
         "returns the turn's input. Absent when none.",
     )
+    incomplete: bool = Field(
+        default=False,
+        exclude_if=lambda i: not i,
+        description="A staged turn still waiting on its external outcome or its outcome step "
+        "(#212, FR-EXT-19): `true`, with its committed beats and a null `message`; absent "
+        "otherwise.",
+    )
 
     @classmethod
     def of(cls, summary: TurnSummary) -> TurnSummaryModel:

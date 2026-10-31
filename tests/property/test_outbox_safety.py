@@ -41,11 +41,17 @@ sweep ever sends or enqueues one, a fork lists nothing for reconciliation, and t
 ``effects_pending_in_source`` is exactly the source's ``intended``, ``claimed`` and ``unknown``
 rows of the copied turns. Its complement cases: a fork over an undispatched effect lists it
 pending, and a fork after a confirmed one lists nothing.
+
+``test_outbox_safety__stages`` (#212, FR-EXT-15,16,19) plays staged turns end to end (a
+synchronous provider) and asserts the stage clause: no committed beat, at any stage, asserts an
+external outcome that was not confirmed, or a conditional effect that was not committed, when
+its stage committed; and no committed stage is rolled back by a later stage's failure.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 from collections import Counter
 from dataclasses import dataclass, field, fields
 from datetime import timedelta
@@ -742,3 +748,261 @@ def test_outbox_safety__contingency(pg_url: str, monkeypatch: pytest.MonkeyPatch
 
     safety()
     assert {"converted", "released", "held"} <= set(seen), seen
+
+
+# -- #212: staged turns (FR-EXT-15,16,19) --------------------------------------------------------
+
+STAGED_EXAMPLES = 8
+STAGED_ANSWERS = ("confirmed", "failed", "unknown", "hang")
+INTENT_SAYS = {
+    "attempt": "Mira wraps the sword in oilcloth.",
+    "outcome": "Mira wraps the sword in oilcloth. The purchase went through.",
+    "holds": "Mira wraps the sword in oilcloth. Cal now holds the sword.",
+}
+OUTCOME_SAYS = {
+    "done": "The smith nods: the purchase went through.",
+    "holds": "Cal now holds the sword.",
+    "pending": "The smith counts the coins.",
+}
+staged_turns = st.lists(
+    st.tuples(
+        st.sampled_from(STAGED_ANSWERS),
+        st.sampled_from(sorted(INTENT_SAYS)),
+        st.sampled_from(sorted(OUTCOME_SAYS)),
+    ),
+    min_size=1,
+    max_size=2,
+)
+StagedDrawn = tuple[list[tuple[str, str, str]], bool]
+"""The staged turns (the game's answer, what the intent and the outcome step say) and whether
+the last turn's completion fails."""
+staged_examples = st.tuples(staged_turns, st.booleans())
+STAGED_CASE: StagedDrawn = (
+    [("confirmed", "outcome", "done"), ("failed", "holds", "holds")],
+    True,
+)
+"""The complement: a confirmed purchase narrated done at its outcome step (and repaired at its
+intent), then a refused one whose possession sentences are repaired at both stages, whose
+completion then fails, leaving its intent and outcome committed."""
+
+
+class Boom(Exception):
+    """An induced failure of a staged turn's completion."""
+
+
+async def _staged_story(client: Any, engine: AsyncEngine, epistrel: Any) -> tuple[str, str, Any]:
+    """A story whose gold a synchronous provider owns (it waits 1 s) and whose story-owned
+    sword Cal buys with it (a ``conditional`` grant): the story, Cal and the fake."""
+    from epistrel.core.propositions import store
+    from epistrel.core.states import StateDefinition
+    from tests import effect_support as es
+    from tests.story_support import override
+    from tests.structured_turn_support import structured_story
+
+    name = ps.unique_name("bank")
+    await ps.register(
+        engine,
+        ps.write_capable_spec(name, confirmation="synchronous", confirm_wait_max_seconds=1),
+    )
+    fake = ps.ScriptedProvider(name, default=1000).attach(epistrel)
+    story, ids = await structured_story(client, "Cal", "Mira")
+    await override(client, story, {"budgets": {"model_calls": 50}})
+    await ss.set_level(engine, story, "on")
+    await ps.external_gold(engine, story, name, authorization=es.ANY_CHARACTER)
+    async with engine.begin() as conn:
+        sword = await store.add_entity(conn, story, "item", "sword")
+    await ss.define_all(
+        engine,
+        story,
+        StateDefinition.model_validate(
+            {
+                "name": "sword",
+                "type": "number",
+                "scope": "character",
+                "constraints": {"non_negative": True},
+                "initial_value": 0,
+                "entity_id": sword,
+                "transfer": {"counterparties": ["gold"]},
+                "authorization": {"sources": ["any_character", "director"]},
+            }
+        ),
+    )
+    return story, ids["Cal"], fake
+
+
+def _buying(cal: str) -> dict[str, Any]:
+    return {
+        "kind": "transfer",
+        "state": "sword",
+        "scope_key": cal,
+        "delta": 1,
+        "counterparty": {"state": "gold", "scope_key": cal, "delta": -500},
+        "reason": "the sword",
+    }
+
+
+async def _pending_at(engine: AsyncEngine, story: str, cal: str) -> dict[str, Any]:
+    """What a beat of the turn may not assert while unsettled: Cal's gold change (the
+    exchange) and the sword's conditional grant, as #209's and #216's rules read them."""
+    from epistrel.core import states
+    from epistrel.core.states import effects as rules
+
+    async with engine.connect() as conn:
+        found = {d.name: d for d in await states.definitions(conn, story)}
+    gold, sword = found["gold"], found["sword"]
+    return {
+        "gold": rules.Pending(
+            "gold", gold.id, cal, rules.terms_of(gold, {}).words, Decimal(1000), Decimal(500)
+        ),
+        "sword": rules.Pending(
+            "sword", sword.id, cal, ("sword",), Decimal(0), Decimal(1), grant=True
+        ),
+    }
+
+
+async def _staged_check(engine: AsyncEngine, story: str, cal: str, operation_id: str) -> None:
+    """The stage clause over one staged turn: no committed beat asserts an external outcome
+    that was not confirmed, or a conditional effect that was not committed, when its stage
+    committed (an intent beat: nothing was; an outcome-step beat: the turn's outcome)."""
+    from epistrel.core.states import effects as rules
+
+    pending = await _pending_at(engine, story, cal)
+    async with engine.connect() as conn:
+        beats = list(
+            await conn.execute(
+                text(
+                    "SELECT beat, payload->>'text' AS text FROM events WHERE operation_id = :o "
+                    "AND type LIKE 'beat_%' ORDER BY seq"
+                ),
+                {"o": operation_id},
+            )
+        )
+        outcome = await conn.scalar(
+            text(
+                "SELECT payload->>'status' FROM events WHERE operation_id = :o "
+                "AND type = 'external_outcome'"
+            ),
+            {"o": operation_id},
+        )
+        first_outcome = await conn.scalar(
+            text(
+                "SELECT min(beat) FROM events WHERE operation_id = :o AND type = 'external_outcome'"
+            ),
+            {"o": operation_id},
+        )
+        granted = await conn.scalar(
+            text(
+                "SELECT count(*) FROM state_changes WHERE operation_id = :o "
+                "AND source = 'settlement' AND status = 'committed'"
+            ),
+            {"o": operation_id},
+        )
+    for b in beats:
+        at_intent = first_outcome is None or b.beat < first_outcome
+        unsettled = [
+            p
+            for name, p in pending.items()
+            if at_intent
+            or (name == "gold" and outcome != "confirmed")
+            or (name == "sword" and not granted)
+        ]
+        assert rules.outcome_spans(b.text, unsettled) == [], (b.beat, b.text, outcome, granted)
+
+
+async def _staged_example(url: str, drawn: StagedDrawn, seen: Counter[str]) -> None:
+    from epistrel.orchestrator.structured import staged as staged_rules
+    from tests import effect_support as es
+    from tests import multi_support as ms
+    from tests import staged_support as sp
+    from tests.respond_support import respond_client
+    from tests.structured_turn_support import beat
+
+    script, fail_last = drawn
+    settings_ = auth_settings(url, model_adapter="stub")
+    engine = make_engine(settings_)
+    try:
+        async with respond_client(settings_, engine) as (client, epistrel):
+            stub = epistrel.models.stub
+            story, cal, fake = await _staged_story(client, engine, epistrel)
+            for n, (answer, intent_says, outcome_says) in enumerate(script):
+                failing = fail_last and n == len(script) - 1
+                fake.script_writes("gold", ps.Hang() if answer == "hang" else answer)
+                stub.reset()
+                sp.outcome_step(stub, beat("narration", OUTCOME_SAYS[outcome_says]))
+                ms.renders_for(
+                    stub,
+                    "Mira",
+                    es.render(beat("do", INTENT_SAYS[intent_says], effects=[_buying(cal)])),
+                )
+                es.narrator(stub, es.render(beat("narration", "The forge glows.")))
+                stub.script(
+                    "regeneration",
+                    [
+                        json.dumps({"text": t, "effects": []})
+                        for t in (INTENT_SAYS["attempt"], OUTCOME_SAYS["pending"]) * 4
+                    ],
+                )
+                before = await sp.revision(engine, story)
+                original = staged_rules.write_report
+
+                async def boom(*_: Any, **__: Any) -> None:
+                    raise Boom("the completion fails")
+
+                staged_rules.write_report = boom if failing else original
+                try:
+                    answer_ = await sp.buy(client, story, cal)
+                except Boom:
+                    answer_ = None
+                finally:
+                    staged_rules.write_report = original
+                op = await sp.staged_op(engine, story)
+                await _staged_check(engine, story, cal, op.operation_id)
+                if failing:
+                    # The failed completion rolled back alone: intent and outcome stand.
+                    assert answer_ is None or answer_.status_code >= 500
+                    assert op.turn_stage == "outcome_recorded"
+                    assert await sp.revision(engine, story) == before + 2
+                    assert await sp.stage_names(engine, story) == ["intent", "claim", "outcome"]
+                    seen["failed_completion"] += 1
+                else:
+                    assert answer_ is not None
+                    assert answer_.status_code == 200, answer_.text
+                    assert op.turn_stage == "completed"
+                    assert await sp.revision(engine, story) == before + 3
+                    assert await sp.stage_names(engine, story) == list(staged_rules.STAGES)
+                    seen[answer] += 1
+            await ps.drop_outbox_jobs(engine, story)
+            await ss.set_level(engine, story, None)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-EXT-15,16,19")
+def test_outbox_safety__stages(
+    pg_url: str, monkeypatch: pytest.MonkeyPatch, drained_embedding_jobs: None
+) -> None:
+    """#212 (FR-EXT-15,16,19): over drawn staged turns (the game confirms, refuses, answers
+    ambiguously or never answers; each turn's intent and outcome step drawn to narrate the
+    attempt, the outcome or the possession of the conditional grant; the last turn's completion
+    possibly failing), no committed beat, at any stage, asserts an external outcome that was not
+    confirmed, or a conditional effect that was not committed, when that beat's stage committed
+    (#209's and #216's own rules, ``core.states.effects.outcome_spans``); every completed turn
+    moved the revision exactly three times and logged its five stages; and a failed completion
+    rolls back alone, never the committed intent or outcome."""
+    ss.deliver(monkeypatch)
+    seen: Counter[str] = Counter()
+
+    @settings(
+        max_examples=STAGED_EXAMPLES,
+        deadline=None,
+        suppress_health_check=[HealthCheck.function_scoped_fixture, HealthCheck.too_slow],
+    )
+    @given(drawn=staged_examples)
+    @example(drawn=STAGED_CASE)
+    def safety(drawn: StagedDrawn) -> None:
+        asyncio.run(_staged_example(pg_url, drawn, seen))
+
+    safety()
+    assert seen["confirmed"] >= 1, seen
+    assert seen["failed_completion"] >= 1, seen

@@ -22,7 +22,9 @@ row's status. From ``claimed`` or ``unknown`` the answer becomes the status (``u
 confirmed | failed`` included); a later answer to a settled row is recorded as ``duplicate``
 (the same, or ``unknown``) or ``conflict`` (another terminal answer) and changes nothing (the
 first terminal outcome wins, FR-EXT-22). ``release`` puts a claimed row back to ``intended``
-when the adapter proved nothing was sent (``ProviderUnavailable`` before the request).
+when the adapter proved nothing was sent (``ProviderUnavailable`` before the request). Each
+recorded outcome notifies ``OUTCOME_CHANNEL`` with the row id when its transaction commits, so a
+staged turn waiting on the row (#212, FR-EXT-15) wakes at once rather than at its next poll.
 
 **The timeline and erasure** (#211; ``core.timeline_effects`` drives them): ``locked_of``
 locks the rows of operations a membership flip moved, ``cancel_all`` cancels their
@@ -88,6 +90,9 @@ if TYPE_CHECKING:
     from epistrel.core.events.operation import Operation
 
 log = get_logger(__name__)
+
+OUTCOME_CHANNEL = "epistrel_outbox"
+"""The NOTIFY channel ``record_outcome`` signals (the row id as the payload, ids only)."""
 
 TERMINAL = frozenset({CONFIRMED, FAILED})
 """A settled row's statuses: a later answer never changes them."""
@@ -413,6 +418,8 @@ async def record_outcome(
     elif current in (CLAIMED, UNKNOWN):
         after = status
     await _insert_outcome(conn, outbox_id, kind, payload or {}, raw_hash, via, now)
+    # #212: a staged turn waiting on the row hears of the outcome when this commits.
+    await conn.execute(select(func.pg_notify(OUTCOME_CHANNEL, outbox_id)))
     if after != current or after in TERMINAL:
         values: dict[str, Any] = {"status": after}
         if after in TERMINAL:

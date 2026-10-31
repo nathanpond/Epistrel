@@ -17518,6 +17518,12 @@
             ],
             "description": "Within the result window, the stored response of the operation's `Idempotency-Key`. Null after the window, for a read naming no viewpoint, and for an `omniscient` read of a result produced for a character viewpoint (that read still gets `eval_hooks` and `read_set.keys`)."
           },
+          "staged": {
+            "default": false,
+            "description": "A staged turn (#212, FR-EXT-16): `true`; absent for every other operation.",
+            "title": "Staged",
+            "type": "boolean"
+          },
           "stages": {
             "default": [],
             "items": {
@@ -17608,7 +17614,8 @@
           "rating_check",
           "reactivation_check",
           "offboarding",
-          "erasure"
+          "erasure",
+          "staged_turn"
         ],
         "title": "OperationLabel",
         "type": "string"
@@ -35502,6 +35509,18 @@
             "title": "Name",
             "type": "string"
           },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A staged turn's stage only: the story's timeline revision once the stage committed (absent otherwise).",
+            "title": "Revision"
+          },
           "status": {
             "$ref": "#/components/schemas/StageStatus"
           }
@@ -39312,6 +39331,12 @@
       "TurnSummaryModel": {
         "description": "A turn on the page and its reply; ``message`` is null for a reply-less turn.",
         "properties": {
+          "incomplete": {
+            "default": false,
+            "description": "A staged turn still waiting on its external outcome or its outcome step (#212, FR-EXT-19): `true`, with its committed beats and a null `message`; absent otherwise.",
+            "title": "Incomplete",
+            "type": "boolean"
+          },
           "message": {
             "anyOf": [
               {
@@ -59332,7 +59357,7 @@
     },
     "/operations/{operation_id}": {
       "get": {
-        "description": "An operation's kind, status (`in_flight`, `committed`, `abandoned` or `failed`), position (`narrative_turn`, `turn_variant`), the story's `timeline_revision` once it committed, the requesting principal, its timestamps, revalidation `attempts`, `config_revisions`, `origin` (`generated` or `ingested`) and, for an ingested batch, `batch_operation_ids`. A committed Lite turn reports `queued_ms` (its wait in the story's turn queue, null when it was not queued) and `first_call_offset_ms` (from reaching the front to its first model call). A story's `genesis` operation from a scenario carries its full `creation_report` (every entry, deferred item and inactive setting) to a read with `?viewpoint=omniscient` only; otherwise it is null.\n\nA long-running operation names what it was for in `label` and lists its `stages`, each `{name, status, at}` with `status` one of `pending`, `running`, `done`, `failed`, `skipped` (or `partial`, for an erasure's summary regeneration that rewrote only some windows) and `at` null while pending: a story's `genesis` (`validated`, `snapshotted`, `skipped` for a blank story, `materialized`); a rating change's `rating_check` or an edit's `reactivation_check` (`checking`, then `applied`/`reactivated` or `refused`); an `offboarding` (one stage per entity type, in processing order); and an `erasure` (`redacted`, `ledger_written`, `regenerated`, `rebuilt`; a catalog erasure skips the last two). Every other operation has a null `label` and no stages.\n\nAn operation that captured a read set reports `read_set`: `keys_count` (the query keys a structured turn's verdict, precondition and blocker lookups recorded, empty results included; 0 for a Lite turn), `retrieved_count` (rows read as generation context only) and, with `?viewpoint=omniscient` only, the `keys` themselves (`subject`, `predicate`, `object`, `holder`, `window`, `result_hash`); otherwise `keys` is null. `read_set` is null for an operation with no read set.\n\nA committed structured turn reports `eval_hooks` to a read with `?viewpoint=omniscient` only (FR-OBS-2): `raw_render_event_ids`, the verification `verdicts`, the `repair_rungs`, `model_calls_by_purpose` and `latency_ms_by_stage`; otherwise it is null.\n\nWithin the idempotency result window (default 24 hours) `result` holds the stored response (`status`, `body`) of the operation's `Idempotency-Key`. A result produced for an output viewpoint (a turn) is returned only when `?viewpoint=` names that viewpoint; another named character viewpoint is 409 `idempotency_conflict`. A read naming no viewpoint, or naming `omniscient` for a result produced for a character, gets the operation with `result` null; the omniscient read still gets `eval_hooks` and `read_set.keys`. After the window `result` is absent: the operation is the reference a retry receives. Unknown ids are 404.",
+        "description": "An operation's kind, status (`in_flight`, `committed`, `abandoned` or `failed`), position (`narrative_turn`, `turn_variant`), the story's `timeline_revision` once it committed, the requesting principal, its timestamps, revalidation `attempts`, `config_revisions`, `origin` (`generated` or `ingested`) and, for an ingested batch, `batch_operation_ids`. A committed Lite turn reports `queued_ms` (its wait in the story's turn queue, null when it was not queued) and `first_call_offset_ms` (from reaching the front to its first model call). A story's `genesis` operation from a scenario carries its full `creation_report` (every entry, deferred item and inactive setting) to a read with `?viewpoint=omniscient` only; otherwise it is null.\n\nA long-running operation names what it was for in `label` and lists its `stages`, each `{name, status, at}` with `status` one of `pending`, `running`, `done`, `failed`, `skipped` (or `partial`, for an erasure's summary regeneration that rewrote only some windows) and `at` null while pending: a story's `genesis` (`validated`, `snapshotted`, `skipped` for a blank story, `materialized`); a rating change's `rating_check` or an edit's `reactivation_check` (`checking`, then `applied`/`reactivated` or `refused`); an `offboarding` (one stage per entity type, in processing order); and an `erasure` (`redacted`, `ledger_written`, `regenerated`, `rebuilt`; a catalog erasure skips the last two). A staged turn (a turn with an effect on a `synchronous` write-capable provider, FR-EXT-16) carries `staged: true` and the label `staged_turn`, with the stages `intent`, `claim`, `outcome`, `completion` and `response`, each also carrying the story's `revision` once it committed; the stage after the last recorded one is `running` while the turn is incomplete, and a turn a discard abandoned shows the rest `skipped`. Every other operation has a null `label` and no stages.\n\nAn operation that captured a read set reports `read_set`: `keys_count` (the query keys a structured turn's verdict, precondition and blocker lookups recorded, empty results included; 0 for a Lite turn), `retrieved_count` (rows read as generation context only) and, with `?viewpoint=omniscient` only, the `keys` themselves (`subject`, `predicate`, `object`, `holder`, `window`, `result_hash`); otherwise `keys` is null. `read_set` is null for an operation with no read set.\n\nA committed structured turn reports `eval_hooks` to a read with `?viewpoint=omniscient` only (FR-OBS-2): `raw_render_event_ids`, the verification `verdicts`, the `repair_rungs`, `model_calls_by_purpose` and `latency_ms_by_stage`; otherwise it is null.\n\nWithin the idempotency result window (default 24 hours) `result` holds the stored response (`status`, `body`) of the operation's `Idempotency-Key`. A result produced for an output viewpoint (a turn) is returned only when `?viewpoint=` names that viewpoint; another named character viewpoint is 409 `idempotency_conflict`. A read naming no viewpoint, or naming `omniscient` for a result produced for a character, gets the operation with `result` null; the omniscient read still gets `eval_hooks` and `read_set.keys`. After the window `result` is absent: the operation is the reference a retry receives. Unknown ids are 404.",
         "operationId": "get_operation",
         "parameters": [
           {

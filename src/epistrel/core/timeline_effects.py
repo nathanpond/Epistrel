@@ -16,6 +16,10 @@ the transaction of the membership flip:
 - **Coming back** (``to`` ``active``: an untruncate, a swap back): a ``cancelled`` row is not
   sent again (nothing re-dispatches a cancelled row); it is marked and collected as
   ``cancelled_on_reactivation``.
+- **A staged turn** (#212, FR-EXT-17,19) that leaves the active timeline before its completion
+  (``turn_stage`` ``intent_committed``, ``awaiting_outcome`` or ``outcome_recorded``) is
+  ``abandoned``: its remaining stages never commit (a later stage's continuation is refused),
+  and its rows are classified as above.
 
 Nothing here writes an outbox row: no compensation is ever issued automatically. ``superseded``
 never arrives through a flip (``core.membership.FLIP_TARGETS``): only #143's reflections are
@@ -42,12 +46,13 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core import outbox as core_outbox
-from epistrel.core.enums import Membership
+from epistrel.core.enums import UNFINISHED_TURN_STAGES, Membership, StagedTurnStage
 from epistrel.core.membership import register_follower
+from epistrel.core.tables import operations
 from epistrel.core.tables.outbox import (
     CANCELLED,
     CLAIMED,
@@ -127,6 +132,16 @@ async def classify_discarded(
 ) -> None:
     """``core.membership``'s follower: classify the outbox rows of ``operation_ids`` after
     their flip to ``to`` (see the module docstring)."""
+    if Membership(to) is not Membership.ACTIVE and operation_ids:
+        # #212: a staged turn discarded before its completion is abandoned.
+        await conn.execute(
+            update(operations)
+            .where(
+                operations.c.operation_id.in_(list(operation_ids)),
+                operations.c.turn_stage.in_(sorted(s.value for s in UNFINISHED_TURN_STAGES)),
+            )
+            .values(turn_stage=StagedTurnStage.ABANDONED.value)
+        )
     rows = await core_outbox.locked_of(conn, story_id, operation_ids)
     if not rows:
         return

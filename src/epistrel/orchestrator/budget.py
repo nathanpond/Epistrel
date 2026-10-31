@@ -164,6 +164,11 @@ class TurnBudget:
     """Optional kinds the budget or the deadline refused this turn: no less important kind
     runs after one (NFR-PERF-7's order: polish goes before repairs, repairs before
     entailment)."""
+    paused_s: float = 0.0
+    """#212 (NFR-PERF-6): the seconds the deadline clock stood still (a staged turn's wait on
+    its external outcome is excluded from ``turn_deadline``)."""
+    paused_at: float | None = None
+    """When the current pause began (``None``: the clock runs)."""
     _claims: list[str | None] = field(default_factory=list, repr=False)
 
     def __post_init__(self) -> None:
@@ -343,10 +348,33 @@ class TurnBudget:
             self.stage = before
 
     def remaining_s(self) -> float | None:
-        """Seconds until the deadline (negative once passed); ``None`` when unbounded."""
+        """Seconds until the deadline (negative once passed); ``None`` when unbounded. The time
+        the clock was paused (``pause``) does not count."""
         if self.deadline_s is None:
             return None
-        return self.started + self.deadline_s - time.monotonic()
+        now = self.paused_at if self.paused_at is not None else time.monotonic()
+        return self.started + self.deadline_s + self.paused_s - now
+
+    def pause(self) -> None:
+        """#212 (NFR-PERF-6): stop the deadline clock (a staged turn's confirmation wait, from
+        its claim to its recorded outcome or the wait's expiry); a second pause is a no-op."""
+        if self.paused_at is None:
+            self.paused_at = time.monotonic()
+
+    def resume(self) -> None:
+        """Start the deadline clock again after ``pause``; the pause is not counted."""
+        if self.paused_at is not None:
+            self.paused_s += time.monotonic() - self.paused_at
+            self.paused_at = None
+
+    @contextmanager
+    def paused(self) -> Iterator[None]:
+        """The deadline clock stands still while the block runs (``pause``, then ``resume``)."""
+        self.pause()
+        try:
+            yield
+        finally:
+            self.resume()
 
     def expired(self) -> bool:
         remaining = self.remaining_s()

@@ -64,6 +64,11 @@ Reads the ``transcript_messages`` projection (joined to each beat's event for a 
   changes its operation committed (``core.states.turn_effects``: ``{state, scope_key,
   old_value, new_value, reason, source, contingency, status}``), a ``hidden`` State's only for
   ``omniscient``: visibility only, no audience filter (owner decision 2026-10-28).
+- **Incomplete turns** (#212, FR-EXT-19): a staged turn whose completion has not committed
+  (``operations.turn_stage`` ``intent_committed``, ``awaiting_outcome`` or
+  ``outcome_recorded``) is on the page with its committed beats (the action as an attempt,
+  filtered for the viewpoint like any other) and no message, its summary marked
+  ``incomplete``.
 """
 
 from __future__ import annotations
@@ -79,7 +84,12 @@ from sqlalchemy import and_, bindparam, case, func, literal_column, or_, select
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core.enums import EventCategory, Membership, OperationStatus
+from epistrel.core.enums import (
+    UNFINISHED_TURN_STAGES,
+    EventCategory,
+    Membership,
+    OperationStatus,
+)
 from epistrel.core.epistemic import audience as audience_rules
 from epistrel.core.epistemic import perception
 from epistrel.core.errors import InvalidRequest, StoryNotFound
@@ -168,6 +178,8 @@ class TurnSummary:
     notices: list[dict[str, Any]] = field(default_factory=list)
     """#598 (FR-RESP-14): the turn's ``implausible_knowledge`` notices, as its ``respond``
     returned them, with ``external_effects`` as of the read (see the module docstring)."""
+    incomplete: bool = False
+    """#212 (FR-EXT-19): a staged turn still waiting on its outcome or its outcome step."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,7 +289,7 @@ async def read_history(
         timeline_revision=story.timeline_revision,
         output_viewpoint=resolved,
         as_of=through,
-        turns=_turns(items, changed, noticed),
+        turns=_turns(items, changed, noticed, _incomplete(rows)),
         audit=audit,
         next_before_turn=next_before,
         summary=summary,
@@ -446,7 +458,11 @@ async def _rows(
     t = transcript_messages
     query = (
         select(
-            t, operations.c.origin, operations.c.viewpoint.label("op_viewpoint"), events.c.payload
+            t,
+            operations.c.origin,
+            operations.c.viewpoint.label("op_viewpoint"),
+            operations.c.turn_stage.label("op_turn_stage"),
+            events.c.payload,
         )
         .join(operations, operations.c.operation_id == t.c.operation_id)
         .join(events, events.c.id == t.c.message_id)
@@ -903,10 +919,21 @@ async def _notices(
     }
 
 
+def _incomplete(rows: Sequence[Any]) -> frozenset[str]:
+    """#212: the operations on the page that are unfinished staged turns."""
+    unfinished = {s.value for s in UNFINISHED_TURN_STAGES}
+    return frozenset(
+        str(r.operation_id)
+        for r in rows
+        if r.op_turn_stage is not None and str(r.op_turn_stage) in unfinished
+    )
+
+
 def _turns(
     items: Sequence[HistoryItem],
     changed: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
     noticed: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    incomplete: frozenset[str] = frozenset(),
 ) -> list[TurnSummary]:
     turns: dict[int, TurnSummary] = {}
     for item in items:
@@ -918,6 +945,7 @@ def _turns(
             None,
             _turn_effects((changed or {}).get(item.operation_id, ())),
             [dict(n) for n in (noticed or {}).get(item.operation_id, ())],
+            incomplete=item.operation_id in incomplete,
         )
         if summary.message is None and item.kind == REPLY_KIND:
             summary = dataclasses.replace(summary, message=TurnMessage(item.message_id, item.text))

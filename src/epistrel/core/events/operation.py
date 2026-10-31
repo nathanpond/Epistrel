@@ -51,6 +51,21 @@ marked ``failed`` in a separate transaction. Leaving the ``async with`` block wi
 ``valid_time`` equals ``tx_time`` (both ``transaction_timestamp()``) until the world clock
 arrives in M6. A story-less operation (deployment-scoped control) serialises on a transaction
 advisory lock instead of a story row.
+
+**Staged turns (#212, FR-EXT-16,19).** A turn with an effect on a ``synchronous`` write-capable
+provider sets ``turn_stage`` before its first commit (``intent_committed``): the intent commit
+records the stage and keeps the turn slot (a commit gives the slot back only once the turn is
+completed; a failed intent gives it back like any turn). Each
+later truth-changing stage (the outcome, the completion) is the **same operation's** work:
+``reopen()`` continues the committed operation, and its next ``commit()`` writes the stage's
+events at the turn's own position under the turn's operation id, bumps the revision once, moves
+``turn_stage`` and appends the stage's ``stage_log`` entries, with no repositioning, no
+membership change, no chain check and no new idempotency binding. A paused or erasure-blocked
+story does not refuse a continuation (the stage is not a new truth-changing call), a
+continuation whose turn a discard abandoned meanwhile is refused (``timeline_changed``),
+and a failed continuation leaves the committed operation as it was (the previous stage
+boundary). ``append_stage`` logs a stage that commits no events (the claim, the stored
+response).
 """
 
 from __future__ import annotations
@@ -79,6 +94,7 @@ from sqlalchemy import (
     text,
     update,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from sqlalchemy.orm import aliased
@@ -113,12 +129,14 @@ from epistrel.core.concurrency import (
     touched_members,
 )
 from epistrel.core.enums import (
+    UNFINISHED_TURN_STAGES,
     Authority,
     EventCategory,
     Membership,
     OperationKind,
     OperationStatus,
     Provenance,
+    StagedTurnStage,
     StoryStatus,
 )
 from epistrel.core.erasure import guard as erasure_guard
@@ -133,6 +151,7 @@ from epistrel.core.errors import (
     StoryArchived,
     StoryBusy,
     StoryNotFound,
+    TimelineChanged,
 )
 from epistrel.core.events.registry import EventPayload, lookup, validate
 from epistrel.core.ids import new_ulid
@@ -302,6 +321,42 @@ async def chain_violation(conn: AsyncConnection, story_id: str) -> dict[str, Any
     }
 
 
+def stage_entry(name: str, status: str, revision: int | None) -> dict[str, Any]:
+    """#212: one staged-turn ``stage_log`` entry, ``{stage, status, at, revision}``."""
+    return {"stage": name, "status": status, "at": clock.now().isoformat(), "revision": revision}
+
+
+async def append_stage(
+    conn: AsyncConnection,
+    operation_id: str,
+    entry: Mapping[str, Any],
+    *,
+    turn_stage: StagedTurnStage | None = None,
+) -> bool:
+    """#212: append ``entry`` to a committed staged turn's ``stage_log`` in the caller's
+    transaction, for a stage that commits no events (the claim, the stored response); with
+    ``turn_stage``, also move the turn to it, only while the turn is unfinished. Answers whether
+    the row was updated (``False``: a discard abandoned the turn meanwhile)."""
+    where = [
+        operations.c.operation_id == operation_id,
+        operations.c.status == OperationStatus.COMMITTED.value,
+        operations.c.turn_stage.is_not(None),
+    ]
+    if turn_stage is not None:
+        where.append(operations.c.turn_stage.in_(sorted(s.value for s in UNFINISHED_TURN_STAGES)))
+    moved = await conn.scalar(
+        update(operations)
+        .where(*where)
+        .values(
+            stage_log=func.coalesce(operations.c.stage_log, text("'[]'::jsonb"))
+            + literal([dict(entry)], JSONB),
+            **({} if turn_stage is None else {"turn_stage": turn_stage.value}),
+        )
+        .returning(operations.c.operation_id)
+    )
+    return moved is not None
+
+
 class Withdrawn(Exception):
     """Raised inside a batch commit when its work is no longer wanted although nothing went
     wrong (e.g. a concurrent duplicate already recorded it): the operations end ``abandoned``."""
@@ -396,7 +451,8 @@ class Operation:
         its commit removes the turn from the queue in the same transaction."""
         self.holds_turn_slot = False
         """Set once the operation took the story's turn slot (#63): its commit or failure gives
-        the slot back in the same transaction."""
+        the slot back in the same transaction. #212: a staged turn's commit keeps it while the
+        turn is unfinished; its completion gives it back."""
         self.bumps_revision = bumps_revision
         self.control_action = control_action
         self.story_id = story_id
@@ -428,6 +484,12 @@ class Operation:
         while it commits, the story's time basis gives every position of the turn its step's
         start (``core.world_clock.turn_scope``), its events' stamps included."""
         self._stages: list[dict[str, Any]] = []
+        self.turn_stage: StagedTurnStage | None = None
+        """#212 (FR-EXT-16): a staged turn's stage (``operations.turn_stage``), written by each
+        commit that moves it; ``None`` for an ordinary turn and every other operation."""
+        self._continuing = False
+        """#212: this commit continues the committed staged turn (``reopen``)."""
+        self._continued: tuple[Any, ...] = ()
         self.status: OperationStatus | None = None
         self.narrative_turn: int | None = None
         self.turn_variant: int | None = None
@@ -483,6 +545,43 @@ class Operation:
     @property
     def in_flight(self) -> bool:
         return self.status is OperationStatus.IN_FLIGHT
+
+    @property
+    def is_staged_turn(self) -> bool:
+        """#212: a staged turn (``turn_stage`` set; ``operations.turn_stage IS NOT NULL``). Not
+        ``staged``, which is the events staged for the next commit."""
+        return self.turn_stage is not None
+
+    @property
+    def _unfinished(self) -> bool:
+        """#212: a staged turn short of its completion: its commits keep the turn slot."""
+        return self.turn_stage is not None and self.turn_stage in UNFINISHED_TURN_STAGES
+
+    def reopen(self) -> None:
+        """#212 (FR-EXT-16): continue this committed staged turn with its next truth-changing
+        stage (see the module docstring): the staged events, commit steps and stage entries
+        start empty, and the next ``commit()`` writes them at the turn's position."""
+        if (
+            self.status is not OperationStatus.COMMITTED
+            or self.turn_stage is None
+            or self.narrative_turn is None
+            or self.story_id is None
+        ):
+            raise RuntimeError(f"operation {self.operation_id} is no committed staged turn")
+        self._staged.clear()
+        self._commit_steps.clear()
+        self._stages = []
+        self._continuing = True
+        self._continued = (
+            self.narrative_turn,
+            self.turn_variant,
+            self.parent_variant,
+            self.tx_time,
+            self.timeline_revision,
+            self.seqs,
+            self.turn_stage,
+        )
+        self.status = OperationStatus.IN_FLIGHT
 
     async def begin(self, read: Callable[[AsyncConnection], Awaitable[Any]] | None = None) -> Any:
         """Insert the ``in_flight`` operations row and capture the base. Takes no story lock.
@@ -752,6 +851,24 @@ class Operation:
         self._require_in_flight("record a stage of")
         self._stages.append({"stage": name, "status": status, "at": clock.now().isoformat()})
 
+    def stage_turn(self, name: str, status: str = "done") -> None:
+        """#212: record one stage of a staged turn, ``{stage, status, at, revision}``; the
+        commit fills ``revision`` with the story's revision it leaves."""
+        self._require_in_flight("record a stage of")
+        self.drop_turn_stages(name)
+        self._stages.append(
+            {"stage": name, "status": status, "at": clock.now().isoformat(), "revision": None}
+        )
+
+    def drop_turn_stages(self, name: str | None = None) -> None:
+        """#212: forget the staged-turn stage entries recorded for the next commit (``name``'s
+        only, when given): a regenerated attempt records its own."""
+        self._stages = [
+            e
+            for e in self._stages
+            if "revision" not in e or (name is not None and e.get("stage") != name)
+        ]
+
     def add_commit_step(self, step: CommitStep) -> None:
         """Run ``step(conn)`` inside the commit transaction, after the events and projections
         are written and before the operation is finalised (e.g. a rebuild's refold)."""
@@ -789,12 +906,19 @@ class Operation:
             await self._record_attempts()
             raise
         except BaseException as exc:
+            if self._continuing:
+                # #212: a failed stage leaves the turn at its previous stage boundary.
+                self._restore_continued()
+                if self.story_id is not None and lock_timed_out(exc):
+                    raise story_lock_busy(self.story_id) from exc
+                raise
             self._reset_position()
             await self._finish(_failure_status(exc), exc)
             if self.story_id is not None and lock_timed_out(exc):
                 raise story_lock_busy(self.story_id) from exc
             raise
         self.status = OperationStatus.COMMITTED
+        self._continuing = False
         if self.kind is OperationKind.TURN:
             # The turn's atomic commit (NFR-PERF-3; #76), as P-03 times it.
             stages.observe("commit", time.perf_counter() - started)
@@ -854,6 +978,20 @@ class Operation:
         else:
             await self._finish(_failure_status(error), error)
 
+    def _restore_continued(self) -> None:
+        """#212: a continuation that did not commit leaves the operation committed as it was."""
+        (
+            self.narrative_turn,
+            self.turn_variant,
+            self.parent_variant,
+            self.tx_time,
+            self.timeline_revision,
+            self.seqs,
+            self.turn_stage,
+        ) = self._continued
+        self._continuing = False
+        self.status = OperationStatus.COMMITTED
+
     def _reset_position(self) -> None:
         self.narrative_turn = self.turn_variant = self.parent_variant = self.tx_time = None
         self.slot_k = None
@@ -907,15 +1045,22 @@ class Operation:
             ).one_or_none()
             if locked is None:
                 raise StoryNotFound(f"story {self.story_id} does not exist")
-            await self._refuse_blocked(conn, locked.status)
-            self._refuse_archived(locked.status)
+            if not self._continuing:
+                # #212: a staged turn's later stage is the same operation's work, which a pause
+                # or an erasure block that began after its intent does not refuse.
+                await self._refuse_blocked(conn, locked.status)
+                self._refuse_archived(locked.status)
             current_revision = int(locked.timeline_revision)
             if decide is not None:
                 await self._revalidate(conn, locked, decide)
-            self.narrative_turn, self.turn_variant, advance = await self._position(
-                conn, locked.next_turn_index
-            )
-            if self.kind is OperationKind.TURN:
+            if self._continuing:
+                # #212: a later stage of the turn, at the turn's own position.
+                advance = False
+            else:
+                self.narrative_turn, self.turn_variant, advance = await self._position(
+                    conn, locked.next_turn_index
+                )
+            if self.kind is OperationKind.TURN and not self._continuing:
                 self.parent_variant = await self._parent_variant(conn)
                 if self.requested_turn is not None:
                     await self._retire_variant(conn)
@@ -1008,11 +1153,13 @@ class Operation:
                 .where(operations.c.operation_id == self.operation_id)
                 .values(checked_guardrails=await guardrail_stamp(conn, self.story_id))
             )
-        if self.story_id is not None and (
-            self.kind is OperationKind.TURN or self.control_action or self._commit_steps
+        if (
+            self.story_id is not None
+            and not self._continuing
+            and (self.kind is OperationKind.TURN or self.control_action or self._commit_steps)
         ):
             await self._check_chain(conn)
-        call = idempotency.current_call()
+        call = None if self._continuing else idempotency.current_call()
         if call is not None:
             # The key's operation commits with it (a late original is refused here, #61).
             await call.bind(conn, self)
@@ -1377,8 +1524,14 @@ class Operation:
         now = func.transaction_timestamp()
         if self.story_id is not None:
             self.timeline_revision = current_revision + (1 if self.bumps_revision else 0)
-            if self.attempts:
+            if self.attempts and not self._continuing:
                 self.attempts[-1]["committed_revision"] = self.timeline_revision
+        for entry in self._stages:
+            if "revision" in entry and entry["revision"] is None:
+                entry["revision"] = self.timeline_revision
+        if self._continuing:
+            await self._finalise_stage(conn)
+            return
         result = await conn.execute(
             update(operations)
             .where(
@@ -1397,6 +1550,7 @@ class Operation:
                 timeline_revision=self.timeline_revision,
                 **({"stage_log": list(self._stages)} if self._stages else {}),
                 **({"read_set": self._read_set_document()} if self._keyed() is not None else {}),
+                **({"turn_stage": self.turn_stage.value} if self.turn_stage is not None else {}),
             )
             .returning(operations.c.membership_tx)
         )
@@ -1406,7 +1560,7 @@ class Operation:
         self.tx_time = row.membership_tx
         if self.story_id is None:
             return
-        if self.holds_turn_slot:
+        if self.holds_turn_slot and not self._unfinished:
             await turn_gate.release(conn, self.story_id, self.operation_id)
         if self.queued:
             await conn.execute(
@@ -1423,6 +1577,40 @@ class Operation:
         if changes:
             await conn.execute(
                 update(stories).where(stories.c.id == self.story_id).values(**changes)
+            )
+
+    async def _finalise_stage(self, conn: AsyncConnection) -> None:
+        """#212: a staged turn's later stage: the operation stays ``committed`` where it is; its
+        stage and revision move, its new stage entries are appended, the story's revision is
+        bumped, and the slot is given back when the stage holds it (the completion)."""
+        assert self.story_id is not None  # noqa: S101 - only a story's turn is staged
+        moved = await conn.scalar(
+            update(operations)
+            .where(
+                operations.c.operation_id == self.operation_id,
+                operations.c.status == OperationStatus.COMMITTED.value,
+                operations.c.turn_stage.in_(sorted(s.value for s in UNFINISHED_TURN_STAGES)),
+            )
+            .values(
+                turn_stage=None if self.turn_stage is None else self.turn_stage.value,
+                timeline_revision=self.timeline_revision,
+                stage_log=func.coalesce(operations.c.stage_log, text("'[]'::jsonb"))
+                + literal(list(self._stages), JSONB),
+            )
+            .returning(operations.c.operation_id)
+        )
+        if moved is None:
+            raise TimelineChanged(
+                "a control action discarded the staged turn before this stage committed",
+                {"current_revision": self._continued[4], "operation_id": self.operation_id},
+            )
+        if self.holds_turn_slot and not self._unfinished:
+            await turn_gate.release(conn, self.story_id, self.operation_id)
+        if self.bumps_revision:
+            await conn.execute(
+                update(stories)
+                .where(stories.c.id == self.story_id)
+                .values(timeline_revision=stories.c.timeline_revision + 1)
             )
 
     # -- helpers -----------------------------------------------------------------------------

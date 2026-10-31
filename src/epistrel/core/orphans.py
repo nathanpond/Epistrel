@@ -16,7 +16,9 @@ other turn fails ``turn_interrupted``). Then it marks ``failed`` every operation
 - no ``running`` job with a live lease works on its story (or on none).
 
 A live call renews its key's lease, a live turn its slot's and a live job its own, so a
-running operation always has a claim. The rule is deliberately conservative: an operation it
+running operation always has a claim. A staged turn (#212) is ``committed`` from its intent on,
+so this sweep never marks it; and the slot reclaim skips an unfinished one, whose slot it keeps
+(#213 resumes it). The rule is deliberately conservative: an operation it
 leaves alone is swept by a later pass. Its key is left to the retry (or ``idempotency_purge``).
 Running it again changes nothing.
 """
@@ -61,8 +63,8 @@ async def reclaim_expired_slots(db: AsyncEngine) -> list[str]:
                     .with_for_update(skip_locked=True)
                 )
             ).one_or_none()
-            if locked is not None:
-                await turn_gate.reclaim(conn, story_id, holder)
+            # #212: an unfinished staged turn keeps its slot (``turn_gate.reclaim`` skips it).
+            if locked is not None and await turn_gate.reclaim(conn, story_id, holder):
                 reclaimed.append(holder)
     return reclaimed
 

@@ -45,7 +45,12 @@ from pydantic import ValidationError
 from sqlalchemy import delete, func, insert, literal_column, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core.enums import OperationKind, OperationStatus
+from epistrel.core.enums import (
+    UNFINISHED_TURN_STAGES,
+    OperationKind,
+    OperationStatus,
+    StagedTurnStage,
+)
 from epistrel.core.errors import EpistrelError, StoryBusy, StoryNotFound
 from epistrel.core.idempotency import QUEUE_OWNER_PREFIX
 from epistrel.core.profiles.effective import StoryProfile, effective_configuration
@@ -281,8 +286,12 @@ async def acquire(
                 select(operations.c.origin).where(operations.c.operation_id == holder)
             )
             return Held(holder, origin, max(1, math.ceil(remaining)), await _depth(conn, story_id))
-        if holder is not None:
-            await _reclaim(conn, story_id, holder)
+        if holder is not None and not await _reclaim(conn, story_id, holder):
+            # #212: an unfinished staged turn keeps the slot past its lease (#213 resumes it).
+            origin = await conn.scalar(
+                select(operations.c.origin).where(operations.c.operation_id == holder)
+            )
+            return Held(holder, origin, 1, await _depth(conn, story_id))
         if newcomer:
             depth = await _depth(conn, story_id)
             if depth:
@@ -339,10 +348,21 @@ def _interval(seconds: float) -> Any:
     return literal_column(f"make_interval(secs => {float(seconds)!r})")
 
 
-async def _reclaim(conn: AsyncConnection, story_id: str, holder: str) -> None:
+async def _reclaim(conn: AsyncConnection, story_id: str, holder: str) -> bool:
     """The holder's lease ran out (its process died, or it hung): a queued turn goes back to
     the queue (``MAX_RUNS`` interrupted runs fail it); any other turn is marked ``failed``. A
-    late commit of the dead turn is refused (its operation is no longer ``in_flight``)."""
+    late commit of the dead turn is refused (its operation is no longer ``in_flight``).
+
+    #212: a staged turn whose intent committed and whose completion has not (``turn_stage`` in
+    ``UNFINISHED_TURN_STAGES``) is skipped: it is never marked ``failed`` or
+    ``turn_interrupted`` and keeps its slot (#213 resumes it from here). Answers whether the
+    slot was reclaimed."""
+    stage = await conn.scalar(
+        select(operations.c.turn_stage).where(operations.c.operation_id == holder)
+    )
+    if stage is not None and StagedTurnStage(stage) in UNFINISHED_TURN_STAGES:
+        logger.warning("turn slot of a story held past its lease by a staged turn (%s)", holder)
+        return False
     queued = (
         await conn.execute(
             select(turn_queue.c.attempts)
@@ -374,12 +394,14 @@ async def _reclaim(conn: AsyncConnection, story_id: str, holder: str) -> None:
         if queued is not None:
             await _forget_item(conn, holder)
     await release(conn, story_id, holder)
+    return True
 
 
-async def reclaim(conn: AsyncConnection, story_id: str, holder: str) -> None:
+async def reclaim(conn: AsyncConnection, story_id: str, holder: str) -> bool:
     """Reclaim ``holder``'s expired slot (the caller holds the story row lock; #75's
-    start-up sweep, ``core.orphans``)."""
-    await _reclaim(conn, story_id, holder)
+    start-up sweep, ``core.orphans``); ``False`` for an unfinished staged turn (#212), which
+    keeps it."""
+    return await _reclaim(conn, story_id, holder)
 
 
 class TurnInterrupted(EpistrelError):

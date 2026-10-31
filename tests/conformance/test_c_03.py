@@ -74,6 +74,7 @@ from epistrel.api.routes.catalog_scenarios import (
     ScenarioStatusBody,
     ScenarioVersionsBody,
 )
+from epistrel.api.routes.clock import ClockAdvancedBody, ClockBody, ClockSettingsWriteBody
 from epistrel.api.routes.engine_profiles import (
     ProfileBody,
     ProfileDeletedBody,
@@ -193,6 +194,7 @@ from epistrel.core.story_texts import CustomInstructionsRequest, PinnedMemoriesR
 from epistrel.core.tables.ownership import EntityType
 from epistrel.core.timeline import Swapped, TruncateRequest, UntruncateRequest, Untruncation
 from epistrel.core.variants import ChainRef, SwapRequest
+from epistrel.core.world_clock.service import ClockAdvanceRequest
 from epistrel.engine import Engine, operations
 from epistrel.orchestrator.jobs.handlers.rebuild import RebuildQueued
 from epistrel.orchestrator.lite.schemas import RegenerateRequest, RespondRequest
@@ -1379,6 +1381,29 @@ def _steps() -> list[Step]:
             lambda e, ids: _participation(
                 e.set_participation(
                     CTX, ids["story"], ids["dale"], ParticipationSpec(role="primary", fixed=True)
+                )
+            ),
+        ),
+        # #193: the world clock read, its settings changed, and an advance its story's
+        # configuration refuses (409 module_off) until #203 delivers the clock module.
+        Step(
+            "get_clock",
+            lambda ids: Rest("GET", f"{s}/clock"),
+            lambda e, ids: _clock(e.get_clock(CTX, ids["story"])),
+        ),
+        Step(
+            "update_clock",
+            lambda ids: Rest("PATCH", f"{s}/clock", {"mode": "manual"}),
+            lambda e, ids: _clock_settings(e.update_clock(CTX, ids["story"], {"mode": "manual"})),
+        ),
+        Step(
+            "advance_clock",
+            lambda ids: Rest("POST", f"{s}/clock/advance", {"minutes": 30, "reason": "they wait"}),
+            lambda e, ids: _clock_advanced(
+                e.advance_clock(
+                    CTX,
+                    ids["story"],
+                    ClockAdvanceRequest(minutes=30, reason="they wait"),
                 )
             ),
         ),
@@ -2665,6 +2690,18 @@ async def _promoted(call: Awaitable[Any]) -> dict[str, Any]:
 
 async def _participation(call: Awaitable[Any]) -> dict[str, Any]:
     return dump(ParticipationSetBody.of(await call))
+
+
+async def _clock(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ClockBody.of(await call))
+
+
+async def _clock_settings(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ClockSettingsWriteBody.of(await call))
+
+
+async def _clock_advanced(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ClockAdvancedBody.of(await call))
 
 
 async def _weighted(call: Awaitable[Any]) -> dict[str, Any]:

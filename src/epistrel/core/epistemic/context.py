@@ -95,6 +95,7 @@ from epistrel.core.epistemic import exposure as exposures
 from epistrel.core.epistemic import nested, partitions, perception, testimony
 from epistrel.core.epistemic import scene as scenes
 from epistrel.core.errors import InvalidRequest
+from epistrel.core.membership import POSITION_FIELDS, Position
 from epistrel.core.memory import records
 from epistrel.core.memory.records import WorkingBeat
 from epistrel.core.profiles.capabilities import module_on
@@ -399,17 +400,33 @@ class _Cast:
 
 
 async def _cast(conn: AsyncConnection, story_id: str) -> _Cast:
+    from epistrel.core import world_clock  # here: the clock reads States, which import this
+
     found = await conn.execute(
-        select(characters.c.id, characters.c.name, characters.c.is_player, characters.c.true_age)
+        select(
+            characters.c.id,
+            characters.c.name,
+            characters.c.is_player,
+            characters.c.true_age,
+            *(characters.c[f"modeled_{n}"] for n in POSITION_FIELDS),
+        )
         .where(characters.c.story_id == story_id)
         .order_by(characters.c.ordinal)
     )
+    # #193: the age a character is now, its true age plus the full years on the world clock
+    # since its creation position (the guardrails' ``current_age``).
+    elapsed = await world_clock.elapsed_since(conn, story_id)
     names: dict[str, str] = {}
     ages: dict[str, int | None] = {}
     players: set[str] = set()
     for row in found:
         names[str(row.id)] = str(row.name)
-        ages[str(row.id)] = None if row.true_age is None else int(row.true_age)
+        created = Position.of_columns(dict(row._mapping), "modeled") or Position(0)
+        ages[str(row.id)] = (
+            None
+            if row.true_age is None
+            else int(row.true_age) + world_clock.full_years(elapsed(created))
+        )
         if row.is_player:
             players.add(str(row.id))
     entity_of: dict[str, str] = {}

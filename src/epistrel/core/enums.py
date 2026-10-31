@@ -319,13 +319,15 @@ class CharacterWeight(StrEnum):
 
 class StateType(StrEnum):
     """A State's value type (FR-STATE-1; #185): a number (``numeric``, never a float), a
-    boolean, one of the definition's ``allowed_values`` (``enum``), or short text (at most 200
-    characters). #193 adds ``clock`` for the built-in world clock. Postgres enum ``state_type``."""
+        boolean, one of the definition's ``allowed_values`` (``enum``), or short text (at most 200
+        characters), or the built-in world ``clock`` (#193: an offset in minutes from the story's
+    start, changed only by its advances). Postgres enum ``state_type``."""
 
     NUMBER = "number"
     BOOLEAN = "boolean"
     ENUM = "enum"
     TEXT = "text"
+    CLOCK = "clock"
 
 
 class StateScope(StrEnum):
@@ -416,6 +418,25 @@ class StateChangeStatus(StrEnum):
     DROPPED = "dropped"
 
 
+class ClockMode(StrEnum):
+    """How the world clock advances (FR-CLOCK-5; #193): ``paced`` (the pacing rule and validated
+    skips), ``manual`` (explicit skips only) or ``external`` (a provider's, #209). Postgres enum
+    ``clock_mode``."""
+
+    PACED = "paced"
+    MANUAL = "manual"
+    EXTERNAL = "external"
+
+
+class TimeAwareness(StrEnum):
+    """How precisely the story's characters know the time (#200; set through #193's
+    ``PATCH /clock``): ``exact``, ``approximate`` or ``none``. Postgres enum ``time_awareness``."""
+
+    EXACT = "exact"
+    APPROXIMATE = "approximate"
+    NONE = "none"
+
+
 PG_ENUM_TYPES: dict[str, type[StrEnum]] = {
     "event_category": EventCategory,
     "operation_kind": OperationKind,
@@ -453,6 +474,8 @@ PG_ENUM_TYPES: dict[str, type[StrEnum]] = {
     "state_change_source": StateChangeSource,
     "state_contingency": StateContingency,
     "state_change_status": StateChangeStatus,
+    "clock_mode": ClockMode,
+    "time_awareness": TimeAwareness,
 }
 """Postgres enum type name (``<schema>.<name>`` outside ``public``) → the Python enum whose
 values it holds (creation order)."""

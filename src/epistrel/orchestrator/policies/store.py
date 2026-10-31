@@ -35,6 +35,7 @@ from epistrel.core.enums import StoryStatus
 from epistrel.core.epistemic.perception import RouteBeat
 from epistrel.core.epistemic.scene import Moves, placed_elsewhere
 from epistrel.core.errors import PolicyNotFound, StoryNotFound
+from epistrel.core.membership import POSITION_FIELDS, Position
 from epistrel.core.policies.model import (
     SCOPE_RANK,
     ModelAssistedRule,
@@ -209,7 +210,10 @@ class GuardContext:
 
 
 async def read_cast(conn: AsyncConnection, story_id: str) -> tuple[CastMember, ...]:
-    """The story's cast in creation order, with true ages (never leaves the engine)."""
+    """The story's cast in creation order, with true ages (never leaves the engine) and the
+    minutes on the world clock since each was created (#193)."""
+    from epistrel.core import world_clock  # here: the clock reads States, which import this
+
     rows = (
         await conn.execute(
             select(
@@ -217,20 +221,27 @@ async def read_cast(conn: AsyncConnection, story_id: str) -> tuple[CastMember, .
                 characters.c.ordinal,
                 characters.c.true_age,
                 characters.c.age_recorded_at,
+                *(characters.c[f"modeled_{n}"] for n in POSITION_FIELDS),
             )
             .where(characters.c.story_id == story_id)
             .order_by(characters.c.ordinal)
         )
     ).all()
-    return tuple(
-        CastMember(
-            character_id=row.id,
-            ordinal=int(row.ordinal),
-            true_age=int(row.true_age),
-            age_recorded_at=row.age_recorded_at,
+    elapsed = await world_clock.elapsed_since(conn, story_id)
+    found: list[CastMember] = []
+    for row in rows:
+        created = Position.of_columns(dict(row._mapping), "modeled") or Position(0)
+        found.append(
+            CastMember(
+                character_id=row.id,
+                ordinal=int(row.ordinal),
+                true_age=int(row.true_age),
+                age_recorded_at=row.age_recorded_at,
+                created_at=created,
+                elapsed_minutes=elapsed(created),
+            )
         )
-        for row in rows
-    )
+    return tuple(found)
 
 
 @dataclass(frozen=True, slots=True)

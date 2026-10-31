@@ -87,9 +87,7 @@ from epistrel.core.propositions.model import (
     TypedLiteral,
 )
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME, LOCATED_AT
-from epistrel.core.resolution.context import load_time_basis
 from epistrel.core.resolution.entities import add_entities, character_spec
-from epistrel.core.resolution.time import story_time_at
 from epistrel.core.tables import characters, events
 from epistrel.core.tables.characters import TRUE_AGE_MAX, TRUE_AGE_MIN
 from epistrel.core.tables.utterances import utterances
@@ -637,10 +635,13 @@ async def write_character_facts(
     story_id = operation.story_id
     if story_id is None or not joined:
         return []
-    basis = await load_time_basis(conn, story_id)
-    since = story_time_at(operation.narrative_turn or 0, basis)
+    from epistrel.core import world_clock  # here: the clock reads States, which import this
+
+    basis = await world_clock.time_basis(conn, story_id)
+    turn, variant = operation.narrative_turn or 0, operation.turn_variant or 0
     written: list[Fact] = []
     for character_id, age, beat in joined:
+        since = basis.at(Position(turn, variant, 0, beat or 0))
         if age is not None:
             written.append(
                 await commit_fact(

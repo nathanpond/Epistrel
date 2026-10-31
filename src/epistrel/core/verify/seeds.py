@@ -38,6 +38,7 @@ from epistrel.core.resolution.time import TimeBasis
 from epistrel.core.verify.detect import DetectionEnv, detect_seed
 from epistrel.core.verify.merge import SeedFact, SeedLayer
 from epistrel.core.verify.rules import VerdictReason
+from epistrel.core.world_clock import clock_off_basis
 
 CANON = "canon"
 """A seed's default kind: the author's statement of fact."""
@@ -62,7 +63,7 @@ class SeedWorld:
 
     registry: Registry
     index: EntityIndex
-    basis: TimeBasis = field(default_factory=TimeBasis)
+    basis: TimeBasis = field(default_factory=clock_off_basis)
 
     @classmethod
     def of(cls, registry: Registry, entities: Iterable[tuple[str, EntitySpec]]) -> SeedWorld:

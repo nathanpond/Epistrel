@@ -622,6 +622,11 @@ CALLS: dict[tuple[str, str], Call] = {
         200, {"weight": "minor"}, prepare=_story_character
     ),
     ("POST", f"{S}/entities/{{entity_id}}/model"): Call(201, {"true_age": 40}, prepare=_unmodeled),
+    # -- stories: the world clock (#193): read, settings changed, and an advance, which the
+    # story's configuration refuses (409 module_off) until #203 delivers the clock module
+    ("GET", f"{S}/clock"): Call(200),
+    ("PATCH", f"{S}/clock"): Call(200, {"mode": "manual"}),
+    ("POST", f"{S}/clock/advance"): Call(409, {"minutes": 30, "reason": "they wait"}),
     # -- stories: a character's participation role (#176)
     ("PATCH", f"{S}/characters/{{character_id}}/participation"): Call(
         200, {"role": "primary", "fixed": True}, prepare=_story_character

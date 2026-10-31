@@ -3274,6 +3274,423 @@
         "title": "ClassCapabilityCounts",
         "type": "object"
       },
+      "ClockAdvanceRequest": {
+        "additionalProperties": false,
+        "description": "``POST /stories/{id}/clock/advance``: ``minutes`` forward, or ``to`` a target (an offset\nin minutes from the story's start, or a time of day ``\"HH:MM\"``), with a ``reason``.",
+        "examples": [
+          {
+            "minutes": 90,
+            "reason": "they wait for the bus"
+          }
+        ],
+        "properties": {
+          "minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Minutes"
+          },
+          "reason": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "to": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "ClockAdvanceRequest",
+        "type": "object"
+      },
+      "ClockAdvancedBody": {
+        "description": "A consumer's advance: the inter-turn slot ``operation_id`` that recorded it, the\n``change_id`` of its ``world_clock`` change, the clock ``before`` and ``after``, the slot's\n``position`` (``{turn, variant, slot_k, beat, step}``) and the story's revision after.",
+        "properties": {
+          "after": {
+            "$ref": "#/components/schemas/ClockValueBody"
+          },
+          "before": {
+            "$ref": "#/components/schemas/ClockValueBody"
+          },
+          "change_id": {
+            "title": "Change Id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "operation_id": {
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "position": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Position",
+            "type": "object"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "operation_id",
+          "change_id",
+          "before",
+          "after",
+          "position"
+        ],
+        "title": "ClockAdvancedBody",
+        "type": "object"
+      },
+      "ClockBody": {
+        "description": "The clock as the story stands: its ``offset`` and ``display``, its ``anchor`` (``null``:\nunanchored), the ``level`` the story's configuration runs it at (``off``: inert, no\nadvance is written; ``prompt_only``; ``on``), its ``mode`` and its ``settings``.",
+        "properties": {
+          "anchor": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anchor"
+          },
+          "display": {
+            "title": "Display",
+            "type": "string"
+          },
+          "level": {
+            "enum": [
+              "off",
+              "prompt_only",
+              "on"
+            ],
+            "title": "Level",
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "paced",
+              "manual",
+              "external"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "settings": {
+            "$ref": "#/components/schemas/ClockSettingsBody"
+          }
+        },
+        "required": [
+          "offset",
+          "display",
+          "anchor",
+          "level",
+          "mode",
+          "settings"
+        ],
+        "title": "ClockBody",
+        "type": "object"
+      },
+      "ClockPatch": {
+        "additionalProperties": false,
+        "description": "``PATCH /stories/{id}/clock``: the settings to change (each optional).",
+        "examples": [
+          {
+            "mode": "manual"
+          }
+        ],
+        "properties": {
+          "bands": {
+            "anyOf": [
+              {
+                "items": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bands"
+          },
+          "calendar": {
+            "anyOf": [
+              {
+                "const": "gregorian",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Calendar"
+          },
+          "max_unprompted_skip_minutes": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Unprompted Skip Minutes"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "paced",
+                  "manual",
+                  "external"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
+          "pacing_table": {
+            "anyOf": [
+              {
+                "items": {
+                  "items": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pacing Table"
+          },
+          "stop_at_due_events": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stop At Due Events"
+          },
+          "time_awareness": {
+            "anyOf": [
+              {
+                "enum": [
+                  "exact",
+                  "approximate",
+                  "none"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Time Awareness"
+          }
+        },
+        "title": "ClockPatch",
+        "type": "object"
+      },
+      "ClockSettingsBody": {
+        "description": "The clock's settings (FR-CLOCK-3,5,8,9): its ``mode``; the ``pacing_table`` rows\n``[from_words, to_words (exclusive; null: no end), minutes]``; the cap on a skip a render\nstarts on its own (``max_unprompted_skip_minutes``); whether it stops at due events\n(``stop_at_due_events``) and the grace after one (``grace_minutes``); how far a stated time\nmay be from it (``time_statement_tolerance_minutes``) and an elapsed time\n(``elapsed_tolerance_factor``); how precisely characters know the time\n(``time_awareness``); the time-of-day ``bands`` (``[name, from, to]``); and the\n``calendar``.",
+        "properties": {
+          "bands": {
+            "items": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Bands",
+            "type": "array"
+          },
+          "calendar": {
+            "title": "Calendar",
+            "type": "string"
+          },
+          "elapsed_tolerance_factor": {
+            "title": "Elapsed Tolerance Factor",
+            "type": "number"
+          },
+          "grace_minutes": {
+            "title": "Grace Minutes",
+            "type": "integer"
+          },
+          "max_unprompted_skip_minutes": {
+            "title": "Max Unprompted Skip Minutes",
+            "type": "integer"
+          },
+          "mode": {
+            "enum": [
+              "paced",
+              "manual",
+              "external"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "pacing_table": {
+            "items": {
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": "array"
+            },
+            "title": "Pacing Table",
+            "type": "array"
+          },
+          "stop_at_due_events": {
+            "title": "Stop At Due Events",
+            "type": "boolean"
+          },
+          "time_awareness": {
+            "enum": [
+              "exact",
+              "approximate",
+              "none"
+            ],
+            "title": "Time Awareness",
+            "type": "string"
+          },
+          "time_statement_tolerance_minutes": {
+            "title": "Time Statement Tolerance Minutes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "mode",
+          "pacing_table",
+          "max_unprompted_skip_minutes",
+          "stop_at_due_events",
+          "grace_minutes",
+          "time_statement_tolerance_minutes",
+          "elapsed_tolerance_factor",
+          "time_awareness",
+          "bands",
+          "calendar"
+        ],
+        "title": "ClockSettingsBody",
+        "type": "object"
+      },
+      "ClockSettingsWriteBody": {
+        "description": "The clock's settings after a ``PATCH``, the story's ``config_revision`` (moved by a\nchange) and its unchanged ``timeline_revision``.",
+        "properties": {
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "settings": {
+            "$ref": "#/components/schemas/ClockSettingsBody"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "settings",
+          "config_revision"
+        ],
+        "title": "ClockSettingsWriteBody",
+        "type": "object"
+      },
+      "ClockValueBody": {
+        "description": "The clock at one point: its exact ``offset`` in minutes from the story's start, and its\n``display`` (``+HHh MMm`` from the start while the anchor fixes no hour).",
+        "properties": {
+          "display": {
+            "title": "Display",
+            "type": "string"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "offset",
+          "display"
+        ],
+        "title": "ClockValueBody",
+        "type": "object"
+      },
       "CompanionPublishedBody": {
         "description": "The companion version a character's publish made (FR-CAT-10; #116): the companion\nscenario's id, its new version (pinned to the character's new version), its draft's new\n``draft_revision`` (the draft's pin moved with it; with ``with_companion`` it is what was\npublished) and that version's validation ``report`` (a rating difference with the character\nis a ``rating_looser`` warning there).",
         "properties": {
@@ -25472,6 +25889,16 @@
             "title": "Capabilities",
             "type": "array"
           },
+          "clock": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TurnClockBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "config_revision": {
             "anyOf": [
               {
@@ -26515,6 +26942,16 @@
             },
             "title": "Capabilities",
             "type": "array"
+          },
+          "clock": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TurnClockBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "config_revision": {
             "anyOf": [
@@ -34798,6 +35235,23 @@
           "discarded_operations"
         ],
         "title": "TruncatedBody",
+        "type": "object"
+      },
+      "TurnClockBody": {
+        "description": "The world clock ``before`` and ``after`` a turn (FR-CLOCK-13).",
+        "properties": {
+          "after": {
+            "$ref": "#/components/schemas/ClockValueBody"
+          },
+          "before": {
+            "$ref": "#/components/schemas/ClockValueBody"
+          }
+        },
+        "required": [
+          "before",
+          "after"
+        ],
+        "title": "TurnClockBody",
         "type": "object"
       },
       "TurnMessageModel": {
@@ -57582,6 +58036,492 @@
           }
         ],
         "summary": "Set a story character's narrative weight",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
+    "/stories/{story_id}/clock": {
+      "get": {
+        "description": "The story's world clock as it stands (FR-CLOCK-1,13): every story has one, created with it, and it cannot be deleted. `offset` is its exact value in minutes from the story's start (the fold of its active advances, so a truncation, a swap and a fork move it with everything else), `display` renders it (`+HHh MMm` while unanchored), `anchor` is its absolute date and time where established (null: unanchored). `level` is the level the story's configuration runs it at: `off` makes it inert (no advance is written, and story-time follows the clock-off rule), `prompt_only` writes advances and verifies nothing, `on` runs it all. `mode` and `settings` are set with `PATCH /stories/{id}/clock`.",
+        "operationId": "get_clock",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClockBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read a story's world clock",
+        "tags": [
+          "stories"
+        ]
+      },
+      "patch": {
+        "description": "Change the world clock's settings (FR-CLOCK-5): `mode` (`paced`, the default: the pacing rule and validated skips advance it; `manual`: only explicit skips do; `external` needs a registered provider and is refused until it can have one), the `pacing_table`, `max_unprompted_skip_minutes` (0 disables a skip a render starts on its own), `stop_at_due_events`, `time_awareness`, the time-of-day `bands` and the `calendar`. A story configuration write: each changed setting records a `config_changes` row (`state:world_clock.<setting>`; `pacing_table` is prospective, the others interpretive, so a turn checked under the old value is re-checked) and the story's `config_revision` moves by one; setting the values it has changes nothing. 422 for an unknown setting or an invalid value; 409 `story_archived`.",
+        "operationId": "update_clock",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClockPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClockSettingsWriteBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Change a story's world clock settings",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
+    "/stories/{story_id}/clock/advance": {
+      "post": {
+        "description": "Move the world clock forward between turns, as the consumer (FR-CLOCK-13): `minutes` forward, or `to` a target, either an offset in minutes from the story's start or a time of day `\"HH:MM\"`, with a `reason`. The advance is an inter-turn slot after the last turn (a truncation to that turn or earlier discards it, and the clock with it) and is recorded with the source `consumer`. Answers the clock `before` and `after`. 422 `clock_backward` for a move backward (nothing is written; earlier story-time is reached by truncation or a rewrite), `clock_unanchored` for a `\"HH:MM\"` the clock's anchor cannot place (no anchor fixes the hour yet); 409 `module_off` while the story runs the clock off, `story_archived`, `story_paused` or `revision_conflict`. A turn that was rejected or failed, and an ingested event, never advance the clock.",
+        "operationId": "advance_clock",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClockAdvanceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClockAdvancedBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_paused`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `clock_backward`, `clock_unanchored`, `validation_error`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Advance a story's world clock",
         "tags": [
           "stories"
         ]

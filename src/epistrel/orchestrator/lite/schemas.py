@@ -41,6 +41,7 @@ from epistrel.core.settings_schema import (
     SequenceOrder,
 )
 from epistrel.core.viewpoint import AudienceFilter
+from epistrel.core.world_clock.service import TurnClock
 from epistrel.orchestrator.models.metrics import ModelCall
 
 MAX_INPUT_CHARS = 8_000
@@ -374,6 +375,9 @@ class RespondResult:
     before #113."""
     replayed: bool = False
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
+    clock: TurnClock | None = None
+    """The world clock before and after the turn (FR-CLOCK-13; #193); ``None`` when the story
+    runs the clock off (and in a result stored before #193)."""
     order: list[str] = field(default_factory=list)
     """#174: a structured turn with several primaries, their ids in the order they rendered
     (the request's, or the director's); empty otherwise."""

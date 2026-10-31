@@ -1239,6 +1239,21 @@
     },
     {
       "method": "GET",
+      "path": "/stories/{story_id}/clock",
+      "requirement": "FR-CLOCK-13"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/clock/advance",
+      "requirement": "FR-CLOCK-13"
+    },
+    {
+      "method": "PATCH",
+      "path": "/stories/{story_id}/clock",
+      "requirement": "FR-CLOCK-5"
+    },
+    {
+      "method": "GET",
       "path": "/admin/evals/extraction-shadow",
       "requirement": "FR-OBS-4"
     }

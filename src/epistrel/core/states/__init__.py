@@ -90,15 +90,21 @@ from epistrel.core.membership import Position, active_only, insert_derived
 from epistrel.core.settings_schema import ConfigClass, merge_patch
 from epistrel.core.states.model import (
     ADDITIVE,
+    CLOCK_INTERPRETIVE_MEMBERS,
+    CLOCK_MEMBERS,
+    CLOCK_PROSPECTIVE_MEMBERS,
+    CLOCK_SOURCES,
     COUNTED,
     IMMUTABLE_MEMBERS,
     INTERPRETIVE_MEMBERS,
+    NUMERIC_TYPES,
     PROSPECTIVE_MEMBERS,
     REASON_MAX,
     RESERVED_NAMES,
     TEXT_MAX,
     WORLD_CLOCK,
     ChangeRow,
+    ClockSettings,
     Constraints,
     Folded,
     StateChange,
@@ -201,15 +207,28 @@ def _exempt(name: str) -> bool:
     return name == WORLD_CLOCK
 
 
+CLOCK_ADVANCE_ROUTE = "POST /stories/{story_id}/clock/advance"
+"""Where the world clock is moved forward (the State API never sets it)."""
+
+
+def _clock_change_ok(change: StateChange) -> None:
+    """The world clock moves only forward, by an advance from a clock source (#193): a ``set``
+    (of any value, so never backward) or another source is 422 ``reserved_state``."""
+    if change.kind is not StateChangeKind.DELTA or change.source not in CLOCK_SOURCES:
+        raise InvalidRequest(
+            f"{WORLD_CLOCK!r} is the built-in clock: advance it with {CLOCK_ADVANCE_ROUTE}",
+            {"field": "state", "reason": "reserved_state", "use": CLOCK_ADVANCE_ROUTE},
+        )
+
+
 # -- valid time -----------------------------------------------------------------------------------
 
 
 async def valid_time_at(conn: AsyncConnection, story_id: str, position: Position) -> int:
-    """The story-minute of ``position`` (#193 points this at ``world_clock.story_time_at``)."""
-    from epistrel.core.resolution.context import load_time_basis
-    from epistrel.core.resolution.time import story_time_at
+    """The story-minute of ``position``: ``world_clock.story_time_at`` (#193)."""
+    from epistrel.core import world_clock  # here: the clock is a State of this module's
 
-    return story_time_at(position, await load_time_basis(conn, story_id))
+    return await world_clock.story_time_at(conn, story_id, position)
 
 
 # -- reading definitions and changes ------------------------------------------------------------
@@ -244,6 +263,13 @@ def _definition_of(row: Any) -> StateDefinition:
         transfer=dict(row.transfer or {}),
         reservation_expiry_minutes=row.reservation_expiry_minutes,
         created_by=row.created_by,
+        clock=_clock_of(row) if kind is StateType.CLOCK else None,
+    )
+
+
+def _clock_of(row: Any) -> ClockSettings:
+    return ClockSettings.model_validate(
+        {m: getattr(row, m) for m in CLOCK_MEMBERS if getattr(row, m) is not None}
     )
 
 
@@ -611,6 +637,7 @@ def _definition_row(story_id: str, state: StateDefinition, op: Operation) -> dic
         "transfer": dict(state.transfer),
         "reservation_expiry_minutes": state.reservation_expiry_minutes,
         "created_by": state.created_by.value,
+        **({} if state.clock is None else _clock_columns(state)),
         "operation_id": op.operation_id,
         "narrative_turn": op.narrative_turn,
         "turn_variant": op.turn_variant,
@@ -697,8 +724,24 @@ async def define_state(
 # -- updating a definition ---------------------------------------------------------------
 
 
-def _member_class(member: str) -> ConfigClass:
-    return ConfigClass.interpretive if member in INTERPRETIVE_MEMBERS else ConfigClass.prospective
+def _members(name: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """``(interpretive, prospective)``: the members an update of State ``name`` may change."""
+    if name == WORLD_CLOCK:
+        return CLOCK_INTERPRETIVE_MEMBERS, CLOCK_PROSPECTIVE_MEMBERS
+    return INTERPRETIVE_MEMBERS, PROSPECTIVE_MEMBERS
+
+
+def _member_class(member: str, interpretive: Sequence[str]) -> ConfigClass:
+    return ConfigClass.interpretive if member in interpretive else ConfigClass.prospective
+
+
+def _clock_columns(state: StateDefinition) -> dict[str, Any]:
+    """The clock's settings as their ``state_definitions`` columns."""
+    assert state.clock is not None  # noqa: S101 - only the clock has settings
+    return {
+        **state.clock.document(),
+        "elapsed_tolerance_factor": state.clock.elapsed_tolerance_factor,
+    }
 
 
 async def _scope_values(
@@ -721,13 +764,18 @@ async def update_definition(
     principal: str,
 ) -> StateDefinition:
     """Change State ``name``'s declaration (see the module docstring); answers the declaration
-    as it now stands. A patch that changes nothing writes nothing."""
+    as it now stands. A patch that changes nothing writes nothing. The world clock's members
+    are its settings (``CLOCK_INTERPRETIVE_MEMBERS``, ``CLOCK_PROSPECTIVE_MEMBERS``; #193's
+    ``PATCH /clock``); its State members are fixed."""
+    interpretive, prospective = _members(name)
     for member in patch:
-        if member in IMMUTABLE_MEMBERS:
+        if member in IMMUTABLE_MEMBERS or (
+            name == WORLD_CLOCK and member not in (*interpretive, *prospective)
+        ):
             raise InvalidRequest(
                 f"a State's {member} cannot change", {"field": member, "reason": "immutable_field"}
             )
-        if member not in (*INTERPRETIVE_MEMBERS, *PROSPECTIVE_MEMBERS):
+        if member not in (*interpretive, *prospective):
             raise InvalidRequest(
                 f"{member!r} is not a State definition member",
                 {"field": member, "reason": "unknown"},
@@ -749,14 +797,15 @@ async def update_definition(
     for member in IMMUTABLE_MEMBERS:
         after[member] = before[member]
     builtin = name in RESERVED_NAMES
+    clock = {m: after.pop(m) for m in CLOCK_MEMBERS if m in after}
+    if clock:
+        after["clock"] = {m: v for m, v in clock.items() if v is not None}
     wanted = validate_definition(
         {k: v for k, v in after.items() if v is not None or k in ("initial_value",)},
         builtin=builtin,
     ).model_copy(update={"id": current.id})
     wanted_document = wanted.document()
-    changed = [
-        m for m in (*INTERPRETIVE_MEMBERS, *PROSPECTIVE_MEMBERS) if wanted_document[m] != before[m]
-    ]
+    changed = [m for m in (*interpretive, *prospective) if wanted_document[m] != before[m]]
     if not changed:
         return current
     if row.status == StoryStatus.ARCHIVED.value:
@@ -795,7 +844,7 @@ async def update_definition(
             old=before[member],
             new=wanted_document[member],
             actor=principal,
-            change_class=_member_class(member),
+            change_class=_member_class(member, interpretive),
             scope=ConfigScope.STORY,
             scope_id=story_id,
         )
@@ -804,6 +853,8 @@ async def update_definition(
 
 
 def _stored(state: StateDefinition, member: str) -> Any:
+    if member in CLOCK_MEMBERS and state.clock is not None:
+        return _clock_columns(state)[member]
     document = state.document()
     if member == "aliases":
         return list(state.aliases)
@@ -832,7 +883,7 @@ def _typed(state: StateDefinition, change: StateChange) -> tuple[Value | None, D
         return value, None
     if change.kind not in ADDITIVE:  # pragma: no cover - every kind is one or the other
         raise InvalidRequest(f"unknown change kind {change.kind}", {"field": "kind"})
-    if state.type is not StateType.NUMBER:
+    if state.type not in NUMERIC_TYPES:
         raise InvalidRequest(
             f"a delta applies to a number State, not {state.type.value!r}",
             {"field": "delta", "reason": "not_number"},
@@ -868,7 +919,12 @@ async def apply_change(
     if story_id is None:
         raise InvalidRequest("a State change belongs to a story's operation", {"field": "op"})
     state = await definition(conn, story_id, change.state)
-    if not _exempt(state.name):
+    if _exempt(state.name):
+        from epistrel.core import world_clock  # here: the clock is a State of this module's
+
+        _clock_change_ok(change)
+        await world_clock.require_clock(conn, story_id)
+    else:
         await require_module(conn, story_id, turn=change.source is StateChangeSource.TURN)
     _scope_ok(state, change.scope_key)
     await _scope_key_ok(conn, story_id, change.scope_key)
@@ -945,6 +1001,7 @@ async def apply_change(
         "step": position.step,
         "valid_time_minutes": minutes,
         "tx_from": await conn.scalar(select(func.transaction_timestamp())),
+        "estimate_meta": None if change.estimate_meta is None else dict(change.estimate_meta),
     }
     await insert_derived(conn, state_changes, [row])
     await index_records(conn, [state_change_record(SimpleNamespace(**row))])
@@ -954,9 +1011,11 @@ async def apply_change(
 
 
 __all__ = [
+    "CLOCK_ADVANCE_ROUTE",
     "MODULE",
     "Applied",
     "ChangeRow",
+    "ClockSettings",
     "Constraints",
     "Folded",
     "Key",

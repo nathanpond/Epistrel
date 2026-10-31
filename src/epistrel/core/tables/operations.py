@@ -43,8 +43,10 @@ MUTABLE_OPERATION_COLUMNS: tuple[str, ...] = (
     "parent_variant",
     "checked_guardrails",
     "stage_log",
+    "slot_k",
 )
-"""The only ``operations`` columns an UPDATE may change (#44's engine-wide allow-list)."""
+"""The only ``operations`` columns an UPDATE may change (#44's engine-wide allow-list; #193 adds
+``slot_k``, which an inter-turn slot's commit sets beside its turn and variant)."""
 
 ORIGIN_CHECK = "origin IN ('generated', 'ingested')"
 """``generated``: the Engine produced the operation's records; ``ingested``: a consumer recorded

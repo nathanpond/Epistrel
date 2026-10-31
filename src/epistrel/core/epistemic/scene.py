@@ -59,8 +59,6 @@ from epistrel.core.propositions.vocabulary import (
     ON_CHANNEL,
 )
 from epistrel.core.readset import KeyedLookup, StructuredReadSet, register_rebase_check
-from epistrel.core.resolution.context import load_time_basis
-from epistrel.core.resolution.time import story_time_at
 from epistrel.core.tables import characters, entities, placement, story_heads
 
 PARTITIONS_MODULE = "partitions"
@@ -135,8 +133,11 @@ async def load_scene(
 ) -> tuple[SceneState, Moves]:
     """The scene at the start of ``turn`` and the moves the turn's own beats committed (see
     the module docstring)."""
+    from epistrel.core import world_clock  # here: the clock reads States, which import this
+    from epistrel.core.membership import Position
+
     by_entity, cast = await _cast(conn, story_id)
-    now = story_time_at(turn, await load_time_basis(conn, story_id))
+    now = await world_clock.story_time_at(conn, story_id, Position(turn))
     start = (turn - 1, START_SLOT)
     rows = [
         dict(r._mapping)

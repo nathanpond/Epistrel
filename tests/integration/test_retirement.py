@@ -796,7 +796,7 @@ async def test_i_15__m6_states(s: Scratch, monkeypatch: pytest.MonkeyPatch) -> N
         )
     before = {t: v for t, v in (await _story_state(db, story)).items() if t in STATE_TABLES}
     assert {t: len(v) for t, v in before.items()} == {
-        "state_definitions": 2,
+        "state_definitions": 3,  # the two declared and genesis's world_clock (#193)
         "state_changes": 8,
         "state_values": 2,
     }

@@ -62,10 +62,14 @@ def test_u_14__declaration() -> None:
     )
     assert _refused({**BALANCE, "provider_id": "bank"}) == "story_owned"
     assert _refused({**BALANCE, "name": "world_clock"}) == "reserved_state"
-    built_in = model.validate_definition(
-        {"name": "world_clock", "type": "number", "initial_value": 0}, builtin=True
-    )
+    built_in = model.validate_definition(model.world_clock_definition(), builtin=True)
     assert built_in.name == model.WORLD_CLOCK
+    # Only the built-in world_clock is of type clock (#193).
+    assert _refused({"name": "elapsed", "type": "clock", "initial_value": 0}) == "reserved_state"
+    with pytest.raises(InvalidRequest):
+        model.validate_definition(
+            {"name": "world_clock", "type": "number", "initial_value": 0}, builtin=True
+        )
     # The shape rules every declaration shares, whoever owns it.
     assert _refused({"name": "mood", "type": "enum"}) == "required"
     assert (

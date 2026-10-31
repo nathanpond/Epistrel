@@ -118,6 +118,8 @@ from epistrel.core.settings_schema import (
     StorySettings,
     superseded,
 )
+from epistrel.core.states import define_state
+from epistrel.core.states.model import world_clock_definition
 from epistrel.core.tables import (
     audit_log,
     character_snapshots,
@@ -708,6 +710,8 @@ async def create_story_from(
         # The story row after its cast (#123): a name that mentions a character needs the
         # character to exist when the row is scanned.
         await index_rows(conn, stories, stories.c.id == story_id, story_record)
+        # Every story's world clock (FR-CLOCK-1; #193), inert while its profile has it off.
+        await define_state(conn, op, story_id, world_clock_definition(), builtin=True)
 
     op = Operation(
         db,

@@ -620,10 +620,11 @@ async def _module_guard(conn: AsyncConnection, story_id: str, settings: Any) -> 
 
 
 async def _story_time(conn: AsyncConnection, story_id: str, position: Position) -> int:
-    from epistrel.core.resolution.context import load_time_basis
-    from epistrel.core.resolution.time import story_time_at
+    """The story-time of ``position`` (``core.world_clock``, #193): a transition's default
+    ``valid_at``."""
+    from epistrel.core import world_clock
 
-    return story_time_at(position.turn, await load_time_basis(conn, story_id))
+    return await world_clock.story_time_at(conn, story_id, position)
 
 
 def _conflicts(stored: Proposition, belief: Belief, registry: Registry) -> bool:

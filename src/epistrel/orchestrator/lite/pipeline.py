@@ -127,6 +127,7 @@ from epistrel.core.turns import (
     stage_turn,
 )
 from epistrel.core.viewpoint import resolve_viewpoint, try_resolve
+from epistrel.core.world_clock.service import turn_clock_of
 from epistrel.observability import stages
 from epistrel.observability.logging import get_logger
 from epistrel.observability.metrics import count_degradation
@@ -757,6 +758,10 @@ async def _play(
             "config_revision": configuration.config_revision,
             # #177: echoed; a no-op under Lite (perception ``none``: nothing is filtered).
             "player_view": request.player_view or await story_player_view(conn, story_id),
+            # #193: the world clock before and after the turn (none with the clock off).
+            "clock": await turn_clock_of(
+                conn, story_id, committed.narrative_turn, committed.turn_variant
+            ),
         }
         if regenerating is not None:
             return RegenerateResult(**fields, previous_variant=regenerating.variant)

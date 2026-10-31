@@ -302,6 +302,7 @@ from epistrel.core.viewpoint import (
     try_resolve,
 )
 from epistrel.core.visibility import Visibility
+from epistrel.core.world_clock.service import turn_clock_of
 from epistrel.observability import stages
 from epistrel.observability.logging import get_logger
 from epistrel.observability.metrics import (
@@ -5737,6 +5738,10 @@ async def play(
             **lite._stamp_fields(stamped[0] if stamped else None),
             "profile": ProfileVersionRef(id=captured.profile_id, version=captured.version),
             "config_revision": configuration.config_revision,
+            # #193: the world clock before and after the turn (none with the clock off).
+            "clock": await turn_clock_of(
+                conn, story_id, committed.narrative_turn, committed.turn_variant
+            ),
         }
         steps = _degradation(
             outcome, released[0] if released else None, found[0] if found else None

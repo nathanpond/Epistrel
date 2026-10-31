@@ -1248,7 +1248,13 @@ def replay_surfaces(pg_url: str, tmp_path_factory: pytest.TempPathFactory) -> An
         )
 
 
-REPLAY_EXCLUDED: dict[str, str] = {}
+REPLAY_EXCLUDED: dict[str, str] = {
+    "advance_clock": (
+        "a world clock advance (#193) needs the clock module, which #203 delivers: until then "
+        "C-03's story runs the clock off and the advance answers 409 module_off (its replay "
+        "under a key is covered by test_s_clock_timeline, which delivers the module)"
+    ),
+}
 """Mutating routes the replay does not reach, each with the reason
 (``replay_support.REPLACED_NOT_STORED`` names the one replayed without a stored result)."""
 

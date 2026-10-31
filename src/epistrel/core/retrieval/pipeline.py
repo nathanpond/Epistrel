@@ -139,7 +139,6 @@ from epistrel.core.resolution.time import (
     find_time_expressions,
     grammar,
     resolve_time,
-    story_time_at,
 )
 from epistrel.core.resolution.types import (
     Mention,
@@ -322,12 +321,35 @@ def turn_window(
     window: tuple[int | None, int | None], basis: TimeBasis
 ) -> tuple[int | None, int | None]:
     """The turns whose story-time span overlaps ``window`` (``[start, end)`` story-minutes;
-    ``None`` open): turn ``t`` spans ``[zero + t·m, zero + (t+1)·m)`` under M4's basis."""
+    ``None`` open): turn ``t`` spans ``[zero + t·m, zero + (t+1)·m)`` under M4's stand-in, and
+    from its start to the next turn's on the world clock (#193; a turn the clock does not move
+    spans its minute)."""
     lo, hi = window
+    if basis.advances is not None:
+        return _clock_turn_window(lo, hi, basis)
     m, zero = basis.minutes_per_turn, basis.minute_zero
     first = None if lo is None else math.floor((lo - zero) / m)
     last = None if hi is None else math.ceil((hi - zero) / m) - 1
     return first, last
+
+
+def _clock_turn_window(
+    lo: int | None, hi: int | None, basis: TimeBasis
+) -> tuple[int | None, int | None]:
+    assert basis.advances is not None  # noqa: S101 - the clock's basis
+    final = max((key[0] for key, _, _ in basis.advances), default=0) + 1
+
+    def overlaps(turn: int) -> bool:
+        start = basis.at(NarrativePosition(turn))
+        end = max(basis.at(NarrativePosition(turn + 1)), start + 1)
+        return (lo is None or end > lo) and (hi is None or start < hi)
+
+    hits = [t for t in range(final + 1) if overlaps(t)]
+    later = overlaps(final + 1)  # every turn after the clock's last advance
+    first = None if lo is None else (hits[0] if hits else final + 1)
+    if hi is None or later:
+        return first, None
+    return first, (hits[-1] if hits else (first or 0) - 1)
 
 
 def beat_occasion(text: str, mentions: Iterable[Mention]) -> tuple[str | None, tuple[str, ...]]:
@@ -1190,7 +1212,7 @@ async def retrieve(
         canon = await lookup.canon_context(
             story_id,
             subjects=subjects,
-            story_time=story_time_at(position, basis),
+            story_time=basis.at(position),
             viewpoint=canon_viewpoint,
             through_position=(now_turn, 0),
             limit=CANON_PER_ENTITY,

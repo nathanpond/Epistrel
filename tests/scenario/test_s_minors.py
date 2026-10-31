@@ -32,11 +32,14 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.core import world_clock
 from epistrel.core.seeds.ratings import EVERYONE_ID, EXPLICIT_ID
 from epistrel.core.stories import CharacterSpec, StorySpec, create_story_from
 from epistrel.orchestrator.policies.seeds.policies import MINORS_POLICY_ID
+from tests import clock_support as ck
 from tests import genesis_support as g
 from tests import multi_support as ms
 from tests import perception_support as ps
@@ -354,3 +357,97 @@ async def test_s_minors__m5(
     assert "it ships on, and turning it off is the deployment's decision and responsibility" in (
         whitepaper
     )
+
+
+# -- M6: the world clock ages the cast (#193) ---------------------------------------------------
+
+
+async def _ages(engine: AsyncEngine, story: str) -> dict[str, int]:
+    """Each character's age now, as the guardrails (``current_age``) and the character context
+    (``own_age``, ``age_band``) read it; the two must agree."""
+    from epistrel.core.epistemic.context import _cast
+    from epistrel.orchestrator.policies.age import current_age
+    from epistrel.orchestrator.policies.store import read_cast
+
+    async with engine.connect() as conn:
+        guarded = {str(m.character_id): current_age(m) for m in await read_cast(conn, story)}
+        context = (await _cast(conn, story)).ages
+    assert guarded == context
+    return guarded
+
+
+async def _minors_rule_applies(engine: AsyncEngine, story: str) -> bool:
+    from epistrel.orchestrator.policies.store import story_guardrails
+
+    found = await story_guardrails(engine, story)
+    active = {p.id for p in found.active}
+    inactive = {p.id for p in found.inactive}
+    assert (MINORS_POLICY_ID in active) != (MINORS_POLICY_ID in inactive)
+    return MINORS_POLICY_ID in active
+
+
+@pytest.mark.part("M6", "FR-CAT-12; FR-CLOCK-7")
+async def test_s_minors__m6(engine: AsyncEngine, clock_delivered: None) -> None:
+    """A two-year time skip makes the 16-year-old 18, and the seeded minors policy no longer
+    applies to them: ``current_age`` is the true age plus the full years elapsed on the world
+    clock since the character's creation position (genesis for the cast, ``modeled_at`` for a
+    modeled character), and the character context reads the same age.
+
+    Complements asserted: 23 months leave them 17 and the policy applies; a character modeled
+    23 months in ages only from there; with the clock off nobody ages."""
+
+    created = await create_story_from(
+        engine,
+        StorySpec(
+            name="The Long Summer",
+            content_rating_id=EXPLICIT_ID,
+            characters=[
+                CharacterSpec(
+                    name=ADULT_NAME, definition="The player.", true_age=34, is_player=True
+                ),
+                CharacterSpec(name=PARTNER_NAME, definition="Her partner.", true_age=31),
+                CharacterSpec(name=MINOR_NAME, definition="The neighbour's kid.", true_age=16),
+            ],
+        ),
+        principal="p-minors",
+    )
+    story = created.story_id
+    ids = {ch.name: ch.id for ch in created.characters}
+    adult, partner, minor = ids[ADULT_NAME], ids[PARTNER_NAME], ids[MINOR_NAME]
+    await ck.set_level(engine, story, "prompt_only")
+    assert await _ages(engine, story) == {adult: 34, partner: 31, minor: 16}
+    assert await _minors_rule_applies(engine, story)
+
+    # 23 months: 17, still a minor.
+    months = 23 * ck.YEAR // 12
+    await ck.advance(engine, story, months, reason="the months go by")
+    assert (await _ages(engine, story))[minor] == 17
+    assert await _minors_rule_applies(engine, story)
+
+    # The partner as a character modeled now: it ages only from here (its ``modeled_at``).
+    async with engine.begin() as conn:
+        assert (await world_clock.clock_at(conn, story, world_clock.HEAD)).offset_minutes == months
+        (slot,) = await conn.execute(
+            text(
+                "SELECT narrative_turn, slot_k FROM operations WHERE story_id = :s "
+                "AND kind = 'inter_turn' ORDER BY slot_k DESC LIMIT 1"
+            ),
+            {"s": story},
+        )
+        await conn.execute(
+            text(
+                "UPDATE characters SET modeled_turn = :t, modeled_slot_k = :k "
+                "WHERE story_id = :s AND id = :c"
+            ),
+            {"t": slot.narrative_turn, "k": slot.slot_k, "s": story, "c": partner},
+        )
+
+    # The rest of the two years: 18, and the rule no longer applies to them.
+    await ck.advance(engine, story, 2 * ck.YEAR - months, reason="summer again")
+    assert await _ages(engine, story) == {adult: 36, partner: 31, minor: 18}
+    assert not await _minors_rule_applies(engine, story)
+
+    # With the clock off nobody ages (it is inert).
+    await ck.set_level(engine, story, None)
+    assert (await _ages(engine, story))[minor] == 16
+    assert await _minors_rule_applies(engine, story)

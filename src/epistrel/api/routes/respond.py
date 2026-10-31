@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from epistrel.api.deps import ContextDep, EngineDep, RespondAsyncDep, StoryId
 from epistrel.api.idempotency import answered
 from epistrel.api.responses import MutationResponse
+from epistrel.api.routes.clock import TurnClockBody
 from epistrel.api.routes.history import (
     AudienceFilterValue,
     ItemModel,
@@ -266,6 +267,9 @@ class RespondResponse(MutationResponse):
     state_effects: list[StateEffectModel] = Field(default_factory=list, exclude_if=lambda e: not e)
     """The State changes the turn committed (#187, FR-RESP-7) with their old and new values, a
     ``hidden`` State's only when the request names ``omniscient``; absent when none."""
+    clock: TurnClockBody | None = Field(default=None, exclude_if=lambda c: c is None)
+    """The world clock before and after the turn (FR-CLOCK-13; #193): ``{before, after}``, each
+    ``{offset, display}``; absent when the story runs the clock off."""
 
     @classmethod
     def of(cls, result: RespondResult) -> RespondResponse:
@@ -310,6 +314,7 @@ class RespondResponse(MutationResponse):
             reduced_characters=list(result.reduced_characters),
             reconcile=[ReconcileBody(**r) for r in result.reconcile],
             state_effects=[StateEffectModel(**e) for e in result.state_effects],
+            clock=None if result.clock is None else TurnClockBody.of(result.clock),
             budget=(
                 None
                 if result.budget is None

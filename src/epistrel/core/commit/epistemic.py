@@ -131,10 +131,9 @@ async def could_have_known(
 ) -> Flag | None:
     """The soft flag on binding ``thunk`` to ``character_id`` at ``now`` (``binding`` reconciled
     with no conflict), or ``None``; see the module docstring."""
+    from epistrel.core import world_clock
     from epistrel.core.commit.reconcile import introduced_at
     from epistrel.core.epistemic import replay
-    from epistrel.core.resolution.context import load_time_basis
-    from epistrel.core.resolution.time import story_time_at
 
     introduced = introduced_at(thunk)
     if thunk.narrative_turn is None or now.turn == thunk.narrative_turn:
@@ -156,11 +155,11 @@ async def could_have_known(
     )
     if not isinstance(answer, replay.NoPath):
         return None
-    basis = await load_time_basis(conn, story_id)
+    basis = await world_clock.time_basis(conn, story_id)
     since = thunk.valid_time
     if since is None:
-        since = story_time_at(introduced.turn, basis)
-    gap = max(0, story_time_at(now.turn, basis) - since)
+        since = basis.at(introduced)
+    gap = max(0, basis.at(now) - since)
     severity = severity_of(gap)
     COULD_HAVE_KNOWN_FLAGS.labels(severity=severity).inc()
     return Flag(character_id, severity, thunk.id, gap)

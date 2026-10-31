@@ -35,6 +35,7 @@ from epistrel.core.resolution.entities import (
 from epistrel.core.resolution.time import TimeBasis
 from epistrel.core.resolution.types import ReasonCode, ResolvedTime
 from epistrel.core.retrieval import pipeline
+from epistrel.core.world_clock import clock_off_basis
 
 MEN = ("Bobby", "Tom", "Raj", "Luis", "Owen", "Felix", "Hugo", "Ivan")
 WOMEN = ("Jenni", "Mara", "Priya", "Ines", "Wendy", "Zoe", "Lena", "Ruth")
@@ -65,7 +66,7 @@ class Fixture:
     entries: tuple[EntityEntry, ...]
     relations: tuple[Relation, ...]
     queries: tuple[Query, ...]
-    basis: TimeBasis = field(default_factory=TimeBasis)
+    basis: TimeBasis = field(default_factory=clock_off_basis)
 
 
 def _id(n: int) -> str:

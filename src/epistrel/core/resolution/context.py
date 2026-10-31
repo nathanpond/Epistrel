@@ -5,7 +5,7 @@ the operation's connection:
 
 - ``load_index``: the story's entities and aliases as an ``EntityIndex`` (the per-story alias
   map, loaded per operation);
-- ``load_time_basis``: ``stories.story_minute_zero`` and ``story_epoch`` as a ``TimeBasis``;
+- ``load_time_basis``: the story's ``TimeBasis``, as ``core.world_clock`` builds it (#193);
 - ``load_context``: the context window (the last ``CONTEXT_BEATS`` beats at or before the
   position, #135's ``working_memory`` as the speaker perceives them), the player character,
   the scene's entities present and the relationships of the story's people (#137's
@@ -84,15 +84,11 @@ async def load_index(conn: AsyncConnection, story_id: str) -> EntityIndex:
 
 
 async def load_time_basis(conn: AsyncConnection, story_id: str) -> TimeBasis:
-    """The story's ``TimeBasis`` (M4's stand-in for the basis)."""
-    row = (
-        await conn.execute(
-            select(stories.c.story_minute_zero, stories.c.story_epoch).where(
-                stories.c.id == story_id
-            )
-        )
-    ).one()
-    return TimeBasis(minute_zero=int(row.story_minute_zero), epoch=row.story_epoch)
+    """The story's ``TimeBasis``: ``core.world_clock.time_basis`` (#193), the world clock's
+    active advances when the story runs it, M4's stand-in otherwise."""
+    from epistrel.core import world_clock  # here: the clock reads States, which import this
+
+    return await world_clock.time_basis(conn, story_id)
 
 
 SceneShare = tuple[frozenset[str] | None, tuple[Relation, ...]]

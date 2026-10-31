@@ -1152,6 +1152,25 @@ class StateConstraintViolation(EpistrelError):
     http_status = 422
 
 
+class ClockBackward(EpistrelError):
+    """A world clock advance that would move it backward along the active timeline (FR-CLOCK-8,13;
+    #193): a negative number of minutes, or a target offset before the clock's value there.
+    ``details``: ``story_id``, ``current`` (the offset in minutes) and ``attempted``. Nothing is
+    written; earlier story-time is reached by a truncation or a rewrite."""
+
+    code = "clock_backward"
+    http_status = 422
+
+
+class ClockUnanchored(EpistrelError):
+    """A clock target given as a time of day (``"HH:MM"``) while the clock's anchor does not fix
+    the hour (FR-CLOCK-3; #193, until #195's anchors): the engine never picks a time the story
+    has not established. ``details``: ``story_id`` and ``to``. Nothing is written."""
+
+    code = "clock_unanchored"
+    http_status = 422
+
+
 class ScopeMismatch(EpistrelError):
     """A consolidation's inputs span viewpoint scopes no one output may combine (FR-MEM-9; #143):
     the intersection of their scopes is empty (two characters' private memories). Refused when

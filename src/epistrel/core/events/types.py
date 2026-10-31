@@ -555,6 +555,18 @@ class CharacterModeled(EventPayload):
     position: dict[str, int]
 
 
+@register("clock_advanced", category=EventCategory.CONTROL)
+class ClockAdvanced(EventPayload):
+    """A world clock advance made between turns (FR-CLOCK-13; #193's ``POST
+    /stories/{id}/clock/advance``), in an inter-turn slot: what was asked (``minutes``, or the
+    ``to_offset`` target) and who asked (``source``). The advance itself is the slot's
+    ``state_changes`` row; this event makes the slot's operation one a fork copies."""
+
+    source: str
+    minutes: int | None = None
+    to_offset: int | None = None
+
+
 @register("belief_authored", category=EventCategory.CONTROL)
 class BeliefAuthored(EventPayload):
     """An author directed a character's belief (FR-EPI-7's author direction; #160's

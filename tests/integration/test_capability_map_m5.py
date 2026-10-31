@@ -44,6 +44,7 @@ from epistrel.core.genesis.settings_map import (
     SETTING_CAPABILITIES,
     unmapped_settings,
 )
+from epistrel.core.ids import new_ulid
 from epistrel.core.profiles import schema
 from epistrel.core.profiles.capabilities import (
     CAPABILITY,
@@ -61,6 +62,7 @@ from epistrel.core.profiles.validate import (
     validate_profile,
 )
 from epistrel.core.seeds import profiles as seeds
+from epistrel.core.seeds.profiles import LITE_PRESET_ID
 from epistrel.core.settings_schema import (
     CharacterSettings,
     ConfigClass,
@@ -74,7 +76,7 @@ from epistrel.tools.capability_map import MAP_PATH, render
 from tests import perception_support as ps
 from tests.auth_support import auth_settings, bearer
 from tests.conftest import alembic_config
-from tests.event_support import new_story, rows, scalar
+from tests.event_support import rows, scalar
 from tests.profile_support import (
     M5_MODULES,
     PROFILES,
@@ -533,6 +535,21 @@ async def test_c_16__m5_capabilities(
         assert effective["profile"]["version"] == 1
 
 
+async def _story_row(db: AsyncEngine) -> str:
+    """A story row as revision 0079 has it, on the Lite preset: today's genesis writes tables a
+    later revision adds (#193), and the migration reads only the row."""
+    story = new_ulid()
+    async with db.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO stories (id, owner_principal, engine_profile_id) "
+                "VALUES (:s, 'p-test', :p)"
+            ),
+            {"s": story, "p": LITE_PRESET_ID},
+        )
+    return story
+
+
 @pytest.mark.part("M5", "FR-PROF-12,13")
 async def test_c_16__m5_seed_pins(scratch_database: str) -> None:
     """Migration ``0080`` updates the seeded profile in place: on a database where a story
@@ -545,7 +562,7 @@ async def test_c_16__m5_seed_pins(scratch_database: str) -> None:
     command.upgrade(cfg, "0079")
     db = make_engine(auth_settings(scratch_database))
     try:
-        on_profile, lite = await new_story(db), await new_story(db)
+        on_profile, lite = await _story_row(db), await _story_row(db)
         async with db.begin() as conn:
             await conn.execute(
                 text("UPDATE stories SET engine_profile_id = :p WHERE id = :s"),

@@ -521,7 +521,9 @@ async def test_time__membership_helpers(
                 conn, table, [{"id": new_ulid(), "story_id": "S", "membership": "dormant"}]
             )
 
-    # flip_by_sources: rows whose sources overlap go with them, and come back.
+    # flip_by_sources: rows whose sources overlap go with them, and come back. Story creation
+    # writes a derived row of its own (#193), so its table is registered again.
+    DERIVED_TABLES["state_definitions"] = registry["state_definitions"]
     story, rows = await _story(engine, table, 2)
     second = (await _rows(engine, table, story))[rows[2]]
     sources = second.source_event_ids

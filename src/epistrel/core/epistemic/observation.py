@@ -127,10 +127,9 @@ async def observe(
                 kind == "say" and seen.fidelity == perception.ENVELOPE and seen.envelope is not None
             ):
                 if when is None:
-                    from epistrel.core.resolution.context import load_time_basis
-                    from epistrel.core.resolution.time import story_time_at
+                    from epistrel.core import world_clock
 
-                    when = story_time_at(position.turn, await load_time_basis(conn, story_id))
+                    when = await world_clock.story_time_at(conn, story_id, position)
                 found = envelope_proposition(seen.envelope, when)
                 observed = [] if found is None else [found]
             for proposition in observed:

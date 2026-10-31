@@ -78,7 +78,6 @@ from epistrel.core.resolution.time import (
     SubjectTimeline,
     TimeBasis,
     resolve_time,
-    story_time_at,
 )
 from epistrel.core.resolution.types import Reason, ReasonCode, ResolvedTime, Uncertain
 from epistrel.core.verify.rules import Verdict, VerdictReason, uncertain
@@ -361,7 +360,7 @@ def open_phrase(text: str | None) -> bool:
 
 def default_time(predicate: Predicate, position: Position, basis: TimeBasis) -> Interval | Instant:
     """The valid-time of a claim that states none (see the module docstring)."""
-    now = story_time_at(position, basis)
+    now = basis.at(position)
     if predicate.temporal_kind is TemporalKind.EVENT:
         return Instant.of(now, Granularity.MINUTE)
     return Interval.of(now, None)

@@ -15,6 +15,13 @@ possession-style State tracks, a ``visibility``, an ``owner`` (``story``, or ``e
 ``validation_error`` with ``details.reason``; the name ``world_clock`` is reserved for the
 built-in clock (#193, ``reason: reserved_state``).
 
+**The world clock** (#193, FR-CLOCK-1,3,5) is the one State of type ``clock``: story-owned,
+story-scoped, non-negative, with initial value 0. Its value is an exact offset in minutes from
+the story's start, changed only by ``delta`` changes from a clock source (``CLOCK_SOURCES``),
+and its declaration carries the clock's settings (``ClockSettings``: the mode, the anchor, the
+pacing table, the skip cap and the other settings #194 to #200 read). Only a ``builtin``
+declaration of ``world_clock`` has that type; ``world_clock_definition()`` is genesis's.
+
 **Values.** A number is a ``Decimal`` (never a float) of at most 15 significant digits, so its
 JSON form round-trips exactly; a boolean is a ``bool``; an enum is one of the definition's
 ``allowed_values``; text is at most 200 characters. ``Undefined`` is a State with no value yet (no
@@ -41,11 +48,12 @@ import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from epistrel.core.enums import (
+    ClockMode,
     StateChangeKind,
     StateChangeSource,
     StateChangeStatus,
@@ -55,6 +63,7 @@ from epistrel.core.enums import (
     StateScope,
     StateType,
     StateVisibility,
+    TimeAwareness,
 )
 from epistrel.core.epistemic.roles import REACTIVE
 from epistrel.core.errors import InvalidRequest
@@ -107,6 +116,64 @@ IMMUTABLE_MEMBERS: tuple[str, ...] = (
 """Definition members an update refuses (``reason: immutable_field``): the State's identity,
 and its fold's base (changing ``initial_value`` would rewrite every view's history)."""
 
+NUMERIC_TYPES: frozenset[StateType] = frozenset({StateType.NUMBER, StateType.CLOCK})
+"""The types whose value is a number (the clock's is its offset in minutes)."""
+
+CLOCK_SOURCES: frozenset[StateChangeSource] = frozenset(
+    {
+        StateChangeSource.PACING,
+        StateChangeSource.DECLARED_SKIP,
+        StateChangeSource.ESTIMATE,
+        StateChangeSource.PLAYER,
+        StateChangeSource.AUTHOR,
+        StateChangeSource.CONSUMER,
+        StateChangeSource.EXTERNAL,
+    }
+)
+"""The sources a world clock advance may have (FR-CLOCK-12)."""
+
+CLOCK_INTERPRETIVE_MEMBERS: tuple[str, ...] = (
+    "mode",
+    "max_unprompted_skip_minutes",
+    "stop_at_due_events",
+    "time_awareness",
+    "bands",
+    "calendar",
+)
+"""The clock settings ``PATCH /clock`` changes as interpretive configuration (#193)."""
+CLOCK_PROSPECTIVE_MEMBERS: tuple[str, ...] = ("pacing_table",)
+"""The clock setting ``PATCH /clock`` changes as prospective configuration (#193)."""
+CLOCK_MEMBERS: tuple[str, ...] = (
+    "mode",
+    "anchor",
+    "pacing_table",
+    "max_unprompted_skip_minutes",
+    "stop_at_due_events",
+    "grace_minutes",
+    "time_statement_tolerance_minutes",
+    "elapsed_tolerance_factor",
+    "time_awareness",
+    "bands",
+    "calendar",
+)
+"""Every clock setting, each stored in the ``state_definitions`` column of its name."""
+
+DEFAULT_PACING_TABLE: tuple[tuple[int, int | None, int], ...] = (
+    (0, 5, 0),
+    (5, 51, 1),
+    (51, None, 2),
+)
+"""``(from_words, to_words (exclusive; None: no end), minutes)`` rows (#194 reads them)."""
+DEFAULT_BANDS: tuple[tuple[str, str, str], ...] = (
+    ("night", "00:00", "05:00"),
+    ("morning", "05:00", "12:00"),
+    ("afternoon", "12:00", "17:00"),
+    ("evening", "17:00", "21:00"),
+    ("night", "21:00", "24:00"),
+)
+"""FR-CLOCK-3's time-of-day bands, ``(name, from, to)`` (#195 reads them)."""
+_HHMM = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$|^24:00$")
+
 Value = Decimal | bool | str
 
 
@@ -158,6 +225,75 @@ class Constraints(BaseModel):
         return found
 
 
+class ClockSettings(BaseModel):
+    """The world clock's settings (FR-CLOCK-3,5,8,9; #193): its ``mode``, its ``anchor``
+    (``None``: unanchored; #195's), the ``pacing_table`` (#194), the unprompted-skip cap
+    (#199), the due-event stop and its grace (#196), the time-statement tolerance and the
+    elapsed-time tolerance factor (#197), the characters' ``time_awareness`` (#200), the
+    time-of-day ``bands`` and the ``calendar``."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    mode: ClockMode = ClockMode.PACED
+    anchor: dict[str, Any] | None = None
+    pacing_table: tuple[tuple[int, int | None, int], ...] = DEFAULT_PACING_TABLE
+    max_unprompted_skip_minutes: int = Field(default=1440, ge=0)
+    stop_at_due_events: bool = True
+    grace_minutes: int = Field(default=30, ge=0)
+    time_statement_tolerance_minutes: int = Field(default=15, ge=0)
+    elapsed_tolerance_factor: Decimal = Field(default=Decimal(2), ge=1)
+    time_awareness: TimeAwareness = TimeAwareness.EXACT
+    bands: tuple[tuple[str, str, str], ...] = DEFAULT_BANDS
+    calendar: Literal["gregorian"] = "gregorian"
+
+    def document(self) -> dict[str, Any]:
+        """Every setting as JSON (each the ``state_definitions`` column of its name)."""
+        return {
+            "mode": self.mode.value,
+            "anchor": None if self.anchor is None else dict(self.anchor),
+            "pacing_table": [list(row) for row in self.pacing_table],
+            "max_unprompted_skip_minutes": self.max_unprompted_skip_minutes,
+            "stop_at_due_events": self.stop_at_due_events,
+            "grace_minutes": self.grace_minutes,
+            "time_statement_tolerance_minutes": self.time_statement_tolerance_minutes,
+            "elapsed_tolerance_factor": to_json(self.elapsed_tolerance_factor),
+            "time_awareness": self.time_awareness.value,
+            "bands": [list(band) for band in self.bands],
+            "calendar": self.calendar,
+        }
+
+
+def check_clock_settings(settings: ClockSettings) -> ClockSettings:
+    """The shape rules of the clock's settings (422 ``validation_error``)."""
+    table = settings.pacing_table
+    if not table or table[0][0] != 0:
+        raise _invalid("the pacing table starts at 0 words", "pacing_table", "shape")
+    for index, (start, end, minutes) in enumerate(table):
+        last = index == len(table) - 1
+        if minutes < 0 or start < 0:
+            raise _invalid("pacing rows are not negative", "pacing_table", "shape")
+        if last != (end is None):
+            raise _invalid(
+                "only the pacing table's last row is open-ended", "pacing_table", "shape"
+            )
+        if end is not None and (end <= start or table[index + 1][0] != end):
+            raise _invalid("the pacing table's rows are contiguous", "pacing_table", "shape")
+    if not settings.bands:
+        raise _invalid("the clock names its time-of-day bands", "bands", "required")
+    for name, begins, ends in settings.bands:
+        if not name.strip() or len(name) > ALIAS_MAX:
+            raise _invalid(f"a band's name is 1 to {ALIAS_MAX} characters", "bands", "name")
+        if not (_HHMM.match(begins) and _HHMM.match(ends)) or begins == "24:00" or begins >= ends:
+            raise _invalid("a band runs from one HH:MM to a later one", "bands", "times")
+    if not _digits_ok(settings.elapsed_tolerance_factor):
+        raise _invalid(
+            f"a number has at most {DIGITS_MAX} significant digits",
+            "elapsed_tolerance_factor",
+            "precision",
+        )
+    return settings
+
+
 class StateDefinition(BaseModel):
     """A State's declaration (see the module docstring); ``id`` is set once it is stored."""
 
@@ -180,11 +316,15 @@ class StateDefinition(BaseModel):
     transfer: dict[str, Any] = Field(default_factory=dict)
     reservation_expiry_minutes: int | None = None
     created_by: StateCreatedBy = StateCreatedBy.CONSUMER
+    clock: ClockSettings | None = None
+    """The world clock's settings (``None`` for every other State)."""
     id: str | None = None
 
     def document(self) -> dict[str, Any]:
-        """Every member as JSON (what ``update_definition`` patches and records)."""
+        """Every member as JSON (what ``update_definition`` patches and records); the clock's
+        settings are members of their own (``CLOCK_MEMBERS``)."""
         return {
+            **({} if self.clock is None else self.clock.document()),
             "name": self.name,
             "type": self.type.value,
             "scope": self.scope.value,
@@ -207,7 +347,8 @@ class StateDefinition(BaseModel):
     def interpretive(self) -> list[Any]:
         """The members a turn's checks interpret, as JSON (``config_dependencies``' hash)."""
         document = self.document()
-        return [self.name, *(document[m] for m in INTERPRETIVE_MEMBERS)]
+        members = INTERPRETIVE_MEMBERS + (() if self.clock is None else CLOCK_INTERPRETIVE_MEMBERS)
+        return [self.name, *(document[m] for m in members)]
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,6 +371,8 @@ class StateChange:
     contingency: StateContingency = StateContingency.UNCONDITIONAL
     status: StateChangeStatus = StateChangeStatus.COMMITTED
     prerequisite_effect_ids: tuple[str, ...] = ()
+    estimate_meta: Mapping[str, Any] | None = None
+    """An estimated clock advance's estimate and reason (#193, #197)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -299,11 +442,14 @@ def _digits_ok(value: Decimal) -> bool:
 
 
 def coerce(state_type: StateType, raw: Any, *, field: str = "value") -> Value:
-    """``raw`` as a value of ``state_type`` (422 ``validation_error``, ``reason: type``)."""
-    if state_type is StateType.NUMBER:
+    """``raw`` as a value of ``state_type`` (422 ``validation_error``, ``reason: type``); the
+    clock's is a whole number of minutes."""
+    if state_type in NUMERIC_TYPES:
         found = number(raw)
         if found is None:
             raise _invalid("a number State takes a number", field, "type")
+        if state_type is StateType.CLOCK and found != found.to_integral_value():
+            raise _invalid("the clock moves in whole minutes", field, "whole_minutes")
         if not _digits_ok(found):
             raise _invalid(
                 f"a number has at most {DIGITS_MAX} significant digits", field, "precision"
@@ -330,7 +476,7 @@ def from_json(state_type: StateType, raw: Any) -> Value | None:
     """A stored ``jsonb`` value as a typed value (``None`` stays ``None``)."""
     if raw is None:
         return None
-    if state_type is StateType.NUMBER:
+    if state_type in NUMERIC_TYPES:
         found = number(raw)
         if found is None:
             raise ValueError(f"stored value {raw!r} is not a number")
@@ -344,7 +490,7 @@ def violation(definition: StateDefinition, value: Value | UndefinedType) -> str 
     if isinstance(value, UndefinedType):
         return None
     kind, c = definition.type, definition.constraints
-    if kind is StateType.NUMBER:
+    if kind in NUMERIC_TYPES:
         if not isinstance(value, Decimal):
             return "type"
         if c.non_negative and value < 0:
@@ -389,6 +535,18 @@ def validate_definition(
         )
     if d.name in RESERVED_NAMES and not builtin:
         raise _invalid(f"{d.name!r} is reserved for the built-in clock", "name", "reserved_state")
+    if (d.type is StateType.CLOCK) != (d.name == WORLD_CLOCK) or (
+        d.type is StateType.CLOCK and not builtin
+    ):
+        raise _invalid("only the built-in world_clock is of type clock", "type", "reserved_state")
+    if (d.clock is not None) != (d.type is StateType.CLOCK):
+        raise _invalid("only the world clock has clock settings", "clock", "not_clock")
+    if d.clock is not None:
+        check_clock_settings(d.clock)
+        if d.scope is not StateScope.STORY or d.initial_value != 0 or d.rules:
+            raise _invalid(
+                "the world clock is story-scoped, starts at 0 and has no rules", "clock", "shape"
+            )
     if d.owner is StateOwner.EXTERNAL:
         if not d.provider_id:
             raise _invalid(
@@ -421,7 +579,7 @@ def validate_definition(
         raise _invalid(
             "only an enum State lists allowed values", "constraints.allowed_values", "not_enum"
         )
-    if d.type is not StateType.NUMBER:
+    if d.type not in NUMERIC_TYPES:
         for name in ("min", "max"):
             if getattr(c, name) is not None:
                 raise _invalid(
@@ -473,6 +631,24 @@ def validate_definition(
             "positive",
         )
     return d.model_copy(update={"initial_value": initial, "aliases": aliases, "unit": unit})
+
+
+def world_clock_definition() -> StateDefinition:
+    """The built-in clock as genesis declares it (FR-CLOCK-1; #193): story-owned and
+    story-scoped, visible to the player, starting at offset 0, never negative, with the default
+    settings (``paced``, unanchored)."""
+    return StateDefinition(
+        name=WORLD_CLOCK,
+        type=StateType.CLOCK,
+        scope=StateScope.STORY,
+        constraints=Constraints(non_negative=True),
+        initial_value=Decimal(0),
+        unit="minutes",
+        visibility=StateVisibility.PLAYER_VISIBLE,
+        owner=StateOwner.STORY,
+        created_by=StateCreatedBy.GENESIS,
+        clock=ClockSettings(),
+    )
 
 
 # -- the fold -------------------------------------------------------------------------------------
@@ -533,14 +709,22 @@ def check_change(
 
 __all__ = [
     "ADDITIVE",
+    "CLOCK_INTERPRETIVE_MEMBERS",
+    "CLOCK_MEMBERS",
+    "CLOCK_PROSPECTIVE_MEMBERS",
+    "CLOCK_SOURCES",
     "COUNTED",
+    "DEFAULT_BANDS",
+    "DEFAULT_PACING_TABLE",
     "IMMUTABLE_MEMBERS",
     "INTERPRETIVE_MEMBERS",
+    "NUMERIC_TYPES",
     "PROSPECTIVE_MEMBERS",
     "RESERVED_NAMES",
     "TEXT_MAX",
     "WORLD_CLOCK",
     "ChangeRow",
+    "ClockSettings",
     "Constraints",
     "Folded",
     "StateChange",
@@ -550,6 +734,7 @@ __all__ = [
     "Value",
     "Violation",
     "check_change",
+    "check_clock_settings",
     "coerce",
     "fold",
     "from_json",
@@ -558,4 +743,5 @@ __all__ = [
     "to_json",
     "validate_definition",
     "violation",
+    "world_clock_definition",
 ]

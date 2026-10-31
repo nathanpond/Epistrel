@@ -146,15 +146,21 @@ DROPPED_BELOW_0019 = ("checked_guardrails",)
 """``operations`` columns a later revision adds, which the downgrade below ``0019`` drops with
 it: #118's guardrail stamp (``0035``), a record of the checks a turn passed, not of the log."""
 
+EVENTS_DROPPED_BELOW_0019 = ("valid_time_minutes",)
+"""``events`` columns a later revision adds, which the downgrade below ``0019`` drops: #193's
+story-time of an event (``0085``), derived from its position, not part of what it recorded."""
+
 
 async def _log(engine: AsyncEngine, story: str) -> list[tuple[Any, ...]]:
     dropped = " - ".join(f"'{c}'" for c in DROPPED_BELOW_0019)
+    events_dropped = " - ".join(f"'{c}'" for c in EVENTS_DROPPED_BELOW_0019)
     async with engine.connect() as conn:
         found = await conn.execute(
             text(
                 f"SELECT 'o', (to_jsonb(o) - {dropped})::text FROM operations o "  # noqa: S608
-                "WHERE story_id = :s "
-                "UNION ALL SELECT 'e', e::text FROM events e WHERE story_id = :s ORDER BY 1, 2"
+                "WHERE story_id = :s UNION ALL "
+                f"SELECT 'e', (to_jsonb(e) - {events_dropped})::text FROM events e "
+                "WHERE story_id = :s ORDER BY 1, 2"
             ),
             {"s": story},
         )

@@ -135,7 +135,7 @@ from epistrel.core.errors import (
 )
 from epistrel.core.events.registry import EventPayload, lookup, validate
 from epistrel.core.ids import new_ulid
-from epistrel.core.membership import follow
+from epistrel.core.membership import Position, follow
 from epistrel.core.ratings.stamp import guardrail_stamp
 from epistrel.core.settings_schema import StorySettings
 from epistrel.core.tables import events, operations, stories, turn_queue
@@ -355,6 +355,7 @@ class Operation:
         queued: bool = False,
         source_window: dict[str, Any] | None = None,
         erasure: bool = False,
+        slot: bool = False,
     ) -> None:
         if principal is None or not principal.strip():
             raise PrincipalRequired("an operation needs a requesting principal")
@@ -363,6 +364,11 @@ class Operation:
         if turn is not None and (story_id is None or turn < 1):
             raise InvalidRequest(
                 "turn must be a positive turn index of the operation's story", {"field": "turn"}
+            )
+        if slot and (kind is not OperationKind.INTER_TURN or story_id is None or turn is not None):
+            raise InvalidRequest(
+                "an inter-turn slot is an inter_turn operation of a story, after its last turn",
+                {"field": "slot"},
             )
         if control_action is None:
             control_action = kind is OperationKind.TURN and turn is not None
@@ -409,6 +415,12 @@ class Operation:
         self.erasure = erasure
         """An erasure's operation (#124): it runs on an archived or paused story too, since an
         erasure must reach every story the subject appears in (FR-ADMIN-2)."""
+        self.slot = slot
+        """An inter-turn slot (#193, ``core.world_clock.slots``): positioned at commit, under the
+        story lock, after the last completed turn ``N`` (its active variant) in the next slot
+        ``slot_k`` no operation at ``N`` has taken (a slot number, like a variant, is never
+        reused)."""
+        self.slot_k: int | None = None
         self._stages: list[dict[str, Any]] = []
         self.status: OperationStatus | None = None
         self.narrative_turn: int | None = None
@@ -829,6 +841,7 @@ class Operation:
 
     def _reset_position(self) -> None:
         self.narrative_turn = self.turn_variant = self.parent_variant = self.tx_time = None
+        self.slot_k = None
         self.timeline_revision = None
         self.seqs = ()
 
@@ -897,6 +910,7 @@ class Operation:
         first = int(last_seq or 0) + 1
         self.seqs = tuple(range(first, first + len(self._staged)))
         ids = [new_ulid() for _ in self._staged]
+        story_minutes = await self._story_minutes(conn)
         if self._staged:
             await conn.execute(
                 insert(events),
@@ -911,6 +925,8 @@ class Operation:
                         "turn_variant": self.turn_variant,
                         "beat": staged.beat,
                         "step": staged.step,
+                        "slot_k": self.slot_k,
+                        "valid_time_minutes": story_minutes(staged),
                         "character_id": staged.character_id,
                         "principal": self.principal,
                         "type": staged.type,
@@ -1240,6 +1256,8 @@ class Operation:
     ) -> tuple[int | None, int | None, bool]:
         """(narrative_turn, turn_variant, advances the turn index) for this operation."""
         turn = self.requested_turn
+        if self.slot:
+            return await self._slot_position(conn, next_turn_index - 1)
         if turn is None:
             if self.kind is OperationKind.TURN:
                 return next_turn_index, await self._next_variant(conn, next_turn_index), True
@@ -1271,6 +1289,50 @@ class Operation:
             raise InvalidRequest(f"turn {turn} has no active variant", {"field": "turn"})
         return turn, int(active), False
 
+    async def _story_minutes(self, conn: AsyncConnection) -> Callable[[StagedEvent], int | None]:
+        """Each staged event's story-time (``events.valid_time_minutes``, #193): the story's
+        ``core.world_clock`` basis at the event's position; ``None`` for a position-less
+        operation's events and a deployment's."""
+        if self.story_id is None or self.narrative_turn is None or not self._staged:
+            return lambda _: None
+        from epistrel.core import world_clock  # here: the clock reads States, which use this
+
+        basis = await world_clock.time_basis(conn, self.story_id)
+        turn, variant, slot = self.narrative_turn, self.turn_variant or 0, self.slot_k or 0
+
+        def at(staged: StagedEvent) -> int:
+            return basis.at(Position(turn, variant, slot, staged.beat or 0, staged.step or 0))
+
+        return at
+
+    async def _slot_position(
+        self, conn: AsyncConnection, turn: int
+    ) -> tuple[int | None, int | None, bool]:
+        """An inter-turn slot's position (``self.slot``): after ``turn`` (0 before the first
+        turn), on its active variant, in the next slot; sets ``slot_k``."""
+        variant = 0
+        if turn >= 1:
+            active = await conn.scalar(
+                select(func.max(operations.c.turn_variant)).where(
+                    operations.c.story_id == self.story_id,
+                    operations.c.narrative_turn == turn,
+                    operations.c.kind == OperationKind.TURN.value,
+                    operations.c.status == OperationStatus.COMMITTED.value,
+                    operations.c.membership == Membership.ACTIVE.value,
+                )
+            )
+            variant = int(active or 0)
+        last = await conn.scalar(
+            select(func.coalesce(func.max(operations.c.slot_k), 0)).where(
+                operations.c.story_id == self.story_id,
+                operations.c.narrative_turn == turn,
+                operations.c.slot_k.is_not(None),
+                operations.c.status == OperationStatus.COMMITTED.value,
+            )
+        )
+        self.slot_k = int(last or 0) + 1
+        return turn, variant, False
+
     async def _next_variant(self, conn: AsyncConnection, turn: int) -> int:
         """``max(existing variants at turn) + 1`` (#66): a turn written over a rewound tail,
         like a regenerated one, never reuses a variant number."""
@@ -1301,6 +1363,7 @@ class Operation:
                 status=OperationStatus.COMMITTED.value,
                 narrative_turn=self.narrative_turn,
                 turn_variant=self.turn_variant,
+                slot_k=self.slot_k,
                 parent_variant=self.parent_variant,
                 membership_tx=now,
                 committed_at=now,

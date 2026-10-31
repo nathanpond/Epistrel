@@ -290,6 +290,8 @@ ERROR_STATUS: dict[str, int] = {
     "seed_memory_invalid": 422,
     "span_not_found": 422,
     "state_constraint_violation": 422,
+    "clock_backward": 422,
+    "clock_unanchored": 422,
     "pin_limit_exceeded": 422,
     "key_mismatch": 422,
     "unknown_predicate": 422,
@@ -430,6 +432,16 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "unsupported_event_kind",
         "erased_subject_referenced",
     ),
+    # The world clock (#193): a consumer's advance between turns, and its settings.
+    "advance_clock": (
+        "story_archived",
+        "story_paused",
+        "module_off",
+        "clock_backward",
+        "clock_unanchored",
+        "erased_subject_referenced",
+    ),
+    "update_clock": ("story_archived",),
     # A predicate proposal's decision (#131): an archived story's registry is read-only.
     "approve_predicate": ("story_archived",),
     "reject_predicate": ("story_archived",),

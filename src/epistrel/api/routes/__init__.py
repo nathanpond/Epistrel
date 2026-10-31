@@ -14,6 +14,7 @@ from epistrel.api.routes import (
     admin,
     catalog_characters,
     catalog_scenarios,
+    clock,
     engine_profiles,
     feedback,
     feedback_reports,
@@ -61,6 +62,7 @@ router.include_router(personas.router)
 router.include_router(principals.router)
 router.include_router(story_profile.router)
 router.include_router(story_rating.router)
+router.include_router(clock.router)
 router.include_router(feedback.router)
 router.include_router(feedback_reports.router)
 router.include_router(admin.router)

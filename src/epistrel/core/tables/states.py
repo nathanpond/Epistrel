@@ -8,7 +8,12 @@ docs/02 §7.1; #185, migration 0084).
   ``entity_id`` a possession-style State tracks, ``visibility``, ``owner`` (``story`` or
   ``external``, with its ``provider_id``), ``silent``, the effect rules (``rules``,
   ``authorization``, ``transfer``; #188), ``reservation_expiry_minutes`` (#216) and
-  ``created_by``. It is a derived record (``core.membership``): ``operation_id`` is the operation
+  ``created_by``. The built-in ``world_clock`` (#193, migration 0085; type ``clock``) also
+  fills the clock's settings, one column each (``mode``, ``anchor``, ``pacing_table``,
+  ``max_unprompted_skip_minutes``, ``stop_at_due_events``, ``grace_minutes``,
+  ``time_statement_tolerance_minutes``, ``elapsed_tolerance_factor``, ``time_awareness``,
+  ``bands``, ``calendar``); they are ``NULL`` for every other State (CHECK ``clock_settings``).
+  It is a derived record (``core.membership``): ``operation_id`` is the operation
   that defined it, and its membership follows that operation only. ``core.states``'s
   ``update_definition`` changes the row in place; its history is the ``config_changes`` log.
 - **``state_changes``** — one row per change: the State (``state_id``, no foreign key: integrity
@@ -17,7 +22,8 @@ docs/02 §7.1; #185, migration 0084).
   ``reason``, its ``source``, ``contingency``, ``status`` and ``prerequisite_effect_ids``; its
   narrative position (``narrative_turn``/``turn_variant`` of the derived columns, plus ``slot_k``,
   ``beat`` and ``step``; read as a ``core.membership.Position``), its story-minute
-  (``valid_time_minutes``) and when it was recorded (``tx_from``). Append-only
+  (``valid_time_minutes``), when it was recorded (``tx_from``) and, for a clock advance the
+  Orchestrator estimated, the estimate and its reason (``estimate_meta``; #193, #197). Append-only
   (``epistrel_state_changes_append_only``): an UPDATE may change only ``membership`` and
   ``membership_tx`` (#216 adds ``status``), an erasure may also redact ``reason`` and the
   values; a DELETE passes only under an erasure or the story's deletion.
@@ -48,6 +54,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 
 from epistrel.core.enums import (
+    ClockMode,
     StateChangeKind,
     StateChangeSource,
     StateChangeStatus,
@@ -57,6 +64,7 @@ from epistrel.core.enums import (
     StateScope,
     StateType,
     StateVisibility,
+    TimeAwareness,
 )
 from epistrel.core.membership import (
     DerivedTable,
@@ -75,6 +83,15 @@ MUTABLE_STATE_CHANGE_COLUMNS: tuple[str, ...] = ("membership", "membership_tx")
 
 ERASURE_STATE_CHANGE_COLUMNS: tuple[str, ...] = ("reason", "value", "old_value", "new_value")
 """The columns an erasure may also rewrite (redaction of a subject's name)."""
+
+CLOCK_SETTINGS_CHECK = (
+    "(type = 'clock') = (mode IS NOT NULL) AND (type = 'clock' OR (anchor IS NULL "
+    "AND pacing_table IS NULL AND max_unprompted_skip_minutes IS NULL "
+    "AND stop_at_due_events IS NULL AND grace_minutes IS NULL "
+    "AND time_statement_tolerance_minutes IS NULL AND elapsed_tolerance_factor IS NULL "
+    "AND time_awareness IS NULL AND bands IS NULL AND calendar IS NULL))"
+)
+"""The clock's settings belong to the clock (``state_definitions.ck_..._clock_settings``)."""
 
 state_definitions = Table(
     "state_definitions",
@@ -98,6 +115,17 @@ state_definitions = Table(
     Column("transfer", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
     Column("reservation_expiry_minutes", Integer, nullable=True),
     Column("created_by", pg_enum(StateCreatedBy, "state_created_by"), nullable=False),
+    Column("mode", pg_enum(ClockMode, "clock_mode"), nullable=True),
+    Column("anchor", JSONB(none_as_null=True), nullable=True),
+    Column("pacing_table", JSONB(none_as_null=True), nullable=True),
+    Column("max_unprompted_skip_minutes", Integer, nullable=True),
+    Column("stop_at_due_events", Boolean, nullable=True),
+    Column("grace_minutes", Integer, nullable=True),
+    Column("time_statement_tolerance_minutes", Integer, nullable=True),
+    Column("elapsed_tolerance_factor", Numeric, nullable=True),
+    Column("time_awareness", pg_enum(TimeAwareness, "time_awareness"), nullable=True),
+    Column("bands", JSONB(none_as_null=True), nullable=True),
+    Column("calendar", Text, nullable=True),
     *derived_columns(),
     UniqueConstraint("story_id", "name"),
     CheckConstraint("length(name) BETWEEN 1 AND 80", name="name_length"),
@@ -111,6 +139,7 @@ state_definitions = Table(
         "AND jsonb_typeof(\"authorization\") = 'object' AND jsonb_typeof(transfer) = 'object'",
         name="documents",
     ),
+    CheckConstraint(CLOCK_SETTINGS_CHECK, name="clock_settings"),
     *derived_indexes("state_definitions"),
 )
 
@@ -153,6 +182,7 @@ state_changes = Table(
     Column("step", SmallInteger, nullable=False, server_default=text("0")),
     Column("valid_time_minutes", BigInteger, nullable=True),
     Column("tx_from", TIMESTAMP(timezone=True), nullable=False),
+    Column("estimate_meta", JSONB(none_as_null=True), nullable=True),
     CheckConstraint("narrative_turn IS NOT NULL AND turn_variant IS NOT NULL", name="positioned"),
     CheckConstraint(
         "(kind = 'set') = (value IS NOT NULL) AND (kind = 'set') = (delta IS NULL)",
@@ -189,6 +219,7 @@ state_values = Table(
 )
 
 __all__ = [
+    "CLOCK_SETTINGS_CHECK",
     "ERASURE_STATE_CHANGE_COLUMNS",
     "MUTABLE_STATE_CHANGE_COLUMNS",
     "STATE_CHANGES",

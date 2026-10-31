@@ -144,6 +144,7 @@ from epistrel.core.viewpoint import (
     resolve_viewpoint,
     with_requested,
 )
+from epistrel.core.world_clock import service as clock_service
 from epistrel.observability import instrument
 from epistrel.orchestrator import queue_drainer
 from epistrel.orchestrator.budget import (
@@ -287,6 +288,9 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "set_character_weight": ResultCodec.of(stories.CharacterWeighted),
     # #176: a character's participation role (a story configuration write).
     "set_participation": ResultCodec.of(stories.ParticipationSet, revision_field=_CONFIG),
+    # #193: the world clock moved forward between turns, and its settings changed.
+    "advance_clock": ResultCodec.of(clock_service.ClockMoved),
+    "update_clock": ResultCodec.of(clock_service.ClockSettingsWrite, revision_field=_CONFIG),
     "model_entity": ResultCodec.of(stories.CharacterWeighted, status=201),
     "create_content_rating": ResultCodec.of(
         ratings.RatingWrite, status=201, revision_field=_CONFIG
@@ -2773,6 +2777,71 @@ class Engine:
             run,
             story_id=story_id,
             material={"story_id": story_id, "character_id": character_id, "body": _body(request)},
+        )
+
+    # -- the world clock (FR-CLOCK-1,5,13; #193) ----------------------------------------------
+
+    @refuses_nul()
+    async def get_clock(self, ctx: RequestContext, story_id: str) -> clock_service.ClockView:
+        """The story's world clock as it stands (FR-CLOCK-13): its offset in minutes from the
+        story's start and its display (``+HHh MMm`` while unanchored), its anchor, the level
+        the story runs it at (``off``: inert, ``prompt_only``, ``on``), its mode and its
+        settings. 404 for an unknown story."""
+        return await clock_service.read_clock(self.db, story_id)
+
+    async def advance_clock(
+        self, ctx: RequestContext, story_id: str, request: clock_service.ClockAdvanceRequest
+    ) -> clock_service.ClockMoved:
+        """Move the story's world clock forward between turns, as the consumer (FR-CLOCK-13):
+        ``minutes``, or ``to`` an offset from the story's start, in an inter-turn slot after
+        the last turn (a truncation to that turn or earlier discards it). Answers the clock
+        before and after. 422 ``clock_backward`` for a backward move (nothing is written; use a
+        truncation), ``clock_unanchored`` for a time of day ``"HH:MM"`` the anchor cannot
+        place; 409 ``module_off`` with the clock off, ``story_archived``, ``story_paused`` or
+        ``revision_conflict``."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> clock_service.ClockMoved:
+            await self.check_expected_revision(ctx, story_id)
+            return await clock_service.advance_clock(
+                self.db,
+                story_id,
+                request,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+            )
+
+        return await self._keyed(
+            ctx,
+            "advance_clock",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "body": _body(request)},
+        )
+
+    async def update_clock(
+        self, ctx: RequestContext, story_id: str, patch: Mapping[str, Any]
+    ) -> clock_service.ClockSettingsWrite:
+        """Change the world clock's settings (FR-CLOCK-5): ``mode`` (``paced`` or ``manual``),
+        ``pacing_table``, ``max_unprompted_skip_minutes``, ``stop_at_due_events``,
+        ``time_awareness``, ``bands`` and ``calendar``. A story configuration write: each
+        changed setting records one ``config_changes`` row (``state:world_clock.<setting>``;
+        ``pacing_table`` prospective, the others interpretive) and the story's
+        ``config_revision`` moves by one; a patch that changes nothing writes nothing. 422 for
+        an unknown setting, an invalid value or ``mode: external`` (#209); 409
+        ``story_archived``."""
+        principal = self.require_principal(ctx)
+        body = dict(patch)
+
+        async def run(ctx: RequestContext) -> clock_service.ClockSettingsWrite:
+            return await clock_service.update_clock(self.db, story_id, body, principal=principal)
+
+        return await self._keyed(
+            ctx,
+            "update_clock",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "body": body},
         )
 
     async def set_character_weight(

@@ -1,9 +1,12 @@
 """Relative time to story-time (FR-PROP-9, FR-RET-2; #139).
 
-**Story-time at a position.** Until the world clock lands (M6, FR-CLOCK-2) the story-time of a
-narrative position ``(turn, beat)`` is ``story_minute_zero + turn x story_minutes_per_turn``
-(#131's M4 rule; ``TimeBasis``, default 10 minutes a turn; the beat does not move it):
-``story_time_at``. "Now" is that minute.
+**Story-time at a position** (FR-CLOCK-2; #193) is ``story_minute_zero`` plus the world clock's
+offset there, the fold of its active advances, for a story that runs the clock; for one that
+does not (a story pinned to a clock-off profile version) it is #131's M4 stand-in,
+``story_minute_zero + turn x story_minutes_per_turn`` (default 10 minutes a turn; the beat does
+not move it). Both live in ``TimeBasis``, which only ``core.world_clock`` builds; its
+``story_time_at(conn, story_id, position)`` is the one entry point, and ``resolve_time`` reads
+"now" off the basis it is given.
 
 **The grammar** is a data table, ``time_grammar.json`` (English only in M4; another language
 is another table): regex rules over number words, unit words, months, weekdays, seasons
@@ -73,20 +76,60 @@ DAY = 1440
 YEAR = 525_960
 
 
+Position = int | tuple[int, int] | NarrativePosition
+"""A narrative position: a turn, ``(turn, beat)``, or the shared ``core.membership.Position``
+(#164)."""
+
+Advance = tuple[tuple[int, int, int, int], int, int]
+"""One active world clock advance as a basis carries it: its position's ``key()``, its
+operation's variant and its minutes."""
+
+
 @dataclass(frozen=True, slots=True)
 class TimeBasis:
-    """M4's stand-in for the world clock (M6): where the story starts
-    (``stories.story_minute_zero``), how far a turn moves it, and the calendar anchor
-    (``stories.story_epoch``; ``None``: no calendar, so calendar expressions are uncertain)."""
+    """The story's time basis, which ``core.world_clock`` builds (#193; no other module does):
+    where the story starts (``stories.story_minute_zero``), the calendar anchor
+    (``stories.story_epoch``; ``None``: no calendar, so calendar expressions are uncertain) and,
+    for a story that runs the world clock, its active ``advances``. Without them (``None``: the
+    clock is off) story-time is M4's stand-in, ``minutes_per_turn`` a turn (#131, #139)."""
 
     minute_zero: int = 0
     minutes_per_turn: int = STORY_MINUTES_PER_TURN
     epoch: datetime | None = None
+    advances: tuple[Advance, ...] | None = None
+
+    def at(self, position: Position) -> int:
+        """The story-minute of ``position``, the moment it starts: ``minute_zero`` plus the
+        clock's offset before it (the advances before it, leaving out another variant's of its
+        own turn; an advance at a beat ends that beat, FR-CLOCK-17), or the stand-in's. A turn
+        alone (or ``(turn, beat)``) is the start of that turn (or beat)."""
+        return self._minutes(position, inclusive=False)
+
+    def through(self, position: Position) -> int:
+        """``minute_zero`` plus the clock's offset through ``position``: the advances at or
+        before it (the clock's value there, ``core.world_clock.clock_at``)."""
+        return self._minutes(position, inclusive=True)
+
+    def _minutes(self, position: Position, *, inclusive: bool) -> int:
+        if self.advances is None:
+            return self.minute_zero + turn_of(position) * self.minutes_per_turn
+        found = as_position(position)
+        key = found.key()
+        return self.minute_zero + sum(
+            minutes
+            for at, variant, minutes in self.advances
+            if (at <= key if inclusive else at < key)
+            and not (found.variant and at[0] == found.turn and variant != found.variant)
+        )
 
 
-Position = int | tuple[int, int] | NarrativePosition
-"""A narrative position: a turn, ``(turn, beat)``, or the shared ``core.membership.Position``
-(#164)."""
+def as_position(position: Position) -> NarrativePosition:
+    """``position`` as a ``core.membership.Position`` (a turn alone is its start)."""
+    if isinstance(position, NarrativePosition):
+        return position
+    if isinstance(position, int):
+        return NarrativePosition(position)
+    return NarrativePosition(position[0], beat=position[1])
 
 
 def turn_of(position: Position) -> int:
@@ -97,9 +140,9 @@ def turn_of(position: Position) -> int:
 
 
 def story_time_at(position: Position, basis: TimeBasis) -> int:
-    """The story-minute of ``position`` (see the module docstring)."""
-    turn = turn_of(position)
-    return basis.minute_zero + turn * basis.minutes_per_turn
+    """The story-minute of ``position`` on ``basis`` (``TimeBasis.at``). Outside this module
+    story-time is read through ``core.world_clock.story_time_at`` (#193)."""
+    return basis.at(position)
 
 
 @dataclass(frozen=True, slots=True)
@@ -399,10 +442,12 @@ __all__ = [
     "DEFAULT_EPOCH",
     "STORY_MINUTES_PER_TURN",
     "YEAR",
+    "Advance",
     "Grammar",
     "Position",
     "SubjectTimeline",
     "TimeBasis",
+    "as_position",
     "calendar_words",
     "find_time_expressions",
     "grammar",

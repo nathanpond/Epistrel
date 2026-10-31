@@ -121,7 +121,7 @@ def test_chaos_runs_weekly_and_on_dispatch_and_reports_a_red_run() -> None:
     assert set(triggers["workflow_dispatch"]["inputs"]) == {"seed", "iterations"}
     assert wf["permissions"] == {"contents": "read"}
     job = wf["jobs"]["chaos"]
-    assert job["timeout-minutes"] == 60
+    assert job["timeout-minutes"] == 120  # #213: X-03 M6 adds about 10 min at 500 iterations
     assert job["permissions"] == {"contents": "read", "issues": "write"}
     run = next(s for s in _steps(wf, "chaos") if s.get("id") == "chaos")
     assert "-m chaos" in run["run"]

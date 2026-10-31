@@ -9503,3 +9503,9 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   - Both: type and area labels on all 29 joined issues, with `needs-triage` removed.
 - **Not changed:** no closures, no epic AC, no coverage claims or maps (the joined issues add no requirement IDs to M6 or M7).
 - **Outside scope:** M11's audit emphases should name the new catalog-scope erasure subject (#504). That is left for a later `/n8-replan M11`.
+
+## Ad-hoc — 2026-10-30 (M6 test gate)
+
+- **Change:** For M6's 24 pre-story issues only, `/n8-exec` runs the full suite once per batch instead of after every issue. There are four ordered batches: flakes (#537 #514 #517 #446 #468), then M5 bugs (#567 #566 #568 #516 #563 #483 #521), then decided changes and Console additions (#519 #515 #456 #588 #536 #533 #535 #526 #527 #531 #534), then #522 alone. Each issue still runs its own tests, its area tests and the fast gates. Every M6 feature story (#185 onward) keeps the per-story full-suite gate. The rules and the metrics tables are in `.n8/memory/m6-batched-pre-story-gate.md`.
+  **Why:** The owner's decision, 2026-10-30. The pre-story issues are independent, small fixes, the shape where M4's and M5's batched fix passes caught nothing late. Batching saves roughly 5–6 h of full runs at about 19 min per sharded run. The feature stories share the commit path, verification, the profile schema (#203's `DELIVERED` flip) and the outbox and staged-turn harness: M3 group C's shape, where batching was a net loss because of test pollution across areas.
+  **Affects:** M6 execution method only. No issue's AC or plan changes.

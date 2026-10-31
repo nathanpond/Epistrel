@@ -56,7 +56,7 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
     BaseModel,
@@ -96,6 +96,7 @@ from epistrel.core.events.types import (
     Sanitized,
     SanitizeOriginal,
 )
+from epistrel.core.membership import active_only
 from epistrel.core.membership import supersede as supersede_rows
 from epistrel.core.memory import records
 from epistrel.core.memory.records import EPISODIC_MODULE, Memory
@@ -107,6 +108,7 @@ from epistrel.core.propositions.registry import load as load_registry
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.stories import require_writable
 from epistrel.core.tables import events
+from epistrel.core.tables import operations as operations_table
 from epistrel.core.tables.base import ulid_type
 from epistrel.core.tables.facts import facts as facts_table
 from epistrel.core.tables.memories import QUARANTINE_REASON_MAX, TEXT_MAX, memories
@@ -260,7 +262,7 @@ class MemoryView(BaseModel):
     pinned_by: str | None = None
 
     @classmethod
-    def of(cls, memory: Memory) -> MemoryView:
+    def of(cls, memory: Memory) -> Self:
         return cls(
             id=memory.id,
             kind=memory.kind,
@@ -283,6 +285,40 @@ class MemoryView(BaseModel):
             pinned=memory.pinned,
             pinned_by=memory.pinned_by,
         )
+
+
+class ConsolidationProvenance(BaseModel):
+    """Where a consolidation output came from (#531; FR-MEM-10, FR-STORE-27), as stored: the
+    positioned ``consolidation`` operation that wrote it, the window of whole turns it covers,
+    its scope and level (from that operation's ``source_window``; ``None`` when the operation
+    records none), and the input memories it compresses (those whose ``covered_by`` names it,
+    by id)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    operation_id: str
+    from_turn: int | None = None
+    to_turn: int | None = None
+    scope: str | None = None
+    level: int | None = None
+    source_memory_ids: tuple[str, ...] = ()
+
+
+class ListedMemory(MemoryView):
+    """A memory as the omniscient list reads it (#531): ``MemoryView`` and, on a consolidation
+    output, its ``consolidation`` provenance (``None`` on every other memory)."""
+
+    consolidation: ConsolidationProvenance | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryPage:
+    """One page of a story's memories (omniscient), ordered by id, and where the next one
+    starts."""
+
+    memories: tuple[ListedMemory, ...]
+    timeline_revision: int
+    next_cursor: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -921,6 +957,117 @@ async def read_fact(db: AsyncEngine, story_id: str, fact_id: str) -> Fact:
         return await canon.read_version(conn, story_id, fact_id)
 
 
+async def list_memories(
+    db: AsyncEngine,
+    story_id: str,
+    *,
+    kind: MemoryKind | None = None,
+    retrieval_tier: RetrievalTier | None = None,
+    holder_character_id: str | None = None,
+    from_turn: int | None = None,
+    to_turn: int | None = None,
+    quarantined: bool | None = None,
+    pinned: bool | None = None,
+    limit: int = DEFAULT_LIST_LIMIT,
+    cursor: str | None = None,
+) -> MemoryPage:
+    """The story's memories on its active timeline under ``omniscient`` (#531), each with its
+    quarantine, tier and pin state, filtered by ``kind``, ``retrieval_tier``, holder, a
+    narrative-turn range (``from_turn``..``to_turn``, inclusive; a position-less memory is in
+    no range), ``quarantined`` and ``pinned``. Ordered by id; ``cursor`` (a page's
+    ``next_cursor``) continues after it. A consolidation output carries its provenance
+    (``ConsolidationProvenance``). 404 for an unknown story; 422 ``validation_error`` when
+    ``to_turn`` is before ``from_turn``."""
+    if from_turn is not None and to_turn is not None and to_turn < from_turn:
+        raise InvalidRequest(
+            "to_turn is at or after from_turn",
+            {"field": "query.to_turn", "reason": "empty_range"},
+        )
+    limit = max(1, min(LIST_LIMIT_MAX, limit))
+    m = memories
+    where: list[Any] = [m.c.story_id == story_id, active_only(m)]
+    if kind is not None:
+        where.append(m.c.kind == MemoryKind(kind).value)
+    if retrieval_tier is not None:
+        where.append(m.c.retrieval_tier == RetrievalTier(retrieval_tier).value)
+    if holder_character_id is not None:
+        where.append(m.c.holder_character_id == holder_character_id)
+    if from_turn is not None:
+        where.append(m.c.narrative_turn >= from_turn)
+    if to_turn is not None:
+        where.append(m.c.narrative_turn <= to_turn)
+    if quarantined is not None:
+        q = m.c.quarantined_at
+        where.append(q.is_not(None) if quarantined else q.is_(None))
+    if pinned is not None:
+        where.append(m.c.pinned.is_(bool(pinned)))
+    if cursor is not None:
+        where.append(m.c.id > cursor)
+    async with db.connect() as conn:
+        revision = await check_expected_revision(conn, story_id, None)
+        ids = [
+            str(i)
+            for i in await conn.scalars(
+                select(m.c.id).where(*where).order_by(m.c.id).limit(limit + 1)
+            )
+        ]
+        page = await records.memories_by_id(conn, story_id, ids[:limit])
+        provenance = await _consolidation_provenance(conn, story_id, page)
+    listed = tuple(
+        ListedMemory.of(memory).model_copy(update={"consolidation": provenance.get(memory.id)})
+        for memory in page
+    )
+    more = len(ids) > limit
+    return MemoryPage(listed, revision, listed[-1].id if more and listed else None)
+
+
+async def _consolidation_provenance(
+    conn: AsyncConnection, story_id: str, page: Sequence[Memory]
+) -> dict[str, ConsolidationProvenance]:
+    """The provenance of the page's consolidation outputs, by memory id: each output's
+    operation's ``source_window`` and the memories whose ``covered_by`` names it."""
+    outputs = [x for x in page if x.provenance is RecordProvenance.SYSTEM_CONSOLIDATED]
+    if not outputs:
+        return {}
+    o = operations_table
+    windows = {
+        str(r.operation_id): dict(r.source_window or {})
+        for r in await conn.execute(
+            select(o.c.operation_id, o.c.source_window).where(
+                o.c.story_id == story_id,
+                o.c.operation_id.in_(sorted({x.operation_id for x in outputs})),
+            )
+        )
+    }
+    wanted = [x.id for x in outputs]
+    sources: dict[str, list[str]] = {i: [] for i in wanted}
+    covering = bindparam("covering", wanted, type_=ARRAY(ulid_type()))
+    for row in await conn.execute(
+        select(memories.c.id, memories.c.covered_by)
+        .where(memories.c.story_id == story_id, memories.c.covered_by.overlap(covering))
+        .order_by(memories.c.id)
+    ):
+        for output_id in row.covered_by:
+            if str(output_id) in sources:
+                sources[str(output_id)].append(str(row.id))
+    found: dict[str, ConsolidationProvenance] = {}
+    for x in outputs:
+        window = windows.get(x.operation_id, {})
+        found[x.id] = ConsolidationProvenance(
+            operation_id=x.operation_id,
+            from_turn=_int_or_none(window.get("from_turn")),
+            to_turn=_int_or_none(window.get("to_turn")),
+            scope=None if window.get("scope") is None else str(window["scope"]),
+            level=_int_or_none(window.get("level", x.level)),
+            source_memory_ids=tuple(sources[x.id]),
+        )
+    return found
+
+
+def _int_or_none(value: Any) -> int | None:
+    return None if value is None else int(value)
+
+
 # -- FR-GUARD-5: implication ------------------------------------------------------------------
 
 
@@ -1076,11 +1223,14 @@ __all__ = [
     "REPEATED_IMPLICATION",
     "SANITIZE_SETTING",
     "SYSTEM_PRINCIPAL",
+    "ConsolidationProvenance",
     "FactPage",
     "FactRequest",
     "FactWarning",
     "FactWrite",
     "Implication",
+    "ListedMemory",
+    "MemoryPage",
     "MemoryView",
     "MemoryWrite",
     "QuarantineRequest",
@@ -1091,6 +1241,7 @@ __all__ = [
     "follow_implications",
     "implicate",
     "list_facts",
+    "list_memories",
     "quarantine",
     "read_fact",
     "read_memory",

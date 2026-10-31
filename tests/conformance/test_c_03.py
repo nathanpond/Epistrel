@@ -46,6 +46,7 @@ from epistrel.api.routes.admin.mutation import (
     FactBody,
     FactListBody,
     FactWritten,
+    MemoryListBody,
     MemoryWritten,
 )
 from epistrel.api.routes.admin.offboarding import OffboardingPlanBody, OffboardingQueuedBody
@@ -153,6 +154,7 @@ from epistrel.core.config_changes import ConfigScope
 from epistrel.core.context import RequestContext
 from epistrel.core.db import make_engine
 from epistrel.core.deployment import SettingsPatch
+from epistrel.core.enums import MemoryKind
 from epistrel.core.epistemic.author import BeliefRequest
 from epistrel.core.errors import EpistrelError
 from epistrel.core.feedback import FeedbackRequest
@@ -357,6 +359,7 @@ MUTATION_ANSWERS = [
     ("unlock_fact", 200),
     ("list_facts", 200),
     ("get_fact", 200),
+    ("list_memories", 200),
     ("inspect_ledger", 200),
     ("quarantine_memory", 200),
     ("unquarantine_memory", 200),
@@ -427,6 +430,13 @@ async def _fact_list(engine: Engine, story_id: str) -> dict[str, Any]:
 
 async def _fact_body(engine: Engine, story_id: str, fact_id: str) -> dict[str, Any]:
     return dump(FactBody.of(await engine.get_fact(CTX, story_id, fact_id, viewpoint="omniscient")))
+
+
+async def _memory_list(engine: Engine, story_id: str) -> dict[str, Any]:
+    page = await engine.list_memories(
+        CTX, story_id, viewpoint="omniscient", kind=MemoryKind.SEMANTIC
+    )
+    return dump(MemoryListBody.of(page))
 
 
 async def _ledger(engine: Engine, story_id: str) -> dict[str, Any]:
@@ -1150,6 +1160,17 @@ def _steps() -> list[Step]:
                 "GET", "/admin/stories/{fork}/facts/{fork_fact}", params={"viewpoint": "omniscient"}
             ),
             lambda e, ids: _fact_body(e, ids["fork"], ids["fork_fact"]),
+            group=MUTATION_GROUP,
+        ),
+        # The story's memories (#531), omniscient: the fork's semantic ones (its author memory).
+        Step(
+            "list_memories",
+            lambda ids: Rest(
+                "GET",
+                "/admin/stories/{fork}/memories",
+                params={"viewpoint": "omniscient", "kind": "semantic"},
+            ),
+            lambda e, ids: _memory_list(e, ids["fork"]),
             group=MUTATION_GROUP,
         ),
         # The thunks and the promissory ledger (#146), omniscient, on the structured fork.

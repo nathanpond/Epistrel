@@ -3535,6 +3535,72 @@
         "title": "ConsolidateRequest",
         "type": "object"
       },
+      "ConsolidationProvenance": {
+        "description": "Where a consolidation output came from (#531; FR-MEM-10, FR-STORE-27), as stored: the\npositioned ``consolidation`` operation that wrote it, the window of whole turns it covers,\nits scope and level (from that operation's ``source_window``; ``None`` when the operation\nrecords none), and the input memories it compresses (those whose ``covered_by`` names it,\nby id).",
+        "properties": {
+          "from_turn": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From Turn"
+          },
+          "level": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Level"
+          },
+          "operation_id": {
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope"
+          },
+          "source_memory_ids": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Memory Ids",
+            "type": "array"
+          },
+          "to_turn": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To Turn"
+          }
+        },
+        "required": [
+          "operation_id"
+        ],
+        "title": "ConsolidationProvenance",
+        "type": "object"
+      },
       "ConsolidationQueuedResponse": {
         "description": "The ``consolidation`` job a requested consolidation was handed to (202), with the story's\nrevision when it was queued.",
         "properties": {
@@ -13247,6 +13313,174 @@
         "title": "LikesDislikesPatch",
         "type": "object"
       },
+      "ListedMemory": {
+        "description": "A memory as the omniscient list reads it (#531): ``MemoryView`` and, on a consolidation\noutput, its ``consolidation`` provenance (``None`` on every other memory).",
+        "properties": {
+          "beat": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Beat"
+          },
+          "character_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Character Id"
+          },
+          "consolidation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConsolidationProvenance"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "embedded": {
+            "default": false,
+            "title": "Embedded",
+            "type": "boolean"
+          },
+          "holder_character_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Holder Character Id"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "implication_count": {
+            "default": 0,
+            "title": "Implication Count",
+            "type": "integer"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/MemoryKind"
+          },
+          "membership": {
+            "$ref": "#/components/schemas/Membership"
+          },
+          "narrative_turn": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narrative Turn"
+          },
+          "pinned": {
+            "default": false,
+            "title": "Pinned",
+            "type": "boolean"
+          },
+          "pinned_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pinned By"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/RecordProvenance"
+          },
+          "quarantine_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quarantine Reason"
+          },
+          "quarantined": {
+            "default": false,
+            "title": "Quarantined",
+            "type": "boolean"
+          },
+          "quarantined_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quarantined At"
+          },
+          "quarantined_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quarantined By"
+          },
+          "retired_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retired Reason"
+          },
+          "retrieval_tier": {
+            "$ref": "#/components/schemas/RetrievalTier",
+            "default": "hot"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "visibility": {
+            "$ref": "#/components/schemas/Visibility"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "text",
+          "provenance",
+          "membership"
+        ],
+        "title": "ListedMemory",
+        "type": "object"
+      },
       "ListingStatusBody": {
         "description": "A catalog entry's listing status after a ``PUT …/listing-status`` (FR-CAT-11): one of\nthe deployment's ``listing_status_values``, never interpreted by Epistrel.\n``config_revision`` is the deployment's, unchanged.",
         "properties": {
@@ -14020,6 +14254,40 @@
         ],
         "title": "MemoryKind",
         "type": "string"
+      },
+      "MemoryListBody": {
+        "description": "A page of the story's memories, by id, the story's revision, and the cursor of the next\npage (``null`` on the last).",
+        "properties": {
+          "memories": {
+            "items": {
+              "$ref": "#/components/schemas/ListedMemory"
+            },
+            "title": "Memories",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "memories",
+          "timeline_revision",
+          "next_cursor"
+        ],
+        "title": "MemoryListBody",
+        "type": "object"
       },
       "MemoryView": {
         "description": "A memory as the omniscient admin reads it, its quarantine state, its retrieval tier (and\nwhy it was retired) and its pin included (#147).",
@@ -42144,6 +42412,278 @@
           }
         ],
         "summary": "Read a story's hot set",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/stories/{story_id}/memories": {
+      "get": {
+        "description": "The story's memories on its active timeline (#531), `omniscient` only (403 `omniscient_required` otherwise), each with its quarantine, retrieval tier and pin. Filters: `kind` (`episodic`, `semantic`, `reflection`), `retrieval_tier` (`hot`, `retired`), `holder_character_id`, `from_turn`/`to_turn` (an inclusive narrative-turn range; a position-less memory, such as an author fact's, is in no range; 422 when `to_turn` is before `from_turn`), `quarantined` and `pinned`. A consolidation output carries `consolidation`: the consolidation operation that wrote it, the window and scope it covers, its level and the source memories it compresses (`null` on every other memory). Paged by id: `limit` (1 to 500, default 100) and `cursor` (a page's `next_cursor`).",
+        "operationId": "list_memories",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "viewpoint",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Viewpoint"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/MemoryKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "retrieval_tier",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/RetrievalTier"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Retrieval Tier"
+            }
+          },
+          {
+            "in": "query",
+            "name": "holder_character_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Holder Character Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from_turn",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 2147483647,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From Turn"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to_turn",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 2147483647,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To Turn"
+            }
+          },
+          {
+            "in": "query",
+            "name": "quarantined",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Quarantined"
+            }
+          },
+          {
+            "in": "query",
+            "name": "pinned",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pinned"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryListBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden: `omniscient_required`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`, `viewpoint_unresolved`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List the story's memories",
         "tags": [
           "admin"
         ]

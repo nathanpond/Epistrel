@@ -5,6 +5,7 @@ Operator endpoints under ``/admin`` (C-02 M4) so a deployment can restrict them 
 like every call they need the service credential and, to mutate, a principal, and any principal
 may make them (Epistrel has no roles, S-TRUST-BOUNDARY M4):
 
+- ``GET …/memories`` (``omniscient`` only; #531): a page of the story's memories, filtered;
 - ``POST …/memories/{memory_id}/quarantine`` ``{reason}`` and ``DELETE`` (the reverse);
 - ``POST …/memories/{memory_id}/sanitize`` ``{span, surrogate}``;
 - ``GET …/facts`` and ``GET …/facts/{fact_id}`` (``omniscient`` only; #535) and ``POST …/facts``
@@ -30,6 +31,7 @@ from epistrel.api.deps import ContextDep, EngineDep, StoryId
 from epistrel.api.idempotency import answered
 from epistrel.api.responses import MutationResponse
 from epistrel.core.canon.facts import Fact, Visibility
+from epistrel.core.enums import MemoryKind, RetrievalTier
 from epistrel.core.ids import ULID_PATTERN
 from epistrel.core.mutation import (
     DEFAULT_LIST_LIMIT,
@@ -38,6 +40,8 @@ from epistrel.core.mutation import (
     FactRequest,
     FactWarning,
     FactWrite,
+    ListedMemory,
+    MemoryPage,
     MemoryView,
     MemoryWrite,
     QuarantineRequest,
@@ -183,6 +187,23 @@ class FactListBody(BaseModel):
         )
 
 
+class MemoryListBody(BaseModel):
+    """A page of the story's memories, by id, the story's revision, and the cursor of the next
+    page (``null`` on the last)."""
+
+    memories: list[ListedMemory]
+    timeline_revision: int
+    next_cursor: str | None
+
+    @classmethod
+    def of(cls, page: MemoryPage) -> MemoryListBody:
+        return cls(
+            memories=list(page.memories),
+            timeline_revision=page.timeline_revision,
+            next_cursor=page.next_cursor,
+        )
+
+
 def _memory(written: MemoryWrite, ctx: Any, response: Response) -> MemoryWritten:
     return answered(MemoryWritten.of(written), ctx, response, replayed=written.replayed)
 
@@ -192,6 +213,57 @@ def _created(written: FactWrite, ctx: Any, response: Response) -> JSONResponse:
     return JSONResponse(
         body.model_dump(mode="json"), status_code=201, headers=dict(response.headers)
     )
+
+
+@router.get(
+    "/{story_id}/memories",
+    response_model=MemoryListBody,
+    operation_id="list_memories",
+    summary="List the story's memories",
+    description=(
+        "The story's memories on its active timeline (#531), `omniscient` only (403 "
+        "`omniscient_required` otherwise), each with its quarantine, retrieval tier and pin. "
+        "Filters: `kind` (`episodic`, `semantic`, `reflection`), `retrieval_tier` (`hot`, "
+        "`retired`), `holder_character_id`, `from_turn`/`to_turn` (an inclusive narrative-turn "
+        "range; a position-less memory, such as an author fact's, is in no range; 422 when "
+        "`to_turn` is before `from_turn`), `quarantined` and `pinned`. A consolidation output "
+        "carries `consolidation`: the consolidation operation that wrote it, the window and "
+        "scope it covers, its level and the source memories it compresses (`null` on every "
+        "other memory). Paged by id: `limit` "
+        f"(1 to {LIST_LIMIT_MAX}, default {DEFAULT_LIST_LIMIT}) and `cursor` (a page's "
+        "`next_cursor`)."
+    ),
+)
+async def list_memories(
+    story_id: StoryId,
+    ctx: ContextDep,
+    engine: EngineDep,
+    viewpoint: str | None = None,
+    kind: MemoryKind | None = None,
+    retrieval_tier: RetrievalTier | None = None,
+    holder_character_id: Annotated[str | None, Query(pattern=ULID_PATTERN)] = None,
+    from_turn: Annotated[int | None, Query(ge=0, le=2_147_483_647)] = None,
+    to_turn: Annotated[int | None, Query(ge=0, le=2_147_483_647)] = None,
+    quarantined: bool | None = None,
+    pinned: bool | None = None,
+    limit: Annotated[int, Query(ge=1, le=LIST_LIMIT_MAX)] = DEFAULT_LIST_LIMIT,
+    cursor: Annotated[str | None, Query(pattern=ULID_PATTERN)] = None,
+) -> MemoryListBody:
+    page = await engine.list_memories(
+        ctx,
+        story_id,
+        viewpoint=viewpoint,
+        kind=kind,
+        retrieval_tier=retrieval_tier,
+        holder_character_id=holder_character_id,
+        from_turn=from_turn,
+        to_turn=to_turn,
+        quarantined=quarantined,
+        pinned=pinned,
+        limit=limit,
+        cursor=cursor,
+    )
+    return MemoryListBody.of(page)
 
 
 @router.post(

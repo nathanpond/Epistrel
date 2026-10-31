@@ -1038,6 +1038,11 @@
       "requirement": "FR-MEM-8"
     },
     {
+      "method": "GET",
+      "path": "/admin/stories/{story_id}/memories",
+      "requirement": "FR-MEM-8"
+    },
+    {
       "method": "POST",
       "path": "/admin/stories/{story_id}/memories/{memory_id}/quarantine",
       "requirement": "FR-GUARD-4"

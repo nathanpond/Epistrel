@@ -66,7 +66,14 @@ from epistrel.core.catalog.report import ValidationResult
 from epistrel.core.commit import lifecycle as commitment
 from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.context import SYSTEM_PRINCIPAL, RequestContext, requesting_principal
-from epistrel.core.enums import EntryStatus, ExposureState, StoryStatus, ThunkState
+from epistrel.core.enums import (
+    EntryStatus,
+    ExposureState,
+    MemoryKind,
+    RetrievalTier,
+    StoryStatus,
+    ThunkState,
+)
 from epistrel.core.epistemic import author as belief_author
 from epistrel.core.epistemic import inspection, partitions
 from epistrel.core.erasure import boundary as erasure_boundary
@@ -1393,6 +1400,45 @@ class Engine:
         ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
         require_omniscient(ctx.viewpoint or "", field="query.viewpoint")
         return await mutation.read_fact(self.db, story_id, fact_id)
+
+    @refuses_nul()
+    async def list_memories(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        viewpoint: str | None = None,
+        kind: MemoryKind | None = None,
+        retrieval_tier: RetrievalTier | None = None,
+        holder_character_id: str | None = None,
+        from_turn: int | None = None,
+        to_turn: int | None = None,
+        quarantined: bool | None = None,
+        pinned: bool | None = None,
+        limit: int = mutation.DEFAULT_LIST_LIMIT,
+        cursor: str | None = None,
+    ) -> mutation.MemoryPage:
+        """The story's memories on its active timeline (#531), ``omniscient`` only (403
+        ``omniscient_required`` otherwise): a page of ``limit`` by id, ``cursor`` continuing,
+        filtered by ``kind``, ``retrieval_tier``, ``holder_character_id``, a narrative-turn
+        range (``from_turn``..``to_turn``), ``quarantined`` and ``pinned``; a consolidation
+        output carries its provenance (window and source memories). 404 for an unknown
+        story."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        require_omniscient(ctx.viewpoint or "", field="query.viewpoint")
+        return await mutation.list_memories(
+            self.db,
+            story_id,
+            kind=kind,
+            retrieval_tier=retrieval_tier,
+            holder_character_id=holder_character_id,
+            from_turn=from_turn,
+            to_turn=to_turn,
+            quarantined=quarantined,
+            pinned=pinned,
+            limit=limit,
+            cursor=cursor,
+        )
 
     @library_only("a precondition every story mutation runs (`X-Epistrel-Expected-Revision`)")
     async def check_expected_revision(self, ctx: RequestContext, story_id: str) -> int:

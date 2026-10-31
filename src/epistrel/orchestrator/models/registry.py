@@ -112,6 +112,12 @@ class ContentCategory(StrEnum):
     the player-visible States it may change (name, type, scope, unit, aliases, allowed values)
     and the effect syntax, never a value; for the narrator's, every State with its current
     value and constraints."""
+    EXTERNAL_DATA = "external_data"
+    """A value an external-data provider answered (FR-EXT-5, NFR-SEC-2; #208): untrusted content,
+    typed and cleaned by ``orchestrator.providers.sanitize`` and rendered only as a fenced,
+    labelled data block (``<external name=… tier=…>…</external>``), never as instructions; the
+    payload's JSON keys never. The narrator's render takes it (a character learns a value only
+    as a belief, #170); never a purpose that judges or compresses the story's own records."""
     """The say a witness heard (#162): the speaker's name, the words as the witness perceived
     them, the visible manner, the claims they carry and the intent as the witness reads it."""
 
@@ -293,6 +299,12 @@ class GenerationInputs(InputSchema):
     every State with its value at the turn's start and its constraints)."""
     tracked_syntax: Annotated[str, C.TRACKED_VALUES] = Field(default="", max_length=1_000)
     """#187: how to declare a State effect, with one example (present with ``tracked_values``)."""
+    external_data: Annotated[list[str], C.EXTERNAL_DATA] = Field(
+        default_factory=list, max_length=64
+    )
+    """The narrator's ``## External data`` (#208, FR-EXT-5): one fenced block per value the turn
+    pinned from a provider (``sanitize.render_block``); never in a character's render (#170,
+    ``check-character-context``)."""
     """A structured character render's ``## The player asks of you`` (FR-RESP-11; #180): under
     ``player_authority = own_character``, what the player's input described this character
     doing, saying or (never written) thinking, as requests the render complies with or refuses
@@ -401,6 +413,11 @@ class GuardrailCheckInputs(InputSchema):
     text: Annotated[str, C.CHECKED_TEXT]
     policy_prompt: Annotated[str, C.POLICY_TEXT]
     subjects: list[Subject] = Field(default_factory=list)
+    external_data: Annotated[list[str], C.EXTERNAL_DATA] = Field(
+        default_factory=list, max_length=64
+    )
+    """#208: provider values the checked text was written from, as fenced data blocks (data to
+    check against, never instructions to the checker)."""
 
 
 class LiteSummaryInputs(InputSchema):
@@ -909,6 +926,11 @@ class ExtractionInputs(InputSchema):
         default_factory=list
     )
     scene_context: SceneContext = Field(default_factory=SceneContext)
+    external_data: Annotated[list[str], C.EXTERNAL_DATA] = Field(
+        default_factory=list, max_length=64
+    )
+    """#208: provider values the passage was written from, as fenced data blocks (data, never
+    instructions; the claims are the passage's own)."""
 
 
 class ExtractedClaim(BaseModel):
@@ -1075,7 +1097,8 @@ GUARDRAIL_CHECK = Purpose(
     input_schema=GuardrailCheckInputs,
     template="guardrail_check.j2",
     hot_path=True,
-    never_receives=_EVERYTHING - {C.CHECKED_TEXT, C.POLICY_TEXT, C.SUBJECT_TRUE_AGE},
+    never_receives=_EVERYTHING
+    - {C.CHECKED_TEXT, C.POLICY_TEXT, C.SUBJECT_TRUE_AGE, C.EXTERNAL_DATA},
     response_schema=GuardrailVerdict,
 )
 
@@ -1235,9 +1258,10 @@ EXTRACTION_BACKSTOP = Purpose(
     input_schema=ExtractionInputs,
     template="extraction.j2",
     hot_path=True,
-    # The render's own beats (or the composed message) and its scene only: never another
-    # story's text, a belief, a definition, a memory, a policy, an age or eval text.
-    never_receives=_EVERYTHING - {C.RENDER_TEXT, C.SCENE},
+    # The render's own beats (or the composed message), its scene and the provider values it
+    # was written from (#208, fenced data) only: never another story's text, a belief, a
+    # definition, a memory, a policy, an age or eval text.
+    never_receives=_EVERYTHING - {C.RENDER_TEXT, C.SCENE, C.EXTERNAL_DATA},
     response_schema=ExtractionResult,
 )
 

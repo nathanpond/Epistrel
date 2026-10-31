@@ -604,7 +604,8 @@ class ExternalRead(EventPayload):
     State), ``query_hash`` the request (provider, value, the story's binding and the scope
     key), ``value`` what it answered (the State's stored form; ``None``: unknown), ``raw_hash``
     the SHA-256 of the raw answer (the raw body is never stored nor logged), ``read_at`` when,
-    and ``source`` how it was obtained (``EXTERNAL_READ_SOURCES``). Positioned at the turn's
+    and ``source`` how it was obtained (``EXTERNAL_READ_SOURCES``); ``truncated`` (#208) that a
+    text value was capped. Positioned at the turn's
     input (beat 0, step 0) for a read at turn start, at a claim's beat and step for one made on
     demand during verification; ``core.projections.external`` folds it into
     ``external_values``."""
@@ -619,6 +620,8 @@ class ExternalRead(EventPayload):
     read_at: datetime
     source: Literal["live", "last_known", "unknown"] = "live"
     origin_event_id: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    truncated: bool = Field(default=False, exclude_if=lambda v: not v)
+    """#208: a ``text`` value was capped before it was pinned (only the capped value is kept)."""
 
 
 @register("belief_authored", category=EventCategory.CONTROL)

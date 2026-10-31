@@ -19,7 +19,9 @@ under ``src/epistrel`` for:
   context (the first parameter, or a ``replace`` field set from it; #572: the player's input
   among them, perception-routed, never the typed text); an ``UNSCOPED`` one (turn
   text with no viewpoint scope: the rolling summary, the text pins) must come only from
-  ``replace`` fields that are empty when the context is ``partitioned``.
+  ``replace`` fields that are empty when the context is ``partitioned``; a ``NARRATOR`` one
+  (#208: ``external_data``, the provider values' fenced blocks) is never passed at all, and
+  ``structured_generation.j2`` (with what it includes) never names it.
 
 A repair's regeneration (#151) and a policy regeneration (#68) rebuild their inputs from the
 render's own (``Rendered.character_inputs``), so they carry the same context. The age-repair
@@ -32,6 +34,7 @@ CI enforces it through ``tests/gates/test_character_context_gate.py``.
 from __future__ import annotations
 
 import ast
+import re
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 
@@ -59,6 +62,9 @@ text, the character's own definition, the policy and steering lines, and the tur
 (#176, #180)."""
 UNSCOPED = "unscoped"
 """Turn text with no viewpoint scope (#544): a partitioned character never gets it."""
+NARRATOR = "narrator"
+"""The narrator's alone (#208): provider content, which a character learns only as a belief
+through ``build_context`` (#170). ``character_inputs`` never passes it."""
 SECTIONS: dict[str, str] = {
     "own_age": CONTEXT,
     "player_input": CONTEXT,
@@ -85,6 +91,7 @@ SECTIONS: dict[str, str] = {
     "player_requests": TURN,
     "pinned_memories": UNSCOPED,
     "summary_segments": UNSCOPED,
+    "external_data": NARRATOR,
 }
 """Every section a character's ``GenerationInputs`` may carry, classified (#544)."""
 
@@ -185,6 +192,8 @@ def _section_findings(
             used = _attrs(k.value)
             if kind is None:
                 yield node.lineno, f"passes the unclassified section {k.arg!r} to a character"
+            elif kind == NARRATOR:
+                yield node.lineno, f"passes the narrator-only section {k.arg!r} to a character"
             elif kind == CONTEXT and not (_mentions(k.value, context) or used & from_context):
                 yield node.lineno, f"passes the context section {k.arg!r} from outside the context"
             elif kind == UNSCOPED and not (used and used <= guarded):
@@ -222,9 +231,35 @@ def _findings(rel: str, tree: ast.AST) -> Iterator[tuple[int, str]]:
             yield from _section_findings(function)
 
 
+TEMPLATES = "src/epistrel/orchestrator/models/templates"
+CHARACTER_TEMPLATE = "structured_generation.j2"
+INCLUDE = re.compile(r"""{%-?\s*include\s+["']([^"']+)["']""")
+
+
+def _template_findings(root: Path) -> Iterator[str]:
+    """#208: the character template, and every template it includes, never names a
+    ``NARRATOR`` section."""
+    narrator_only = [name for name, kind in SECTIONS.items() if kind == NARRATOR]
+    pending, seen = [CHARACTER_TEMPLATE], set()
+    while pending:
+        name = pending.pop()
+        path = root / TEMPLATES / name
+        if name in seen or not path.is_file():
+            continue
+        seen.add(name)
+        source = path.read_text(encoding="utf-8")
+        pending.extend(INCLUDE.findall(source))
+        for section in narrator_only:
+            if re.search(rf"\b{section}\b", source):
+                yield (
+                    f"{TEMPLATES}/{name}: names the narrator-only section {section!r}; a "
+                    "character's prompt comes from build_context (NFR-PRIV-4, #170, #208)"
+                )
+
+
 def scan(root: Path = REPO_ROOT) -> list[str]:
     """Every breach of the rule under ``root`` (see the module docstring)."""
-    findings: list[str] = []
+    findings: list[str] = list(_template_findings(root))
     for path in sorted((root / SOURCE_ROOT).rglob("*.py")):
         rel = path.relative_to(root).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
@@ -246,10 +281,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 __all__ = [
+    "CHARACTER_TEMPLATE",
     "CONTEXT",
     "CONTEXT_MODULE",
+    "NARRATOR",
     "SEALERS",
     "SECTIONS",
+    "TEMPLATES",
     "TURN",
     "UNSCOPED",
     "main",

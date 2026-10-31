@@ -510,25 +510,36 @@ def _bounds(definition: StateDefinition) -> list[str]:
     return found
 
 
+EXTERNAL_VALUE = "read from a provider: see its block under External data"
+"""#208: what an externally owned State's narrator line shows instead of its value."""
+
+
 def narrator_line(
     definition: StateDefinition,
     values: Mapping[str | None, Value | UndefinedType],
     names: Mapping[str, str],
+    *,
+    external: bool = False,
 ) -> str:
     """The narrator's line for a State: its shape, constraints, visibility and its value at the
-    turn's start (per character, by name, for a character-scoped one)."""
+    turn's start (per character, by name, for a character-scoped one). An ``external`` one's
+    value is not shown: the line points at its data block (#208)."""
     parts = _shape(definition) + _bounds(definition)
     if definition.visibility is StateVisibility.HIDDEN:
         parts.append("hidden from the characters")
+
+    def shown_value(v: Value | UndefinedType) -> str:
+        return EXTERNAL_VALUE if external else _shown(v, definition)
+
     if definition.scope.value == "character":
         shown = [
-            f"{names.get(k, k)} (id {k}) {_shown(v, definition)}"
+            f"{names.get(k, k)} (id {k}) {shown_value(v)}"
             for k, v in sorted(values.items(), key=lambda kv: names.get(kv[0] or "", "") or "")
             if k is not None
         ]
         now = "; ".join(shown) if shown else _shown(_initial(definition), definition) + " each"
     else:
-        now = _shown(values.get(None, _initial(definition)), definition)
+        now = shown_value(values.get(None, _initial(definition)))
     return f"{definition.name} ({'; '.join(parts)}): {now}"
 
 
@@ -573,6 +584,7 @@ __all__ = [
     "ANY_CHARACTER",
     "CHARACTER_SOURCE",
     "EFFECT_UNRESOLVED",
+    "EXTERNAL_VALUE",
     "INVALID_EFFECT",
     "NARRATED_KINDS",
     "STATE_CONSTRAINT",

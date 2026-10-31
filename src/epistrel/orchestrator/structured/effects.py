@@ -140,21 +140,23 @@ class Book:
 
     def narrator_section(self) -> tuple[tuple[str, ...], str]:
         """The narrator's ``## Tracked values``: every State with its value at the turn's start
-        and its constraints, and the effect syntax (nothing when effects are off)."""
+        and its constraints (an external one's value is in its ``## External data`` block,
+        #208), and the effect syntax (nothing when effects are off)."""
         if not self.on or not self.definitions:
             return (), ""
         found = list(self.definitions.values())
         lines: list[str] = []
         for d in found:
             if d.owner is StateOwner.EXTERNAL:
-                # #205: the pinned value only; an unpinned external State is absent.
+                # #205: only a pinned external State is listed; #208: its value is in its fenced
+                # ``## External data`` block, never on this line.
                 pinned = {
                     scope: Undefined if v is None else v
                     for (name, scope), v in self.external.items()
                     if name == d.name
                 }
                 if pinned:
-                    lines.append(rules.narrator_line(d, pinned, self.names))
+                    lines.append(rules.narrator_line(d, pinned, self.names, external=True))
                 continue
             values = {scope: v for (name, scope), v in self.values.items() if name == d.name}
             lines.append(rules.narrator_line(d, values, self.names))

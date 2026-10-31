@@ -100,7 +100,7 @@ async def test_json_schema_path_validates_in_one_call() -> None:
     (call,) = mal.stub.calls
     assert call.response_schema == "GuardrailVerdict"
     assert all(SCHEMA_INSTRUCTION not in m.content for m in call.messages)  # not in the prompt
-    assert call.fields == ("policy_prompt", "subjects", "text")
+    assert call.fields == ("external_data", "policy_prompt", "subjects", "text")
     assert budget.used == 1
 
 

@@ -20,7 +20,8 @@ the provider's adapter as registered now (#204's ``provider_for``) with the stor
 reads it once (timed as the ``external_read`` stage; no model budget is debited), and pins the
 answer: later ``get``s, every primary's included, return the pinned value with no adapter call.
 An adapter error goes to ``unavailable`` (#206 applies the provider's policy there; until then
-it is raised). ``sanitize`` is #208's hook on each answer before it is pinned.
+it is raised). Each answer is typed and cleaned before it is pinned (``sanitize``, #208): a
+malformed one is an adapter error (``provider_malformed``) that goes to ``unavailable`` too.
 
 **What is recorded** (``stage``): one ``external_read`` event per pinned value, ``input``
 category, at its position: the provider, the value's name, the State and scope key, the query
@@ -54,16 +55,15 @@ from epistrel.core.enums import ExternalValueSource, Provenance, StateScope, Sta
 from epistrel.core.events.types import EXTERNAL_READ, ExternalRead
 from epistrel.core.membership import Position
 from epistrel.core.propositions.model import Proposition
-from epistrel.core.propositions.vocabulary import STATE_VALUE
 from epistrel.core.states import external
 from epistrel.core.states.external import ExternalPin
 from epistrel.core.states.model import StateDefinition, Value, to_json
-from epistrel.core.states.verify import state_of
 from epistrel.observability import stages
 from epistrel.orchestrator.providers.bindings import require_bound
 from epistrel.orchestrator.providers.in_process import InProcessRegistry
 from epistrel.orchestrator.providers.port import Binding, ProviderUnavailable, ReadResult
 from epistrel.orchestrator.providers.registry import provider_for
+from epistrel.orchestrator.providers.sanitize import Sanitized, in_domain, render_block, sanitize
 
 if TYPE_CHECKING:
     import httpx2
@@ -89,6 +89,10 @@ class PinnedValue:
     read_at: datetime
     source: str = "live"
     origin_event_id: str | None = None
+    tier: str = "authoritative"
+    """The provider's ``trust_tier`` as registered when it was read (the block's ``tier``)."""
+    truncated: bool = False
+    """#208: a ``text`` value was capped at ``sanitize.TEXT_MAX`` characters."""
 
     @property
     def value(self) -> Value | None:
@@ -111,7 +115,12 @@ class PinnedValue:
             read_at=self.read_at,
             source=self.source,
             origin_event_id=self.origin_event_id,
+            truncated=self.truncated,
         )
+
+    def block(self) -> str:
+        """#208: this value as the narrator's fenced data block (``sanitize.render_block``)."""
+        return render_block(self.value_name, self.tier, self.value, holder=self.pin.scope_key)
 
 
 def query_hash(
@@ -214,24 +223,27 @@ class PinnedReads:
                 environ=self.environ,
             )
             bound = await core_providers.find_binding(conn, self.story_id, provider_name)
+            row = await core_providers.get_provider(conn, provider_name)
         external_ids = dict(bound.external_ids) if bound is not None else {}
         binding = Binding(self.story_id, provider_name, external_ids)
         reading = time.perf_counter()
         self.live_reads += 1
         try:
             result = await adapter.read(value_name, binding, ref[1])
+            # #208: typed and cleaned before it is pinned; a malformed answer is an adapter
+            # error (provider_malformed), so the unavailability policy applies to it too.
+            clean = self.sanitize(definition, result, row)
         except ProviderUnavailable as error:
             pinned = await self.unavailable(definition, ref, at, error)
             self._pins[ref] = pinned
             return pinned
         finally:
             stages.observe("external_read", time.perf_counter() - reading)
-        result = self.sanitize(definition, result)
         pinned = PinnedValue(
             pin=ExternalPin(
                 state_id=ref[0],
                 scope_key=ref[1],
-                value=result.value,
+                value=clean.value,
                 position=at,
                 source=ExternalValueSource.READ,
             ),
@@ -240,15 +252,29 @@ class PinnedReads:
             query_hash=query_hash(provider_name, value_name, external_ids, ref[1]),
             raw_hash=result.raw_hash,
             read_at=result.at,
+            tier=row.trust_tier,
+            truncated=clean.truncated,
         )
         self._pins[ref] = pinned
         log.debug("external read pinned", extra={"provider": provider_name, "value": value_name})
         return pinned
 
-    def sanitize(self, definition: StateDefinition, result: ReadResult) -> ReadResult:
-        """#208's hook on an answer before it is pinned (untrusted content): as is, here."""
-        del definition
-        return result
+    def sanitize(
+        self, definition: StateDefinition, result: ReadResult, row: core_providers.ProviderRow
+    ) -> Sanitized:
+        """#208: an answer typed against the manifest's declared type and the State, and a
+        text value cleaned, before it is pinned (``providers.sanitize``); ``ProviderMalformed``
+        otherwise."""
+        value_name = str(definition.external_value_name or definition.name)
+        declared = row.values().get(value_name, {}).get("type")
+        return sanitize(
+            result.value,
+            str(declared),
+            provider=row.name,
+            name=value_name,
+            state_type=definition.type,
+            allowed_values=definition.constraints.allowed_values,
+        )
 
     async def unavailable(
         self,
@@ -270,9 +296,8 @@ class PinnedReads:
         defined = await self.definitions()
         found: list[PinnedValue] = []
         for proposition, beat, step in claims:
-            if proposition.predicate_id != STATE_VALUE:
-                continue
-            definition = defined.get(state_of(proposition) or "")
+            # #208's domain gating: a value is read only for a claim on the State it owns.
+            definition = next((d for d in defined.values() if in_domain(d, proposition)), None)
             if definition is None:
                 continue
             ref = (str(definition.id), scope_of(definition, proposition.subject_id))
@@ -305,6 +330,11 @@ class PinnedReads:
             for p in self._pins.values()
             if p.pin.state_id in names
         }
+
+    def blocks(self) -> tuple[str, ...]:
+        """#208: the narrator's ``external_data``: one fenced block per pinned value, in the
+        order they were read (never a character's: ``check-character-context``)."""
+        return tuple(p.block() for p in self._pins.values())
 
     def stage(self, op: Operation) -> None:
         """Stage one ``external_read`` event per pinned value, at its position."""

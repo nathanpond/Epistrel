@@ -1,7 +1,8 @@
 """C-06: external-provider conformance (docs/04; FR-EXT-1,2,5,6), the M6 parts #204 builds:
 registration and runtime registration updates (``test_c_06__registration``), and each story's
-binding to its providers (``test_c_06__bindings``). The live-read, verification-routing and
-untrusted-content clauses are #205's and #207's parts of the same test ID.
+binding to its providers (``test_c_06__bindings``). The live-read (#205), verification-routing
+(#207) and untrusted-content (#208, ``test_c_06__untrusted``) clauses are parts of the same
+test ID.
 
 The C-06 conformance helpers (``conformance_read``) run the same assertions over both adapters
 (C-07's M6 part, ``test_c_07.py``)."""
@@ -9,6 +10,7 @@ The C-06 conformance helpers (``conformance_read``) run the same assertions over
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -20,7 +22,8 @@ from epistrel.core.ids import new_ulid
 from epistrel.core.states import verify as sv
 from epistrel.engine import Engine
 from epistrel.orchestrator.providers import registry
-from epistrel.orchestrator.providers.port import Binding, ProviderUnavailable
+from epistrel.orchestrator.providers.pinned import PinnedReads
+from epistrel.orchestrator.providers.port import Binding, ProviderMalformed, ProviderUnavailable
 from tests import canon_support as canon
 from tests import effect_support as es
 from tests import genesis_support as g
@@ -514,4 +517,83 @@ async def test_c_06__live_read(
                     assert "300 gold left" in text_out
             values = [r.payload["value"] for r in await ps.external_reads(engine, story)]
             assert values == [300, 300]
+            await ss.set_level(engine, story, None)
+
+
+MALFORMED: tuple[tuple[str, Any], ...] = (
+    ("object", {"amount": 300}),
+    ("array", [300]),
+    ("string", "300"),
+    ("boolean", True),
+    ("not_finite", "NaN"),
+)
+"""Answers that are not a number at ``value_path`` (``NaN`` as a bare JSON token / a Decimal)."""
+
+
+@pytest.mark.part("M6", "FR-EXT-5")
+@pytest.mark.parametrize("transport", ["in_process", "http"])
+async def test_c_06__untrusted(
+    pg_url: str,
+    engine: AsyncEngine,
+    states_delivered: None,
+    monkeypatch: pytest.MonkeyPatch,
+    transport: str,
+) -> None:
+    """Over either adapter, an answer whose ``value_path`` resolves to an object or an array
+    instead of a scalar, or to a value of another type (a string, a boolean, a non-finite
+    number for a ``number``), is ``provider_malformed``: the adapter refuses it, the turn's
+    ``PinnedReads`` hands it to the unavailability seam (#206's policy) and pins nothing (no
+    partial parse). Complement: a well-formed 300 is pinned."""
+    settings = auth_settings(pg_url, model_adapter="stub")
+    name = ps.unique_name("ledger")
+    with ps.stub_server() as server:
+        async with (
+            ps.allowed_hosts(engine, [server.host]),
+            respond_client(settings, engine) as (client, lib),
+        ):
+            fake = ps.ScriptedProvider(name)
+            if transport == "http":
+                await ps.register(engine, ps.http_spec(server.base_url, name))
+            else:
+                await ps.register(engine, ps.in_process_spec(name))
+                fake.attach(lib)
+            story, ids = await structured_story(client, "Cal", "Mira")
+            cal = ids["Cal"]
+            await ss.set_level(engine, story, "on")
+            gold = await ps.external_gold(engine, story, name)
+            seen: list[ProviderUnavailable] = []
+
+            async def unavailable(
+                self: PinnedReads, definition: Any, ref: Any, position: Any, error: Any
+            ) -> Any:
+                seen.append(error)
+                raise error
+
+            monkeypatch.setattr(PinnedReads, "unavailable", unavailable)
+
+            def serve(answer: Any) -> None:
+                if transport == "http":
+                    raw = b'{"balance": NaN}' if answer == "NaN" else None
+                    reply = ps.Reply(200, {"balance": answer}, content=raw)
+                    server.route("GET", "/players/p-1/gold", reply)
+                else:
+                    fake.script("gold", Decimal("NaN") if answer == "NaN" else answer)
+
+            for case, answer in MALFORMED:
+                serve(answer)
+                with pytest.raises(ProviderMalformed) as refused:
+                    await _read(engine, lib, name, Binding(story, name, {"player": "p-1"}))
+                assert refused.value.reason == "provider_malformed", case
+                pins = PinnedReads(engine, story, in_process=lib.in_process_providers)
+                with pytest.raises(ProviderMalformed):
+                    await pins.get((str(gold.id), cal))
+                assert pins.values() == [], case
+                assert seen[-1].reason == "provider_malformed", case
+            assert len(seen) == len(MALFORMED)
+
+            serve(300)
+            pins = PinnedReads(engine, story, in_process=lib.in_process_providers)
+            pinned = await pins.get((str(gold.id), cal))
+            assert pinned.value == 300
+            assert len(seen) == len(MALFORMED)
             await ss.set_level(engine, story, None)

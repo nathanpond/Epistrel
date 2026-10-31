@@ -30,13 +30,13 @@ from epistrel.core.enums import FactAuthority, RecordProvenance, StateType
 from epistrel.core.events.types import EXTERNAL_READ
 from epistrel.core.membership import Position
 from epistrel.core.propositions.model import Interval
-from epistrel.core.propositions.vocabulary import STATE_VALUE
 from epistrel.core.states import verify as state_verify
 from epistrel.core.states.model import from_json
 from epistrel.core.tables import events
 from epistrel.core.verify.rules import OwnedValue, VerdictKind
 from epistrel.core.visibility import Visibility
 from epistrel.orchestrator.providers.pinned import scope_of
+from epistrel.orchestrator.providers.sanitize import in_domain
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -69,12 +69,12 @@ def references(pins: PinnedReads, checked: Sequence[Any]) -> list[Reference]:
         proposition = c.claim.proposition
         if result is None or result.kind is not VerdictKind.SUPPORTED or proposition is None:
             continue
-        if proposition.predicate_id != STATE_VALUE or proposition.literal is None:
+        if proposition.literal is None:
             continue
-        definition = defined.get(state_verify.state_of(proposition) or "")
+        # #208's domain gating: only a claim on the State the provider owns.
+        definition = next((d for d in defined.values() if in_domain(d, proposition)), None)
         if definition is None:
             continue
-
         ref = (str(definition.id), scope_of(definition, proposition.subject_id))
         pinned = pins.pinned(ref[0], ref[1], None)
         if pinned is None or pinned.value is None or ref in found:

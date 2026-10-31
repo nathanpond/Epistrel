@@ -4382,6 +4382,8 @@ async def play(
             working_memory=read.narrator_memory,
             tracked=tracked,
             tracked_syntax=tracked_syntax,
+            # #208: the pinned provider values, fenced data for the narrator alone.
+            external=pins.blocks() if book.on else (),
         )
         # #174 (FR-MULTI-6): the primaries' order, the request's or the director's.
         ordered = multi.Ordered(tuple(p.id for p in primaries), multi.REQUEST)

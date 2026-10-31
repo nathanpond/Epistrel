@@ -11,8 +11,10 @@ resulting values when the provider returns them (FR-EXT-20).
 An adapter that cannot answer at all (the endpoint is down, a secret is missing, a host is not
 allowed after substitution, no callable is registered in this process) raises
 ``ProviderUnavailable`` with a ``reason`` code: the provider's unavailability policy applies
-(#206). Nothing an adapter raises or logs carries a URL with substituted ids, a secret or a
-value (invariant 3): only the provider's name, the value's name and the reason.
+(#206). An answer that is not a value of the declared type is its subclass ``ProviderMalformed``
+(``provider_malformed``, #208), handled the same way. Nothing an adapter raises or logs carries a
+URL with substituted ids, a secret or a value (invariant 3): only the provider's name, the
+value's name and the reason.
 
 Two adapters implement the port: ``HttpManifestProvider`` (``http_manifest``) and
 ``InProcessProvider`` (``in_process``). The rest of the Orchestrator sees only this protocol
@@ -76,8 +78,9 @@ class WriteOutcome:
 
 class ProviderUnavailable(Exception):
     """An adapter could not answer (see the module docstring). ``reason`` is a code such as
-    ``timeout``, ``unreachable``, ``status``, ``redirect``, ``not_json``, ``path``, ``type``,
-    ``secret_missing``, ``binding_missing``, ``host_not_allowed`` or ``not_registered``."""
+    ``timeout``, ``unreachable``, ``status``, ``redirect``, ``not_json``, ``path``,
+    ``secret_missing``, ``binding_missing``, ``host_not_allowed``, ``not_registered`` or
+    ``provider_malformed`` (``ProviderMalformed``)."""
 
     def __init__(self, provider: str, value: str | None, reason: str) -> None:
         self.provider = provider
@@ -85,6 +88,23 @@ class ProviderUnavailable(Exception):
         self.reason = reason
         named = f"{provider}.{value}" if value else provider
         super().__init__(f"provider {named} unavailable: {reason}")
+
+
+MALFORMED = "provider_malformed"
+"""``ProviderMalformed.reason``: the answer is not a value of the declared type (#208)."""
+
+
+class ProviderMalformed(ProviderUnavailable):
+    """An adapter's answer is not a value of the manifest's declared type (FR-EXT-5; #208): the
+    ``value_path`` resolved to an object or an array instead of a scalar, a value of another
+    type, an enum value the State does not allow, or a number that is not finite or has more
+    significant digits than a State holds. Nothing of it is used (no partial parse): it is an
+    adapter error (``reason = provider_malformed``) and the unavailability policy applies
+    (#206). ``detail`` says which check failed (``type``, ``allowed_values``, ``precision``)."""
+
+    def __init__(self, provider: str, value: str | None, detail: str = "type") -> None:
+        super().__init__(provider, value, MALFORMED)
+        self.detail = detail
 
 
 @runtime_checkable
@@ -108,27 +128,32 @@ def raw_hash(raw: bytes | Any) -> str:
 
 def coerce(provider: str, value: str, declared: str, found: Any) -> Decimal | bool | str:
     """``found`` as the manifest's ``declared`` type (``number``: a JSON number, never a
-    boolean, as a ``Decimal``; ``boolean``; ``enum`` and ``text``: a string); else
-    ``ProviderUnavailable`` (``type``)."""
+    boolean, finite, as a ``Decimal``; ``boolean``; ``enum`` and ``text``: a string); else
+    ``ProviderMalformed`` (an object or an array included: no partial parse, #208)."""
     if declared == "number":
         if isinstance(found, bool) or not isinstance(found, int | float | Decimal):
-            raise ProviderUnavailable(provider, value, "type")
-        return Decimal(str(found))
+            raise ProviderMalformed(provider, value)
+        typed = Decimal(str(found))
+        if not typed.is_finite():
+            raise ProviderMalformed(provider, value)
+        return typed
     if declared == "boolean":
         if not isinstance(found, bool):
-            raise ProviderUnavailable(provider, value, "type")
+            raise ProviderMalformed(provider, value)
         return found
     if not isinstance(found, str):
-        raise ProviderUnavailable(provider, value, "type")
+        raise ProviderMalformed(provider, value)
     return found
 
 
 __all__ = [
+    "MALFORMED",
     "OUTCOMES",
     "Binding",
     "Effect",
     "ExternalProvider",
     "OutcomeStatus",
+    "ProviderMalformed",
     "ProviderUnavailable",
     "ReadResult",
     "WriteOutcome",

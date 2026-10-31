@@ -86,6 +86,7 @@ When {{ character.name }} refuses or changes the subject: {{ character.deflectio
 {{ tracked_syntax }}
 
 {% endif %}
+{% include "external_data.j2" %}
 ## Repair
 This `{{ beat_kind }}` beat{% if voiced_characters %} of {{ voiced_characters | join(", ") }}{% endif %} broke the story's facts:
 {{ rejected_text }}

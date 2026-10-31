@@ -37,9 +37,16 @@ scene and each introduced character with its clue.
 value), and the narrator's from ``orchestrator.structured.effects.narrator_lines`` (every State,
 hidden ones included, with its value at the turn's start and its constraints).
 
+**External data** (#208, FR-EXT-5): a value a provider answered reaches only the narrator, as
+one fenced block per pinned value in ``## External data`` (``external_data``,
+``orchestrator.providers.sanitize``); its ``## Tracked values`` line points at the block and
+carries no value. A character render never gets the section (``check-character-context``
+classifies it narrator-only): it learns a value only as a belief through ``build_context``.
+
 **The cap** (``render.prompt_token_budget``, ``len // 4`` tokens): over it, retrieved items
 are dropped from the end first, then canon lines, then working memory from the oldest beat
-(``## Just now`` and ``## Tracked values`` count against the cap and are never dropped). The
+(``## Just now``, ``## Tracked values`` and ``## External data`` count against the cap and are
+never dropped). The
 belief state and the private memories sit with the definition and the pins (U-31's top tier):
 they are never dropped before a retrieved item (they are bounded at the source,
 ``context.BELIEFS_MAX`` and ``context.PRIVATE_MAX``).
@@ -93,6 +100,10 @@ class RenderSections:
     """#187: ``## Tracked values``: counted against the cap, never dropped by it."""
     tracked_syntax: str = ""
     """#187: the effect syntax and its example (with ``tracked``)."""
+    external: tuple[str, ...] = ()
+    """#208: the narrator's ``## External data``, one fenced block per pinned provider value
+    (``PinnedReads.blocks``): counted against the cap, never dropped by it, never a
+    character's (``character_inputs`` empties it)."""
 
 
 RESOLUTION_STEERING = (
@@ -125,6 +136,7 @@ def _size(sections: RenderSections) -> int:
         *sections.just_now,
         *sections.tracked,
         sections.tracked_syntax,
+        *sections.external,
         *sections.retrieved,
         *sections.canon,
     )
@@ -188,6 +200,9 @@ def character_inputs(
             just_now=context.just_now,
             tracked=context.tracked,
             tracked_syntax=context.tracked_syntax,
+            # #208: provider content is the narrator's alone; a character learns a value only
+            # as a belief through build_context (#170).
+            external=(),
             retrieved=context.retrieved,
             canon=context.canon,
         ),
@@ -256,6 +271,7 @@ def narrator_inputs(
         open_references=list(open_references),
         tracked_values=list(s.tracked),
         tracked_syntax=s.tracked_syntax,
+        external_data=list(s.external),
     )
 
 

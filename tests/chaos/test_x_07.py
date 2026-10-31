@@ -19,11 +19,13 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -931,9 +933,77 @@ async def _task_ran(engine: AsyncEngine, name: str) -> bool:
 
 
 def _free_port() -> int:
+    """A port free a moment ago: ``_workers`` starts a worker on it again elsewhere if someone
+    took it before the worker bound it (#468)."""
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+BOUND = re.compile(r"Uvicorn running on http://127\.0\.0\.1:(\d+)")
+"""uvicorn's INFO line once it bound its port (the CLI takes no port 0 to report one)."""
+IN_USE = "address already in use"
+"""uvicorn's ERROR line when its port was taken: it exits."""
+WORKER_ATTEMPTS = 3
+WORKER_START_S = 30.0
+
+
+class _Worker:
+    """An ``epistrel worker`` process on ``port``; a thread drains its output (its JSON log lines
+    on stdout at INFO, and stderr), keeping the last lines and noting whether it bound its port
+    or found it taken."""
+
+    def __init__(self, pg_url: str, port: int) -> None:
+        self.port = port
+        self.proc = _spawn(pg_url, port)
+        self.lines: deque[str] = deque(maxlen=200)
+        self.bound = threading.Event()
+        self.in_use = False
+        self.drain = threading.Thread(target=self._drain, daemon=True)
+        self.drain.start()
+
+    def _drain(self) -> None:
+        assert self.proc.stdout is not None
+        for line in self.proc.stdout:
+            self.lines.append(line)
+            found = BOUND.search(line)
+            if found and int(found.group(1)) == self.port:
+                self.bound.set()
+            elif IN_USE in line.lower():
+                self.in_use = True
+
+    def output(self) -> str:
+        return "".join(self.lines)
+
+
+async def _workers(pg_url: str, n: int) -> list[_Worker]:
+    """``n`` workers started together, each on a port it bound itself: one whose port was taken
+    between ``_free_port`` and its bind is started again on a fresh port (``WORKER_ATTEMPTS`` at
+    most, #468). Until a worker has bound, nothing talks to its port."""
+    workers = [_Worker(pg_url, _free_port()) for _ in range(n)]
+    started: list[_Worker] = []
+    try:
+        for slot in range(n):
+            for attempt in range(1, WORKER_ATTEMPTS + 1):
+                worker = workers[slot]
+                deadline = time.monotonic() + WORKER_START_S
+                while not worker.bound.is_set() and worker.proc.poll() is None:
+                    assert time.monotonic() < deadline, f"worker not bound: {worker.output()}"
+                    await asyncio.sleep(0.05)
+                if worker.bound.is_set():
+                    break
+                worker.proc.wait(timeout=10)
+                worker.drain.join(timeout=5)  # it has read the last lines
+                assert worker.in_use, worker.output()
+                assert attempt < WORKER_ATTEMPTS, worker.output()
+                workers[slot] = _Worker(pg_url, _free_port())
+            started.append(workers[slot])
+    except BaseException:
+        for worker in workers:
+            worker.proc.kill()
+            worker.proc.wait(timeout=10)
+        raise
+    return started
 
 
 def _spawn(pg_url: str, port: int) -> subprocess.Popen[str]:
@@ -943,7 +1013,8 @@ def _spawn(pg_url: str, port: int) -> subprocess.Popen[str]:
         "EPISTREL_SERVICE_CREDENTIALS": CREDENTIAL_A,
         "EPISTREL_MODEL_ADAPTER": "stub",
         "EPISTREL_WORKER_POLL_INTERVAL": "0.3",
-        "EPISTREL_LOG_LEVEL": "WARNING",
+        # INFO: uvicorn's line once it bound its port (``BOUND``).
+        "EPISTREL_LOG_LEVEL": "INFO",
         "EPISTREL_HOST": "127.0.0.1",
         # The start-up check needs a writable media root (#105); never one under the repository.
         "EPISTREL_MEDIA_ROOT": str(MEDIA_ROOT),
@@ -955,8 +1026,8 @@ def _spawn(pg_url: str, port: int) -> subprocess.Popen[str]:
     return subprocess.Popen(
         [sys.executable, "-m", "epistrel.cli", "worker", "--port", str(port)],
         env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         text=True,
     )
 
@@ -974,13 +1045,13 @@ async def test_x_07__processes(pg_url: str, engine: AsyncEngine, quiet: Probe) -
         "UPDATE recurring_tasks SET next_run_at = now() - interval '3 hours 5 minutes' "
         "WHERE name = 'idempotency_purge'",
     )
-    ports = [_free_port(), _free_port()]
-    procs = [_spawn(pg_url, port) for port in ports]
+    workers = await _workers(pg_url, 2)
+    ports = [w.port for w in workers]
     try:
 
         async def all_alive() -> bool:
-            for proc in procs:
-                assert proc.poll() is None, proc.stderr.read() if proc.stderr else ""
+            for worker in workers:
+                assert worker.proc.poll() is None, worker.output()
             return bool(await _scalar(engine, "SELECT count(*) FROM worker_heartbeats") == 4)
 
         await _wait_for(all_alive, within=30)
@@ -1002,9 +1073,9 @@ async def test_x_07__processes(pg_url: str, engine: AsyncEngine, quiet: Probe) -
             routes = await client.get(f"http://127.0.0.1:{ports[0]}/stories", headers=_bearer())
             assert routes.status_code == 404
     finally:
-        for proc in procs:
-            proc.kill()
-            proc.wait(timeout=10)
+        for worker in workers:
+            worker.proc.kill()
+            worker.proc.wait(timeout=10)
     assert await _scalar(engine, "SELECT count(*) FROM worker_heartbeats") == 4  # no clean stop
     await _execute(engine, "UPDATE worker_heartbeats SET at = at - interval '61 seconds'")
     api = auth_settings(pg_url)
@@ -1012,6 +1083,51 @@ async def test_x_07__processes(pg_url: str, engine: AsyncEngine, quiet: Probe) -
     assert body["status"] == "degraded"
     assert body["checks"]["workers"]["alive"] == 0
     assert body["checks"]["workers"]["last_heartbeat_s"] >= 61
+
+
+@pytest.mark.chaos
+@pytest.mark.chaos_quick
+@pytest.mark.part("M2", "NFR-REL-5; NFR-OPS-1")
+async def test_x_07__processes_port_taken(
+    pg_url: str, engine: AsyncEngine, quiet: Probe, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A worker whose port another process took before it bound it (#468) exits with uvicorn's
+    ``address already in use``; ``_workers`` starts it again on a fresh port, and only that one
+    runs: its heartbeats are the only ones (the first stopped cleanly), and nothing talked to
+    the taken port."""
+    with socket.socket() as other:
+        other.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        other.bind(("127.0.0.1", 0))
+        other.listen()
+        other.setblocking(False)
+        taken = int(other.getsockname()[1])
+        picked: list[int] = []
+        fresh = _free_port
+
+        def first_taken() -> int:
+            picked.append(taken if not picked else fresh())
+            return picked[-1]
+
+        monkeypatch.setattr(sys.modules[__name__], "_free_port", first_taken)
+        (worker,) = await _workers(pg_url, 1)
+        try:
+            assert len(picked) == 2
+            assert worker.port == picked[1] != taken
+
+            async def alive() -> bool:
+                assert worker.proc.poll() is None, worker.output()
+                return bool(await _scalar(engine, "SELECT count(*) FROM worker_heartbeats") == 2)
+
+            await _wait_for(alive, within=30)
+            async with httpx.AsyncClient() as client:
+                health = await client.get(f"http://127.0.0.1:{worker.port}/health")
+                assert health.status_code == 200
+                assert health.json()["checks"]["workers"]["alive"] == 2
+        finally:
+            worker.proc.kill()
+            worker.proc.wait(timeout=10)
+        with pytest.raises(BlockingIOError):
+            other.accept()
 
 
 # -- the deployment: compose, image, entrypoint -------------------------------------------------

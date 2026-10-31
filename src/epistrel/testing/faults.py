@@ -22,6 +22,15 @@ port. Options the child applies to itself before serving:
 - ``mode``: ``EPISTREL_MODE`` (``all`` by default; ``api`` runs no job worker, so a harness
   drains jobs itself).
 
+**Its port (#468).** The child binds its listening socket itself before serving and reports the
+port it got (``EPISTREL-FAULT listening <port>``), so no port is picked and then bound later by
+someone else: the first start asks for port 0 (any free port), and a restart asks for the same
+port again, so a client's ``base_url`` stays valid. A child that finds its port taken reports
+``EPISTREL-FAULT address-in-use <port>`` and exits; ``start`` then tries again on a fresh port
+(``START_ATTEMPTS`` in all, ``port_retries`` counts them), and ``base_url`` follows. Until the
+child reports, the harness never talks to the port, so it cannot reach another process that
+holds it.
+
 The child's media root (``EPISTREL_MEDIA_ROOT``, #105) and erasure ledger directory
 (``EPISTREL_ERASURE_LEDGER_DIR``, #125) are temporary directories of its own, kept across restarts
 and removed when the harness's context ends (or the harness is collected), so a child never
@@ -42,6 +51,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import errno
 import os
 import shutil
 import signal
@@ -57,12 +67,21 @@ from epistrel.testing.crash import POINTS, CrashPlan, crash_at, hit
 
 FAULT_MARKER = "EPISTREL-FAULT"
 BEFORE_COMMIT = "before-commit"
+LISTENING = "listening"
+"""The child bound its port: ``listening <port>`` (#468)."""
+ADDRESS_IN_USE = "address-in-use"
+"""The child's port was taken: ``address-in-use <port>``; it exits with ``EX_ADDRESS_IN_USE``."""
+EX_ADDRESS_IN_USE = 75
+"""The child's exit status when its port was taken (``EX_TEMPFAIL``: try again)."""
 HOST = "127.0.0.1"
 START_TIMEOUT_S = 30.0
 MARKER_TIMEOUT_S = 30.0
+START_ATTEMPTS = 3
+"""How many children ``start`` runs before giving up on finding a free port (#468)."""
 
 
 def free_port() -> int:
+    """A port free a moment ago (nothing holds it for the caller: prefer binding port 0)."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind((HOST, 0))
         port: int = sock.getsockname()[1]
@@ -87,7 +106,8 @@ class EngineProcess:
     ) -> None:
         self.database_url = database_url
         self.credential = credential
-        self.port = port or free_port()
+        self.port = port or 0
+        """The child's port: 0 until the first start reports one (see the module docstring)."""
         self.lease_s = lease_s
         self.pause_before_commit = pause_before_commit
         self.stub_latency_s = stub_latency_s
@@ -101,6 +121,8 @@ class EngineProcess:
         self.process: asyncio.subprocess.Process | None = None
         self.markers: asyncio.Queue[str] = asyncio.Queue()
         self.starts = 0
+        self.port_retries = 0
+        """Starts tried again on a fresh port because the port asked for was taken (#468)."""
         self._reader: asyncio.Task[None] | None = None
 
     @property
@@ -124,9 +146,22 @@ class EngineProcess:
         }
 
     async def start(self) -> None:
-        """Start the child and wait until ``/health`` answers."""
+        """Start the child and wait until ``/health`` answers: on the port it last had (any free
+        port the first time), or on a fresh one when that port was taken (#468)."""
         if self.process is not None and self.process.returncode is None:
             raise RuntimeError("the engine process is already running")
+        for _ in range(START_ATTEMPTS):
+            if await self._spawn():
+                self.starts += 1
+                await self._wait_healthy()
+                return
+            self.port = 0
+            self.port_retries += 1
+        raise RuntimeError(f"the engine process found no free port in {START_ATTEMPTS} attempts")
+
+    async def _spawn(self) -> bool:
+        """Run a child on ``self.port`` and wait until it bound it (``True``, ``self.port`` the
+        port it got) or found it taken (``False``, the child reaped)."""
         env = self.child_env()
         args = [
             sys.executable,
@@ -142,22 +177,45 @@ class EngineProcess:
             args.append("--pause-before-commit")
         if self.turn_start_delay_s > 0:
             args += ["--turn-start-delay-s", str(self.turn_start_delay_s)]
+        bound: asyncio.Future[int | None] = asyncio.get_running_loop().create_future()
         self.process = await asyncio.create_subprocess_exec(
             *args,
             env=env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        self._reader = asyncio.create_task(self._read_markers(self.process))
-        self.starts += 1
-        await self._wait_healthy()
+        self._reader = asyncio.create_task(self._read_markers(self.process, bound))
+        try:
+            port = await asyncio.wait_for(bound, START_TIMEOUT_S)
+        except BaseException:
+            await self.kill()  # a child that never bound, or one that died first: reaped
+            raise
+        if port is None:
+            await self.process.wait()
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(self._reader, 5.0)
+            return False
+        self.port = port
+        return True
 
-    async def _read_markers(self, process: asyncio.subprocess.Process) -> None:
+    async def _read_markers(
+        self, process: asyncio.subprocess.Process, bound: asyncio.Future[int | None]
+    ) -> None:
         assert process.stdout is not None  # noqa: S101 - piped above
-        while line := await process.stdout.readline():
-            text = line.decode(errors="replace").strip()
-            if text.startswith(FAULT_MARKER):
-                await self.markers.put(text.removeprefix(FAULT_MARKER).strip())
+        try:
+            while line := await process.stdout.readline():
+                text = line.decode(errors="replace").strip()
+                if not text.startswith(FAULT_MARKER):
+                    continue
+                marker = text.removeprefix(FAULT_MARKER).strip()
+                name, _, value = marker.partition(" ")
+                if name in (LISTENING, ADDRESS_IN_USE) and not bound.done():
+                    bound.set_result(int(value) if name == LISTENING else None)
+                else:
+                    await self.markers.put(marker)
+        finally:
+            if not bound.done():
+                bound.set_exception(RuntimeError("the engine process exited during start-up"))
 
     async def _wait_healthy(self) -> None:
         loop = asyncio.get_running_loop()
@@ -259,7 +317,7 @@ def _delay_turn_starts(delay_s: float) -> None:
 
 def serve(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="epistrel.testing.faults serve")
-    parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("--port", type=int, required=True, help="0: any free port")
     parser.add_argument("--lease-s", type=float, default=1.0)
     parser.add_argument("--pause-before-commit", action="store_true")
     parser.add_argument("--turn-start-delay-s", type=float, default=0.0)
@@ -277,8 +335,30 @@ def serve(argv: list[str] | None = None) -> int:
         _pause_turn_commits()
     if args.turn_start_delay_s > 0:
         _delay_turn_starts(args.turn_start_delay_s)
-    uvicorn.run(create_app(), host=HOST, port=args.port, log_level="warning")
+    sock = _bind(args.port)
+    if sock is None:
+        print(f"{FAULT_MARKER} {ADDRESS_IN_USE} {args.port}", flush=True)
+        return EX_ADDRESS_IN_USE
+    port = int(sock.getsockname()[1])
+    print(f"{FAULT_MARKER} {LISTENING} {port}", flush=True)
+    config = uvicorn.Config(create_app(), host=HOST, port=port, log_level="warning")
+    uvicorn.Server(config).run(sockets=[sock])
     return 0
+
+
+def _bind(port: int) -> socket.socket | None:
+    """The child's listening socket on ``port`` (0: any free port), bound as uvicorn binds its
+    own (``SO_REUSEADDR``); ``None`` when another socket holds the port (#468)."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind((HOST, port))
+    except OSError as exc:
+        sock.close()
+        if exc.errno == errno.EADDRINUSE:
+            return None
+        raise
+    return sock
 
 
 @contextlib.contextmanager
@@ -304,9 +384,13 @@ if __name__ == "__main__":  # pragma: no cover - the child process entry point
 
 
 __all__ = [
+    "ADDRESS_IN_USE",
     "BEFORE_COMMIT",
+    "EX_ADDRESS_IN_USE",
     "FAULT_MARKER",
+    "LISTENING",
     "POINTS",
+    "START_ATTEMPTS",
     "CrashPlan",
     "EngineProcess",
     "crash_at",

@@ -598,6 +598,21 @@ class IdempotentCall:
 
     # -- bind (inside the commit transaction) --------------------------------------------------
 
+    async def hold(self, conn: AsyncConnection) -> None:
+        """Lock the key's row in the caller's transaction until it ends, ahead of a later
+        ``bind`` there. A ``REPEATABLE READ`` transaction that binds calls this as its first
+        statement (the fork's snapshot): otherwise this call's own lease renewal, committing
+        after the snapshot was taken, fails the bind with a serialization failure on every
+        attempt that outlasts a renewal period (#637). The renewal waits for the transaction
+        instead; a takeover cannot follow it, since the committed bind sets ``operation_id``."""
+        if not self.claimed:
+            return
+        await conn.execute(
+            select(idempotency_keys.c.key)
+            .where(self._where(), idempotency_keys.c.owner_token == self.token)
+            .with_for_update(key_share=True)
+        )
+
     async def bind(self, conn: AsyncConnection, operation: Any) -> None:
         """Bind this call's committing ``operation`` to the key, in the commit transaction.
 

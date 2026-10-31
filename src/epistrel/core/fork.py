@@ -33,6 +33,8 @@ independent copy under new ids, isolated from the source from the moment it exis
   turn committing meanwhile is wholly in or wholly out (FR-CONC-10). A serialization failure is
   retried (``SNAPSHOT_ATTEMPTS``) after a jittered, doubling pause (``snapshot_backoff_s``), so
   the retries leave the contention that failed them (#510); then 503 ``database_unavailable``.
+  Under an idempotent call the key's row is locked as the snapshot's first statement, so the
+  call's own lease renewal waits for the copy rather than failing its bind (#637).
 - **The new story.** Status ``active`` (an archived source can be forked), its settings,
   rating, engine profile and ``config_revision`` copied (a retired rating or a deleted profile
   too: a fork continues its story, so it is not a new assignment; #106), owned by the requester
@@ -379,6 +381,11 @@ async def _copy(
 ) -> Forked:
     """The whole copy, inside ``conn``'s transaction (REPEATABLE READ from its first read)."""
     await conn.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
+    # The key the copy binds at its end is locked first, so this call's own lease renewal
+    # cannot commit under the snapshot and fail the bind (#637).
+    call = idempotency.current_call()
+    if call is not None:
+        await call.hold(conn)
     row = (await conn.execute(select(stories).where(stories.c.id == source))).one_or_none()
     if row is None:
         raise StoryNotFound(f"story {source} does not exist", {"story_id": source})
@@ -438,7 +445,6 @@ async def _copy(
     await reindex_story(conn, fork_id)
     for statement in _TEARDOWN:
         await conn.exec_driver_sql(statement)
-    call = idempotency.current_call()
     if call is not None:
         await call.bind(conn, _Genesis(genesis))
     crash.hit("before_commit", CRASH_KIND)

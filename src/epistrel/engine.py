@@ -323,6 +323,9 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "analyze_state_proposals": ResultCodec.of(state_proposals.AnalysisQueued, status=202),
     "approve_state_proposal": ResultCodec.of(state_proposals.ProposalApproved, status=201),
     "dismiss_state_proposal": ResultCodec.of(state_proposals.ProposalDismissed),
+    # #218: the explicit reconciliation actions (settle-now, a compensating effect).
+    "settle_now": ResultCodec.of(settlement_job.SettledNow),
+    "compensate": ResultCodec.of(settlement_job.Compensated, status=201),
     "model_entity": ResultCodec.of(stories.CharacterWeighted, status=201),
     "create_content_rating": ResultCodec.of(
         ratings.RatingWrite, status=201, revision_field=_CONFIG
@@ -3345,6 +3348,75 @@ class Engine:
         recorded outcome. A confirmed or cancelled effect is not listed. 404 for an unknown
         story."""
         return await core_outbox.listings(self.db, story_id)
+
+    async def settle_now(
+        self, ctx: RequestContext, story_id: str, outbox_id: str
+    ) -> settlement_job.SettledNow:
+        """Settle a listed effect now (FR-EXT-22; #218): for an effect listed
+        ``late_success_after_expiry``, ``confirmed_discarded_origin`` or
+        ``settlement_conflict``, re-verify its transfer against current state at this moment
+        (availability, ownership, the State bounds) and apply it at the next inter-turn slot as a
+        late settlement (``source = settlement``), resolving the listing; ``result: queued``
+        while an incomplete staged turn holds the slot. 409 ``settle_refused {reasons}`` when
+        re-verification fails (nothing changes); 404 ``not_found`` (``reason: no_listing``) for
+        an effect not listed so; 409 ``module_off``, ``story_archived`` or ``story_paused``."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> settlement_job.SettledNow:
+            await self.check_expected_revision(ctx, story_id)
+            return await settlement_job.settle_now(
+                self.db,
+                story_id,
+                outbox_id,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+                registry=self.in_process_providers,
+            )
+
+        return await self._keyed(
+            ctx,
+            "settle_now",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "outbox_id": outbox_id},
+        )
+
+    async def compensate(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        outbox_id: str,
+        request: core_outbox.CompensateRequest,
+    ) -> settlement_job.Compensated:
+        """Compensate a listed effect (FR-EXT-22; #218): issue ``request.effect`` (#187's
+        ``{state, scope_key?, delta | value, reason}`` on an externally owned State) as a new
+        ``intended`` outbox row naming the listed one (``compensates``), on a new inter-turn slot
+        operation, dispatched like any other (REST 201). The listed effect shows ``status:
+        compensated`` until the compensating row is confirmed. 422 ``provider_read_only`` when
+        the State's provider is not write-capable, ``state_unpermitted`` for a State no external
+        provider owns; 404 ``not_found`` (``reason: no_listing``) for an effect not listed
+        ``late_success_after_expiry``, ``confirmed_discarded_origin`` or
+        ``settlement_conflict``; 409 ``module_off``, ``story_archived`` or ``story_paused``."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> settlement_job.Compensated:
+            await self.check_expected_revision(ctx, story_id)
+            return await settlement_job.compensate(
+                self.db,
+                story_id,
+                outbox_id,
+                request,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+            )
+
+        return await self._keyed(
+            ctx,
+            "compensate",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "outbox_id": outbox_id, "body": _body(request)},
+        )
 
     async def approve_state_proposal(
         self,

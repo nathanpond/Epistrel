@@ -785,6 +785,8 @@ OVERRIDES: dict[str, dict[str, str]] = {
     "external_effect_outbox": {
         "executable": "false",
         "outcome_event_id": _mapped_or_null("outcome_event_id"),
+        # #218: a compensating row names the fork's copy of the row it answers.
+        "compensates": _mapped_or_null("compensates"),
     },
     # Speech acts (#150): the propositions an utterance asserts are the fork's copies.
     "utterances": {

@@ -1324,6 +1324,16 @@
     },
     {
       "method": "POST",
+      "path": "/stories/{story_id}/reconciliation/{outbox_id}/settle-now",
+      "requirement": "FR-EXT-22"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/reconciliation/{outbox_id}/compensate",
+      "requirement": "FR-EXT-22"
+    },
+    {
+      "method": "POST",
       "path": "/stories/{story_id}/state-proposals/{proposal_id}/approve",
       "requirement": "FR-STATE-3"
     },

@@ -117,6 +117,7 @@ from epistrel.api.routes.ownership import (
 )
 from epistrel.api.routes.personas import PersonaBody, PersonaListBody
 from epistrel.api.routes.predicates import PredicateDecisionBody, PredicateListBody
+from epistrel.api.routes.reconciliation import CompensatedBody, SettledNowBody
 from epistrel.api.routes.respond import RespondResponse
 from epistrel.api.routes.retrieval import RetrievalBody
 from epistrel.api.routes.scene import EntityProfileBody, SceneBody
@@ -197,6 +198,7 @@ from epistrel.core.media.uploads import UploadOpen
 from epistrel.core.memory.consolidation import ConsolidateRequest
 from epistrel.core.mutation import FactRequest, QuarantineRequest, SanitizeRequest, SupersedeRequest
 from epistrel.core.offboarding import OffboardingPlan, OffboardingRequest
+from epistrel.core.outbox import CompensateRequest
 from epistrel.core.ownership import OwnerTransferRequest, RelationRequest
 from epistrel.core.policies.model import Scope
 from epistrel.core.profiles.impact import ImpactPreviewRequest
@@ -253,6 +255,9 @@ PROPOSAL = "01J9Z8Q4N5V6W7X8Y9Z0A1B2D5"
 EVENT = "01J9Z8Q4N5V6W7X8Y9Z0A1B2E6"
 """#196: a scheduled event id (the clock's gate answers before it is looked up)."""
 """A State proposal id the proposal steps name (#192; refused by the module gate first)."""
+OUTBOX = "01J9Z8Q4N5V6W7X8Y9Z0A1B2F7"
+"""#218: a listed effect's outbox id (refused by the states module gate first)."""
+COMPENSATION = {"effect": {"state": "gold", "delta": 5, "reason": "a refund"}}
 REPLY = "The innkeeper sets down a mug and says nothing."
 TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
 SIGNED = re.compile(r"([?&](?:exp|sig)=)[^&]*")
@@ -1564,6 +1569,22 @@ def _steps() -> list[Step]:
             "reconciliation",
             lambda ids: Rest("GET", f"{s}/reconciliation"),
             lambda e, ids: _reconciliation(e.reconciliation(CTX, ids["story"])),
+        ),
+        # #218: the explicit actions on a listed effect (409 module_off on both surfaces until
+        # #203 delivers the states module; the gate answers before the effect is looked up).
+        Step(
+            "settle_now",
+            lambda ids: Rest("POST", f"{s}/reconciliation/{OUTBOX}/settle-now"),
+            lambda e, ids: _settled_now(e.settle_now(CTX, ids["story"], OUTBOX)),
+        ),
+        Step(
+            "compensate",
+            lambda ids: Rest("POST", f"{s}/reconciliation/{OUTBOX}/compensate", COMPENSATION),
+            lambda e, ids: _compensated(
+                e.compensate(
+                    CTX, ids["story"], OUTBOX, CompensateRequest.model_validate(COMPENSATION)
+                )
+            ),
         ),
         Step(
             "approve_state_proposal",
@@ -2970,6 +2991,14 @@ async def _state_proposals(call: Awaitable[Any]) -> dict[str, Any]:
 
 async def _reconciliation(call: Awaitable[Any]) -> dict[str, Any]:
     return dump(await call)
+
+
+async def _settled_now(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(SettledNowBody.of(await call))
+
+
+async def _compensated(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(CompensatedBody.of(await call))
 
 
 async def _proposal_approved(call: Awaitable[Any]) -> dict[str, Any]:

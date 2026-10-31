@@ -1383,3 +1383,22 @@ class EffectNotFound(EpistrelError):
 
     code = "effect_not_found"
     http_status = 422
+
+
+class SettleRefused(EpistrelError):
+    """An author's settle-now (#218, FR-EXT-22) whose re-verification against current state
+    fails at that moment: the effect is not applied and nothing changes. ``details``:
+    ``outbox_id`` and ``reasons`` (codes: ``precondition:availability``,
+    ``precondition:ownership``, ``bounds:<constraint>``, ``settlement_conflict``,
+    ``not_confirmed``)."""
+
+    code = "settle_refused"
+    http_status = 409
+
+
+class ProviderReadOnly(EpistrelError):
+    """A compensating effect (#218, FR-EXT-22) on a State whose provider is not write-capable:
+    Epistrel cannot issue it. ``details``: ``state`` and ``provider``. Nothing is written."""
+
+    code = "provider_read_only"
+    http_status = 422

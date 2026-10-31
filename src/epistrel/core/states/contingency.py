@@ -45,6 +45,13 @@ side, else every external effect of the turn.
 A ``released``, ``dropped`` or ``converted`` row is never settled again: a confirmation after an
 expired hold changes nothing here (#218's ``late_success_after_expiry``).
 
+**An explicit settlement** (#218, FR-EXT-22: the author's settle-now, ``settle(...,
+operation_id=)``) settles the requesting operation's own contingent rows whatever their
+membership (a discarded origin's) and also a ``released`` hold (an expired reservation): the
+new committed row is written as above; a ``held`` or ``pending`` row is marked ``converted``, a
+``released`` one keeps its status (the new row's ``settles_change_id`` names it). Only the
+author's action reaches this path.
+
 **Expiry** (``release``): a hold whose State sets ``reservation_expiry_minutes`` is released by
 the Orchestrator's ``reservation_expiry`` timer (``orchestrator.jobs.handlers.reservations``,
 scheduled by the commit path; Core never schedules it), once: the update only moves a row that
@@ -103,6 +110,8 @@ AT_INTENT: Mapping[StateContingency, StateChangeStatus] = {
 """A change's status when its turn commits, by its contingency."""
 WAITING: frozenset[str] = frozenset({StateChangeStatus.HELD.value, StateChangeStatus.PENDING.value})
 """The statuses a settlement moves."""
+EXPLICIT: frozenset[str] = WAITING | {StateChangeStatus.RELEASED.value}
+"""The statuses an explicit settlement (#218's settle-now) settles: an expired hold too."""
 
 
 # -- classification ------------------------------------------------------------------------------
@@ -291,24 +300,32 @@ async def settle(
     position: Position,
     *,
     check: SettlementCheck | None = None,
+    operation_id: str | None = None,
 ) -> list[Settled]:
     """Settle every active ``held`` or ``pending`` row of ``op``'s story whose prerequisites
     ``outcomes`` (``{effect_id: confirmed | failed | unknown}``) decide, in ``op``'s
     transaction (see the module docstring); answers what it did, in position order. ``check``
-    (#214) revalidates a converting row under the current configuration."""
+    (#214) revalidates a converting row under the current configuration. ``operation_id``
+    (#218): an explicit settlement of that requesting operation's rows, a ``released`` hold
+    included, whatever their membership."""
     from epistrel.core import states  # here: this module is part of ``core.states``
 
     story_id = op.story_id
     if story_id is None or not outcomes:
         return []
     c = state_changes.c
+    which: list[ColumnElement[bool]] = [
+        c.status.in_(sorted(WAITING)),
+        active_only(state_changes),
+    ]
+    if operation_id is not None:
+        which = [c.status.in_(sorted(EXPLICIT)), c.operation_id == operation_id]
     rows = list(
         await conn.execute(
             select(state_changes)
             .where(
                 c.story_id == story_id,
-                c.status.in_(sorted(WAITING)),
-                active_only(state_changes),
+                *which,
                 c.prerequisite_effect_ids.overlap(sorted(outcomes)),
             )
             .order_by(c.narrative_turn, c.slot_k, c.beat, c.step, c.id)
@@ -370,7 +387,8 @@ async def settle(
             )
             continue
         await savepoint.commit()
-        await _mark(conn, str(row.id), status, CONVERTED)
+        if status != RELEASED:
+            await _mark(conn, str(row.id), status, CONVERTED)
         touched.add((str(row.state_id), scope_key))
         done.append(
             Settled(
@@ -440,6 +458,7 @@ __all__ = [
     "CONFLICT",
     "CONVERTED",
     "DROPPED",
+    "EXPLICIT",
     "FAILED",
     "NOBODY",
     "RELEASED",

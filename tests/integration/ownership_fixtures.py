@@ -379,6 +379,12 @@ async def _state_proposal(client: httpx.AsyncClient, kind: Kind, entity: Entity)
     return {"proposal_id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2D5"}
 
 
+async def _outbox_effect(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """An outbox id for the reconciliation actions (#218), whose story runs States off until
+    #203 (the module gate answers before the id is looked up)."""
+    return {"outbox_id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2F7"}
+
+
 async def _scheduled_event(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
     """A scheduled event id for the event writes (#196), whose story runs the clock off until
     #203 (the module gate answers before the id is looked up)."""
@@ -705,6 +711,12 @@ CALLS: dict[tuple[str, str], Call] = {
     ("POST", f"{S}/state-proposals/{{proposal_id}}/dismiss"): Call(409, prepare=_state_proposal),
     # -- stories: the reconciliation status of its external effects (#210)
     ("GET", f"{S}/reconciliation"): Call(200),
+    # #218: the explicit actions on a listed effect, which the story's configuration refuses
+    # (409 module_off) until #203 delivers the states module
+    ("POST", f"{S}/reconciliation/{{outbox_id}}/settle-now"): Call(409, prepare=_outbox_effect),
+    ("POST", f"{S}/reconciliation/{{outbox_id}}/compensate"): Call(
+        409, {"effect": {"state": "gold", "delta": 5, "reason": "refund"}}, prepare=_outbox_effect
+    ),
     # -- stories: a character's participation role (#176)
     ("PATCH", f"{S}/characters/{{character_id}}/participation"): Call(
         200, {"role": "primary", "fixed": True}, prepare=_story_character

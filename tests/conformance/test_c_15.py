@@ -1289,6 +1289,15 @@ REPLAY_EXCLUDED: dict[str, str] = {
             "cancel_scheduled_event",
         )
     },
+    **{
+        operation: (
+            "a reconciliation action (#218) needs the states module, which #203 delivers, and "
+            "an effect listed for it: until then C-03's story runs States off and the action "
+            "answers 409 module_off (its replay under a key is covered by "
+            "test_s_reservation_expiry__actions, which delivers the module)"
+        )
+        for operation in ("settle_now", "compensate")
+    },
 }
 """Mutating routes the replay does not reach, each with the reason
 (``replay_support.REPLACED_NOT_STORED`` names the one replayed without a stored result)."""

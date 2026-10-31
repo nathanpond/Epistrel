@@ -16,7 +16,7 @@ import sys
 import time
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any, cast
 
 import pytest
@@ -59,6 +59,7 @@ from tests.auth_support import auth_settings, bearer
 from tests.event_support import new_story, play_turn, rows, scalar
 from tests.respond_support import WITHIN_S
 from tests.retrieval_support import statements
+from tests.wall_clock_support import MovableClock, moving
 
 POLL_S = 0.3
 LEASE_S = 3.0
@@ -69,19 +70,6 @@ DERIVED_KIND = OperationKind.CONSOLIDATION.value
 
 def _now() -> datetime:
     return clock.now()
-
-
-class MovableClock:
-    """The real time plus an offset the test moves (``clock.set_clock``)."""
-
-    def __init__(self) -> None:
-        self.offset = timedelta()
-
-    def __call__(self) -> datetime:
-        return datetime.now(UTC) + self.offset
-
-    def advance(self, seconds: float) -> None:
-        self.offset += timedelta(seconds=seconds)
 
 
 # -- test handlers ---------------------------------------------------------------------------
@@ -195,12 +183,8 @@ async def registry(engine: AsyncEngine) -> AsyncIterator[Probe]:
 
 @pytest.fixture
 def moved() -> Iterator[MovableClock]:
-    movable = MovableClock()
-    clock.set_clock(movable)
-    try:
+    with moving() as movable:
         yield movable
-    finally:
-        clock.set_clock(None)
 
 
 async def _enqueue(engine: AsyncEngine, kind: str, payload: dict[str, Any], **kw: Any) -> str:

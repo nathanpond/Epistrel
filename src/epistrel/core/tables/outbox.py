@@ -25,16 +25,24 @@ migration 0095; #211, migration 0098).
   never the raw body), its ``raw_hash``, ``received_via`` (``dispatcher`` or the consumer's
   ``ingest``, #217) and when, and whether a settlement ``settled`` it (#217, the one column an
   update may change). A trigger refuses every other update and delete outside erasure and
-  story deletion, and any TRUNCATE (0068's pattern).
+  story deletion, and any TRUNCATE (0068's pattern). #218 (migration 0103): at most one settled
+  terminal outcome (``confirmed`` or ``failed``) per row, and per consumer-applied effect, within
+  a story (two partial unique indexes): a later answer is ``duplicate`` or ``conflict``
+  (FR-EXT-22).
 
 - **``reconciliation_marks``** (#211, migration 0098) — why a row is listed when its status
   alone does not say: ``reconciliation_required`` (a claimed, unknown or confirmed row whose
   turn left the active timeline), ``cancelled_on_reactivation`` (a row cancelled while its turn
   was out, whose turn is active again), and the later stories' reasons (#216, #217, #218).
   ``since`` is when it was marked and ``resolved_by`` the explicit action that resolved it
-  (#218; null while open). One open mark per row and reason (a partial unique index). Ids and
-  reason codes only, no story content; a fork does not copy it (the fork's outbox copies are
-  records, never listed).
+  (#218; null while open). One open mark per row and reason (a partial unique index).
+  ``detail`` (#218, migration 0103) carries a ``late_success_after_expiry`` mark's
+  re-verification (``{reverification, reasons}``, codes only). Ids and reason codes only,
+  no story content; a fork does not copy it (the fork's outbox copies are records, never
+  listed).
+
+``external_effect_outbox.compensates`` (#218, migration 0103) names the row a compensating effect
+(a refund the author chose, FR-EXT-22) answers; null on every other row.
 
 ``external_effect_outbox.erased_at`` (#211) is set when an erasure redacted a claimed or
 ``unknown`` row (listed as ``{outbox_id, provider, status}`` only), or abandoned its dispatch
@@ -119,6 +127,7 @@ external_effect_outbox = Table(
     Column("attempts", Integer, nullable=False, server_default=text("0")),
     Column("executable", Boolean, nullable=False, server_default=text("true")),
     Column("erased_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("compensates", ulid_type(), nullable=True),
     Column(
         "created_at",
         TIMESTAMP(timezone=True),
@@ -139,6 +148,7 @@ Index(
     external_effect_outbox.c.status,
     external_effect_outbox.c.story_id,
 )
+Index("ix_external_effect_outbox_compensates", external_effect_outbox.c.compensates)
 
 outbox_outcomes = Table(
     "outbox_outcomes",
@@ -161,6 +171,21 @@ outbox_outcomes = Table(
 Index("ix_outbox_outcomes_outbox", outbox_outcomes.c.outbox_id, outbox_outcomes.c.received_at)
 Index("ix_outbox_outcomes_effect", outbox_outcomes.c.effect_id, outbox_outcomes.c.received_at)
 Index("ix_outbox_outcomes_story", outbox_outcomes.c.story_id)
+_SETTLED_KIND = outbox_outcomes.c.kind.in_((CONFIRMED, FAILED))
+Index(
+    "uq_outbox_outcomes_terminal_outbox",
+    outbox_outcomes.c.story_id,
+    outbox_outcomes.c.outbox_id,
+    unique=True,
+    postgresql_where=_SETTLED_KIND & outbox_outcomes.c.outbox_id.is_not(None),
+)
+Index(
+    "uq_outbox_outcomes_terminal_effect",
+    outbox_outcomes.c.story_id,
+    outbox_outcomes.c.effect_id,
+    unique=True,
+    postgresql_where=_SETTLED_KIND & outbox_outcomes.c.effect_id.is_not(None),
+)
 
 REASONS: tuple[str, ...] = (
     "unconfirmed",
@@ -191,6 +216,7 @@ reconciliation_marks = Table(
         server_default=text("transaction_timestamp()"),
     ),
     Column("resolved_by", Text, nullable=True),
+    Column("detail", JSONB, nullable=True),
     CheckConstraint(_in("reason", REASONS), name="reason"),
 )
 Index(

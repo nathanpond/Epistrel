@@ -225,6 +225,7 @@ ERROR_STATUS: dict[str, int] = {
     "story_paused": 409,
     "timeline_changed": 409,
     "erased_subject_referenced": 409,
+    "settle_refused": 409,
     "unknown_chain": 409,
     "config_conflict": 409,
     "draft_stale": 409,
@@ -301,6 +302,7 @@ ERROR_STATUS: dict[str, int] = {
     "clock_unanchored": 422,
     "clock_external": 422,
     "effect_not_found": 422,
+    "provider_read_only": 422,
     "pin_limit_exceeded": 422,
     "key_mismatch": 422,
     "unknown_predicate": 422,
@@ -557,6 +559,17 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "erased_subject_referenced",
     ),
     "dismiss_state_proposal": ("story_archived", "story_paused", "module_off"),
+    # The explicit reconciliation actions (#218, FR-EXT-22): settle-now (re-verified at that
+    # moment) and a compensating effect through the outbox, each at an inter-turn slot.
+    "settle_now": ("story_archived", "story_paused", "module_off", "settle_refused"),
+    "compensate": (
+        "story_archived",
+        "story_paused",
+        "module_off",
+        "state_unpermitted",
+        "provider_read_only",
+        "erased_subject_referenced",
+    ),
     # A predicate proposal's decision (#131): an archived story's registry is read-only.
     "approve_predicate": ("story_archived",),
     "reject_predicate": ("story_archived",),

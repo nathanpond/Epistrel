@@ -21,8 +21,10 @@ point. A row of a story ``blocked_by_erasure`` is not claimed (it stays ``intend
 row's status. From ``claimed`` or ``unknown`` the answer becomes the status (``unknown →
 confirmed | failed`` included); a later answer to a settled row is recorded as ``duplicate``
 (the same, or ``unknown``) or ``conflict`` (another terminal answer) and changes nothing (the
-first terminal outcome wins, FR-EXT-22). ``release`` puts a claimed row back to ``intended``
-when the adapter proved nothing was sent (``ProviderUnavailable`` before the request). Each
+first terminal outcome wins, FR-EXT-22; #218: one settled terminal record per row, a partial
+unique index, and a ``conflict`` lists the row ``outcome_conflict``). ``release`` puts a
+claimed row back to ``intended`` when the adapter proved nothing was sent
+(``ProviderUnavailable`` before the request). Each
 recorded outcome notifies ``OUTCOME_CHANNEL`` with the row id when its transaction commits, so a
 staged turn waiting on the row (#212, FR-EXT-15) wakes at once rather than at its next poll.
 
@@ -44,6 +46,13 @@ its reason and since only.
 prerequisite had failed (its ``reservation_expiry`` lapsed, FR-STATE-14). Nothing here bumps a
 revision.
 
+**Explicit actions** (#218, FR-EXT-22; the Orchestrator's ``jobs.settlement`` drives them):
+``resolve`` closes a row's open marks with the action that answered them (``settle_now``, or
+``compensated`` when the compensating row a ``compensate`` wrote is confirmed); a
+``late_success_after_expiry`` mark carries its re-verification (``Listing.reverification``),
+and a row a compensating row answers is listed ``status: compensated`` (``compensated_by``)
+until that row is confirmed.
+
 Log lines carry ids and counts only (invariant 3).
 """
 
@@ -53,9 +62,18 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
+    model_validator,
+)
 from sqlalchemy import Row, and_, any_, exists, func, insert, literal, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
@@ -67,6 +85,7 @@ from epistrel.core.erasure.records import outbox_record
 from epistrel.core.errors import StoryNotFound
 from epistrel.core.ids import new_ulid
 from epistrel.core.membership import active_only, active_operation, insert_derived
+from epistrel.core.states.model import REASON_MAX
 from epistrel.core.tables import erasure_ledger, operations, stories
 from epistrel.core.tables.outbox import (
     CANCELLED,
@@ -142,6 +161,10 @@ class Intended:
     effect: Mapping[str, Any]
     beat: int
     step: int = 0
+    slot_k: int = 0
+    """#218: the slot an inter-turn operation's row is written at (``0``: a turn's)."""
+    compensates: str | None = None
+    """#218: the row a compensating effect answers (FR-EXT-22's ``compensate``)."""
 
 
 async def write_intended(conn: AsyncConnection, op: Operation, rows: Sequence[Intended]) -> int:
@@ -174,9 +197,10 @@ async def write_intended(conn: AsyncConnection, op: Operation, rows: Sequence[In
             "operation_id": op.operation_id,
             "narrative_turn": op.narrative_turn,
             "turn_variant": op.turn_variant,
-            "slot_k": 0,
+            "slot_k": r.slot_k,
             "beat": r.beat,
             "step": r.step,
+            "compensates": r.compensates,
         }
         for r in rows
     ]
@@ -319,22 +343,75 @@ async def cancel_all(conn: AsyncConnection, outbox_ids: Sequence[str]) -> int:
     return int(result.rowcount)
 
 
-async def mark(conn: AsyncConnection, story_id: str, outbox_id: str, reason: str) -> bool:
+async def mark(
+    conn: AsyncConnection,
+    story_id: str,
+    outbox_id: str,
+    reason: str,
+    *,
+    detail: Mapping[str, Any] | None = None,
+) -> bool:
     """List row ``outbox_id`` with ``reason`` until an explicit action resolves it (#218):
     a ``reconciliation_marks`` row, unless one is open for that row and reason already.
-    Answers whether it wrote one."""
+    ``detail``: codes only (#218: a late success's re-verification). Answers whether it wrote
+    one."""
     if reason not in REASONS:
         raise ValueError(f"{reason!r} is not a reconciliation reason")
     m = reconciliation_marks.c
     written = await conn.scalar(
         pg_insert(reconciliation_marks)
-        .values(id=new_ulid(), story_id=story_id, outbox_id=outbox_id, reason=reason)
+        .values(
+            id=new_ulid(),
+            story_id=story_id,
+            outbox_id=outbox_id,
+            reason=reason,
+            detail=None if detail is None else dict(detail),
+        )
         .on_conflict_do_nothing(
             index_elements=[m.outbox_id, m.reason], index_where=m.resolved_by.is_(None)
         )
         .returning(m.id)
     )
     return written is not None
+
+
+RESOLVED_SETTLE_NOW = "settle_now"
+RESOLVED_COMPENSATED = "compensated"
+"""#218: a mark's ``resolved_by``: the author's settle-now applied it, or the compensating
+effect the author chose was confirmed."""
+
+
+async def open_marks(conn: AsyncConnection, story_id: str, outbox_id: str) -> list[str]:
+    """#218: the reasons row ``outbox_id`` is marked with and no action resolved yet."""
+    m = reconciliation_marks.c
+    return [
+        str(r)
+        for r in await conn.scalars(
+            select(m.reason)
+            .where(m.story_id == story_id, m.outbox_id == outbox_id, m.resolved_by.is_(None))
+            .order_by(m.since, m.id)
+        )
+    ]
+
+
+async def resolve(
+    conn: AsyncConnection,
+    story_id: str,
+    outbox_id: str,
+    by: str,
+    *,
+    reasons: Sequence[str] | None = None,
+) -> int:
+    """#218: resolve row ``outbox_id``'s open marks (of ``reasons``; ``None``: all) with the
+    explicit action ``by``; answers how many it resolved. The row leaves the listing unless its
+    status lists it."""
+    m = reconciliation_marks.c
+    query = update(reconciliation_marks).where(
+        m.story_id == story_id, m.outbox_id == outbox_id, m.resolved_by.is_(None)
+    )
+    if reasons is not None:
+        query = query.where(m.reason.in_(list(reasons)))
+    return int((await conn.execute(query.values(resolved_by=by))).rowcount)
 
 
 async def erased_since(conn: AsyncConnection, story_id: str, at: datetime | None) -> bool:
@@ -431,20 +508,33 @@ async def record_outcome(
 ) -> Recorded:
     """Record answer ``status`` (``confirmed``, ``failed`` or ``unknown``) for the row, which
     the caller has locked (see the module docstring); ``outcome_id``: the record's id (#217's
-    ``outcome_recorded`` event names it)."""
+    ``outcome_recorded`` event names it).
+
+    #218 (FR-EXT-22) the terminal rule: the row's first ``confirmed`` or ``failed`` record is
+    its settled terminal outcome (one per row, a partial unique index). A later answer is a
+    ``duplicate`` (the same, or ``unknown``) and changes nothing, or a ``conflict`` (the other
+    terminal answer): recorded, the row listed ``outcome_conflict``, and nothing reversed. A
+    compensating row's first confirmation resolves the marks of the row it compensates."""
     row = await locked(conn, outbox_id)
     if row is None:
         raise LookupError(f"outbox row {outbox_id} does not exist")
     current = str(row.status)
     kind = status
     after = current
-    if current in TERMINAL:
-        kind = DUPLICATE if status in (current, UNKNOWN) else CONFLICT
+    settled = await settled_kind(conn, str(row.story_id), outbox_id)
+    if settled is None and current in TERMINAL:
+        settled = current
+    if settled is not None:
+        kind = DUPLICATE if status in (settled, UNKNOWN) else CONFLICT
     elif current in (CLAIMED, UNKNOWN):
         after = status
     outcome_id = await _insert_outcome(
         conn, outbox_id, kind, payload or {}, raw_hash, via, now, outcome_id=outcome_id
     )
+    if kind == CONFLICT:
+        await mark(conn, str(row.story_id), outbox_id, "outcome_conflict")
+    elif kind == CONFIRMED and row.compensates is not None:
+        await resolve(conn, str(row.story_id), str(row.compensates), RESOLVED_COMPENSATED)
     # #212: a staged turn waiting on the row hears of the outcome when this commits.
     await conn.execute(select(func.pg_notify(OUTCOME_CHANNEL, outbox_id)))
     if after != current or after in TERMINAL:
@@ -457,6 +547,31 @@ async def record_outcome(
             .values(**values)
         )
     return Recorded(kind, after, outcome_id)
+
+
+async def settled_kind(conn: AsyncConnection, story_id: str, outbox_id: str) -> str | None:
+    """#218: row ``outbox_id``'s settled terminal outcome (its first ``confirmed`` or ``failed``
+    record), or ``None``."""
+    o = outbox_outcomes.c
+    found = await conn.scalar(
+        select(o.kind)
+        .where(o.story_id == story_id, o.outbox_id == outbox_id, o.kind.in_(sorted(TERMINAL)))
+        .order_by(o.received_at, o.id)
+        .limit(1)
+    )
+    return None if found is None else str(found)
+
+
+async def settled_outcome(conn: AsyncConnection, story_id: str, outbox_id: str) -> str | None:
+    """#218: the id of row ``outbox_id``'s settled terminal outcome record, or ``None``."""
+    o = outbox_outcomes.c
+    found = await conn.scalar(
+        select(o.id)
+        .where(o.story_id == story_id, o.outbox_id == outbox_id, o.kind.in_(sorted(TERMINAL)))
+        .order_by(o.received_at, o.id)
+        .limit(1)
+    )
+    return None if found is None else str(found)
 
 
 async def record_effect_outcome(
@@ -591,11 +706,29 @@ class OutcomeView(BaseModel):
     received_at: datetime
 
 
+COMPENSATED = "compensated"
+"""#218: a listed row's ``status`` once the author chose to compensate it: a compensating row
+(``compensated_by``) is on its way; the listing stays until that row is confirmed."""
+
+
+class Reverification(BaseModel):
+    """#218 (FR-EXT-22): a late success's re-verification against current state: ``passed``
+    or ``failed``, and why (codes: ``precondition:availability``, ``precondition:ownership``,
+    ``bounds:<constraint>``)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reverification: Literal["passed", "failed"]
+    reasons: list[str] = Field(default_factory=list)
+
+
 class Listing(BaseModel):
     """One effect the consumer must reconcile: the outbox row (its id is the provider
     idempotency key), the provider and value, its status, why it is listed, since when, the
     effect, and the latest outcome recorded for it, if any. A row an erasure redacted (#211)
-    is listed as ``{outbox_id, provider, status}`` with its reason and since only."""
+    is listed as ``{outbox_id, provider, status}`` with its reason and since only. #218: a
+    ``late_success_after_expiry`` carries its re-verification; a compensated row's status is
+    ``compensated`` and ``compensated_by`` names the compensating row."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -607,6 +740,47 @@ class Listing(BaseModel):
     since: datetime
     effect: dict[str, Any] | None = Field(default=None, exclude_if=lambda v: v is None)
     outcome: OutcomeView | None = Field(default=None, exclude_if=lambda v: v is None)
+    reverification: Reverification | None = Field(default=None, exclude_if=lambda v: v is None)
+    compensated_by: str | None = Field(default=None, exclude_if=lambda v: v is None)
+
+
+class CompensatingEffect(BaseModel):
+    """#218 (FR-EXT-22): a compensating external effect (a refund), in #187's effect shape: an
+    externally owned ``state`` (by name), the character's ``scope_key`` for a per-character
+    State, a signed ``delta`` or a new ``value``, and the ``reason``."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"examples": [{"state": "gold", "delta": 500, "reason": "refund"}]},
+    )
+
+    state: str = Field(min_length=1, max_length=64)
+    scope_key: str | None = Field(default=None, min_length=1, max_length=64)
+    delta: StrictInt | StrictFloat | None = None
+    value: StrictBool | StrictInt | StrictFloat | StrictStr | None = None
+    reason: str = Field(min_length=1, max_length=REASON_MAX)
+
+    @model_validator(mode="after")
+    def _one_of(self) -> Self:
+        if (self.value is None) == (self.delta is None):
+            raise ValueError("give a value or a delta, not both")
+        return self
+
+
+class CompensateRequest(BaseModel):
+    """``POST /stories/{id}/reconciliation/{outbox_id}/compensate``: the compensating
+    effect."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "examples": [
+                {"effect": {"state": "gold", "scope_key": "cal", "delta": -500, "reason": "refund"}}
+            ]
+        },
+    )
+
+    effect: CompensatingEffect
 
 
 class Reconciliation(BaseModel):
@@ -690,7 +864,7 @@ async def _marks(conn: AsyncConnection, story_id: str, ids: Sequence[str]) -> di
         return {}
     m = reconciliation_marks.c
     found = await conn.execute(
-        select(m.outbox_id, m.reason, m.since)
+        select(m.outbox_id, m.reason, m.since, m.detail)
         .where(m.story_id == story_id, m.outbox_id.in_(list(ids)), m.resolved_by.is_(None))
         .order_by(m.since, m.id)
     )
@@ -730,6 +904,21 @@ async def expired_holds(conn: AsyncConnection, story_id: str, ids: Sequence[str]
     return {p for r in released if not failed & set(r) for p in r if p in ids}
 
 
+async def compensations_of(
+    conn: AsyncConnection, story_id: str, ids: Sequence[str]
+) -> dict[str, str]:
+    """#218: which of the rows ``ids`` a compensating row answers, and its id (the latest)."""
+    if not ids:
+        return {}
+    o = external_effect_outbox.c
+    found = await conn.execute(
+        select(o.compensates, o.id)
+        .where(o.story_id == story_id, o.compensates.in_(list(ids)), o.executable.is_(True))
+        .order_by(o.created_at, o.id)
+    )
+    return {str(r.compensates): str(r.id) for r in found}
+
+
 async def listings_in(conn: AsyncConnection, story_id: str) -> Reconciliation:
     """The story's reconciliation status, read in ``conn`` (404 for an unknown story)."""
     await _require_story(conn, story_id)
@@ -754,9 +943,13 @@ async def listings_in(conn: AsyncConnection, story_id: str) -> Reconciliation:
     marked = await _marks(conn, story_id, [str(r.id) for r in rows])
     expired = await expired_holds(conn, story_id, [str(r.id) for r in rows])
     unsettled = await _unsettled_of(conn, story_id, [str(r.id) for r in rows])
+    compensations = await compensations_of(conn, story_id, [str(r.id) for r in rows])
     listed: list[Listing] = []
     for row in rows:
         status = str(row.status)
+        compensation = compensations.get(str(row.id))
+        if compensation is not None:
+            status = COMPENSATED
         outcome = latest.get(str(row.id))
         found_mark = marked.get(str(row.id))
         reason: Reason
@@ -777,6 +970,9 @@ async def listings_in(conn: AsyncConnection, story_id: str) -> Reconciliation:
                 since = outcome.received_at
             else:
                 since = row.claimed_at if status == CLAIMED and row.claimed_at else row.created_at
+        checked = None
+        if found_mark is not None and found_mark.detail:
+            checked = Reverification.model_validate(found_mark.detail)
         if row.erased_at is not None:
             # #211: an erasure redacted the row (or abandoned its dispatch): ids only.
             listed.append(
@@ -805,6 +1001,8 @@ async def listings_in(conn: AsyncConnection, story_id: str) -> Reconciliation:
                     received_via=str(outcome.received_via),
                     received_at=outcome.received_at,
                 ),
+                reverification=checked,
+                compensated_by=compensation,
             )
         )
     return Reconciliation(listings=listed)
@@ -844,9 +1042,14 @@ async def summary(db: AsyncEngine | AsyncConnection, story_id: str) -> dict[str,
 
 
 __all__ = [
+    "COMPENSATED",
     "INTERNAL_EFFECT_KEYS",
     "REASONS",
+    "RESOLVED_COMPENSATED",
+    "RESOLVED_SETTLE_NOW",
     "TERMINAL",
+    "CompensateRequest",
+    "CompensatingEffect",
     "Intended",
     "Listing",
     "OutcomeRecord",
@@ -854,10 +1057,12 @@ __all__ = [
     "Reason",
     "Reconciliation",
     "Recorded",
+    "Reverification",
     "abandon",
     "cancel",
     "cancel_all",
     "claimable",
+    "compensations_of",
     "count",
     "erased_since",
     "expired_holds",
@@ -870,12 +1075,16 @@ __all__ = [
     "mark_sent",
     "mark_settled",
     "mark_unknown",
+    "open_marks",
     "origin_active",
     "outcome",
     "public_effect",
     "record_effect_outcome",
     "record_outcome",
     "release",
+    "resolve",
+    "settled_kind",
+    "settled_outcome",
     "story_blocked",
     "summary",
     "write_intended",

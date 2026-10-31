@@ -4071,6 +4071,166 @@
         "title": "CompanionRef",
         "type": "object"
       },
+      "CompensateRequest": {
+        "additionalProperties": false,
+        "description": "``POST /stories/{id}/reconciliation/{outbox_id}/compensate``: the compensating\neffect.",
+        "examples": [
+          {
+            "effect": {
+              "delta": -500,
+              "reason": "refund",
+              "scope_key": "cal",
+              "state": "gold"
+            }
+          }
+        ],
+        "properties": {
+          "effect": {
+            "$ref": "#/components/schemas/CompensatingEffect"
+          }
+        },
+        "required": [
+          "effect"
+        ],
+        "title": "CompensateRequest",
+        "type": "object"
+      },
+      "CompensatedBody": {
+        "description": "A compensation: the new outbox row (`outbox_id`, `intended`, dispatched like any other)\nthat compensates `compensates`, its slot (`position`, `N⁺k`; `slot` the full position) and\nits operation.",
+        "properties": {
+          "compensates": {
+            "title": "Compensates",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "operation_id": {
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "outbox_id": {
+            "title": "Outbox Id",
+            "type": "string"
+          },
+          "position": {
+            "title": "Position",
+            "type": "string"
+          },
+          "slot": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Slot",
+            "type": "object"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "outbox_id",
+          "compensates",
+          "status",
+          "position",
+          "slot",
+          "operation_id"
+        ],
+        "title": "CompensatedBody",
+        "type": "object"
+      },
+      "CompensatingEffect": {
+        "additionalProperties": false,
+        "description": "#218 (FR-EXT-22): a compensating external effect (a refund), in #187's effect shape: an\nexternally owned ``state`` (by name), the character's ``scope_key`` for a per-character\nState, a signed ``delta`` or a new ``value``, and the ``reason``.",
+        "examples": [
+          {
+            "delta": 500,
+            "reason": "refund",
+            "state": "gold"
+          }
+        ],
+        "properties": {
+          "delta": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delta"
+          },
+          "reason": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "scope_key": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Key"
+          },
+          "state": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "State",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "state",
+          "reason"
+        ],
+        "title": "CompensatingEffect",
+        "type": "object"
+      },
       "Concern": {
         "additionalProperties": false,
         "description": "One conflict between the entry and a rating: the policy (``policy_id``) or the quoted\nrating-description ``clause`` it breaks (exactly one), the element, and why.",
@@ -14733,8 +14893,19 @@
       },
       "Listing": {
         "additionalProperties": false,
-        "description": "One effect the consumer must reconcile: the outbox row (its id is the provider\nidempotency key), the provider and value, its status, why it is listed, since when, the\neffect, and the latest outcome recorded for it, if any. A row an erasure redacted (#211)\nis listed as ``{outbox_id, provider, status}`` with its reason and since only.",
+        "description": "One effect the consumer must reconcile: the outbox row (its id is the provider\nidempotency key), the provider and value, its status, why it is listed, since when, the\neffect, and the latest outcome recorded for it, if any. A row an erasure redacted (#211)\nis listed as ``{outbox_id, provider, status}`` with its reason and since only. #218: a\n``late_success_after_expiry`` carries its re-verification; a compensated row's status is\n``compensated`` and ``compensated_by`` names the compensating row.",
         "properties": {
+          "compensated_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compensated By"
+          },
           "effect": {
             "anyOf": [
               {
@@ -14781,6 +14952,16 @@
             ],
             "title": "Reason",
             "type": "string"
+          },
+          "reverification": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Reverification"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "since": {
             "format": "date-time",
@@ -29415,6 +29596,32 @@
         "title": "RetrievedMemoryBody",
         "type": "object"
       },
+      "Reverification": {
+        "additionalProperties": false,
+        "description": "#218 (FR-EXT-22): a late success's re-verification against current state: ``passed``\nor ``failed``, and why (codes: ``precondition:availability``, ``precondition:ownership``,\n``bounds:<constraint>``).",
+        "properties": {
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "reverification": {
+            "enum": [
+              "passed",
+              "failed"
+            ],
+            "title": "Reverification",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reverification"
+        ],
+        "title": "Reverification",
+        "type": "object"
+      },
       "ReviewedPlayerInput": {
         "description": "The player input a message answered: what the acting character said and did.",
         "properties": {
@@ -35402,6 +35609,95 @@
           }
         },
         "title": "SettingsPatch",
+        "type": "object"
+      },
+      "SettledNowBody": {
+        "description": "A settle-now: the effect and its confirmed outcome record, the re-verification at that\nmoment (`reverification`, `reasons`), and `result`: `settled` at the slot `position`\n(`N⁺k`; `slot` the full position, by `operation_id`), or `queued` while an incomplete\nstaged turn holds the slot (applied at the next one).",
+        "properties": {
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "operation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operation Id"
+          },
+          "outbox_id": {
+            "title": "Outbox Id",
+            "type": "string"
+          },
+          "outcome_id": {
+            "title": "Outcome Id",
+            "type": "string"
+          },
+          "position": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Position"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "result": {
+            "title": "Result",
+            "type": "string"
+          },
+          "reverification": {
+            "title": "Reverification",
+            "type": "string"
+          },
+          "slot": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slot"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "outbox_id",
+          "outcome_id",
+          "result",
+          "reverification",
+          "reasons"
+        ],
+        "title": "SettledNowBody",
         "type": "object"
       },
       "ShadowSampleBody": {
@@ -69524,7 +69820,7 @@
     },
     "/stories/{story_id}/reconciliation": {
       "get": {
-        "description": "The effects dispatched to write-capable providers that are not confirmed, oldest first:\neach one's outbox id (the provider idempotency key), provider and value, status, why it is\nlisted (`reason`: `unconfirmed`, `failed`, `unknown`, `reconciliation_required`,\n`cancelled_on_reactivation`, `confirmed_unsettled`, `confirmed_discarded_origin`,\n`settlement_conflict`, `late_success_after_expiry`, `outcome_conflict` or\n`reservation_expired`), since when, the effect, and the latest outcome recorded for it. A\nconfirmed or cancelled effect is not listed. 404 for an unknown story.",
+        "description": "The effects dispatched to write-capable providers that are not confirmed, oldest first:\neach one's outbox id (the provider idempotency key), provider and value, status, why it is\nlisted (`reason`: `unconfirmed`, `failed`, `unknown`, `reconciliation_required`,\n`cancelled_on_reactivation`, `confirmed_unsettled`, `confirmed_discarded_origin`,\n`settlement_conflict`, `late_success_after_expiry`, `outcome_conflict` or\n`reservation_expired`), since when, the effect, and the latest outcome recorded for it. A\n`late_success_after_expiry` carries its `reverification` (`passed` or `failed`, with\n`reasons`); an effect the author chose to compensate shows `status: compensated` and\n`compensated_by`, the compensating effect, until that one is confirmed. A confirmed or\ncancelled effect is not listed. 404 for an unknown story.",
         "operationId": "reconciliation",
         "parameters": [
           {
@@ -69617,6 +69913,414 @@
           }
         ],
         "summary": "Read the story's reconciliation status",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
+    "/stories/{story_id}/reconciliation/{outbox_id}/compensate": {
+      "post": {
+        "description": "Issue a compensating external effect (a refund) for a listed effect (FR-EXT-22): `effect` (`{state, scope_key?, delta | value, reason}`) on an externally owned State becomes a new `intended` outbox row naming the listed one (`compensates`), written by an inter-turn slot operation and dispatched like any other. The listed effect shows `status: compensated` until the compensating effect is confirmed. 422 `provider_read_only` when the State's provider is not write-capable; 422 `state_unpermitted` for a State no external provider owns. 404 `not_found` (`reason: no_listing`) unless the effect is listed `late_success_after_expiry`, `confirmed_discarded_origin` or `settlement_conflict`; 409 `module_off` while the story's configuration has States off.",
+        "operationId": "compensate",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The listed effect's outbox id (the provider idempotency key; a ULID).",
+            "in": "path",
+            "name": "outbox_id",
+            "required": true,
+            "schema": {
+              "description": "The listed effect's outbox id (the provider idempotency key; a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2F7"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Outbox Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompensateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompensatedBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_paused`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `provider_read_only`, `state_unpermitted`, `validation_error`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Compensate a listed effect",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
+    "/stories/{story_id}/reconciliation/{outbox_id}/settle-now": {
+      "post": {
+        "description": "Settle a listed external effect now (FR-EXT-22): its transfer is re-verified against current state at this moment (the item still the seller's, no other hold on it, no other owner in canon, the State bounds) and applied at the next inter-turn slot as a late settlement, and the listing is resolved. 409 `settle_refused` (`reasons`) when re-verification fails: nothing changes. 404 `not_found` (`reason: no_listing`) unless the effect is listed `late_success_after_expiry`, `confirmed_discarded_origin` or `settlement_conflict`; 409 `module_off` while the story's configuration has States off.",
+        "operationId": "settle_now",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The listed effect's outbox id (the provider idempotency key; a ULID).",
+            "in": "path",
+            "name": "outbox_id",
+            "required": true,
+            "schema": {
+              "description": "The listed effect's outbox id (the provider idempotency key; a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2F7"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Outbox Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettledNowBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `module_off`, `revision_conflict`, `settle_refused`, `story_archived`, `story_paused`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Settle a listed effect now",
         "tags": [
           "stories"
         ]

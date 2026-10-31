@@ -89,6 +89,7 @@ from tests.integration.test_media_assets import SWEEPER, put
 from tests.media_support import blob_path, png, scratch
 from tests.memory_support import use_structured
 from tests.respond_support import until
+from tests.wall_clock_support import MovableClock, moving
 
 POLL_S = 0.3
 LEASE_S = 3.0
@@ -204,25 +205,10 @@ def _now() -> datetime:
     return clock.now()
 
 
-class MovableClock:
-    def __init__(self) -> None:
-        self.offset = timedelta()
-
-    def __call__(self) -> datetime:
-        return datetime.now(UTC) + self.offset
-
-    def advance(self, seconds: float) -> None:
-        self.offset += timedelta(seconds=seconds)
-
-
 @pytest.fixture
 def moved() -> Iterator[MovableClock]:
-    movable = MovableClock()
-    clock.set_clock(movable)
-    try:
+    with moving() as movable:
         yield movable
-    finally:
-        clock.set_clock(None)
 
 
 def _config(**kw: Any) -> WorkerConfig:

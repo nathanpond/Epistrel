@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from epistrel.api.deps import ContextDep, EngineDep, StoryId
 from epistrel.api.idempotency import answered
 from epistrel.api.responses import MutationResponse
-from epistrel.core.states.model import Calendar
+from epistrel.core.states.model import PG_INT_MAX, Calendar
 from epistrel.core.world_clock import ClockValue
 from epistrel.core.world_clock.service import (
     ClockAdvanceRequest,
@@ -132,7 +132,7 @@ class ClockPatch(BaseModel):
 
     mode: Literal["paced", "manual", "external"] | None = None
     pacing_table: list[list[int | None]] | None = None
-    max_unprompted_skip_minutes: int | None = Field(default=None, ge=0)
+    max_unprompted_skip_minutes: int | None = Field(default=None, ge=0, le=PG_INT_MAX)
     stop_at_due_events: bool | None = None
     time_awareness: Literal["exact", "approximate", "none"] | None = None
     bands: list[list[str]] | None = None

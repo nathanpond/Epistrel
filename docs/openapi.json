@@ -3701,6 +3701,7 @@
           "max_unprompted_skip_minutes": {
             "anyOf": [
               {
+                "maximum": 2147483647.0,
                 "minimum": 0.0,
                 "type": "integer"
               },

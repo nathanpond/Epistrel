@@ -362,6 +362,10 @@ class Constraints(BaseModel):
         return found
 
 
+PG_INT_MAX = 2_147_483_647
+"""The largest value an ``INTEGER`` settings column holds (#193: a larger one was a 500)."""
+
+
 class ClockSettings(BaseModel):
     """The world clock's settings (FR-CLOCK-3,5,8,9; #193): its ``mode``, its ``anchor``
     (``None``: unanchored; #195's), the ``pacing_table`` (#194), the unprompted-skip cap
@@ -374,10 +378,10 @@ class ClockSettings(BaseModel):
     mode: ClockMode = ClockMode.PACED
     anchor: dict[str, Any] | None = None
     pacing_table: tuple[tuple[int, int | None, int], ...] = DEFAULT_PACING_TABLE
-    max_unprompted_skip_minutes: int = Field(default=1440, ge=0)
+    max_unprompted_skip_minutes: int = Field(default=1440, ge=0, le=PG_INT_MAX)
     stop_at_due_events: bool = True
-    grace_minutes: int = Field(default=30, ge=0)
-    time_statement_tolerance_minutes: int = Field(default=15, ge=0)
+    grace_minutes: int = Field(default=30, ge=0, le=PG_INT_MAX)
+    time_statement_tolerance_minutes: int = Field(default=15, ge=0, le=PG_INT_MAX)
     elapsed_tolerance_factor: Decimal = Field(default=Decimal(2), ge=1)
     time_awareness: TimeAwareness = TimeAwareness.EXACT
     bands: tuple[tuple[str, str, str], ...] = DEFAULT_BANDS

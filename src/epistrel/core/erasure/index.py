@@ -57,7 +57,7 @@ with (``core.erasure.records``). ``tests/integration/test_subject_index.py`` che
 ``information_schema``: a new story-content table without a registration (or a registered
 writer that never calls the indexer) fails it. Tables M4+ adds register here when they land
 (#131's predicate registry, propositions and entities did, #133's facts and #135's memories,
-#143's reflections among them, and #146's thunks; beliefs, States and the outbox will).
+#143's reflections among them, #146's thunks, beliefs and #185's States; the outbox will).
 ``EXEMPT_TABLES`` names the story and catalog tables that are not indexed, and why.
 
 ``drop_references``/``drop_many`` remove a record's rows; every delete path of an indexed record
@@ -680,6 +680,7 @@ _PARTITIONS = "epistrel.core.epistemic.partitions"
 _TRANSITIONS = "epistrel.core.epistemic.transitions"
 _EXPOSURES = "epistrel.core.epistemic.exposure"
 _DIVERGENCES = "epistrel.core.epistemic.divergences"
+_STATES = "epistrel.core.states"
 
 SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
     SubjectWriter(
@@ -791,6 +792,10 @@ SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
     # Divergences (#166): the speaker and the asserted and believed propositions' subject and
     # object characters are declared subjects.
     SubjectWriter("divergences", (_DIVERGENCES,), f"{_RECORDS}:read_divergences"),
+    # States (#185): a declaration's name, aliases, unit and text initial value, and a change's
+    # reason and text values (positional); a character-scoped change declares its character.
+    SubjectWriter("state_definitions", (_STATES,), f"{_RECORDS}:read_state_definitions"),
+    SubjectWriter("state_changes", (_STATES,), f"{_RECORDS}:read_state_changes"),
 )
 """Every indexed table (see the module docstring); the coverage test's source of truth."""
 
@@ -831,6 +836,8 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "refolded by erasure's rebuilt stage (#159)",
     "nested_belief_state": "a projection of nested beliefs, which are erased: ids, levels and "
     "positions, refolded by erasure's rebuilt stage (#167)",
+    "state_values": "a projection of State changes, which are erased and redacted: ids, folded "
+    "values and positions, refolded by erasure's rebuilt stage (#185)",
     # Deployment tables (#334: the coverage test enumerates every table with text or JSON).
     "alembic_version": "the schema migration's revision id",
     "schema_meta": "schema bookkeeping keys and values",

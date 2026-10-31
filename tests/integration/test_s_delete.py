@@ -14,7 +14,7 @@ from epistrel.core import clock, turn_gate
 from epistrel.core.commit import lifecycle
 from epistrel.core.commit.sketch import ThunkSketch
 from epistrel.core.context import RequestContext
-from epistrel.core.enums import OpenSlot, OperationKind, Provenance
+from epistrel.core.enums import OpenSlot, OperationKind, Provenance, StateChangeSource
 from epistrel.core.epistemic import divergences, nested, transitions
 from epistrel.core.errors import GuardrailViolation
 from epistrel.core.events import Operation
@@ -41,6 +41,7 @@ from tests import (
     memory_support,
     nested_support,
     partition_support,
+    state_support,
 )
 from tests import erasure_support as erasure
 from tests import genesis_support as g
@@ -351,6 +352,20 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
 
         op.add_commit_step(speak)
         await op.commit()
+    # States (#185): a character-scoped declaration and a change for the character, written
+    # with the module on (prompt-only) and then the override dropped again.
+    with state_support.delivered():
+        await state_support.set_level(engine, story_id, "prompt_only")
+        await state_support.define(engine, story_id, state_support.gold())
+        await state_support.change(
+            engine,
+            story_id,
+            state_support.delta(
+                "gold", 5, scope_key=character_id, source=StateChangeSource.CONSUMER
+            ),
+            kind=OperationKind.CONTROL,
+        )
+        await state_support.set_level(engine, story_id, None)
 
 
 def _due() -> datetime:

@@ -317,6 +317,105 @@ class CharacterWeight(StrEnum):
     MAJOR = "major"
 
 
+class StateType(StrEnum):
+    """A State's value type (FR-STATE-1; #185): a number (``numeric``, never a float), a
+    boolean, one of the definition's ``allowed_values`` (``enum``), or short text (at most 200
+    characters). #193 adds ``clock`` for the built-in world clock. Postgres enum ``state_type``."""
+
+    NUMBER = "number"
+    BOOLEAN = "boolean"
+    ENUM = "enum"
+    TEXT = "text"
+
+
+class StateScope(StrEnum):
+    """Whether a State has one value for the ``story`` or one per ``character`` (the player's
+    gold apart from Jenni's). Postgres enum ``state_scope``."""
+
+    STORY = "story"
+    CHARACTER = "character"
+
+
+class StateVisibility(StrEnum):
+    """Who sees a State: the player (``player_visible``, gold) or nobody but the narrator and an
+    ``omniscient`` read (``hidden``, an NPC's trust score). Postgres enum ``state_visibility``."""
+
+    PLAYER_VISIBLE = "player_visible"
+    HIDDEN = "hidden"
+
+
+class StateOwner(StrEnum):
+    """Who holds a tracked value (FR-STATE-2): Epistrel (``story``) or a registered provider
+    (``external``, FR-EXT). Postgres enum ``state_owner``."""
+
+    STORY = "story"
+    EXTERNAL = "external"
+
+
+class StateCreatedBy(StrEnum):
+    """Who declared a State (FR-STATE-3): the story's ``genesis`` (a scenario's declaration),
+    the ``consumer`` API, the ``author``, or an approved engine ``proposal``. Postgres enum
+    ``state_created_by``."""
+
+    GENESIS = "genesis"
+    CONSUMER = "consumer"
+    AUTHOR = "author"
+    PROPOSAL = "proposal"
+
+
+class StateChangeKind(StrEnum):
+    """What one ``state_changes`` row does to the value: ``set`` it, add a signed ``delta``, or
+    one side of a transfer (FR-STATE-12, #188), which also carries its signed ``delta``.
+    Postgres enum ``state_change_kind``."""
+
+    SET = "set"
+    DELTA = "delta"
+    TRANSFER_IN = "transfer_in"
+    TRANSFER_OUT = "transfer_out"
+
+
+class StateChangeSource(StrEnum):
+    """Where a change came from (FR-STATE-4): a narrative ``turn``, the ``author``, the
+    ``consumer`` API, a ``rule``; the world clock's advances (``pacing``, ``declared_skip``,
+    ``estimate``, ``player``, #193); an ``external`` provider; a late ``settlement``
+    (FR-EXT-21); or a genesis ``seed`` at position 0 (#202). Postgres enum
+    ``state_change_source``."""
+
+    TURN = "turn"
+    AUTHOR = "author"
+    CONSUMER = "consumer"
+    RULE = "rule"
+    PACING = "pacing"
+    DECLARED_SKIP = "declared_skip"
+    ESTIMATE = "estimate"
+    PLAYER = "player"
+    EXTERNAL = "external"
+    SETTLEMENT = "settlement"
+    SEED = "seed"
+
+
+class StateContingency(StrEnum):
+    """How a change depends on external effects (FR-STATE-14, #216): ``unconditional``, a
+    ``reservation`` or ``conditional``. Postgres enum ``state_contingency``."""
+
+    UNCONDITIONAL = "unconditional"
+    RESERVATION = "reservation"
+    CONDITIONAL = "conditional"
+
+
+class StateChangeStatus(StrEnum):
+    """A change's settlement status (FR-STATE-14): only ``committed`` and ``converted`` rows
+    count toward the value; ``held``, ``pending``, ``released`` and ``dropped`` are kept for
+    #216 to #218. Postgres enum ``state_change_status``."""
+
+    COMMITTED = "committed"
+    HELD = "held"
+    PENDING = "pending"
+    RELEASED = "released"
+    CONVERTED = "converted"
+    DROPPED = "dropped"
+
+
 PG_ENUM_TYPES: dict[str, type[StrEnum]] = {
     "event_category": EventCategory,
     "operation_kind": OperationKind,
@@ -345,6 +444,15 @@ PG_ENUM_TYPES: dict[str, type[StrEnum]] = {
     "exposure_kind": ExposureKind,
     "exposure_fidelity": ExposureFidelity,
     "exposure_state": ExposureState,
+    "state_type": StateType,
+    "state_scope": StateScope,
+    "state_visibility": StateVisibility,
+    "state_owner": StateOwner,
+    "state_created_by": StateCreatedBy,
+    "state_change_kind": StateChangeKind,
+    "state_change_source": StateChangeSource,
+    "state_contingency": StateContingency,
+    "state_change_status": StateChangeStatus,
 }
 """Postgres enum type name (``<schema>.<name>`` outside ``public``) → the Python enum whose
 values it holds (creation order)."""

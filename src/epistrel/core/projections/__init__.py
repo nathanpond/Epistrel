@@ -4,7 +4,7 @@ The M2 set is ``transcript_messages``, ``story_heads``, ``story_texts`` (#60) an
 ``lite_summary_segments`` (#72); M4 adds the structured projections over canon,
 ``relationships``, ``placement`` and ``scene_state`` (#137, ``structured``); M5 the belief
 projections over the partitions, ``belief_state`` (#159, ``beliefs``) and ``nested_belief_state``
-(#167). Each projection
+(#167); M6 the State values, ``state_values`` (#185, ``states``). Each projection
 is registered with ``register_projection``; ``apply_events`` maintains them inside
 ``Operation.commit()``, and ``rebuild`` refolds them from the log (the structured ones from
 canon).
@@ -28,6 +28,7 @@ from epistrel.core.projections.fold import (
 )
 from epistrel.core.projections.heads import HeadsProjection
 from epistrel.core.projections.lite_summary import LiteSummaryProjection
+from epistrel.core.projections.states import StateValuesProjection
 from epistrel.core.projections.story_texts import StoryTextsProjection
 from epistrel.core.projections.structured import (
     PlacementProjection,
@@ -49,7 +50,9 @@ BELIEF_STATE = register_projection(BeliefStateProjection())
 """The belief projection (#159), folded from the story's beliefs."""
 NESTED_BELIEF_STATE = register_projection(NestedBeliefStateProjection())
 """The nested-belief projection (#167), folded from the story's nested beliefs."""
-STORED_STATE = (*STRUCTURED, BELIEF_STATE, NESTED_BELIEF_STATE)
+STATE_VALUES = register_projection(StateValuesProjection())
+"""The State values (#185), folded from the story's active State changes."""
+STORED_STATE = (*STRUCTURED, BELIEF_STATE, NESTED_BELIEF_STATE, STATE_VALUES)
 """The projections folded from stored state rather than the log; a fork refolds them."""
 
 __all__ = [
@@ -60,6 +63,7 @@ __all__ = [
     "PLACEMENT",
     "RELATIONSHIPS",
     "SCENE_STATE",
+    "STATE_VALUES",
     "STORED_STATE",
     "STORY_TEXTS",
     "STRUCTURED",

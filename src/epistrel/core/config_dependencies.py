@@ -31,7 +31,10 @@ predicate)``: an author locking or unlocking canon, #145, changes it). #161 adds
 turn, whose commit then routes under the new level, and ``core.epistemic.scene.recheck`` (a
 ``REBASE_CHECKS`` entry) regenerates a turn begun with partitions that no longer has them.
 #180 adds ``player_authority`` (FR-RESP-11, a story setting): how the turn treated the player's
-input about other characters (M6's rebase case needs it).
+input about other characters (M6's rebase case needs it). #185 adds ``state_definitions`` (a hash
+of every active State declaration's interpretive members, ``model.INTERPRETIVE_MEMBERS``,
+like ``author_locks``): an interpretive definition update re-checks the turn under the new
+definition (#187's ``REBASE_CHECKS``); a prospective one (aliases, unit) does not move it.
 
 The set values are hashes (``hash_member``), so detection at commit is a compare. At commit,
 under the story lock, ``changed`` names the dependencies whose value moved since the capture:
@@ -78,9 +81,10 @@ STRUCTURED_DEPENDENCIES = (
     "author_locks",
     "perception_level",
     "player_authority",
+    "state_definitions",
 )
 """What a structured turn's commit is re-checked against when it changes (#136, #144, #161,
-#180)."""
+#180, #185)."""
 
 VERIFICATION_PREFIX = "verification."
 
@@ -137,6 +141,13 @@ async def _perception_level(conn: AsyncConnection, story_id: str) -> str:
     from epistrel.core.epistemic.scene import current_level  # here: it imports the read set
 
     return await current_level(conn, story_id)
+
+
+async def state_definitions_hash(conn: AsyncConnection, story_id: str) -> str:
+    """Hash of every active State declaration's interpretive members, by name (#185)."""
+    from epistrel.core.states import definitions  # here: core.states imports the config log
+
+    return hash_member([state.interpretive() for state in await definitions(conn, story_id)])
 
 
 async def _policy_set(
@@ -224,6 +235,8 @@ async def capture(
         captured["author_locks"] = hash_member(
             [list(key) for key in await locked_keys(conn, story_id)]
         )
+    if "state_definitions" in members:
+        captured["state_definitions"] = await state_definitions_hash(conn, story_id)
     if "default_output_viewpoint" in members:
         captured["default_output_viewpoint"] = StorySettings.from_row(
             story.settings
@@ -247,4 +260,5 @@ __all__ = [
     "captured_for",
     "changed",
     "dependencies_for",
+    "state_definitions_hash",
 ]

@@ -128,6 +128,9 @@ _ENTRY_THUNK_RANK = (
     "(SELECT h.proposition_sketch::text FROM thunks h WHERE h.id = t.thunk_id) NULLS FIRST"
 )
 """A thunk by its predicate's name, and a ledger entry by its thunk's sketch (#146)."""
+_STATE_RANK = "(SELECT d.name FROM state_definitions d WHERE d.id = t.state_id)"
+_SCOPE_RANK = "(SELECT c.ordinal FROM characters c WHERE c.id::text = t.scope_key::text)"
+"""A State change or value by its State's name and its scope's cast ordinal (#185)."""
 
 ORDER: dict[str, str] = {
     "deployment_state": "t.id",
@@ -246,6 +249,14 @@ ORDER: dict[str, str] = {
         "t.objective_relation, t.belief_relation, t.intent, t.classification NULLS FIRST, "
         "t.created_at"
     ),
+    # States (#185): declarations by name; changes by their State's name, scope (the cast
+    # ordinal of its character) and position, then kind and record time; values likewise.
+    "state_definitions": f"{_STORY_RANK}, t.name",
+    "state_changes": (
+        f"{_STORY_RANK}, {_STATE_RANK}, {_SCOPE_RANK} NULLS FIRST, t.narrative_turn, "
+        "t.slot_k, t.beat, t.step, t.turn_variant, t.tx_from, t.kind, t.reason"
+    ),
+    "state_values": f"{_STORY_RANK}, {_STATE_RANK}, {_SCOPE_RANK} NULLS FIRST",
     # The read set's change index (#136): by revision, then valid window and change kind.
     "proposition_changes": (
         f"{_STORY_RANK}, t.timeline_revision, t.tx_time, t.valid_window, t.change, t.holder"

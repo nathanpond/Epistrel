@@ -282,6 +282,30 @@ async def engine(settings: Settings) -> AsyncIterator[AsyncEngine]:
         await engine.dispose()
 
 
+_STATES_OFF = text(
+    "UPDATE story_profile_overrides SET settings = settings - 'states', revision = revision + 1 "
+    "WHERE settings -> 'states' IS NOT NULL"
+)
+
+
+@pytest.fixture
+async def states_delivered(
+    monkeypatch: pytest.MonkeyPatch, engine: AsyncEngine
+) -> AsyncIterator[None]:
+    """The ``states`` module delivered for the test (#185; #203 delivers it for real), and no
+    story left on the shared database with a ``states`` override afterwards: once the patch
+    is gone, such a story's configuration names an undelivered level, which a later
+    deployment-wide validation (``PATCH /admin/settings``) refuses."""
+    from tests import state_support
+
+    state_support.deliver(monkeypatch)
+    try:
+        yield
+    finally:
+        async with engine.begin() as conn:
+            await conn.execute(_STATES_OFF)
+
+
 # -- embedding jobs on the shared database (#138) -------------------------------------------------
 
 EMBEDDING_JOB_KINDS = ("embed", "reembed")

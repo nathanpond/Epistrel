@@ -157,7 +157,8 @@ the copied turns, ``lite_summary_segments`` (#72) by folding the copied events, 
 segment's ``superseded`` state is the fork's own (a merged parent past the fork point is not
 copied, and its children are active in the fork), the structured projections
 (``relationships``, ``placement``, ``scene_state``; #137) by folding the copied canon, and
-``belief_state`` (#159) and ``nested_belief_state`` (#167) by folding the copied beliefs."""
+``belief_state`` (#159) and ``nested_belief_state`` (#167) by folding the copied beliefs, and
+``state_values`` (#185) by folding the copied State changes."""
 
 FORK_SUFFIX = " (fork)"
 
@@ -728,6 +729,15 @@ OVERRIDES: dict[str, dict[str, str]] = {
     "belief_transitions": {
         "prior_belief_ids": (
             f"CAST(ARRAY(SELECT {_ID}(s.id::text) FROM unnest(t.prior_belief_ids) "  # noqa: S608
+            "WITH ORDINALITY AS s(id, n) ORDER BY s.n) AS char(26)[])"
+        ),
+    },
+    # States (#185): a change's character (``scope_key``) is the fork's copy of it, and the
+    # effects it waits on (#216) the fork's copies.
+    "state_changes": {
+        "scope_key": f'{_ID}(t."scope_key"::text)',
+        "prerequisite_effect_ids": (
+            f"CAST(ARRAY(SELECT {_ID}(s.id::text) FROM unnest(t.prerequisite_effect_ids) "  # noqa: S608
             "WITH ORDINALITY AS s(id, n) ORDER BY s.n) AS char(26)[])"
         ),
     },

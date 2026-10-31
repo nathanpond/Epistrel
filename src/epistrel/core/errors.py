@@ -1126,6 +1126,32 @@ class ModuleOff(EpistrelError):
     http_status = 409
 
 
+class StateNotFound(EpistrelError):
+    """The State a call names is not one the story declares on its active timeline (FR-STATE-1;
+    #185). ``details``: ``story_id`` and ``state``."""
+
+    code = "not_found"
+    http_status = 404
+
+
+class StateNameTaken(EpistrelError):
+    """A State declaration reuses a name the story already holds (FR-STATE-1; #185: names are
+    unique per story). ``details``: ``story_id`` and ``state``. Nothing is written."""
+
+    code = "state_name_taken"
+    http_status = 409
+
+
+class StateConstraintViolation(EpistrelError):
+    """A State write would leave a value its constraints refuse (FR-STATE-6; #185): a definition
+    update whose new constraints the current value already violates (#186's set refuses the
+    same way). ``details``: ``state``, ``constraint``, ``attempted`` and ``current``. Nothing is
+    written."""
+
+    code = "state_constraint_violation"
+    http_status = 422
+
+
 class ScopeMismatch(EpistrelError):
     """A consolidation's inputs span viewpoint scopes no one output may combine (FR-MEM-9; #143):
     the intersection of their scopes is empty (two characters' private memories). Refused when

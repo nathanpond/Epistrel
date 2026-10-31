@@ -45,6 +45,7 @@ from epistrel.orchestrator.jobs.handlers.consolidation import consolidate_window
 from epistrel.testing import pauses
 from epistrel.testing.determinism import differences, state
 from epistrel.tools import backup
+from tests import canon_support as c
 from tests import character_support as characters
 from tests import consolidation_support as cs
 from tests import erasure_support as e
@@ -53,6 +54,7 @@ from tests import ledger_support as ledger
 from tests import media_support as media
 from tests import partition_support as ps
 from tests import scenario_support as scenarios
+from tests import state_support as ss
 from tests.auth_support import MEDIA_ROOT, auth_settings
 from tests.conformance.conftest import migrated_database
 from tests.conftest import DUMMY_DSN, REPO_ROOT
@@ -914,3 +916,64 @@ async def test_s_erasure_boundary__beliefs(erasure_settings: Settings, engine: A
         engine, "SELECT visibility FROM memories WHERE id = :m", m=k.shared_memory
     )
     assert shared.visibility["characters"] == [k.ann]
+
+
+@pytest.mark.part("M6", "FR-ADMIN-6")
+async def test_s_erasure_boundary__m6_states(
+    erasure_settings: Settings, engine: AsyncEngine, states_delivered: None
+) -> None:
+    """M6 (#185): a State scoped to the subject is removed. Bobby and Ann each have a ``trust``
+    value (a hidden per-character State) and a purse; erasing Bobby deletes every change
+    scoped to him, each with an erasure marker naming the record (identifiers only), and his
+    ``state_values`` rows, and the projection still equals the fold; the dry run counts the
+    changes and writes nothing; a reason that names him elsewhere (a story-scoped change) is
+    redacted in place. Complement: Ann's scoped values survive, her changes untouched."""
+    w = await c.world(engine)
+    story, bobby, ann = w.story_id, w.characters["Bobby"], w.characters["Ann"]
+    await use_structured(engine, story)
+    await ss.set_level(engine, story, "on")
+    await ss.define_all(
+        engine,
+        story,
+        ss.gold(name="trust", visibility="hidden", initial_value=5, aliases=(), unit=None),
+        ss.gold(name="purse"),
+        ss.gold(name="rumours", scope="story", aliases=(), unit=None),
+    )
+    await ss.change(
+        engine,
+        story,
+        ss.delta("trust", 2, scope_key=bobby, reason="he kept his word"),
+        ss.delta("trust", -1, scope_key=ann, reason="she was late"),
+        ss.delta("purse", 7, scope_key=bobby, reason="wages"),
+        ss.delta("purse", 3, scope_key=ann, reason="wages"),
+        ss.delta("rumours", 1, reason="Bobby was seen at the docks"),
+    )
+    his = {str(r.id) for r in await ss.change_rows(engine, story) if r.scope_key == bobby}
+    hers = {str(r.id): r.reason for r in await ss.change_rows(engine, story) if r.scope_key == ann}
+    assert len(his) == 2
+    assert len(hers) == 2
+    async with respond_client(erasure_settings, engine) as (client, _):
+        preview = await e.erase(client, "character", bobby, story, dry_run=True)
+        assert preview["records"]["state_changes"] >= len(his)
+        assert his <= {str(r.id) for r in await ss.change_rows(engine, story)}
+        await e.erase(client, "character", bobby, story, confirm_all=True)
+    left = await ss.change_rows(engine, story)
+    assert not his & {str(r.id) for r in left}
+    assert {str(r.id): r.reason for r in left if r.scope_key == ann} == hers
+    marked = await rows(
+        engine,
+        "SELECT payload->>'record_id' AS record_id, payload::text AS body FROM events "
+        "WHERE story_id = :s AND type = 'erasure_marker' "
+        "AND payload->>'record_table' = 'state_changes'",
+        s=story,
+    )
+    assert his <= {m.record_id for m in marked}
+    assert all(not e.naming(m.body, ["Bobby"]) for m in marked)
+    stored = await ss.stored_values(engine, story)
+    assert stored == await ss.folded_values(engine, story)
+    assert bobby not in {v["scope_key"] for v in stored}
+    assert await ss.value(engine, story, "trust", ann) == 4
+    assert await ss.value(engine, story, "purse", ann) == 3
+    (story_change,) = [r for r in left if r.scope_key is None]
+    assert not e.naming(story_change.reason, ["Bobby"])
+    assert "[erased]" in story_change.reason

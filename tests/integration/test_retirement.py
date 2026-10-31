@@ -18,7 +18,8 @@ test ID per milestone in one file):
   stub's consolidation unavailable, the overflow gauge and the reconcile;
 - ``test_i_16__retired_stay_active``: history views, keyed lookups, rehydration without a
   return to the hot set, and the ledger delivering what retired records mention;
-- ``test_i_15`` and ``test_s_retention__vectors``: a dormant continuation's vectors.
+- ``test_i_15`` and ``test_s_retention__vectors``: a dormant continuation's vectors;
+- ``test_i_15__m6_states`` (I-15's M6 part, #185): its State records and their projection.
 
 These run on a database of their own (``embedding_support.embedding_db``): the first real
 embedding pins the deployment's dimension, a schema change the shared database must never see.
@@ -57,6 +58,7 @@ from tests import canon_support as c
 from tests import consolidation_support as cs
 from tests import hot_set_support as h
 from tests import retrieval_support as r
+from tests import state_support as ss
 from tests.embedding_support import Scratch, embedding_db, pin_of, reset, say, vectors
 from tests.event_support import new_story
 from tests.fork_support import fork
@@ -752,6 +754,71 @@ async def test_i_15(s: Scratch) -> None:
     assert {i: on["vectors_after"][i].vector for i in on["first"]} == {
         i: on["vectors_before"][i] for i in on["first"]
     }
+
+
+STATE_TABLES = ("state_definitions", "state_changes", "state_values")
+
+
+@pytest.mark.part("M6", "FR-STORE-30")
+async def test_i_15__m6_states(s: Scratch, monkeypatch: pytest.MonkeyPatch) -> None:
+    """I-15 (M6, #185): State records and their projection are byte-identical after a swap
+    reactivates the continuation that wrote them. Bobby's purse and a story rumour change over
+    four turns; truncated to 3 and continued another way (other changes); swapped back: the
+    ``state_definitions``, ``state_changes`` and rebuilt ``state_values`` rows of the active
+    timeline equal the ones before the truncation (minus the swap's flip times). Complement: a
+    change on the active continuation after the swap back is the only difference (one change
+    row, and its value row)."""
+    ss.deliver(monkeypatch)
+    db = s.db
+    w = await h.story(db)
+    story, bobby = w.story_id, w.characters["Bobby"]
+    await ss.set_level(db, story, "on")
+    await ss.define_all(
+        db,
+        story,
+        ss.gold(name="purse"),
+        ss.gold(
+            name="rumour",
+            type="text",
+            scope="story",
+            constraints={},
+            initial_value=None,
+            aliases=(),
+            unit=None,
+        ),
+    )
+    for n in range(2, 6):
+        await ss.change(
+            db,
+            story,
+            ss.delta("purse", n, scope_key=bobby, reason=f"wages {n}"),
+            ss.set_to("rumour", f"rumour {n}"),
+        )
+    before = {t: v for t, v in (await _story_state(db, story)).items() if t in STATE_TABLES}
+    assert {t: len(v) for t, v in before.items()} == {
+        "state_definitions": 2,
+        "state_changes": 8,
+        "state_values": 2,
+    }
+    assert await truncate(db, story, 3) is not None
+    for n in (4, 5):
+        await ss.change(db, story, ss.delta("purse", 10 * n, scope_key=bobby, reason="other"))
+    assert await ss.value(db, story, "purse", bobby) == 2 + 3 + 40 + 50
+    assert await swap(db, story) is not None
+    after = {t: v for t, v in (await _story_state(db, story)).items() if t in STATE_TABLES}
+    assert after == before
+    assert await ss.value(db, story, "purse", bobby) == 2 + 3 + 4 + 5
+
+    await ss.change(db, story, ss.delta("purse", 1, scope_key=bobby, reason="a tip"))
+    later = {t: v for t, v in (await _story_state(db, story)).items() if t in STATE_TABLES}
+    assert later["state_definitions"] == before["state_definitions"]
+    added = [r for r in later["state_changes"] if r not in before["state_changes"]]
+    assert [r["reason"] for r in added] == ["a tip"]
+    assert len(later["state_changes"]) == len(before["state_changes"]) + 1
+    moved = [r for r in later["state_values"] if r not in before["state_values"]]
+    assert [(r["scope_key"], r["change_count"]) for r in moved] == [(bobby, 5)]
+    assert len(later["state_values"]) == len(before["state_values"])
+    await ss.set_level(db, story, None)  # no undelivered level left behind
 
 
 @pytest.mark.part("M4", "FR-STORE-30; NFR-DETERM-1")

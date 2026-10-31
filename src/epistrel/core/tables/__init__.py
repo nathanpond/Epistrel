@@ -73,6 +73,7 @@ from epistrel.core.tables.propositions import (
 from epistrel.core.tables.rating_checks import guardrail_check_results, rating_check_jobs
 from epistrel.core.tables.ratings import content_rating_versions, content_ratings
 from epistrel.core.tables.readset import proposition_changes
+from epistrel.core.tables.states import state_changes, state_definitions, state_values
 from epistrel.core.tables.stories import stories
 from epistrel.core.tables.timers import recurring_tasks, timers, worker_heartbeats
 from epistrel.core.tables.turn_queue import turn_queue
@@ -136,6 +137,9 @@ __all__ = [
     "scenario_catalog",
     "scenario_versions",
     "scene_state",
+    "state_changes",
+    "state_definitions",
+    "state_values",
     "stories",
     "story_heads",
     "story_profile_overrides",

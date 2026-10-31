@@ -58,6 +58,7 @@ from epistrel.core.tables.propositions import (
     predicates,
     propositions,
 )
+from epistrel.core.tables.states import state_changes, state_definitions
 
 STORY_SCOPE = "story"
 """The ``scope`` of a story's configuration change, stored result and policy."""
@@ -374,6 +375,35 @@ def belief_transition_record(row: Any) -> Record:
     if source is not None:
         declared.append((SubjectKind.CHARACTER, str(source), "source_character_id"))
     return Record(belief_transitions.name, str(row.id), _str(row.story_id), {}, tuple(declared))
+
+
+def state_definition_record(row: Any) -> Record:
+    """A State's declaration (#185): its ``name``, each alias (``aliases[n]``), its ``unit`` and a
+    text State's ``initial_value``, indexed positionally (ADR-154); it declares no subject."""
+    fields: dict[str, str | None] = {"name": predicate_words(str(row.name))}
+    for index, alias in enumerate(row.aliases or ()):
+        fields[f"aliases[{index}]"] = alias
+    if row.unit:
+        fields["unit"] = row.unit
+    if isinstance(row.initial_value, str):
+        fields["initial_value"] = row.initial_value
+    return Record(state_definitions.name, str(row.id), _str(row.story_id), fields)
+
+
+def state_change_record(row: Any) -> Record:
+    """A State change (#185): its ``reason`` and its string values (``value``, ``old_value``,
+    ``new_value``: a text or enum State's), indexed positionally (ADR-154); a change scoped to a
+    character declares it (``scope_key``)."""
+    fields: dict[str, str | None] = {"reason": row.reason}
+    for column in ("value", "old_value", "new_value"):
+        found = getattr(row, column, None)
+        if isinstance(found, str):
+            fields[column] = found
+    scope_key = _str(getattr(row, "scope_key", None))
+    declared: tuple[Declared, ...] = (
+        ((SubjectKind.CHARACTER, scope_key, "scope_key"),) if scope_key else ()
+    )
+    return Record(state_changes.name, str(row.id), _str(row.story_id), fields, declared)
 
 
 def exposure_record(row: Any) -> Record:
@@ -834,6 +864,16 @@ async def read_belief_transitions(conn: AsyncConnection, story_id: str | None) -
     return await _story_rows(conn, belief_transitions, story_id, belief_transition_record)
 
 
+async def read_state_definitions(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    """A story's State declarations, as ``state_definition_record`` indexes them."""
+    return await _story_rows(conn, state_definitions, story_id, state_definition_record)
+
+
+async def read_state_changes(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    """A story's State changes, as ``state_change_record`` indexes them."""
+    return await _story_rows(conn, state_changes, story_id, state_change_record)
+
+
 async def read_thunks(conn: AsyncConnection, story_id: str | None) -> list[Record]:
     """A story's thunks, as ``thunk_record`` indexes them."""
     return await _story_rows(conn, thunks, story_id, thunk_record)
@@ -898,8 +938,12 @@ __all__ = [
     "read_beliefs",
     "read_divergences",
     "read_exposures",
+    "read_state_changes",
+    "read_state_definitions",
     "read_thunks",
     "snapshot_record",
+    "state_change_record",
+    "state_definition_record",
     "story_record",
     "text_fields",
     "thunk_record",

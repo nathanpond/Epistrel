@@ -219,6 +219,12 @@ from epistrel.core.tables.propositions import (
     predicates,
     propositions,
 )
+from epistrel.core.tables.states import (
+    STORY_SCOPE_KEY,
+    state_changes,
+    state_definitions,
+    state_values,
+)
 from epistrel.observability.logging import get_logger
 
 log = get_logger(__name__)
@@ -1277,15 +1283,17 @@ async def _redact_structured(
     """The structured stores (#131): an erased character's entity loses its aliases (deleted,
     each with a marker); every other record naming the subject is redacted in place. A story
     predicate's name keeps its id as a suffix when redacted, so names stay unique per story.
-    Facts (#133), exposures (#164), divergences (#166), beliefs (#159), memories (#135) and
-    thunks (#146) go first: see ``_erase_facts``, ``_erase_exposures``, ``_erase_divergences``,
-    ``_erase_beliefs``, ``_erase_memories`` and ``_erase_thunks``."""
+    Facts (#133), exposures (#164), divergences (#166), beliefs (#159), memories (#135),
+    thunks (#146) and States (#185) go first: see ``_erase_facts``, ``_erase_exposures``,
+    ``_erase_divergences``, ``_erase_beliefs``, ``_erase_memories``, ``_erase_thunks`` and
+    ``_erase_states``."""
     await _erase_facts(conn, story_id, refs, removed, tally, run)
     await _erase_exposures(conn, story_id, refs, removed, tally, run)
     await _erase_divergences(conn, story_id, refs, removed, tally, run)
     await _erase_beliefs(conn, story_id, removed, tally, run, refs=refs)
     await _erase_memories(conn, story_id, refs, removed, redactor, tally, run)
     await _erase_thunks(conn, story_id, refs, removed, redactor, tally, run)
+    await _erase_states(conn, story_id, refs, removed, redactor, tally, run)
     owned = list(
         await conn.scalars(
             select(entity_aliases.c.id)
@@ -1339,6 +1347,88 @@ async def _redact_structured(
                 update(predicates)
                 .where(predicates.c.id == row.id)
                 .values(name=f"{renamed}_{str(row.id).lower()}")
+            )
+
+
+async def _erase_states(
+    conn: AsyncConnection,
+    story_id: str,
+    refs: Mapping[str, set[str]],
+    removed: set[str],
+    redactor: Redactor,
+    tally: _Tally,
+    run: _StoryRun,
+) -> None:
+    """States (#185; S-ERASURE-BOUNDARY M6): a State scoped to an erased character is removed
+    for them: every change scoped to them is deleted, each with a marker, and their
+    ``state_values`` rows with them (the projection; refolded again by the ``rebuilt`` stage).
+    Every other change or declaration that names the subject is redacted in place (a change's
+    reason and text values; a declaration's aliases, unit and text initial value, and its name,
+    which keeps its id as a suffix when redacted, as a predicate's does, so names stay unique)."""
+    c = state_changes.c
+    if removed:
+        scoped = list(
+            await conn.scalars(
+                select(c.id)
+                .where(c.story_id == story_id, c.scope_key.in_(sorted(removed)))
+                .order_by(c.id)
+            )
+        )
+        for change_id in scoped:
+            await _delete(
+                conn,
+                run,
+                tally,
+                state_changes.name,
+                str(change_id),
+                delete(state_changes).where(c.id == change_id),
+            )
+        if run.write:
+            v = state_values.c
+            await conn.execute(
+                delete(state_values).where(
+                    v.story_id == story_id,
+                    v.scope_key != STORY_SCOPE_KEY,
+                    v.scope_key.in_(sorted(removed)),
+                )
+            )
+        gone = {str(i) for i in scoped}
+    else:
+        gone = set()
+    await _redact_json_rows(
+        conn,
+        state_changes,
+        c.id,
+        set(refs.get(state_changes.name, set())) - gone,
+        ("reason", "value", "old_value", "new_value"),
+        redactor,
+        tally,
+        write=run.write,
+    )
+    named = sorted(refs.get(state_definitions.name, set()))
+    await _redact_json_rows(
+        conn,
+        state_definitions,
+        state_definitions.c.id,
+        named,
+        ("aliases", "unit", "initial_value"),
+        redactor,
+        tally,
+        write=run.write,
+    )
+    d = state_definitions.c
+    for row in await conn.execute(select(d.id, d.name).where(d.id.in_(named))):
+        words = predicate_words(str(row.name))
+        new = redactor.text(words, (state_definitions.name, str(row.id), "name"))
+        if new == words:
+            continue
+        tally.record(state_definitions.name, 1)
+        if run.write:
+            renamed = "_".join(new.replace("[", "").replace("]", "").split())
+            await conn.execute(
+                update(state_definitions)
+                .where(d.id == row.id)
+                .values(name=f"{renamed[:53]}_{str(row.id).lower()}")
             )
 
 

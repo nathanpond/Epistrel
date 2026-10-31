@@ -178,6 +178,7 @@ from epistrel.core.tables.propositions import (
     propositions,
 )
 from epistrel.core.tables.readset import proposition_changes
+from epistrel.core.tables.states import state_changes, state_definitions, state_values
 from epistrel.core.tables.utterances import utterances
 from epistrel.core.trimmed import trim_as_sent
 
@@ -231,6 +232,11 @@ STORY_TABLES: tuple[Table, ...] = (
     nested_belief_state,
     # Exposures (#164): a derived table, before the operations it references.
     exposures,
+    # States (#185): the projection (rebuilt by a fork), then the changes and the declarations,
+    # derived tables before the operations they reference (no foreign key between them).
+    state_values,
+    state_changes,
+    state_definitions,
     # Memory records (#135): a derived table, before the operations it references.
     memories,
     # Speech acts (#150): a derived table, before the operations it references.

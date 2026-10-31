@@ -24,7 +24,10 @@ changes possession (one with an item):
      declares (never prose: a detected claim does not count), or the counterparty's own render
      declaring the effect (its own act). A ``theft`` needs none.
   2. ``availability``: ``holds(seller, item)``, and no reservation (#216) on the item for anyone
-     but the payer. Inert until #216: there are no reservations yet.
+     but the payer (``Canon.reserved``: the held rows of earlier turns, read by
+     ``core.states.contingency.held_items``; ``Context.reserved``: the turn's own holds, laid
+     over it by the dry-run as each reservation passes). A decrease of a State that tracks a
+     held item (its ``entity_id``) is unmet too, unless it goes to the hold's beneficiary.
   3. ``co_location``: ``present_at(payer, place) ∧ present_at(seller, place)``, ``place`` the
      payer's location, read through ``core.epistemic.perception.co_located_set`` over
      ``core.epistemic.scene``'s state (ADR-169: never ``placement`` directly), with the turn's
@@ -187,7 +190,8 @@ class Canon:
     owns: dict[str, list[Record]] = field(default_factory=dict)
     agreed: dict[str, list[Record]] = field(default_factory=dict)
     reserved: dict[str, str] = field(default_factory=dict)
-    """#216: an item's reservation and its beneficiary (none until reservations exist)."""
+    """#216: each held item (an entity) and its beneficiary (``contingency.NOBODY``: no
+    character of the story), from the active ``held`` rows of earlier turns."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,9 +201,20 @@ class Context:
 
     canon: Canon
     beats: Mapping[int, BeatView] = field(default_factory=dict)
+    reserved: Mapping[str, str] = field(default_factory=dict)
+    """#216: the items the turn's own reservations hold so far (item → beneficiary), laid over
+    ``Canon.reserved`` (``reserve``)."""
 
     def at(self, beats: Iterable[BeatView]) -> Context:
         return replace(self, beats={b.beat: b for b in beats})
+
+    def reserve(self, item: str, beneficiary: str) -> Context:
+        """This context with ``item`` held for ``beneficiary`` by the turn (#216)."""
+        return replace(self, reserved={**self.reserved, item: beneficiary})
+
+    def holds(self) -> Mapping[str, str]:
+        """Every held item and its beneficiary: earlier turns' and the turn's own."""
+        return {**self.canon.reserved, **self.reserved}
 
 
 def context_of(canon: Canon, beats: Sequence[Any], stage: Any = None) -> Context:
@@ -308,6 +323,10 @@ def parties_of(effect: StateEffect, context: Context) -> Parties | None:
     counterparty = None
     if transfer and effect.counterparty is not None:
         counterparty = effect.counterparty.scope_key
+        if counterparty is not None and counterparty == effect.scope_key:
+            # #216: a transfer between one character's own values (the sword for the payout
+            # into the same character's external account) has no other party to agree.
+            counterparty = None
     seller = paid
     if not transfer and payer is not None and item is not None:
         seller = _holder(context.canon, item, besides=payer)
@@ -556,9 +575,10 @@ def evaluate(
     """The ``PRECONDITIONS`` hook (see the module docstring): the first unmet or uncertain
     precondition's ``Unpermitted``, ``effect_unresolved`` for a sale with no item, else
     ``None``."""
-    del definition
     if not isinstance(context, Context):
         return None
+    if _spends_held(effect, definition, context):
+        return Unpermitted(reason_of(AVAILABILITY))
     beat = None if effect.beat is None else context.beats.get(effect.beat)
     parties = parties_of(effect, context)
     if parties is None:
@@ -574,6 +594,8 @@ def evaluate(
     for r in preconditions_for(effect, beat, context, asserter=asserter):
         if r.name != CONSENT and parties.unresolved:
             break
+        if r.name == AVAILABILITY and _reserved_for_another(parties, context):
+            return Unpermitted(reason_of(AVAILABILITY))
         if not _met(r.name, verdict_of(r, effect, parties, context)):
             return Unpermitted(reason_of(r.name))
     if parties.unresolved:
@@ -581,6 +603,24 @@ def evaluate(
         # escalates (docs/02 §4.9), so the safe disposition at once.
         return Unpermitted(reason_of(AVAILABILITY))
     return None
+
+
+def _reserved_for_another(parties: Parties, context: Context) -> bool:
+    """#216: the item is held for someone other than the payer."""
+    held = context.holds()
+    return parties.item is not None and parties.item in held and held[parties.item] != parties.payer
+
+
+def _spends_held(effect: StateEffect, definition: StateDefinition, context: Context) -> bool:
+    """#216: ``effect`` decreases a State that tracks a held item, and does not hand it to the
+    hold's beneficiary (a transfer's other side)."""
+    item = definition.entity_id
+    held = context.holds()
+    if item is None or item not in held or effect.delta is None or effect.delta >= 0:
+        return False
+    beneficiary = held[item]
+    to = None if effect.counterparty is None else effect.counterparty.scope_key
+    return not (beneficiary and to == beneficiary)
 
 
 # -- the reads -----------------------------------------------------------------------------------
@@ -649,6 +689,10 @@ async def read(
     _, parties = wanted(effects, context)
     for party in sorted(parties):
         canon.agreed[party] = await facts(AGREED_TO, party, None)
+    from epistrel.core.states.contingency import held_items
+
+    # #216: the items earlier turns' reservations hold (counted against availability).
+    canon.reserved = await held_items(conn, story_id)
     return canon
 
 

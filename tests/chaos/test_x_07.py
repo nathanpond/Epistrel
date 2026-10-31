@@ -43,9 +43,14 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.api import create_app
 from epistrel.api.routes.health import check
 from epistrel.config import Settings
-from epistrel.core import clock
+from epistrel.core import clock, states
 from epistrel.core import outbox as core_outbox
-from epistrel.core.enums import OperationKind, Provenance
+from epistrel.core.enums import (
+    OperationKind,
+    Provenance,
+    StateChangeStatus,
+    StateContingency,
+)
 from epistrel.core.events.operation import Operation
 from epistrel.core.ids import new_ulid
 from epistrel.core.media import sweep as media_sweep
@@ -56,7 +61,7 @@ from epistrel.orchestrator.jobs import handlers, queue
 from epistrel.orchestrator.jobs import timers as timer_api
 from epistrel.orchestrator.jobs.handlers import media_sweep as media_sweep_job
 from epistrel.orchestrator.jobs.handlers import outbox as outbox_job
-from epistrel.orchestrator.jobs.handlers import retention, turn_queue
+from epistrel.orchestrator.jobs.handlers import reservations, retention, turn_queue
 from epistrel.orchestrator.jobs.recurring import (
     NoPayload,
     RecurringTask,
@@ -73,13 +78,16 @@ from epistrel.orchestrator.jobs.worker import (
     recovery_pass,
 )
 from epistrel.orchestrator.providers.in_process import InProcessRegistry
+from tests import canon_support as c
 from tests import provider_support as ps
+from tests import state_support as ss
 from tests.auth_support import CREDENTIAL_A, ERASURE_LEDGER_DIR, MEDIA_ROOT, auth_settings
 from tests.conftest import REPO_ROOT
 from tests.event_support import new_story, play_turn
 from tests.integration import test_jobs as jt
 from tests.integration.test_media_assets import SWEEPER, put
 from tests.media_support import blob_path, png, scratch
+from tests.memory_support import use_structured
 from tests.respond_support import until
 
 POLL_S = 0.3
@@ -1448,3 +1456,93 @@ async def test_x_07__m6_outbox(engine: AsyncEngine, quiet: Probe, moved: Movable
     finally:
         outbox_job.bind(None)
         await ps.drop_outbox_jobs(engine, story)
+
+
+# -- State reservation expiry (#216) -------------------------------------------------------------
+
+
+async def _holds(engine: AsyncEngine) -> tuple[str, str, str]:
+    """A story whose Cal has 10 gold, two of it held by one turn for two external payouts
+    (``held`` reservations), each with a ``reservation_expiry`` timer due in two hours; answers
+    the story and the two held changes' ids."""
+    world = await c.world(engine)
+    story, cal = world.story_id, world.characters["Cal"]
+    await use_structured(engine, story)
+    await ss.set_level(engine, story, "on")
+    await ss.define_all(engine, story, ss.gold())
+    await ss.change(engine, story, ss.set_to("gold", 10, scope_key=cal))
+
+    def hold() -> Any:
+        return ss.delta(
+            "gold",
+            -1,
+            scope_key=cal,
+            contingency=StateContingency.RESERVATION,
+            status=StateChangeStatus.HELD,
+            prerequisite_effect_ids=(new_ulid(),),
+        )
+
+    async def write(conn: Any, op: Operation) -> list[str]:
+        found = [await states.apply_change(conn, op, hold()) for _ in range(2)]
+        ids = [f.change_id for f in found if isinstance(f, states.Applied)]
+        due = clock.now() + timedelta(hours=2)
+        for change_id in ids:
+            await timer_api.schedule(
+                conn, reservations.RESERVATION_EXPIRY, change_id, due, story_id=story
+            )
+        return ids
+
+    _, (first, second) = await c.run(engine, story, write)
+    return story, first, second
+
+
+async def _change_status(engine: AsyncEngine, change_id: str) -> str:
+    return str(await _scalar(engine, "SELECT status FROM state_changes WHERE id = :i", i=change_id))
+
+
+@pytest.mark.chaos
+@pytest.mark.chaos_quick
+@pytest.mark.part("M6", "NFR-REL-5")
+async def test_x_07__m6_reservation(
+    engine: AsyncEngine, quiet: Probe, moved: MovableClock, states_delivered: None
+) -> None:
+    """State reservation expiry (#216, FR-STATE-14): two holds' expiry timers come due while no
+    worker runs; racing workers fire each timer once, and the next worker's recovery pass and
+    drain release the hold exactly once. Restarts, later passes and a repeated release change
+    nothing. Complement: a hold converted before its expiry is not released by its timer, and a
+    timer not yet due fires nothing."""
+    story, released, converted = await _holds(engine)
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("UPDATE state_changes SET status = 'converted' WHERE id = :i"), {"i": converted}
+        )
+    # Not due yet: nothing fires.
+    assert (await timer_api.fire_due(engine)).timers == []
+
+    # The outage outlasts the expiry; racing workers fire each timer once.
+    moved.advance(timedelta(hours=2, minutes=1).total_seconds())
+    results = await asyncio.gather(*(timer_api.fire_due(engine) for _ in range(4)))
+    fired = sorted(kind for r in results for kind in r.timers)
+    assert fired == [reservations.RESERVATION_EXPIRY] * 2
+    worker = Worker(engine, _config(timers=False))
+    assert await worker.recovery_pass() is not None
+    assert await _drain(engine, worker) == 2
+    outcomes = sorted(
+        j.result["outcome"] for j in await _jobs_of(engine, reservations.RESERVATION_EXPIRY)
+    )
+    assert outcomes == [reservations.RELEASED, reservations.SKIPPED]
+    assert await _change_status(engine, released) == "released"
+    assert await _change_status(engine, converted) == "converted"
+
+    # Restarts and later passes change nothing.
+    for _ in range(2):
+        moved.advance(timedelta(hours=3).total_seconds())
+        restarted = Worker(engine, _config(timers=False))
+        await restarted.recovery_pass()
+        await timer_api.fire_due(engine)
+        assert await _drain(engine, restarted) == 0
+        assert await reservations.expire(engine, released) == reservations.SKIPPED
+    assert await _change_status(engine, released) == "released"
+    assert len(await _jobs_of(engine, reservations.RESERVATION_EXPIRY)) == 2
+    async with engine.begin() as conn:
+        await conn.execute(delete(jobs).where(jobs.c.story_id == story))

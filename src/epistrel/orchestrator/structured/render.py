@@ -26,10 +26,11 @@ wrong and is retried within the deployment's ``structured_retry_budget``:
   repaired, not refused;
 - ``effects`` (#187, FR-TURN-11) are the beat's State effects, ``{kind, state, scope_key?,
   delta? | value?, counterparty?, reason, justification?, justified_by?, consideration?,
-  silent?, contingency?, prerequisites?}``. Only ``kind = change``, ``reason`` (1 to 200
-  characters) and ``silent`` are delivered: any other kind, or a non-null field another story
-  owns (#188's ``counterparty``, ``justification``, ``justified_by``; #216's ``contingency``,
-  ``prerequisites``), is invalid. So is an effect
+  silent?, contingency?, prerequisites?}``. #216's ``contingency`` (``unconditional``,
+  ``reservation``, ``conditional``) and ``prerequisites`` (the States of the turn's external
+  effects it waits on: each must name an externally owned State, ``TrackedState.external``)
+  classify the effect in a turn that requests external effects (``core.states.contingency``);
+  a time advance or a reschedule takes neither. So is an effect
   naming no State of the story (``world_clock`` included: a time advance is #194's), a
   ``delta`` on a non-number, both a ``delta`` and a ``value``, a value of the wrong type, a
   scope key on a story State or naming no cast member, a character-scoped State with no
@@ -305,12 +306,11 @@ MAX_SKIP_MINUTES = 525_960 * 10
 """The longest declared time advance the schema takes (ten years; #199 caps a model-initiated
 one at ``max_unprompted_skip``)."""
 HHMM = r"^([01][0-9]|2[0-3]):[0-5][0-9]$"
-UNDELIVERED_EFFECT_FIELDS = (
-    "contingency",
-    "prerequisites",
-)
-"""The effect fields later stories validate (#216): non-null is invalid until then (#189
-delivered ``consideration``)."""
+UNDELIVERED_EFFECT_FIELDS: tuple[str, ...] = ()
+"""The effect fields later stories validate: non-null is invalid until then (#189 delivered
+``consideration``, #216 ``contingency`` and ``prerequisites``)."""
+CONTINGENCY_FIELDS = ("contingency", "prerequisites")
+"""#216: a State effect's alone (a time advance or a reschedule takes neither)."""
 STATES_ON = "on"
 
 
@@ -372,6 +372,8 @@ def declared_of(effects: Sequence[EffectDecl]) -> tuple[DeclaredEffect, ...]:
             justification=None if e.justification is None else e.justification.strip(),
             justified_by=e.justified_by,
             consideration=None if e.consideration is None else e.consideration.strip() or None,
+            contingency=e.contingency,
+            prerequisites=tuple(p.strip() for p in e.prerequisites or () if p.strip()),
         )
         for e in effects
         if e.kind not in CLOCK_EFFECTS
@@ -401,11 +403,13 @@ def advances_of(effects: Sequence[EffectDecl]) -> tuple[DeclaredAdvance, ...]:
 @dataclass(frozen=True, slots=True)
 class TrackedState:
     """What a render's schema knows of one of the story's States (#187): its type, scope and
-    visibility (``core.states.StateDefinition``'s)."""
+    visibility (``core.states.StateDefinition``'s); ``external`` whether an external provider
+    owns it (#216: what a contingent effect's ``prerequisites`` may name)."""
 
     type: str
     scope: str
     visibility: str
+    external: bool = False
 
 
 def _value_fits(state_type: str, value: Any) -> bool:
@@ -495,16 +499,16 @@ def effect_errors(
     errors: list[str] = []
     for m, effect in enumerate(effects):
         if effect.kind == TIME_ADVANCE:
-            for name in UNDELIVERED_EFFECT_FIELDS:
+            for name in (*UNDELIVERED_EFFECT_FIELDS, *CONTINGENCY_FIELDS):
                 if getattr(effect, name) is not None:
-                    errors.append(f"{where}.effects.{m}.{name}: not delivered yet")
+                    errors.append(f"{where}.effects.{m}.{name}: not a time advance's")
             errors += advance_errors(
                 f"{where}.effects.{m}", effect, clock=clock, clock_fixed=clock_fixed
             )
         elif effect.kind == RESCHEDULE:
-            for name in UNDELIVERED_EFFECT_FIELDS:
+            for name in (*UNDELIVERED_EFFECT_FIELDS, *CONTINGENCY_FIELDS):
                 if getattr(effect, name) is not None:
-                    errors.append(f"{where}.effects.{m}.{name}: not delivered yet")
+                    errors.append(f"{where}.effects.{m}.{name}: not a reschedule's")
             errors += reschedule_errors(f"{where}.effects.{m}", effect, clock=clock)
     for m, effect in changes:
         at = f"{where}.effects.{m}"
@@ -541,6 +545,10 @@ def effect_errors(
             if effect.scope_key is not None and effect.scope_key not in cast_ids:
                 errors.append(f"{at}.scope_key: not one of the story's characters")
         errors += _transfer_errors(at, effect, target, states=states, cast_ids=cast_ids)
+        for n, cited in enumerate(effect.prerequisites or ()):
+            found = states.get(cited.strip())
+            if found is None or not found.external:
+                errors.append(f"{at}.prerequisites.{n}: names no external value of the story")
     return errors
 
 

@@ -31,7 +31,10 @@ initial value and no ``set``).
 **The fold** (FR-STATE-4). A State's value in a view is ``fold(initial_value, changes)``: its
 changes in position order (``(turn, slot_k, beat, step)``, then id, which is creation order),
 ``set`` replacing the value and ``delta``/``transfer_in``/``transfer_out`` adding their signed
-``delta``. Only ``committed`` and ``converted`` changes count (``COUNTED``). A delta on an
+``delta``. Only ``committed`` changes count (``COUNTED``): a ``held`` reservation, a
+``pending`` conditional change and a ``released`` or ``dropped`` one never do, and neither does a
+``converted`` intent row, whose settlement is a new ``committed`` row at the settling position
+(#216, ``core.states.contingency``; never backdated). A delta on an
 undefined value leaves it undefined. Which changes are in a view (active, or as recorded, through
 a position) is the caller's; the fold is the same function everywhere, so the projection, the
 reads and the property tests agree by construction.
@@ -95,10 +98,9 @@ UNIT_MAX = 40
 DIGITS_MAX = 15
 """A number's most significant digits: its JSON form (a float on the way out) round-trips."""
 
-COUNTED: frozenset[StateChangeStatus] = frozenset(
-    {StateChangeStatus.COMMITTED, StateChangeStatus.CONVERTED}
-)
-"""The statuses that count toward a value; the others are kept for #216 to #218."""
+COUNTED: frozenset[StateChangeStatus] = frozenset({StateChangeStatus.COMMITTED})
+"""The statuses that count toward a value. ``converted`` is bookkeeping on an intent row whose
+settlement wrote a new ``committed`` row (#216): counting both would count the change twice."""
 
 ADDITIVE: frozenset[StateChangeKind] = frozenset(
     {StateChangeKind.DELTA, StateChangeKind.TRANSFER_IN, StateChangeKind.TRANSFER_OUT}
@@ -543,6 +545,8 @@ class StateChange:
     """A clock advance a due scheduled event stopped: the event (its ``proposition_id``; #196)."""
     paused_for_event_id: str | None = None
     """A clock advance a ``possibly_due`` event paused: the event (#197)."""
+    settles_change_id: str | None = None
+    """A settlement's intent row (#216): the ``held`` or ``pending`` change it converts."""
 
 
 @dataclass(frozen=True, slots=True)

@@ -87,6 +87,21 @@ in the turn's own transaction (``write_outbox``; ``core.outbox``,
 read-only one's until a confirmation is recorded. Until #212's staged turns, a
 ``synchronous`` provider's effects take this asynchronous path too.
 
+**Contingent effects** (#216, FR-STATE-14, FR-STATE-12 across systems): in a turn that requests
+an external effect (either kind above), each story-owned side the commit writes is classified
+by ``core.states.contingency.classify`` (the render's declared ``contingency`` and
+``prerequisites``, else a transfer's direction against its external side): ``unconditional``
+commits (``committed``); a ``reservation`` is written ``held`` (out of the value, held against
+availability); a ``conditional`` change is written ``pending`` (no value impact). Each names
+the ``effect_id``s it waits on (``prerequisite_effect_ids``; the outbox row's id, or the
+consumer request's), and a tracked side whose other side is external carries ``counterparty:
+external`` in the response, with its ``contingency`` and ``status``. A hold on a State with a
+``reservation_expiry_minutes`` gets a ``reservation_expiry`` timer (``orchestrator.jobs.timers``'
+``schedule``, in the turn's transaction; ``orchestrator.jobs.handlers.reservations`` releases it
+once). The dry-run reads the values less the holds of earlier turns (``Book.available``), and a
+beat asserting a pending grant ("Cal holds the sword") is #209's ``external_outcome_unconfirmed``
+(``pending_of``'s grants). #212 and #217 settle the rows (``core.states.contingency.settle``).
+
 Log lines carry counts only (invariant 3).
 """
 
@@ -111,6 +126,8 @@ from epistrel.core.enums import (
     Provenance,
     StateChangeKind,
     StateChangeSource,
+    StateChangeStatus,
+    StateContingency,
     StateOwner,
     StateScope,
     StateVisibility,
@@ -131,6 +148,7 @@ from epistrel.core.states import (
     Undefined,
     UndefinedType,
     completeness,
+    contingency,
 )
 from epistrel.core.states import authorize as permission
 from epistrel.core.states import effects as rules
@@ -188,6 +206,13 @@ class Book:
     outbox: frozenset[str] = frozenset()
     """#210: the externally owned States whose provider is ``write_capable``: an effect on one
     is dispatched through the outbox, never applied by Epistrel (``write_outbox``)."""
+    held: dict[rules.Key, Decimal] = field(default_factory=dict)
+    """#216: each value's held decreases from earlier turns (negative): not in the value, but
+    not available to spend again (``available``)."""
+
+    def available(self) -> dict[rules.Key, Value | UndefinedType]:
+        """The values the dry-run spends from: ``values`` less the holds of earlier turns."""
+        return _less_held(self.values, self.held)
 
     @property
     def requested(self) -> frozenset[str]:
@@ -221,7 +246,9 @@ class Book:
     def tracked(self) -> dict[str, TrackedState]:
         """The render schema's States (what an effect may name)."""
         return {
-            name: TrackedState(d.type.value, d.scope.value, d.visibility.value)
+            name: TrackedState(
+                d.type.value, d.scope.value, d.visibility.value, name in self.requested
+            )
             for name, d in self.definitions.items()
         }
 
@@ -263,6 +290,17 @@ class Book:
         return tuple(lines), rules.syntax(found, character=False)
 
 
+def _less_held(
+    values: Mapping[rules.Key, Value | UndefinedType], held: Mapping[rules.Key, Decimal]
+) -> dict[rules.Key, Value | UndefinedType]:
+    found = dict(values)
+    for key, amount in held.items():
+        current = found.get(key)
+        if isinstance(current, Decimal):
+            found[key] = current + amount
+    return found
+
+
 def level_of(settings: ProfileSettings) -> str | None:
     """The level ``states`` runs at under ``settings`` (``None``: off, or undelivered)."""
     level = schema.level_of(settings, states.MODULE)
@@ -299,6 +337,8 @@ async def load(conn: AsyncConnection, story_id: str, settings: ProfileSettings) 
                 outbox.add(d.name)
     book.read_only = frozenset(read_only)
     book.outbox = frozenset(outbox)
+    # #216: the reservations of earlier turns, held against what the turn may spend.
+    book.held = await contingency.held_amounts(conn, story_id)
     tracked = [d.entity_id for d in found if d.entity_id is not None]
     if tracked:
         named = await conn.execute(
@@ -394,14 +434,27 @@ def _dry_run(
         if book.preconditions is None
         else action_preconditions.context_of(book.preconditions, beats, stage)
     )
+    # #216: a turn with an external effect classifies its other effects (``contingency``).
+    external = any(rules.touches_external(book.definitions, p.effect) for p in ordered)
+    values = book.available()
     if not simultaneous:
         return rules.dry_run(
-            book.definitions, book.values, ordered, evidence=evidence, preconditions=context
+            book.definitions,
+            values,
+            ordered,
+            evidence=evidence,
+            preconditions=context,
+            turn_external=external,
         )[1]
     found: list[Finding] = []
     for group in _alone(ordered):
         found += rules.dry_run(
-            book.definitions, book.values, group, evidence=evidence, preconditions=context
+            book.definitions,
+            values,
+            group,
+            evidence=evidence,
+            preconditions=context,
+            turn_external=external,
         )[1]
     return sorted(found, key=lambda f: (f.beat, f.effect if f.effect is not None else -1))
 
@@ -629,6 +682,9 @@ class Requested:
     dispatch: bool = False
     """#210: dispatched through the outbox (a write-capable provider's value), not applied by
     the consumer."""
+    planned_index: int | None = None
+    """#216: which of the turn's planned effects (``planned(beats)``'s order) it is a side of:
+    a contingent story-owned side of the same effect waits on it."""
 
     def payload(self) -> RequestedEffect:
         """The ``requested_effect`` event's payload."""
@@ -678,6 +734,7 @@ def _requested(
     kind: str,
     delta: Any = None,
     value: Any = None,
+    planned_index: int | None = None,
 ) -> Requested:
     current = book.values.get((definition.name, scope_key), Undefined)
     return Requested(
@@ -692,6 +749,7 @@ def _requested(
         current=None if isinstance(current, UndefinedType) else to_json(current),
         hidden=definition.visibility is not StateVisibility.PLAYER_VISIBLE,
         dispatch=definition.name in book.outbox,
+        planned_index=planned_index,
     )
 
 
@@ -702,7 +760,7 @@ def requested_of(book: Book, beats: Sequence[TurnBeat]) -> list[Requested]:
     if not book.on or not book.requested:
         return []
     found: list[Requested] = []
-    for p in planned(beats):
+    for n, p in enumerate(planned(beats)):
         definition = book.definitions.get(p.effect.state)
         if definition is None:
             continue
@@ -718,6 +776,7 @@ def requested_of(book: Book, beats: Sequence[TurnBeat]) -> list[Requested]:
                     kind="transfer" if transfer else "change",
                     delta=p.effect.delta,
                     value=None if p.effect.delta is not None else p.effect.value,
+                    planned_index=n,
                 )
             )
         other = p.effect.counterparty
@@ -736,6 +795,7 @@ def requested_of(book: Book, beats: Sequence[TurnBeat]) -> list[Requested]:
                 p,
                 kind="transfer",
                 delta=moved,
+                planned_index=n,
             )
         )
     return found
@@ -797,7 +857,10 @@ def pending_of(
     if not book.on or not book.requested:
         return []
     found: list[rules.Pending] = []
-    for p in planned(beats, stage):
+    ordered = planned(beats, stage)
+    if any(rules.touches_external(book.definitions, p.effect) for p in ordered):
+        found += _grants(book, ordered)
+    for p in ordered:
         definition = book.definitions.get(p.effect.state)
         if definition is None or definition.name not in book.requested:
             continue
@@ -818,6 +881,63 @@ def pending_of(
                 leaves,
             )
         )
+    return found
+
+
+def _grants(book: Book, ordered: Sequence[Planned]) -> list[rules.Pending]:
+    """#216 (FR-STATE-14): the turn's story-owned ``conditional`` sides (``contingency``), each
+    a grant narration may not assert before it commits ("Cal holds the sword")."""
+    found: list[rules.Pending] = []
+    for p in ordered:
+        for definition, scope_key, delta, other_external in sides(book, p):
+            kind = contingency.contingency_of(
+                declared=p.effect.contingency,
+                delta=delta,
+                transfer=p.effect.kind == permission.TRANSFER,
+                counterparty_external=other_external,
+                turn_external=True,
+            )
+            if kind is not StateContingency.CONDITIONAL:
+                continue
+            current = book.values.get((definition.name, scope_key), Undefined)
+            leaves: Value | UndefinedType = Undefined
+            if delta is not None and isinstance(current, Decimal):
+                leaves = current + delta
+            found.append(
+                rules.Pending(
+                    definition.name,
+                    definition.id,
+                    scope_key,
+                    rules.terms_of(definition, book.entity_names).words,
+                    current,
+                    leaves,
+                    grant=True,
+                )
+            )
+    return found
+
+
+def sides(book: Book, p: Planned) -> list[tuple[StateDefinition, str | None, Decimal | None, bool]]:
+    """#216: ``p``'s story-owned sides: each State, scope key, signed delta (``None``: a
+    ``set``) and whether its other side is external."""
+    definition = book.definitions.get(p.effect.state)
+    if definition is None:
+        return []
+    own_external = definition.owner is StateOwner.EXTERNAL
+    delta = None if p.effect.delta is None else number(p.effect.delta)
+    other = p.effect.counterparty
+    transfer = p.effect.kind == permission.TRANSFER
+    other_definition = None if not transfer or other is None else book.definitions.get(other[0])
+    other_external = other_definition is not None and other_definition.owner is StateOwner.EXTERNAL
+    found: list[tuple[StateDefinition, str | None, Decimal | None, bool]] = []
+    if not own_external:
+        found.append(
+            (definition, rules.scope_of(p.effect, definition, p.actor), delta, other_external)
+        )
+    if other is not None and other_definition is not None and not other_external:
+        moved = number(other[2]) if other[2] is not None else (None if delta is None else -delta)
+        scope_key = None if other_definition.scope is StateScope.STORY else other[1]
+        found.append((other_definition, scope_key, moved, own_external))
     return found
 
 
@@ -1063,7 +1183,7 @@ def breaks(book: Book, beats: Sequence[TurnBeat]) -> Callable[[Sequence[StateCla
         }
         if len(sets) > 1:
             return True
-        _, refused = rules.dry_run(book.definitions, book.values, chosen)
+        _, refused = rules.dry_run(book.definitions, book.available(), chosen)
         return bool(refused)
 
     return check
@@ -1101,7 +1221,7 @@ def refusal_of(
     definition = book.definitions.get(claims[0].state) if claims else None
     effects = {(p.beat, p.index): p for p in planned(beats)}
     chosen = [effects[(c.beat, c.index)] for c in claims if (c.beat, c.index) in effects]
-    _, refused = rules.dry_run(book.definitions, book.values, chosen)
+    _, refused = rules.dry_run(book.definitions, book.available(), chosen)
     constraint = refused[0].constraint if refused else "allowed_values"
     return rules.refusal_text(beat.kind, actor, definition, constraint)
 
@@ -1363,6 +1483,57 @@ def _other_change(
     )
 
 
+def _classified(
+    change: StateChange,
+    p: Planned,
+    *,
+    counterparty_external: bool,
+    turn_external: Sequence[str],
+    own: Sequence[str],
+    cited: Sequence[str],
+) -> StateChange:
+    """#216: ``change`` (one story-owned side of ``p``) with its contingency, its status at
+    intent and the external effects it waits on (``core.states.contingency.classify``)."""
+    found = contingency.classify(
+        declared=p.effect.contingency,
+        delta=None if change.delta is None else Decimal(change.delta),
+        transfer=p.effect.kind == permission.TRANSFER,
+        counterparty_external=counterparty_external,
+        turn_external=turn_external,
+        own=own if counterparty_external else (),
+        cited=cited,
+    )
+    return replace(
+        change,
+        contingency=found.contingency,
+        status=found.status,
+        prerequisite_effect_ids=found.prerequisites,
+    )
+
+
+async def _schedule_expiry(
+    conn: AsyncConnection, story_id: str, holds: Sequence[tuple[str, StateDefinition]]
+) -> int:
+    """#216 (FR-STATE-14): a ``reservation_expiry`` timer for each hold whose State sets
+    ``reservation_expiry_minutes`` (wall-clock, from the intent commit), in the turn's
+    transaction."""
+    from datetime import timedelta
+
+    from epistrel.core import clock
+    from epistrel.orchestrator.jobs import timers
+    from epistrel.orchestrator.jobs.handlers.reservations import RESERVATION_EXPIRY
+
+    scheduled = 0
+    for change_id, definition in holds:
+        minutes = definition.reservation_expiry_minutes
+        if minutes is None:
+            continue
+        due = clock.now() + timedelta(minutes=minutes)
+        await timers.schedule(conn, RESERVATION_EXPIRY, change_id, due, story_id=story_id)
+        scheduled += 1
+    return scheduled
+
+
 async def apply_declared(
     conn: AsyncConnection,
     op: Operation,
@@ -1370,11 +1541,23 @@ async def apply_declared(
     book: Book,
     *,
     roles: Mapping[str, str] | None = None,
+    requested: Sequence[Requested] = (),
 ) -> list[Committed]:
     """Write every surviving effect of ``beats`` in ``op``'s commit transaction (see the module
-    docstring); ``roles``: each character's #176 role for the turn (``primary`` otherwise)."""
+    docstring); ``roles``: each character's #176 role for the turn (``primary`` otherwise);
+    ``requested`` the turn's external effects (``stage_requested``'s, with their ids), which
+    its story-owned sides are classified against (#216)."""
     done: list[Committed] = []
-    for p in planned(beats):
+    external = [r for r in requested if r.kind != TIME_ADVANCE]
+    turn_external = [r.effect_id for r in external]
+    by_index: dict[int, list[str]] = {}
+    by_state: dict[str, list[str]] = {}
+    for r in external:
+        if r.planned_index is not None:
+            by_index.setdefault(r.planned_index, []).append(r.effect_id)
+        by_state.setdefault(r.state, []).append(r.effect_id)
+    holds: list[tuple[str, StateDefinition]] = []
+    for n, p in enumerate(planned(beats)):
         definition = book.definitions.get(p.effect.state)
         if definition is None:
             raise RebaseCheckFailed("a State the turn changes is gone")
@@ -1388,6 +1571,26 @@ async def apply_declared(
             if other is None:
                 continue
             own, other, counterparty = other, None, StateOwner.EXTERNAL.value
+        # #216 (FR-STATE-14): each story-owned side, classified against the external effects.
+        cited = [i for name in p.effect.prerequisites for i in by_state.get(name, ())]
+        mine = by_index.get(n, [])
+        own = _classified(
+            own,
+            p,
+            counterparty_external=counterparty == StateOwner.EXTERNAL.value,
+            turn_external=turn_external,
+            own=mine,
+            cited=cited,
+        )
+        if other is not None:
+            other = _classified(
+                other,
+                p,
+                counterparty_external=False,
+                turn_external=turn_external,
+                own=mine,
+                cited=cited,
+            )
         try:
             if p.effect.kind == permission.TRANSFER and own.state == definition.name:
                 written = await states.apply_transfer(conn, op, own, other)
@@ -1398,6 +1601,9 @@ async def apply_declared(
         if isinstance(written, states.Violation):
             raise RebaseCheckFailed("a State moved since the turn's snapshot")
         found, *rest = written if isinstance(written, list) else [written]
+        for change, applied in zip((own, other), (found, *rest), strict=False):
+            if change is not None and change.status is StateChangeStatus.HELD:
+                holds.append((applied.change_id, book.definitions[change.state]))
         done.append(
             Committed(
                 p.beat,
@@ -1409,7 +1615,10 @@ async def apply_declared(
                 declared=p.effect.declared,
             )
         )
-    log.debug("state effects: %d committed", len(done))
+    if holds:
+        assert op.story_id is not None  # noqa: S101 - a turn belongs to a story
+        await _schedule_expiry(conn, op.story_id, holds)
+    log.debug("state effects: %d committed, %d held", len(done), len(holds))
     return done
 
 
@@ -1469,7 +1678,10 @@ async def recheck(conn: AsyncConnection, op: Operation) -> bool:
         if name not in current or current[name].interpretive() != members:
             log.debug("rebase re-check: a State's declaration changed")
             return False
-    values = await states.current_values(conn, found.story_id, list(current.values()))
+    values = _less_held(
+        await states.current_values(conn, found.story_id, list(current.values())),
+        await contingency.held_amounts(conn, found.story_id),
+    )
     _, refused = rules.dry_run(current, values, found.planned)
     if refused:
         log.debug("rebase re-check: %d effects no longer fit", len(refused))
@@ -1493,7 +1705,10 @@ async def recheck_authorization(conn: AsyncConnection, op: Operation) -> bool:
     current = {d.name: d for d in await states.definitions(conn, found.story_id)}
     if any(p.effect.state not in current for p in found.planned):
         return False
-    values = await states.current_values(conn, found.story_id, list(current.values()))
+    values = _less_held(
+        await states.current_values(conn, found.story_id, list(current.values())),
+        await contingency.held_amounts(conn, found.story_id),
+    )
     _, refused = rules.dry_run(current, values, found.planned, evidence=found.evidence)
     unpermitted = [f for f in refused if f.tag in (rules.STATE_UNPERMITTED, rules.STATE_CAPPED)]
     if unpermitted:

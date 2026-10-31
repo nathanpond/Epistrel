@@ -752,9 +752,11 @@ OVERRIDES: dict[str, dict[str, str]] = {
         ),
     },
     # States (#185): a change's character (``scope_key``) is the fork's copy of it, and the
-    # effects it waits on (#216) the fork's copies.
+    # effects it waits on (#216) the fork's copies, and a settlement's intent row (#216) the
+    # fork's copy of it (``NULL`` when it was not copied).
     "state_changes": {
         "scope_key": f'{_ID}(t."scope_key"::text)',
+        "settles_change_id": _mapped_or_null("settles_change_id"),
         "prerequisite_effect_ids": (
             f"CAST(ARRAY(SELECT {_ID}(s.id::text) FROM unnest(t.prerequisite_effect_ids) "  # noqa: S608
             "WITH ORDINALITY AS s(id, n) ORDER BY s.n) AS char(26)[])"

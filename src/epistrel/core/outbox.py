@@ -37,7 +37,10 @@ row: ``unconfirmed`` (``intended`` with its operation active, or ``claimed``), `
 ``reconciliation_required``, ``cancelled_on_reactivation``; #216, #217, #218 add theirs). A
 ``confirmed`` or ``cancelled`` row without a mark is not listed; a fork's copies never are. A
 row an erasure reached (``erased_at``) is listed as ``{outbox_id, provider, status}`` with
-its reason and since only. Nothing here bumps a revision.
+its reason and since only.
+``reservation_expired`` (#216) lists a row a State hold waited on that was released while no
+prerequisite had failed (its ``reservation_expiry`` lapsed, FR-STATE-14). Nothing here bumps a
+revision.
 
 Log lines carry ids and counts only (invariant 3).
 """
@@ -61,7 +64,7 @@ from epistrel.core.erasure.index import index_records
 from epistrel.core.erasure.records import outbox_record
 from epistrel.core.errors import StoryNotFound
 from epistrel.core.ids import new_ulid
-from epistrel.core.membership import active_operation, insert_derived
+from epistrel.core.membership import active_only, active_operation, insert_derived
 from epistrel.core.tables import erasure_ledger, operations, stories
 from epistrel.core.tables.outbox import (
     CANCELLED,
@@ -78,6 +81,7 @@ from epistrel.core.tables.outbox import (
     reconciliation_marks,
 )
 from epistrel.core.tables.outbox import REASONS as MARK_REASONS
+from epistrel.core.tables.states import state_changes
 from epistrel.observability.logging import get_logger
 
 if TYPE_CHECKING:
@@ -514,6 +518,35 @@ def _status_reason(status: str) -> Reason:
     return "unconfirmed" if status in (INTENDED, CLAIMED) else status  # type: ignore[return-value]
 
 
+async def expired_holds(conn: AsyncConnection, story_id: str, ids: Sequence[str]) -> set[str]:
+    """#216: which of the outbox rows ``ids`` an active State hold waited on that was released
+    with none of its prerequisites ``failed``: the hold expired (``reservation_expired``)."""
+    if not ids:
+        return set()
+    c = state_changes.c
+    released = [
+        [str(p) for p in r.prerequisite_effect_ids]
+        for r in await conn.execute(
+            select(c.prerequisite_effect_ids).where(
+                c.story_id == story_id,
+                c.status == "released",
+                active_only(state_changes),
+                c.prerequisite_effect_ids.overlap(list(ids)),
+            )
+        )
+    ]
+    if not released:
+        return set()
+    o = external_effect_outbox.c
+    named = {p for r in released for p in r}
+    failed = set(
+        await conn.scalars(
+            select(o.id).where(o.story_id == story_id, o.id.in_(sorted(named)), o.status == FAILED)
+        )
+    )
+    return {p for r in released if not failed & set(r) for p in r if p in ids}
+
+
 async def listings_in(conn: AsyncConnection, story_id: str) -> Reconciliation:
     """The story's reconciliation status, read in ``conn`` (404 for an unknown story)."""
     await _require_story(conn, story_id)
@@ -536,6 +569,7 @@ async def listings_in(conn: AsyncConnection, story_id: str) -> Reconciliation:
         for answer in found:
             latest[str(answer.outbox_id)] = answer
     marked = await _marks(conn, story_id, [str(r.id) for r in rows])
+    expired = await expired_holds(conn, story_id, [str(r.id) for r in rows])
     listed: list[Listing] = []
     for row in rows:
         status = str(row.status)
@@ -545,6 +579,10 @@ async def listings_in(conn: AsyncConnection, story_id: str) -> Reconciliation:
         if found_mark is not None:
             reason = found_mark.reason
             since = found_mark.since
+        elif str(row.id) in expired and status != FAILED:
+            # #216: the State hold that waited on this row expired (FR-STATE-14).
+            reason = "reservation_expired"
+            since = row.created_at
         else:
             reason = _status_reason(status)
             if outcome is not None and status in (FAILED, UNKNOWN):
@@ -632,6 +670,7 @@ __all__ = [
     "claimable",
     "count",
     "erased_since",
+    "expired_holds",
     "listings",
     "listings_in",
     "locked",

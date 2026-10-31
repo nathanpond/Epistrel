@@ -49,6 +49,7 @@ import asyncio
 from collections import Counter
 from dataclasses import dataclass, field, fields
 from datetime import timedelta
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -60,16 +61,22 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from epistrel.core import clock, timeline
 from epistrel.core import outbox as core_outbox
 from epistrel.core.db import make_engine
-from epistrel.core.enums import OperationKind, Provenance
+from epistrel.core.enums import OperationKind, Provenance, StateChangeStatus, StateContingency
 from epistrel.core.events import Operation
 from epistrel.core.fork import ForkRequest, fork
 from epistrel.core.ids import new_ulid
+from epistrel.core.membership import Position
+from epistrel.core.states import contingency
 from epistrel.core.variants import ChainRef, SwapRequest, list_chains
 from epistrel.orchestrator.jobs.handlers import outbox
 from epistrel.orchestrator.providers.in_process import InProcessRegistry
+from tests import canon_support as c
+from tests import projection_support as projections
 from tests import provider_support as ps
+from tests import state_support as ss
 from tests.auth_support import auth_settings
 from tests.event_support import new_story
+from tests.memory_support import use_structured
 
 PRINCIPAL = "p-test"
 PENDING = ("intended", "claimed", "unknown")
@@ -550,3 +557,188 @@ def test_outbox_safety__fork(pg_url: str) -> None:
         assert getattr(by_case[name], counter) > 0, (name, by_case[name])
     assert tally.forks > 0
     assert tally.examples == FORK_EXAMPLES + len(FORK_CASES)
+
+
+# -- #216: contingent State effects (FR-STATE-14) ------------------------------------------------
+
+CONTINGENCY_EXAMPLES = 25
+CONTINGENT_KINDS = ("intent", "intent", "turn", "settle", "settle", "truncate")
+contingent_steps = st.lists(
+    st.tuples(
+        st.sampled_from(CONTINGENT_KINDS),
+        st.integers(min_value=0, max_value=50),
+        st.sampled_from(OUTCOMES),
+    ),
+    min_size=2,
+    max_size=10,
+)
+
+
+@dataclass
+class Ledger:
+    engine: AsyncEngine
+    story: str
+    cal: str
+    effects: list[str] = field(default_factory=list)
+    """Every external effect id an intent row waits on."""
+    settled_at: dict[str, tuple[int, int]] = field(default_factory=dict)
+    """Each settling operation's ``(turn, slot_k)``."""
+    slots: Counter[int] = field(default_factory=Counter)
+
+
+async def _ledger_story(engine: AsyncEngine) -> Ledger:
+
+    world = await c.world(engine)
+    story, cal = world.story_id, world.characters["Cal"]
+    await use_structured(engine, story)
+    await ss.set_level(engine, story, "on")
+    await ss.define_all(engine, story, ss.gold())
+    await ss.change(engine, story, ss.set_to("gold", 100, scope_key=cal))
+    return Ledger(engine, story, cal)
+
+
+async def _contingent_step(w: Ledger, kind: str, pick: int, outcome: str) -> None:
+
+    head = await _head(w.engine, w.story)
+    if kind == "intent":
+        effect = new_ulid()
+        w.effects.append(effect)
+        held = pick % 2 == 0
+        await ss.change(
+            w.engine,
+            w.story,
+            ss.delta(
+                "gold",
+                -(pick % 7 + 1) if held else pick % 7 + 1,
+                scope_key=w.cal,
+                contingency=StateContingency.RESERVATION if held else StateContingency.CONDITIONAL,
+                status=StateChangeStatus.HELD if held else StateChangeStatus.PENDING,
+                prerequisite_effect_ids=(effect,),
+            ),
+        )
+    elif kind == "turn":
+        await ss.change(w.engine, w.story, ss.delta("gold", 0, scope_key=w.cal))
+    elif kind == "settle" and w.effects:
+        effect = w.effects[pick % len(w.effects)]
+        w.slots[head] += 1
+        position = Position(head, 0, w.slots[head])
+
+        async def write(conn: AsyncConnection, op: Operation) -> Any:
+            found = await conn.scalar(
+                text(
+                    "SELECT turn_variant FROM operations WHERE story_id = :s AND kind = 'turn' "
+                    "AND narrative_turn = :t AND membership = 'active'"
+                ),
+                {"s": w.story, "t": head},
+            )
+            at = Position(head, int(found or 0), position.slot_k)
+            return await contingency.settle(conn, op, {effect: outcome}, at)
+
+        op, _ = await c.run(w.engine, w.story, write, kind=OperationKind.CONTROL, turn=head)
+        w.settled_at[op.operation_id] = (head, position.slot_k)
+    elif kind == "truncate" and head > 2:
+        await projections.truncate(w.engine, w.story, 2 + pick % (head - 2))
+
+
+async def _contingent_check(w: Ledger) -> None:
+
+    changes = [r for r in await ss.change_rows(w.engine, w.story) if r.scope_key == w.cal]
+    by_id = {str(r.id): r for r in changes}
+    active = [r for r in changes if r.membership == "active"]
+    for r in changes:
+        if r.source != "settlement":
+            continue
+        intent = by_id[str(r.settles_change_id)]
+        # Never positioned before its settling operation, nor before its intent.
+        assert (r.narrative_turn, r.slot_k) == w.settled_at[str(r.operation_id)]
+        assert (r.narrative_turn, r.slot_k, r.beat) > (
+            intent.narrative_turn,
+            intent.slot_k,
+            intent.beat,
+        )
+        assert intent.status == "converted"
+    for r in active:
+        if r.settles_change_id is not None:
+            others = [
+                o for o in active if o.settles_change_id == r.settles_change_id and o.id != r.id
+            ]
+            assert not others  # settled once
+    # No contingent change is folded into a value before it commits: every view's value is the
+    # committed rows' alone, by their own positions.
+    head = await _head(w.engine, w.story)
+    (seed,) = [r for r in active if r.kind == "set"]
+    for turn in range(int(seed.narrative_turn), head + 1):
+        for slot in range(
+            0, 1 + max((r.slot_k for r in active if r.narrative_turn == turn), default=0)
+        ):
+            through = Position.end_of(turn, slot)
+            expected = Decimal(100) + sum(
+                (
+                    Decimal(r.delta)
+                    for r in active
+                    if r.status == "committed"
+                    and r.delta is not None
+                    and (r.narrative_turn, r.slot_k) <= (turn, slot)
+                    and r.kind != "set"
+                ),
+                Decimal(0),
+            )
+            assert await ss.value(w.engine, w.story, "gold", w.cal, through=through) == expected
+
+
+async def _contingent_example(
+    url: str, drawn: list[tuple[str, int, str]], seen: Counter[str]
+) -> None:
+
+    engine = make_engine(auth_settings(url))
+    try:
+        w = await _ledger_story(engine)
+        for kind, pick, outcome in drawn:
+            await _contingent_step(w, kind, pick, outcome)
+            await _contingent_check(w)
+        for r in await ss.change_rows(engine, w.story):
+            seen[str(r.status)] += 1
+        await ss.set_level(engine, w.story, None)
+    finally:
+        await engine.dispose()
+
+
+CONTINGENT_CASE = [
+    ("intent", 1, "confirmed"),
+    ("turn", 0, "confirmed"),
+    ("settle", 0, "confirmed"),
+    ("intent", 2, "failed"),
+    ("settle", 1, "failed"),
+    ("intent", 4, "unknown"),
+    ("settle", 2, "unknown"),
+    ("truncate", 0, "confirmed"),
+]
+"""The complement: a settlement converts, a failure releases, ``unknown`` leaves a row held,
+and a truncation past a settlement drops it."""
+
+
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-STATE-14")
+def test_outbox_safety__contingency(pg_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#216 (FR-STATE-14): over drawn interleavings of contingent intents (``held`` and
+    ``pending`` rows waiting on external effects), plain turns, settlements with drawn outcomes
+    at the head's next inter-turn slot, and truncations: no conditional effect is folded into a
+    value before it commits (every view through every turn and slot is the committed rows'
+    alone), no settlement is positioned before its settling operation or its intent, and none
+    is settled twice."""
+
+    ss.deliver(monkeypatch)
+    seen: Counter[str] = Counter()
+
+    @settings(
+        max_examples=CONTINGENCY_EXAMPLES,
+        deadline=None,
+        suppress_health_check=[HealthCheck.function_scoped_fixture, HealthCheck.too_slow],
+    )
+    @given(drawn=contingent_steps)
+    @example(drawn=CONTINGENT_CASE)
+    def safety(drawn: list[tuple[str, int, str]]) -> None:
+        asyncio.run(_contingent_example(pg_url, drawn, seen))
+
+    safety()
+    assert {"converted", "released", "held"} <= set(seen), seen

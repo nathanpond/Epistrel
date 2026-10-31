@@ -11,7 +11,8 @@ recurring safety net), the embedding port's ``embed`` and ``reembed`` (#138) and
 ``hot_counts_reconcile`` (#147), and claim detection's post-commit ``extraction_shadow``
 (#148, ``orchestrator.verify.extraction``). M6 adds the on-demand State proposal analysis
 ``state_proposal_analysis`` (#192), and the outbox dispatcher's ``outbox_dispatch``,
-its ``outbox_lease`` timer kind and the ``outbox_recovery`` sweep every 60 s (#210). A kind
+its ``outbox_lease`` timer kind and the ``outbox_recovery`` sweep every 60 s (#210), and the
+``reservation_expiry`` timer kind that releases an expired State hold (#216). A kind
 no handler is registered for is refused at enqueue and ends ``failed`` if a worker claims one
 (a row a newer version wrote). Tests register their own handlers through ``register`` /
 ``unregister``.
@@ -43,6 +44,7 @@ from epistrel.orchestrator.jobs.handlers.outbox import (
 from epistrel.orchestrator.jobs.handlers.rating_check import RATING_CHECK_HANDLER
 from epistrel.orchestrator.jobs.handlers.rebuild import REBUILD_HANDLER
 from epistrel.orchestrator.jobs.handlers.reembed import EMBED_HANDLER, REEMBED_HANDLER
+from epistrel.orchestrator.jobs.handlers.reservations import RESERVATION_EXPIRY_HANDLER
 from epistrel.orchestrator.jobs.handlers.retention import (
     IDEMPOTENCY_HANDLER,
     IDEMPOTENCY_TASK,
@@ -102,6 +104,7 @@ for _handler in (
     OUTBOX_DISPATCH_HANDLER,
     OUTBOX_LEASE_HANDLER,
     OUTBOX_RECOVERY_HANDLER,
+    RESERVATION_EXPIRY_HANDLER,
 ):
     register(_handler)
 for _task in (

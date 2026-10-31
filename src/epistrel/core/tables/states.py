@@ -25,10 +25,13 @@ docs/02 §7.1; #185, migration 0084).
   narrative position (``narrative_turn``/``turn_variant`` of the derived columns, plus ``slot_k``,
   ``beat`` and ``step``; read as a ``core.membership.Position``), its story-minute
   (``valid_time_minutes``), when it was recorded (``tx_from``) and, for a clock advance the
-  Orchestrator estimated, the estimate and its reason (``estimate_meta``; #193, #197). Append-only
+  Orchestrator estimated, the estimate and its reason (``estimate_meta``; #193, #197); a
+  settlement's intent row (``settles_change_id``, #216, migration 0099). Append-only
   (``epistrel_state_changes_append_only``): an UPDATE may change only ``membership`` and
-  ``membership_tx`` (#216 adds ``status``), an erasure may also redact ``reason`` and the
-  values; a DELETE passes only under an erasure or the story's deletion.
+  ``membership_tx``, and ``status`` only along a settlement (``SETTLEMENT_TRANSITIONS``:
+  ``held → converted | released``, ``pending → converted | dropped``; #216); an erasure may
+  also redact ``reason`` and the values; a DELETE passes only under an erasure or the story's
+  deletion.
 - **``state_values``** — the projection (``core.projections.states``): one row per
   ``(state, scope key)`` with at least one counted active change, its folded ``value``, the
   position of its last change (``since_*``) and ``change_count``. ``scope_key`` is ``''`` for a
@@ -97,7 +100,19 @@ STORY_SCOPE_KEY = ""
 """``state_values.scope_key`` of a story-scoped State (``state_changes.scope_key`` is ``NULL``)."""
 
 MUTABLE_STATE_CHANGE_COLUMNS: tuple[str, ...] = ("membership", "membership_tx")
-"""The columns an UPDATE of ``state_changes`` may change (#216 adds ``status``)."""
+"""The columns an UPDATE of ``state_changes`` may change freely (``status`` only along
+``SETTLEMENT_TRANSITIONS``)."""
+
+SETTLEMENT_TRANSITIONS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("held", "converted"),
+        ("held", "released"),
+        ("pending", "converted"),
+        ("pending", "dropped"),
+    }
+)
+"""The ``status`` updates the append-only trigger admits (#216, migration 0099): a reservation
+converted or released, a conditional change converted or dropped. Any other is refused."""
 
 ERASURE_STATE_CHANGE_COLUMNS: tuple[str, ...] = ("reason", "value", "old_value", "new_value")
 """The columns an erasure may also rewrite (redaction of a subject's name)."""
@@ -220,6 +235,7 @@ state_changes = Table(
     Column("estimate_meta", JSONB(none_as_null=True), nullable=True),
     Column("stopped_by_event_id", ulid_type(), nullable=True),
     Column("paused_for_event_id", ulid_type(), nullable=True),
+    Column("settles_change_id", ulid_type(), nullable=True),
     CheckConstraint("narrative_turn IS NOT NULL AND turn_variant IS NOT NULL", name="positioned"),
     CheckConstraint(
         "(kind = 'set') = (value IS NOT NULL) AND (kind = 'set') = (delta IS NULL)",
@@ -339,6 +355,7 @@ __all__ = [
     "CLOCK_SETTINGS_CHECK",
     "ERASURE_STATE_CHANGE_COLUMNS",
     "MUTABLE_STATE_CHANGE_COLUMNS",
+    "SETTLEMENT_TRANSITIONS",
     "STATE_CHANGES",
     "STATE_DEFINITIONS",
     "STORY_SCOPE_KEY",

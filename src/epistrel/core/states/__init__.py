@@ -1284,6 +1284,7 @@ async def apply_change(
         "estimate_meta": None if change.estimate_meta is None else dict(change.estimate_meta),
         "stopped_by_event_id": change.stopped_by_event_id,
         "paused_for_event_id": change.paused_for_event_id,
+        "settles_change_id": change.settles_change_id,
     }
     await insert_derived(conn, state_changes, [row])
     await index_records(conn, [state_change_record(SimpleNamespace(**row))])

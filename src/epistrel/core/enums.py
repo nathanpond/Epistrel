@@ -406,9 +406,11 @@ class StateContingency(StrEnum):
 
 
 class StateChangeStatus(StrEnum):
-    """A change's settlement status (FR-STATE-14): only ``committed`` and ``converted`` rows
-    count toward the value; ``held``, ``pending``, ``released`` and ``dropped`` are kept for
-    #216 to #218. Postgres enum ``state_change_status``."""
+    """A change's settlement status (FR-STATE-14; #216): only ``committed`` rows count toward
+    the value. At intent a reservation is ``held`` and a conditional change ``pending``; a
+    settlement marks the intent row ``converted`` (and writes a new ``committed`` row at the
+    settling position), ``released`` (a hold) or ``dropped`` (a conditional change). Postgres
+    enum ``state_change_status``."""
 
     COMMITTED = "committed"
     HELD = "held"

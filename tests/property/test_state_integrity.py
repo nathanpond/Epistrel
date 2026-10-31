@@ -370,7 +370,7 @@ async def _check(engine: AsyncEngine, story_id: str, cast: dict[str, str]) -> No
                 if r.state_id == definition.id
                 and r.scope_key == key
                 and r.membership == "active"
-                and r.status in ("committed", "converted")
+                and r.status in {s.value for s in model.COUNTED}
             ]
             if active:
                 expected: Any = model.from_json(definition.type, active[-1].new_value)

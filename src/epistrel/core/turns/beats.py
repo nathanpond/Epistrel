@@ -195,6 +195,12 @@ class DeclaredEffect:
     consideration: str | None = None
     """#189 (FR-STATE-11): the item the effect pays for (an entity of the story, by id, name
     or alias), whose availability and ownership are its preconditions."""
+    contingency: str | None = None
+    """#216 (FR-STATE-14): ``unconditional``, ``reservation`` or ``conditional`` in a turn that
+    requests external effects (``None``: the default, ``core.states.contingency``)."""
+    prerequisites: tuple[str, ...] = ()
+    """#216: the States of the turn's external effects a contingent effect waits on (empty:
+    the transfer's own external side, else every external effect of the turn)."""
 
     @property
     def unresolved(self) -> bool:

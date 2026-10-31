@@ -16,7 +16,11 @@ its ``constraint``), repaired like a refused one; one above a cap is ``state_cap
 ``amount`` the cap leaves. A ``transfer`` folds its tracked other side too. #189: the action
 preconditions (``core.states.preconditions``, given as ``dry_run``'s ``preconditions``) refuse
 an effect as ``state_unpermitted`` with ``precondition:<name>``; a sale whose item is named
-nowhere is ``effect_unresolved`` with the constraint ``consideration``.
+nowhere is ``effect_unresolved`` with the constraint ``consideration``. #216 (FR-STATE-14): in a
+turn that requests an external effect, a story-owned side ``core.states.contingency`` classifies
+``conditional`` is checked but adds nothing the later effects see (it is ``pending``), while a
+``reservation`` takes its amount out of what they may spend and, for a State that tracks an
+entity, holds the item against them (``Context.reserve``: #189's availability).
 
 **Narrated changes** (``mentions``). A ``do`` or ``narration`` sentence that names a tracked
 State (its name, an alias, its unit, or the name of the entity it tracks) and holds a change
@@ -44,7 +48,7 @@ from decimal import Decimal
 from functools import cache
 from typing import Any, Final, Literal
 
-from epistrel.core.enums import StateType, StateVisibility
+from epistrel.core.enums import StateContingency, StateOwner, StateType, StateVisibility
 from epistrel.core.repair.rungs import sentences
 from epistrel.core.states import authorize as permission
 from epistrel.core.states.authorize import (
@@ -56,6 +60,7 @@ from epistrel.core.states.authorize import (
     StateEffect,
     Unpermitted,
 )
+from epistrel.core.states.contingency import NOBODY, contingency_of
 from epistrel.core.states.model import (
     StateDefinition,
     Undefined,
@@ -284,6 +289,7 @@ def dry_run(
     *,
     evidence: Mapping[int, Evidence] | None = None,
     preconditions: Any = None,
+    turn_external: bool | None = None,
 ) -> tuple[list[Passed], list[Finding]]:
     """Fold ``planned`` (in order) over ``values`` (each key's value at the turn's start; a key
     not given is its State's initial value): what passes and what is refused (see the module
@@ -292,7 +298,11 @@ def dry_run(
     or ``state_capped`` with the amount the caps leave; a transfer's tracked other side is
     folded and bounded too. #189: ``preconditions`` (``core.states.preconditions.Context``) is
     what the action-precondition hook reads; a sale whose item is named nowhere is
-    ``effect_unresolved`` (constraint ``consideration``)."""
+    ``effect_unresolved`` (constraint ``consideration``). #216: ``turn_external`` whether the
+    turn requests an external effect (``None``: whether ``planned`` touches an external
+    value)."""
+    if turn_external is None:
+        turn_external = any(touches_external(definitions, p.effect) for p in planned)
     running: dict[Key, Value | UndefinedType] = {}
     passed: list[Passed] = []
     found: list[Finding] = []
@@ -373,14 +383,77 @@ def dry_run(
         if isinstance(other, str):
             found.append(_finding(definition, p, key, other, current, attempted))
             continue
-        running[key] = attempted
-        passed.append(Passed(p.beat, p.index, key, current, attempted))
+        transfer = p.effect.kind == permission.TRANSFER
+        own_external = definition.owner is StateOwner.EXTERNAL
+        other_external = (
+            typed.counterparty is not None
+            and permission.counterparty_kind(definitions, typed.counterparty.state)
+            == permission.EXTERNAL
+        )
+        own_kind = contingency_of(
+            declared=p.effect.contingency,
+            delta=delta,
+            transfer=transfer,
+            counterparty_external=other_external,
+            turn_external=turn_external,
+        )
+        pending = not own_external and own_kind is StateContingency.CONDITIONAL
+        if not pending:
+            running[key] = attempted
+        passed.append(Passed(p.beat, p.index, key, current, current if pending else attempted))
+        if not own_external and own_kind is StateContingency.RESERVATION:
+            beneficiary = NOBODY if other is None or other_external else other[0][1] or NOBODY
+            preconditions = _reserve(preconditions, definition, delta, beneficiary)
         if other is not None:
             other_key, other_old, other_new = other
-            running[other_key] = other_new
-            passed.append(Passed(p.beat, p.index, other_key, other_old, other_new))
+            other_definition = definitions[other_key[0]]
+            moved = (
+                other_new - other_old
+                if isinstance(other_new, Decimal) and isinstance(other_old, Decimal)
+                else None
+            )
+            other_kind = contingency_of(
+                declared=p.effect.contingency,
+                delta=moved,
+                transfer=True,
+                counterparty_external=own_external,
+                turn_external=turn_external,
+            )
+            held_back = other_kind is StateContingency.CONDITIONAL
+            if not held_back:
+                running[other_key] = other_new
+            passed.append(
+                Passed(p.beat, p.index, other_key, other_old, other_old if held_back else other_new)
+            )
+            if other_kind is StateContingency.RESERVATION:
+                beneficiary = NOBODY if own_external else key[1] or NOBODY
+                preconditions = _reserve(preconditions, other_definition, moved, beneficiary)
         so_far += permission.authorized(typed, permission.change_of(typed, current), definitions)
     return passed, found
+
+
+def touches_external(definitions: Mapping[str, StateDefinition], effect: DeclaredEffect) -> bool:
+    """#216: whether ``effect`` changes a value an external provider owns (its own State, or a
+    transfer's other side): a turn with one requests an external effect."""
+    own = definitions.get(effect.state)
+    if own is not None and own.owner is StateOwner.EXTERNAL:
+        return True
+    other = effect.counterparty
+    if effect.kind != permission.TRANSFER or other is None:
+        return False
+    return permission.counterparty_kind(definitions, other[0]) == permission.EXTERNAL
+
+
+def _reserve(
+    preconditions: Any, definition: StateDefinition, delta: Decimal | None, beneficiary: str
+) -> Any:
+    """#216: ``preconditions`` with a reservation's item held for ``beneficiary`` from here on
+    (a decrease of a State that tracks an entity; #189's ``Context.reserve``)."""
+    item = definition.entity_id
+    reserve = getattr(preconditions, "reserve", None)
+    if item is None or reserve is None or delta is None or delta >= 0:
+        return preconditions
+    return reserve(item, beneficiary)
 
 
 def _other_side(
@@ -640,7 +713,9 @@ def span_of(text: str, state: str, terms: Sequence[Terms]) -> tuple[int, int] | 
 class Pending:
     """A change the turn asks an external value's owner to apply (FR-EXT-9): the State, its
     scope key, the words prose names it by, its value as pinned for the turn and the value the
-    change would leave (``Undefined``: not known)."""
+    change would leave (``Undefined``: not known). #216: a ``grant`` is a story-owned
+    ``conditional`` change waiting on an external effect (the sword bought with an external
+    payment): a sentence naming it with a possession word asserts it too (FR-STATE-14)."""
 
     state: str
     state_id: str | None
@@ -648,6 +723,7 @@ class Pending:
     words: tuple[str, ...]
     current: Value | UndefinedType = Undefined
     leaves: Value | UndefinedType = Undefined
+    grant: bool = False
 
 
 OUTCOME_NOUNS: tuple[str, ...] = (
@@ -686,6 +762,26 @@ OUTCOME_VERBS: tuple[str, ...] = (
     "is done",
 )
 """The words of an exchange's outcome ("the purchase went through")."""
+POSSESSION_WORDS: tuple[str, ...] = (
+    "holds",
+    "holding",
+    "has",
+    "owns",
+    "receives",
+    "received",
+    "wields",
+    "grips",
+    "carries",
+    "belongs",
+    "his now",
+    "hers now",
+    "yours now",
+    "theirs now",
+    "in hand",
+)
+"""#216: the words of a conditional grant's possession ("Cal holds the sword"): a sentence naming
+a pending grant with one asserts it before it commits. A handing-over verb is the attempt's
+("Cal hands over the coins for the sword"), so it is not one of them."""
 NOW_CUES: tuple[str, ...] = ("now", "left", "remaining", "remains", "down to", "up to")
 """The words of a value's state after a change ("your balance is now 250")."""
 _NUMBER = re.compile(r"(?<![\w.])\d[\d,]*(?:\.\d+)?(?![\w])")
@@ -704,6 +800,8 @@ def _numbers(sentence: str) -> list[Decimal]:
 def _asserts_outcome(sentence: str, request: Pending) -> bool:
     """Whether ``sentence`` says ``request``'s change happened (see ``unconfirmed_outcomes``)."""
     names = _word_pattern(request.words).search(sentence) is not None if request.words else False
+    if request.grant and names and _word_pattern(POSSESSION_WORDS).search(sentence) is not None:
+        return True
     exchange = _word_pattern(OUTCOME_NOUNS).search(sentence) is not None
     if (names or exchange) and _word_pattern(OUTCOME_VERBS).search(sentence) is not None:
         return True
@@ -1060,6 +1158,7 @@ __all__ = [
     "OUTCOME_KINDS",
     "OUTCOME_NOUNS",
     "OUTCOME_VERBS",
+    "POSSESSION_WORDS",
     "PROSE_TAGS",
     "REFUSED_TAGS",
     "STATE_CAPPED",
@@ -1100,6 +1199,7 @@ __all__ = [
     "suppressed",
     "syntax",
     "terms_of",
+    "touches_external",
     "unconfirmed_outcomes",
     "verb_hit",
     "visible_to_characters",

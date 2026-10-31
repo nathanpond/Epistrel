@@ -5833,8 +5833,9 @@ async def play(
         owners = render_steps.beat_steps([b for b in beats if not b.narrator])
         roles = {cid: r.role for cid, r in roles_state[0].roles.items()} if roles_state else {}
         with beat_steps(op.operation_id, owners):
+            # #216: classified against the turn's external effects (their ids).
             fixed["state_effects"] = await state_effects.apply_declared(
-                conn, op, beats, books[0], roles=roles
+                conn, op, beats, books[0], roles=roles, requested=fixed.get("requested", ())
             )
 
     async def write_turn(

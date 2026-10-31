@@ -138,7 +138,9 @@ async def test_u_state_update_definition(engine: AsyncEngine, states_delivered: 
 async def test_value_of_positions(engine: AsyncEngine, states_delivered: None) -> None:
     """``value_of(through=…)`` folds the changes at or before a position: checkpoint ``N``
     (``Position.end_of(N)``) leaves out ``N``'s inter-turn slots, ``N⁺k`` takes slots 1..k; a
-    seed at position 0 and an initial value are the base; held and dropped changes never count;
+    seed at position 0 and an initial value are the base; held, dropped and converted changes
+    never count (#216: a converted intent row's settlement is a new committed row, so counting
+    both would count the change twice);
     a story-scoped State takes no scope key and a per-character one needs one; an undefined
     value reads as ``Undefined``."""
     w = await c.world(engine)
@@ -163,6 +165,7 @@ async def test_value_of_positions(engine: AsyncEngine, states_delivered: None) -
         ss.delta("gold", 10, scope_key=cal, source=StateChangeSource.CONSUMER, position=slot),
         ss.delta("gold", 100, scope_key=cal, status=StateChangeStatus.HELD, position=slot),
         ss.delta("gold", 1000, scope_key=cal, status=StateChangeStatus.DROPPED),
+        ss.delta("gold", 5000, scope_key=cal, status=StateChangeStatus.CONVERTED),
         kind=OperationKind.CONTROL,
         turn=turn,
     )

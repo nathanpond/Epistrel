@@ -140,7 +140,7 @@ class WarningBody(BaseModel):
 class AdjudicationBody(BaseModel):
     """One settled conflict of a ``simultaneous`` turn (#175, FR-MULTI-8): the contested
     object's entity id, the character whose action stood, the one whose action became an
-    attempt, and the rule: ``request_order`` or ``director``."""
+    attempt, and the rule: ``request_order``, ``director`` or ``state:<name>`` (M6)."""
 
     object: str
     winner: str

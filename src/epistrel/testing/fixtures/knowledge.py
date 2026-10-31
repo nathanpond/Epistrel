@@ -60,7 +60,6 @@ from epistrel.testing.fixtures.scale import (
     ScaleSpec,
     ScaleStory,
     canon_plan,
-    person_names,
     proposition,
     turn_operations,
 )
@@ -120,18 +119,10 @@ class Written:
     operation_id: str
 
 
-def player_of(story: ScaleStory) -> str:
-    """The story's player character: the first of the cast's names (``scale.person_names``).
-    Not ``ScaleStory.player``: a cached fixture's sidecar is written with sorted keys, so its
-    ``characters`` lose the cast's order."""
-    first = person_names(len(story.characters))[0]
-    return story.characters[first]
-
-
 def holders(story: ScaleStory) -> list[str]:
-    """The characters that get a partition: the cast less the player, in the cast's order."""
-    names = person_names(len(story.characters))
-    return [story.characters[n] for n in names[1:]]
+    """The characters that get a partition: the cast less the player, in the cast's order
+    (``ScaleStory.characters`` keeps it, a cached fixture's included; #521)."""
+    return [c for c in story.characters.values() if c != story.player]
 
 
 def key_of(planned: Planned) -> tuple[str, str, str]:
@@ -316,7 +307,7 @@ async def apply(
                             witness=holder,
                             proposition_id=stored,
                             proposition=heard,
-                            source=player_of(story),
+                            source=story.player,
                             source_event_id=event_id,
                             position=exposure.exposure_position(turn, variant, 1),
                         )
@@ -399,7 +390,6 @@ __all__ = [
     "key_of",
     "partitioned",
     "plan",
-    "player_of",
     "privatize",
     "probes",
 ]

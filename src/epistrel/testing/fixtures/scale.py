@@ -207,7 +207,15 @@ class ScaleStory:
 
     @property
     def player(self) -> str:
+        """The player character: the cast's first (``person_names``' order, which
+        ``ScaleFixture.document`` keeps through a cached fixture's sidecar; #521)."""
         return next(iter(self.characters.values()))
+
+
+ORDERED_MAPS = ("characters", "people", "places", "items")
+"""``ScaleStory``'s name maps, whose order is meaningful (the player first; ``queries`` and
+``memory_plan`` walk them in order): a sidecar stores each as ``[name, id]`` pairs, which a
+``sort_keys`` dump keeps in order (#521)."""
 
 
 @dataclass
@@ -222,9 +230,12 @@ class ScaleFixture:
     index: IndexStats | None = None
 
     def document(self) -> dict[str, Any]:
+        story = asdict(self.story)
+        for name in ORDERED_MAPS:
+            story[name] = [[k, v] for k, v in getattr(self.story, name).items()]
         return {
             "spec": asdict(self.spec),
-            "story": asdict(self.story),
+            "story": story,
             "version": self.version,
             "timings": dict(self.timings),
             "index": None if self.index is None else asdict(self.index),
@@ -234,9 +245,12 @@ class ScaleFixture:
     @classmethod
     def of(cls, document: Mapping[str, Any]) -> ScaleFixture:
         index = document.get("index")
+        story = dict(document["story"])
+        for name in ORDERED_MAPS:
+            story[name] = {str(k): str(v) for k, v in story[name]}
         return cls(
             spec=ScaleSpec(**document["spec"]),
-            story=ScaleStory(**document["story"]),
+            story=ScaleStory(**story),
             version=str(document["version"]),
             timings={str(k): float(v) for k, v in dict(document.get("timings") or {}).items()},
             index=None if index is None else IndexStats(**index),
@@ -1079,8 +1093,13 @@ def write_cached(cache_dir: Path, url: str, fixture: ScaleFixture) -> Path:
     """Dump the database at ``url`` and write the fixture's sidecar; answers the dump."""
     dump_path, sidecar = cached_paths(cache_dir, fixture.spec)
     dump(url, dump_path)
-    sidecar.write_text(json.dumps(fixture.document(), indent=2, sort_keys=True) + "\n")
+    sidecar.write_text(sidecar_text(fixture))
     return dump_path
+
+
+def sidecar_text(fixture: ScaleFixture) -> str:
+    """The cached fixture's sidecar, which ``read_cached`` reads back (``ScaleFixture.of``)."""
+    return json.dumps(fixture.document(), indent=2, sort_keys=True) + "\n"
 
 
 __all__ = [
@@ -1111,6 +1130,7 @@ __all__ = [
     "read_cached",
     "rebuild_index",
     "restore",
+    "sidecar_text",
     "turn_operations",
     "version_of",
     "write_cached",

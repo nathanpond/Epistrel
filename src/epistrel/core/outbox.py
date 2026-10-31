@@ -44,13 +44,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Row, and_, exists, func, insert, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core.enums import Membership, StoryStatus
+from epistrel.core.enums import StoryStatus
 from epistrel.core.erasure import guard
 from epistrel.core.erasure.index import index_records
 from epistrel.core.erasure.records import outbox_record
 from epistrel.core.errors import StoryNotFound
 from epistrel.core.ids import new_ulid
-from epistrel.core.membership import insert_derived
+from epistrel.core.membership import active_operation, insert_derived
 from epistrel.core.tables import operations, stories
 from epistrel.core.tables.outbox import (
     CANCELLED,
@@ -191,12 +191,15 @@ async def locked(conn: AsyncConnection, outbox_id: str) -> Row[Any] | None:
     ).one_or_none()
 
 
-async def origin_membership(conn: AsyncConnection, operation_id: str) -> str | None:
-    """The membership of the operation that wrote a row, read now (FR-EXT-12)."""
+async def origin_active(conn: AsyncConnection, operation_id: str) -> bool:
+    """Whether the operation that wrote a row is on the active timeline, read now (FR-EXT-12;
+    through ``core.membership.active_operation``)."""
     found = await conn.scalar(
-        select(operations.c.membership).where(operations.c.operation_id == operation_id)
+        select(operations.c.operation_id).where(
+            operations.c.operation_id == operation_id, active_operation(operations)
+        )
     )
-    return None if found is None else str(getattr(found, "value", found))
+    return found is not None
 
 
 async def story_blocked(conn: AsyncConnection, story_id: str) -> bool:
@@ -384,7 +387,7 @@ def _listed() -> Any:
     o = external_effect_outbox.c
     active = exists().where(
         operations.c.operation_id == o.operation_id,
-        operations.c.membership == Membership.ACTIVE.value,
+        active_operation(operations),
     )
     return and_(
         o.executable.is_(True),
@@ -502,7 +505,7 @@ __all__ = [
     "mark_claimed",
     "mark_sent",
     "mark_unknown",
-    "origin_membership",
+    "origin_active",
     "record_outcome",
     "release",
     "story_blocked",

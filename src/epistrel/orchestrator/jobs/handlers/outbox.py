@@ -58,7 +58,6 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.core import clock
 from epistrel.core import outbox as core_outbox
 from epistrel.core import providers as core_providers
-from epistrel.core.enums import Membership
 from epistrel.core.ids import ULID_PATTERN
 from epistrel.core.tables import jobs
 from epistrel.core.tables.outbox import (
@@ -246,9 +245,7 @@ async def claim(
         if await core_outbox.story_blocked(conn, story_id):
             return HELD
         # FR-EXT-12: the origin's membership, read in the claim's own transaction.
-        if await core_outbox.origin_membership(conn, str(row.operation_id)) != (
-            Membership.ACTIVE.value
-        ):
+        if not await core_outbox.origin_active(conn, str(row.operation_id)):
             await core_outbox.cancel(conn, outbox_id)
             logger.info("outbox row %s cancelled: its operation is no longer active", outbox_id)
             return CANCELLED

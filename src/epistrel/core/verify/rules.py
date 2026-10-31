@@ -275,6 +275,9 @@ class VerdictReason(StrEnum):
     ADVISORY = "advisory"
     """#207: a value an ``advisory`` external provider answered (its ``trust_tier``): it
     settles no claim either way (the owner's decision, 2026-10-30)."""
+    PROVIDER_UNKNOWN = "provider_unknown"
+    """#206: a value pinned ``Unknown`` this turn (the provider was unavailable and its policy,
+    FR-EXT-7, fell to ``unknown``): no objective claim of it can be settled (FR-EXT-11)."""
 
 
 class Rule(StrEnum):
@@ -305,6 +308,7 @@ CONFIDENCE: Mapping[VerdictReason, float] = {
     VerdictReason.UNRESOLVED_TIME: 0.0,
     VerdictReason.NO_CLOCK: 0.0,
     VerdictReason.ADVISORY: 0.0,
+    VerdictReason.PROVIDER_UNKNOWN: 0.0,
 }
 """``Verdict.confidence`` of an ``uncertain`` verdict, by reason; rule verdicts are 1.0."""
 

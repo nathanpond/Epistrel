@@ -323,6 +323,7 @@ ERROR_STATUS: dict[str, int] = {
     "model_unavailable": 503,
     "moderation_unavailable": 503,
     "original_in_flight_timeout": 503,
+    "provider_unavailable": 503,
     "turn_interrupted": 503,
 }
 """Every error code a route documents, with its status. ``config_conflict`` stands for the 409
@@ -346,6 +347,7 @@ STATUS_TEXT = {
 
 _TURN = (
     "model_unavailable",
+    "provider_unavailable",
     "budget_exhausted",
     "turn_interrupted",
     "timeline_changed",

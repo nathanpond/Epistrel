@@ -24,7 +24,13 @@ never imports ``orchestrator.providers``: it reads what was pinned.
 the story's ``external_read`` events on the active timeline with the facts citing them, an
 omniscient raw read (the caller applies ``core.epistemic.inspection.omniscient_read``).
 
-Pure but for ``pinned_values``'s and ``inspect``'s reads; logs nothing (invariant 3).
+**Unavailability** (#206, FR-EXT-7,11): ``last_read`` is the recorded live read a provider's
+``last_known`` policy may stand in with; ``unknown_now`` tells the observation writer
+(``core.epistemic.observation``) that a value is pinned ``Unknown`` this turn, so no one newly
+learns it.
+
+Pure but for ``pinned_values``'s, ``last_read``'s and ``inspect``'s reads; logs nothing
+(invariant 3).
 """
 
 from __future__ import annotations
@@ -33,6 +39,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol
 
 from sqlalchemy import select
@@ -51,6 +58,7 @@ from epistrel.core.tables.states import STORY_SCOPE_KEY, external_values
 
 if TYPE_CHECKING:
     from epistrel.core.canon.facts import Fact
+    from epistrel.core.propositions.model import Proposition
 
 INSPECT_LIMIT_DEFAULT = 100
 INSPECT_LIMIT_MAX = 500
@@ -179,6 +187,73 @@ async def pinned_values(
     return {key: pin for key, (_, pin) in latest.items() if _at_or_before(pin.position, through)}
 
 
+# -- unavailability (#206) ---------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class RecordedRead:
+    """A recorded live read of an external value (``last_known``'s candidate, #206): its
+    ``external_read`` event, the stored value and when the provider answered it."""
+
+    event_id: str
+    value: Any
+    read_at: datetime
+
+
+async def last_read(
+    conn: AsyncConnection, story_id: str, state_id: str, scope_key: str | None
+) -> RecordedRead | None:
+    """The most recent live read (``source = read``, a value) of ``(state_id, scope_key)`` on
+    the story's active timeline (an operation ``core.membership.active_operation`` keeps), by
+    position, with its event's ``read_at``; ``None`` when there is none (#206's ``last_known``,
+    FR-EXT-7). A ``last_known`` or ``Unknown`` pin is never a candidate: freshness is measured
+    from the provider's own answer."""
+    from epistrel.core.tables import events
+
+    v = external_values.c
+    query = (
+        select(v.event_id, v.value, events.c.payload["read_at"].astext.label("read_at"))
+        .select_from(
+            external_values.join(operations, operations.c.operation_id == v.operation_id).join(
+                events, events.c.id == v.event_id
+            )
+        )
+        .where(
+            v.story_id == story_id,
+            v.state_id == state_id,
+            v.scope_key == (STORY_SCOPE_KEY if scope_key is None else scope_key),
+            v.source == ExternalValueSource.READ,
+            v.value.is_not(None),
+            active_operation(operations),
+        )
+        .order_by(position_key(external_values, "position").desc(), v.version.desc())
+        .limit(1)
+    )
+    row = (await conn.execute(query)).first()
+    if row is None or row.read_at is None:
+        return None
+    return RecordedRead(str(row.event_id), row.value, datetime.fromisoformat(str(row.read_at)))
+
+
+def unknown_now(claim: Proposition) -> bool:
+    """Whether ``claim`` is a ``state_value`` of an external value the current turn pinned
+    ``Unknown`` (#206, FR-EXT-11): no one may newly acquire it this turn (an observation of it
+    is never written). ``False`` outside a turn."""
+    from epistrel.core.propositions.vocabulary import STATE_VALUE
+
+    source = current()
+    if source is None or claim.predicate_id != STATE_VALUE:
+        return False
+    state_id = claim.qualifiers.get("state")
+    if not isinstance(state_id, str):
+        return False
+    for scope_key in (None, claim.subject_id):
+        pin = source.pinned(state_id, scope_key, None)
+        if isinstance(pin, ExternalPin) and pin.source is ExternalValueSource.UNKNOWN:
+            return True
+    return False
+
+
 # -- external facts (#207) ----------------------------------------------------------------------
 
 
@@ -281,9 +356,12 @@ __all__ = [
     "ExternalPin",
     "Key",
     "PinSource",
+    "RecordedRead",
     "current",
     "external",
     "inspect",
+    "last_read",
     "pinned_values",
     "pinning",
+    "unknown_now",
 ]

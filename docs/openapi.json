@@ -25473,6 +25473,7 @@
                 "type": "null"
               }
             ],
+            "description": "`last_known`'s freshness window in minutes; `null`: 60.",
             "title": "Freshness Minutes"
           },
           "manifest": {
@@ -25515,6 +25516,7 @@
           },
           "unavailability": {
             "default": "last_known",
+            "description": "What a turn does when the provider cannot answer a read (FR-EXT-7): `fail_turn` fails the turn (503 `provider_unavailable`, nothing recorded); `last_known` uses the most recent recorded value if the provider answered it within `freshness_minutes`, else the value is `unknown`; `unknown` pins the value as unknown for the turn. The policy applied is recorded with the turn.",
             "enum": [
               "fail_turn",
               "last_known",
@@ -25608,6 +25610,7 @@
                 "type": "null"
               }
             ],
+            "description": "`last_known`'s freshness window in minutes; `null`: 60.",
             "title": "Freshness Minutes"
           },
           "manifest": {
@@ -25645,6 +25648,7 @@
           },
           "unavailability": {
             "default": "last_known",
+            "description": "What a turn does when the provider cannot answer a read (FR-EXT-7): `fail_turn` fails the turn (503 `provider_unavailable`, nothing recorded); `last_known` uses the most recent recorded value if the provider answered it within `freshness_minutes`, else the value is `unknown`; `unknown` pins the value as unknown for the turn. The policy applied is recorded with the turn.",
             "enum": [
               "fail_turn",
               "last_known",
@@ -67823,7 +67827,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `budget_exhausted`, `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `model_unavailable`, `original_in_flight_timeout`, `turn_interrupted`.",
+            "description": "Unavailable; nothing was written: `budget_exhausted`, `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `model_unavailable`, `original_in_flight_timeout`, `provider_unavailable`, `turn_interrupted`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -68598,7 +68602,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `budget_exhausted`, `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `model_unavailable`, `original_in_flight_timeout`, `turn_interrupted`.",
+            "description": "Unavailable; nothing was written: `budget_exhausted`, `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `model_unavailable`, `original_in_flight_timeout`, `provider_unavailable`, `turn_interrupted`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",

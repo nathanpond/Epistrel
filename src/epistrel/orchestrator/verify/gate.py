@@ -15,7 +15,8 @@ names what may escalate:
 gate (``RESOLVED_IN_CORE``). ``unresolved_entity``, ``unresolved_time`` and ``argument_type`` never
 escalate (``NEVER_ESCALATES``), nor does ``no_clock`` (#195: a clock check on a story without the
 clock), nor ``advisory`` (#207: a value an advisory external provider answered, which settles
-nothing by the owner's decision): the claim is not about anything the model could judge against the
+nothing by the owner's decision), nor ``provider_unknown`` (#206: a value pinned ``Unknown`` because
+its provider was unavailable): the claim is not about anything the model could judge against the
 records, so it takes the safe disposition at once. Neither does ``approximate_bounds`` (#467,
 ADR-162). FR-PROP-10 already resolves it deterministically to ``uncertain``: the rules showed that
 the claim holds under some admissible readings of the approximate bounds and not under others, and a
@@ -67,6 +68,7 @@ NEVER_ESCALATES = frozenset(
         R.APPROXIMATE_BOUNDS,
         R.NO_CLOCK,
         R.ADVISORY,
+        R.PROVIDER_UNKNOWN,
     }
 )
 """Take the safe disposition directly, whatever the threshold (``approximate_bounds``: #467)."""

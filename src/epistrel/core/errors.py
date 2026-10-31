@@ -1326,6 +1326,17 @@ class ProviderUnbound(EpistrelError):
     http_status = 422
 
 
+class ProviderDown(EpistrelError):
+    """A turn read an external value whose provider could not answer (an adapter error, a
+    timeout, a missing secret or callable, a malformed answer) and the provider's unavailability
+    policy is ``fail_turn`` (FR-EXT-7; #206): the turn fails cleanly before its commit, so
+    nothing is recorded (no event, no ``external_read``). ``details``: ``provider`` and
+    ``value`` (the provider's value name)."""
+
+    code = "provider_unavailable"
+    http_status = 503
+
+
 class ProviderUnregistered(EpistrelError):
     """A story created from a scenario requires providers the deployment has not registered
     (``story_settings_defaults.required_providers``; #204). ``details``: ``providers`` (the

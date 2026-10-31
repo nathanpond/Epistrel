@@ -1732,6 +1732,15 @@ class Verifier:
         )
         found_result = dataclasses.replace(result, speech=speech)
         if (
+            result.reason is VerdictReason.PROVIDER_UNKNOWN
+            and decision.belief_relation == "consistent"
+            and not decision.hallucinated
+        ):
+            # #206 (FR-EXT-11): an existing belief keeps its semantics while the provider's
+            # value is Unknown: a belief-consistent claim of it stands as said, its objective
+            # relation unresolved (only new objective assertions take the safe disposition).
+            found_result = dataclasses.replace(found_result, disposition=None)
+        if (
             decision.hallucinated
             and self.config.safe_disposition == "surface"
             and result.kind is not VerdictKind.CONTRADICTED

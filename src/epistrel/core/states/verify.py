@@ -21,7 +21,8 @@ only through it (ADR-160's owner paths):
   current turn's pin, else the recorded version at or before the position (a frame-bounded read
   of an earlier turn included: never a later or a live one); one with none is left out (a
   claim on it is ``novel``). A value whose provider is registered ``trust_tier = advisory``
-  (#204's ``external_providers``) is ``unsettled`` (#207).
+  (#204's ``external_providers``) is ``unsettled`` (#207), and so is one pinned ``Unknown``
+  under its provider's unavailability policy (``provider_unknown``, #206, FR-EXT-11).
 - ``verdict`` (pure): over a canon holder's values, a claim is ``supported`` when its value
   matches the fold (a number within the State's ``constraints.tolerance``; an enum and a boolean
   exactly; text case-insensitively) and ``contradicted`` otherwise (``functional_key``; a
@@ -74,7 +75,13 @@ from typing import TYPE_CHECKING, Final
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from epistrel.core.enums import StateOwner, StateScope, StateType, StateVisibility
+from epistrel.core.enums import (
+    ExternalValueSource,
+    StateOwner,
+    StateScope,
+    StateType,
+    StateVisibility,
+)
 from epistrel.core.propositions.model import (
     Interval,
     LiteralKind,
@@ -371,8 +378,8 @@ def verdict(claim: Proposition, owned: Sequence[OwnedValue]) -> Verdict:
     if found.unsettled is not None:
         # #207: an advisory provider's value settles nothing either way (the owner's decision,
         # 2026-10-30): an equal claim is not supported, a differing one takes the safe, hedged
-        # disposition (#151), never contradiction and repair. #206 adds ``provider_unknown``
-        # (an ``Unknown`` pinned value) through the same branch.
+        # disposition (#151), never contradiction and repair. #206: so is an ``Unknown``
+        # pinned value (``provider_unknown``, FR-EXT-11).
         return uncertain(found.unsettled)
     if found.proposition.literal is None or claim.literal is None:
         return uncertain(VerdictReason.UNRESOLVED_ENTITY)
@@ -484,11 +491,18 @@ async def read(
         is_external = state.owner is StateOwner.EXTERNAL
         for scope_key in keys_of(state):
             value: Value | UndefinedType | None
+            unsettled: VerdictReason | None = None
             if is_external:
                 pin = pinned.get((state.id, scope_key))
                 if pin is None:
                     continue
                 value = pin.value
+                if pin.source is ExternalValueSource.UNKNOWN:
+                    # #206 (FR-EXT-11): pinned ``Unknown`` under the provider's unavailability
+                    # policy: no objective claim of it is settled either way.
+                    unsettled = VerdictReason.PROVIDER_UNKNOWN
+                elif state.provider_id in advisory:
+                    unsettled = VerdictReason.ADVISORY
             else:
                 fold = folded.get((state.id, scope_key))
                 value = fold.value if fold is not None else state.initial_value
@@ -503,9 +517,7 @@ async def read(
                     kind=state.type.value,
                     tolerance=float(state.constraints.tolerance),
                     entity_id=state.entity_id,
-                    unsettled=VerdictReason.ADVISORY
-                    if is_external and state.provider_id in advisory
-                    else None,
+                    unsettled=unsettled,
                 )
             )
     return found

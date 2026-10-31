@@ -564,7 +564,12 @@ async def test_c_06__untrusted(
             seen: list[ProviderUnavailable] = []
 
             async def unavailable(
-                self: PinnedReads, definition: Any, ref: Any, position: Any, error: Any
+                self: PinnedReads,
+                definition: Any,
+                ref: Any,
+                position: Any,
+                error: Any,
+                *rest: Any,  # #206: the provider row and the binding's ids
             ) -> Any:
                 seen.append(error)
                 raise error

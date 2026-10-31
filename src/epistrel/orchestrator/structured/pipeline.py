@@ -299,7 +299,7 @@ from epistrel.core.verify.normalize import (
 )
 from epistrel.core.verify.permission import Asserter
 from epistrel.core.verify.protected import PrivateRecord
-from epistrel.core.verify.rules import CANON, Record, VerdictKind, check
+from epistrel.core.verify.rules import CANON, Record, VerdictKind, VerdictReason, check
 from epistrel.core.viewpoint import (
     is_omniscient,
     resolve_viewpoint,
@@ -367,7 +367,7 @@ from epistrel.orchestrator.policies.output_gate import (
 )
 from epistrel.orchestrator.policies.rebase import output_passes, output_recheck
 from epistrel.orchestrator.policies.store import guard_context
-from epistrel.orchestrator.providers import external_facts
+from epistrel.orchestrator.providers import external_facts, unavailability
 from epistrel.orchestrator.providers.in_process import InProcessRegistry
 from epistrel.orchestrator.providers.pinned import PinnedReads
 from epistrel.orchestrator.repair import ladder as repair_ladder
@@ -1466,6 +1466,9 @@ def _stepper(
         found = await verifier.source.deterministic(
             claim, holder=CANON, viewpoint=viewpoint, position=(read.turn, first_beat)
         )
+        if found is not None and found[0].reason is VerdictReason.PROVIDER_UNKNOWN:
+            # #206 (FR-EXT-11): a value pinned Unknown is no one's newly acquired knowledge.
+            return render_steps.Observed(False, render_steps.PROVIDER_UNKNOWN)
         if found is None or found[0].kind is not VerdictKind.SUPPORTED:
             return render_steps.Observed(False, render_steps.UNVERIFIED_OBJECT)
         if not await located(claim):
@@ -5779,6 +5782,9 @@ async def play(
         if timings[0] is not None:
             # #194: the turn's pacing and in-turn timing.
             report["clock"] = clocking.report(timings[0])
+        if pins.policies:
+            # #206 (FR-EXT-7): the unavailability policy each unanswered external read took.
+            report[unavailability.REPORT_KEY] = pins.policy_report()
         if roles_state:
             # #176: the turn's roles and what reactive narration made of them.
             report["roles"] = roles_state[0].report()

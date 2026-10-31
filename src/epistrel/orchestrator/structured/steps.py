@@ -19,7 +19,8 @@ sees what the render's earlier beats established and nothing later.
   (``located_at``/``present_at`` a place), a perception path (#161: the character is at that
   place, inside it or containing it). Anything else (novel, contradicted, undecided, an
   unnormalizable sketch, no path) rejects the step (``unverified_object``,
-  ``no_perception_path``): no entailment call, the safe disposition. A render that invents the
+  ``no_perception_path``; #206: ``provider_unknown`` for an external value pinned ``Unknown``,
+  FR-EXT-11): no entailment call, the safe disposition. A render that invents the
   observed fact itself is refused by its permission (#144) before the step is reached, so the
   overlay never holds it.
 - ``believe``: it cites only verified earlier steps (or records: an event, a fact, an utterance,
@@ -81,6 +82,9 @@ OWNING = frozenset({ACT, TIME})
 SELF_ATTESTATION = "self_attestation"
 UNVERIFIED_OBJECT = "unverified_object"
 NO_PERCEPTION_PATH = "no_perception_path"
+PROVIDER_UNKNOWN = "provider_unknown"
+"""#206 (FR-EXT-11): the observed value is pinned ``Unknown`` this turn (its provider was
+unavailable): no one newly learns it."""
 ANTECEDENT_INVALID = "antecedent_invalid"
 UNNORMALIZABLE = "unnormalizable"
 LATER_CITE, UNVERIFIED_CITE, NO_CITE = "later_cite", "unverified_cite", "no_cite"

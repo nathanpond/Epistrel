@@ -157,8 +157,18 @@ class ProviderSpec(_Strict):
     confirmation: Confirmation | None = None
     dedupes_dispatch: StrictBool | None = None
     returns_resulting_values: StrictBool | None = None
-    unavailability: Unavailability = "last_known"
-    freshness_minutes: Annotated[StrictInt, Field(ge=1, le=FRESHNESS_MAX_MINUTES)] | None = None
+    unavailability: Unavailability = Field(
+        default="last_known",
+        description="What a turn does when the provider cannot answer a read (FR-EXT-7): "
+        "`fail_turn` fails the turn (503 `provider_unavailable`, nothing recorded); "
+        "`last_known` uses the most recent recorded value if the provider answered it within "
+        "`freshness_minutes`, else the value is `unknown`; `unknown` pins the value as unknown "
+        "for the turn. The policy applied is recorded with the turn.",
+    )
+    freshness_minutes: Annotated[StrictInt, Field(ge=1, le=FRESHNESS_MAX_MINUTES)] | None = Field(
+        default=None,
+        description="`last_known`'s freshness window in minutes; `null`: 60.",
+    )
     confirm_wait_max_seconds: Annotated[StrictInt, Field(ge=1, le=CONFIRM_WAIT_MAX)] = (
         DEFAULT_CONFIRM_WAIT_MAX_SECONDS
     )

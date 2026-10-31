@@ -19,13 +19,17 @@ no speculative reads.
 the provider's adapter as registered now (#204's ``provider_for``) with the story's binding,
 reads it once (timed as the ``external_read`` stage; no model budget is debited), and pins the
 answer: later ``get``s, every primary's included, return the pinned value with no adapter call.
-An adapter error goes to ``unavailable`` (#206 applies the provider's policy there; until then
-it is raised). Each answer is typed and cleaned before it is pinned (``sanitize``, #208): a
-malformed one is an adapter error (``provider_malformed``) that goes to ``unavailable`` too.
+An adapter error or a timeout goes to ``unavailable``, where #206 applies the provider's
+unavailability policy (``unavailability``): ``fail_turn`` fails the turn (503
+``provider_unavailable``, nothing committed), ``last_known`` pins a fresh enough recorded value,
+otherwise the value is pinned ``Unknown``; ``policies`` lists each application for the report.
+Each answer is typed and cleaned before it is pinned (``sanitize``, #208): a malformed one is an
+adapter error (``provider_malformed``) that goes to ``unavailable`` too.
 
 **What is recorded** (``stage``): one ``external_read`` event per pinned value, ``input``
 category, at its position: the provider, the value's name, the State and scope key, the query
-hash, the value, the raw answer's hash (never the body), when, and ``source = live``. The
+hash, the value, the raw answer's hash (never the body), when, and ``source = live`` (#206:
+``last_known`` with its ``origin_event_id``, or ``unknown`` with no value). The
 ``external_values`` projection folds them in the commit.
 
 **Rebase and regeneration.** A rebase commits the same attempt, so the pins stand (FR-CONC-9: a
@@ -38,6 +42,7 @@ Logs carry the provider's and the value's names only (invariant 3).
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -59,9 +64,16 @@ from epistrel.core.states import external
 from epistrel.core.states.external import ExternalPin
 from epistrel.core.states.model import StateDefinition, Value, to_json
 from epistrel.observability import stages
+from epistrel.orchestrator.providers import unavailability
 from epistrel.orchestrator.providers.bindings import require_bound
+from epistrel.orchestrator.providers.http_manifest import DEFAULT_TIMEOUT_SECONDS
 from epistrel.orchestrator.providers.in_process import InProcessRegistry
-from epistrel.orchestrator.providers.port import Binding, ProviderUnavailable, ReadResult
+from epistrel.orchestrator.providers.port import (
+    Binding,
+    ExternalProvider,
+    ProviderUnavailable,
+    ReadResult,
+)
 from epistrel.orchestrator.providers.registry import provider_for
 from epistrel.orchestrator.providers.sanitize import Sanitized, in_domain, render_block, sanitize
 
@@ -71,6 +83,9 @@ if TYPE_CHECKING:
     from epistrel.core.events.operation import Operation
 
 log = logging.getLogger(__name__)
+
+READ_TIMEOUT_SECONDS: float = DEFAULT_TIMEOUT_SECONDS
+"""#206: an ``in_process`` read's timeout (the HTTP adapter's default, #204)."""
 
 ValueRef = tuple[str, str | None]
 """An external value of the story: ``(State id, scope key)`` (``None``: story-scoped)."""
@@ -151,6 +166,10 @@ class PinnedReads:
     """Live adapter reads this turn made, every attempt included."""
     hits: int = 0
     """``get``s answered from a pin (no adapter call)."""
+    read_timeout: float = field(default_factory=lambda: READ_TIMEOUT_SECONDS)
+    """How long an ``in_process`` read may take (#206)."""
+    policies: list[unavailability.Applied] = field(default_factory=list)
+    """#206: the attempt's unavailability policy applications, in the order they were read."""
     _pins: dict[ValueRef, PinnedValue] = field(default_factory=dict)
     _definitions: dict[str, StateDefinition] | None = None
     _turn: int = 0
@@ -167,6 +186,7 @@ class PinnedReads:
         """A new attempt (the read phase ran again): every pin is dropped, so a regenerated
         turn reads live again (FR-CONC-9)."""
         self._pins.clear()
+        self.policies.clear()
         self._definitions = None
         self._started = False
 
@@ -234,16 +254,16 @@ class PinnedReads:
         reading = time.perf_counter()
         self.live_reads += 1
         try:
-            result = await adapter.read(value_name, binding, ref[1])
+            result = await self.read(adapter, row, value_name, binding, ref[1])
             # #208: typed and cleaned before it is pinned; a malformed answer is an adapter
             # error (provider_malformed), so the unavailability policy applies to it too.
             clean = self.sanitize(definition, result, row)
         except ProviderUnavailable as error:
-            pinned = await self.unavailable(definition, ref, at, error)
+            stages.observe("external_read", time.perf_counter() - reading)
+            pinned = await self.unavailable(definition, ref, at, error, row, external_ids)
             self._pins[ref] = pinned
             return pinned
-        finally:
-            stages.observe("external_read", time.perf_counter() - reading)
+        stages.observe("external_read", time.perf_counter() - reading)
         pinned = PinnedValue(
             pin=ExternalPin(
                 state_id=ref[0],
@@ -263,6 +283,26 @@ class PinnedReads:
         self._pins[ref] = pinned
         log.debug("external read pinned", extra={"provider": provider_name, "value": value_name})
         return pinned
+
+    async def read(
+        self,
+        adapter: ExternalProvider,
+        row: core_providers.ProviderRow,
+        value_name: str,
+        binding: Binding,
+        scope_key: str | None,
+    ) -> ReadResult:
+        """One attempt at the adapter (#206: no retry inside a turn; the policy is the retry).
+        An ``in_process`` callable gets ``READ_TIMEOUT_SECONDS`` (the HTTP adapter applies the
+        manifest's ``read.timeout_seconds`` itself); running past it is ``timeout``."""
+        if row.transport != "in_process":
+            return await adapter.read(value_name, binding, scope_key)
+        try:
+            return await asyncio.wait_for(
+                adapter.read(value_name, binding, scope_key), self.read_timeout
+            )
+        except TimeoutError:
+            raise ProviderUnavailable(row.name, value_name, "timeout") from None
 
     def sanitize(
         self, definition: StateDefinition, result: ReadResult, row: core_providers.ProviderRow
@@ -287,11 +327,35 @@ class PinnedReads:
         ref: ValueRef,
         position: Position,
         error: ProviderUnavailable,
+        row: core_providers.ProviderRow,
+        external_ids: Mapping[str, str],
     ) -> PinnedValue:
-        """The seam #206's unavailability policy fills (``fail_turn``, ``last_known``,
-        ``unknown``): until then the adapter's error is raised and nothing is committed."""
-        del definition, ref, position
-        raise error
+        """#206: the provider's unavailability policy (``unavailability.apply_policy``):
+        ``fail_turn`` raises 503 ``provider_unavailable`` (nothing is committed); otherwise the
+        ``last_known`` or ``Unknown`` value is pinned like a read (its ``external_read`` event
+        records the source, and a ``last_known`` value its origin event) and the application
+        is listed for the turn report (``policies``)."""
+        degraded = await unavailability.apply_policy(
+            self.db, self.story_id, row, definition, ref, position, error
+        )
+        self.policies.append(degraded.applied)
+        value_name = degraded.applied.value
+        return PinnedValue(
+            pin=degraded.pin,
+            provider=row.name,
+            value_name=value_name,
+            query_hash=query_hash(row.name, value_name, external_ids, ref[1]),
+            raw_hash="",
+            read_at=degraded.read_at,
+            source=degraded.source,
+            origin_event_id=degraded.origin_event_id,
+            tier=row.trust_tier,
+        )
+
+    def policy_report(self) -> list[dict[str, Any]]:
+        """#206: the turn report's ``provider_policy_applied`` entries (empty when every read
+        answered)."""
+        return [applied.report() for applied in self.policies]
 
     async def ensure(self, claims: Iterable[tuple[Proposition, int, int]]) -> list[PinnedValue]:
         """The pinned value of each externally owned State a claim resolves to (``(proposition,

@@ -12,7 +12,7 @@ creates one. ``core.tables.states`` describes the table.
 Downgrade drops the table and the enum type.
 
 Revision ID: 0091
-Revises: 0088
+Revises: 0090
 Create Date: 2026-10-31
 
 """
@@ -26,7 +26,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "0091"
-down_revision: str | None = "0088"
+down_revision: str | None = "0090"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

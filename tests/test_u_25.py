@@ -408,7 +408,9 @@ async def test_u_25__ownership(
             "Bobby",
             ms.render(beat("do", "They wait fifty minutes.", effects=[skip(50, "they wait")])),
         )
-        found = await play(client, stub, story, ids)
+        # #199 (FR-CLOCK-8): the player's input invites the wait, so Bobby's skip is the
+        # player's, not one his render starts on its own.
+        found = await play(client, stub, story, ids, say="We wait for the train.")
         (verdict,) = await schedule_verdicts(engine, story)
         assert verdict["schedule"]["kind"] == "create"
         (train,) = await ck.events(engine, story)

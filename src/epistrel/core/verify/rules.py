@@ -38,6 +38,14 @@ rule's evidence lists every conflicting record it found.
      checked without the coverage step (the added precision is a novel detail).
    - An **event** claim stated over an interval ("sometime in 2012") is supported by a matching
      record inside it, and a record that contains it is a granularity refinement.
+   - **Placement supports presence** (#515, the owner's option (a); ``PRESENCE_SUPPORT``): the
+     subject's affirmed ``located_at(X, P)`` records match an affirmed ``present_at(X, P)``
+     claim as if they were ``present_at`` records, by the same coverage test. A character
+     placed at the scene's place takes part in the scene, so a ``do`` beat's mention of a
+     co-located character (#148's mention claim, ``present_at`` of the scene's place) is
+     ``supported``, not ``novel``. A character placed elsewhere, or not placed, is unchanged:
+     its mention is still ``novel`` (and its permission decides). It is support only: a
+     placement never contradicts a presence here.
    - A **permanent** predicate ignores valid-time here.
    - Overlap that the approximate bounds cannot decide is ``uncertain(approximate_bounds)``,
      unless a contradiction rule below is conclusive.
@@ -114,7 +122,8 @@ learn about partitions.
 
 - the subject's and object's ``same_as``;
 - the claim's predicate for the expanded subjects, windowed to the claim's possible span (not
-  windowed for event and permanent predicates);
+  windowed for event and permanent predicates), and for an affirmed ``present_at`` claim the
+  subjects' ``located_at`` likewise (#515);
 - for an affirmed claim whose predicate has an inverse with cardinality, the claim's predicate
   for each expanded object (any subject), windowed the same way: the item's other holders;
 - the predicate's containment predicate (any subject);
@@ -183,7 +192,7 @@ from epistrel.core.propositions.registry import (
     load,
     same_event,
 )
-from epistrel.core.propositions.vocabulary import SAME_AS
+from epistrel.core.propositions.vocabulary import LOCATED_AT, PRESENT_AT, SAME_AS
 from epistrel.core.readset import (
     KeyedLookup,
     StructuredReadSet,
@@ -740,6 +749,24 @@ class _Support:
     evidence: list[Evidence] = field(default_factory=list)
     covered: list[Span] = field(default_factory=list)
     uncovered: list[Span] = field(default_factory=list)
+
+
+PRESENCE_SUPPORT: Mapping[str, str] = {PRESENT_AT: LOCATED_AT}
+"""#515: the predicate whose affirmed records support an affirmed claim of the key predicate
+with the same subject and object (a placement supports presence there; see the module
+docstring's coverage)."""
+
+
+def _placements(claim: Proposition, ctx: _Context) -> list[tuple[Record, Proposition]]:
+    """#515: the subject's affirmed placements, as records of the claim's predicate."""
+    source = PRESENCE_SUPPORT.get(claim.predicate_id)
+    if source is None or claim.polarity is not Polarity.AFFIRMED:
+        return []
+    return [
+        (r, p.model_copy(update={"predicate_id": claim.predicate_id}))
+        for r, p in ctx.by(source, claim.subject_id)
+        if p.polarity is Polarity.AFFIRMED
+    ]
 
 
 def _support(
@@ -1327,7 +1354,7 @@ def _check(
     same = ctx.by(claim.predicate_id, claim.subject_id)
     pending: VerdictReason | None = None
     if not skip_support:
-        support = _support(claim, predicate, same)
+        support = _support(claim, predicate, [*same, *_placements(claim, ctx)])
         if support.kind == "supported":
             return Verdict(VerdictKind.SUPPORTED, evidence=tuple(support.evidence))
         if support.kind == "partial" and not remainder:
@@ -1678,6 +1705,9 @@ async def _gather(
     window = None if timeless else _window(c.valid_time)
     subject_set = sorted(subjects)
     records += await read(c.predicate_id, subject_set, window, None)
+    if c.polarity is Polarity.AFFIRMED and c.predicate_id in PRESENCE_SUPPORT:
+        # #515: the subject's placement, which supports its presence there.
+        records += await read(PRESENCE_SUPPORT[c.predicate_id], subject_set, window, None)
     if (
         options.contradictions
         and c.polarity is Polarity.AFFIRMED

@@ -15,7 +15,10 @@ model salience):
   them;
 - turns 2 and 3: Jenni hands the delivery driver a tip (modeled), then thanks him again (a
   ``say`` addressed to him): one persistent entity (one ``characters`` row) whose sparse
-  partition accrues a memory from each interaction and nothing else (not Jenni's coffee);
+  partition accrues a memory from each interaction and nothing else (not Jenni's coffee). In
+  turn 3 she also waves to Wren and to the driver again: both are placed on the street, so the
+  ``do`` beats' mentions are supported by the placements and the beats are kept, unrepaired
+  (#515);
 - sparse, low-weight machinery: every modeled character is ``minor``, the omniscient story read
   shows its weight and ``modeled_at`` (Jenni ``major`` at position 0), a minor holds no memory
   of a beat it did not take part in, and the author can promote one to ``major``.
@@ -60,6 +63,8 @@ TIP = "Jenni hands the delivery driver a tip."
 COFFEE = "Jenni sips her coffee."
 AGAIN = "Thanks again, see you tomorrow!"
 MAILMAN = "Jenni waves to the mailman."
+WAVES_WREN = "Jenni waves to Wren again."
+WAVES_DRIVER = "Jenni waves to the delivery driver again."
 
 
 @pytest.fixture
@@ -168,9 +173,28 @@ async def test_s_modeling(
             epistrel,
             story,
             ids,
-            render(beat("say", AGAIN, intent="sincere", addressee=driver_id)),
+            render(
+                beat("say", AGAIN, intent="sincere", addressee=driver_id),
+                beat("do", WAVES_WREN),
+                beat("do", WAVES_DRIVER),
+            ),
             ms.salient_characters(),
         )
+        # #515: a do beat naming a character placed in the scene (the player, a modeled minor)
+        # is kept: its mention is supported by the placement, not novel, so nothing is denied
+        # and nothing is repaired.
+        report = await turn_report(engine, story)
+        assert report["verify"]["denied"] == []
+        assert [v["kind"] for v in report["verify"]["verdicts"]] == ["supported", "supported"]
+        assert "repairs" not in report
+        done = await rows(
+            engine,
+            "SELECT payload->>'text' AS text FROM events WHERE story_id = :s "
+            "AND type = 'beat_do' AND character_id = :c AND narrative_turn = 3 ORDER BY seq",
+            s=story,
+            c=ids["Jenni"],
+        )
+        assert [d.text for d in done] == [WAVES_WREN, WAVES_DRIVER]
         cast = await ms.characters_of(engine, story)
         drivers = [r for n, r in cast.items() if "driver" in n]
         assert [r.name for r in drivers] == ["the delivery driver"]
@@ -179,6 +203,7 @@ async def test_s_modeling(
         assert await ms.memory_texts(engine, story, driver.id) == [
             (2, f"Jenni does: {TIP}"),
             (3, f"Jenni says: {AGAIN}"),
+            (3, f"Jenni does: {WAVES_DRIVER}"),
         ]
         # The neighbor took part in nothing since: its partition did not grow.
         assert await ms.memory_texts(engine, story, neighbor.id) == [(1, f"Jenni does: {WAVE}")]

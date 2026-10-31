@@ -33,6 +33,13 @@ from tests.respond_support import body
 from tests.story_support import WRITE, override
 from tests.structured_turn_support import beat, structured_story
 
+CONFIRM_WAIT_S = 30
+"""The crash tests' providers' ``confirm_wait_max_seconds``. The wait ends as soon as every
+synchronous row has an answer, so it costs nothing when the send is prompt; it only has to
+outlast a resumed send on a loaded host. A wait that lapses first completes the turn with the
+purchase still pending (FR-EXT-15; the lease timer re-sends it a minute later), which the
+tests would misread as the resume never sending (seen once at 1 s: #213's ``staged.after_claim``
+case under a 23-minute sharded run)."""
 GARBAGE = "<<not a render>>"
 """An outcome-step render answer no attempt can parse (the render fails every attempt)."""
 
@@ -57,7 +64,7 @@ async def http_story(
     db: AsyncEngine,
     server: ps.GameServer,
     *,
-    wait_s: int = 1,
+    wait_s: int = CONFIRM_WAIT_S,
     perceived: bool = False,
 ) -> Staged:
     """A story (Cal, Mira) whose gold ``server`` owns through a synchronous HTTP provider
@@ -139,6 +146,7 @@ def logged(op: Any) -> list[str]:
 
 
 __all__ = [
+    "CONFIRM_WAIT_S",
     "GARBAGE",
     "PERCEIVED",
     "Staged",

@@ -594,11 +594,22 @@ async def _belief_terms(
         if viewpoint.startswith(CHARACTER_VIEWPOINT_PREFIX)
         else None
     )
+    # #522: only a belief whose object is one of these can give a term, so only those are
+    # read (none at all when the speaker knows every person the index names): reading and
+    # decoding every other character's whole partition, for every speaker's index, was the
+    # bulk of a multi-character turn's CPU.
+    unknown = sorted(
+        entity
+        for entity, entry in index.entries.items()
+        if entry.kind in BELIEF_TERM_KINDS and entity not in known
+    )
     found: list[ProtectedTerm] = []
+    if not unknown:
+        return found
     for holder in sorted(cast):
         if holder == speaker:
             continue
-        held = await partitions.partition(conn, story_id, holder)
+        held = await partitions.partition(conn, story_id, holder, objects_=unknown)
         for belief in sorted(held, key=lambda b: b.id, reverse=True):
             p = belief.proposition
             objects = [p.object_id] if p.object_id is not None else []

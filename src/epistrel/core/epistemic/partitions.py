@@ -80,6 +80,7 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.dialects.postgresql import Range
+from sqlalchemy.dialects.postgresql import array as pg_array
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import readset
@@ -376,6 +377,7 @@ async def partition(
     through: Position | None = None,
     subjects: Sequence[str] | None = None,
     entities_: Sequence[str] | None = None,
+    objects_: Sequence[str] | None = None,
     predicate: str | None = None,
     proposition_ids: Sequence[str] | None = None,
     levels: Iterable[BeliefConfidenceLevel] | None = None,
@@ -384,8 +386,9 @@ async def partition(
 ) -> list[Belief]:
     """``holder``'s first-order beliefs current at ``through`` (see the module docstring),
     optionally only those whose proposition's subject is one of ``subjects``, whose subject or
-    object is one of ``entities_``, of ``predicate``, among ``proposition_ids``, at one of
-    ``levels``; ordered by id (``order = "confidence"``: strongest first, then the latest)."""
+    object is one of ``entities_``, whose object (or a member of its object set) is one of
+    ``objects_``, of ``predicate``, among ``proposition_ids``, at one of ``levels``; ordered
+    by id (``order = "confidence"``: strongest first, then the latest)."""
     b = beliefs.c
     p = propositions.c
     where: list[ColumnElement[bool]] = [
@@ -403,6 +406,10 @@ async def partition(
     if entities_ is not None:
         found = list(entities_)
         where.append(or_(p.subject_id.in_(found), p.object_id.in_(found)))
+    if objects_ is not None:
+        wanted = list(objects_)
+        # ``object_set`` is a JSON list of entity ids: ``?|`` matches any of them (#522).
+        where.append(or_(p.object_id.in_(wanted), p.object_set.has_any(pg_array(wanted))))
     if predicate is not None:
         where.append(p.predicate_id == predicate)
     if proposition_ids is not None:

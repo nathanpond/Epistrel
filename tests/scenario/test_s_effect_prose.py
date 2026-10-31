@@ -2,7 +2,8 @@
 FR-RESP-8).
 
 Every S-EFFECT-PROSE M6 part lives in this file: #209's consumer-applied part
-(``__consumer_applied``), #210's and #212's parts, and #217's outcome tails.
+(``__consumer_applied``), #210's asynchronous part (``__async``, its own docstring), #212's
+part, and #217's outcome tails.
 
 #209's part, played end to end through ``respond`` with the stub adapter. Cal's gold is owned by
 a read-only provider (it reads 300); Mira's render declares ``gold -50`` for a sword:
@@ -29,12 +30,13 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.orchestrator.jobs.handlers import outbox as outbox_job
 from tests import effect_support as es
 from tests import multi_support as ms
 from tests import provider_support as ps
 from tests import state_support as ss
 from tests.auth_support import auth_settings
-from tests.respond_support import body, respond, respond_client
+from tests.respond_support import AUTHOR, body, respond, respond_client
 from tests.structured_turn_support import beat, structured_story, turn_report
 
 pytestmark = pytest.mark.integration
@@ -153,4 +155,74 @@ async def test_s_effect_prose__consumer_applied(
         for prompt in ms.render_prompts(stub, "Mira"):
             assert AWAITING not in prompt
             assert REASON not in prompt
+        await ss.set_level(engine, story, None)
+
+
+@pytest.mark.part("M6", "FR-EXT-15; FR-RESP-8")
+async def test_s_effect_prose__async(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#210's part (an ``asynchronous`` write-capable provider, FR-EXT-15): Mira's beat "The
+    purchase went through." asserts the outcome of an outbox effect with no recorded
+    confirmation, so #209's rule rejects it and the repair narrates the attempt; the effect is
+    kept, written to the outbox and marked ``pending``. The dispatcher records a failure: the
+    reconciliation status lists it ``failed`` and nothing reports it applied (no State change).
+    Complement: a second purchase the fixture confirms is no longer pending (not listed)."""
+    name = ps.unique_name("bank")
+    await ps.register(engine, ps.write_capable_spec(name))
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        fake = ps.ScriptedProvider(name, default=300).attach(epistrel)
+        story, ids = await structured_story(client, "Cal", "Mira")
+        cal = ids["Cal"]
+        await ss.set_level(engine, story, "on")
+        await ps.external_gold(engine, story, name, authorization=es.ANY_CHARACTER)
+
+        stub.reset()
+        ms.renders_for(stub, "Mira", _mira(cal, f"{TAKES} {WENT}"))
+        es.narrator(stub, es.render(beat("narration", "The forge glows.")))
+        stub.script("regeneration", [json.dumps({"text": ATTEMPT, "effects": []})])
+        answer = await respond(client, story, body(cal, None, do="buys the sword"))
+        assert answer.status_code == 200, answer.text
+        played = answer.json()
+        (asked,) = es.regenerations(stub)
+        assert "has not said yet: narrate only the attempt" in asked
+        texts = [b["text"] for b in played["beats"]]
+        assert ATTEMPT in texts
+        assert not any("went through" in t for t in texts)
+        assert "went through" not in played["message"]["text"]
+        effect = _pending(played)
+        assert effect["outbox_id"] == effect["effect_id"]
+        assert _tags(await turn_report(engine, story)) == [("external_outcome_unconfirmed", 3)]
+
+        # The dispatcher records a failure: listed, never reported as applied.
+        fake.script_writes("gold", "failed")
+        sent = await outbox_job.dispatch(
+            engine, effect["outbox_id"], registry=epistrel.in_process_providers
+        )
+        assert sent == "failed"
+        listed = (await epistrel.reconciliation(AUTHOR, story)).listings
+        assert [(e.outbox_id, e.reason) for e in listed] == [(effect["outbox_id"], "failed")]
+        assert await es.turn_changes(engine, story) == []
+
+        # Complement: confirmed, the next purchase is no longer pending.
+        fake.script_writes("gold", "confirmed")
+        stub.reset()
+        ms.renders_for(stub, "Mira", _mira(cal, TAKES))
+        es.narrator(stub, es.render(beat("narration", "The forge glows.")))
+        answer = await respond(client, story, body(cal, None, do="buys another sword"))
+        assert answer.status_code == 200, answer.text
+        second = _pending(answer.json())
+        assert answer.json()["reconciliation"] == {"count": 2}
+        sent = await outbox_job.dispatch(
+            engine, second["outbox_id"], registry=epistrel.in_process_providers
+        )
+        assert sent == "confirmed"
+        listed = (await epistrel.reconciliation(AUTHOR, story)).listings
+        assert [e.outbox_id for e in listed] == [effect["outbox_id"]]
+        assert fake.idempotency_keys == [effect["outbox_id"], second["outbox_id"]]
+        await ps.drop_outbox_jobs(engine, story)
         await ss.set_level(engine, story, None)

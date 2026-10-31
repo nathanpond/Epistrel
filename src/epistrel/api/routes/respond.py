@@ -197,6 +197,12 @@ class DeferredCharacterBody(BaseModel):
     fixed: bool
 
 
+class ReconciliationCountBody(BaseModel):
+    """#210: how many effects the story's reconciliation status lists."""
+
+    count: int = Field(ge=0)
+
+
 class RespondResponse(MutationResponse):
     """One finished turn: the reply, the turn's beats for the resolved viewpoint, its position,
     the story's new revision, the model calls it made, where its time went, and the
@@ -267,6 +273,12 @@ class RespondResponse(MutationResponse):
     state_effects: list[StateEffectModel] = Field(default_factory=list, exclude_if=lambda e: not e)
     """The State changes the turn committed (#187, FR-RESP-7) with their old and new values, a
     ``hidden`` State's only when the request names ``omniscient``; absent when none."""
+    reconciliation: ReconciliationCountBody | None = Field(
+        default=None, exclude_if=lambda r: r is None
+    )
+    """#210 (FR-EXT-10): ``{count}``, how many effects the story's reconciliation status lists
+    (``GET /stories/{id}/reconciliation``); absent while the story has never dispatched an
+    effect to a write-capable provider."""
     clock: TurnClockBody | None = Field(default=None, exclude_if=lambda c: c is None)
     """The world clock before and after the turn (FR-CLOCK-13; #193): ``{before, after}``, each
     ``{offset, display}``; absent when the story runs the clock off."""
@@ -315,6 +327,9 @@ class RespondResponse(MutationResponse):
             reconcile=[ReconcileBody(**r) for r in result.reconcile],
             state_effects=[StateEffectModel(**e) for e in result.state_effects],
             clock=None if result.clock is None else TurnClockBody.of(result.clock),
+            reconciliation=None
+            if result.reconciliation is None
+            else ReconciliationCountBody(**result.reconciliation),
             budget=(
                 None
                 if result.budget is None

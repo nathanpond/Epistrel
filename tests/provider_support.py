@@ -369,6 +369,71 @@ async def external_facts(engine: AsyncEngine, story_id: str) -> list[Any]:
         return list(found)
 
 
+# -- the outbox (#210) --------------------------------------------------------------------------
+
+
+def write_capable_spec(
+    name: str, *, dedupes: bool = True, confirmation: str = "asynchronous", **fields: Any
+) -> dict[str, Any]:
+    """An ``in_process`` provider owning a writable ``gold``: write-capable, ``confirmation``
+    (``asynchronous`` by default: #210's path), deduplicating dispatch or not."""
+    return in_process_spec(
+        name,
+        writable=["gold"],
+        confirmation=confirmation,
+        dedupes_dispatch=dedupes,
+        **fields,
+    )
+
+
+async def outbox_rows(engine: AsyncEngine, story_id: str) -> list[Any]:
+    """The story's ``external_effect_outbox`` rows, oldest first."""
+    async with engine.connect() as conn:
+        found = await conn.execute(
+            text(
+                "SELECT *, membership::text AS member FROM external_effect_outbox "
+                "WHERE story_id = :s ORDER BY created_at, id"
+            ),
+            {"s": story_id},
+        )
+        return list(found)
+
+
+async def outbox_outcomes(engine: AsyncEngine, story_id: str) -> list[Any]:
+    """The story's ``outbox_outcomes`` rows, in the order they were received."""
+    async with engine.connect() as conn:
+        found = await conn.execute(
+            text("SELECT * FROM outbox_outcomes WHERE story_id = :s ORDER BY received_at, id"),
+            {"s": story_id},
+        )
+        return list(found)
+
+
+async def outbox_jobs(engine: AsyncEngine, story_id: str) -> list[Any]:
+    """The story's ``outbox_dispatch`` jobs."""
+    async with engine.connect() as conn:
+        found = await conn.execute(
+            text(
+                "SELECT id, status, payload, coalesce_key FROM jobs WHERE story_id = :s "
+                "AND kind = 'outbox_dispatch' ORDER BY created_at, id"
+            ),
+            {"s": story_id},
+        )
+        return list(found)
+
+
+async def drop_outbox_jobs(engine: AsyncEngine, story_id: str) -> None:
+    """Delete the story's outbox jobs and lease timers (the database is shared)."""
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("DELETE FROM jobs WHERE story_id = :s AND kind LIKE 'outbox_%'"), {"s": story_id}
+        )
+        await conn.execute(
+            text("DELETE FROM timers WHERE story_id = :s AND kind = 'outbox_lease'"),
+            {"s": story_id},
+        )
+
+
 # -- the loopback HTTP stub ---------------------------------------------------------------------
 
 
@@ -496,16 +561,21 @@ __all__ = [
     "Timeout",
     "allowed_hosts",
     "bind",
+    "drop_outbox_jobs",
     "external_facts",
     "external_gold",
     "external_reads",
     "external_value_rows",
     "http_spec",
     "in_process_spec",
+    "outbox_jobs",
+    "outbox_outcomes",
+    "outbox_rows",
     "read_template",
     "reconstruction",
     "register",
     "stub_server",
     "unique_name",
+    "write_capable_spec",
     "write_template",
 ]

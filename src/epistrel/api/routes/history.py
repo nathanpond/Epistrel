@@ -105,6 +105,14 @@ class StateEffectModel(BaseModel):
         description="#209: a requested change's stable id, which the consumer's outcome report "
         "names.",
     )
+    outbox_id: str | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="#210 (FR-EXT-10): set when Epistrel dispatches the change to a "
+        "write-capable provider through its outbox (the same id as `effect_id`, and the "
+        "provider idempotency key): the consumer does not apply it, and the reconciliation "
+        "status lists it until it is confirmed.",
+    )
     delta: Any = Field(
         default=None,
         exclude_if=lambda v: v is None,

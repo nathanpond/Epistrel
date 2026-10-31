@@ -50,6 +50,7 @@ from epistrel.core.tables.exposures import exposures
 from epistrel.core.tables.facts import facts
 from epistrel.core.tables.media import SubjectKind, media_upload_sessions
 from epistrel.core.tables.memories import memories
+from epistrel.core.tables.outbox import external_effect_outbox
 from epistrel.core.tables.propositions import (
     closed_sets,
     entities,
@@ -435,6 +436,23 @@ def scheduled_event_record(row: Any) -> Record:
         for index, o in enumerate(getattr(row, "shared_owners", None) or ())
     ]
     return Record(scheduled_events.name, str(row.id), _str(row.story_id), {}, tuple(declared))
+
+
+def outbox_record(row: Any) -> Record:
+    """An outbox row (#210): every text of its ``effect`` (the render's ``reason``, the State's
+    name), indexed positionally (ADR-154); a character-scoped value declares its character
+    (``scope_key``)."""
+    scope_key = _str(getattr(row, "scope_key", None))
+    declared: tuple[Declared, ...] = (
+        ((SubjectKind.CHARACTER, scope_key, "scope_key"),) if scope_key else ()
+    )
+    return Record(
+        external_effect_outbox.name,
+        str(row.id),
+        _str(row.story_id),
+        text_fields(row.effect, "effect"),
+        declared,
+    )
 
 
 def exposure_record(row: Any) -> Record:
@@ -915,6 +933,11 @@ async def read_scheduled_events(conn: AsyncConnection, story_id: str | None) -> 
     return await _story_rows(conn, scheduled_events, story_id, scheduled_event_record)
 
 
+async def read_outbox(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    """A story's outbox rows (#210), as ``outbox_record`` indexes them."""
+    return await _story_rows(conn, external_effect_outbox, story_id, outbox_record)
+
+
 async def read_thunks(conn: AsyncConnection, story_id: str | None) -> list[Record]:
     """A story's thunks, as ``thunk_record`` indexes them."""
     return await _story_rows(conn, thunks, story_id, thunk_record)
@@ -968,6 +991,7 @@ __all__ = [
     "media_record",
     "memory_record",
     "operation_record",
+    "outbox_record",
     "persona_record",
     "policy_record",
     "predicate_record",
@@ -979,6 +1003,7 @@ __all__ = [
     "read_beliefs",
     "read_divergences",
     "read_exposures",
+    "read_outbox",
     "read_scheduled_events",
     "read_state_changes",
     "read_state_definitions",

@@ -269,6 +269,13 @@ ORDER: dict[str, str] = {
         f"{_STORY_RANK}, {_STATE_RANK}, {_SCOPE_RANK} NULLS FIRST, t.position_turn, "
         "t.position_slot_k, t.position_beat, t.position_step, t.position_variant, t.version"
     ),
+    # The outbox (#210): rows by their declaring position, then provider, value and
+    # status; outcome records by when they were received.
+    "external_effect_outbox": (
+        f"{_STORY_RANK}, t.narrative_turn, t.slot_k, t.beat, t.step, t.turn_variant, "
+        "t.provider_name, t.value_name, t.status, t.created_at"
+    ),
+    "outbox_outcomes": f"{_STORY_RANK}, t.received_at, t.kind",
     # Engine-proposed States (#192): by name.
     "state_proposals": f"{_STORY_RANK}, t.name",
     # The read set's change index (#136): by revision, then valid window and change kind.

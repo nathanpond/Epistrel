@@ -10,7 +10,8 @@ recurring safety net), the embedding port's ``embed`` and ``reembed`` (#138) and
 ``consolidation`` (#143), and the hot set's ``hot_set_retirement`` and its daily
 ``hot_counts_reconcile`` (#147), and claim detection's post-commit ``extraction_shadow``
 (#148, ``orchestrator.verify.extraction``). M6 adds the on-demand State proposal analysis
-``state_proposal_analysis`` (#192). A kind
+``state_proposal_analysis`` (#192), and the outbox dispatcher's ``outbox_dispatch``,
+its ``outbox_lease`` timer kind and the ``outbox_recovery`` sweep every 60 s (#210). A kind
 no handler is registered for is refused at enqueue and ends ``failed`` if a worker claims one
 (a row a newer version wrote). Tests register their own handlers through ``register`` /
 ``unregister``.
@@ -33,6 +34,12 @@ from epistrel.orchestrator.jobs.handlers.media_sweep import (
     MEDIA_SWEEP_TASK_DEFINITION,
 )
 from epistrel.orchestrator.jobs.handlers.offboarding import OFFBOARDING_HANDLER
+from epistrel.orchestrator.jobs.handlers.outbox import (
+    OUTBOX_DISPATCH_HANDLER,
+    OUTBOX_LEASE_HANDLER,
+    OUTBOX_RECOVERY_HANDLER,
+    OUTBOX_RECOVERY_TASK,
+)
 from epistrel.orchestrator.jobs.handlers.rating_check import RATING_CHECK_HANDLER
 from epistrel.orchestrator.jobs.handlers.rebuild import REBUILD_HANDLER
 from epistrel.orchestrator.jobs.handlers.reembed import EMBED_HANDLER, REEMBED_HANDLER
@@ -92,6 +99,9 @@ for _handler in (
     RECONCILE_HANDLER,
     SHADOW_HANDLER,
     STATE_PROPOSAL_HANDLER,
+    OUTBOX_DISPATCH_HANDLER,
+    OUTBOX_LEASE_HANDLER,
+    OUTBOX_RECOVERY_HANDLER,
 ):
     register(_handler)
 for _task in (
@@ -103,6 +113,7 @@ for _task in (
     ERASURE_RECONCILE_TASK,
     IMPORTANCE_TASK,
     RECONCILE_TASK,
+    OUTBOX_RECOVERY_TASK,
 ):
     register_recurring(_task)
 

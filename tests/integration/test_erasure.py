@@ -22,16 +22,22 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel import Engine
 from epistrel.config import Settings
+from epistrel.core import outbox as core_outbox
 from epistrel.core.context import RequestContext
+from epistrel.core.enums import OperationKind, Provenance
 from epistrel.core.erasure import erase as erase_module
 from epistrel.core.erasure.erase import ErasureRequest
 from epistrel.core.erasure.index import rebuild_scope
 from epistrel.core.erasure.redact import Redactor
 from epistrel.core.erasure.verify import verify
+from epistrel.core.events.operation import Operation
+from epistrel.core.events.types import REQUESTED_EFFECT, RequestedEffect
 from epistrel.core.ids import new_ulid
 from epistrel.core.ports import Ports
+from epistrel.orchestrator.jobs.handlers import outbox as outbox_job
 from tests import erasure_support as e
 from tests import genesis_support as g
+from tests import provider_support as ps
 from tests.auth_support import auth_settings
 from tests.event_support import execute_in_tx, rows, scalar
 from tests.respond_support import body, new_story, played, respond, respond_client
@@ -561,6 +567,84 @@ async def test_a_multi_word_name_is_erased_by_its_words(
 
 
 MARISOL = ("Marisol Quenby", "Marisol", "Quenby")
+
+
+async def test_requested_and_outbox_effects_are_erased(
+    erasure_settings: Settings, engine: AsyncEngine
+) -> None:
+    """#209, #210: a ``requested_effect`` event's ``reason`` (an effect asked of the consumer)
+    and an outbox row's ``effect`` (one dispatched to a write-capable provider) are story text:
+    both are indexed, and an erasure of Marisol Quenby leaves no residue in ``events`` or
+    ``external_effect_outbox``. The ``intended`` row naming her is cancelled before the erasure
+    (never sent, FR-EXT-14); the claimed one keeps its status, redacted, and stays listed.
+    Complement: before the erasure the scan finds her in both tables."""
+    name = ps.unique_name("bank")
+    await ps.register(engine, ps.write_capable_spec(name))
+    async with respond_client(erasure_settings, engine) as (client, lib):
+        story, ids = await new_story(client, "Wren", "Marisol Quenby", "Ty")
+        lib.models.stub.script("generation", ["Marisol Quenby waves at Ty."])
+        await played(client, story, body(ids["Wren"], "Hi Marisol."))
+        await ps.bind(engine, story, name, {"player": "p-1"})
+        ps.ScriptedProvider(name).attach(lib)
+        rows = [new_ulid(), new_ulid()]
+        async with Operation(
+            engine, story_id=story, kind=OperationKind.TURN, principal="p-author"
+        ) as op:
+            op.append("player_input", {"text": "pay her"}, provenance=Provenance.PLAYER)
+            op.append(
+                REQUESTED_EFFECT,
+                RequestedEffect(
+                    effect_id=new_ulid(),
+                    kind="change",
+                    state="gold",
+                    scope_key=None,
+                    delta=-5,
+                    reason="paid Marisol Quenby for the map",
+                ),
+                provenance=Provenance.ENGINE,
+                beat=2,
+            )
+            op.append("message_rendered", {"text": "The coins change hands."})
+
+            async def write(conn: AsyncConnection) -> None:
+                await core_outbox.write_intended(
+                    conn,
+                    op,
+                    [
+                        core_outbox.Intended(
+                            id=row_id,
+                            provider_name=name,
+                            value_name="gold",
+                            scope_key=None,
+                            effect={
+                                "kind": "change",
+                                "state": "gold",
+                                "delta": -5,
+                                "reason": f"a gift for Marisol ({n})",
+                            },
+                            beat=2,
+                        )
+                        for n, row_id in enumerate(rows)
+                    ],
+                )
+
+            op.add_commit_step(write)
+            await op.commit()
+        claimed = await outbox_job.claim(engine, rows[1], registry=lib.in_process_providers)
+        assert isinstance(claimed, outbox_job.Claimed)
+        before = await e.residue(engine, story, MARISOL)
+        assert before["events"] > 0
+        assert before["external_effect_outbox"] == 2
+
+        await e.erase(client, "character", ids["Marisol Quenby"], story)
+    left = await e.residue(engine, story, MARISOL)
+    assert (left["events"], left["external_effect_outbox"]) == (0, 0)
+    found = {r.id: r for r in await ps.outbox_rows(engine, story)}
+    assert (found[rows[0]].status, found[rows[1]].status) == ("cancelled", "claimed")
+    assert "Marisol" not in found[rows[1]].effect["reason"]
+    listed = (await core_outbox.listings(engine, story)).listings
+    assert [entry.outbox_id for entry in listed] == [rows[1]]
+    await ps.drop_outbox_jobs(engine, story)
 
 
 async def test_the_residue_scan_reports_what_is_left(

@@ -413,6 +413,10 @@ class HttpManifestProvider:
             log.warning("provider write unanswered", extra={"provider": self.name})
             return WriteOutcome(status="unknown")
         digest = raw_hash(response.content)
+        if not response.is_success:
+            # #210 (FR-EXT-16): a non-2xx answer (a redirect included) decides nothing, whatever
+            # its body says: the effect may or may not have been applied.
+            return WriteOutcome(status="unknown", raw_hash=digest)
         try:
             document = json.loads(response.content)
             outcome = extract(document, parse_path(str(template["outcome_path"])))

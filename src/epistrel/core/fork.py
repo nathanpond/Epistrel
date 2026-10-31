@@ -754,6 +754,9 @@ OVERRIDES: dict[str, dict[str, str]] = {
             "WITH ORDINALITY AS s(id, n) ORDER BY s.n) AS char(26)[])"
         ),
     },
+    # The outbox (#210, FR-EXT-13): a fork never copies an executable effect; its copies
+    # are records only (#211 lists the ones pending at the fork point).
+    "external_effect_outbox": {"executable": "false"},
     # Speech acts (#150): the propositions an utterance asserts are the fork's copies.
     "utterances": {
         "proposition_ids": (
@@ -798,6 +801,11 @@ _OPERATION_IDS = f"(SELECT old_id FROM {_MAP} WHERE kind = 'operation')"  # noqa
 ROW_FILTERS: dict[str, str] = {
     events.name: f"t.id IN {_EVENT_IDS}",
     transcript_messages.name: f"t.message_id IN {_EVENT_IDS}",
+    # The outbox's outcome records (#210) follow the outbox rows the fork copies.
+    "outbox_outcomes": (
+        f"t.outbox_id::text IN (SELECT old_id FROM {_MAP} "  # noqa: S608
+        "WHERE kind = 'external_effect_outbox')"
+    ),
 }
 """Which source rows a table copies beyond ``story_id``: by default the rows of the copied
 operations when the table has an ``operation_id`` column, else every row of the story."""

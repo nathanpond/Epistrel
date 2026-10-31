@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from epistrel import Engine, ProfileOverridesPatch, RelationRequest
 from epistrel.config import Settings
 from epistrel.core import clock, turn_gate
+from epistrel.core import outbox as core_outbox
 from epistrel.core.commit import lifecycle
 from epistrel.core.commit.sketch import ThunkSketch
 from epistrel.core.context import RequestContext
@@ -33,9 +34,11 @@ from epistrel.core.verify import shadow
 from epistrel.core.world_clock import stops as scheduled
 from epistrel.orchestrator.jobs import queue as job_queue
 from epistrel.orchestrator.jobs import timers
+from epistrel.orchestrator.jobs.handlers import outbox as outbox_job
 from epistrel.orchestrator.jobs.handlers.rebuild import REBUILD_KIND
 from epistrel.orchestrator.policies.input_gate import EntryPoint, GateText
 from epistrel.orchestrator.policies.schemas import StoryPolicyItem
+from epistrel.orchestrator.providers.in_process import InProcessRegistry
 from tests import (
     canon_support,
     escalation_support,
@@ -436,6 +439,34 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
 
         event_op.add_commit_step(schedule)
         await event_op.commit()
+    # The outbox (#210): a turn's effect for a write-capable provider, dispatched and confirmed
+    # (its row and its outcome record; the outcome table is append-only outside a deletion).
+    bank = provider_support.unique_name("deleted")
+    await provider_support.register(engine, provider_support.write_capable_spec(bank))
+    await provider_support.bind(engine, story_id, bank, {"player": "p-1"})
+    outbox_id = new_ulid()
+
+    async def intend(conn: AsyncConnection, op: Operation) -> None:
+        await core_outbox.write_intended(
+            conn,
+            op,
+            [
+                core_outbox.Intended(
+                    id=outbox_id,
+                    provider_name=bank,
+                    value_name="gold",
+                    scope_key=None,
+                    effect={"kind": "change", "state": "gold", "delta": -5, "reason": "dues"},
+                    beat=2,
+                )
+            ],
+        )
+
+    await canon_support.run(engine, story_id, intend)
+    registry = InProcessRegistry()
+    fake = provider_support.ScriptedProvider(bank)
+    registry.register(bank, read=fake.read, write=fake.write)
+    assert await outbox_job.dispatch(engine, outbox_id, registry=registry) == "confirmed"
 
 
 def _due() -> datetime:

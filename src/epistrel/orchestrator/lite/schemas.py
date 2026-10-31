@@ -406,6 +406,9 @@ class RespondResult:
     """#177 (FR-MULTI-3): a structured turn's reconciled concurrent commitments, ``{proposition,
     winner_beat, loser_beat, rule}``; empty when nothing contradicted."""
     state_effects: list[dict[str, Any]] = field(default_factory=list)
+    reconciliation: dict[str, int] | None = None
+    """#210 (FR-EXT-10): ``{count}``, how many effects the story's reconciliation status lists
+    (``GET /stories/{id}/reconciliation``); ``None`` when the story has no outbox row."""
     """#187 (FR-RESP-7): the State changes a structured turn committed, ``{state, scope_key,
     old_value, new_value, reason, source, contingency, status}``, a ``hidden`` State's only for
     ``omniscient``; empty otherwise."""

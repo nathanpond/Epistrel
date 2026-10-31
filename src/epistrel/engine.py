@@ -51,6 +51,7 @@ from epistrel.core import (
     variants,
 )
 from epistrel.core import control as control_ops
+from epistrel.core import outbox as core_outbox
 from epistrel.core import providers as core_providers
 from epistrel.core import story_settings as settings_store
 from epistrel.core.canon.facts import Fact
@@ -170,6 +171,7 @@ from epistrel.orchestrator.jobs.handlers import importance as importance_job
 from epistrel.orchestrator.jobs.handlers import lite_summary as lite_summary_job
 from epistrel.orchestrator.jobs.handlers import media_sweep as media_sweep_job
 from epistrel.orchestrator.jobs.handlers import offboarding as offboarding_job
+from epistrel.orchestrator.jobs.handlers import outbox as outbox_job
 from epistrel.orchestrator.jobs.handlers import rating_check as rating_check_job
 from epistrel.orchestrator.jobs.handlers import reembed as reembed_job
 from epistrel.orchestrator.jobs.handlers import turn_queue as turn_queue_job
@@ -717,6 +719,8 @@ class Engine:
         rating_check_job.bind(self.models)
         media_sweep_job.bind(self.media)
         erasure_reconcile_job.bind(self._reconcile_run)
+        # #210: the outbox dispatcher sends through this Engine's in-process callables.
+        outbox_job.bind(self.in_process_providers)
         if mode == "api":
             self._recovery = asyncio.create_task(self._recover())
             return
@@ -764,6 +768,8 @@ class Engine:
             media_sweep_job.bind(None)
         if erasure_reconcile_job.bound() == self._reconcile_run:
             erasure_reconcile_job.bind(None)
+        if outbox_job.bound() is self.in_process_providers:
+            outbox_job.bind(None)
         reconcile, self._reconcile_task = self._reconcile_task, None
         if reconcile is not None and not reconcile.done():
             reconcile.cancel()
@@ -3212,6 +3218,18 @@ class Engine:
         (``proposed``, ``approved``, ``dismissed``) and the analysis that proposed it. 409
         ``module_off`` with ``states.level`` off; 404 for an unknown story."""
         return await state_proposals.list_proposals(self.db, story_id)
+
+    @refuses_nul()
+    async def reconciliation(
+        self, ctx: RequestContext, story_id: str
+    ) -> core_outbox.Reconciliation:
+        """The story's reconciliation status (FR-EXT-10,14,18; #210): every effect dispatched to
+        a write-capable provider that Epistrel cannot report as applied, oldest first, each with
+        its outbox id (the provider idempotency key), provider, value, status, ``reason``
+        (``unconfirmed``, ``failed``, ``unknown``, ...), since when, the effect and its latest
+        recorded outcome. A confirmed or cancelled effect is not listed. 404 for an unknown
+        story."""
+        return await core_outbox.listings(self.db, story_id)
 
     async def approve_state_proposal(
         self,

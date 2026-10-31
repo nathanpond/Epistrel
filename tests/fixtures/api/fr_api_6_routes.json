@@ -1313,6 +1313,11 @@
       "requirement": "FR-STATE-3"
     },
     {
+      "method": "GET",
+      "path": "/stories/{story_id}/reconciliation",
+      "requirement": "FR-EXT-10"
+    },
+    {
       "method": "POST",
       "path": "/stories/{story_id}/state-proposals/{proposal_id}/approve",
       "requirement": "FR-STATE-3"

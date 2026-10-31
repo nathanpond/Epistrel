@@ -14555,6 +14555,76 @@
         "title": "ListedMemory",
         "type": "object"
       },
+      "Listing": {
+        "additionalProperties": false,
+        "description": "One effect the consumer must reconcile: the outbox row (its id is the provider\nidempotency key), the provider and value, its status, why it is listed, since when, the\neffect, and the latest outcome recorded for it, if any.",
+        "properties": {
+          "effect": {
+            "additionalProperties": true,
+            "title": "Effect",
+            "type": "object"
+          },
+          "outbox_id": {
+            "title": "Outbox Id",
+            "type": "string"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OutcomeView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "reason": {
+            "enum": [
+              "unconfirmed",
+              "failed",
+              "unknown",
+              "reconciliation_required",
+              "cancelled_on_reactivation",
+              "confirmed_unsettled",
+              "confirmed_discarded_origin",
+              "settlement_conflict",
+              "late_success_after_expiry",
+              "outcome_conflict",
+              "reservation_expired"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "since": {
+            "format": "date-time",
+            "title": "Since",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "outbox_id",
+          "provider",
+          "value",
+          "status",
+          "reason",
+          "since",
+          "effect"
+        ],
+        "title": "Listing",
+        "type": "object"
+      },
       "ListingStatusBody": {
         "description": "A catalog entry's listing status after a ``PUT …/listing-status`` (FR-CAT-11): one of\nthe deployment's ``listing_status_values``, never interpreted by Epistrel.\n``config_revision`` is the deployment's, unchanged.",
         "properties": {
@@ -17413,6 +17483,32 @@
           }
         },
         "title": "OutcomeCounts",
+        "type": "object"
+      },
+      "OutcomeView": {
+        "additionalProperties": false,
+        "description": "The latest answer recorded for a listed row.",
+        "properties": {
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "received_at": {
+            "format": "date-time",
+            "title": "Received At",
+            "type": "string"
+          },
+          "received_via": {
+            "title": "Received Via",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "received_via",
+          "received_at"
+        ],
+        "title": "OutcomeView",
         "type": "object"
       },
       "OverridesRef": {
@@ -26865,6 +26961,39 @@
         "title": "ReconcileRunBody",
         "type": "object"
       },
+      "Reconciliation": {
+        "additionalProperties": false,
+        "description": "``GET /stories/{id}/reconciliation``: every listed effect, oldest first.",
+        "properties": {
+          "listings": {
+            "items": {
+              "$ref": "#/components/schemas/Listing"
+            },
+            "title": "Listings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "listings"
+        ],
+        "title": "Reconciliation",
+        "type": "object"
+      },
+      "ReconciliationCountBody": {
+        "description": "#210: how many effects the story's reconciliation status lists.",
+        "properties": {
+          "count": {
+            "minimum": 0.0,
+            "title": "Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "count"
+        ],
+        "title": "ReconciliationCountBody",
+        "type": "object"
+      },
       "RecordProvenance": {
         "description": "Where a structured record came from (#133; shared by ``facts`` and #135's memories):\nthe author or the scenario's seed, the engine's consolidation, an in-world source, a\nrender, the director or the player, an external authority (with its timestamp in the\nrecord's reference), a resolution, or a backfill. Postgres enum ``record_provenance``.",
         "enum": [
@@ -27452,6 +27581,16 @@
             },
             "title": "Reconcile",
             "type": "array"
+          },
+          "reconciliation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReconciliationCountBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "reduced_characters": {
             "items": {
@@ -28502,6 +28641,16 @@
             },
             "title": "Reconcile",
             "type": "array"
+          },
+          "reconciliation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReconciliationCountBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "reduced_characters": {
             "items": {
@@ -35439,6 +35588,18 @@
           },
           "old_value": {
             "title": "Old Value"
+          },
+          "outbox_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#210 (FR-EXT-10): set when Epistrel dispatches the change to a write-capable provider through its outbox (the same id as `effect_id`, and the provider idempotency key): the consumer does not apply it, and the reconciliation status lists it until it is confirmed.",
+            "title": "Outbox Id"
           },
           "owner": {
             "anyOf": [
@@ -68047,6 +68208,106 @@
         "summary": "Bind the story to a provider",
         "tags": [
           "settings"
+        ]
+      }
+    },
+    "/stories/{story_id}/reconciliation": {
+      "get": {
+        "description": "The effects dispatched to write-capable providers that are not confirmed, oldest first:\neach one's outbox id (the provider idempotency key), provider and value, status, why it is\nlisted (`reason`: `unconfirmed`, `failed`, `unknown`, `reconciliation_required`,\n`cancelled_on_reactivation`, `confirmed_unsettled`, `confirmed_discarded_origin`,\n`settlement_conflict`, `late_success_after_expiry`, `outcome_conflict` or\n`reservation_expired`), since when, the effect, and the latest outcome recorded for it. A\nconfirmed or cancelled effect is not listed. 404 for an unknown story.",
+        "operationId": "reconciliation",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Reconciliation"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read the story's reconciliation status",
+        "tags": [
+          "stories"
         ]
       }
     },

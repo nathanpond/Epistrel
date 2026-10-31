@@ -45,6 +45,7 @@ from epistrel.core.tables.memories import memories
 from epistrel.core.tables.model_config import model_config
 from epistrel.core.tables.offboarding import offboarding_jobs
 from epistrel.core.tables.operations import operations
+from epistrel.core.tables.outbox import external_effect_outbox, outbox_outcomes
 from epistrel.core.tables.ownership import entity_relations, ownership_events
 from epistrel.core.tables.personas import personas
 from epistrel.core.tables.policies import policies
@@ -113,6 +114,7 @@ __all__ = [
     "escalations",
     "events",
     "exposures",
+    "external_effect_outbox",
     "external_providers",
     "external_values",
     "extraction_shadow",
@@ -131,6 +133,7 @@ __all__ = [
     "nested_belief_state",
     "offboarding_jobs",
     "operations",
+    "outbox_outcomes",
     "overflow_episodes",
     "ownership_events",
     "personas",

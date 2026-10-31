@@ -57,7 +57,7 @@ with (``core.erasure.records``). ``tests/integration/test_subject_index.py`` che
 ``information_schema``: a new story-content table without a registration (or a registered
 writer that never calls the indexer) fails it. Tables M4+ adds register here when they land
 (#131's predicate registry, propositions and entities did, #133's facts and #135's memories,
-#143's reflections among them, #146's thunks, beliefs and #185's States; the outbox will).
+#143's reflections among them, #146's thunks, beliefs, #185's States and #210's outbox).
 ``EXEMPT_TABLES`` names the story and catalog tables that are not indexed, and why.
 
 ``drop_references``/``drop_many`` remove a record's rows; every delete path of an indexed record
@@ -804,6 +804,10 @@ SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
         ("epistrel.core.world_clock.stops",),
         f"{_RECORDS}:read_scheduled_events",
     ),
+    # The outbox (#210): an effect's texts (the render's reason, positional); a character-scoped
+    # value declares its character. Its writer is the outbox module (intent, dispatcher and
+    # intake writes alike).
+    SubjectWriter("external_effect_outbox", ("epistrel.core.outbox",), f"{_RECORDS}:read_outbox"),
 )
 """Every indexed table (see the module docstring); the coverage test's source of truth."""
 
@@ -850,6 +854,8 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "values and positions, refolded by erasure's rebuilt stage (#185)",
     "external_values": "a projection of external_read events, which are indexed: ids, a "
     "provider's typed value and positions, refolded by erasure's rebuilt stage (#205)",
+    "outbox_outcomes": "a provider's answers for outbox rows (#210): kinds, the typed resulting "
+    "values or why an answer is unknown, hashes and times; never the raw body or story prose",
     # Deployment tables (#334: the coverage test enumerates every table with text or JSON).
     "alembic_version": "the schema migration's revision id",
     "schema_meta": "schema bookkeeping keys and values",

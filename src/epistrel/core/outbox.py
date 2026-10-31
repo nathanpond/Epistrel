@@ -1,0 +1,511 @@
+"""The transactional outbox's rows and the reconciliation status (FR-EXT-10,12,14,16..18;
+docs/02 §4.8; #210). The dispatcher that drives them is the Orchestrator's
+(``orchestrator.jobs.handlers.outbox``); every write to the two tables goes through here.
+
+**Intent** (``write_intended``). A turn's effect on a value a write-capable provider owns is
+never applied by Epistrel: it is written as an ``external_effect_outbox`` row, ``intended``, in
+the turn's own commit transaction (its id the effect's, which is also the provider idempotency
+key), at the declaring beat's position, so the turn and the row commit together or not at all
+(FR-EXT-10). The row's ``effect`` (``{kind, state, delta|value, reason}``) passes the
+resurrection guard first (``core.erasure.guard.check_content``) and is indexed for erasure
+(``index_records``: its text leaves by position, a character scope as a declared subject).
+
+**Claim** (``claim_row``, ``claimable``). The dispatcher locks a row ``FOR UPDATE SKIP LOCKED``
+and, in the same transaction, re-reads its operation's ``membership`` (FR-EXT-12): anything but
+``active`` (``discarded`` by a truncation, ``dormant`` after a regeneration or a swap away,
+``superseded``) cancels it (``cancel``), never sent. Otherwise ``mark_claimed`` sets
+``claimed``, ``claimed_at`` and the lease; the commit of that transaction is the in-flight
+point. A row of a story ``blocked_by_erasure`` is not claimed (it stays ``intended``).
+
+**Outcome** (``record_outcome``), in its own transaction: an ``outbox_outcomes`` row and the
+row's status. From ``claimed`` or ``unknown`` the answer becomes the status (``unknown →
+confirmed | failed`` included); a later answer to a settled row is recorded as ``duplicate``
+(the same, or ``unknown``) or ``conflict`` (another terminal answer) and changes nothing (the
+first terminal outcome wins, FR-EXT-22). ``release`` puts a claimed row back to ``intended``
+when the adapter proved nothing was sent (``ProviderUnavailable`` before the request).
+
+**Reconciliation** (``listings``, ``count``): what the consumer must look at, one listing per
+row: ``unconfirmed`` (``intended`` with its operation active, or ``claimed``), ``failed`` and
+``unknown`` here; the other ``REASONS`` are listed by later stories (#211, #216, #217, #218).
+A row that is ``confirmed`` or ``cancelled`` is not listed. Nothing here bumps a revision.
+
+Log lines carry ids and counts only (invariant 3).
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import Row, and_, exists, func, insert, or_, select, update
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
+
+from epistrel.core.enums import Membership, StoryStatus
+from epistrel.core.erasure import guard
+from epistrel.core.erasure.index import index_records
+from epistrel.core.erasure.records import outbox_record
+from epistrel.core.errors import StoryNotFound
+from epistrel.core.ids import new_ulid
+from epistrel.core.membership import insert_derived
+from epistrel.core.tables import operations, stories
+from epistrel.core.tables.outbox import (
+    CANCELLED,
+    CLAIMED,
+    CONFIRMED,
+    CONFLICT,
+    DUPLICATE,
+    FAILED,
+    INTENDED,
+    UNKNOWN,
+    VIA_DISPATCHER,
+    external_effect_outbox,
+    outbox_outcomes,
+)
+from epistrel.observability.logging import get_logger
+
+if TYPE_CHECKING:
+    from epistrel.core.events.operation import Operation
+
+log = get_logger(__name__)
+
+TERMINAL = frozenset({CONFIRMED, FAILED})
+"""A settled row's statuses: a later answer never changes them."""
+
+REASONS: tuple[str, ...] = (
+    "unconfirmed",
+    "failed",
+    "unknown",
+    "reconciliation_required",
+    "cancelled_on_reactivation",
+    "confirmed_unsettled",
+    "confirmed_discarded_origin",
+    "settlement_conflict",
+    "late_success_after_expiry",
+    "outcome_conflict",
+    "reservation_expired",
+)
+"""Every reconciliation reason (the full enum; #210 lists the first three)."""
+
+Reason = Literal[
+    "unconfirmed",
+    "failed",
+    "unknown",
+    "reconciliation_required",
+    "cancelled_on_reactivation",
+    "confirmed_unsettled",
+    "confirmed_discarded_origin",
+    "settlement_conflict",
+    "late_success_after_expiry",
+    "outcome_conflict",
+    "reservation_expired",
+]
+
+
+# -- intent --------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Intended:
+    """One effect for the outbox: its id (the idempotency key), the provider and its value, the
+    scope key, the ``effect`` document and the declaring beat and step."""
+
+    id: str
+    provider_name: str
+    value_name: str
+    scope_key: str | None
+    effect: Mapping[str, Any]
+    beat: int
+    step: int = 0
+
+
+async def write_intended(conn: AsyncConnection, op: Operation, rows: Sequence[Intended]) -> int:
+    """Write ``rows`` ``intended`` in ``op``'s commit transaction (see the module docstring)."""
+    story_id = op.story_id
+    if story_id is None or not rows:
+        return 0
+    await guard.check_content(
+        conn,
+        story_id,
+        [
+            guard.Content(
+                tuple(str(r.effect.get("reason") or "") for r in rows if r.effect.get("reason")),
+                frozenset(r.scope_key for r in rows if r.scope_key),
+                op.provenance in guard.CONSUMER_PROVENANCE,
+            )
+        ],
+        base_revision=op.base_revision,
+        path=__name__,
+    )
+    written = [
+        {
+            "id": r.id,
+            "story_id": story_id,
+            "provider_name": r.provider_name,
+            "value_name": r.value_name,
+            "scope_key": r.scope_key,
+            "effect": dict(r.effect),
+            "status": INTENDED,
+            "operation_id": op.operation_id,
+            "narrative_turn": op.narrative_turn,
+            "turn_variant": op.turn_variant,
+            "slot_k": 0,
+            "beat": r.beat,
+            "step": r.step,
+        }
+        for r in rows
+    ]
+    await insert_derived(conn, external_effect_outbox, written)
+    await index_records(conn, [outbox_record(SimpleNamespace(**row)) for row in written])
+    log.debug("outbox: %d intended", len(written))
+    return len(written)
+
+
+# -- claim ---------------------------------------------------------------------------------------
+
+
+async def claimable(conn: AsyncConnection, outbox_id: str) -> Row[Any] | None:
+    """Lock outbox row ``outbox_id`` when it is ``intended`` and executable (``SKIP LOCKED``:
+    ``None`` while another transaction holds it, or when it is not claimable)."""
+    o = external_effect_outbox.c
+    return (
+        await conn.execute(
+            select(external_effect_outbox)
+            .where(o.id == outbox_id, o.status == INTENDED, o.executable.is_(True))
+            .with_for_update(skip_locked=True)
+        )
+    ).one_or_none()
+
+
+async def locked(conn: AsyncConnection, outbox_id: str) -> Row[Any] | None:
+    """Lock outbox row ``outbox_id`` whatever its status (waits for another holder)."""
+    return (
+        await conn.execute(
+            select(external_effect_outbox)
+            .where(external_effect_outbox.c.id == outbox_id)
+            .with_for_update()
+        )
+    ).one_or_none()
+
+
+async def origin_membership(conn: AsyncConnection, operation_id: str) -> str | None:
+    """The membership of the operation that wrote a row, read now (FR-EXT-12)."""
+    found = await conn.scalar(
+        select(operations.c.membership).where(operations.c.operation_id == operation_id)
+    )
+    return None if found is None else str(getattr(found, "value", found))
+
+
+async def story_blocked(conn: AsyncConnection, story_id: str) -> bool:
+    """Whether the erasure reconciler holds the story (#125): its rows are not claimed."""
+    status = await conn.scalar(select(stories.c.status).where(stories.c.id == story_id))
+    return str(getattr(status, "value", status)) == StoryStatus.BLOCKED_BY_ERASURE.value
+
+
+async def cancel(conn: AsyncConnection, outbox_id: str) -> None:
+    """``intended → cancelled``: the origin is no longer active; never sent."""
+    await conn.execute(
+        update(external_effect_outbox)
+        .where(external_effect_outbox.c.id == outbox_id)
+        .values(status=CANCELLED, claim_lease_until=None)
+    )
+
+
+async def mark_claimed(
+    conn: AsyncConnection, outbox_id: str, now: datetime, lease: timedelta
+) -> int:
+    """``→ claimed`` with a fresh lease, one more attempt; answers the attempt (the claim's
+    token)."""
+    attempts = await conn.scalar(
+        update(external_effect_outbox)
+        .where(external_effect_outbox.c.id == outbox_id)
+        .values(
+            status=CLAIMED,
+            claimed_at=now,
+            claim_lease_until=now + lease,
+            attempts=external_effect_outbox.c.attempts + 1,
+        )
+        .returning(external_effect_outbox.c.attempts)
+    )
+    return int(attempts or 0)
+
+
+async def release(conn: AsyncConnection, outbox_id: str, attempts: int) -> bool:
+    """``claimed → intended`` for the claim ``attempts`` when nothing was sent (the adapter
+    refused before any request); ``False`` when the row moved on meanwhile."""
+    o = external_effect_outbox.c
+    gone = await conn.scalar(
+        update(external_effect_outbox)
+        .where(o.id == outbox_id, o.status == CLAIMED, o.attempts == attempts)
+        .values(status=INTENDED, claimed_at=None, claim_lease_until=None)
+        .returning(o.id)
+    )
+    return gone is not None
+
+
+async def mark_unknown(conn: AsyncConnection, outbox_id: str, now: datetime, why: str) -> None:
+    """A claimed row with no outcome whose lease lapsed, for a provider that does not
+    deduplicate: ``unknown``, listed, never re-sent (FR-EXT-18)."""
+    await _insert_outcome(conn, outbox_id, UNKNOWN, {"reason": why}, "", VIA_DISPATCHER, now)
+    await conn.execute(
+        update(external_effect_outbox)
+        .where(external_effect_outbox.c.id == outbox_id)
+        .values(status=UNKNOWN, claim_lease_until=None)
+    )
+
+
+# -- outcomes ------------------------------------------------------------------------------------
+
+
+async def _insert_outcome(
+    conn: AsyncConnection,
+    outbox_id: str,
+    kind: str,
+    payload: Mapping[str, Any],
+    raw_hash: str,
+    via: str,
+    now: datetime,
+) -> str:
+    story_id = await conn.scalar(
+        select(external_effect_outbox.c.story_id).where(external_effect_outbox.c.id == outbox_id)
+    )
+    outcome_id = new_ulid()
+    await conn.execute(
+        insert(outbox_outcomes).values(
+            id=outcome_id,
+            story_id=story_id,
+            outbox_id=outbox_id,
+            kind=kind,
+            payload=dict(payload),
+            raw_hash=raw_hash,
+            received_via=via,
+            received_at=now,
+        )
+    )
+    return outcome_id
+
+
+@dataclass(frozen=True, slots=True)
+class Recorded:
+    """What ``record_outcome`` did: the outcome record's kind and the row's status after it."""
+
+    kind: str
+    status: str
+
+
+async def record_outcome(
+    conn: AsyncConnection,
+    outbox_id: str,
+    status: str,
+    *,
+    payload: Mapping[str, Any] | None = None,
+    raw_hash: str = "",
+    via: str = VIA_DISPATCHER,
+    now: datetime,
+) -> Recorded:
+    """Record answer ``status`` (``confirmed``, ``failed`` or ``unknown``) for the row, which
+    the caller has locked (see the module docstring)."""
+    row = await locked(conn, outbox_id)
+    if row is None:
+        raise LookupError(f"outbox row {outbox_id} does not exist")
+    current = str(row.status)
+    kind = status
+    after = current
+    if current in TERMINAL:
+        kind = DUPLICATE if status in (current, UNKNOWN) else CONFLICT
+    elif current in (CLAIMED, UNKNOWN):
+        after = status
+    await _insert_outcome(conn, outbox_id, kind, payload or {}, raw_hash, via, now)
+    if after != current or after in TERMINAL:
+        values: dict[str, Any] = {"status": after}
+        if after in TERMINAL:
+            values["claim_lease_until"] = None
+        await conn.execute(
+            update(external_effect_outbox)
+            .where(external_effect_outbox.c.id == outbox_id)
+            .values(**values)
+        )
+    return Recorded(kind, after)
+
+
+async def mark_sent(conn: AsyncConnection, outbox_id: str, at: datetime) -> None:
+    """When the latest send started."""
+    await conn.execute(
+        update(external_effect_outbox)
+        .where(external_effect_outbox.c.id == outbox_id)
+        .values(sent_at=at)
+    )
+
+
+# -- reconciliation ------------------------------------------------------------------------------
+
+
+class OutcomeView(BaseModel):
+    """The latest answer recorded for a listed row."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str
+    received_via: str
+    received_at: datetime
+
+
+class Listing(BaseModel):
+    """One effect the consumer must reconcile: the outbox row (its id is the provider
+    idempotency key), the provider and value, its status, why it is listed, since when, the
+    effect, and the latest outcome recorded for it, if any."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    outbox_id: str
+    provider: str
+    value: str
+    status: str
+    reason: Reason
+    since: datetime
+    effect: dict[str, Any]
+    outcome: OutcomeView | None = Field(default=None, exclude_if=lambda v: v is None)
+
+
+class Reconciliation(BaseModel):
+    """``GET /stories/{id}/reconciliation``: every listed effect, oldest first."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    listings: list[Listing]
+
+
+def _listed() -> Any:
+    """The rows the status lists: unconfirmed (``intended`` with an active origin, or
+    ``claimed``), ``failed`` and ``unknown``; executable rows only."""
+    o = external_effect_outbox.c
+    active = exists().where(
+        operations.c.operation_id == o.operation_id,
+        operations.c.membership == Membership.ACTIVE.value,
+    )
+    return and_(
+        o.executable.is_(True),
+        or_(
+            and_(o.status == INTENDED, active),
+            o.status.in_((CLAIMED, FAILED, UNKNOWN)),
+        ),
+    )
+
+
+async def _require_story(conn: AsyncConnection, story_id: str) -> None:
+    if await conn.scalar(select(stories.c.id).where(stories.c.id == story_id)) is None:
+        raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
+
+
+async def listings_in(conn: AsyncConnection, story_id: str) -> Reconciliation:
+    """The story's reconciliation status, read in ``conn`` (404 for an unknown story)."""
+    await _require_story(conn, story_id)
+    o = external_effect_outbox.c
+    rows = list(
+        await conn.execute(
+            select(external_effect_outbox)
+            .where(o.story_id == story_id, _listed())
+            .order_by(o.created_at, o.id)
+        )
+    )
+    latest: dict[str, Any] = {}
+    if rows:
+        c = outbox_outcomes.c
+        found = await conn.execute(
+            select(c.outbox_id, c.kind, c.received_via, c.received_at)
+            .where(c.story_id == story_id, c.outbox_id.in_([r.id for r in rows]))
+            .order_by(c.received_at, c.id)
+        )
+        for answer in found:
+            latest[str(answer.outbox_id)] = answer
+    listed: list[Listing] = []
+    for row in rows:
+        status = str(row.status)
+        outcome = latest.get(str(row.id))
+        reason: Reason = "unconfirmed" if status in (INTENDED, CLAIMED) else status  # type: ignore[assignment]
+        if outcome is not None and status in (FAILED, UNKNOWN):
+            since = outcome.received_at
+        else:
+            since = row.claimed_at if status == CLAIMED and row.claimed_at else row.created_at
+        listed.append(
+            Listing(
+                outbox_id=str(row.id),
+                provider=str(row.provider_name),
+                value=str(row.value_name),
+                status=status,
+                reason=reason,
+                since=since,
+                effect=dict(row.effect or {}),
+                outcome=None
+                if outcome is None
+                else OutcomeView(
+                    kind=str(outcome.kind),
+                    received_via=str(outcome.received_via),
+                    received_at=outcome.received_at,
+                ),
+            )
+        )
+    return Reconciliation(listings=listed)
+
+
+async def listings(db: AsyncEngine | AsyncConnection, story_id: str) -> Reconciliation:
+    """The story's reconciliation status (see the module docstring)."""
+    if isinstance(db, AsyncConnection):
+        return await listings_in(db, story_id)
+    async with db.connect() as conn:
+        return await listings_in(conn, story_id)
+
+
+async def count(conn: AsyncConnection, story_id: str) -> int | None:
+    """How many effects the story's reconciliation status lists; ``None`` when the story has
+    never written an outbox row (the respond response then carries no ``reconciliation``)."""
+    o = external_effect_outbox.c
+    if await conn.scalar(select(o.id).where(o.story_id == story_id).limit(1)) is None:
+        return None
+    found = await conn.scalar(
+        select(func.count())
+        .select_from(external_effect_outbox)
+        .where(o.story_id == story_id, _listed())
+    )
+    return int(found or 0)
+
+
+async def summary(db: AsyncEngine | AsyncConnection, story_id: str) -> dict[str, int] | None:
+    """The respond response's ``reconciliation``: ``{count}`` (``count``), ``None`` when the
+    story has never written an outbox row."""
+    if isinstance(db, AsyncConnection):
+        found = await count(db, story_id)
+    else:
+        async with db.connect() as conn:
+            found = await count(conn, story_id)
+    return None if found is None else {"count": found}
+
+
+__all__ = [
+    "REASONS",
+    "TERMINAL",
+    "Intended",
+    "Listing",
+    "OutcomeView",
+    "Reason",
+    "Reconciliation",
+    "Recorded",
+    "cancel",
+    "claimable",
+    "count",
+    "listings",
+    "listings_in",
+    "locked",
+    "mark_claimed",
+    "mark_sent",
+    "mark_unknown",
+    "origin_membership",
+    "record_outcome",
+    "release",
+    "story_blocked",
+    "summary",
+    "write_intended",
+]

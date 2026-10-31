@@ -77,6 +77,16 @@ with no recorded outcome (``pending_outcomes``); no character's context does (FR
 An external world clock's pacing and skips are requested the same way (``kind:
 time_advance``, ``time_requests``).
 
+**Write-capable external values** (#210, FR-EXT-10,15): an effect on a State whose provider
+is ``write_capable`` (``Book.outbox``) is requested the same way, but Epistrel dispatches it:
+instead of a ``requested_effect`` event, the commit writes an ``external_effect_outbox`` row
+(``intended``, its id the ``effect_id``, at the declaring beat) and enqueues its dispatch job
+in the turn's own transaction (``write_outbox``; ``core.outbox``,
+``orchestrator.jobs.handlers.outbox``). The response lists it ``pending`` with its
+``outbox_id`` (the consumer does not apply it), and its outcome prose is held back like a
+read-only one's until a confirmation is recorded. Until #212's staged turns, a
+``synchronous`` provider's effects take this asynchronous path too.
+
 Log lines carry counts only (invariant 3).
 """
 
@@ -93,6 +103,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from epistrel.core import outbox as core_outbox
 from epistrel.core import providers as core_providers
 from epistrel.core import states
 from epistrel.core.concurrency import RebaseCheckFailed
@@ -174,6 +185,14 @@ class Book:
     read_only: frozenset[str] = frozenset()
     """#209: the externally owned States whose provider is not ``write_capable``: an effect on
     one is requested of the consumer, never applied (``requested_of``)."""
+    outbox: frozenset[str] = frozenset()
+    """#210: the externally owned States whose provider is ``write_capable``: an effect on one
+    is dispatched through the outbox, never applied by Epistrel (``write_outbox``)."""
+
+    @property
+    def requested(self) -> frozenset[str]:
+        """Every externally owned State an effect is requested of rather than applied to."""
+        return self.read_only | self.outbox
 
     def pin(self, external: Mapping[tuple[str, str | None], Value | None]) -> None:
         """#205, #209: the turn's pinned external values (``PinnedReads.by_name``), which the
@@ -269,12 +288,17 @@ async def load(conn: AsyncConnection, story_id: str, settings: ProfileSettings) 
     )
     book.names = {str(r.id): str(r.name) for r in rows}
     read_only: set[str] = set()
+    outbox: set[str] = set()
     for d in found:
         if d.owner is StateOwner.EXTERNAL and d.provider_id is not None:
             provider = await core_providers.find_provider(conn, d.provider_id)
             if provider is None or not provider.write_capable:
                 read_only.add(d.name)
+            else:
+                # #210: a write-capable provider's value goes through the outbox.
+                outbox.add(d.name)
     book.read_only = frozenset(read_only)
+    book.outbox = frozenset(outbox)
     tracked = [d.entity_id for d in found if d.entity_id is not None]
     if tracked:
         named = await conn.execute(
@@ -602,6 +626,9 @@ class Requested:
     step: int = 0
     current: Any = None
     hidden: bool = False
+    dispatch: bool = False
+    """#210: dispatched through the outbox (a write-capable provider's value), not applied by
+    the consumer."""
 
     def payload(self) -> RequestedEffect:
         """The ``requested_effect`` event's payload."""
@@ -630,6 +657,8 @@ class Requested:
             "owner": StateOwner.EXTERNAL.value,
             "effect_id": self.effect_id,
         }
+        if self.dispatch:
+            row["outbox_id"] = self.effect_id
         if self.kind == TIME_ADVANCE:
             row["kind"] = TIME_ADVANCE
             row["minutes"] = self.minutes
@@ -662,6 +691,7 @@ def _requested(
         value=value,
         current=None if isinstance(current, UndefinedType) else to_json(current),
         hidden=definition.visibility is not StateVisibility.PLAYER_VISIBLE,
+        dispatch=definition.name in book.outbox,
     )
 
 
@@ -669,7 +699,7 @@ def requested_of(book: Book, beats: Sequence[TurnBeat]) -> list[Requested]:
     """The changes ``beats``' surviving effects ask the consumer to apply: each effect on a
     read-only external State, and a transfer's other side when that is one (see the module
     docstring), in beat order."""
-    if not book.on or not book.read_only:
+    if not book.on or not book.requested:
         return []
     found: list[Requested] = []
     for p in planned(beats):
@@ -678,7 +708,7 @@ def requested_of(book: Book, beats: Sequence[TurnBeat]) -> list[Requested]:
             continue
         own_scope = rules.scope_of(p.effect, definition, p.actor)
         transfer = p.effect.kind == permission.TRANSFER
-        if definition.name in book.read_only:
+        if definition.name in book.requested:
             found.append(
                 _requested(
                     book,
@@ -695,7 +725,7 @@ def requested_of(book: Book, beats: Sequence[TurnBeat]) -> list[Requested]:
             continue
         name, scope_key, declared = other
         other_definition = book.definitions.get(name)
-        if other_definition is None or name not in book.read_only:
+        if other_definition is None or name not in book.requested:
             continue
         moved = declared if declared is not None else to_json(-Decimal(str(p.effect.delta)))
         found.append(
@@ -738,6 +768,10 @@ def stage_requested(op: Operation, requested: Sequence[Requested]) -> list[Reque
     for r in requested:
         step = r.step if r.kind == TIME_ADVANCE else step_of(r.beat, op.operation_id)
         found = replace(r, step=step)
+        if found.dispatch:
+            # #210: an outbox row, written by the commit (``write_outbox``), not an event.
+            staged.append(found)
+            continue
         op.append(
             REQUESTED_EFFECT,
             found.payload(),
@@ -751,20 +785,21 @@ def stage_requested(op: Operation, requested: Sequence[Requested]) -> list[Reque
 
 
 def is_requested(book: Book, p: Planned) -> bool:
-    """Whether ``p``'s own side is requested of the consumer, never applied."""
-    return p.effect.state in book.read_only
+    """Whether ``p``'s own side is requested (of the consumer, or through the outbox),
+    never applied."""
+    return p.effect.state in book.requested
 
 
 def pending_of(
     book: Book, beats: Sequence[TurnBeat], stage: TurnStage | None
 ) -> list[rules.Pending]:
     """The turn's requested changes as ``core.states.effects`` reads their outcome in prose."""
-    if not book.on or not book.read_only:
+    if not book.on or not book.requested:
         return []
     found: list[rules.Pending] = []
     for p in planned(beats, stage):
         definition = book.definitions.get(p.effect.state)
-        if definition is None or definition.name not in book.read_only:
+        if definition is None or definition.name not in book.requested:
             continue
         key = (definition.name, rules.scope_of(p.effect, definition, p.actor))
         current = book.values.get(key, Undefined)
@@ -845,6 +880,49 @@ async def pending_outcomes(
         holder = names.get(str(scope_key)) if scope_key else None
         lines.append(rules.pending_line(payload, holder))
     return tuple(lines)
+
+
+def outbox_rows(book: Book, requested: Sequence[Requested]) -> list[core_outbox.Intended]:
+    """#210: the outbox rows of ``requested``'s dispatched effects (``stage_requested`` gave
+    them their steps): the provider and its value from the State's declaration."""
+    found: list[core_outbox.Intended] = []
+    for r in requested:
+        definition = book.definitions.get(r.state)
+        if not r.dispatch or definition is None or definition.provider_id is None:
+            continue
+        effect: dict[str, Any] = {"kind": r.kind, "state": r.state, "reason": r.reason}
+        if r.delta is not None:
+            effect["delta"] = r.delta
+        else:
+            effect["value"] = r.value
+        found.append(
+            core_outbox.Intended(
+                id=r.effect_id,
+                provider_name=definition.provider_id,
+                value_name=definition.external_value_name or definition.name,
+                scope_key=r.scope_key,
+                effect=effect,
+                beat=r.beat,
+                step=r.step,
+            )
+        )
+    return found
+
+
+async def write_outbox(
+    conn: AsyncConnection, op: Operation, book: Book, requested: Sequence[Requested]
+) -> int:
+    """#210 (FR-EXT-10): in the turn's commit transaction, write each dispatched effect's
+    ``intended`` outbox row and enqueue its dispatch job (the enqueue's NOTIFY wakes a worker
+    when the turn commits); a failure anywhere leaves neither the turn nor the rows."""
+    from epistrel.orchestrator.jobs.handlers import outbox as dispatcher
+
+    rows = outbox_rows(book, requested)
+    written = await core_outbox.write_intended(conn, op, rows)
+    assert op.story_id is not None  # noqa: S101 - a turn belongs to a story
+    for row in rows:
+        await dispatcher.enqueue(conn, row.id, op.story_id)
+    return written
 
 
 _AMOUNT = r"(?<![\w.,]){}(?![\w]|[.,]\d)"
@@ -1508,6 +1586,7 @@ __all__ = [
     "is_state_claim",
     "level_of",
     "load",
+    "outbox_rows",
     "outcome_check",
     "outcome_findings",
     "pending_of",
@@ -1528,4 +1607,5 @@ __all__ = [
     "tie_break_book",
     "tie_break_values",
     "time_requests",
+    "write_outbox",
 ]

@@ -210,6 +210,7 @@ from epistrel.core.tables.media import (
     subject_references,
 )
 from epistrel.core.tables.memories import memories
+from epistrel.core.tables.outbox import CANCELLED, INTENDED, external_effect_outbox
 from epistrel.core.tables.ownership import EntityType
 from epistrel.core.tables.propositions import (
     closed_sets,
@@ -1273,6 +1274,32 @@ async def _redact_policies(
     )
 
 
+async def _erase_outbox(
+    conn: AsyncConnection,
+    refs: Mapping[str, set[str]],
+    redactor: Redactor,
+    tally: _Tally,
+    run: _StoryRun,
+) -> None:
+    """The outbox (#210; FR-EXT-14): an ``intended`` row that names the subject (its effect's
+    text, or a value scoped to an erased character) is cancelled before the erasure, never
+    sent; every row that names the subject has its effect redacted in place (a claimed or
+    settled one stays listed for reconciliation)."""
+    named = sorted(refs.get(external_effect_outbox.name, set()))
+    if not named:
+        return
+    o = external_effect_outbox.c
+    if run.write:
+        await conn.execute(
+            update(external_effect_outbox)
+            .where(o.id.in_(named), o.status == INTENDED)
+            .values(status=CANCELLED)
+        )
+    await _redact_json_rows(
+        conn, external_effect_outbox, o.id, named, ("effect",), redactor, tally, write=run.write
+    )
+
+
 async def _erase_scheduled(
     conn: AsyncConnection,
     story_id: str,
@@ -1321,8 +1348,8 @@ async def _redact_structured(
     predicate's name keeps its id as a suffix when redacted, so names stay unique per story.
     Facts (#133), exposures (#164), divergences (#166), beliefs (#159), memories (#135),
     thunks (#146) and States (#185) go first: see ``_erase_facts``, ``_erase_exposures``,
-    ``_erase_divergences``, ``_erase_beliefs``, ``_erase_memories``, ``_erase_thunks`` and
-    ``_erase_states``."""
+    ``_erase_divergences``, ``_erase_beliefs``, ``_erase_memories``, ``_erase_thunks``,
+    ``_erase_states`` and (#210) ``_erase_outbox``."""
     await _erase_facts(conn, story_id, refs, removed, tally, run)
     await _erase_exposures(conn, story_id, refs, removed, tally, run)
     await _erase_divergences(conn, story_id, refs, removed, tally, run)
@@ -1331,6 +1358,7 @@ async def _redact_structured(
     await _erase_thunks(conn, story_id, refs, removed, redactor, tally, run)
     await _erase_states(conn, story_id, refs, removed, redactor, tally, run)
     await _erase_scheduled(conn, story_id, refs, removed, tally, run)
+    await _erase_outbox(conn, refs, redactor, tally, run)
     owned = list(
         await conn.scalars(
             select(entity_aliases.c.id)

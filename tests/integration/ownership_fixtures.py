@@ -699,6 +699,8 @@ CALLS: dict[tuple[str, str], Call] = {
         409, {"definition": {}}, prepare=_state_proposal
     ),
     ("POST", f"{S}/state-proposals/{{proposal_id}}/dismiss"): Call(409, prepare=_state_proposal),
+    # -- stories: the reconciliation status of its external effects (#210)
+    ("GET", f"{S}/reconciliation"): Call(200),
     # -- stories: a character's participation role (#176)
     ("PATCH", f"{S}/characters/{{character_id}}/participation"): Call(
         200, {"role": "primary", "fixed": True}, prepare=_story_character

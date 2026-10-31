@@ -1549,6 +1549,12 @@ def _steps() -> list[Step]:
             lambda ids: Rest("GET", f"{s}/state-proposals"),
             lambda e, ids: _state_proposals(e.list_state_proposals(CTX, ids["story"])),
         ),
+        # #210: the reconciliation status of the story's external effects (none listed).
+        Step(
+            "reconciliation",
+            lambda ids: Rest("GET", f"{s}/reconciliation"),
+            lambda e, ids: _reconciliation(e.reconciliation(CTX, ids["story"])),
+        ),
         Step(
             "approve_state_proposal",
             lambda ids: Rest("POST", f"{s}/state-proposals/{PROPOSAL}/approve", {"definition": {}}),
@@ -2941,6 +2947,10 @@ async def _analysis_queued(call: Awaitable[Any]) -> dict[str, Any]:
 
 async def _state_proposals(call: Awaitable[Any]) -> dict[str, Any]:
     return dump(StateProposalsBody.of(await call))
+
+
+async def _reconciliation(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(await call)
 
 
 async def _proposal_approved(call: Awaitable[Any]) -> dict[str, Any]:

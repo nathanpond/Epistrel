@@ -171,6 +171,7 @@ from epistrel.core.tables.feedback import feedback_history, message_feedback
 from epistrel.core.tables.hot_set import overflow_episodes
 from epistrel.core.tables.media import MediaKind
 from epistrel.core.tables.memories import memories
+from epistrel.core.tables.outbox import external_effect_outbox, outbox_outcomes
 from epistrel.core.tables.ownership import EntityType
 from epistrel.core.tables.propositions import (
     closed_sets,
@@ -258,6 +259,10 @@ STORY_TABLES: tuple[Table, ...] = (
     # Scheduled events (#196): a derived table (each lifecycle step a version), before the
     # operations it references; copied by a fork through the fork point like ``facts``.
     scheduled_events,
+    # The outbox (#210): the outcome records (append-only, no foreign key), then the
+    # outbox (a derived table), before the operations it references.
+    outbox_outcomes,
+    external_effect_outbox,
     # Memory records (#135): a derived table, before the operations it references.
     memories,
     # Speech acts (#150): a derived table, before the operations it references.

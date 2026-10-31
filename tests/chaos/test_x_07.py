@@ -44,7 +44,10 @@ from epistrel.api import create_app
 from epistrel.api.routes.health import check
 from epistrel.config import Settings
 from epistrel.core import clock
+from epistrel.core import outbox as core_outbox
+from epistrel.core.enums import OperationKind, Provenance
 from epistrel.core.events.operation import Operation
+from epistrel.core.ids import new_ulid
 from epistrel.core.media import sweep as media_sweep
 from epistrel.core.tables import audit_log, idempotency_keys, jobs, recurring_tasks, timers
 from epistrel.core.tables import worker_heartbeats as heartbeats
@@ -52,6 +55,7 @@ from epistrel.engine import TURN_QUEUE_HOOK, Engine
 from epistrel.orchestrator.jobs import handlers, queue
 from epistrel.orchestrator.jobs import timers as timer_api
 from epistrel.orchestrator.jobs.handlers import media_sweep as media_sweep_job
+from epistrel.orchestrator.jobs.handlers import outbox as outbox_job
 from epistrel.orchestrator.jobs.handlers import retention, turn_queue
 from epistrel.orchestrator.jobs.recurring import (
     NoPayload,
@@ -68,6 +72,8 @@ from epistrel.orchestrator.jobs.worker import (
     WorkerConfig,
     recovery_pass,
 )
+from epistrel.orchestrator.providers.in_process import InProcessRegistry
+from tests import provider_support as ps
 from tests.auth_support import CREDENTIAL_A, ERASURE_LEDGER_DIR, MEDIA_ROOT, auth_settings
 from tests.conftest import REPO_ROOT
 from tests.event_support import new_story, play_turn
@@ -1325,3 +1331,120 @@ async def test_x_07__media_sweep(
         task = await _task(space.db, media_sweep_job.MEDIA_SWEEP)
         assert task.last_status == "ok"
         assert task.next_run_at > _now()
+
+
+# -- the outbox's claim leases (#210) ------------------------------------------------------------
+
+
+async def _outbox_turn(engine: AsyncEngine, story: str, names: list[str]) -> list[str]:
+    """One turn writing an ``intended`` outbox row per provider ``names``; their ids."""
+    ids = [new_ulid() for _ in names]
+    async with Operation(engine, story_id=story, kind=OperationKind.TURN, principal="p-test") as op:
+        op.append("player_input", {"text": "pay"}, provenance=Provenance.PLAYER)
+        op.append("message_rendered", {"text": "the coins change hands"})
+
+        async def write(conn: Any) -> None:
+            await core_outbox.write_intended(
+                conn,
+                op,
+                [
+                    core_outbox.Intended(
+                        id=row_id,
+                        provider_name=name,
+                        value_name="gold",
+                        scope_key=None,
+                        effect={"kind": "change", "state": "gold", "delta": -5, "reason": "dues"},
+                        beat=2,
+                    )
+                    for row_id, name in zip(ids, names, strict=True)
+                ],
+            )
+            for row_id in ids:
+                await outbox_job.enqueue(conn, row_id, story)
+
+        op.add_commit_step(write)
+        await op.commit()
+    return ids
+
+
+async def _outbox_state(engine: AsyncEngine, outbox_id: str) -> tuple[str, int, list[str]]:
+    """A row's status and attempts, and the kinds of its outcome records in order."""
+    async with engine.connect() as conn:
+        row = (
+            await conn.execute(
+                text("SELECT status, attempts FROM external_effect_outbox WHERE id = :i"),
+                {"i": outbox_id},
+            )
+        ).one()
+        kinds = list(
+            await conn.scalars(
+                text(
+                    "SELECT kind FROM outbox_outcomes WHERE outbox_id = :i ORDER BY received_at, id"
+                ),
+                {"i": outbox_id},
+            )
+        )
+    return str(row.status), int(row.attempts), kinds
+
+
+@pytest.mark.chaos
+@pytest.mark.chaos_quick
+@pytest.mark.part("M6", "NFR-REL-5")
+async def test_x_07__m6_outbox(engine: AsyncEngine, quiet: Probe, moved: MovableClock) -> None:
+    """The outbox's claim leases (#210, FR-EXT-17,18): a turn's two outbox rows are claimed and
+    the worker dies before it sends either. While no worker runs their leases lapse; racing
+    workers fire each lease timer once, and the next worker runs them: the provider that
+    deduplicates gets the row again under the same key (confirmed), the one that does not has
+    its row moved to ``unknown`` with one outcome record, never sent. Restarts and later passes
+    change nothing. Complement: the confirmed row is never re-sent."""
+    dedupe, plain = ps.unique_name("dedupe"), ps.unique_name("plain")
+    await ps.register(engine, ps.write_capable_spec(dedupe, dedupes=True))
+    await ps.register(engine, ps.write_capable_spec(plain, dedupes=False))
+    story = await new_story(engine)
+    registry = InProcessRegistry()
+    fakes = {name: ps.ScriptedProvider(name) for name in (dedupe, plain)}
+    for name, fake in fakes.items():
+        registry.register(name, read=fake.read, write=fake.write)
+        await ps.bind(engine, story, name, {"player": "p-1"})
+    outbox_job.bind(registry)
+    try:
+        resent, lapsed = await _outbox_turn(engine, story, [dedupe, plain])
+        assert {j.status for j in await ps.outbox_jobs(engine, story)} == {"queued"}
+        # The worker claims both rows and dies before sending (its dispatch jobs end).
+        for row_id in (resent, lapsed):
+            assert isinstance(await outbox_job.claim(engine, row_id), outbox_job.Claimed)
+        async with engine.begin() as conn:
+            await conn.execute(delete(jobs).where(jobs.c.story_id == story))
+        assert await _outbox_state(engine, lapsed) == ("claimed", 1, [])
+
+        # The outage outlasts the leases; racing workers fire each lease timer once.
+        moved.advance(outbox_job.CLAIM_LEASE.total_seconds() + 5)
+        results = await asyncio.gather(*(timer_api.fire_due(engine) for _ in range(4)))
+        fired = sorted(kind for r in results for kind in r.timers)
+        assert fired == [outbox_job.OUTBOX_LEASE, outbox_job.OUTBOX_LEASE]
+        worker = Worker(engine, _config(timers=False))
+        assert await worker.recovery_pass() is not None
+        assert await _drain(engine, worker) == 2
+        assert fakes[dedupe].idempotency_keys == [resent]
+        assert fakes[plain].idempotency_keys == []
+        assert await _outbox_state(engine, resent) == ("confirmed", 2, ["confirmed"])
+        assert await _outbox_state(engine, lapsed) == ("unknown", 1, ["unknown"])
+        listed = (await core_outbox.listings(engine, story)).listings
+        assert [(e.outbox_id, e.reason) for e in listed] == [(lapsed, "unknown")]
+
+        # Restarts and later passes change nothing; the confirmed row is never re-sent.
+        for _ in range(2):
+            moved.advance(outbox_job.CLAIM_LEASE.total_seconds() + 5)
+            restarted = Worker(engine, _config(timers=False))
+            await restarted.recovery_pass()
+            await timer_api.fire_due(engine)
+            await _drain(engine, restarted)
+            await outbox_job.expire(engine, lapsed)
+            await outbox_job.expire(engine, resent)
+        assert fakes[dedupe].idempotency_keys == [resent]
+        assert fakes[plain].idempotency_keys == []
+        assert await _outbox_state(engine, resent) == ("confirmed", 2, ["confirmed"])
+        assert await _outbox_state(engine, lapsed) == ("unknown", 1, ["unknown"])
+    finally:
+        outbox_job.bind(None)
+        await ps.drop_outbox_jobs(engine, story)

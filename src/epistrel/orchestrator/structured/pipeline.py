@@ -171,6 +171,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import idempotency, pause, turn_gate, world_clock
+from epistrel.core import outbox as core_outbox
 from epistrel.core.canon import facts as canon_facts
 from epistrel.core.canon.canonize import CanonRequest, canonize_all
 from epistrel.core.commit import boundary, hidden, lifecycle, matching
@@ -5755,6 +5756,9 @@ async def play(
             owners = render_steps.beat_steps([b for b in checked.beats if not b.narrator])
             with beat_steps(op.operation_id, owners):
                 fixed["requested"] = state_effects.stage_requested(op, requested)
+            if any(r.dispatch for r in fixed["requested"]):
+                # #210 (FR-EXT-10): the outbox rows commit with the turn, in its transaction.
+                op.add_commit_step(partial(write_outbox, requested=list(fixed["requested"])))
         else:
             fixed.pop("requested", None)
         if books[0].on:
@@ -5802,6 +5806,11 @@ async def play(
                 },
             ),
         )
+
+    async def write_outbox(
+        conn: AsyncConnection, *, requested: Sequence[state_effects.Requested]
+    ) -> None:
+        await state_effects.write_outbox(conn, op, books[0], requested)
 
     async def apply_effects(conn: AsyncConnection, *, beats: Sequence[TurnBeat]) -> None:
         # #187 (FR-STATE-5,6): the surviving effects, in the commit, before the beats' records.
@@ -6440,6 +6449,8 @@ async def play(
             "clock": await turn_clock_of(
                 conn, story_id, committed.narrative_turn, committed.turn_variant
             ),
+            # #210 (FR-EXT-10): how many effects the reconciliation status lists.
+            "reconciliation": await core_outbox.summary(conn, story_id),
         }
         steps = _degradation(
             outcome, released[0] if released else None, found[0] if found else None

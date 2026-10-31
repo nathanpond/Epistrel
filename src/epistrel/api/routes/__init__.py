@@ -27,6 +27,7 @@ from epistrel.api.routes import (
     personas,
     predicates,
     principals,
+    reconciliation,
     respond,
     retrieval,
     scene,
@@ -71,6 +72,7 @@ router.include_router(scheduled_events.router)
 router.include_router(admin_providers.story_router)
 router.include_router(states.router)
 router.include_router(state_proposals.router)
+router.include_router(reconciliation.router)
 router.include_router(feedback.router)
 router.include_router(feedback_reports.router)
 router.include_router(admin.router)

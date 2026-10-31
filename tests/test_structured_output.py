@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 
 import httpx2
 import openai
@@ -51,6 +50,7 @@ from tests.auth_support import auth_settings
 from tests.conftest import DUMMY_DSN
 from tests.model_support import config_key, mock_openai
 from tests.policy_support import policy
+from tests.respond_support import WITHIN_S
 from tests.test_model_adapters import configured, fixed
 
 CHECK = GuardrailCheckInputs(text="the text being checked", policy_prompt="no dragons")
@@ -363,20 +363,20 @@ async def test_no_budget_left_makes_no_call() -> None:
 async def test_a_hung_call_ends_at_its_timeout() -> None:
     mal = models()
     mal.stub.fault("generation", "hang")
-    started = time.monotonic()
-    with pytest.raises(ModelUnavailable) as failed:
-        await mal.call("generation", GENERATION, ModelParams(timeout=0.2))
-    assert time.monotonic() - started < 2
+    # A hang never answers, so the timeout reason proves the timeout ended the call; the outer
+    # bound only turns a regression into a failure rather than a hung run (#446).
+    async with asyncio.timeout(WITHIN_S):
+        with pytest.raises(ModelUnavailable) as failed:
+            await mal.call("generation", GENERATION, ModelParams(timeout=0.2))
     assert failed.value.details == {"purpose": "generation", "reason": "timeout"}
 
 
 async def test_the_deadline_clamps_every_call() -> None:
     mal = models()
     mal.stub.fault("guardrail_check", "hang")
-    started = time.monotonic()
-    with pytest.raises(ModelUnavailable) as failed:
-        await check(mal, TurnBudget(deadline_s=0.2))
-    assert time.monotonic() - started < 2
+    async with asyncio.timeout(WITHIN_S):  # not hung; the reason proves the deadline (#446)
+        with pytest.raises(ModelUnavailable) as failed:
+            await check(mal, TurnBudget(deadline_s=0.2))
     assert failed.value.details == {
         "purpose": "guardrail_check",
         "reason": "deadline",

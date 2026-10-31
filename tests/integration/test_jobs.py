@@ -57,6 +57,7 @@ from epistrel.orchestrator.jobs.worker import (
 )
 from tests.auth_support import auth_settings, bearer
 from tests.event_support import new_story, play_turn, rows, scalar
+from tests.respond_support import WITHIN_S
 from tests.retrieval_support import statements
 
 POLL_S = 0.3
@@ -252,16 +253,17 @@ async def _segments(engine: AsyncEngine, story_id: str) -> list[str]:
 
 
 async def test_notify_wakes_a_worker_before_its_poll(engine: AsyncEngine, registry: Probe) -> None:
-    """With LISTEN on and a 30 s poll, an enqueued job is claimed at once by the notification."""
-    worker = Worker(engine, _config(listen=True, poll_interval=30.0))
+    """With LISTEN on and an hour's poll, an enqueued job is claimed at once by the
+    notification: the loop's next poll is an hour away, so the job being done within
+    ``WITHIN_S`` can only be the notification's doing (a causal check, not a wall-clock bound
+    a loaded host could miss, #446)."""
+    worker = Worker(engine, _config(listen=True, poll_interval=3600.0))
     running = asyncio.create_task(worker.run())
     try:
         await asyncio.wait_for(worker.listening.wait(), 5.0)
-        await asyncio.sleep(0.1)
-        started = time.monotonic()
+        await asyncio.sleep(0.1)  # yields to the loop's first poll; it passes either way
         job_id = await _enqueue(engine, "test_echo", {"n": 7})
-        await _wait_for(lambda: _done(engine, job_id), within=5.0)
-        assert time.monotonic() - started < 3.0
+        await _wait_for(lambda: _done(engine, job_id), within=WITHIN_S)
     finally:
         worker.stop()
         await running
@@ -374,11 +376,14 @@ async def test_fenced_heartbeat_cancels_the_handler(engine: AsyncEngine, registr
     run = asyncio.create_task(worker.execute(claimed))
     await asyncio.wait_for(registry.entered.wait(), 5.0)
     first = (await _job(engine, job_id)).lease_until
-    await asyncio.sleep(0.5)
-    assert (await _job(engine, job_id)).lease_until > first  # renewed
+
+    async def renewed() -> bool:
+        return bool((await _job(engine, job_id)).lease_until > first)
+
+    await _wait_for(renewed, within=WITHIN_S)  # a condition, not a fixed sleep (#446)
     async with engine.begin() as conn:
         await conn.execute(update(jobs).where(jobs.c.id == job_id).values(attempt=5))
-    assert await asyncio.wait_for(run, 2.0) is None
+    assert await asyncio.wait_for(run, WITHIN_S) is None  # not hung
     row = await _job(engine, job_id)
     assert (row.status, row.failures, row.result) == ("running", 0, None)
 

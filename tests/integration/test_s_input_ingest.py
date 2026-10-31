@@ -4,7 +4,6 @@ half (#57, FR-RESP-9) and the ingest half (#58, FR-RESP-10)."""
 from __future__ import annotations
 
 import asyncio
-import time
 from typing import Any
 
 import httpx2 as httpx
@@ -17,6 +16,7 @@ from tests.event_support import rows
 from tests.respond_support import (
     FIRST,
     PLAYER,
+    WITHIN_S,
     body,
     new_story,
     played,
@@ -159,10 +159,15 @@ async def test_s_input_ingest__ingest(stub_settings: Settings, engine: AsyncEngi
         latch = stub.hold("generation")
         turn = asyncio.ensure_future(respond(client, story, body(ids[FIRST], "Who's there?")))
         await asyncio.wait_for(latch.entered.wait(), 5)
-        started = time.monotonic()
-        busy = await ingest(client, story, {**event, "client_event_id": "F"})
+        busy = await asyncio.wait_for(
+            ingest(client, story, {**event, "client_event_id": "F"}), WITHIN_S
+        )
         assert busy.status_code == 423, busy.text
-        assert time.monotonic() - started < 2  # refused at once, not after waiting
+        # Refused at once, not after waiting: it answered while the turn still holds the slot
+        # (its generation is held until the release below), so it did not wait for the turn,
+        # and the reason is ``in_flight``, not a lock wait that timed out. A causal check, not
+        # a wall-clock bound (#446).
+        assert not turn.done()
         assert busy.json()["error"]["code"] == "story_busy"
         assert busy.json()["error"]["details"]["reason"] == "in_flight"
         latch.release()

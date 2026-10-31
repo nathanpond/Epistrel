@@ -2,8 +2,8 @@
 FR-STATE-3,7,9, FR-STORE-31; #186).
 
 Every S-STATE-SCHEMA M6 part lives in this file: #186's API (``__api``), declaration
-(``__define``), ingest (``__ingest``) and source (``__unpermitted``) parts; #192 adds the rules
-part and #202 the proposal part.
+(``__define``), ingest (``__ingest``) and source (``__unpermitted``) parts, and #192's proposal
+(``__proposals``) and rules (``__rules``) parts.
 
 Played through the REST app with the stub adapter on a Lite story running States at
 ``prompt_only`` (FR-LITE-5's form; the module delivered for the test, ``states_delivered``).
@@ -17,9 +17,18 @@ from typing import Any
 
 import httpx2 as httpx
 import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core import projections
+from epistrel.core.enums import OperationKind, Provenance
+from epistrel.core.events import Operation
+from epistrel.core.ids import new_ulid
+from epistrel.core.propositions import vocabulary
+from tests import canon_support as c
+from tests import clock_support as ck
+from tests import embedding_support
 from tests import provider_support as ps
 from tests import state_support as st
 from tests.auth_support import auth_settings
@@ -497,3 +506,425 @@ async def test_s_state_schema__unpermitted(
         accepted = await _put(client, story, "gold", {"delta": 1})
         assert accepted.status_code == 200, accepted.text
         assert accepted.json()["new_value"] == 11
+
+
+# -- #192: engine-proposed States and deterministic rules -----------------------------------------
+
+PROPOSALS = "SELECT count(*) AS n FROM state_proposals WHERE story_id = :s"
+ANALYSIS = "state_proposal_analysis"
+
+
+def _quantity(value: int, unit: str, subject: str) -> dict[str, Any]:
+    """A beat's declared proposition with a quantity literal (``value unit``)."""
+    return {
+        "proposition": {
+            "subject_id": subject,
+            "predicate_id": vocabulary.STATE_VALUE,
+            "literal": {"kind": "quantity", "value": value, "unit": unit},
+            "polarity": "affirmed",
+        },
+        "verdict": "novel",
+    }
+
+
+def _holds(subject: str, item: str) -> dict[str, Any]:
+    """A beat's declared ``holds`` proposition about an object entity."""
+    return {
+        "proposition": {
+            "subject_id": subject,
+            "predicate_id": vocabulary.HOLDS,
+            "object_id": item,
+            "polarity": "affirmed",
+        },
+        "verdict": "novel",
+    }
+
+
+def _detected(text: str, phrase: str, category: str = "transfer") -> dict[str, Any]:
+    """A detected claim (#148) over ``phrase`` in ``text``: its span and category only."""
+    start = text.index(phrase)
+    return {"start": start, "end": start + len(phrase), "category": category, "verdict": "novel"}
+
+
+async def _beats(engine: AsyncEngine, story: str, *beats: dict[str, Any]) -> int:
+    """One turn whose narration beats are ``beats`` (``StructuredBeat`` payloads); its turn."""
+    async with Operation(
+        engine, story_id=story, kind=OperationKind.TURN, principal=c.PRINCIPAL
+    ) as op:
+        op.append("player_input", {"text": "go on"}, provenance=Provenance.PLAYER, beat=1)
+        for index, payload in enumerate(beats, start=2):
+            op.append("beat_narration", payload, beat=index)
+        op.append("message_rendered", {"text": "The day goes on."})
+        await op.commit()
+    assert op.narrative_turn is not None
+    return op.narrative_turn
+
+
+async def _item(engine: AsyncEngine, story: str, name: str) -> str:
+    """An object entity of the story (not a character)."""
+    item = new_ulid()
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO entities (id, story_id, kind, canonical_name) "
+                "VALUES (:i, :s, 'object', :n)"
+            ),
+            {"i": item, "s": story, "n": name},
+        )
+    return item
+
+
+async def _analyze(
+    client: httpx.AsyncClient, engine: AsyncEngine, story: str, key: str | None = None
+) -> Any:
+    """Ask for an analysis (a keyed request is replayed once, writing nothing more) and run
+    its job; the 202's body."""
+    path = f"/stories/{story}/state-proposals/analyze"
+    response = await client.post(path, headers=_headers(key))
+    assert response.status_code == 202, response.text
+    if key is not None:
+        replay = await client.post(path, headers=_headers(key))
+        assert replay.status_code == 202, replay.text
+        assert replay.headers["Idempotent-Replay"] == "true"
+        assert replay.json() == response.json()
+    (outcome,) = await embedding_support.run_jobs(engine, ANALYSIS, story)
+    assert str(outcome) in ("committed", "CommitOutcome.COMMITTED"), outcome
+    return response.json()
+
+
+async def _proposals(client: httpx.AsyncClient, story: str) -> dict[str, Any]:
+    response = await client.get(f"/stories/{story}/state-proposals", headers=READ)
+    assert response.status_code == 200, response.text
+    return {p["name"]: p for p in response.json()["proposals"]}
+
+
+@pytest.mark.part("M6", "FR-STATE-3")
+async def test_s_state_schema__proposals(
+    stub_settings: Settings, engine: AsyncEngine, states_delivered: None
+) -> None:
+    """The story begins showing recurring resources with no State: an on-demand analysis
+    (202, a ``state_proposal_analysis`` job) proposes each one recurring in three or more
+    turns (a declared quantity's unit, a ``holds`` object, an amount re-parsed from a detected
+    claim's span), never a definition: nothing is tracked until the author approves one, which
+    declares it at a slot (``created_by = proposal``); a dismissed one stays dismissed.
+
+    Complements: 20 played turns (the respond path) write no proposal; a one-off mention and a
+    resource a State already tracks (by its name or unit) are not proposed; running the
+    analysis again writes no duplicate and does not re-propose the dismissed one; a decided
+    proposal cannot be decided again; with States off the analysis is 409 ``module_off``."""
+    async with respond_client(stub_settings, engine) as (client, _):
+        story, ids = await _story(client, engine)
+        await _defined(client, story, GOLD)
+        player = ids[PLAYER]
+        for n in range(20):
+            await played(client, story, body(player, f"I walk on, step {n}."))
+        (none,) = await rows(engine, PROPOSALS, s=story)
+        assert none.n == 0
+
+        key = await _item(engine, story, "Silver Key")
+        texts = [
+            ("She paid two bottles of wine and kept five loaves.", "two bottles"),
+            ("He trades three bottles for the map.", "three bottles"),
+            ("Two bottles more change hands.", "Two bottles"),
+        ]
+        for n, (said, amount) in enumerate(texts):
+            once = [_detected(said, "five loaves", "consumption")] if n == 0 else []
+            await _beats(
+                engine,
+                story,
+                {
+                    "text": said,
+                    "propositions": [
+                        _quantity(12 - n, "arrows", player),
+                        _quantity(3, "gold", player),
+                        _holds(player, key),
+                    ],
+                    "detected": [_detected(said, amount), *once],
+                },
+            )
+        (none,) = await rows(engine, PROPOSALS, s=story)
+        assert none.n == 0
+        tracked_before = await rows(engine, DEFINITIONS, s=story)
+
+        # The analysis: a request operation and a job; proposals, never definitions.
+        queued = await _analyze(client, engine, story, key="analyze-1")
+        assert set(queued) >= {"job_id", "operation_id", "timeline_revision"}
+        (jobs,) = await rows(
+            engine,
+            "SELECT count(*) AS n FROM jobs WHERE story_id = :s AND kind = :k",
+            s=story,
+            k=ANALYSIS,
+        )
+        assert jobs.n == 1
+        (request,) = await rows(
+            engine,
+            "SELECT kind::text AS kind FROM operations WHERE operation_id = :o",
+            o=queued["operation_id"],
+        )
+        assert request.kind == "maintenance"
+        found = await _proposals(client, story)
+        assert set(found) == {"arrows", "bottle", "silver_key"}
+        arrows, bottle, silver = found["arrows"], found["bottle"], found["silver_key"]
+        assert all(p["status"] == "proposed" for p in found.values())
+        assert all(p["created_by_operation_id"] == queued["operation_id"] for p in found.values())
+        assert (arrows["suggested_type"], arrows["suggested_unit"]) == ("number", "arrows")
+        assert len({e["turn"] for e in arrows["evidence"]}) == 3
+        assert silver["suggested_entity_id"] == key
+        assert {e["text"] for e in bottle["evidence"]} == {
+            "two bottles",
+            "three bottles",
+            "Two bottles",
+        }
+        assert all(e["span"] is not None for e in bottle["evidence"])
+        assert await rows(engine, DEFINITIONS, s=story) == tracked_before
+        (values,) = await rows(
+            engine, "SELECT count(*) AS n FROM state_values WHERE story_id = :s", s=story
+        )
+        assert values.n == 0
+        _refused(
+            await client.get(
+                f"/stories/{story}/states/arrows", params={"viewpoint": "omniscient"}, headers=READ
+            ),
+            404,
+            "not_found",
+        )
+
+        # Approval declares the State at a slot, with the author's overrides on top.
+        approval = {"definition": {"scope": "story", "initial_value": 12}}
+        approve_path = f"/stories/{story}/state-proposals/{arrows['id']}/approve"
+        approved = await client.post(approve_path, json=approval, headers=_headers("approve-1"))
+        assert approved.status_code == 201, approved.text
+        done = approved.json()
+        replayed = await client.post(approve_path, json=approval, headers=_headers("approve-1"))
+        assert replayed.headers["Idempotent-Replay"] == "true"
+        assert replayed.json() == done
+        assert done["proposal"]["status"] == "approved"
+        assert done["definition"]["created_by"] == "proposal"
+        assert (done["definition"]["name"], done["definition"]["unit"]) == ("arrows", "arrows")
+        assert done["position"].endswith("⁺1")
+        assert done["proposal"]["definition_id"] is not None
+        assert await _value(client, story, "arrows") == 12
+
+        # Dismissal; deciding twice is 404.
+        dismiss_path = f"/stories/{story}/state-proposals/{bottle['id']}/dismiss"
+        dismissed = await client.post(dismiss_path, headers=_headers("dismiss-1"))
+        assert dismissed.status_code == 200, dismissed.text
+        assert dismissed.json()["proposal"]["status"] == "dismissed"
+        replayed = await client.post(dismiss_path, headers=_headers("dismiss-1"))
+        assert replayed.headers["Idempotent-Replay"] == "true"
+        assert replayed.json() == dismissed.json()
+        again = _refused(
+            await client.post(
+                f"/stories/{story}/state-proposals/{bottle['id']}/approve",
+                json={},
+                headers=WRITE,
+            ),
+            404,
+            "not_found",
+        )
+        assert again["details"]["reason"] == "no_pending_proposal"
+
+        # A second run: no duplicate, the dismissed one stays dismissed.
+        await _beats(
+            engine,
+            story,
+            {
+                "text": "Four bottles roll away.",
+                "detected": [_detected("Four bottles roll away.", "Four bottles")],
+            },
+        )
+        await _analyze(client, engine, story)
+        (count,) = await rows(engine, PROPOSALS, s=story)
+        assert count.n == 3
+        after = await _proposals(client, story)
+        assert {n: p["status"] for n, p in after.items()} == {
+            "arrows": "approved",
+            "bottle": "dismissed",
+            "silver_key": "proposed",
+        }
+
+        # States off: the analysis is refused, and nothing is queued.
+        await st.set_level(engine, story, None)
+        off = await client.post(f"/stories/{story}/state-proposals/analyze", headers=WRITE)
+        _refused(off, 409, "module_off")
+        assert await embedding_support.run_jobs(engine, ANALYSIS, story) == []
+
+
+async def _advance(client: httpx.AsyncClient, story: str, minutes: int) -> None:
+    response = await client.post(
+        f"/stories/{story}/clock/advance",
+        json={"minutes": minutes, "reason": "time passes"},
+        headers=WRITE,
+    )
+    assert response.status_code == 200, response.text
+
+
+async def _rule_changes(engine: AsyncEngine, story: str, name: str) -> list[Any]:
+    return await rows(
+        engine,
+        "SELECT c.delta, c.valid_time_minutes, c.operation_id, c.membership::text AS membership "
+        "FROM state_changes c JOIN state_definitions d ON d.id = c.state_id "
+        "WHERE c.story_id = :s AND d.name = :n AND c.source = 'rule' ORDER BY c.id",
+        s=story,
+        n=name,
+    )
+
+
+HUNGER = {
+    "name": "hunger",
+    "type": "number",
+    "initial_value": 10,
+    "constraints": {"min": 0, "max": 10},
+    "rules": {"kind": "elapsed", "per_minutes": 60, "delta": -3, "bounds_clamp": True},
+}
+SILVER = {"name": "silver", "type": "number", "initial_value": 5}
+NET_WORTH = {
+    "name": "net_worth",
+    "type": "number",
+    "rules": {"kind": "derived", "expression": "gold + silver \u00d7 2"},
+}
+STANDING = {
+    "name": "standing",
+    "type": "number",
+    "rules": {"kind": "derived", "expression": "max(net_worth - 15, 0)"},
+}
+
+
+@pytest.mark.part("M6", "FR-STATE-7")
+async def test_s_state_schema__rules(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    clock_delivered: None,
+) -> None:
+    """A story-time rule updates its State deterministically: hunger (``elapsed``, -3 per 60
+    minutes, clamped at its bounds) writes one ``rule`` change per whole hour the clock passes,
+    in the advance's operation; ``net_worth`` (``derived``: ``gold + silver * 2``, written with
+    the multiplication sign) and ``standing`` (derived from it) are recomputed in topological
+    order in the transaction of any input's change.
+
+    Complements: a derived State rejects a direct set (422 ``state_derived``, #186's guard); a
+    cycle is rejected at declaration and on a definition update; a definition with rules whose
+    ``authorization.sources`` omit ``rule`` is 422 ``state_unpermitted {reason: source}``; any
+    other rule shape is 422; the rule changes follow their operation's membership (a truncation
+    takes them away); and a replay (the projection's fold) gives identical values with no job."""
+    async with respond_client(stub_settings, engine) as (client, _):
+        story, ids = await _story(client, engine)
+        await ck.set_level(engine, story, "prompt_only")
+        for definition in (GOLD, SILVER, HUNGER, NET_WORTH, STANDING):
+            await _defined(client, story, definition)
+        assert await _value(client, story, "net_worth") == 20
+        assert await _value(client, story, "standing") == 5
+        turn = (await played(client, story, body(ids[PLAYER], "Hello.")))["turn"]
+
+        # Elapsed: 150 minutes is two whole hours (two ticks), 60 more one tick, 120 more two
+        # ticks, the second clamped at the minimum and the third holding there.
+        await _advance(client, story, 150)
+        assert await _value(client, story, "hunger") == 4
+        ticks = await _rule_changes(engine, story, "hunger")
+        assert [int(t.delta) for t in ticks] == [-3, -3]
+        assert len({t.operation_id for t in ticks}) == 1
+        (row,) = await rows(
+            engine, "SELECT story_minute_zero AS z FROM stories WHERE id = :s", s=story
+        )
+        zero = int(row.z)
+        assert [t.valid_time_minutes - zero for t in ticks] == [60, 120]
+        await _advance(client, story, 60)
+        assert await _value(client, story, "hunger") == 1
+        await _advance(client, story, 120)
+        assert await _value(client, story, "hunger") == 0
+        assert [int(t.delta) for t in await _rule_changes(engine, story, "hunger")] == [
+            -3,
+            -3,
+            -3,
+            -1,
+            0,
+        ]
+        await _advance(client, story, 29)  # 359 minutes: the sixth hour is not yet whole
+        assert len(await _rule_changes(engine, story, "hunger")) == 5
+
+        # Derived: an input's set recomputes both derived States in its operation.
+        written = (await _put(client, story, "gold", {"delta": 5})).json()
+        assert await _value(client, story, "net_worth") == 25
+        assert await _value(client, story, "standing") == 10
+        recomputed = await rows(
+            engine,
+            "SELECT d.name, c.source::text AS source FROM state_changes c JOIN state_definitions d "
+            "ON d.id = c.state_id WHERE c.operation_id = :o ORDER BY c.id",
+            o=written["operation_id"],
+        )
+        assert [(r.name, r.source) for r in recomputed] == [
+            ("gold", "consumer"),
+            ("net_worth", "rule"),
+            ("standing", "rule"),
+        ]
+
+        # The refusals write nothing.
+        counted = await _count(engine, story)
+        derived = _refused(
+            await _put(client, story, "net_worth", {"value": 1}), 422, "state_derived"
+        )
+        assert derived["details"]["state"] == "net_worth"
+        cycle = _refused(
+            await _define(
+                client,
+                story,
+                {
+                    "name": "loop",
+                    "type": "number",
+                    "rules": {"kind": "derived", "expression": "loop + 1"},
+                },
+            ),
+            422,
+            "validation_error",
+        )
+        assert cycle["details"]["reason"] == "rules_cycle"
+        patched = _refused(
+            await client.patch(
+                f"/stories/{story}/states/net_worth/definition",
+                json={"rules": {"kind": "derived", "expression": "gold + standing"}},
+                headers=WRITE,
+            ),
+            422,
+            "validation_error",
+        )
+        assert patched["details"]["reason"] == "rules_cycle"
+        unpermitted = _refused(
+            await _define(
+                client,
+                story,
+                {**HUNGER, "name": "thirst", "authorization": {"sources": ["consumer"]}},
+            ),
+            422,
+            "state_unpermitted",
+        )
+        assert unpermitted["details"]["reason"] == "source"
+        shape = _refused(
+            await _define(
+                client,
+                story,
+                {**SILVER, "name": "luck", "rules": {"kind": "script", "code": "luck += 1"}},
+            ),
+            422,
+            "validation_error",
+        )
+        assert shape["details"]["reason"] == "rules_shape"
+        assert await _count(engine, story) == counted
+
+        # Replay: the projection's fold over the stored changes gives the same values, and no
+        # job was ever needed.
+        stored = await st.stored_values(engine, story)
+        assert await st.folded_values(engine, story) == stored
+        async with engine.begin() as conn:
+            await projections.replace_with_fold(conn, story)
+        assert await st.stored_values(engine, story) == stored
+        (jobs,) = await rows(engine, "SELECT count(*) AS n FROM jobs WHERE story_id = :s", s=story)
+        assert jobs.n == 0
+
+        # Membership: truncating to the turn discards its slots' advances and sets, and the
+        # rule changes with them.
+        await played(client, story, body(ids[PLAYER], "And then?"))
+        await _post(client, f"/stories/{story}/truncate", {"to_turn": turn})
+        assert await _value(client, story, "hunger") == 10
+        assert await _value(client, story, "net_worth") == 20
+        assert {t.membership for t in await _rule_changes(engine, story, "hunger")} == {"discarded"}

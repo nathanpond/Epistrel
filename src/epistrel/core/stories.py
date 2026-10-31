@@ -186,6 +186,7 @@ from epistrel.core.tables.states import (
     external_values,
     state_changes,
     state_definitions,
+    state_proposals,
     state_values,
 )
 from epistrel.core.tables.utterances import utterances
@@ -251,6 +252,8 @@ STORY_TABLES: tuple[Table, ...] = (
     # External values (#205): the projection of the ``external_read`` events (rebuilt by a
     # fork), no foreign key.
     external_values,
+    # Engine-proposed States (#192): the review queue (no foreign key, no membership).
+    state_proposals,
     # Memory records (#135): a derived table, before the operations it references.
     memories,
     # Speech acts (#150): a derived table, before the operations it references.
@@ -296,6 +299,7 @@ STORY_TABLES_NOT_COPIED: frozenset[str] = frozenset(
         overflow_episodes.name,
         extraction_shadow.name,
         escalations.name,
+        state_proposals.name,
     }
 )
 """Story-scoped tables a fork (#67) leaves behind: work in progress (``jobs``, the turn queue,
@@ -311,7 +315,8 @@ overflow episodes (#147: maintenance state; the fork recounts its counters and i
 opens the episodes it needs), and claim detection's shadow samples (#148: an eval of the
 source's renders, which ``GET /admin/evals/extraction-shadow`` counts once), and the escalation
 records (#155: the source's turns' entailment calls, which ``GET /admin/evals/escalation-yield``
-counts once). Every other table
+counts once), and the engine's State proposals (#192: the source's review queue, whose evidence
+may point past the fork point; the fork's own analysis proposes again). Every other table
 in ``STORY_TABLES`` is copied by ``core.fork``, so a new story-scoped table is copied unless it
 is named here."""
 

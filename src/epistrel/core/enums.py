@@ -418,6 +418,16 @@ class StateChangeStatus(StrEnum):
     DROPPED = "dropped"
 
 
+class StateProposalStatus(StrEnum):
+    """Where an engine-proposed State stands (FR-STATE-3; #192): ``proposed`` (awaiting the
+    author), ``approved`` (its definition was created) or ``dismissed`` (never proposed again).
+    Postgres enum ``state_proposal_status``."""
+
+    PROPOSED = "proposed"
+    APPROVED = "approved"
+    DISMISSED = "dismissed"
+
+
 class ClockMode(StrEnum):
     """How the world clock advances (FR-CLOCK-5; #193): ``paced`` (the pacing rule and validated
     skips), ``manual`` (explicit skips only) or ``external`` (a provider's, #209). Postgres enum
@@ -486,6 +496,7 @@ PG_ENUM_TYPES: dict[str, type[StrEnum]] = {
     "state_change_source": StateChangeSource,
     "state_contingency": StateContingency,
     "state_change_status": StateChangeStatus,
+    "state_proposal_status": StateProposalStatus,
     "clock_mode": ClockMode,
     "time_awareness": TimeAwareness,
     "external_value_source": ExternalValueSource,

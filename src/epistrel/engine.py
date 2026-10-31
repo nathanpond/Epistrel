@@ -135,6 +135,7 @@ from epistrel.core.retrieval import lexical_backend
 from epistrel.core.retrieval import pipeline as retrieval_pipeline
 from epistrel.core.settings_schema import ConfigClass, PlayerView, StorySettings
 from epistrel.core.states import api as state_api
+from epistrel.core.states import proposals as state_proposals
 from epistrel.core.tables import events
 from epistrel.core.tables.media import MediaKind, MediaState
 from epistrel.core.tables.ownership import EntityType
@@ -304,6 +305,10 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "update_state_definition": ResultCodec.of(
         state_api.StateDefinitionWrite, revision_field=_CONFIG
     ),
+    # #192: an analysis requested, and a proposal approved or dismissed.
+    "analyze_state_proposals": ResultCodec.of(state_proposals.AnalysisQueued, status=202),
+    "approve_state_proposal": ResultCodec.of(state_proposals.ProposalApproved, status=201),
+    "dismiss_state_proposal": ResultCodec.of(state_proposals.ProposalDismissed),
     "model_entity": ResultCodec.of(stories.CharacterWeighted, status=201),
     "create_content_rating": ResultCodec.of(
         ratings.RatingWrite, status=201, revision_field=_CONFIG
@@ -3029,6 +3034,102 @@ class Engine:
             run,
             story_id=story_id,
             material={"story_id": story_id, "state": name, "body": body},
+        )
+
+    # -- engine-proposed States (FR-STATE-3; #192) ------------------------------------------------
+
+    async def analyze_state_proposals(
+        self, ctx: RequestContext, story_id: str
+    ) -> state_proposals.AnalysisQueued:
+        """Ask the engine what the story has been counting (FR-STATE-3): an on-demand analysis
+        of the whole history, handed to a worker as a ``state_proposal_analysis`` job (REST 202
+        ``{job_id, operation_id}``; the request is a ``maintenance`` operation, which moves no
+        revision). It proposes each quantity unit or possessed object that recurs in three or
+        more turns and no State tracks; it never creates a State. 409 ``module_off`` with
+        ``states.level`` off, ``story_archived``, ``story_paused`` or ``revision_conflict``."""
+        principal = self.require_principal(ctx)
+
+        async def start(conn: AsyncConnection, payload: state_proposals.AnalysisPayload) -> str:
+            return await job_queue.enqueue(
+                conn, state_proposals.ANALYSIS_KIND, payload, story_id=payload.story_id
+            )
+
+        async def run(ctx: RequestContext) -> state_proposals.AnalysisQueued:
+            await self.check_expected_revision(ctx, story_id)
+            return await state_proposals.request_analysis(
+                self.db, story_id, principal=principal, start_job=start
+            )
+
+        return await self._keyed(
+            ctx,
+            "analyze_state_proposals",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id},
+        )
+
+    async def list_state_proposals(
+        self, ctx: RequestContext, story_id: str
+    ) -> state_proposals.ProposalList:
+        """The story's State proposals (FR-STATE-3), oldest first: each one's suggested name,
+        type, scope, unit or entity, its evidence (the beats it recurs in), its status
+        (``proposed``, ``approved``, ``dismissed``) and the analysis that proposed it. 409
+        ``module_off`` with ``states.level`` off; 404 for an unknown story."""
+        return await state_proposals.list_proposals(self.db, story_id)
+
+    async def approve_state_proposal(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        proposal_id: str,
+        request: state_proposals.StateProposalApproveRequest,
+    ) -> state_proposals.ProposalApproved:
+        """Approve a proposed State (FR-STATE-3): declare it as suggested, with
+        ``request.definition`` on top (``created_by = proposal``), at the next inter-turn slot
+        ``N⁺k`` as ``define_state`` does, and mark the proposal ``approved`` (REST 201). 404
+        ``not_found`` (``reason: no_pending_proposal``) unless the proposal is pending; the
+        refusals of ``define_state`` otherwise."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> state_proposals.ProposalApproved:
+            await self.check_expected_revision(ctx, story_id)
+            return await state_proposals.approve(
+                self.db,
+                story_id,
+                proposal_id,
+                request,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+            )
+
+        return await self._keyed(
+            ctx,
+            "approve_state_proposal",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "proposal": proposal_id, "body": _body(request)},
+        )
+
+    async def dismiss_state_proposal(
+        self, ctx: RequestContext, story_id: str, proposal_id: str
+    ) -> state_proposals.ProposalDismissed:
+        """Dismiss a proposed State (FR-STATE-3): it is never proposed again. 404 ``not_found``
+        (``reason: no_pending_proposal``) unless the proposal is pending; 409 ``module_off``,
+        ``story_archived`` or ``story_paused``."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> state_proposals.ProposalDismissed:
+            await self.check_expected_revision(ctx, story_id)
+            return await state_proposals.dismiss(
+                self.db, story_id, proposal_id, principal=principal
+            )
+
+        return await self._keyed(
+            ctx,
+            "dismiss_state_proposal",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "proposal": proposal_id},
         )
 
     async def set_character_weight(

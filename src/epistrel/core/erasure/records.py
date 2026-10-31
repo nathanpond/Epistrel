@@ -58,7 +58,7 @@ from epistrel.core.tables.propositions import (
     predicates,
     propositions,
 )
-from epistrel.core.tables.states import state_changes, state_definitions
+from epistrel.core.tables.states import state_changes, state_definitions, state_proposals
 
 STORY_SCOPE = "story"
 """The ``scope`` of a story's configuration change, stored result and policy."""
@@ -404,6 +404,17 @@ def state_change_record(row: Any) -> Record:
         ((SubjectKind.CHARACTER, scope_key, "scope_key"),) if scope_key else ()
     )
     return Record(state_changes.name, str(row.id), _str(row.story_id), fields, declared)
+
+
+def state_proposal_record(row: Any) -> Record:
+    """An engine-proposed State (#192): its suggested ``name`` and ``suggested_unit`` and every
+    text of its ``evidence`` (the beats it quotes), indexed positionally (ADR-154); it declares
+    no subject."""
+    fields: dict[str, str | None] = {"name": predicate_words(str(row.name))}
+    if row.suggested_unit:
+        fields["suggested_unit"] = row.suggested_unit
+    fields.update(text_fields(row.evidence, "evidence"))
+    return Record(state_proposals.name, str(row.id), _str(row.story_id), fields)
 
 
 def exposure_record(row: Any) -> Record:
@@ -874,6 +885,11 @@ async def read_state_changes(conn: AsyncConnection, story_id: str | None) -> lis
     return await _story_rows(conn, state_changes, story_id, state_change_record)
 
 
+async def read_state_proposals(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    """A story's State proposals, as ``state_proposal_record`` indexes them."""
+    return await _story_rows(conn, state_proposals, story_id, state_proposal_record)
+
+
 async def read_thunks(conn: AsyncConnection, story_id: str | None) -> list[Record]:
     """A story's thunks, as ``thunk_record`` indexes them."""
     return await _story_rows(conn, thunks, story_id, thunk_record)
@@ -940,10 +956,12 @@ __all__ = [
     "read_exposures",
     "read_state_changes",
     "read_state_definitions",
+    "read_state_proposals",
     "read_thunks",
     "snapshot_record",
     "state_change_record",
     "state_definition_record",
+    "state_proposal_record",
     "story_record",
     "text_fields",
     "thunk_record",

@@ -14,9 +14,11 @@ nothing here handles them.
   regenerated turn is not yet active), and the anchor (#195; ``None``: unanchored).
 - ``advance(conn, op, story_id, *, minutes | to_offset, source, position, reason,
   estimate_meta=None)`` writes one advance in ``op``'s commit transaction (a ``state_changes``
-  row, ``kind = delta``, ``source`` a clock source). A negative ``minutes``, or a ``to_offset``
-  before the clock's value at ``position``, is 422 ``clock_backward`` and writes nothing: the
-  clock never moves backward along the active timeline (FR-CLOCK-8).
+  row, ``kind = delta``, ``source`` a clock source), then runs the post-advance callbacks
+  (``core.world_clock.hooks``; #192's ``elapsed`` State rules) in the same transaction. A
+  negative ``minutes``, or a ``to_offset`` before the clock's value at ``position``, is 422
+  ``clock_backward`` and writes nothing: the clock never moves backward along the active
+  timeline (FR-CLOCK-8).
 - ``clock_before_slot(conn, story_id, turn, slot_k)`` is the clock as inter-turn slot
   ``turn⁺slot_k`` opens: through the end of ``turn`` and its earlier slots.
 - ``story_time_at(conn, story_id, position)`` is **the** story-time entry point (FR-CLOCK-2):
@@ -83,6 +85,7 @@ from epistrel.core.states.model import (
 )
 from epistrel.core.tables import stories
 from epistrel.core.tables.states import state_changes, state_definitions
+from epistrel.core.world_clock import hooks
 from epistrel.core.world_clock.anchor import Anchor, Clockwork, Statement
 from epistrel.core.world_clock.anchor import fold as fold_anchor
 
@@ -509,7 +512,7 @@ async def advance(
             "the world clock never moves backward",
             {"story_id": story_id, "current": current, "attempted": current + wanted},
         )
-    return Advance(
+    written = Advance(
         applied.change_id,
         current,
         current + wanted,
@@ -517,6 +520,12 @@ async def advance(
         source,
         applied.valid_time_minutes,
     )
+    # The elapsed State rules run after every advance (#192): importing them registers their
+    # post-advance callback (here: they import this module).
+    from epistrel.core.states import rules  # noqa: F401
+
+    await hooks.run_post_advance(conn, op, story_id, written)
+    return written
 
 
 __all__ = [

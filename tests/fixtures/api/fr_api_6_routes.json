@@ -1278,6 +1278,26 @@
       "requirement": "FR-STATE-3"
     },
     {
+      "method": "POST",
+      "path": "/stories/{story_id}/state-proposals/analyze",
+      "requirement": "FR-STATE-3"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/state-proposals",
+      "requirement": "FR-STATE-3"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/state-proposals/{proposal_id}/approve",
+      "requirement": "FR-STATE-3"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/state-proposals/{proposal_id}/dismiss",
+      "requirement": "FR-STATE-3"
+    },
+    {
       "method": "GET",
       "path": "/admin/evals/extraction-shadow",
       "requirement": "FR-OBS-4"

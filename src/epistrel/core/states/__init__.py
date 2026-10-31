@@ -131,6 +131,7 @@ from epistrel.core.states.model import (
     Violation,
     check_change,
     coerce,
+    derived_rule,
     fold,
     from_json,
     number,
@@ -155,6 +156,10 @@ MODULE = "states"
 ON = "on"
 SETTING_PREFIX = "state:"
 """``config_changes.setting`` of a definition member: ``state:<name>.<member>``."""
+
+
+DERIVED = "derived"
+"""The ``Violation`` constraint of a change to a derived State from anything but its rule."""
 
 
 class View(StrEnum):
@@ -818,9 +823,14 @@ async def define_state(
         base_revision=op.base_revision,
         path=__name__,
     )
+    from epistrel.core.states import rules  # here: the rules apply this module's writes
+
+    await rules.check_definition(conn, story_id, checked)
     stored = checked.model_copy(update={"id": new_ulid()})
     await insert_derived(conn, state_definitions, [_definition_row(story_id, stored, op)])
     await _index_definition(conn, story_id, stored)
+    if derived_rule(stored) is not None:
+        await rules.seed_derived(conn, op, story_id, stored, operation_position(op))
     return stored
 
 
@@ -915,6 +925,10 @@ async def update_definition(
         raise StoryArchived(
             f"story {story_id} is archived; unarchive it to change it", {"story_id": story_id}
         )
+    if "rules" in changed:
+        from epistrel.core.states import rules  # here: the rules apply this module's writes
+
+        await rules.check_definition(conn, story_id, wanted)
     if "constraints" in changed:
         for value in await _scope_values(conn, story_id, current):
             broken = violation(wanted, value)
@@ -965,6 +979,14 @@ def _stored(state: StateDefinition, member: str) -> Any:
 
 
 # -- changing a value --------------------------------------------------------------------
+
+
+def operation_position(op: Operation) -> Position:
+    """Where ``op``'s writes sit by default: its inter-turn slot once its commit positioned it
+    (``core.world_clock.slots``), else its turn (0 for a position-less operation)."""
+    if op.slot and op.slot_k is not None and op.narrative_turn is not None:
+        return Position(op.narrative_turn, op.turn_variant or 0, op.slot_k)
+    return Position(op.narrative_turn or 0, op.turn_variant or 0)
 
 
 def _position(op: Operation, change: StateChange) -> Position:
@@ -1051,6 +1073,10 @@ async def apply_change(
         if r.status in COUNTED:
             running = step(running, r.kind, r.value, r.delta)
             following.append(running)
+    derived = derived_rule(state) is not None
+    if derived and change.source is not StateChangeSource.RULE:
+        # A derived State changes only by its rule (FR-STATE-7; #192).
+        return Violation(DERIVED, attempted, current)
     refused = check_change(state, change, attempted, current, following)
     if refused is not None:
         return refused
@@ -1110,11 +1136,16 @@ async def apply_change(
     await index_records(conn, [state_change_record(SimpleNamespace(**row))])
     assert state.id is not None  # noqa: S101 - a stored definition has its id
     await refresh(conn, story_id, [(state.id, change.scope_key)])
+    if counted and not derived:
+        from epistrel.core.states import rules  # here: the rules apply this module's writes
+
+        await rules.recompute_derived(conn, op, story_id, state.name, position)
     return Applied(new_id, state.id, current, attempted, position, minutes)
 
 
 __all__ = [
     "CLOCK_ADVANCE_ROUTE",
+    "DERIVED",
     "MODULE",
     "Applied",
     "ChangeRow",
@@ -1140,6 +1171,7 @@ __all__ = [
     "fold_state",
     "folded_at",
     "follow_operations",
+    "operation_position",
     "refresh",
     "require_module",
     "state_level",

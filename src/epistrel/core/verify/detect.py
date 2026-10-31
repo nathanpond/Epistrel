@@ -929,9 +929,15 @@ def _transfer(
 
 
 def _quantity_hits(beat: _Beat) -> list[tuple[int, int, TypedLiteral]]:
+    return quantity_spans(beat.text)
+
+
+def quantity_spans(text: str) -> list[tuple[int, int, TypedLiteral]]:
+    """Every amount with a known unit in ``text`` (``forty arrows`` is not one: the unit table
+    is the detector's), as ``(start, end, quantity literal)``; the unit is its lemma."""
     q = tables().quantity
     found = []
-    for match in _quantity_pattern().finditer(beat.text):
+    for match in _quantity_pattern().finditer(text):
         number = parse_number(match.group("number"))
         if number is None:
             continue
@@ -940,6 +946,12 @@ def _quantity_hits(beat: _Beat) -> list[tuple[int, int, TypedLiteral]]:
         literal = TypedLiteral(kind=LiteralKind.QUANTITY, value=number, unit=unit)
         found.append((match.start(), match.end(), literal))
     return found
+
+
+def parse_quantities(text: str) -> list[TypedLiteral]:
+    """The quantity literals in ``text`` (``quantity_spans`` without the offsets): #148's
+    deterministic parse, for a reader re-reading a detected span (#192's State proposals)."""
+    return [literal for _, _, literal in quantity_spans(text)]
 
 
 def render_quantity(literal: TypedLiteral) -> str:
@@ -1547,6 +1559,8 @@ __all__ = [
     "detect_seed",
     "merge",
     "parse_number",
+    "parse_quantities",
+    "quantity_spans",
     "render_quantity",
     "shape_hash",
     "shape_of",

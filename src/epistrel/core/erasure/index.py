@@ -796,6 +796,7 @@ SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
     # reason and text values (positional); a character-scoped change declares its character.
     SubjectWriter("state_definitions", (_STATES,), f"{_RECORDS}:read_state_definitions"),
     SubjectWriter("state_changes", (_STATES,), f"{_RECORDS}:read_state_changes"),
+    SubjectWriter("state_proposals", (f"{_STATES}.proposals",), f"{_RECORDS}:read_state_proposals"),
 )
 """Every indexed table (see the module docstring); the coverage test's source of truth."""
 

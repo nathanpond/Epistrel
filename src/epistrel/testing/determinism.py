@@ -264,6 +264,8 @@ ORDER: dict[str, str] = {
         f"{_STORY_RANK}, {_STATE_RANK}, {_SCOPE_RANK} NULLS FIRST, t.position_turn, "
         "t.position_slot_k, t.position_beat, t.position_step, t.position_variant, t.version"
     ),
+    # Engine-proposed States (#192): by name.
+    "state_proposals": f"{_STORY_RANK}, t.name",
     # The read set's change index (#136): by revision, then valid window and change kind.
     "proposition_changes": (
         f"{_STORY_RANK}, t.timeline_revision, t.tx_time, t.valid_window, t.change, t.holder"

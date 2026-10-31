@@ -223,6 +223,7 @@ from epistrel.core.tables.states import (
     STORY_SCOPE_KEY,
     state_changes,
     state_definitions,
+    state_proposals,
     state_values,
 )
 from epistrel.observability.logging import get_logger
@@ -1428,6 +1429,33 @@ async def _erase_states(
             await conn.execute(
                 update(state_definitions)
                 .where(d.id == row.id)
+                .values(name=f"{renamed[:53]}_{str(row.id).lower()}")
+            )
+    # Engine-proposed States (#192): the suggested unit and the evidence's quotes in place, and
+    # the suggested name as a declaration's (its id keeps names unique per story).
+    proposed = sorted(refs.get(state_proposals.name, set()))
+    await _redact_json_rows(
+        conn,
+        state_proposals,
+        state_proposals.c.id,
+        proposed,
+        ("suggested_unit", "evidence"),
+        redactor,
+        tally,
+        write=run.write,
+    )
+    p = state_proposals.c
+    for row in await conn.execute(select(p.id, p.name).where(p.id.in_(proposed))):
+        words = predicate_words(str(row.name))
+        new = redactor.text(words, (state_proposals.name, str(row.id), "name"))
+        if new == words:
+            continue
+        tally.record(state_proposals.name, 1)
+        if run.write:
+            renamed = "_".join(new.replace("[", "").replace("]", "").split())
+            await conn.execute(
+                update(state_proposals)
+                .where(p.id == row.id)
                 .values(name=f"{renamed[:53]}_{str(row.id).lower()}")
             )
 

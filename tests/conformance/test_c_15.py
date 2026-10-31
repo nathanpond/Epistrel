@@ -1258,6 +1258,19 @@ REPLAY_EXCLUDED: dict[str, str] = {
         )
         for operation in ("set_state", "define_state", "update_state_definition")
     },
+    **{
+        operation: (
+            "a State proposal call (#192) needs the states module, which #203 delivers: until "
+            "then C-03's story runs States off and the call answers 409 module_off (its replay "
+            "under a key is covered by test_s_state_schema__proposals, which delivers the "
+            "module)"
+        )
+        for operation in (
+            "analyze_state_proposals",
+            "approve_state_proposal",
+            "dismiss_state_proposal",
+        )
+    },
     "advance_clock": (
         "a world clock advance (#193) needs the clock module, which #203 delivers: until then "
         "C-03's story runs the clock off and the advance answers 409 module_off (its replay "

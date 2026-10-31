@@ -25,6 +25,7 @@ from epistrel.core.membership import Position
 from epistrel.core.propositions import registry as predicate_registry
 from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Interval, Proposition
+from epistrel.core.states import proposals as state_proposals
 from epistrel.core.stories import STORY_ID_EXCEPTIONS, STORY_TABLES
 from epistrel.core.tables.ownership import EntityType
 from epistrel.core.turns import beats
@@ -394,6 +395,23 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
             provenance=Provenance.SYSTEM,
         )
         await op.commit()
+
+    # An engine-proposed State (#192), written by the analysis's writer in a maintenance
+    # operation.
+    proposal_op = Operation(
+        engine, story_id=story_id, kind=OperationKind.MAINTENANCE, principal="p-author"
+    )
+
+    async def propose(conn: AsyncConnection) -> None:
+        candidate = state_proposals.Candidate(name="arrows", suggested_unit="arrows")
+        candidate.evidence.append(state_proposals.Evidence(1, new_ulid(), None, "12 arrows"))
+        await state_proposals.write(
+            conn, proposal_op, story_id, [candidate], proposal_op.operation_id
+        )
+
+    async with proposal_op:
+        proposal_op.add_commit_step(propose)
+        await proposal_op.commit()
 
 
 def _due() -> datetime:

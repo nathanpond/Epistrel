@@ -68,8 +68,16 @@ from epistrel.core.enums import (
     TimeAwareness,
 )
 from epistrel.core.epistemic.roles import REACTIVE
-from epistrel.core.errors import InvalidRequest
+from epistrel.core.errors import InvalidRequest, StateUnpermitted
 from epistrel.core.membership import Position
+from epistrel.core.states.expressions import (
+    DERIVED,
+    ELAPSED,
+    DerivedRule,
+    ElapsedRule,
+    Rule,
+    parse_rules,
+)
 
 WORLD_CLOCK: Final = "world_clock"
 """The built-in clock's name (#193): reserved, refused to every other declaration."""
@@ -788,7 +796,71 @@ def validate_definition(
             "reservation_expiry_minutes",
             "positive",
         )
+    check_rules_shape(d)
     return d.model_copy(update={"initial_value": initial, "aliases": aliases, "unit": unit})
+
+
+RULE_SOURCE: Final = StateChangeSource.RULE.value
+"""``authorization.sources``' name for a rule's changes (#188's list)."""
+
+
+def check_rules_shape(definition: StateDefinition) -> Rule | None:
+    """``definition``'s rule (FR-STATE-7; #192; ``core.states.expressions``), or 422: a rule
+    belongs to a story-scoped number State (``reason: rules_type``, ``rules_scope``); a derived
+    State has no initial value and no bounds of its own (``derived_initial``,
+    ``derived_constraints``) and does not read itself (``rules_cycle``); an elapsed one starts
+    from an initial value (``elapsed_initial``). A State whose ``authorization.sources`` omit
+    ``rule`` takes no rules: 422 ``state_unpermitted`` (``reason: source``; #188's define-time
+    check). Which States a derived one reads, and cycles through others, are
+    ``core.states.rules``' (they need the story's other States)."""
+    rule = parse_rules(definition.rules)
+    if rule is None or definition.type is StateType.CLOCK:
+        return rule
+    if definition.type is not StateType.NUMBER:
+        raise _invalid("only a number State has rules", "rules", "rules_type")
+    if definition.scope is not StateScope.STORY:
+        raise _invalid("only a story-scoped State has rules", "rules", "rules_scope")
+    sources = definition.authorization.get("sources")
+    if sources and RULE_SOURCE not in sources:
+        raise StateUnpermitted(
+            f"State {definition.name!r} has rules, but its authorization.sources omit 'rule'",
+            {"state": definition.name, "reason": "source", "source": RULE_SOURCE},
+        )
+    c = definition.constraints
+    if isinstance(rule, DerivedRule):
+        if definition.initial_value is not None:
+            raise _invalid(
+                "a derived State has no initial value: it is computed", "rules", "derived_initial"
+            )
+        if c.min is not None or c.max is not None or c.non_negative:
+            raise _invalid(
+                "a derived State has no bounds of its own", "rules", "derived_constraints"
+            )
+        if definition.name in rule.inputs:
+            raise _invalid("a derived State does not read itself", "rules", "rules_cycle")
+    elif definition.initial_value is None:
+        raise _invalid(
+            "an elapsed rule changes a value: give the State an initial value",
+            "rules",
+            "elapsed_initial",
+        )
+    return rule
+
+
+def derived_rule(definition: StateDefinition) -> DerivedRule | None:
+    """``definition``'s derived rule, if it is a derived State (its stored rules are valid)."""
+    if definition.rules.get("kind") != DERIVED:
+        return None
+    rule = parse_rules(definition.rules)
+    return rule if isinstance(rule, DerivedRule) else None
+
+
+def elapsed_rule(definition: StateDefinition) -> ElapsedRule | None:
+    """``definition``'s elapsed rule, if it has one (its stored rules are valid)."""
+    if definition.rules.get("kind") != ELAPSED:
+        return None
+    rule = parse_rules(definition.rules)
+    return rule if isinstance(rule, ElapsedRule) else None
 
 
 def world_clock_definition() -> StateDefinition:
@@ -880,6 +952,7 @@ __all__ = [
     "NUMERIC_TYPES",
     "PROSPECTIVE_MEMBERS",
     "RESERVED_NAMES",
+    "RULE_SOURCE",
     "TEXT_MAX",
     "WORLD_CLOCK",
     "Calendar",
@@ -898,7 +971,10 @@ __all__ = [
     "check_calendar",
     "check_change",
     "check_clock_settings",
+    "check_rules_shape",
     "coerce",
+    "derived_rule",
+    "elapsed_rule",
     "fold",
     "from_json",
     "hhmm_minutes",

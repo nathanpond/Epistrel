@@ -9,7 +9,8 @@ recurring ``erasure_reconcile_retry`` (#125). M4 adds ``importance_scoring`` (#1
 recurring safety net), the embedding port's ``embed`` and ``reembed`` (#138) and
 ``consolidation`` (#143), and the hot set's ``hot_set_retirement`` and its daily
 ``hot_counts_reconcile`` (#147), and claim detection's post-commit ``extraction_shadow``
-(#148, ``orchestrator.verify.extraction``). A kind
+(#148, ``orchestrator.verify.extraction``). M6 adds the on-demand State proposal analysis
+``state_proposal_analysis`` (#192). A kind
 no handler is registered for is refused at enqueue and ends ``failed`` if a worker claims one
 (a row a newer version wrote). Tests register their own handlers through ``register`` /
 ``unregister``.
@@ -46,6 +47,7 @@ from epistrel.orchestrator.jobs.handlers.retirement import (
     RECONCILE_TASK,
     RETIREMENT_HANDLER,
 )
+from epistrel.orchestrator.jobs.handlers.state_proposals import STATE_PROPOSAL_HANDLER
 from epistrel.orchestrator.jobs.handlers.turn_queue import TURN_QUEUE_HANDLER, TURN_QUEUE_TASK
 from epistrel.orchestrator.jobs.recurring import register_recurring
 from epistrel.orchestrator.jobs.types import JobHandler
@@ -89,6 +91,7 @@ for _handler in (
     RETIREMENT_HANDLER,
     RECONCILE_HANDLER,
     SHADOW_HANDLER,
+    STATE_PROPOSAL_HANDLER,
 ):
     register(_handler)
 for _task in (

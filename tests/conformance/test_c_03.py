@@ -114,6 +114,12 @@ from epistrel.api.routes.predicates import PredicateDecisionBody, PredicateListB
 from epistrel.api.routes.respond import RespondResponse
 from epistrel.api.routes.retrieval import RetrievalBody
 from epistrel.api.routes.scene import EntityProfileBody, SceneBody
+from epistrel.api.routes.state_proposals import (
+    AnalysisQueuedBody,
+    ProposalApprovedBody,
+    ProposalDismissedBody,
+    StateProposalsBody,
+)
 from epistrel.api.routes.states import (
     StateDeclaredBody,
     StateDefinitionWriteBody,
@@ -201,6 +207,7 @@ from epistrel.core.ratings.suggest import SuggestionRequest
 from epistrel.core.seeds.profiles import LITE_PRESET_ID, STRUCTURED_M4_PROFILE_ID
 from epistrel.core.seeds.ratings import EVERYONE_ID, EXPLICIT_ID
 from epistrel.core.states.api import StateDefineRequest, StateSetRequest
+from epistrel.core.states.proposals import StateProposalApproveRequest
 from epistrel.core.stories import (
     AdHocCharacter,
     CharacterWeightRequest,
@@ -234,6 +241,8 @@ PRINCIPAL = "p-parity"
 CTX = RequestContext(principal=PRINCIPAL)
 GOLD = {"name": "gold", "type": "number", "initial_value": 10}
 """A State the State steps declare (#186)."""
+PROPOSAL = "01J9Z8Q4N5V6W7X8Y9Z0A1B2D5"
+"""A State proposal id the proposal steps name (#192; refused by the module gate first)."""
 REPLY = "The innkeeper sets down a mug and says nothing."
 TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
 SIGNED = re.compile(r"([?&](?:exp|sig)=)[^&]*")
@@ -1462,6 +1471,33 @@ def _steps() -> list[Step]:
             lambda ids: Rest("PATCH", f"{s}/states/gold/definition", {"unit": "coins"}),
             lambda e, ids: _state_definition(
                 e.update_state_definition(CTX, ids["story"], "gold", {"unit": "coins"})
+            ),
+        ),
+        # #192: engine-proposed States, which the story's configuration refuses (409
+        # module_off) until #203 delivers the states module: an analysis, the list, and an
+        # approval and a dismissal (the gate answers before the proposal is looked up).
+        Step(
+            "analyze_state_proposals",
+            lambda ids: Rest("POST", f"{s}/state-proposals/analyze"),
+            lambda e, ids: _analysis_queued(e.analyze_state_proposals(CTX, ids["story"])),
+        ),
+        Step(
+            "list_state_proposals",
+            lambda ids: Rest("GET", f"{s}/state-proposals"),
+            lambda e, ids: _state_proposals(e.list_state_proposals(CTX, ids["story"])),
+        ),
+        Step(
+            "approve_state_proposal",
+            lambda ids: Rest("POST", f"{s}/state-proposals/{PROPOSAL}/approve", {"definition": {}}),
+            lambda e, ids: _proposal_approved(
+                e.approve_state_proposal(CTX, ids["story"], PROPOSAL, StateProposalApproveRequest())
+            ),
+        ),
+        Step(
+            "dismiss_state_proposal",
+            lambda ids: Rest("POST", f"{s}/state-proposals/{PROPOSAL}/dismiss"),
+            lambda e, ids: _proposal_dismissed(
+                e.dismiss_state_proposal(CTX, ids["story"], PROPOSAL)
             ),
         ),
         Step(
@@ -2826,6 +2862,22 @@ async def _state_declared(call: Awaitable[Any]) -> dict[str, Any]:
 
 async def _state_definition(call: Awaitable[Any]) -> dict[str, Any]:
     return dump(StateDefinitionWriteBody.of(await call))
+
+
+async def _analysis_queued(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(AnalysisQueuedBody.of(await call))
+
+
+async def _state_proposals(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(StateProposalsBody.of(await call))
+
+
+async def _proposal_approved(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ProposalApprovedBody.of(await call))
+
+
+async def _proposal_dismissed(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ProposalDismissedBody.of(await call))
 
 
 async def _weighted(call: Awaitable[Any]) -> dict[str, Any]:

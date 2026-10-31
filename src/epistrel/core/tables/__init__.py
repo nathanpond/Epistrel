@@ -78,6 +78,7 @@ from epistrel.core.tables.states import (
     external_values,
     state_changes,
     state_definitions,
+    state_proposals,
     state_values,
 )
 from epistrel.core.tables.stories import stories
@@ -147,6 +148,7 @@ __all__ = [
     "scene_state",
     "state_changes",
     "state_definitions",
+    "state_proposals",
     "state_values",
     "stories",
     "story_heads",

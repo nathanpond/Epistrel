@@ -59,6 +59,7 @@ from sqlalchemy import (
     SmallInteger,
     Table,
     Text,
+    UniqueConstraint,
     text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, ExcludeConstraint
@@ -72,6 +73,7 @@ from epistrel.core.enums import (
     StateContingency,
     StateCreatedBy,
     StateOwner,
+    StateProposalStatus,
     StateScope,
     StateType,
     StateVisibility,
@@ -273,6 +275,49 @@ Index(
     external_values.c.position_step,
 )
 
+state_proposals = Table(
+    "state_proposals",
+    metadata,
+    Column("id", ulid_type(), primary_key=True),
+    Column("story_id", ulid_type(), nullable=False),
+    Column("name", Text, nullable=False),
+    Column("suggested_type", pg_enum(StateType, "state_type"), nullable=False),
+    Column("suggested_scope", pg_enum(StateScope, "state_scope"), nullable=False),
+    Column("suggested_unit", Text, nullable=True),
+    Column("suggested_entity_id", ulid_type(), nullable=True),
+    Column("evidence", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    Column(
+        "status",
+        pg_enum(StateProposalStatus, "state_proposal_status"),
+        nullable=False,
+        server_default=text("'proposed'"),
+    ),
+    Column("created_by_operation_id", ulid_type(), nullable=False),
+    Column(
+        "created_at",
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("transaction_timestamp()"),
+    ),
+    Column("decided_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("decided_by", Text, nullable=True),
+    Column("definition_id", ulid_type(), nullable=True),
+    UniqueConstraint("story_id", "name"),
+    CheckConstraint("char_length(name) BETWEEN 1 AND 80", name="name"),
+    CheckConstraint("jsonb_typeof(evidence) = 'array'", name="evidence"),
+    CheckConstraint(
+        "(status = 'approved') = (definition_id IS NOT NULL)", name="approved_definition"
+    ),
+)
+"""Engine-proposed States awaiting the author (FR-STATE-3; #192, migration 0091): one row per
+recurring quantity unit or possessed entity the on-demand history analysis found with no State,
+its suggested declaration (``suggested_*``), its ``evidence`` (``[{turn, event_id, span,
+text}]``: where it recurs, quoting the beat), its ``status`` and the analysis request's
+operation (``created_by_operation_id``). Unique ``(story_id, name)`` is the analysis's
+fingerprint: a second run writes no duplicate and a ``dismissed`` row is never proposed again.
+An ``approved`` row names the definition it created (``definition_id``; no foreign key). A
+review queue, not a timeline record: no membership, and a fork does not copy it."""
+
 __all__ = [
     "ACTIVE_NAME_CONSTRAINT",
     "CLOCK_SETTINGS_CHECK",
@@ -284,5 +329,6 @@ __all__ = [
     "external_values",
     "state_changes",
     "state_definitions",
+    "state_proposals",
     "state_values",
 ]

@@ -488,13 +488,29 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "story_busy",
         "module_off",
         "state_name_taken",
+        "state_unpermitted",
         "erased_subject_referenced",
     ),
     "update_state_definition": (
         "story_archived",
         "module_off",
         "state_constraint_violation",
+        "state_unpermitted",
     ),
+    # Engine-proposed States (#192): an analysis request, the list, and the review (an approval
+    # declares the State at an inter-turn slot, as define_state does).
+    "analyze_state_proposals": ("story_archived", "story_paused", "module_off"),
+    "list_state_proposals": ("module_off",),
+    "approve_state_proposal": (
+        "story_archived",
+        "story_paused",
+        "story_busy",
+        "module_off",
+        "state_name_taken",
+        "state_unpermitted",
+        "erased_subject_referenced",
+    ),
+    "dismiss_state_proposal": ("story_archived", "story_paused", "module_off"),
     # A predicate proposal's decision (#131): an archived story's registry is read-only.
     "approve_predicate": ("story_archived",),
     "reject_predicate": ("story_archived",),

@@ -373,6 +373,12 @@ async def _state_name(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> 
     return {"name": "gold"}
 
 
+async def _state_proposal(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """A State proposal id for the proposal routes (#192), whose story runs States off until
+    #203 (the module gate answers before the id is looked up)."""
+    return {"proposal_id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2D5"}
+
+
 async def _believing(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
     """The query naming the story's non-player character, Ada, whose belief projection the
     read answers (#159): a ``query.``-prefixed value is a query parameter, not a path value."""
@@ -666,6 +672,14 @@ CALLS: dict[tuple[str, str], Call] = {
     ),
     ("POST", f"{S}/states"): Call(409, {"definition": {"name": "gold", "type": "number"}}),
     ("PATCH", f"{S}/states/{{name}}/definition"): Call(409, {"unit": "coins"}, prepare=_state_name),
+    # -- stories: engine-proposed States (#192), which the story's configuration refuses (409
+    # module_off) until #203 delivers the states module
+    ("POST", f"{S}/state-proposals/analyze"): Call(409),
+    ("GET", f"{S}/state-proposals"): Call(409),
+    ("POST", f"{S}/state-proposals/{{proposal_id}}/approve"): Call(
+        409, {"definition": {}}, prepare=_state_proposal
+    ),
+    ("POST", f"{S}/state-proposals/{{proposal_id}}/dismiss"): Call(409, prepare=_state_proposal),
     # -- stories: a character's participation role (#176)
     ("PATCH", f"{S}/characters/{{character_id}}/participation"): Call(
         200, {"role": "primary", "fixed": True}, prepare=_story_character

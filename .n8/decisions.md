@@ -9516,3 +9516,18 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Why:** /n8-exec §1 preconditions.
 - **Decision:** The 24 pre-story issues run as parallel worktree agents per batch (the batches and barriers are in `.n8/memory/m6-batched-pre-story-gate.md`). The main session posts all GitHub comments and runs the CI-equivalent sharded full suite once per batch. Feature stories (#185 onward) are gated per story.
   **Why:** The owner's 2026-10-30 test-gate decision. Agents can't edit issues in auto mode (learned in the M6 replan), so GitHub writes stay in the main session.
+- **Decision:** #537: P-09's deadline test asserts causality, not a count. The last call is the deadline `timeout` and every earlier call is `ok`, the first call is an ok generation, and fewer than 1 + 5 generations ran. The latency margin is unchanged.
+  **Why:** A wider margin only moves the race. The causal form accepts both shapes the deadline can cut: CI's (the first guardrail cut) and the usual one (the second generation cut). Under an injected slow first guardrail, the old assertion reproduced CI's `assert 1 >= 2`, and the new one passes.
+  **Issue:** #537
+- **Decision:** #514: one explicit `@example` per regen case (revert, reopen, reroll, restore), each checked against its own `Tally` counter. `CASES` must cover every `Tally` field, and the example count is `EXAMPLES + len(CASES)`. The random draws are kept, not derandomized.
+  **Why:** The complement then holds by construction, and a removed case fails deterministically. One run shows only 2 reopens in 64 draws, so the old check ran close to zero.
+  **Issue:** #514
+- **Decision:** #517: test helpers record what they write (`tests/takeback_support.py`). An autouse finaliser in `tests/conftest.py` takes it back after every test: it removes the override keys the helper set, moves stories off recorded profiles to Structured (unpinned), and soft-deletes those profiles. The interim `_forget_m5_modules` in `test_lite_defaults_write_is_recorded` is removed.
+  **Why:** About 40 files call these helpers, and a fixture each test must request can be forgotten, which is how the leftovers happened. The polluting order passes, 29 tests.
+  **Issue:** #517
+- **Decision:** #468: `EngineProcess`'s child binds its own socket, port 0 on the first start, and reports the port. `start()` retries on a fresh port (3 attempts) if the port is taken, which covers restarts, since they ask for the old port. X-07's workers can't take port 0 (`Settings.port` is `ge=1`, a product setting left alone), so they treat uvicorn's "running on" log line as proof of the bind and restart on a fresh port after "address already in use".
+  **Why:** Port 0 closes the race on the first start. A restart has to keep its `base_url`, so it still needs the retry. Widening the CLI's port range is outside the issue.
+  **Issue:** #468
+- **Decision:** #446: the sites that could flake now use condition waits. Two were real flakes: `test_turn_concurrency`'s `drainer.idle()` after a sleep, and `test_jobs`'s lease renewal. X-07's "within one poll interval" is checked against the worker loop's own record (a test-local `LoopLog`), not a 0.8 s wall-clock bound. "Did not hang" bounds became outer `wait_for(30 s)` calls, with the reason proving the cause. P-09's and X-05's bounds stay, because there the bound is the requirement (NFR-PERF-6, NFR-REL-3). One unlisted site, `test_policy_evaluate`'s `< 1.0`, was fixed too (Rule 1). The coverage gap found on the way, where duplicate-wait tests can pass without waiting, is filed as #609.
+  **Why:** The issue's suggested fix, and a mutation check shows that the `LoopLog` assertions catch a loop that waits three intervals.
+  **Issue:** #446

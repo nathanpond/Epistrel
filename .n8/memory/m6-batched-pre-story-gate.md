@@ -16,3 +16,9 @@ One full `uv run pytest` (with CI's coverage gate) over the batch's head. Tick a
 
 ## Metrics to record
 For each batch: full-run wall time, attempts, failures, how each was attributed, rework minutes, and failures the per-issue subsets missed. Compare against per-issue full runs at the current suite time (about 19 min sharded).
+
+## Metrics (filled in during /n8-exec M6)
+
+| Batch | Head | Full-run wall | Attempts | Failures | Attribution | Rework | Missed by per-issue subsets |
+|---|---|---|---|---|---|---|---|
+| 1 flakes (#537 #514 #517 #446 #468) | b47fe89 → 7923759 | 24.7 min (12 shards ×6) + `rest` re-run 4.1 min | 2 (the `rest` shard only) | 2 tests + the check-lexicon gate, one cause | By test name, to #446: "clock" (an M6 term) in three M2-part comments | ~5 min (comment rewording) | 1 (the agent didn't run check-lexicon) |

@@ -58228,7 +58228,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `validation_error`."
+            "description": "Invalid request; nothing was written: `validation_error`, `viewpoint_unresolved`."
           },
           "503": {
             "content": {
@@ -63318,7 +63318,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `validation_error`."
+            "description": "Invalid request; nothing was written: `validation_error`, `viewpoint_unresolved`."
           },
           "503": {
             "content": {

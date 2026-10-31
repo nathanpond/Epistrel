@@ -513,6 +513,9 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "history": ("omniscient_required", "viewpoint_unresolved", "unknown_chain"),
     "retrieve": ("omniscient_required", "viewpoint_unresolved"),
     "get_story": ("viewpoint_unresolved",),
+    # The structured state reads (#137): no viewpoint resolves (#536).
+    "scene": ("viewpoint_unresolved",),
+    "entity_profile": ("viewpoint_unresolved",),
     "get_operation": (
         "idempotency_conflict",
         "viewpoint_unresolved",

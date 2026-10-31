@@ -1672,7 +1672,14 @@ async def _check_turn(
         ]
         speakers = list(dict.fromkeys([input_speaker, read.character.id, *reactors]))
         env = await extraction.load_env(
-            conn, story_id, read_set, position=(turn, 0), speakers=speakers, config=config
+            conn,
+            story_id,
+            read_set,
+            position=(turn, 0),
+            speakers=speakers,
+            config=config,
+            # #483: the replies answer the input's actor, whose beat is not in the window yet.
+            addressed=read.actor.id,
         )
     introductions = Introductions() if introductions is None else introductions
     env = replace(env, introductions=introductions).with_private(_turn_thoughts(rendered.beats))
@@ -3271,6 +3278,7 @@ async def compose_turn(
                 position=(read.turn, 0),
                 speakers=[speaker],
                 config=config,
+                addressed=read.actor.id,
             )
             # The message names the turn's places and objects by the beats' minted ids (#479),
             # and is scanned for the turn's private thoughts too (#172).

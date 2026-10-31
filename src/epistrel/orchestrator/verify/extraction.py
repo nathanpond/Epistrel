@@ -251,10 +251,13 @@ async def load_env(
     speakers: Sequence[str],
     config: DetectionConfig | None = None,
     registry: Registry | None = None,
+    addressed: str | None = None,
 ) -> DetectionEnv:
     """The detection environment of one turn, built once at plan time: the registry, the
     resolution context and protected index of each speaker (remembered for the rebase
-    re-check), the scene's place and placements, and the open thunks."""
+    re-check), the scene's place and placements, and the open thunks. ``addressed`` (#483):
+    the turn's input actor, whom every context's ``you`` may name
+    (``ResolutionContext.addressed``)."""
     config = config or await DetectionConfig.load(conn, story_id)
     registry = registry or await load(conn, story_id)
     basis = await load_time_basis(conn, story_id)
@@ -267,7 +270,7 @@ async def load_env(
     reads: CanonReads = {}
     shared: SharedContext = {}
     for speaker in dict.fromkeys([*speakers, NARRATOR]):
-        contexts[speaker] = await load_context(
+        context = await load_context(
             conn,
             story_id,
             position=position,
@@ -279,6 +282,9 @@ async def load_env(
             identities=await speaker_identities(
                 lookup, story_id, speaker, through_position=(turn, 0)
             ),
+        )
+        contexts[speaker] = (
+            context if addressed is None else replace(context, addressed=frozenset({addressed}))
         )
         protected[speaker] = await load_protected_index(
             conn,
@@ -1122,6 +1128,13 @@ async def _run_shadow(ctx: JobContext) -> JobOutput:
         settings = (await effective_configuration(conn, story_id, validate=False)).settings
         routes = routes_of(settings)
         speakers = [str(r.get("speaker") or NARRATOR) for r in skipped]
+        # #483: the turn's input actor, as the live check resolved ``you`` against.
+        actor = await conn.scalar(
+            select(events.c.character_id).where(
+                events.c.operation_id == payload.operation_id,
+                events.c.type == "player_input",
+            )
+        )
         env = await load_env(
             conn,
             story_id,
@@ -1129,6 +1142,7 @@ async def _run_shadow(ctx: JobContext) -> JobOutput:
             position=(turn, 0),
             speakers=speakers,
             config=DetectionConfig.of(settings),
+            addressed=None if actor is None else str(actor),
         )
         beats: dict[int | None, DetectBeat] = {}
         for r in skipped:

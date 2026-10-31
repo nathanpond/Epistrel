@@ -77,7 +77,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import cache
 from importlib import resources
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 from epistrel.core.commit.sketch import ThunkSketch, fills
 from epistrel.core.propositions.model import (
@@ -1019,6 +1019,72 @@ def _times(beat: _Beat, scene_entity: str | None) -> list[tuple[str, ClaimSketch
     return found
 
 
+_WEEKDAYS: Final = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+
+
+def _clock_statements(
+    beat: _Beat, env: DetectionEnv
+) -> list[tuple[str, ClaimSketch, tuple[int, int]]]:
+    """#195, with the world clock on only (a clock-off story detects as in M4): a greeting
+    naming a time-of-day band ("good evening") is a ``time_of_day_band`` claim, and "it is
+    (was) <weekday> [<band>]" or "it is <band>" a ``time_is`` claim of the day and band as
+    said; both of the scene's place, both clock checks (``core.world_clock.verify``)."""
+    from epistrel.core.world_clock.anchor import Anchor
+
+    anchor = env.basis.anchor
+    weekdays = anchor.clockwork.weekdays if isinstance(anchor, Anchor) else _WEEKDAYS
+    bands = [b[0].casefold() for b in env.basis.bands or ()] or [
+        "morning",
+        "afternoon",
+        "evening",
+        "night",
+    ]
+    band = "|".join(re.escape(b) for b in sorted(set(bands), key=len, reverse=True))
+    day = "|".join(re.escape(w) for w in sorted(weekdays, key=len, reverse=True))
+    found: list[tuple[str, ClaimSketch, tuple[int, int]]] = []
+    greeting = re.compile(rf"(?<![\w'\u2019])good\s+(?P<band>{band})(?![\w'\u2019])", re.I)
+    for match in greeting.finditer(beat.text):
+        if match.group("band").casefold() == "night":
+            continue  # a farewell, not a time of day
+        beat.hit("time")
+        found.append(
+            (
+                "time",
+                ClaimSketch(
+                    relation_text="time_of_day_band",
+                    subject_id=env.scene_entity,
+                    literal=TypedLiteral(
+                        kind=LiteralKind.STR, value=match.group("band").casefold()
+                    ),
+                    span=match.span(),
+                ),
+                match.span(),
+            )
+        )
+    stated = re.compile(
+        rf"(?<![\w'\u2019])it(?:\s+(?:is|was)|['\u2019]s)\s+(?:now\s+)?(?:a\s+)?"
+        rf"(?P<said>(?:{day})(?:\s+(?:{band}))?|(?:{band}))(?![\w'\u2019])",
+        re.I,
+    )
+    for match in stated.finditer(beat.text):
+        beat.hit("time")
+        found.append(
+            (
+                "time",
+                ClaimSketch(
+                    relation_text="time_is",
+                    subject_id=env.scene_entity,
+                    literal=TypedLiteral(
+                        kind=LiteralKind.STR, value=" ".join(match.group("said").split()).casefold()
+                    ),
+                    span=match.span("said"),
+                ),
+                match.span("said"),
+            )
+        )
+    return found
+
+
 def _mentions(
     beat: _Beat, covered: set[str], scene_entity: str | None, *, seed: bool
 ) -> list[tuple[str, ClaimSketch | Unnormalizable, tuple[int, int]]]:
@@ -1139,6 +1205,8 @@ def _detect_beat(
     _verb_hits(work, env.registry, env)
     lone = _quantities(work)
     lone += _times(work, env.scene_entity)
+    if env.basis.advances is not None:
+        lone += _clock_statements(work, env)
     mention_claims = _mentions(work, _declared_ids(beat), env.scene_entity, seed=seed)
     found_claims: list[DetectedClaim] = []
     for i, (category, sketch, _span) in enumerate([*work.sketches, *lone]):

@@ -45,13 +45,14 @@ change whose folded result breaks a constraint is refused with that constraint.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from epistrel.core.enums import (
     ClockMode,
@@ -177,6 +178,138 @@ DEFAULT_BANDS: tuple[tuple[str, str, str], ...] = (
 )
 """FR-CLOCK-3's time-of-day bands, ``(name, from, to)`` (#195 reads them)."""
 _HHMM = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$|^24:00$")
+GREGORIAN: Final = "gregorian"
+"""The default calendar's stored form (``state_definitions.calendar``)."""
+CALENDAR_MAX_MONTHS = 64
+CALENDAR_MAX_WEEKDAYS = 32
+
+
+class CalendarMonth(BaseModel):
+    """One month of a custom calendar: its name and its length in days."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str = Field(min_length=1, max_length=ALIAS_MAX)
+    days: int = Field(ge=1, le=1000)
+
+
+class Calendar(BaseModel):
+    """The clock's calendar (FR-CLOCK-4; #195): ``{kind: gregorian}`` (the default) or ``{kind:
+    custom, day_minutes, months: [{name, days}], weekdays: [names], year_days}``. Stored in the
+    ``calendar`` text column as ``gregorian`` or the custom calendar's JSON (``stored``); read
+    back from either form, or from the object (``of``)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: Literal["gregorian", "custom"] = "gregorian"
+    day_minutes: int | None = Field(default=None, ge=60, le=100_000)
+    months: tuple[CalendarMonth, ...] | None = None
+    weekdays: tuple[str, ...] | None = None
+    year_days: int | None = Field(default=None, ge=1, le=100_000)
+
+    @classmethod
+    def of(cls, raw: Any) -> Calendar:
+        """``raw`` (a ``Calendar``, ``"gregorian"``, a stored custom calendar's JSON, or the
+        object) as a calendar."""
+        if isinstance(raw, Calendar):
+            return raw
+        if raw is None or raw == GREGORIAN:
+            return cls()
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except ValueError:
+                raise _invalid(
+                    "a calendar is gregorian or a custom calendar", "calendar", "kind"
+                ) from None
+        return cls.model_validate(raw)
+
+    @property
+    def gregorian(self) -> bool:
+        return self.kind == "gregorian"
+
+    def document(self) -> dict[str, Any]:
+        """The calendar as the API shows it."""
+        if self.gregorian:
+            return {"kind": GREGORIAN}
+        return {
+            "kind": "custom",
+            "day_minutes": self.day_minutes,
+            "months": [{"name": m.name, "days": m.days} for m in self.months or ()],
+            "weekdays": list(self.weekdays or ()),
+            "year_days": self.year_days,
+        }
+
+    def stored(self) -> str:
+        """The ``calendar`` column's text."""
+        if self.gregorian:
+            return GREGORIAN
+        return json.dumps(self.document(), separators=(",", ":"))
+
+
+def check_calendar(calendar: Calendar) -> Calendar:
+    """A calendar's shape rules (422 ``validation_error``, field ``calendar``): a Gregorian one
+    names nothing else; a custom one names its day length, at least one month (each named
+    once), its weekdays (each named once) and a year length equal to its months' days."""
+    if calendar.gregorian:
+        named = (calendar.day_minutes, calendar.months, calendar.weekdays, calendar.year_days)
+        if any(x is not None for x in named):
+            raise _invalid("the Gregorian calendar takes no other members", "calendar", "shape")
+        return calendar
+    if calendar.day_minutes is None or calendar.year_days is None:
+        raise _invalid(
+            "a custom calendar names its day_minutes and year_days", "calendar", "required"
+        )
+    months = calendar.months or ()
+    weekdays = calendar.weekdays or ()
+    if not 1 <= len(months) <= CALENDAR_MAX_MONTHS:
+        raise _invalid(f"a calendar has 1 to {CALENDAR_MAX_MONTHS} months", "calendar", "months")
+    if not 1 <= len(weekdays) <= CALENDAR_MAX_WEEKDAYS:
+        raise _invalid(
+            f"a calendar has 1 to {CALENDAR_MAX_WEEKDAYS} weekdays", "calendar", "weekdays"
+        )
+    for names, field in (([m.name for m in months], "months"), (list(weekdays), "weekdays")):
+        if any(not n.strip() or len(n) > ALIAS_MAX for n in names):
+            raise _invalid(f"a name is 1 to {ALIAS_MAX} characters", "calendar", field)
+        if len({n.casefold() for n in names}) != len(names):
+            raise _invalid("a calendar's names are unique", "calendar", field)
+    if sum(m.days for m in months) != calendar.year_days:
+        raise _invalid("a year's days are its months' days", "calendar", "year_days")
+    return calendar
+
+
+def hhmm_minutes(value: str) -> int:
+    """``"HH:MM"`` as minutes from midnight (``"24:00"`` is 1440)."""
+    hours, minutes = value.split(":")
+    return int(hours) * 60 + int(minutes)
+
+
+def check_bands(bands: Sequence[Sequence[str]]) -> None:
+    """The time-of-day bands' shape rules (FR-CLOCK-3,4; 422 ``validation_error``, field
+    ``bands``): each is ``(name, from, to)`` with ``HH:MM`` times and ``from`` before ``to``,
+    and together, in order, they tile the day: the first starts at 00:00, each starts where the
+    one before ends, and the last ends at 24:00 (a custom calendar's day is scaled to it)."""
+    if not bands:
+        raise _invalid("the clock names its time-of-day bands", "bands", "required")
+    ranges: list[tuple[int, int]] = []
+    for band in bands:
+        if len(band) != 3:
+            raise _invalid("a band is [name, from, to]", "bands", "shape")
+        name, begins, ends = band
+        if not name.strip() or len(name) > ALIAS_MAX:
+            raise _invalid(f"a band's name is 1 to {ALIAS_MAX} characters", "bands", "name")
+        if not (_HHMM.match(begins) and _HHMM.match(ends)) or begins == "24:00" or begins >= ends:
+            raise _invalid("a band runs from one HH:MM to a later one", "bands", "times")
+        ranges.append((hhmm_minutes(begins), hhmm_minutes(ends)))
+    ranges.sort()
+    end = 0
+    for lo, hi in ranges:
+        if lo != end:
+            raise _invalid("the bands tile the day: no gap and no overlap", "bands", "tiling")
+        end = hi
+    if end != 1440:
+        raise _invalid("the bands tile the day: the last ends at 24:00", "bands", "tiling")
+
 
 Value = Decimal | bool | str
 
@@ -248,7 +381,12 @@ class ClockSettings(BaseModel):
     elapsed_tolerance_factor: Decimal = Field(default=Decimal(2), ge=1)
     time_awareness: TimeAwareness = TimeAwareness.EXACT
     bands: tuple[tuple[str, str, str], ...] = DEFAULT_BANDS
-    calendar: Literal["gregorian"] = "gregorian"
+    calendar: Calendar = Field(default_factory=Calendar)
+
+    @field_validator("calendar", mode="before")
+    @classmethod
+    def _calendar(cls, raw: Any) -> Calendar:
+        return Calendar.of(raw)
 
     def document(self) -> dict[str, Any]:
         """Every setting as JSON (each the ``state_definitions`` column of its name)."""
@@ -263,7 +401,7 @@ class ClockSettings(BaseModel):
             "elapsed_tolerance_factor": to_json(self.elapsed_tolerance_factor),
             "time_awareness": self.time_awareness.value,
             "bands": [list(band) for band in self.bands],
-            "calendar": self.calendar,
+            "calendar": self.calendar.stored(),
         }
 
 
@@ -282,13 +420,8 @@ def check_clock_settings(settings: ClockSettings) -> ClockSettings:
             )
         if end is not None and (end <= start or table[index + 1][0] != end):
             raise _invalid("the pacing table's rows are contiguous", "pacing_table", "shape")
-    if not settings.bands:
-        raise _invalid("the clock names its time-of-day bands", "bands", "required")
-    for name, begins, ends in settings.bands:
-        if not name.strip() or len(name) > ALIAS_MAX:
-            raise _invalid(f"a band's name is 1 to {ALIAS_MAX} characters", "bands", "name")
-        if not (_HHMM.match(begins) and _HHMM.match(ends)) or begins == "24:00" or begins >= ends:
-            raise _invalid("a band runs from one HH:MM to a later one", "bands", "times")
+    check_calendar(settings.calendar)
+    check_bands(settings.bands)
     if not _digits_ok(settings.elapsed_tolerance_factor):
         raise _invalid(
             f"a number has at most {DIGITS_MAX} significant digits",
@@ -737,6 +870,7 @@ __all__ = [
     "COUNTED",
     "DEFAULT_BANDS",
     "DEFAULT_PACING_TABLE",
+    "GREGORIAN",
     "IMMUTABLE_MEMBERS",
     "INTERPRETIVE_MEMBERS",
     "NUMERIC_TYPES",
@@ -744,6 +878,8 @@ __all__ = [
     "RESERVED_NAMES",
     "TEXT_MAX",
     "WORLD_CLOCK",
+    "Calendar",
+    "CalendarMonth",
     "ChangeRow",
     "ClockSettings",
     "Constraints",
@@ -754,11 +890,14 @@ __all__ = [
     "UndefinedType",
     "Value",
     "Violation",
+    "check_bands",
+    "check_calendar",
     "check_change",
     "check_clock_settings",
     "coerce",
     "fold",
     "from_json",
+    "hhmm_minutes",
     "number",
     "step",
     "to_json",

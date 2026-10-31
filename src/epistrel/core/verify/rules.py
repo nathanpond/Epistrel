@@ -202,8 +202,10 @@ from epistrel.core.propositions.registry import (
     Registry,
     canonical,
     cardinality_may_contradict,
+    conditional_owner,
     imply,
     load,
+    owner_active,
     owner_lookup,
     same_event,
 )
@@ -262,6 +264,8 @@ class VerdictReason(StrEnum):
     WEAK_SEMANTICS = "weak_semantics"
     WORLD_KNOWLEDGE = "world_knowledge"
     ARGUMENT_TYPE = "argument_type"
+    NO_CLOCK = "no_clock"
+    """#195: a clock check on a story that does not run the clock."""
 
 
 class Rule(StrEnum):
@@ -290,6 +294,7 @@ CONFIDENCE: Mapping[VerdictReason, float] = {
     VerdictReason.UNRESOLVED_PREDICATE: 0.0,
     VerdictReason.UNRESOLVED_ENTITY: 0.0,
     VerdictReason.UNRESOLVED_TIME: 0.0,
+    VerdictReason.NO_CLOCK: 0.0,
 }
 """``Verdict.confidence`` of an ``uncertain`` verdict, by reason; rule verdicts are 1.0."""
 
@@ -1273,6 +1278,8 @@ def _forward(claim: Proposition, predicate: Predicate, ctx: _Context) -> tuple[_
         if consequent is None:
             continue
         hook = owner_lookup(derived.predicate_id)
+        if hook is not None and conditional_owner(derived.predicate_id) and not ctx.owned:
+            hook = None  # #195: a conditional owner its story does not run (facts decide)
         if hook is not None:
             # #191 (ADR-160): a consequence on an owner-lookup predicate is checked against the
             # owner's value, never against records; only a canon holder reads the owner.
@@ -1520,7 +1527,7 @@ def check(
     canon = holder.kind == "canon"
     ctx = _Context.build(records, closed_sets, registry, options, owned, canon=canon)
     hook = owner_lookup(predicate.id)
-    if hook is not None and canon:
+    if hook is not None and canon and (ctx.owned or not conditional_owner(predicate.id)):
         # #191: an owner-lookup predicate takes part only through its lookup (FR-VERIFY-7).
         settled = hook.verdict(ctx.norm(claim), ctx.owned)
         if settled.kind is VerdictKind.CONTRADICTED and not options.contradictions:
@@ -1689,7 +1696,7 @@ async def check_with(
     async def read_owned(predicate_id: str, subjects: Sequence[str] | None) -> list[OwnedValue]:
         return await lookup.owned(story_id, predicate_id, subjects, through, canon_viewpoint)
 
-    if holder.kind != "belief" and owner_lookup(c.predicate_id) is not None:
+    if holder.kind != "belief" and await owner_active(c.predicate_id, lookup.conn, story_id):
         # #191: a canon holder's claim on an owner-lookup predicate reads the owner's values
         # (never a fact): the claim's subject, ``same_as``-expanded as any other read.
         subjects = {c.subject_id}
@@ -1855,9 +1862,15 @@ async def _gather(
                 if then is None:
                     continue
                 if owner_lookup(x) is not None:
-                    if read_owned is not None and owned is not None:
-                        owned += await read_owned(x, subject_set)
-                    continue
+                    found_owned = (
+                        await read_owned(x, subject_set)
+                        if read_owned is not None and owned is not None
+                        else []
+                    )
+                    if owned is not None:
+                        owned += found_owned
+                    if found_owned or not conditional_owner(x):
+                        continue
                 records += await read(x, subject_set, _window(c.valid_time), None)
                 closed += await closed_sets_for(lookup.conn, story_id, x)
                 if then.containment_of is not None:
@@ -2010,6 +2023,9 @@ register_rebase_check(recheck)
 # #191: ``state_value``'s owner lookup registers itself on import (``core.states.verify``
 # imports this module, so it is imported here, after every name it reads is defined).
 from epistrel.core.states import verify as _state_verify  # noqa: E402, F401
+
+# #195: the clock checks' owner lookup (``time_is`` while the story runs the clock).
+from epistrel.core.world_clock import verify as _clock_verify  # noqa: E402, F401
 
 __all__ = [
     "CANON",

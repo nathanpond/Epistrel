@@ -27,6 +27,13 @@ resolves one, purely and deterministically:
   Monday``) need the story's calendar anchor (``stories.story_epoch``): without one they are
   ``uncertain(no_calendar)``; a bare date takes the position's year; a year is a year-granule
   instant;
+- **with the world clock on** (#195) the basis carries the clock's partial ``anchor`` and its
+  time-of-day ``bands``: its epoch is set only by an anchor that fixes the full date and time,
+  so month and year granules decide nothing before that; a weekday expression resolves against
+  the anchor's weekday at "now" (``uncertain(no_calendar)`` while the anchor leaves it unknown),
+  and times of day (``this morning``, ``last night``, ``tonight``) are the bands' intervals on
+  the day the anchor places "now" in, approximate when the anchor gives only a range of the day
+  and ``uncertain(no_calendar)`` when it gives none. A clock-off story resolves as in M4;
 - ``when he was seven`` uses the subject's ``born`` fact (its granule's start; a granule
   coarser than a day, or an age fact, adds ± 1 year) or an ``age`` fact's valid-time (birth ≈
   its start - age); neither is ``uncertain(no_anchor)``. The caller reads those facts through
@@ -46,7 +53,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import cache
 from importlib import resources
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from epistrel.core.membership import Position as NarrativePosition
 from epistrel.core.propositions.model import (
@@ -68,6 +75,9 @@ from epistrel.core.resolution.types import (
     TimeResolution,
     Uncertain,
 )
+
+if TYPE_CHECKING:
+    from epistrel.core.world_clock.anchor import Anchor
 
 STORY_MINUTES_PER_TURN = 10
 """M4's default story-minutes a narrative turn advances, until the world clock lands (M6)."""
@@ -97,6 +107,10 @@ class TimeBasis:
     minutes_per_turn: int = STORY_MINUTES_PER_TURN
     epoch: datetime | None = None
     advances: tuple[Advance, ...] | None = None
+    anchor: Anchor | None = None
+    """#195: the clock's anchor (``None``: the clock is off, or nothing is anchored)."""
+    bands: tuple[tuple[str, str, str], ...] | None = None
+    """#195: the clock's time-of-day bands (``None``: the clock is off; the grammar's own)."""
 
     def at(self, position: Position) -> int:
         """The story-minute of ``position``, the moment it starts: ``minute_zero`` plus the
@@ -339,6 +353,10 @@ def resolve_time(
     if rule.kind == "day":
         start = _day_start(now, int(params["days"]), epoch)
         return _resolved(Instant.of(start, Granularity.DAY, epoch), now, rule.name)
+    if rule.kind == "time_of_day" and basis.bands is not None:
+        return _clock_time_of_day(rule, groups, params, now, basis)
+    if rule.kind == "weekday" and basis.bands is not None and epoch is None:
+        return _clock_weekday(rule, groups, now, basis)
     if rule.kind == "time_of_day":
         day_word = params.get("day") or " ".join(str(groups.get("day") or "").split())
         days = int(raw["day_words"].get(day_word, 0))
@@ -381,6 +399,118 @@ def resolve_time(
     if epoch is None:
         return _uncertain(ReasonCode.NO_CALENDAR, rule.name)
     return _calendar_time(rule, groups, now, epoch)
+
+
+def _day_starts(now: int, basis: TimeBasis) -> tuple[int, int, int] | None:
+    """With the clock on: the earliest and latest story-minute "now"'s day may start at, and
+    the day's length (``None`` when the anchor places "now" nowhere in the day)."""
+    from epistrel.core.world_clock.anchor import Anchor
+
+    anchor = basis.anchor
+    if not isinstance(anchor, Anchor):
+        return None
+    found = anchor.absolute_at(now - basis.minute_zero)
+    day = anchor.clockwork.day_minutes
+    minutes = [m for s in found.segments for m in (s.lo, s.hi - 1)]
+    if not minutes or (
+        len(found.segments) == 1 and found.segments[0].hi - found.segments[0].lo >= day
+    ):
+        return None
+    days = {s.day for s in found.segments}
+    if len(days) > 1:
+        # Across midnight: count the earlier day's minutes back from midnight.
+        first = min(days)
+        minutes = [
+            m - (day if s.day == first else 0) for s in found.segments for m in (s.lo, s.hi - 1)
+        ]
+    return now - max(minutes), now - min(minutes), day
+
+
+def _span(lo_start: int, hi_start: int, begin: int, end: int) -> Interval | None:
+    """``[day start + begin, day start + end)`` over the admissible day starts: exact when the
+    day start is, else approximate (``None`` when no minute is certainly inside)."""
+    if lo_start == hi_start:
+        return Interval.of(lo_start + begin, lo_start + end)
+    if hi_start + begin >= lo_start + end:
+        return None
+    return Interval(
+        start=Bound(inner=hi_start + begin, outer=lo_start + begin),
+        end=Bound(inner=lo_start + end, outer=hi_start + end),
+    )
+
+
+def _band_span(
+    name: str, bands: Sequence[tuple[str, str, str]], day: int
+) -> tuple[int, int] | None:
+    """Band ``name``'s span on a day of ``day`` minutes; a band that wraps past midnight (the
+    night) runs from its late tile into the next day."""
+    tiles = sorted(
+        (int(lo[:2]) * 60 + int(lo[3:]), int(hi[:2]) * 60 + int(hi[3:]))
+        for n, lo, hi in bands
+        if n.casefold() == name
+    )
+    if not tiles:
+        return None
+    tiles = [(lo * day // 1440, hi * day // 1440) for lo, hi in tiles]
+    late = tiles[-1]
+    if late[1] == day and tiles[0][0] == 0 and len(tiles) > 1:
+        return late[0], day + tiles[0][1]
+    return late
+
+
+def _clock_time_of_day(
+    rule: _Rule, groups: Mapping[str, Any], params: Mapping[str, Any], now: int, basis: TimeBasis
+) -> TimeResolution:
+    raw = grammar().raw
+    day_word = params.get("day") or " ".join(str(groups.get("day") or "").split())
+    days = int(raw["day_words"].get(day_word, 0))
+    tod = str(params.get("tod") or groups.get("tod"))
+    starts = _day_starts(now, basis)
+    if starts is None:
+        return _uncertain(ReasonCode.NO_CALENDAR, rule.name)
+    lo_start, hi_start, day = starts
+    bands = basis.bands or ()
+    if tod == "tonight":
+        evening = _band_span("evening", bands, day)
+        night = _band_span("night", bands, day)
+        span = None if evening is None or night is None else (evening[0], max(night[1], evening[1]))
+    else:
+        span = _band_span(tod, bands, day)
+        if tod == "night" and day_word in ("this", "today", "in the"):
+            days = 0
+    if span is None:
+        return _uncertain(ReasonCode.UNRESOLVED_TIME, rule.name)
+    shift = days * day
+    valid = _span(lo_start + shift, hi_start + shift, span[0], span[1])
+    if valid is None:
+        return _uncertain(ReasonCode.NO_CALENDAR, rule.name)
+    return _resolved(valid, now, rule.name)
+
+
+def _clock_weekday(
+    rule: _Rule, groups: Mapping[str, Any], now: int, basis: TimeBasis
+) -> TimeResolution:
+    from epistrel.core.world_clock.anchor import Anchor, Exact
+
+    anchor = basis.anchor
+    starts = _day_starts(now, basis)
+    if not isinstance(anchor, Anchor) or starts is None:
+        return _uncertain(ReasonCode.NO_CALENDAR, rule.name)
+    found = anchor.absolute_at(now - basis.minute_zero)
+    weekday = found.weekday
+    names = anchor.clockwork.weekdays
+    target_name = str(groups["weekday"])
+    if not isinstance(weekday, Exact) or target_name not in names:
+        return _uncertain(ReasonCode.NO_CALENDAR, rule.name)
+    today = names.index(str(weekday.value))
+    target = names.index(target_name)
+    week = {"last": -1, "next": 1}.get(str(groups.get("which") or ""), 0)
+    delta = len(names) * week + target - today
+    lo_start, hi_start, day = starts
+    valid = _span(lo_start + delta * day, hi_start + delta * day, 0, day)
+    if valid is None:
+        return _uncertain(ReasonCode.NO_CALENDAR, rule.name)
+    return _resolved(valid, now, rule.name)
 
 
 def _calendar_time(

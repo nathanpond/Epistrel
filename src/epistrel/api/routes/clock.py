@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from epistrel.api.deps import ContextDep, EngineDep, StoryId
 from epistrel.api.idempotency import answered
 from epistrel.api.responses import MutationResponse
+from epistrel.core.states.model import Calendar
 from epistrel.core.world_clock import ClockValue
 from epistrel.core.world_clock.service import (
     ClockAdvanceRequest,
@@ -33,7 +34,8 @@ router = APIRouter(prefix="/stories", tags=["stories"])
 
 class ClockValueBody(BaseModel):
     """The clock at one point: its exact ``offset`` in minutes from the story's start, and its
-    ``display`` (``+HHh MMm`` from the start while the anchor fixes no hour)."""
+    ``display`` (``+HHh MMm`` from the start, then the anchor's known components and ranges, if
+    any: a date or minute the story has not established is never shown)."""
 
     offset: int
     display: str
@@ -73,7 +75,7 @@ class ClockSettingsBody(BaseModel):
     elapsed_tolerance_factor: float
     time_awareness: Literal["exact", "approximate", "none"]
     bands: list[list[str]]
-    calendar: str
+    calendar: dict[str, Any]
 
 
 class ClockBody(BaseModel):
@@ -134,7 +136,7 @@ class ClockPatch(BaseModel):
     stop_at_due_events: bool | None = None
     time_awareness: Literal["exact", "approximate", "none"] | None = None
     bands: list[list[str]] | None = None
-    calendar: Literal["gregorian"] | None = None
+    calendar: Literal["gregorian"] | Calendar | None = None
 
 
 class ClockSettingsWriteBody(MutationResponse):
@@ -162,8 +164,12 @@ class ClockSettingsWriteBody(MutationResponse):
         "The story's world clock as it stands (FR-CLOCK-1,13): every story has one, created "
         "with it, and it cannot be deleted. `offset` is its exact value in minutes from the "
         "story's start (the fold of its active advances, so a truncation, a swap and a fork "
-        "move it with everything else), `display` renders it (`+HHh MMm` while unanchored), "
-        "`anchor` is its absolute date and time where established (null: unanchored). `level` "
+        "move it with everything else), `display` renders it (`+HHh MMm`, then what the anchor "
+        "establishes: `+02h 10m (Saturday, between 05:00 and 12:00 (morning))`), `anchor` is "
+        "its partial absolute time: each of year, month, day, weekday, band, hour and minute a "
+        "value, a `[lo, hi]` range or null (unknown), never a value the story has not "
+        "established (null: unanchored). The settings' `calendar` is `{kind: gregorian}` or "
+        "`{kind: custom, day_minutes, months, weekdays, year_days}`. `level` "
         "is the level the story's configuration runs it at: `off` makes it inert (no advance "
         "is written, and story-time follows the clock-off rule), `prompt_only` writes advances "
         "and verifies nothing, `on` runs it all. `mode` and `settings` are set with "
@@ -187,8 +193,9 @@ async def get_clock(story_id: StoryId, ctx: ContextDep, engine: EngineDep) -> Cl
         "and is recorded with the source `consumer`. Answers the clock `before` and `after`. "
         "422 `clock_backward` for a move backward (nothing is written; earlier story-time is "
         'reached by truncation or a rewrite), `clock_unanchored` for a `"HH:MM"` the clock\'s '
-        "anchor cannot place (no anchor fixes the hour yet); 409 `module_off` while the story "
-        "runs the clock off, `story_archived`, `story_paused` or `revision_conflict`. A turn "
+        "anchor cannot place (the anchor does not fix the exact time of day; once it does, "
+        "the next such time); 409 `module_off` while the story runs the clock off, "
+        "`story_archived`, `story_paused` or `revision_conflict`. A turn "
         "that was rejected or failed, and an ingested event, never advance the clock."
     ),
 )

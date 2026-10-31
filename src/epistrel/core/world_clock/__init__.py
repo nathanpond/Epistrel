@@ -33,6 +33,17 @@ nothing here handles them.
   commit steps: an advance a turn writes in a step (#194's pacing) must be made known to the
   stamp of the beats after it (#194's).
 
+**The anchor** (#195; ``core.world_clock.anchor``): the clock's absolute time, never more than
+the story established. Each statement that establishes or refines it is a commitment, a fact on
+``clock_anchor`` at its position with ``visibility = engine`` (``commit_anchor``; only an
+objective narrator's, director's or author's statement anchors, #144), and ``anchor_at(conn,
+story_id, position)`` is the fold of the active anchor facts through the position on the
+author's starting anchor (the ``anchor`` setting; ``None``: unanchored), so a truncation
+un-anchors and a fork copies. ``clockwork`` is the clock's calendar and bands. With the clock
+on, ``time_basis`` carries the anchor and the bands, and its ``epoch`` is the one a full
+date-and-time anchor implies (never otherwise: month and year granules decide nothing on an
+unanchored story); ``stories.story_epoch`` stays the clock-off form.
+
 **The module gate** (``clock.level``, FR-PROF-2): ``off`` makes the clock inert (no advance is
 ever written, 409 ``module_off``; story-time is the stand-in), ``prompt_only`` (#203's Lite form)
 writes advances and verifies nothing, ``on`` runs it all. The clock is exempt from
@@ -43,9 +54,10 @@ Log lines carry identifiers and counts only (invariant 3); this module logs noth
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
@@ -56,9 +68,10 @@ from epistrel.core import states
 from epistrel.core.enums import StateChangeKind, StateChangeSource, StateChangeStatus
 from epistrel.core.errors import ClockBackward, InvalidRequest, ModuleOff, StoryNotFound
 from epistrel.core.membership import Position, active_only
-from epistrel.core.resolution.time import YEAR, TimeBasis
+from epistrel.core.resolution.time import YEAR, TimeBasis, as_position
 from epistrel.core.resolution.time import Advance as BasisAdvance
 from epistrel.core.resolution.time import Position as AnyPosition
+from epistrel.core.settings_schema import OMNISCIENT
 from epistrel.core.states.model import (
     CLOCK_SOURCES,
     COUNTED,
@@ -70,8 +83,12 @@ from epistrel.core.states.model import (
 )
 from epistrel.core.tables import stories
 from epistrel.core.tables.states import state_changes, state_definitions
+from epistrel.core.world_clock.anchor import Anchor, Clockwork, Statement
+from epistrel.core.world_clock.anchor import fold as fold_anchor
 
 if TYPE_CHECKING:
+    from epistrel.core.canon.facts import Fact, FactOperation
+    from epistrel.core.enums import RecordProvenance
     from epistrel.core.events.operation import Operation
 
 MODULE = "clock"
@@ -82,16 +99,20 @@ HEAD = Position(2**31 - 1)
 
 @dataclass(frozen=True, slots=True)
 class ClockValue:
-    """The clock at a position: its offset in minutes from the story's start and its anchor
-    (#195; ``None``: unanchored)."""
+    """The clock at a position: its offset in minutes from the story's start, its anchor
+    (#195's ``Anchor.document()``; ``None``: unanchored) and the absolute time the anchor gives
+    there (its known components and ranges; ``None``: none known)."""
 
     offset_minutes: int
     anchor: dict[str, Any] | None = None
+    absolute: str | None = None
 
     def display(self) -> str:
-        """The clock as a reader sees it: ``+HHh MMm`` from the start while the anchor fixes no
-        hour (always, until #195 renders an anchor's known components)."""
-        return display(self.offset_minutes)
+        """The clock as a reader sees it: ``+HHh MMm`` from the start, followed by the anchor's
+        known components and ranges when it has any (``+02h 10m (Saturday, between 05:00 and
+        12:00 (morning))``); a date or minute the anchor does not fix is never shown."""
+        offset = display(self.offset_minutes)
+        return offset if self.absolute is None else f"{offset} ({self.absolute})"
 
     def document(self) -> dict[str, Any]:
         """``{offset, display}``, as ``respond`` and ``GET /clock`` return it."""
@@ -201,10 +222,159 @@ async def clock_at(
     view: states.View | str = states.View.ACTIVE,
 ) -> ClockValue:
     """The clock at ``through`` (see the module docstring); ``as_recorded`` folds every advance
-    ever recorded."""
+    ever recorded. The anchor is the one established through ``through`` (#195)."""
     found = await settings(conn, story_id)
     basis = TimeBasis(advances=tuple(await _advances(conn, story_id, view=states.View(view))))
-    return ClockValue(basis.through(through), found.anchor)
+    offset = basis.through(through)
+    anchor = await _fold(conn, story_id, found, as_position(through))
+    if anchor.is_unanchored:
+        return ClockValue(offset)
+    return ClockValue(offset, anchor.document(), anchor.display(offset))
+
+
+# -- the anchor (#195) ------------------------------------------------------------------------
+
+
+def clockwork(found: ClockSettings) -> Clockwork:
+    """The clock's calendar and time-of-day bands."""
+    return Clockwork(found.calendar, tuple(found.bands))
+
+
+def base_anchor(found: ClockSettings) -> Anchor:
+    """The anchor before any statement: the author's starting ``anchor`` setting (the same
+    document ``Anchor.document`` writes), or unanchored."""
+    if found.anchor:
+        return Anchor.from_document(found.anchor, clockwork(found))
+    return Anchor.unanchored(clockwork(found))
+
+
+def _statement_of(fact: Fact, works: Clockwork) -> tuple[Statement, int] | None:
+    """An anchor fact's statement and offset, its weekday read by name in the calendar as it
+    now stands (a calendar changed since has no such weekday: the statement keeps the rest)."""
+    literal = fact.proposition.literal
+    if literal is None or not isinstance(literal.value, str):
+        return None
+    try:
+        raw = json.loads(literal.value)
+    except ValueError:
+        return None
+    if not isinstance(raw, dict) or not isinstance(raw.get("statement"), dict):
+        return None
+    statement = Statement.from_document(raw["statement"])
+    if statement.weekday is not None:
+        name = raw.get("weekday_name")
+        names = works.weekdays
+        weekday = names.index(name) if isinstance(name, str) and name in names else None
+        statement = replace(statement, weekday=weekday)
+    return statement, int(raw.get("offset", 0))
+
+
+def _fact_position(fact: Fact) -> Position:
+    return Position(
+        int(fact.narrative_turn or 0),
+        int(fact.turn_variant or 0),
+        int(fact.slot_k or 0),
+        int(fact.beat or 0),
+    )
+
+
+async def _fold(
+    conn: AsyncConnection,
+    story_id: str,
+    found: ClockSettings,
+    through: Position,
+) -> Anchor:
+    from epistrel.core.canon.facts import canon  # here: canon reads build on this package
+    from epistrel.core.propositions.vocabulary import CLOCK_ANCHOR
+
+    anchors = await canon(
+        conn, story_id, predicate=CLOCK_ANCHOR, through_position=through, viewpoint=OMNISCIENT
+    )
+    ordered = sorted(anchors, key=lambda f: (_fact_position(f).key(), f.id))
+    statements = []
+    for fact in ordered:
+        stated = _statement_of(fact, clockwork(found))
+        if stated is not None:
+            statements.append((stated[0], stated[1], _fact_position(fact)))
+    return fold_anchor(statements, base_anchor(found))
+
+
+async def anchor_at(conn: AsyncConnection, story_id: str, position: AnyPosition = HEAD) -> Anchor:
+    """The clock's anchor through ``position`` (see the module docstring): the fold of the
+    active ``clock_anchor`` facts at or before it. Its ``revision`` counts the statements that
+    built it (#197 keys on it)."""
+    found = await settings(conn, story_id)
+    return await _fold(conn, story_id, found, as_position(position))
+
+
+async def anchor_revision(
+    conn: AsyncConnection, story_id: str, position: AnyPosition = HEAD
+) -> int:
+    """How many anchor statements are active through ``position``."""
+    return (await anchor_at(conn, story_id, position)).revision
+
+
+async def commit_anchor(
+    conn: AsyncConnection,
+    story_id: str,
+    statement: Statement,
+    *,
+    operation: FactOperation,
+    provenance: RecordProvenance,
+    beat: int | None = None,
+    slot_k: int | None = None,
+) -> Fact | None:
+    """Establish or refine the anchor with ``statement``, made at ``operation``'s position (its
+    ``beat``), in its commit transaction (see the module docstring): a ``clock_anchor`` fact
+    whose literal is the statement and the clock's offset there, with ``visibility = engine``.
+    ``None`` (nothing written) when the story does not run the clock or the statement
+    contradicts the anchor as it stands there (a statement verified against an anchor an
+    earlier beat of the same turn narrowed)."""
+    from epistrel.core.canon.facts import commit_fact
+    from epistrel.core.propositions.model import (
+        Granularity,
+        Instant,
+        LiteralKind,
+        Proposition,
+        TypedLiteral,
+    )
+    from epistrel.core.propositions.vocabulary import CLOCK_ANCHOR
+    from epistrel.core.visibility import Visibility
+
+    if await clock_level(conn, story_id) is None or operation.narrative_turn is None:
+        return None
+    position = Position(
+        int(operation.narrative_turn),
+        int(operation.turn_variant or 0),
+        int(slot_k or 0),
+        int(beat or 0),
+    )
+    basis = await time_basis(conn, story_id)
+    offset = basis.at(position) - basis.minute_zero
+    current = await anchor_at(conn, story_id, position)
+    if not isinstance(current.refine(statement, offset, position), Anchor):
+        return None
+    clock = await clock_definition(conn, story_id)
+    assert clock.id is not None  # noqa: S101 - a stored declaration has its id
+    stored: dict[str, Any] = {"statement": statement.document(), "offset": offset}
+    if statement.weekday is not None:
+        stored["weekday_name"] = current.clockwork.weekdays[statement.weekday]
+    literal = json.dumps(stored, separators=(",", ":"))
+    return await commit_fact(
+        conn,
+        story_id,
+        Proposition(
+            subject_id=clock.id,
+            predicate_id=CLOCK_ANCHOR,
+            literal=TypedLiteral(kind=LiteralKind.STR, value=literal),
+            valid_time=Instant.of(basis.at(position), Granularity.MINUTE),
+        ),
+        provenance=provenance,
+        visibility=Visibility(scope="engine"),
+        operation=operation,
+        beat=beat,
+        slot_k=slot_k,
+    )
 
 
 async def clock_before_slot(
@@ -237,13 +407,34 @@ def clock_off_basis(minute_zero: int = 0, epoch: datetime | None = None) -> Time
 
 
 async def time_basis(conn: AsyncConnection, story_id: str) -> TimeBasis:
-    """The story's time basis (see the module docstring): the clock's active advances when the
-    story runs the clock, the stand-in otherwise."""
+    """The story's time basis (see the module docstring): the clock's active advances, its
+    anchor and bands when the story runs the clock, the stand-in otherwise."""
     row = await _story_row(conn, story_id)
     zero, epoch = int(row.story_minute_zero), row.story_epoch
     if await clock_level(conn, story_id) is None:
         return clock_off_basis(zero, epoch)
-    return TimeBasis(minute_zero=zero, epoch=epoch, advances=tuple(await _advances(conn, story_id)))
+    found = await settings(conn, story_id)
+    advances = tuple(await _advances(conn, story_id))
+    anchor = await _fold(conn, story_id, found, HEAD)
+    return TimeBasis(
+        minute_zero=zero,
+        epoch=anchor_epoch(anchor, zero),
+        advances=advances,
+        anchor=None if anchor.is_unanchored else anchor,
+        bands=tuple(found.bands),
+    )
+
+
+def anchor_epoch(anchor: Anchor, minute_zero: int = 0) -> datetime | None:
+    """The calendar instant of story-minute 0 a Gregorian anchor that fixes the full date and
+    time implies (``None`` for any other anchor: FR-CLOCK-3 never picks one)."""
+    if not anchor.clockwork.calendar.gregorian:
+        return None
+    found = anchor.epoch_minutes()
+    if found is None:
+        return None
+    year, month, day, minute = found
+    return datetime(year, month, day, tzinfo=UTC) + timedelta(minutes=minute - minute_zero)
 
 
 async def story_time_at(conn: AsyncConnection, story_id: str, position: AnyPosition) -> int:
@@ -335,11 +526,17 @@ __all__ = [
     "ClockSettings",
     "ClockValue",
     "advance",
+    "anchor_at",
+    "anchor_epoch",
+    "anchor_revision",
+    "base_anchor",
     "clock_at",
     "clock_before_slot",
     "clock_definition",
     "clock_level",
     "clock_off_basis",
+    "clockwork",
+    "commit_anchor",
     "display",
     "elapsed_since",
     "full_years",

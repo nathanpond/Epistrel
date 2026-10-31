@@ -176,6 +176,10 @@ class CanonRequest:
     beat: int | None = None
     claim_id: str | None = None
     introduces: tuple[NewEntity, ...] = ()
+    anchors_clock: bool = False
+    """#195: the claim (``time_is``, ``time_of_day_band``) establishes or refines the world
+    clock's anchor: it commits as a ``clock_anchor`` fact (``world_clock.commit_anchor``), never
+    as itself."""
 
     def identity(self) -> tuple[str, str, str]:
         """What makes two requests the same write: the proposition, provenance and
@@ -205,6 +209,11 @@ async def canonize_all(
         if identity in seen:
             continue
         seen.add(identity)
+        if request.anchors_clock:
+            anchored = await _anchor(conn, story_id, request, operation)
+            if anchored is not None:
+                written.append(anchored)
+            continue
         introduces = tuple(n for n in request.introduces if n.entity_id not in created)
         created.update(n.entity_id for n in introduces)
         written.append(
@@ -223,6 +232,29 @@ async def canonize_all(
         )
     log.debug("canonized %d of %d permitted claims", len(written), len(requests))
     return written
+
+
+async def _anchor(
+    conn: AsyncConnection, story_id: str, request: CanonRequest, operation: FactOperation
+) -> Fact | None:
+    """#195: an anchoring request as its ``clock_anchor`` commitment."""
+    from epistrel.core import world_clock  # here: the clock reads canon through this package
+    from epistrel.core.world_clock.verify import statement_for
+
+    found = await world_clock.settings(conn, story_id)
+    statement = statement_for(
+        request.claim, world_clock.clockwork(found), found.time_statement_tolerance_minutes
+    )
+    if statement is None:
+        return None
+    return await world_clock.commit_anchor(
+        conn,
+        story_id,
+        statement,
+        operation=operation,
+        provenance=request.provenance,
+        beat=request.beat,
+    )
 
 
 __all__ = [

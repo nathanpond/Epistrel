@@ -123,7 +123,7 @@ from epistrel.core.epistemic import resurface
 from epistrel.core.membership import Position as NarrativePosition
 from epistrel.core.membership import step_of
 from epistrel.core.profiles.effective import effective_configuration
-from epistrel.core.profiles.schema import ProfileSettings
+from epistrel.core.profiles.schema import ProfileSettings, is_delivered, level_of
 from epistrel.core.propositions.model import (
     Bound,
     Granularity,
@@ -131,7 +131,8 @@ from epistrel.core.propositions.model import (
     Proposition,
     TemporalKind,
 )
-from epistrel.core.propositions.registry import Registry, load, owner_lookup
+from epistrel.core.propositions.registry import Registry, conditional_owner, load, owner_lookup
+from epistrel.core.propositions.vocabulary import TIME_IS, TIME_OF_DAY_BAND
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.resolution.context import load_time_basis
 from epistrel.core.resolution.time import TimeBasis
@@ -162,6 +163,8 @@ from epistrel.core.verify.rules import (
     VerdictKind,
     VerdictReason,
 )
+from epistrel.core.visibility import Visibility
+from epistrel.core.world_clock.anchor import Anchor
 from epistrel.observability import stages
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models.access import ModelAccessLayer, routing
@@ -214,6 +217,11 @@ repair reads or substitutes the hidden value."""
 (``core.commit.reconcile``): ``contradicted``, repaired with an ``avoid_binding`` constraint."""
 """The repair tag of a novel claim its asserter may not introduce (#151's ladder)."""
 NEVER_CANONIZES = frozenset({"think"})
+ANCHORING = frozenset({TIME_IS, TIME_OF_DAY_BAND})
+"""#195: the clock checks whose objective statement anchors the clock."""
+ANCHORS = frozenset({"director", "author"})
+"""#195 (#144): the asserters whose statement anchors the clock (objective narration)."""
+ENGINE = Visibility(scope="engine")
 """Beat channels whose claims never canonize."""
 SAY = "say"
 PARTITIONS_MODULE = "partitions"
@@ -242,6 +250,9 @@ class VerifyConfig:
     safe_disposition: SafeDisposition = "repair"
     entailment_max_records: int = VerifySettings().entailment_max_records
     neighborhood_max_facts: int = VerifySettings().neighborhood_max_facts
+    clock: bool = False
+    """#195: the story runs the world clock (``clock.level`` on or ``prompt_only``, delivered):
+    its clock checks anchor the clock, and ``time_is`` is the clock's, not a fact."""
 
     @property
     def on(self) -> bool:
@@ -257,6 +268,7 @@ class VerifyConfig:
         v = profile.verification
         d = deployment or VerifySettings()
         structured = profile.pipeline == "structured"
+        clock = level_of(profile, "clock")
         return cls(
             level=v.level if structured else "off",
             entailment_gate=v.entailment_gate,
@@ -264,6 +276,7 @@ class VerifyConfig:
             safe_disposition=v.safe_disposition,
             entailment_max_records=d.entailment_max_records,
             neighborhood_max_facts=d.neighborhood_max_facts,
+            clock=clock is not None and is_delivered("clock", clock),
         )
 
     @classmethod
@@ -1261,21 +1274,33 @@ class TimeFrame:
     An anchored story reads in calendar dates (``2012-05-10``, ``2012-05-10 09:15``). An
     unanchored one reads as an offset from its start ("2 days 3 hours after the story's
     start"), because the engine never picks a date the story has not established
-    (FR-CLOCK-3)."""
+    (FR-CLOCK-3). #195: a story the world clock partially anchors reads through
+    ``Anchor.display``, its known components and ranges with the offset ("Saturday, between
+    02:50 and 09:50 (2 hours after the story's start)"), so no prompt prints a date or minute
+    the anchor does not fix."""
 
     epoch: datetime | None = None
     minute_zero: int = 0
+    anchor: Anchor | None = None
 
     @classmethod
     def of(cls, basis: TimeBasis) -> TimeFrame:
-        return cls(epoch=basis.epoch, minute_zero=basis.minute_zero)
+        return cls(epoch=basis.epoch, minute_zero=basis.minute_zero, anchor=basis.anchor)
+
+    def _anchored(self, minute: int) -> str | None:
+        """The partial anchor's reading of ``minute`` with its offset (``None``: no anchor, or
+        one that knows nothing there)."""
+        if self.anchor is None:
+            return None
+        found = self.anchor.display(minute - self.minute_zero)
+        return None if found is None else f"{found} ({self._offset(minute)})"
 
     def moment(self, minute: int) -> str:
         """``minute`` as a date (with its time of day unless midnight), or as an offset from
         the story's start."""
         when = self._calendar(minute)
         if when is None:
-            return self._offset(minute)
+            return self._anchored(minute) or self._offset(minute)
         if when.hour == 0 and when.minute == 0:
             return when.strftime("%Y-%m-%d")
         return when.strftime("%Y-%m-%d %H:%M")
@@ -1285,6 +1310,9 @@ class TimeFrame:
         ``at 2012-05-10 09:00 (to the hour)``, ``at 2012-05-10 09:15``."""
         when = self._calendar(at)
         if when is None:
+            anchored = self._anchored(at)
+            if anchored is not None:
+                return f"at {anchored}"
             if granularity is Granularity.MINUTE:
                 return f"at {self._offset(at)}"
             return f"at {self._offset(at)} (to the {granularity.value})"
@@ -1819,7 +1847,10 @@ class Verifier:
         (``core.canon.canonize.canonize_all`` dedupes identical ones): never a denied claim, a
         ``think`` claim, a ``say`` claim that is not about the speaker's own actions or
         backstory, or a claim on an owner-lookup predicate (#191: ``state_value``, whose canon
-        is the State's fold)."""
+        is the State's fold). #195: with the clock on, an objective (director's or author's)
+        ``time_is`` or ``time_of_day_band`` statement that narrows the anchor (verdict
+        ``novel``) is a ``clock_anchor`` commitment (``anchors_clock``, ``visibility =
+        engine``); with it off, ``time_is`` canonizes as in M4."""
         found: list[CanonRequest] = []
         for ref, r in self.results:
             permitted = r.permitted
@@ -1829,8 +1860,23 @@ class Verifier:
                 continue
             if not r.canonizes:  # #166: a lie, a joke or a hallucination never canonizes
                 continue
-            if owner_lookup(r.claim.predicate_id) is not None:
-                continue  # #191: an owner's value (a State's) is never a fact
+            predicate_id = r.claim.predicate_id
+            if owner_lookup(predicate_id) is not None:
+                if self.config.clock and predicate_id in ANCHORING:
+                    if r.asserter.kind in ANCHORS and ref.channel not in (SAY, *NEVER_CANONIZES):
+                        found.append(
+                            CanonRequest(
+                                claim=r.claim,
+                                provenance=r.asserter.provenance,
+                                visibility=ENGINE,
+                                beat=ref.beat,
+                                claim_id=ref.claim_id,
+                                anchors_clock=True,
+                            )
+                        )
+                    continue
+                if not (conditional_owner(predicate_id) and not self.config.clock):
+                    continue  # #191: an owner's value (a State's) is never a fact
             if ref.channel == SAY and permitted.basis is not Basis.OWN:
                 continue
             found.append(

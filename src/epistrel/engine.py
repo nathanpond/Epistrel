@@ -2822,7 +2822,8 @@ class Engine:
     @refuses_nul()
     async def get_clock(self, ctx: RequestContext, story_id: str) -> clock_service.ClockView:
         """The story's world clock as it stands (FR-CLOCK-13): its offset in minutes from the
-        story's start and its display (``+HHh MMm`` while unanchored), its anchor, the level
+        story's start and its display (``+HHh MMm``, then the anchor's known components), its
+        partial anchor (#195), the level
         the story runs it at (``off``: inert, ``prompt_only``, ``on``), its mode and its
         settings. 404 for an unknown story."""
         return await clock_service.read_clock(self.db, story_id)

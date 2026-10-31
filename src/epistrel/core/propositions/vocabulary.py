@@ -67,6 +67,13 @@ ON_CHANNEL = "01JPRED0000000000000000031"
 SPOKE_TO = "01JPRED0000000000000000032"
 SPOKE = "01JPRED0000000000000000033"
 STATE_VALUE = "01JPRED0000000000000000035"
+CLOCK_ANCHOR = "01JPRED0000000000000000036"
+TIME_OF_DAY_BAND = "01JPRED0000000000000000037"
+ELAPSED_SINCE = "01JPRED0000000000000000038"
+SCHEDULED_STATUS = "01JPRED0000000000000000039"
+CLOCK_CHECKS: tuple[str, ...] = (TIME_IS, TIME_OF_DAY_BAND, ELAPSED_SINCE, SCHEDULED_STATUS)
+"""The clock checks (#195): answered by the world clock's anchor when the story runs the clock
+(``core.world_clock.verify``)."""
 
 BARRIERS: tuple[str, ...] = ("none", "door_open", "door_closed", "window", "thin_wall", "wall")
 """The values of ``adjacent_to``'s ``barrier`` qualifier (#161): what stands between two
@@ -97,6 +104,7 @@ SCHEDULES = Family("schedules", "Schedules")
 SCENE_TIME = Family("scene_time", "Scene time")
 COMMUNICATION = Family("communication", "Perception and communication")
 STATES = Family("states", "Tracked values")
+WORLD_CLOCK = Family("world_clock", "World clock")
 
 FAMILIES: tuple[Family, ...] = (
     IDENTITY,
@@ -113,6 +121,7 @@ FAMILIES: tuple[Family, ...] = (
     SCENE_TIME,
     COMMUNICATION,
     STATES,
+    WORLD_CLOCK,
 )
 
 _FAMILY_OF: dict[str, Family] = {}
@@ -531,6 +540,59 @@ CORE_PREDICATES: tuple[Predicate, ...] = (
         "the State's tolerance) and `contradicted` otherwise. A character's belief about a "
         "value is an ordinary belief, acquired by observation or testimony.",
     ),
+    _core(
+        WORLD_CLOCK,
+        id=CLOCK_ANCHOR,
+        name="clock_anchor",
+        object_type="str",
+        cardinality=_M,
+        temporal_kind=_EVENT,
+        docs="A statement that anchors the world clock (#195, FR-CLOCK-3): the subject is the "
+        "`world_clock` State's id, the object the components stated (a `str` literal holding "
+        "the statement as JSON: admissible minutes of the day, weekday, year, month, day). It "
+        "is a commitment written where the anchor is established, with `visibility = engine` "
+        "(no character retrieval or context ever reads it); the clock's anchor at a position is "
+        "the fold of the active anchor facts through it.",
+    ),
+    _core(
+        WORLD_CLOCK,
+        id=TIME_OF_DAY_BAND,
+        name="time_of_day_band",
+        object_type="str",
+        cardinality=_F,
+        temporal_kind=_FLUENT,
+        docs="Which time-of-day band it is (a `str` literal naming one of the clock's bands: "
+        '"morning", "evening"), about the scene\'s place. A clock check (#195): with the clock '
+        "on it is answered by the anchor, `supported` only when every admissible time lies in "
+        "the band and `contradicted` when none does; with the clock off it is "
+        "`uncertain(no_clock)`.",
+    ),
+    _core(
+        WORLD_CLOCK,
+        id=ELAPSED_SINCE,
+        name="elapsed_since",
+        object_type="duration",
+        cardinality=_F,
+        temporal_kind=_FLUENT,
+        key_qualifiers=("since",),
+        qualifiers={"since": QualifierKind.INT},
+        docs="How long it has been (a `duration` literal in minutes) since the story-minute "
+        "`since`. A clock check (#195): the clock's offset is exact, so it is `supported` within "
+        "the clock's `elapsed_tolerance_factor` and `contradicted` outside it; with the clock off "
+        "it is `uncertain(no_clock)`.",
+    ),
+    _core(
+        WORLD_CLOCK,
+        id=SCHEDULED_STATUS,
+        name="scheduled_status",
+        subject_type="event",
+        object_type="str",
+        cardinality=_F,
+        temporal_kind=_FLUENT,
+        docs="A scheduled event's status (a `str` literal: `due`, `not_due`, `possibly_due`, "
+        "`past`). A clock check (#195): `uncertain` until scheduled events are kept (#196, "
+        "#197); with the clock off it is `uncertain(no_clock)`.",
+    ),
 )
 """Every core predicate, in documentation order."""
 
@@ -549,17 +611,22 @@ def family_of(predicate_id: str) -> Family:
 __all__ = [
     "ADJACENT_TO",
     "BARRIERS",
+    "CLOCK_ANCHOR",
+    "CLOCK_CHECKS",
     "CORE_BY_ID",
     "CORE_BY_NAME",
     "CORE_NAMES",
     "CORE_PREDICATES",
     "DEFAULT_BARRIER",
     "EDUCATION_PREDICATES",
+    "ELAPSED_SINCE",
     "FAMILIES",
     "ON_CHANNEL",
+    "SCHEDULED_STATUS",
     "SPOKE",
     "SPOKE_TO",
     "STATE_VALUE",
+    "TIME_OF_DAY_BAND",
     "Family",
     "family_of",
 ]

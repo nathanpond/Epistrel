@@ -7,7 +7,8 @@
   consumer (FR-CLOCK-13): an inter-turn slot operation (``slots.open_inter_turn``) whose commit
   writes one advance at the slot (source ``consumer``) and records a ``clock_advanced`` event.
   ``minutes`` or ``to`` (an offset in minutes from the story's start, or ``"HH:MM"``, 422
-  ``clock_unanchored`` while the anchor fixes no hour: always, until #195). A backward one is
+  ``clock_unanchored`` unless the anchor fixes the exact time of day, #195: then the next such
+  time). A backward one is
   422 ``clock_backward`` and writes nothing; with the clock off, 409 ``module_off``.
 - ``update_clock(db, story_id, patch, *, principal)`` changes its settings: a story
   configuration write through ``core.states.update_definition`` (interpretive members, and
@@ -39,11 +40,13 @@ from epistrel.core.world_clock import (
     HEAD,
     ClockValue,
     advance,
+    anchor_at,
     clock_at,
     clock_level,
     require_clock,
     settings,
 )
+from epistrel.core.world_clock.anchor import Anchor
 from epistrel.core.world_clock.slots import open_inter_turn, slot_position
 
 TIME_OF_DAY = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
@@ -132,6 +135,7 @@ class TurnClock:
 def _settings_document(found: states.ClockSettings) -> dict[str, Any]:
     document = found.document()
     document.pop("anchor")
+    document["calendar"] = found.calendar.document()
     return document
 
 
@@ -151,22 +155,45 @@ async def read_clock(db: AsyncEngine, story_id: str) -> ClockView:
     )
 
 
-async def _precheck(conn: AsyncConnection, story_id: str, request: ClockAdvanceRequest) -> None:
-    """The refusals a consumer's advance gets before any operation opens: the clock off, a
-    time of day the anchor cannot place, and a backward target (the commit checks again)."""
-    await require_clock(conn, story_id)
-    if isinstance(request.to, str):
+async def _time_of_day(conn: AsyncConnection, story_id: str, wanted: str, current: int) -> int:
+    """The offset of the next ``"HH:MM"`` at or after ``current`` (#195): the anchor must fix
+    the exact minute of the day there, else 422 ``clock_unanchored`` (the engine never picks
+    one)."""
+    anchor = await anchor_at(conn, story_id, HEAD)
+    found = anchor.absolute_at(current)
+    day = anchor.clockwork.day_minutes
+    target = int(wanted[:2]) * 60 + int(wanted[3:])
+    if anchor.is_unanchored or len(found.segments) != 1 or target >= day:
         raise ClockUnanchored(
-            "the clock's anchor does not fix the hour, so a time of day cannot be placed",
-            {"story_id": story_id, "to": request.to},
+            "the clock's anchor does not fix the time of day, so a time of day cannot be placed",
+            {"story_id": story_id, "to": wanted},
         )
+    (segment,) = found.segments
+    if segment.hi - segment.lo != 1:
+        raise ClockUnanchored(
+            "the clock's anchor does not fix the time of day, so a time of day cannot be placed",
+            {"story_id": story_id, "to": wanted},
+        )
+    return current + (target - segment.lo) % day
+
+
+async def _precheck(
+    conn: AsyncConnection, story_id: str, request: ClockAdvanceRequest
+) -> int | None:
+    """The refusals a consumer's advance gets before any operation opens: the clock off, a
+    time of day the anchor cannot place, and a backward target (the commit checks again).
+    Answers the target offset of a time of day (``None`` for any other advance)."""
+    await require_clock(conn, story_id)
     current = (await clock_at(conn, story_id, HEAD)).offset_minutes
+    if isinstance(request.to, str):
+        return await _time_of_day(conn, story_id, request.to, current)
     attempted = current + request.minutes if request.minutes is not None else request.to
     if attempted is not None and int(attempted) < current:
         raise ClockBackward(
             "the world clock never moves backward: truncate or rewrite to reach earlier story-time",
             {"story_id": story_id, "current": current, "attempted": attempted},
         )
+    return None
 
 
 async def advance_clock(
@@ -182,8 +209,8 @@ async def advance_clock(
 
     await require_writable(db, story_id)
     async with db.connect() as conn:
-        await _precheck(conn, story_id, request)
-    to_offset = request.to if isinstance(request.to, int) else None
+        placed = await _precheck(conn, story_id, request)
+    to_offset = request.to if isinstance(request.to, int) else placed
     written: list[Any] = []
 
     async def step(conn: AsyncConnection) -> None:
@@ -220,21 +247,24 @@ async def advance_clock(
         op.add_commit_step(step)
         await op.commit()
     moved = written[0]
-    anchor = (await _anchor(db, story_id)) if moved is not None else None
     assert op.timeline_revision is not None  # noqa: S101 - set by a committed story operation
+    async with db.connect() as conn:
+        anchor = await anchor_at(conn, story_id, HEAD)
     return ClockMoved(
         operation_id=op.operation_id,
         change_id=moved.change_id,
-        before=ClockValue(moved.before, anchor),
-        after=ClockValue(moved.after, anchor),
+        before=_value(anchor, moved.before),
+        after=_value(anchor, moved.after),
         position=moved.position.document(),
         timeline_revision=op.timeline_revision,
     )
 
 
-async def _anchor(db: AsyncEngine, story_id: str) -> dict[str, Any] | None:
-    async with db.connect() as conn:
-        return (await settings(conn, story_id)).anchor
+def _value(anchor: Anchor, offset: int) -> ClockValue:
+    """The clock at ``offset`` under ``anchor``."""
+    if anchor.is_unanchored:
+        return ClockValue(offset)
+    return ClockValue(offset, anchor.document(), anchor.display(offset))
 
 
 async def update_clock(

@@ -13,7 +13,8 @@ names what may escalate:
 
 ``partial_coverage`` and ``granularity_refinement`` are resolved by #140's rules and never reach
 the gate (``RESOLVED_IN_CORE``). ``unresolved_entity``, ``unresolved_time`` and
-``argument_type`` never escalate (``NEVER_ESCALATES``): the claim is not about anything the
+``argument_type`` never escalate (``NEVER_ESCALATES``), nor does ``no_clock`` (#195: a clock
+check on a story without the clock): the claim is not about anything the
 model could judge against the records, so it takes the safe disposition at once. Neither does
 ``approximate_bounds`` (#467, ADR-162). FR-PROP-10 already resolves it deterministically to
 ``uncertain``: the rules showed that the claim holds under some admissible readings of the
@@ -58,7 +59,7 @@ RESOLVED_IN_CORE = frozenset({R.PARTIAL_COVERAGE, R.GRANULARITY_REFINEMENT})
 """Resolved by #140's coverage logic (through their remainders); never escalated."""
 
 NEVER_ESCALATES = frozenset(
-    {R.UNRESOLVED_ENTITY, R.UNRESOLVED_TIME, R.ARGUMENT_TYPE, R.APPROXIMATE_BOUNDS}
+    {R.UNRESOLVED_ENTITY, R.UNRESOLVED_TIME, R.ARGUMENT_TYPE, R.APPROXIMATE_BOUNDS, R.NO_CLOCK}
 )
 """Take the safe disposition directly, whatever the threshold (``approximate_bounds``: #467)."""
 

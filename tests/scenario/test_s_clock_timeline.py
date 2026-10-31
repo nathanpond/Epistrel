@@ -1,7 +1,7 @@
 """S-CLOCK-TIMELINE: the clock is a State (docs/04 §7; FR-CLOCK-1,3,5,13,14, FR-STATE-4; #193).
 
 Every S-CLOCK-TIMELINE M6 part lives in this file: #193's (``test_s_clock_timeline``), #195's
-anchoring (``__anchor``) and #209's external mode (``__external``).
+anchoring (``__anchor``, docstring there) and #209's external mode (``__external``).
 
 #193's part, played through the REST app with the stub adapter on a Lite story running the
 clock at ``prompt_only`` (FR-LITE-5's form; delivered for the test):
@@ -31,6 +31,7 @@ clock at ``prompt_only`` (FR-LITE-5's form; delivered for the test):
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 import httpx2 as httpx
@@ -41,13 +42,19 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.api import create_app
 from epistrel.config import Settings
 from epistrel.core import states, world_clock
+from epistrel.core.canon import facts
 from epistrel.core.enums import StateChangeSource
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.membership import Position
+from epistrel.core.propositions.vocabulary import CLOCK_ANCHOR
 from epistrel.core.states import StateChange
 from epistrel.core.states.model import world_clock_definition
+from epistrel.core.world_clock.anchor import UNKNOWN, Anchor, Exact
 from tests import canon_support as c
 from tests import clock_support as ck
+from tests import effect_support as es
+from tests import multi_support as ms
+from tests import perception_support as ps
 from tests.auth_support import auth_settings
 from tests.event_support import rows
 from tests.respond_support import (
@@ -61,6 +68,7 @@ from tests.respond_support import (
     until,
 )
 from tests.story_support import READ, WRITE
+from tests.structured_turn_support import beat, structured_story, turn_report
 
 pytestmark = pytest.mark.integration
 
@@ -316,3 +324,146 @@ async def test_s_clock_timeline(
         one, two = (r.json() for r in answered)
         assert (one["turn"], two["turn"]) == (1, 2)
         assert two["clock"]["before"] == one["clock"]["after"] == _at(45)
+
+
+async def _anchor_facts(engine: AsyncEngine, story: str) -> list[Any]:
+    """The story's ``clock_anchor`` facts, active or not."""
+    return await rows(
+        engine,
+        "SELECT f.id, f.visibility, f.provenance::text AS provenance, f.membership::text AS m "
+        "FROM facts f WHERE f.story_id = :s AND f.predicate_id = :p ORDER BY f.id",
+        s=story,
+        p=CLOCK_ANCHOR,
+    )
+
+
+async def _anchor_at(engine: AsyncEngine, story: str) -> Anchor:
+    async with engine.connect() as conn:
+        return await world_clock.anchor_at(conn, story)
+
+
+async def _narrate(
+    client: httpx.AsyncClient,
+    engine: AsyncEngine,
+    stub: Any,
+    story: str,
+    cal: str,
+    narration: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """A turn whose narration is ``narration`` (Mira says something timeless); the response
+    and the turn report."""
+    stub.reset()
+    es.narrator(stub, es.render(beat("narration", narration)))
+    ms.renders_for(stub, "Mira", es.render(beat("say", "Mind the step.")))
+    answer = await respond(client, story, body(cal, None, do="looks around"))
+    assert answer.status_code == 200, answer.text
+    return answer.json(), await turn_report(engine, story)
+
+
+@pytest.mark.part("M6", "FR-CLOCK-3")
+async def test_s_clock_timeline__anchor(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    clock_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#195's clause: an unanchored story is partially anchored when the first render
+    establishes "Saturday morning" (weekday and a time range only, no minute or date chosen);
+    the anchor is a commitment (a ``clock_anchor`` fact, ``visibility = engine``, never in a
+    character's canon or prompt), a later "it's 13:00" is contradicted and leaves it as it
+    was, "it's 9:15" narrows it to the minute, a truncation un-anchors and a fork copies.
+    Complement: no date component is ever reported."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids = await structured_story(client, "Cal", "Mira")
+        cal, mira = ids["Cal"], ids["Mira"]
+        market = await ps.place_entity(engine, story, "the market")
+        for who in (cal, mira):
+            await ps.put(engine, story, who, market)
+        await ck.set_level(engine, story, "on")
+        assert (await ck.advance(engine, story, 130)).after.offset_minutes == 130
+        assert (await _anchor_at(engine, story)).is_unanchored
+
+        # The first render establishes "Saturday morning" at +130.
+        first, report = await _narrate(
+            client, engine, stub, story, cal, "It was Saturday morning, and the market was waking."
+        )
+        anchor = await _anchor_at(engine, story)
+        here = anchor.absolute_at(130)
+        assert here.weekday == Exact("saturday")
+        assert [(s.lo, s.hi) for s in here.segments] == [(300, 720)]
+        assert (here.year, here.month, here.day, here.minute) == (UNKNOWN,) * 4
+        (fact,) = await _anchor_facts(engine, story)
+        assert fact.visibility == {"scope": "engine"}
+        assert fact.provenance == "director"
+        clock = await _clock(client, story)
+        assert clock["anchor"]["weekday"] == "saturday"
+        assert clock["anchor"]["year"] is None
+        assert clock["anchor"]["day"] is None
+        assert clock["display"] == "+02h 10m (Saturday, between 05:00 and 12:00 (morning))"
+        assert not re.search(r"\d{4}-\d{2}-\d{2}|\b\d{1,2}(st|nd|rd|th)\b", clock["display"])
+        # Engine-only: no character reads the anchor, and no prompt carries it.
+        async with engine.connect() as conn:
+            for viewpoint in (f"character:{mira}", f"character:{cal}"):
+                assert not await facts.canon(
+                    conn, story, predicate=CLOCK_ANCHOR, viewpoint=viewpoint
+                )
+            assert await facts.canon(conn, story, predicate=CLOCK_ANCHOR)
+
+        # "It's 13:00" under the anchor is contradicted, and the anchor is unchanged.
+        _, report = await _narrate(
+            client, engine, stub, story, cal, "It's 13:00 and the bells ring."
+        )
+        kinds = [v.get("kind") for v in report["verify"]["verdicts"]]
+        assert "contradicted" in kinds, report["verify"]
+        assert await _anchor_at(engine, story) == anchor
+        assert len(await _anchor_facts(engine, story)) == 1
+        for call in stub.calls:
+            sent = "\n".join(m.content for m in call.messages)
+            assert '"statement"' not in sent
+            assert "clock_anchor" not in sent
+
+        # "It's 9:15" narrows the anchor to the minute and back-fills the start exactly.
+        _, report = await _narrate(
+            client, engine, stub, story, cal, "It's 9:15, said the town clock."
+        )
+        narrowed = await _anchor_at(engine, story)
+        assert [(s.lo, s.hi) for s in narrowed.absolute_at(130).segments] == [(555, 556)]
+        assert narrowed.display(0) == "Saturday, 07:05 (morning)"
+        assert narrowed.revision == 2
+        assert (await _clock(client, story))["anchor"]["day"] is None
+
+        # The exact minute places a time of day: "10:00" is the next 10:00, 45 minutes on.
+        head = (await _clock(client, story))["offset"]
+        moved = await _advanced(client, story, to="10:00")
+        assert moved["after"]["offset"] == head + 45
+        assert moved["after"]["display"].endswith("(Saturday, 10:00 (morning))")
+        # A fork copies the anchor; a truncation to before the first render un-anchors.
+        forked = await _post(client, f"/stories/{story}/fork", {"at_turn": first["turn"]})
+        assert (await _anchor_at(engine, forked["story_id"])).absolute_at(130).weekday == Exact(
+            "saturday"
+        )
+        await _post(client, f"/stories/{story}/truncate", {"to_turn": first["turn"] - 1})
+        assert (await _anchor_at(engine, story)).is_unanchored
+        assert (await _clock(client, story))["anchor"] is None
+
+        # The calendar and bands are set with PATCH /clock (on the fork, which keeps its
+        # anchor); bands that do not tile are refused. A stored anchor names its weekday, so a
+        # weekday the new calendar lacks is unknown again, never another day.
+        branch = forked["story_id"]
+        custom = {
+            "kind": "custom",
+            "day_minutes": 1440,
+            "months": [{"name": "Thaw", "days": 30}],
+            "weekdays": ["Moonday", "Sunsday"],
+            "year_days": 30,
+        }
+        patched = await client.patch(
+            f"/stories/{branch}/clock", json={"calendar": custom}, headers=WRITE
+        )
+        assert patched.status_code == 200, patched.text
+        assert (await _clock(client, branch))["settings"]["calendar"] == custom
+        assert (await _anchor_at(engine, branch)).absolute_at(130).weekday is UNKNOWN
+        gap = [["night", "00:00", "05:00"], ["day", "06:00", "24:00"]]
+        refused = await client.patch(f"/stories/{branch}/clock", json={"bands": gap}, headers=WRITE)
+        _refused(refused, 422, "validation_error")

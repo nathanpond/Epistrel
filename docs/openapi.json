@@ -1128,6 +1128,101 @@
         "title": "BudgetOverride",
         "type": "object"
       },
+      "Calendar": {
+        "additionalProperties": false,
+        "description": "The clock's calendar (FR-CLOCK-4; #195): ``{kind: gregorian}`` (the default) or ``{kind:\ncustom, day_minutes, months: [{name, days}], weekdays: [names], year_days}``. Stored in the\n``calendar`` text column as ``gregorian`` or the custom calendar's JSON (``stored``); read\nback from either form, or from the object (``of``).",
+        "properties": {
+          "day_minutes": {
+            "anyOf": [
+              {
+                "maximum": 100000.0,
+                "minimum": 60.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Day Minutes"
+          },
+          "kind": {
+            "default": "gregorian",
+            "enum": [
+              "gregorian",
+              "custom"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "months": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/CalendarMonth"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Months"
+          },
+          "weekdays": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weekdays"
+          },
+          "year_days": {
+            "anyOf": [
+              {
+                "maximum": 100000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Year Days"
+          }
+        },
+        "title": "Calendar",
+        "type": "object"
+      },
+      "CalendarMonth": {
+        "additionalProperties": false,
+        "description": "One month of a custom calendar: its name and its length in days.",
+        "properties": {
+          "days": {
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Days",
+            "type": "integer"
+          },
+          "name": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "days"
+        ],
+        "title": "CalendarMonth",
+        "type": "object"
+      },
       "CandidateBody": {
         "additionalProperties": false,
         "description": "A mention the erasure redacts only when confirmed (ADR-154): a common word of the\nsubject's name capitalised at the start of a sentence. The snippet is returned by the dry\nrun only and never stored.",
@@ -3595,6 +3690,9 @@
                 "type": "string"
               },
               {
+                "$ref": "#/components/schemas/Calendar"
+              },
+              {
                 "type": "null"
               }
             ],
@@ -3697,8 +3795,9 @@
             "type": "array"
           },
           "calendar": {
+            "additionalProperties": true,
             "title": "Calendar",
-            "type": "string"
+            "type": "object"
           },
           "elapsed_tolerance_factor": {
             "title": "Elapsed Tolerance Factor",
@@ -3806,7 +3905,7 @@
         "type": "object"
       },
       "ClockValueBody": {
-        "description": "The clock at one point: its exact ``offset`` in minutes from the story's start, and its\n``display`` (``+HHh MMm`` from the start while the anchor fixes no hour).",
+        "description": "The clock at one point: its exact ``offset`` in minutes from the story's start, and its\n``display`` (``+HHh MMm`` from the start, then the anchor's known components and ranges, if\nany: a date or minute the story has not established is never shown).",
         "properties": {
           "display": {
             "title": "Display",
@@ -60317,7 +60416,7 @@
     },
     "/stories/{story_id}/clock": {
       "get": {
-        "description": "The story's world clock as it stands (FR-CLOCK-1,13): every story has one, created with it, and it cannot be deleted. `offset` is its exact value in minutes from the story's start (the fold of its active advances, so a truncation, a swap and a fork move it with everything else), `display` renders it (`+HHh MMm` while unanchored), `anchor` is its absolute date and time where established (null: unanchored). `level` is the level the story's configuration runs it at: `off` makes it inert (no advance is written, and story-time follows the clock-off rule), `prompt_only` writes advances and verifies nothing, `on` runs it all. `mode` and `settings` are set with `PATCH /stories/{id}/clock`.",
+        "description": "The story's world clock as it stands (FR-CLOCK-1,13): every story has one, created with it, and it cannot be deleted. `offset` is its exact value in minutes from the story's start (the fold of its active advances, so a truncation, a swap and a fork move it with everything else), `display` renders it (`+HHh MMm`, then what the anchor establishes: `+02h 10m (Saturday, between 05:00 and 12:00 (morning))`), `anchor` is its partial absolute time: each of year, month, day, weekday, band, hour and minute a value, a `[lo, hi]` range or null (unknown), never a value the story has not established (null: unanchored). The settings' `calendar` is `{kind: gregorian}` or `{kind: custom, day_minutes, months, weekdays, year_days}`. `level` is the level the story's configuration runs it at: `off` makes it inert (no advance is written, and story-time follows the clock-off rule), `prompt_only` writes advances and verifies nothing, `on` runs it all. `mode` and `settings` are set with `PATCH /stories/{id}/clock`.",
         "operationId": "get_clock",
         "parameters": [
           {
@@ -60609,7 +60708,7 @@
     },
     "/stories/{story_id}/clock/advance": {
       "post": {
-        "description": "Move the world clock forward between turns, as the consumer (FR-CLOCK-13): `minutes` forward, or `to` a target, either an offset in minutes from the story's start or a time of day `\"HH:MM\"`, with a `reason`. The advance is an inter-turn slot after the last turn (a truncation to that turn or earlier discards it, and the clock with it) and is recorded with the source `consumer`. Answers the clock `before` and `after`. 422 `clock_backward` for a move backward (nothing is written; earlier story-time is reached by truncation or a rewrite), `clock_unanchored` for a `\"HH:MM\"` the clock's anchor cannot place (no anchor fixes the hour yet); 409 `module_off` while the story runs the clock off, `story_archived`, `story_paused` or `revision_conflict`. A turn that was rejected or failed, and an ingested event, never advance the clock.",
+        "description": "Move the world clock forward between turns, as the consumer (FR-CLOCK-13): `minutes` forward, or `to` a target, either an offset in minutes from the story's start or a time of day `\"HH:MM\"`, with a `reason`. The advance is an inter-turn slot after the last turn (a truncation to that turn or earlier discards it, and the clock with it) and is recorded with the source `consumer`. Answers the clock `before` and `after`. 422 `clock_backward` for a move backward (nothing is written; earlier story-time is reached by truncation or a rewrite), `clock_unanchored` for a `\"HH:MM\"` the clock's anchor cannot place (the anchor does not fix the exact time of day; once it does, the next such time); 409 `module_off` while the story runs the clock off, `story_archived`, `story_paused` or `revision_conflict`. A turn that was rejected or failed, and an ingested event, never advance the clock.",
         "operationId": "advance_clock",
         "parameters": [
           {

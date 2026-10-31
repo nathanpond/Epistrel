@@ -116,7 +116,6 @@ from epistrel.core.tables.outbox import (
 )
 from epistrel.core.tables.states import state_changes
 from epistrel.core.world_clock.slots import open_inter_turn, slot_position
-from epistrel.orchestrator.jobs import queue
 from epistrel.orchestrator.jobs.types import JobContext, JobHandler, JobOutput
 from epistrel.orchestrator.providers import pinned
 from epistrel.orchestrator.providers.in_process import InProcessRegistry
@@ -211,6 +210,9 @@ async def enqueue(
     conn: AsyncConnection, story_id: str, outcome_id: str, *, after: timedelta | None = None
 ) -> str:
     """Enqueue the settlement of ``outcome_id`` in ``conn``'s transaction (once per record)."""
+    # Imported here: ``jobs.queue`` imports the handler registry, which imports this module.
+    from epistrel.orchestrator.jobs import queue
+
     return await queue.enqueue(
         conn,
         SETTLE,

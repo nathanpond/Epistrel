@@ -212,6 +212,7 @@ async def _scenario(url: str, steps: list[Action]) -> None:
             # The belief projections over the partitions (#159, #167): a Lite story has none.
             "belief_state": 0,
             "nested_belief_state": 0,
+            "state_values": 0,
         }
         # The corrupted row is replaced and the invented row is gone, not kept.
         assert all("corrupted" not in row and BOGUS_ID not in row for row in rebuilt.transcript)

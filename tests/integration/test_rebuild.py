@@ -85,6 +85,7 @@ async def test_rebuild_no_revision_bump(engine: AsyncEngine) -> None:
         # The belief projection (#159): no partition in a Lite story.
         "belief_state": 0,
         "nested_belief_state": 0,
+        "state_values": 0,
     }
 
     await play_turn(engine, story_id, "turn 3, again")
@@ -173,6 +174,7 @@ def test_history_survives_dropping_and_rebuilding_projections(pg_url: str) -> No
             # The belief projection (#159): no partition in a Lite story.
             "belief_state": 0,
             "nested_belief_state": 0,
+            "state_values": 0,
         }
         assert len(rebuilt.json()["operation_id"]) == 26
 

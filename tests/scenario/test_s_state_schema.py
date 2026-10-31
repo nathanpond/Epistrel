@@ -22,9 +22,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
 from epistrel.core import projections
-from epistrel.core.enums import OperationKind, Provenance
+from epistrel.core.enums import OperationKind, Provenance, StateChangeSource
 from epistrel.core.events import Operation
 from epistrel.core.ids import new_ulid
+from epistrel.core.membership import Position
 from epistrel.core.propositions import vocabulary
 from tests import canon_support as c
 from tests import clock_support as ck
@@ -783,6 +784,7 @@ NET_WORTH = {
     "type": "number",
     "rules": {"kind": "derived", "expression": "gold + silver \u00d7 2"},
 }
+FATIGUE = {"name": "fatigue", "type": "number", "initial_value": 0}
 STANDING = {
     "name": "standing",
     "type": "number",
@@ -811,7 +813,7 @@ async def test_s_state_schema__rules(
     async with respond_client(stub_settings, engine) as (client, _):
         story, ids = await _story(client, engine)
         await ck.set_level(engine, story, "prompt_only")
-        for definition in (GOLD, SILVER, HUNGER, NET_WORTH, STANDING):
+        for definition in (GOLD, SILVER, HUNGER, NET_WORTH, STANDING, FATIGUE):
             await _defined(client, story, definition)
         assert await _value(client, story, "net_worth") == 20
         assert await _value(client, story, "standing") == 5
@@ -843,21 +845,29 @@ async def test_s_state_schema__rules(
         await _advance(client, story, 29)  # 359 minutes: the sixth hour is not yet whole
         assert len(await _rule_changes(engine, story, "hunger")) == 5
 
-        # Derived: an input's set recomputes both derived States in its operation.
+        # Derived: folded from the inputs on every read, at every position; nothing stored.
         written = (await _put(client, story, "gold", {"delta": 5})).json()
         assert await _value(client, story, "net_worth") == 25
         assert await _value(client, story, "standing") == 10
-        recomputed = await rows(
+        assert await _value(client, story, "net_worth", str(turn)) == 20
+        recorded = await rows(
             engine,
-            "SELECT d.name, c.source::text AS source FROM state_changes c JOIN state_definitions d "
-            "ON d.id = c.state_id WHERE c.operation_id = :o ORDER BY c.id",
-            o=written["operation_id"],
+            "SELECT d.name FROM state_changes c JOIN state_definitions d ON d.id = c.state_id "
+            "WHERE c.story_id = :s AND d.name IN ('net_worth', 'standing')",
+            s=story,
         )
-        assert [(r.name, r.source) for r in recomputed] == [
-            ("gold", "consumer"),
-            ("net_worth", "rule"),
-            ("standing", "rule"),
-        ]
+        assert recorded == []
+        # An input changed at an earlier position (0, before every turn): every later value of
+        # the derived States follows it, at the head and at checkpoint N.
+        await st.change(
+            engine,
+            story,
+            st.delta("silver", 1, source=StateChangeSource.CONSUMER, position=Position(0)),
+            kind=OperationKind.CONTROL,
+        )
+        assert await _value(client, story, "net_worth") == 27
+        assert await _value(client, story, "standing") == 12
+        assert await _value(client, story, "net_worth", str(turn)) == 22
 
         # The refusals write nothing.
         counted = await _count(engine, story)
@@ -926,5 +936,48 @@ async def test_s_state_schema__rules(
         await played(client, story, body(ids[PLAYER], "And then?"))
         await _post(client, f"/stories/{story}/truncate", {"to_turn": turn})
         assert await _value(client, story, "hunger") == 10
-        assert await _value(client, story, "net_worth") == 20
+        assert await _value(client, story, "net_worth") == 22
         assert {t.membership for t in await _rule_changes(engine, story, "hunger")} == {"discarded"}
+        # An untruncation restores an input's active value, and the derived ones follow.
+        await _post(client, f"/stories/{story}/untruncate", {})
+        assert await _value(client, story, "net_worth") == 27
+        assert await _value(client, story, "hunger") == 0
+
+        # A changed expression governs the positions after its configuration change; the
+        # positions before it keep the old one.
+        changed = await client.patch(
+            f"/stories/{story}/states/net_worth/definition",
+            json={"rules": {"kind": "derived", "expression": "gold + silver * 3"}},
+            headers=WRITE,
+        )
+        assert changed.status_code == 200, changed.text
+        assert await _value(client, story, "net_worth") == 33
+        assert await _value(client, story, "net_worth", written["position"]) == 27
+        assert await _value(client, story, "net_worth", str(turn)) == 22
+        later = (await _put(client, story, "silver", {"delta": 1})).json()
+        assert await _value(client, story, "net_worth") == 36
+        assert await _value(client, story, "net_worth", later["position"]) == 36
+        # A State never becomes, or stops being, derived.
+        for name, rules in (("net_worth", None), ("gold", NET_WORTH["rules"])):
+            kind = _refused(
+                await client.patch(
+                    f"/stories/{story}/states/{name}/definition",
+                    json={"rules": rules},
+                    headers=WRITE,
+                ),
+                422,
+                "validation_error",
+            )
+            assert kind["details"]["reason"] == "rules_kind"
+
+        # An elapsed rule added by an update counts from the update, not the declaration: the
+        # clock stands at 359 minutes, and 60 more is one tick (not six).
+        added = await client.patch(
+            f"/stories/{story}/states/fatigue/definition",
+            json={"rules": {"kind": "elapsed", "per_minutes": 60, "delta": 1}},
+            headers=WRITE,
+        )
+        assert added.status_code == 200, added.text
+        await _advance(client, story, 60)
+        assert await _value(client, story, "fatigue") == 1
+        assert len(await _rule_changes(engine, story, "fatigue")) == 1

@@ -40,6 +40,14 @@ declaration's shape, typed values, constraints and the fold) are ``core.states.m
   change ever recorded, whatever its membership), through a ``core.membership.Position``
   (``Position.end_of(N)`` is checkpoint ``N``, without its inter-turn slots;
   ``Position.end_of(N, k)`` is ``N⁺k``). It answers ``Undefined`` for a State with no value.
+- A derived State (``rules.kind = derived``; FR-STATE-7, #192) stores no change: ``value_of``,
+  ``current_values`` and ``folded_at`` fold it from its inputs on every read, with the
+  expression governing the read's position (``rule_versions``/``rules_at``: the declaration's,
+  then each ``update_definition`` from its configuration change's position,
+  ``change_position``), so it never goes stale; ``apply_change`` refuses any change to it
+  (``Violation("derived")``), it has no ``state_values`` row, and no update makes a State
+  derived or underived (422 ``reason: rules_kind``). ``core.states.rules`` checks inputs and
+  cycles and applies the elapsed rules.
 
 **The module gate** (``states.level``, FR-PROF-2): at ``off`` every write here is 409
 ``module_off`` (nothing written, so the projection holds no row for the story); ``prompt_only``
@@ -79,7 +87,7 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core import providers
-from epistrel.core.config_changes import ConfigScope, record_config_change
+from epistrel.core.config_changes import CONFIG_CHANGED, ConfigScope, record_config_change
 from epistrel.core.enums import (
     StateChangeKind,
     StateChangeSource,
@@ -102,8 +110,9 @@ from epistrel.core.errors import (
     StoryNotFound,
 )
 from epistrel.core.ids import new_ulid
-from epistrel.core.membership import Position, active_only, insert_derived
+from epistrel.core.membership import Position, active_only, active_operation, insert_derived
 from epistrel.core.settings_schema import ConfigClass, merge_patch
+from epistrel.core.states.expressions import DerivedRule, evaluate, parse_rules
 from epistrel.core.states.model import (
     ADDITIVE,
     CLOCK_INTERPRETIVE_MEMBERS,
@@ -140,7 +149,7 @@ from epistrel.core.states.model import (
     validate_definition,
     violation,
 )
-from epistrel.core.tables import characters, entities, stories
+from epistrel.core.tables import characters, entities, events, operations, stories
 from epistrel.core.tables.states import (
     STORY_SCOPE_KEY,
     state_changes,
@@ -400,6 +409,8 @@ async def value_of(
     chosen = View(view)
     state = await definition(conn, story_id, name, view=chosen)
     _scope_ok(state, scope_key)
+    if derived_rule(state) is not None:
+        return await _derived_value(conn, story_id, state, through=through, view=chosen)
     folded = fold(
         state.initial_value,
         await _changes(conn, story_id, state, scope_key, view=chosen, through=through),
@@ -407,6 +418,111 @@ async def value_of(
     if isinstance(folded.value, UndefinedType):
         return Undefined
     return StateValue(folded.value, folded.since, folded.count, scope_key)
+
+
+# -- derived States and rule versions (FR-STATE-7; #192) -------------------------------------
+
+
+async def change_position(conn: AsyncConnection, story_id: str, seq: int) -> Position:
+    """Where a configuration change recorded at event ``seq`` sits on the active timeline: the
+    end of the latest turn or inter-turn slot that recorded an event before it (``end_of(0)``
+    when none did). A position after it is governed by the change; one at or before it is not."""
+    e, o = events.c, operations.c
+    slot = func.coalesce(e.slot_k, 0)
+    row = (
+        await conn.execute(
+            select(e.narrative_turn, slot.label("slot_k"))
+            .select_from(events.join(operations, o.operation_id == e.operation_id))
+            .where(
+                e.story_id == story_id,
+                e.seq < seq,
+                e.narrative_turn.is_not(None),
+                active_operation(operations),
+            )
+            .order_by(e.narrative_turn.desc(), slot.desc())
+            .limit(1)
+        )
+    ).one_or_none()
+    if row is None:
+        return Position.end_of(0)
+    return Position.end_of(int(row.narrative_turn), int(row.slot_k))
+
+
+async def rule_versions(
+    conn: AsyncConnection, story_id: str, state: StateDefinition
+) -> list[tuple[Position | None, dict[str, Any]]]:
+    """The State's ``rules`` along the timeline, oldest first: its declaration's (``None``:
+    from the declaration), then each ``update_definition`` of them from that configuration
+    change's position (``change_position``; read from its ``config_changed`` event)."""
+    e = events.c
+    setting = f"{SETTING_PREFIX}{state.name}.rules"
+    changed = list(
+        await conn.execute(
+            select(e.seq, e.payload)
+            .where(
+                e.story_id == story_id,
+                e.type == CONFIG_CHANGED,
+                e.payload["setting"].astext == setting,
+            )
+            .order_by(e.seq)
+        )
+    )
+    if not changed:
+        return [(None, dict(state.rules))]
+    versions: list[tuple[Position | None, dict[str, Any]]] = [
+        (None, dict(changed[0].payload.get("old") or {}))
+    ]
+    for row in changed:
+        at = await change_position(conn, story_id, int(row.seq))
+        versions.append((at, dict(row.payload.get("new") or {})))
+    return versions
+
+
+def rules_at(
+    versions: Sequence[tuple[Position | None, dict[str, Any]]], through: Position | None
+) -> dict[str, Any]:
+    """The ``rules`` that govern ``through`` (``None``: the head): the latest version whose
+    change sits before it."""
+    found = versions[0][1]
+    for at, chosen in versions:
+        if at is None or through is None or through.key() > at.key():
+            found = chosen
+    return found
+
+
+async def _derived_value(
+    conn: AsyncConnection,
+    story_id: str,
+    state: StateDefinition,
+    *,
+    through: Position | None,
+    view: View,
+) -> StateValue | UndefinedType:
+    """A derived State's value through ``through`` in ``view``: its expression (the version
+    governing that position) over its inputs' values there, folded on every read, so it is
+    never stale; undefined while an input has no value or a division is by zero. Its ``since``
+    is its latest input's and its count the inputs' counts."""
+    rule = parse_rules(rules_at(await rule_versions(conn, story_id, state), through))
+    if not isinstance(rule, DerivedRule):
+        return Undefined
+    values: dict[str, Decimal] = {}
+    since: Position | None = None
+    count = 0
+    for name in sorted(rule.inputs):
+        try:
+            found = await value_of(conn, story_id, name, through=through, view=view)
+        except StateNotFound:
+            return Undefined
+        if isinstance(found, UndefinedType) or not isinstance(found.value, Decimal):
+            return Undefined
+        values[name] = found.value
+        count += found.change_count
+        if found.since is not None and (since is None or found.since.key() > since.key()):
+            since = found.since
+    result = evaluate(rule.node, values)
+    if result is None:
+        return Undefined
+    return StateValue(result, since, count, None)
 
 
 # -- the projection ----------------------------------------------------------------------
@@ -498,6 +614,11 @@ async def current_values(
         folded = fold(state.initial_value, changes)
         if folded.count:
             found[(state.name, scope_key)] = folded.value
+    for state in states:
+        if derived_rule(state) is not None:
+            derived = await _derived_value(conn, story_id, state, through=None, view=View.ACTIVE)
+            if isinstance(derived, StateValue) and derived.change_count:
+                found[(state.name, None)] = derived.value
     return found
 
 
@@ -526,7 +647,13 @@ async def folded_at(
     for row in await conn.execute(select(state_changes).where(*where)):
         key = (str(row.state_id), None if row.scope_key is None else str(row.scope_key))
         grouped.setdefault(key, []).append(_change_of(by_id[key[0]].type, row))
-    return {key: fold(by_id[key[0]].initial_value, rows) for key, rows in grouped.items()}
+    found = {key: fold(by_id[key[0]].initial_value, rows) for key, rows in grouped.items()}
+    for state_id, state in by_id.items():
+        if derived_rule(state) is not None:
+            derived = await _derived_value(conn, story_id, state, through=through, view=View.ACTIVE)
+            if isinstance(derived, StateValue):
+                found[(state_id, None)] = Folded(derived.value, derived.since, derived.change_count)
+    return found
 
 
 async def turn_effects(
@@ -829,8 +956,6 @@ async def define_state(
     stored = checked.model_copy(update={"id": new_ulid()})
     await insert_derived(conn, state_definitions, [_definition_row(story_id, stored, op)])
     await _index_definition(conn, story_id, stored)
-    if derived_rule(stored) is not None:
-        await rules.seed_derived(conn, op, story_id, stored, operation_position(op))
     return stored
 
 
@@ -909,6 +1034,14 @@ async def update_definition(
     after = merge_patch(before, patch)
     for member in IMMUTABLE_MEMBERS:
         after[member] = before[member]
+    # A State never becomes, or stops being, derived (#192): a derived State stores no change.
+    if (current.rules.get("kind") == DERIVED) != (
+        (after.get("rules") or {}).get("kind") == DERIVED
+    ):
+        raise InvalidRequest(
+            f"State {name!r} cannot become, or stop being, derived: declare a new State",
+            {"field": "rules", "reason": "rules_kind"},
+        )
     builtin = name in RESERVED_NAMES
     clock = {m: after.pop(m) for m in CLOCK_MEMBERS if m in after}
     if clock:
@@ -1073,9 +1206,8 @@ async def apply_change(
         if r.status in COUNTED:
             running = step(running, r.kind, r.value, r.delta)
             following.append(running)
-    derived = derived_rule(state) is not None
-    if derived and change.source is not StateChangeSource.RULE:
-        # A derived State changes only by its rule (FR-STATE-7; #192).
+    if derived_rule(state) is not None:
+        # A derived State stores no change: its value is folded from its inputs (#192).
         return Violation(DERIVED, attempted, current)
     refused = check_change(state, change, attempted, current, following)
     if refused is not None:
@@ -1136,10 +1268,6 @@ async def apply_change(
     await index_records(conn, [state_change_record(SimpleNamespace(**row))])
     assert state.id is not None  # noqa: S101 - a stored definition has its id
     await refresh(conn, story_id, [(state.id, change.scope_key)])
-    if counted and not derived:
-        from epistrel.core.states import rules  # here: the rules apply this module's writes
-
-        await rules.recompute_derived(conn, op, story_id, state.name, position)
     return Applied(new_id, state.id, current, attempted, position, minutes)
 
 
@@ -1161,6 +1289,7 @@ __all__ = [
     "View",
     "Violation",
     "apply_change",
+    "change_position",
     "check_active_names",
     "current_values",
     "define_state",
@@ -1174,6 +1303,8 @@ __all__ = [
     "operation_position",
     "refresh",
     "require_module",
+    "rule_versions",
+    "rules_at",
     "state_level",
     "turn_effects",
     "update_definition",

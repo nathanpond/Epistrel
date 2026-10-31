@@ -9,7 +9,9 @@ from typing import Any
 import pytest
 
 from epistrel.core.errors import InvalidRequest, StateUnpermitted
+from epistrel.core.membership import Position
 from epistrel.core.states import expressions as ex
+from epistrel.core.states import rules_at
 from epistrel.core.states.model import validate_definition
 from epistrel.core.states.rules import _bounded
 
@@ -115,3 +117,16 @@ def test_elapsed_bounds() -> None:
     assert _bounded(state, Decimal(1), Decimal(-3), clamp=False) == 0
     assert _bounded(state, Decimal(0), Decimal(-3), clamp=True) == 0
     assert _bounded(state, Decimal(9), Decimal(4), clamp=True) == 1
+
+
+def test_rules_at_positions() -> None:
+    old, new = {"kind": "derived", "expression": "a"}, {"kind": "derived", "expression": "b"}
+    versions: list[tuple[Position | None, dict[str, Any]]] = [
+        (None, old),
+        (Position.end_of(2, 1), new),
+    ]
+    assert rules_at(versions, None) == new
+    assert rules_at(versions, Position.end_of(2, 1)) == old
+    assert rules_at(versions, Position(2, 1, 2)) == new
+    assert rules_at(versions, Position(1)) == old
+    assert rules_at([(None, old)], Position(9)) == old

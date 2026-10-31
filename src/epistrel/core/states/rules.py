@@ -2,31 +2,34 @@
 
 "Updated by rules" is limited to constraints plus two triggers (``core.states.expressions``
 holds their shapes and the derived arithmetic); there is no scripting language, no model call
-and no background job: every rule change is written in the transaction of the change that
-triggers it, with ``source = rule``, at that change's position, so it follows its operation's
-membership like any change, and a replay (the projection's fold over the stored changes)
+and no background job, and a replay (the projection's fold over the stored changes)
 reproduces the same values with nothing re-run.
 
 - **Elapsed** (``{kind: elapsed, per_minutes, delta, bounds_clamp}``): ``apply_elapsed`` is a
   post-advance callback (``core.world_clock.hooks``) registered when this module is imported
-  (``core.world_clock.advance`` imports it).
-  After each committed clock advance it writes one ``delta``
-  change per whole ``per_minutes`` the clock has passed since the State's last tick, at the
-  advance's position. Each tick's ``valid_time_minutes`` is the story-minute it falls due, so
-  the last tick is the latest active ``rule`` change's (``last_applied_minute``, derived from the
-  stored rows, never kept elsewhere); before the first, ticks count from the clock as the State
-  was declared. A tick that would break a bound moves only up to it with ``bounds_clamp``, and is
-  held (a ``delta`` of 0) without; either way it is recorded, so it is not tried again.
-- **Derived** (``{kind: derived, expression}``): ``recompute_derived`` runs inside
-  ``core.states.apply_change`` after any change to a State a derived one reads (directly or
-  through another), recomputing the derived States in topological order at the change's
-  position and writing a ``set`` only when the value moves. A new derived State is computed as
-  it is declared (``seed_derived``). ``check_definition`` refuses, at declaration and on
-  ``update_definition``, a derived State that reads anything but the story's active
+  (``core.world_clock.advance`` imports it). After each committed clock advance it writes,
+  in the advance's transaction and at its position (so the ticks follow the advance's
+  operation's membership), one ``delta`` change with ``source = rule`` per whole
+  ``per_minutes`` the clock has passed since the rule's last tick. Each tick's
+  ``valid_time_minutes`` is the story-minute it falls due, so the last tick is the latest
+  active ``rule`` change's (``last_applied_minute``, derived from the stored rows, never kept
+  elsewhere). Ticks count from when the rule applies: the clock as the State was declared, or,
+  for a rule set by ``update_definition``, the clock at that configuration change's position
+  (``core.states.change_position``), whichever is later than the last tick. A tick that would
+  break a bound moves only up to it with ``bounds_clamp``, and is held (a ``delta`` of 0)
+  without; either way it is recorded, so it is not tried again.
+- **Derived** (``{kind: derived, expression}``): a derived State stores no change. Its value is
+  folded from its inputs on every read (``core.states.value_of``, ``current_values``,
+  ``folded_at``): the expression governing the read's position (``core.states.rule_versions``:
+  the declaration's, then each update's from its configuration change's position) over the
+  inputs' values there, in the read's view. So it equals its expression over its inputs at
+  every position, whatever changed an input (an earlier slot, a truncation, an untruncation,
+  a swap, a fork), and nothing can make it stale. ``check_definition`` refuses, at declaration
+  and on ``update_definition``, a derived State that reads anything but the story's active
   story-scoped number States (422 ``validation_error``, ``reason: rules_input``) or that closes a
-  cycle (``reason: rules_cycle``). A derived State refuses every change but its rule's
+  cycle (``reason: rules_cycle``). A derived State refuses every change
   (``core.states.apply_change``: ``Violation("derived")``; the State API's 422
-  ``state_derived``). A changed expression applies from the next change to an input.
+  ``state_derived``), and it has no row in the ``state_values`` projection.
 
 Rules run only with ``states.level`` on or ``prompt_only`` (``module_on("states")``); nothing
 here logs (invariant 3).
@@ -42,9 +45,9 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core import states, world_clock
 from epistrel.core.enums import StateChangeKind, StateChangeSource, StateScope
-from epistrel.core.errors import InvalidRequest, StateNotFound
+from epistrel.core.errors import InvalidRequest
 from epistrel.core.membership import Position, active_only
-from epistrel.core.states.expressions import downstream, evaluate, find_cycle
+from epistrel.core.states.expressions import find_cycle
 from epistrel.core.states.model import (
     NUMERIC_TYPES,
     StateChange,
@@ -63,7 +66,6 @@ if TYPE_CHECKING:
     from epistrel.core.events.operation import Operation
     from epistrel.core.world_clock import Advance
 
-DERIVED_REASON = "recomputed from the States it is derived from"
 ELAPSED_REASON = "story-time passed"
 """The ``reason`` of a rule's changes (identifiers only: no story text)."""
 
@@ -106,72 +108,6 @@ async def check_definition(
             "derived States would read each other in a cycle: " + " -> ".join(cycle),
             {"field": "rules", "reason": "rules_cycle", "cycle": cycle},
         )
-
-
-# -- derived States ---------------------------------------------------------------------------
-
-
-async def _recompute(
-    conn: AsyncConnection, op: Operation, story_id: str, state: StateDefinition, at: Position
-) -> None:
-    rule = derived_rule(state)
-    if rule is None:
-        return
-    values: dict[str, Decimal] = {}
-    for name in sorted(rule.inputs):
-        try:
-            found = await states.value_of(conn, story_id, name, through=at)
-        except StateNotFound:
-            return
-        if isinstance(found, UndefinedType) or not isinstance(found.value, Decimal):
-            return
-        values[name] = found.value
-    result = evaluate(rule.node, values)
-    if result is None:
-        return
-    current = await states.value_of(conn, story_id, state.name, through=at)
-    if not isinstance(current, UndefinedType) and current.value == result:
-        return
-    written = await states.apply_change(
-        conn,
-        op,
-        StateChange(
-            state=state.name,
-            reason=DERIVED_REASON,
-            source=StateChangeSource.RULE,
-            kind=StateChangeKind.SET,
-            value=result,
-            position=at,
-        ),
-    )
-    if isinstance(written, Violation):  # pragma: no cover - a derived State has no bounds
-        raise InvalidRequest(
-            f"derived State {state.name!r} cannot hold its computed value",
-            {"field": "rules", "reason": written.constraint, "state": state.name},
-        )
-
-
-async def recompute_derived(
-    conn: AsyncConnection, op: Operation, story_id: str, changed: str, at: Position
-) -> int:
-    """Recompute, at ``at``, every derived State that reads State ``changed`` (directly or
-    through another derived State), in topological order; answers how many it considered."""
-    defined = await states.definitions(conn, story_id)
-    graph = _graph(defined)
-    if not graph:
-        return 0
-    by_name = {s.name: s for s in defined}
-    order = downstream(graph, changed)
-    for name in order:
-        await _recompute(conn, op, story_id, by_name[name], at)
-    return len(order)
-
-
-async def seed_derived(
-    conn: AsyncConnection, op: Operation, story_id: str, state: StateDefinition, at: Position
-) -> None:
-    """A derived State's value as it is declared (none while an input has none)."""
-    await _recompute(conn, op, story_id, state, at)
 
 
 # -- elapsed rules -------------------------------------------------------------------------------
@@ -242,12 +178,15 @@ async def apply_elapsed(
         return
     zero = await _minute_zero(conn, story_id)
     for state, rule in ruled:
+        # Ticks count from when the rule applies: the declaration, or the configuration change
+        # that set the rule (#192), and after the last tick.
+        applies = (await states.rule_versions(conn, story_id, state))[-1][0]
+        if applies is None:
+            applies = await _declared_at(conn, story_id, state)
+        last = (await world_clock.clock_at(conn, story_id, applies)).offset_minutes
         stored = await _last_tick(conn, story_id, state)
         if stored is not None:
-            last = stored - zero
-        else:
-            declared = await _declared_at(conn, story_id, state)
-            last = (await world_clock.clock_at(conn, story_id, declared)).offset_minutes
+            last = max(last, stored - zero)
         ticks = max(0, (advance.after - last) // rule.per_minutes)
         if not ticks:
             continue
@@ -278,10 +217,7 @@ async def apply_elapsed(
 hooks.register_post_advance(apply_elapsed)
 
 __all__ = [
-    "DERIVED_REASON",
     "ELAPSED_REASON",
     "apply_elapsed",
     "check_definition",
-    "recompute_derived",
-    "seed_derived",
 ]

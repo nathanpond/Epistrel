@@ -445,6 +445,10 @@ class RespondResult:
     """#177 (FR-MULTI-3): a structured turn's reconciled concurrent commitments, ``{proposition,
     winner_beat, loser_beat, rule}``; empty when nothing contradicted."""
     state_effects: list[dict[str, Any]] = field(default_factory=list)
+    settled_effects: list[dict[str, Any]] = field(default_factory=list)
+    """#217 (FR-EXT-21 (e)): the State changes late settlements committed in the inter-turn
+    slots since the previous response, each as ``state_effects`` lists a change (``source:
+    settlement``), a ``hidden`` State's only for ``omniscient``; empty when none."""
     reconciliation: dict[str, int] | None = None
     """#210 (FR-EXT-10): ``{count}``, how many effects the story's reconciliation status lists
     (``GET /stories/{id}/reconciliation``); ``None`` when the story has no outbox row."""

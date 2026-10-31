@@ -77,7 +77,7 @@ constraint lines (#68). The ``user`` block is the player input. -#}
 {% include "external_data.j2" %}
 {% if pending_outcomes %}
 ## Awaiting the game
-The game was asked to make these changes and has not reported whether they happened; never narrate one as done:
+The game was asked to make these changes; never narrate one as done unless its line says the game confirmed it:
 {% for line in pending_outcomes %}
 - {{ line }}
 {% endfor %}

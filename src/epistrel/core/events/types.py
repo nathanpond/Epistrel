@@ -697,6 +697,32 @@ class ExternalOutcome(EventPayload):
     version: OutcomeVersion | None = Field(default=None, exclude_if=lambda v: v is None)
 
 
+OUTCOME_RECORDED = "outcome_recorded"
+"""The event type of a late outcome's intake (#217)."""
+
+
+@register(OUTCOME_RECORDED, category=EventCategory.INPUT)
+class OutcomeRecorded(EventPayload):
+    """An outcome recorded for an external effect after its requesting turn closed (FR-EXT-21
+    (b); #217): by the outbox dispatcher (``received_via = dispatcher``: an asynchronous
+    provider, or a synchronous row whose wait expired) or reported by the consumer through
+    ``ingest`` (``ingest``: a #209 consumer-applied effect names its ``effect_id``). The outcome
+    record (``outcome_id``, an ``outbox_outcomes`` row) and the effect it answers
+    (``outbox_id``, else ``effect_id``), the answer (``status``; the record's own ``kind`` says
+    whether it was a ``duplicate`` or a ``conflict`` of an earlier terminal answer, FR-EXT-22)
+    and who reported it. Its operation has **no narrative position** (timeline-independent: a
+    fork copies it, a truncation never discards it), so it is never an antecedent of anything
+    positioned; the
+    settlement's slot-positioned ``external_outcome`` is (``core.antecedents``). Identifiers and
+    codes only."""
+
+    outcome_id: str
+    outbox_id: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    effect_id: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    status: Literal["confirmed", "failed", "unknown"]
+    received_via: Literal["dispatcher", "ingest"]
+
+
 REQUESTED_EFFECT = "requested_effect"
 """The event type of a change a turn asks an external value's owner to apply (#209)."""
 REQUESTED_KINDS: tuple[str, ...] = ("change", "transfer", "time_advance")

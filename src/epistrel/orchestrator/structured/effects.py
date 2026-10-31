@@ -118,7 +118,7 @@ from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core import outbox as core_outbox
@@ -139,7 +139,7 @@ from epistrel.core.epistemic.conflicts import Conflict, StateClaim, detect_state
 from epistrel.core.errors import ModuleOff, StateNotFound
 from epistrel.core.events.types import REQUESTED_EFFECT, RequestedEffect
 from epistrel.core.ids import new_ulid
-from epistrel.core.membership import Position, active_operation, step_of
+from epistrel.core.membership import Position, active_only, active_operation, step_of
 from epistrel.core.profiles import schema
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.propositions.vocabulary import STATE_VALUE
@@ -161,6 +161,7 @@ from epistrel.core.states.authorize import Evidence, Source
 from epistrel.core.states.effects import Finding, Planned
 from epistrel.core.states.model import WORLD_CLOCK, Value, number, to_json
 from epistrel.core.tables import characters, entities, events, operations
+from epistrel.core.tables.outbox import external_effect_outbox, outbox_outcomes
 from epistrel.core.turns.beats import TurnBeat
 from epistrel.core.verify.detect import DetectedClaim
 from epistrel.core.verify.other_agent import PLAYER_NARRATOR
@@ -1034,31 +1035,128 @@ def outcome_check(
 async def pending_outcomes(
     conn: AsyncConnection, story_id: str, turn: int, names: Mapping[str, str]
 ) -> tuple[str, ...]:
-    """The narrator's ``pending_outcomes`` for turn ``turn`` (FR-EXT-9, FR-EXT-21 (e)): the
-    requests of the ``PENDING_TURNS`` turns before it on the active timeline with no recorded
-    outcome (none is recorded before #217's intake, so every one), oldest first, one line each
-    (``core.states.effects.pending_line``; ``names`` the cast's names by id). A hint for the
-    narrator only; never a character's."""
+    """The narrator's ``pending_outcomes`` for turn ``turn`` (FR-EXT-9, FR-EXT-21 (e)), oldest
+    first, one line each (``core.states.effects.pending_line``; ``names`` the cast's names by
+    id). A hint for the narrator only; never a character's:
+
+    - the changes the ``PENDING_TURNS`` turns before it on the active timeline asked of the game
+      with no settled answer yet: a #209 consumer request (``requested_effect``) with no
+      ``confirmed``/``failed`` outcome record (#217), and a #210 outbox effect still
+      ``intended``, ``claimed`` or ``unknown``;
+    - (#217) every request on the active timeline whose answer the game reported since the
+      previous turn (a late outcome, however old its request): ``confirmed``, or ``refused``,
+      which the narration reconciles (it did not happen)."""
     e = events.c
-    rows = await conn.execute(
-        select(e.payload)
+    o = external_effect_outbox.c
+    x = outbox_outcomes.c
+    since = await conn.scalar(
+        select(func.max(operations.c.committed_at)).where(
+            operations.c.story_id == story_id,
+            operations.c.kind == "turn",
+            operations.c.narrative_turn == turn - 1,
+            active_operation(operations),
+        )
+    )
+    answers: dict[str, tuple[str, Any]] = {}
+    for answered in await conn.execute(
+        select(x.outbox_id, x.effect_id, x.kind, x.received_at)
+        .where(x.story_id == story_id, x.kind.in_(sorted(core_outbox.TERMINAL)))
+        .order_by(x.received_at, x.id)
+    ):
+        key = str(answered.outbox_id or answered.effect_id)
+        answers.setdefault(key, (str(answered.kind), answered.received_at))
+    found: list[tuple[Any, str]] = []
+
+    def line(payload: Mapping[str, Any], key: str, order: Any) -> None:
+        scope_key = payload.get("scope_key")
+        holder = names.get(str(scope_key)) if scope_key else None
+        text = rules.pending_line(payload, holder)
+        answer = answers.get(key)
+        if answer is None:
+            found.append((order, text))
+        elif since is None or answer[1] > since:
+            told = CONFIRMED_LINE if answer[0] == "confirmed" else REFUSED_LINE
+            found.append((order, f"{text}{told}"))
+
+    requests = await conn.execute(
+        select(e.payload, e.narrative_turn, e.seq)
         .select_from(events.join(operations, operations.c.operation_id == e.operation_id))
         .where(
             e.story_id == story_id,
             e.type == REQUESTED_EFFECT,
-            e.narrative_turn >= turn - PENDING_TURNS,
             e.narrative_turn < turn,
             active_operation(operations),
         )
         .order_by(e.seq)
     )
-    lines = []
-    for row in rows:
-        payload = dict(row.payload or {})
-        scope_key = payload.get("scope_key")
-        holder = names.get(str(scope_key)) if scope_key else None
-        lines.append(rules.pending_line(payload, holder))
-    return tuple(lines)
+    for request in requests:
+        payload = dict(request.payload or {})
+        key = str(payload.get("effect_id"))
+        if key in answers or request.narrative_turn >= turn - PENDING_TURNS:
+            line(payload, key, (request.narrative_turn, request.seq))
+    rows = await conn.execute(
+        select(o.id, o.effect, o.scope_key, o.status, o.narrative_turn, o.created_at)
+        .where(
+            o.story_id == story_id,
+            o.executable.is_(True),
+            o.narrative_turn < turn,
+            o.status != "cancelled",
+            active_only(external_effect_outbox),
+        )
+        .order_by(o.created_at, o.id)
+    )
+    for dispatched in rows:
+        key = str(dispatched.id)
+        recent = dispatched.narrative_turn >= turn - PENDING_TURNS
+        if key not in answers and not (recent and dispatched.status in OUTBOX_PENDING):
+            continue
+        payload = {**dict(dispatched.effect or {}), "scope_key": dispatched.scope_key}
+        line(payload, key, (dispatched.narrative_turn, 0))
+    return tuple(text for _, text in sorted(found, key=lambda f: f[0]))
+
+
+CONFIRMED_LINE = " (the game confirmed it)"
+REFUSED_LINE = " (the game refused it: it did not happen; reconcile the story with that)"
+OUTBOX_PENDING = frozenset({"intended", "claimed", "unknown"})
+"""#217: an outbox effect's statuses with no settled answer."""
+
+
+async def settled_effects(
+    conn: AsyncConnection, story_id: str, turn: int, *, omniscient: bool
+) -> list[dict[str, Any]]:
+    """#217 (FR-EXT-21 (e)): the respond response's ``settled_effects`` for turn ``turn``: the
+    State changes late settlements committed in the inter-turn slots since the previous
+    response (``N⁺k`` of turn ``turn - 1``, active), each as ``state_effects`` lists a change,
+    a ``hidden`` State's only for ``omniscient``."""
+    if turn < 2:
+        return []
+    o = operations.c
+    slots = [
+        str(r)
+        for r in await conn.scalars(
+            select(o.operation_id)
+            .where(
+                o.story_id == story_id,
+                o.narrative_turn == turn - 1,
+                o.slot_k.is_not(None),
+                active_operation(operations),
+            )
+            .order_by(o.slot_k)
+        )
+    ]
+    if not slots:
+        return []
+    found = await states.turn_effects(conn, story_id, slots, omniscient=omniscient, with_ids=True)
+    out: list[dict[str, Any]] = []
+    for operation_id in slots:
+        for e in found.get(operation_id, []):
+            if e.get("source") != StateChangeSource.SETTLEMENT.value:
+                continue
+            row = {k: e[k] for k in RESPONSE_FIELDS}
+            if e["kind"] in TRANSFER_KINDS:
+                row["kind"] = e["kind"]
+            out.append(row)
+    return out
 
 
 def outbox_rows(book: Book, requested: Sequence[Requested]) -> list[core_outbox.Intended]:
@@ -1876,6 +1974,7 @@ __all__ = [
     "remember",
     "report",
     "requested_of",
+    "settled_effects",
     "source_of",
     "stage_requested",
     "state_claims",

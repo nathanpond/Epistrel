@@ -830,10 +830,14 @@ _OPERATION_IDS = f"(SELECT old_id FROM {_MAP} WHERE kind = 'operation')"  # noqa
 ROW_FILTERS: dict[str, str] = {
     events.name: f"t.id IN {_EVENT_IDS}",
     transcript_messages.name: f"t.message_id IN {_EVENT_IDS}",
-    # The outbox's outcome records (#210) follow the outbox rows the fork copies.
+    # The outbox's outcome records (#210) follow the outbox rows the fork copies, and (#217) a
+    # consumer-applied effect's follow its copied ``requested_effect`` (whose effect id a fork
+    # keeps: a payload id is mapped only when the fork copies a row with that id).
     "outbox_outcomes": (
-        f"t.outbox_id::text IN (SELECT old_id FROM {_MAP} "  # noqa: S608
-        "WHERE kind = 'external_effect_outbox')"
+        f"(t.outbox_id::text IN (SELECT old_id FROM {_MAP} "  # noqa: S608
+        "WHERE kind = 'external_effect_outbox') OR t.effect_id::text IN "
+        f"(SELECT e.payload->>'effect_id' FROM events e JOIN {_MAP} m ON m.old_id = e.id "
+        "WHERE m.kind = 'event' AND e.type = 'requested_effect'))"
     ),
 }
 """Which source rows a table copies beyond ``story_id``: by default the rows of the copied

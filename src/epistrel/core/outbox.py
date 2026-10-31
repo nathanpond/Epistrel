@@ -56,11 +56,11 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import Row, and_, exists, func, insert, literal, or_, select, update
+from sqlalchemy import Row, and_, any_, exists, func, insert, literal, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core.enums import StoryStatus
+from epistrel.core.enums import StateChangeStatus, StoryStatus
 from epistrel.core.erasure import guard
 from epistrel.core.erasure.index import index_records
 from epistrel.core.erasure.records import outbox_record
@@ -78,6 +78,7 @@ from epistrel.core.tables.outbox import (
     INTENDED,
     UNKNOWN,
     VIA_DISPATCHER,
+    VIA_INGEST,
     external_effect_outbox,
     outbox_outcomes,
     reconciliation_marks,
@@ -361,22 +362,32 @@ async def abandon(conn: AsyncConnection, outbox_id: str, now: datetime) -> None:
 
 async def _insert_outcome(
     conn: AsyncConnection,
-    outbox_id: str,
+    outbox_id: str | None,
     kind: str,
     payload: Mapping[str, Any],
     raw_hash: str,
     via: str,
     now: datetime,
+    *,
+    effect_id: str | None = None,
+    story_id: str | None = None,
+    outcome_id: str | None = None,
 ) -> str:
-    story_id = await conn.scalar(
-        select(external_effect_outbox.c.story_id).where(external_effect_outbox.c.id == outbox_id)
-    )
-    outcome_id = new_ulid()
+    """One ``outbox_outcomes`` row for outbox row ``outbox_id`` or (#217) consumer-applied
+    effect ``effect_id`` of ``story_id`` (with id ``outcome_id`` when given); answers its id."""
+    if story_id is None:
+        story_id = await conn.scalar(
+            select(external_effect_outbox.c.story_id).where(
+                external_effect_outbox.c.id == outbox_id
+            )
+        )
+    outcome_id = outcome_id or new_ulid()
     await conn.execute(
         insert(outbox_outcomes).values(
             id=outcome_id,
             story_id=story_id,
             outbox_id=outbox_id,
+            effect_id=effect_id,
             kind=kind,
             payload=dict(payload),
             raw_hash=raw_hash,
@@ -389,10 +400,12 @@ async def _insert_outcome(
 
 @dataclass(frozen=True, slots=True)
 class Recorded:
-    """What ``record_outcome`` did: the outcome record's kind and the row's status after it."""
+    """What ``record_outcome`` did: the outcome record's kind and the row's status after it
+    (#217: and the outcome record's id)."""
 
     kind: str
     status: str
+    outcome_id: str = ""
 
 
 async def record_outcome(
@@ -404,9 +417,11 @@ async def record_outcome(
     raw_hash: str = "",
     via: str = VIA_DISPATCHER,
     now: datetime,
+    outcome_id: str | None = None,
 ) -> Recorded:
     """Record answer ``status`` (``confirmed``, ``failed`` or ``unknown``) for the row, which
-    the caller has locked (see the module docstring)."""
+    the caller has locked (see the module docstring); ``outcome_id``: the record's id (#217's
+    ``outcome_recorded`` event names it)."""
     row = await locked(conn, outbox_id)
     if row is None:
         raise LookupError(f"outbox row {outbox_id} does not exist")
@@ -417,7 +432,9 @@ async def record_outcome(
         kind = DUPLICATE if status in (current, UNKNOWN) else CONFLICT
     elif current in (CLAIMED, UNKNOWN):
         after = status
-    await _insert_outcome(conn, outbox_id, kind, payload or {}, raw_hash, via, now)
+    outcome_id = await _insert_outcome(
+        conn, outbox_id, kind, payload or {}, raw_hash, via, now, outcome_id=outcome_id
+    )
     # #212: a staged turn waiting on the row hears of the outcome when this commits.
     await conn.execute(select(func.pg_notify(OUTCOME_CHANNEL, outbox_id)))
     if after != current or after in TERMINAL:
@@ -429,7 +446,117 @@ async def record_outcome(
             .where(external_effect_outbox.c.id == outbox_id)
             .values(**values)
         )
-    return Recorded(kind, after)
+    return Recorded(kind, after, outcome_id)
+
+
+async def record_effect_outcome(
+    conn: AsyncConnection,
+    story_id: str,
+    effect_id: str,
+    status: str,
+    *,
+    payload: Mapping[str, Any] | None = None,
+    raw_hash: str = "",
+    via: str = VIA_INGEST,
+    now: datetime,
+    outcome_id: str | None = None,
+) -> Recorded:
+    """#217: record the consumer's answer ``status`` for consumer-applied effect ``effect_id``
+    (a #209 ``requested_effect``, which has no outbox row), with the outbox's first-terminal-wins
+    rule (FR-EXT-22): after a ``confirmed`` or ``failed`` record, the same answer (or
+    ``unknown``) is a ``duplicate`` and another terminal one a ``conflict``. Answers the record's
+    kind, the effect's settled answer after it (``status`` when none came before) and its id.
+    The caller serializes intake under the story lock (an ingest's operation commit)."""
+    o = outbox_outcomes.c
+    earlier = await conn.scalar(
+        select(o.kind)
+        .where(o.story_id == story_id, o.effect_id == effect_id, o.kind.in_(sorted(TERMINAL)))
+        .order_by(o.received_at, o.id)
+        .limit(1)
+    )
+    kind, after = status, status
+    if earlier is not None:
+        after = str(earlier)
+        kind = DUPLICATE if status in (after, UNKNOWN) else CONFLICT
+    outcome_id = await _insert_outcome(
+        conn,
+        None,
+        kind,
+        payload or {},
+        raw_hash,
+        via,
+        now,
+        effect_id=effect_id,
+        story_id=story_id,
+        outcome_id=outcome_id,
+    )
+    return Recorded(kind, after, outcome_id)
+
+
+@dataclass(frozen=True, slots=True)
+class OutcomeRecord:
+    """One ``outbox_outcomes`` row as settlement reads it (#217)."""
+
+    id: str
+    story_id: str
+    outbox_id: str | None
+    effect_id: str | None
+    kind: str
+    payload: dict[str, Any]
+    raw_hash: str
+    received_via: str
+    received_at: datetime
+    settled: bool
+
+    @property
+    def effect(self) -> str:
+        """The effect the outcome answers: the outbox row's id (also its effect id), or the
+        consumer-applied effect's."""
+        found = self.outbox_id or self.effect_id
+        assert found is not None  # noqa: S101 - the table's check sets exactly one
+        return found
+
+
+def _outcome_of(row: Any) -> OutcomeRecord:
+    return OutcomeRecord(
+        id=str(row.id),
+        story_id=str(row.story_id),
+        outbox_id=None if row.outbox_id is None else str(row.outbox_id),
+        effect_id=None if row.effect_id is None else str(row.effect_id),
+        kind=str(row.kind),
+        payload=dict(row.payload or {}),
+        raw_hash=str(row.raw_hash or ""),
+        received_via=str(row.received_via),
+        received_at=row.received_at,
+        settled=bool(row.settled),
+    )
+
+
+async def outcome(
+    conn: AsyncConnection, outcome_id: str, *, lock: bool = False
+) -> OutcomeRecord | None:
+    """Outcome record ``outcome_id`` (``lock``: ``FOR UPDATE``), or ``None``."""
+    query = select(outbox_outcomes).where(outbox_outcomes.c.id == outcome_id)
+    if lock:
+        query = query.with_for_update()
+    row = (await conn.execute(query)).one_or_none()
+    return None if row is None else _outcome_of(row)
+
+
+async def mark_settled(
+    conn: AsyncConnection, outcome_id: str, *, outbox_id: str | None, event_id: str | None
+) -> None:
+    """#217: the outcome record is settled (the one column its trigger lets change) and, for an
+    outbox row, the settlement's slot-positioned event is its ``outcome_event_id``."""
+    await conn.execute(
+        update(outbox_outcomes).where(outbox_outcomes.c.id == outcome_id).values(settled=True)
+    )
+    if outbox_id is not None and event_id is not None:
+        await conn.execute(
+            update(external_effect_outbox)
+            .where(external_effect_outbox.c.id == outbox_id)
+            .values(outcome_event_id=event_id)
+        )
 
 
 async def mark_sent(conn: AsyncConnection, outbox_id: str, at: datetime) -> None:
@@ -485,10 +612,35 @@ def _open_mark() -> Any:
     return exists().where(m.outbox_id == external_effect_outbox.c.id, m.resolved_by.is_(None))
 
 
+def _unsettled() -> Any:
+    """#217 (FR-EXT-21): a ``confirmed`` row whose settlement is not in the active timeline: an
+    active intent row it converted (``converted``, citing the row) has no active settlement row
+    (``settles_change_id``) any more, because a truncation, swap or regeneration took the
+    settlement's slot out (``confirmed_unsettled``). Derived, so a swap back clears it."""
+    o = external_effect_outbox.c
+    intent = state_changes.alias("intent")
+    settlement = state_changes.alias("settlement")
+    return and_(
+        o.status == CONFIRMED,
+        exists().where(
+            intent.c.story_id == o.story_id,
+            intent.c.status == StateChangeStatus.CONVERTED.value,
+            o.id == any_(intent.c.prerequisite_effect_ids),
+            active_only(intent),
+            ~exists().where(
+                settlement.c.story_id == intent.c.story_id,
+                settlement.c.settles_change_id == intent.c.id,
+                active_only(settlement),
+            ),
+        ),
+    )
+
+
 def _listed() -> Any:
     """The rows the status lists, executable rows only: unconfirmed (``intended`` with an
-    active origin, or ``claimed``), ``failed``, ``unknown``, and every row with an open mark
-    (#211: ``reconciliation_required``, ``cancelled_on_reactivation``, and later reasons)."""
+    active origin, or ``claimed``), ``failed``, ``unknown``, every row with an open mark
+    (#211: ``reconciliation_required``, ``cancelled_on_reactivation``, and later reasons) and
+    (#217) a confirmed row whose settlement left the active timeline (``_unsettled``)."""
     o = external_effect_outbox.c
     active = exists().where(
         operations.c.operation_id == o.operation_id, active_operation(operations)
@@ -499,8 +651,22 @@ def _listed() -> Any:
             and_(o.status == INTENDED, active),
             o.status.in_((CLAIMED, FAILED, UNKNOWN)),
             _open_mark(),
+            _unsettled(),
         ),
     )
+
+
+async def _unsettled_of(conn: AsyncConnection, story_id: str, ids: Sequence[str]) -> set[str]:
+    """Which of the rows ``ids`` are ``confirmed_unsettled`` (``_unsettled``)."""
+    if not ids:
+        return set()
+    o = external_effect_outbox.c
+    return {
+        str(i)
+        for i in await conn.scalars(
+            select(o.id).where(o.story_id == story_id, o.id.in_(list(ids)), _unsettled())
+        )
+    }
 
 
 async def _require_story(conn: AsyncConnection, story_id: str) -> None:
@@ -577,6 +743,7 @@ async def listings_in(conn: AsyncConnection, story_id: str) -> Reconciliation:
             latest[str(answer.outbox_id)] = answer
     marked = await _marks(conn, story_id, [str(r.id) for r in rows])
     expired = await expired_holds(conn, story_id, [str(r.id) for r in rows])
+    unsettled = await _unsettled_of(conn, story_id, [str(r.id) for r in rows])
     listed: list[Listing] = []
     for row in rows:
         status = str(row.status)
@@ -590,6 +757,10 @@ async def listings_in(conn: AsyncConnection, story_id: str) -> Reconciliation:
             # #216: the State hold that waited on this row expired (FR-STATE-14).
             reason = "reservation_expired"
             since = row.created_at
+        elif str(row.id) in unsettled:
+            # #217: its settlement left the active timeline (FR-EXT-21).
+            reason = "confirmed_unsettled"
+            since = row.created_at if outcome is None else outcome.received_at
         else:
             reason = _status_reason(status)
             if outcome is not None and status in (FAILED, UNKNOWN):
@@ -667,6 +838,7 @@ __all__ = [
     "TERMINAL",
     "Intended",
     "Listing",
+    "OutcomeRecord",
     "OutcomeView",
     "Reason",
     "Reconciliation",
@@ -685,8 +857,11 @@ __all__ = [
     "mark",
     "mark_claimed",
     "mark_sent",
+    "mark_settled",
     "mark_unknown",
     "origin_active",
+    "outcome",
+    "record_effect_outcome",
     "record_outcome",
     "release",
     "story_blocked",

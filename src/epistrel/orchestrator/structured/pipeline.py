@@ -6892,6 +6892,19 @@ async def play(
                     requested=fixed.get("requested", ()),
                 )
         assert committed.narrative_turn is not None  # noqa: S101 - a committed turn's position
+        # #217 (FR-EXT-21 (e)): what late settlements committed since the previous response.
+        if isinstance(conn, AsyncConnection):
+            settled = await state_effects.settled_effects(
+                conn, story_id, committed.narrative_turn, omniscient=is_omniscient(viewpoint)
+            )
+        else:
+            async with conn.connect() as reading:
+                settled = await state_effects.settled_effects(
+                    reading,
+                    story_id,
+                    committed.narrative_turn,
+                    omniscient=is_omniscient(viewpoint),
+                )
         assert committed.turn_variant is not None  # noqa: S101
         assert committed.timeline_revision is not None  # noqa: S101
         outcome = gated[0] if gated else None
@@ -6910,6 +6923,7 @@ async def play(
             "player_view": view,
             "reconcile": [p.body() for p in reconciled[0].pairs] if reconciled else [],
             "state_effects": changed,
+            "settled_effects": settled,
             "model_calls": list(calls.calls),
             "elapsed_ms": fixed.get("elapsed_ms", budget.elapsed_ms()),
             "call_counts": calls.by_purpose(),

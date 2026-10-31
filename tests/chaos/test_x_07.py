@@ -1432,7 +1432,8 @@ async def test_x_07__m6_outbox(engine: AsyncEngine, quiet: Probe, moved: Movable
         assert fired == [outbox_job.OUTBOX_LEASE, outbox_job.OUTBOX_LEASE]
         worker = Worker(engine, _config(timers=False))
         assert await worker.recovery_pass() is not None
-        assert await _drain(engine, worker) == 2
+        # The two lease jobs, and (#217) the late settlement the confirmation enqueued.
+        assert await _drain(engine, worker) == 3
         assert fakes[dedupe].idempotency_keys == [resent]
         assert fakes[plain].idempotency_keys == []
         assert await _outbox_state(engine, resent) == ("confirmed", 2, ["confirmed"])

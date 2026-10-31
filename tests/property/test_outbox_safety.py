@@ -46,6 +46,13 @@ pending, and a fork after a confirmed one lists nothing.
 synchronous provider) and asserts the stage clause: no committed beat, at any stage, asserts an
 external outcome that was not confirmed, or a conditional effect that was not committed, when
 its stage committed; and no committed stage is rolled back by a later stage's failure.
+
+``test_outbox_safety__settlement`` (#217, FR-EXT-21) draws purchases (an outbox row and a sword
+grant ``conditional`` on it), plain turns, the dispatcher's answers, late settlements,
+truncations and their undoing, and asserts the settlement clause: no late settlement is ever
+positioned or valid-timed before the head at which its outcome arrived (an inter-turn slot of
+that head or a later turn, its story-time not before that head's end), and every confirmed
+outcome is either settled in the active timeline or listed for reconciliation.
 """
 
 from __future__ import annotations
@@ -64,7 +71,7 @@ from hypothesis import strategies as st
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import clock, timeline
+from epistrel.core import clock, timeline, world_clock
 from epistrel.core import outbox as core_outbox
 from epistrel.core.db import make_engine
 from epistrel.core.enums import OperationKind, Provenance, StateChangeStatus, StateContingency
@@ -74,9 +81,11 @@ from epistrel.core.ids import new_ulid
 from epistrel.core.membership import Position
 from epistrel.core.states import contingency
 from epistrel.core.variants import ChainRef, SwapRequest, list_chains
+from epistrel.orchestrator.jobs import settlement
 from epistrel.orchestrator.jobs.handlers import outbox
 from epistrel.orchestrator.providers.in_process import InProcessRegistry
 from tests import canon_support as c
+from tests import late_settlement_support as ls
 from tests import projection_support as projections
 from tests import provider_support as ps
 from tests import state_support as ss
@@ -1006,3 +1015,220 @@ def test_outbox_safety__stages(
     safety()
     assert seen["confirmed"] >= 1, seen
     assert seen["failed_completion"] >= 1, seen
+
+
+# -- #217: late settlement (FR-EXT-21) ------------------------------------------------------------
+
+SETTLEMENT_EXAMPLES = 20
+SETTLEMENT_KINDS = (
+    "intent",
+    "intent",
+    "turn",
+    "answer",
+    "answer",
+    "settle",
+    "settle",
+    "truncate",
+    "untruncate",
+)
+settlement_steps = st.lists(
+    st.tuples(
+        st.sampled_from(SETTLEMENT_KINDS),
+        st.integers(min_value=0, max_value=50),
+        st.sampled_from(OUTCOMES),
+    ),
+    min_size=3,
+    max_size=12,
+)
+
+
+@dataclass
+class Late:
+    engine: AsyncEngine
+    story: str
+    cal: str
+    provider: str
+    registry: InProcessRegistry
+    fake: ps.ScriptedProvider
+    arrived: dict[str, tuple[str, int]] = field(default_factory=dict)
+    """Each outbox row's deciding outcome record and the head at which it arrived."""
+    ran: set[str] = field(default_factory=set)
+    """The rows whose settlement job has run."""
+
+
+async def _late_story(engine: AsyncEngine, provider: str) -> Late:
+    world = await c.world(engine)
+    story, cal = world.story_id, world.characters["Cal"]
+    await use_structured(engine, story)
+    await ss.set_level(engine, story, "on")
+    await ss.define_all(
+        engine,
+        story,
+        ss.gold(name="sword", unit=None, aliases=("blade",), constraints={"non_negative": True}),
+    )
+    registry = InProcessRegistry()
+    fake = ps.ScriptedProvider(provider)
+    registry.register(provider, read=fake.read, write=fake.write)
+    await ps.bind(engine, story, provider, {"player": "p-1"})
+    return Late(engine, story, cal, provider, registry, fake)
+
+
+async def _late_step(w: Late, kind: str, pick: int, outcome: str, seen: Counter[str]) -> None:
+    head = await _head(w.engine, w.story)
+    if kind == "intent":
+        await ls.intent(
+            w.engine,
+            w.story,
+            w.provider,
+            w.cal,
+            [ls.Side(w.cal, 1, StateContingency.CONDITIONAL)],
+        )
+    elif kind == "turn":
+        await ls.turn(w.engine, w.story)
+    elif kind == "answer":
+        open_rows = [r for r in await _rows(w.engine, w.story) if r.status == "intended"]
+        if not open_rows:
+            return
+        row = open_rows[pick % len(open_rows)]
+        w.fake.script_writes("gold", outcome)
+        await outbox.dispatch(w.engine, str(row.id), registry=w.registry)
+        decided = [
+            o
+            for o in await ps.outbox_outcomes(w.engine, w.story)
+            if o.outbox_id == row.id and o.kind in ("confirmed", "failed")
+        ]
+        if decided:
+            w.arrived[str(row.id)] = (str(decided[0].id), head)
+    elif kind == "settle":
+        waiting = sorted(i for i in w.arrived if i not in w.ran)
+        if not waiting:
+            return
+        outbox_id = waiting[pick % len(waiting)]
+        done = await settlement.settle(w.engine, w.arrived[outbox_id][0], registry=w.registry)
+        w.ran.add(outbox_id)
+        seen[done.result] += 1
+    elif kind == "truncate" and head > 1:
+        await projections.truncate(w.engine, w.story, 1 + pick % (head - 1))
+    elif kind == "untruncate":
+        await projections.untruncate(w.engine, w.story)
+
+
+async def _late_check(w: Late, seen: Counter[str]) -> None:
+    changes = await ss.change_rows(w.engine, w.story)
+    async with w.engine.connect() as conn:
+        for r in changes:
+            if r.source != "settlement":
+                continue
+            (outbox_id,) = [str(p) for p in r.prerequisite_effect_ids]
+            _, arrived_at = w.arrived[outbox_id]
+            # Positioned in an inter-turn slot at or after the head it arrived at, never before.
+            assert int(r.slot_k) >= 1, r
+            assert int(r.narrative_turn) >= arrived_at, (r, arrived_at)
+            kind = await conn.scalar(
+                text("SELECT kind::text FROM operations WHERE operation_id = :o"),
+                {"o": r.operation_id},
+            )
+            assert kind == "inter_turn"
+            # Valid-timed at the slot, never before the arrival head's end.
+            floor = await world_clock.story_time_at(conn, w.story, Position.end_of(arrived_at))
+            assert r.valid_time_minutes is None or r.valid_time_minutes >= floor, r
+    # Every confirmed outcome whose settlement ran is settled in the active timeline or listed.
+    listed = {e.outbox_id for e in (await core_outbox.listings(w.engine, w.story)).listings}
+    active = [r for r in changes if r.membership == "active"]
+    for row in await _rows(w.engine, w.story):
+        if row.status != "confirmed" or str(row.id) not in w.ran:
+            continue
+        citing = [r for r in active if str(row.id) in [str(p) for p in r.prerequisite_effect_ids]]
+        waiting = [r for r in citing if r.status in ("pending", "held")]
+        converted = [r for r in citing if r.status == "converted"]
+        settled = all(any(str(o.settles_change_id) == str(r.id) for o in active) for r in converted)
+        if str(row.id) in listed:
+            seen["listed"] += 1
+            continue
+        # Not listed: its origin is active and its settlement is in the active timeline.
+        assert row.origin == "active", (row.id, row.origin)
+        assert not waiting, (row.id, [(r.status, r.source) for r in citing])
+        assert settled, (row.id, [(r.status, r.source) for r in citing])
+        seen["settled_in_timeline"] += 1
+
+
+async def _late_example(
+    url: str, provider: str, drawn: list[tuple[str, int, str]], seen: Counter[str]
+) -> None:
+    engine = make_engine(auth_settings(url))
+    try:
+        w = await _late_story(engine, provider)
+        for kind, pick, outcome in drawn:
+            await _late_step(w, kind, pick, outcome, seen)
+            await _late_check(w, seen)
+        await ls.drop_jobs(engine, w.story)
+        await ss.set_level(engine, w.story, None)
+    finally:
+        await engine.dispose()
+
+
+SETTLEMENT_CASES = [
+    # Arrived after the next turn: settled at that turn's slot, never at the purchase turn.
+    [
+        ("intent", 0, "confirmed"),
+        ("turn", 0, "confirmed"),
+        ("answer", 0, "confirmed"),
+        ("turn", 0, "confirmed"),
+        ("settle", 0, "confirmed"),
+    ],
+    # Settled, then its slot truncated away: listed ``confirmed_unsettled``; undone: settled.
+    [
+        ("intent", 0, "confirmed"),
+        ("answer", 0, "confirmed"),
+        ("settle", 0, "confirmed"),
+        ("turn", 0, "confirmed"),
+        ("truncate", 0, "confirmed"),
+        ("untruncate", 0, "confirmed"),
+    ],
+    # The origin rewound before the confirmation was settled: ``confirmed_discarded_origin``.
+    [
+        ("turn", 0, "confirmed"),
+        ("intent", 0, "confirmed"),
+        ("answer", 0, "confirmed"),
+        ("truncate", 0, "confirmed"),
+        ("settle", 0, "confirmed"),
+    ],
+]
+"""The complement: settled in the timeline, listed after a truncation, and listed with a
+discarded origin."""
+
+
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-EXT-21")
+def test_outbox_safety__settlement(pg_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """See the module docstring (the settlement clause, #217)."""
+    ss.deliver(monkeypatch)
+    seen: Counter[str] = Counter()
+
+    async def setup() -> str:
+        engine = make_engine(auth_settings(pg_url))
+        try:
+            name = ps.unique_name("late")
+            await ps.register(engine, ps.write_capable_spec(name, dedupes=True))
+            return name
+        finally:
+            await engine.dispose()
+
+    provider = asyncio.run(setup())
+
+    @settings(
+        max_examples=SETTLEMENT_EXAMPLES,
+        deadline=None,
+        suppress_health_check=[HealthCheck.function_scoped_fixture, HealthCheck.too_slow],
+    )
+    @given(drawn=settlement_steps)
+    def safety(drawn: list[tuple[str, int, str]]) -> None:
+        asyncio.run(_late_example(pg_url, provider, drawn, seen))
+
+    for case in SETTLEMENT_CASES:
+        safety = example(drawn=case)(safety)
+    safety()
+    assert seen["settled_in_timeline"] > 0, seen
+    assert seen["listed"] > 0, seen
+    assert seen[settlement.SETTLED] > 0, seen
+    assert seen[settlement.DISCARDED] > 0, seen

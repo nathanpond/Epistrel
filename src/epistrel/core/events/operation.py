@@ -240,9 +240,11 @@ invalidates in-flight turns. Audit-only records are written by such operations."
 
 
 def _failure_status(error: BaseException) -> OperationStatus:
-    """A commit that raised ends ``failed``, except one the resurrection guard refused (#127):
-    nothing went wrong, the work's context is stale, so it ends ``abandoned``."""
-    if isinstance(error, ErasedSubjectReferenced):
+    """A commit that raised ends ``failed``, except one the resurrection guard refused (#127)
+    or one whose work was ``Withdrawn`` (#217: a late settlement that re-verification refused,
+    or that must wait): nothing went wrong, the work's context is stale, so it ends
+    ``abandoned``."""
+    if isinstance(error, ErasedSubjectReferenced | Withdrawn):
         return OperationStatus.ABANDONED
     return OperationStatus.FAILED
 

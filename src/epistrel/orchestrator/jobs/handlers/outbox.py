@@ -40,10 +40,12 @@ timer is a row and the move is one transaction, so it happens once across worker
 ``outbox_recovery`` (every ``RECOVERY_INTERVAL``): enqueues a dispatch job for every ``intended``
 executable row with no live job (a notification lost, a job that ended without claiming).
 
-The dispatcher records no operation and bumps no revision: the outcome is a record on the row
-(timeline-independent; settling it into the story is #217's). The in-process callables are the
-process's ``Engine``'s: ``Engine.start_workers`` binds its registry here (``bind``); with none
-bound an ``in_process`` row stays ``intended``.
+The dispatcher bumps no revision: the outcome is a record on the row (timeline-independent),
+written with #217's position-less ``outcome_recorded`` event by an operation of no slot
+(``orchestrator.jobs.settlement.record_operation``), whose commit enqueues the settlement of a
+first ``confirmed`` or ``failed`` answer at the next inter-turn slot (FR-EXT-21). The in-process
+callables are the process's ``Engine``'s: ``Engine.start_workers`` binds its registry here
+(``bind``); with none bound an ``in_process`` row stays ``intended``.
 
 Log lines carry ids, kinds and counts only (invariant 3).
 """
@@ -66,16 +68,19 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.core import clock
 from epistrel.core import outbox as core_outbox
 from epistrel.core import providers as core_providers
+from epistrel.core.errors import EpistrelError
+from epistrel.core.events.operation import Withdrawn
 from epistrel.core.ids import ULID_PATTERN
 from epistrel.core.tables import jobs
 from epistrel.core.tables.outbox import (
     CLAIMED,
     INTENDED,
     UNKNOWN,
+    VIA_DISPATCHER,
     external_effect_outbox,
 )
 from epistrel.core.timeline_effects import RECONCILIATION_REQUIRED
-from epistrel.orchestrator.jobs import queue, timers
+from epistrel.orchestrator.jobs import queue, settlement, timers
 from epistrel.orchestrator.jobs.recurring import NoPayload, RecurringTask, recording
 from epistrel.orchestrator.jobs.types import JobContext, JobHandler, JobOutput
 from epistrel.orchestrator.providers.in_process import InProcessRegistry
@@ -298,27 +303,87 @@ async def send(db: AsyncEngine, claimed: Claimed) -> str:
         logger.warning("outbox row %s send raised %s", claimed.outbox_id, type(exc).__name__)
         outcome = WriteOutcome(status="unknown")
     status = outcome_status(outcome)
-    async with db.begin() as conn:
-        await core_outbox.mark_sent(conn, claimed.outbox_id, started)
+    answer = Answered(
+        outcome_id=settlement.new_outcome_id(),
+        status=status,
+        payload=outcome_payload(outcome) if isinstance(outcome, WriteOutcome) else {},
+        raw_hash=getattr(outcome, "raw_hash", "") or "",
+    )
+    # #217 (FR-EXT-21 (b)): the outcome record and its position-less ``outcome_recorded``
+    # event commit together, and a deciding answer enqueues its settlement.
+    op = settlement.record_operation(db, claimed.story_id, via=VIA_DISPATCHER)
+    try:
+        await op.begin()
+    except EpistrelError:
+        # The story takes no work now (an erasure block): the record alone; settled later.
+        async with db.begin() as conn:
+            return await _record(conn, claimed, started, answer)
+    found: list[str] = []
+
+    async def step(conn: Any) -> None:
         if await _erased_meanwhile(conn, claimed):
-            # #211 (FR-ADMIN-9, FR-EXT-21): an erasure landed while the dispatch was in
-            # flight. Its answer is not recorded; the row is unknown, listed redacted, and
-            # never sent again.
+            raise _Abandoned
+        found.append(await _record(conn, claimed, started, answer))
+
+    try:
+        settlement.stage_recorded(
+            op,
+            outcome_id=answer.outcome_id,
+            status=status,
+            via=VIA_DISPATCHER,
+            outbox_id=claimed.outbox_id,
+        )
+        op.add_commit_step(step)
+        await op.commit()
+    except _Abandoned:
+        # #211 (FR-ADMIN-9, FR-EXT-21): an erasure landed while the dispatch was in
+        # flight. Its answer is not recorded; the row is unknown, listed redacted, and
+        # never sent again.
+        async with db.begin() as conn:
+            await core_outbox.mark_sent(conn, claimed.outbox_id, started)
             await core_outbox.abandon(conn, claimed.outbox_id, clock.now())
             await timers.cancel(conn, OUTBOX_LEASE, claimed.outbox_id)
-            logger.info("outbox row %s abandoned: erased mid-flight", claimed.outbox_id)
-            return ABANDONED
-        recorded = await core_outbox.record_outcome(
-            conn,
-            claimed.outbox_id,
-            status,
-            payload=outcome_payload(outcome) if isinstance(outcome, WriteOutcome) else {},
-            raw_hash=getattr(outcome, "raw_hash", "") or "",
-            now=clock.now(),
-        )
-        if recorded.status != UNKNOWN or not claimed.dedupes or claimed.attempts >= MAX_ATTEMPTS:
-            await timers.cancel(conn, OUTBOX_LEASE, claimed.outbox_id)
-    logger.info("outbox row %s: %s", claimed.outbox_id, recorded.status)
+        logger.info("outbox row %s abandoned: erased mid-flight", claimed.outbox_id)
+        return ABANDONED
+    finally:
+        if op.in_flight:
+            await op.abandon()
+    logger.info("outbox row %s: %s", claimed.outbox_id, found[0])
+    return found[0]
+
+
+@dataclass(frozen=True, slots=True)
+class Answered:
+    """An adapter's answer as its outcome record keeps it (#217: with the record's id)."""
+
+    outcome_id: str
+    status: str
+    payload: dict[str, Any]
+    raw_hash: str
+
+
+class _Abandoned(Withdrawn):
+    """An erasure reached the row while its dispatch was in flight (#211)."""
+
+
+async def _record(conn: Any, claimed: Claimed, started: Any, answer: Answered) -> str:
+    """Record ``answer`` for the claimed row in ``conn``'s transaction (``record_outcome``),
+    settle its lease timer and enqueue its settlement when it decides one (#217); answers the
+    row's status."""
+    await core_outbox.mark_sent(conn, claimed.outbox_id, started)
+    recorded = await core_outbox.record_outcome(
+        conn,
+        claimed.outbox_id,
+        answer.status,
+        payload=answer.payload,
+        raw_hash=answer.raw_hash,
+        now=clock.now(),
+        outcome_id=answer.outcome_id,
+    )
+    if recorded.status != UNKNOWN or not claimed.dedupes or claimed.attempts >= MAX_ATTEMPTS:
+        await timers.cancel(conn, OUTBOX_LEASE, claimed.outbox_id)
+    if settlement.decides(recorded.kind):
+        await settlement.enqueue(conn, claimed.story_id, answer.outcome_id)
     return recorded.status
 
 

@@ -854,8 +854,10 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "values and positions, refolded by erasure's rebuilt stage (#185)",
     "external_values": "a projection of external_read events, which are indexed: ids, a "
     "provider's typed value and positions, refolded by erasure's rebuilt stage (#205)",
-    "outbox_outcomes": "a provider's answers for outbox rows (#210): kinds, the typed resulting "
-    "values or why an answer is unknown, hashes and times; never the raw body or story prose",
+    "outbox_outcomes": "a provider's answers for outbox rows (#210) and the consumer's for "
+    "consumer-applied effects (#217): kinds, the typed resulting values or why an answer is "
+    "unknown, hashes and times; never the raw body or story prose (an erasure that names the "
+    "effect empties the payload, erase._erase_outbox)",
     "reconciliation_marks": "why an outbox row is listed for reconciliation (#211): ids, reason "
     "codes, times and the resolving action's id; no story text",
     # Deployment tables (#334: the coverage test enumerates every table with text or JSON).

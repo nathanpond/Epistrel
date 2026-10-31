@@ -17,7 +17,9 @@ migration 0095; #211, migration 0098).
   place the row at its declaring beat: it follows its turn's membership like any derived
   record, and the dispatcher re-reads the operation's membership when it claims it
   (FR-EXT-12). ``created_at`` is when the turn committed it.
-- **``outbox_outcomes``** — what a provider answered for a row, append-only: ``kind``
+- **``outbox_outcomes``** — what a provider answered for a row, append-only (#217: or what the
+  consumer reported for a consumer-applied #209 effect, which has no outbox row: exactly one of
+  ``outbox_id`` and ``effect_id`` is set, migration 0102): ``kind``
   (``confirmed``, ``failed``, ``unknown``, and ``duplicate``/``conflict`` for a later terminal
   answer, FR-EXT-22), the answer's ``payload`` (its resulting values, or why it is unknown;
   never the raw body), its ``raw_hash``, ``received_via`` (``dispatcher`` or the consumer's
@@ -143,7 +145,8 @@ outbox_outcomes = Table(
     metadata,
     Column("id", ulid_type(), primary_key=True),
     Column("story_id", ulid_type(), nullable=False),
-    Column("outbox_id", ulid_type(), nullable=False),
+    Column("outbox_id", ulid_type(), nullable=True),
+    Column("effect_id", ulid_type(), nullable=True),
     Column("kind", Text, nullable=False),
     Column("payload", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
     Column("raw_hash", Text, nullable=False, server_default=text("''")),
@@ -153,8 +156,10 @@ outbox_outcomes = Table(
     CheckConstraint(_in("kind", OUTCOME_KINDS), name="kind"),
     CheckConstraint(_in("received_via", RECEIVED_VIA), name="received_via"),
     CheckConstraint("jsonb_typeof(payload) = 'object'", name="payload"),
+    CheckConstraint("(outbox_id IS NULL) <> (effect_id IS NULL)", name="one_effect"),
 )
 Index("ix_outbox_outcomes_outbox", outbox_outcomes.c.outbox_id, outbox_outcomes.c.received_at)
+Index("ix_outbox_outcomes_effect", outbox_outcomes.c.effect_id, outbox_outcomes.c.received_at)
 Index("ix_outbox_outcomes_story", outbox_outcomes.c.story_id)
 
 REASONS: tuple[str, ...] = (

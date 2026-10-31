@@ -353,8 +353,8 @@ async def test_s_state_schema__ingest(
     the ingested turn's ``⁺1`` (batch order is position order); a batch of a set alone takes
     the slot after the story's last turn. No ingested event advances the clock.
 
-    Complement: the ``outcome`` kind is still 422 ``unsupported_event_kind`` (#217 updates
-    this test), and a set its constraint refuses writes nothing of the batch."""
+    Complement: an ``outcome`` (#217) naming an effect the story does not know is 422
+    ``effect_not_found``, and a set its constraint refuses writes nothing of the batch."""
     async with respond_client(stub_settings, engine) as (client, _):
         story, ids = await _story(client, engine)
         await _defined(client, story, GOLD)
@@ -453,10 +453,19 @@ async def test_s_state_schema__ingest(
         _refused(refused, 422, "state_constraint_violation")
         unknown = await client.post(
             f"/stories/{story}/ingest",
-            json={"events": [{"client_event_id": "e-6", "kind": "outcome"}]},
+            json={
+                "events": [
+                    {
+                        "client_event_id": "e-6",
+                        "kind": "outcome",
+                        "effect_id": "01JZZZZZZZZZZZZZZZZZZZZZZZ",
+                        "outcome": "confirmed",
+                    }
+                ]
+            },
             headers=WRITE,
         )
-        _refused(unknown, 422, "unsupported_event_kind")
+        _refused(unknown, 422, "effect_not_found")
         assert await _count(engine, story) == counted
         assert await _committed(engine, story) == committed
 

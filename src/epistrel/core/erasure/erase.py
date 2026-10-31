@@ -169,6 +169,7 @@ from epistrel.core.errors import (
     UnknownErasureCandidate,
 )
 from epistrel.core.events.registry import validate
+from epistrel.core.events.types import REQUESTED_EFFECT
 from epistrel.core.ids import Ulid, new_ulid
 from epistrel.core.memory import retirement
 from epistrel.core.ports import SummaryCompressor
@@ -216,6 +217,7 @@ from epistrel.core.tables.outbox import (
     INTENDED,
     UNKNOWN,
     external_effect_outbox,
+    outbox_outcomes,
 )
 from epistrel.core.tables.ownership import EntityType
 from epistrel.core.tables.propositions import (
@@ -1293,11 +1295,19 @@ async def _erase_outbox(
     listed, redacted to ``{outbox_id, provider, status}``: its effect emptied and ``erased_at``
     set, so its dispatch, if in flight, abandons and it is never sent again; every other row
     that names the subject has its effect redacted in place. Nothing of the effect reaches the
-    ledger or a marker (the tally counts the table)."""
+    ledger or a marker (the tally counts the table).
+
+    #217 (FR-EXT-21 (b), S-ERASURE-BOUNDARY M6): a ``confirmed`` row is redacted in place as
+    above (so its listing, ``confirmed_unsettled`` or a mark's, shows only the redacted effect),
+    and the outcome records of every named row, and of every consumer-applied effect whose
+    ``requested_effect`` names the subject, lose their payload and raw hash (``payload =
+    {}``)."""
     named = sorted(refs.get(external_effect_outbox.name, set()))
-    if not named:
+    effects = await _named_effects(conn, refs)
+    if not named and not effects:
         return
     o = external_effect_outbox.c
+    x = outbox_outcomes.c
     if run.write:
         await conn.execute(
             update(external_effect_outbox)
@@ -1309,9 +1319,32 @@ async def _erase_outbox(
             .where(o.id.in_(named), o.status.in_((CLAIMED, UNKNOWN)))
             .values(effect={}, erased_at=func.transaction_timestamp())
         )
+        outcomes = await conn.execute(
+            update(outbox_outcomes)
+            .where(or_(x.outbox_id.in_(named), x.effect_id.in_(sorted(effects))))
+            .values(payload={}, raw_hash="")
+        )
+        for _ in range(int(outcomes.rowcount or 0)):
+            tally.record(outbox_outcomes.name)
     await _redact_json_rows(
         conn, external_effect_outbox, o.id, named, ("effect",), redactor, tally, write=run.write
     )
+
+
+async def _named_effects(conn: AsyncConnection, refs: Mapping[str, set[str]]) -> set[str]:
+    """#217: the effect ids of the ``requested_effect`` events the erasure names (a
+    consumer-applied effect's outcome records name the effect, never the event)."""
+    named = sorted(refs.get(events.name, set()))
+    if not named:
+        return set()
+    e = events.c
+    return {
+        str(effect)
+        for effect in await conn.scalars(
+            select(e.payload["effect_id"].astext).where(e.id.in_(named), e.type == REQUESTED_EFFECT)
+        )
+        if effect
+    }
 
 
 async def _erase_scheduled(

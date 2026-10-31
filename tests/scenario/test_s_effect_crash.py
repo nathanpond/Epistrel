@@ -33,6 +33,8 @@ from epistrel.config import Settings
 from epistrel.core.ids import new_ulid
 from epistrel.core.membership import Position
 from epistrel.core.turns.staged import FORK_CLOSURE
+from epistrel.orchestrator.jobs import settlement
+from epistrel.orchestrator.jobs.handlers import outbox as outbox_job
 from epistrel.orchestrator.providers import pinned
 from epistrel.orchestrator.providers.port import WriteOutcome
 from epistrel.orchestrator.structured import staged
@@ -42,7 +44,7 @@ from tests import multi_support as ms
 from tests import provider_support as ps
 from tests import state_support as ss
 from tests.auth_support import auth_settings
-from tests.event_support import rows
+from tests.event_support import execute_in_tx, rows
 from tests.respond_support import body, respond, respond_client
 from tests.story_support import READ, WRITE, override
 from tests.structured_turn_support import beat, structured_story, turn_report
@@ -644,4 +646,80 @@ async def test_s_effect_crash__visibility(
                 assert f"{STABLE}: confirmed" in prompt
                 assert statuses == ["confirmed", "confirmed"]
             await ps.drop_outbox_jobs(engine, story)
+        await ss.set_level(engine, story, None)
+
+
+@pytest.mark.part("M6", "FR-EXT-16")
+async def test_s_effect_crash__late_confirmation(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#217's part of the wait clause (FR-EXT-16,21): a synchronous provider that does not
+    answer within ``confirm_wait_max_seconds`` leaves the turn completed with the purchase
+    pending and its row ``claimed``. When the provider confirms later (the lease lapses and the
+    deduplicating provider is sent the same key again), the dispatcher records the outcome (an
+    ``outcome_recorded`` event with no narrative position) and enqueues its settlement, which
+    lands at the next inter-turn slot after the staged turn, never inside it; the next turn
+    surfaces the confirmation (the narrator's ``## Awaiting the game`` names it confirmed)."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, cal, _, fake = await _sync_story(
+            client, engine, epistrel, confirm_wait_max_seconds=1
+        )
+        fake.script_writes("gold", ps.Hang())
+        played = await _purchase_turn(client, stub, story, cal, WENT, regenerated=NO_WORD)
+        op = await _staged_op(engine, story)
+        assert op.turn_stage == "completed"
+        (row,) = await ps.outbox_rows(engine, story)
+        assert row.status == "claimed"
+        assert await ps.external_outcomes(engine, story) == []  # nothing recorded in the wait
+
+        # Later: the lease lapses, the provider is sent the same key and confirms.
+        fake.script_writes("gold", "confirmed")
+        await execute_in_tx(
+            engine,
+            (
+                "UPDATE external_effect_outbox SET claim_lease_until = now() - interval '1 s' "
+                "WHERE id = :i",
+                {"i": row.id},
+            ),
+        )
+        resent = await outbox_job.expire(engine, row.id, registry=epistrel.in_process_providers)
+        assert resent == "resent:confirmed"
+        (record,) = [r for r in await ps.outbox_outcomes(engine, story) if r.kind == "confirmed"]
+        (recorded,) = await rows(
+            engine,
+            "SELECT narrative_turn, payload FROM events WHERE story_id = :s "
+            "AND type = 'outcome_recorded'",
+            s=story,
+        )
+        assert recorded.narrative_turn is None
+        assert recorded.payload["outcome_id"] == record.id
+        done = await settlement.settle(engine, record.id, registry=epistrel.in_process_providers)
+        assert done.result == settlement.SETTLED
+        assert done.position is not None
+        assert (done.position.turn, done.position.slot_k) == (played["turn"], 1)
+        at_slot = [o for o in await ps.external_outcomes(engine, story) if o.slot_k]
+        assert [(o.narrative_turn, o.slot_k) for o in at_slot] == [(played["turn"], 1)]
+
+        stub.reset()
+        es.narrator(stub, es.render(beat("narration", "Rain taps.")))
+        ms.renders_for(stub, "Mira", es.render(beat("say", "Anything else?")))
+        answer = await respond(client, story, body(cal, None, do="waits"))
+        assert answer.status_code == 200, answer.text
+        (narrator_prompt,) = [
+            p for p in es.prompts(stub, "NarratorRender") if staged.OUTCOME_STEP not in p
+        ]
+        section = narrator_prompt.split("## Awaiting the game", 1)[1].split("\n## ", 1)[0]
+        assert f"{REASON} (the game confirmed it)" in section
+        await ps.drop_outbox_jobs(engine, story)
+        await execute_in_tx(
+            engine,
+            (
+                "DELETE FROM jobs WHERE story_id = :s AND kind = :k",
+                {"s": story, "k": settlement.SETTLE},
+            ),
+        )
         await ss.set_level(engine, story, None)

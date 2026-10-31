@@ -46,11 +46,16 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, any_, exists, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core import outbox as core_outbox
-from epistrel.core.enums import UNFINISHED_TURN_STAGES, Membership, StagedTurnStage
+from epistrel.core.enums import (
+    UNFINISHED_TURN_STAGES,
+    Membership,
+    StagedTurnStage,
+    StateChangeStatus,
+)
 from epistrel.core.membership import register_follower
 from epistrel.core.tables import operations
 from epistrel.core.tables.outbox import (
@@ -61,6 +66,7 @@ from epistrel.core.tables.outbox import (
     UNKNOWN,
     external_effect_outbox,
 )
+from epistrel.core.tables.states import state_changes
 from epistrel.observability.logging import get_logger
 
 log = get_logger(__name__)
@@ -178,17 +184,37 @@ async def pending_in_source(
     conn: AsyncConnection, story_id: str, operation_ids: Sequence[str]
 ) -> list[PendingEffect]:
     """The executable rows of ``story_id`` that ``operation_ids`` wrote and that are still
-    ``intended``, ``claimed`` or ``unknown`` (read in ``conn``'s snapshot), oldest first."""
+    ``intended``, ``claimed`` or ``unknown`` (read in ``conn``'s snapshot), oldest first; and
+    (#217, FR-EXT-21) the ``confirmed`` ones whose late settlement ``operation_ids`` leave out
+    (a contingent row of theirs ``converted`` by a settlement row no copied operation wrote):
+    the fork holds their outcome only as a record, ``confirmed_unsettled``."""
     if not operation_ids:
         return []
     o = external_effect_outbox.c
+    ids = list(operation_ids)
+    intent = state_changes.alias("intent")
+    settlement = state_changes.alias("settlement")
+    unsettled = and_(
+        o.status == CONFIRMED,
+        exists().where(
+            intent.c.story_id == o.story_id,
+            intent.c.operation_id.in_(ids),
+            intent.c.status == StateChangeStatus.CONVERTED.value,
+            o.id == any_(intent.c.prerequisite_effect_ids),
+            ~exists().where(
+                settlement.c.story_id == intent.c.story_id,
+                settlement.c.settles_change_id == intent.c.id,
+                settlement.c.operation_id.in_(ids),
+            ),
+        ),
+    )
     found = await conn.execute(
         select(o.id, o.status, o.effect, o.erased_at)
         .where(
             o.story_id == story_id,
-            o.operation_id.in_(list(operation_ids)),
+            o.operation_id.in_(ids),
             o.executable.is_(True),
-            o.status.in_(PENDING),
+            or_(o.status.in_(PENDING), unsettled),
         )
         .order_by(o.created_at, o.id)
     )

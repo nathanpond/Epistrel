@@ -1373,3 +1373,13 @@ class ProviderUnregistered(EpistrelError):
 
     code = "provider_unregistered"
     http_status = 422
+
+
+class EffectNotFound(EpistrelError):
+    """An ingested ``outcome`` names an external effect the story does not know (#217,
+    FR-EXT-21): no outbox row with its ``outbox_id``, no ``requested_effect`` with its
+    ``effect_id``. ``details``: ``locator`` (``events[i]``) and ``effect_id`` or ``outbox_id``.
+    Nothing is written."""
+
+    code = "effect_not_found"
+    http_status = 422

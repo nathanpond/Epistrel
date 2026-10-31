@@ -300,6 +300,7 @@ ERROR_STATUS: dict[str, int] = {
     "clock_backward": 422,
     "clock_unanchored": 422,
     "clock_external": 422,
+    "effect_not_found": 422,
     "pin_limit_exceeded": 422,
     "key_mismatch": 422,
     "unknown_predicate": 422,
@@ -475,6 +476,8 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "state_readonly_external",
         "state_unpermitted",
         "state_derived",
+        # an ingested outcome (#217): an effect the story does not know
+        "effect_not_found",
     ),
     # The world clock (#193): a consumer's advance between turns, and its settings.
     "advance_clock": (

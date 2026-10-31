@@ -15,8 +15,19 @@ ingested``, provenance ``consumer``, no viewpoint) at the next turn index. A ``s
 an ``inter_turn`` slot operation (source ``consumer``) in the next slot after the last turn
 written before it in the batch, or after the story's last completed turn when none precedes it:
 batch order is position order. Each bumps the timeline revision (FR-CONC-1), and none advances
-the world clock (#193). The batch is all or nothing (``OperationBatch``). ``outcome`` arrives
-with #217 and is refused 422 ``unsupported_event_kind``.
+the world clock (#193). The batch is all or nothing (``OperationBatch``).
+
+``outcome`` (#217, FR-EXT-21): ``{effect_id | outbox_id, outcome: confirmed|failed|unknown,
+resulting_values?}``, the consumer's report of an external effect's outcome: a #209
+consumer-applied effect names its ``effect_id`` (the ``requested_effect``'s), an outbox effect
+its row (``outbox_id``, which is also its ``effect_id``). An effect the story does not know is
+422 ``effect_not_found``. Outcomes are ingested in a batch of their own (mixed with turns or State
+sets, 422 ``validation_error``): one operation with **no narrative position** and no revision
+bump records each as an ``outbox_outcomes`` row (``core.outbox``: first terminal answer wins,
+FR-EXT-22) and an ``input`` ``outcome_recorded`` event, never refused by a running turn or a
+pause (an outcome is recorded on arrival), and its commit asks the Engine's ``settle`` to settle
+each deciding one at the next inter-turn slot (the Orchestrator's late settlement). An
+outcome's result names that operation and turn ``0``.
 
 **Deduplication.** Every text is NFC-normalised and trimmed, then the event's payload hash is
 the SHA-256 of its canonical JSON without ``client_event_id`` (``None`` fields left out, keys
@@ -48,7 +59,7 @@ import time
 import unicodedata
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol, Self
+from typing import Annotated, Any, Literal, Protocol, Self
 
 from pydantic import (
     BaseModel,
@@ -64,7 +75,8 @@ from pydantic import (
 from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import pause, states, turn_gate
+from epistrel.core import clock, pause, states, turn_gate
+from epistrel.core import outbox as core_outbox
 from epistrel.core.concurrency import (
     Abandon,
     Commit,
@@ -82,6 +94,7 @@ from epistrel.core.enums import (
 )
 from epistrel.core.errors import (
     ClientEventConflict,
+    EffectNotFound,
     InvalidRequest,
     StoryArchived,
     StoryBusy,
@@ -89,11 +102,19 @@ from epistrel.core.errors import (
 )
 from epistrel.core.events import Operation, OperationBatch, UnregisteredEventType
 from epistrel.core.events.operation import Withdrawn
-from epistrel.core.events.types import MessageRendered, PlayerInput, StateSet
-from epistrel.core.ids import new_ulid
+from epistrel.core.events.types import (
+    OUTCOME_RECORDED,
+    REQUESTED_EFFECT,
+    MessageRendered,
+    OutcomeRecorded,
+    PlayerInput,
+    StateSet,
+)
+from epistrel.core.ids import ULID_PATTERN, new_ulid
 from epistrel.core.states import api as state_api
 from epistrel.core.states.model import REASON_MAX, Violation
-from epistrel.core.tables import client_events
+from epistrel.core.tables import client_events, events, stories
+from epistrel.core.tables.outbox import VIA_INGEST, external_effect_outbox
 from epistrel.core.turn_gate import Concurrency
 from epistrel.core.turns import INPUT_BEAT, StoryCast, joined_input, read_story_cast
 from epistrel.core.world_clock.slots import slot_position
@@ -104,15 +125,23 @@ MAX_CLIENT_EVENT_ID_CHARS = 255
 CLIENT_EVENT_ID_PATTERN = r"^[A-Za-z0-9._:-]+$"
 """#61's key rule: at most 255 characters of ``[A-Za-z0-9._:-]``."""
 MAX_ACTOR_ID_CHARS = 64
+MAX_RESULTING_VALUES = 20
+"""The most ``resulting_values`` an ingested outcome may report."""
 
 PLAYER_TURN = "player_turn"
 NARRATION = "narration"
 STATE_CHANGE = "state_change"
-SUPPORTED_KINDS = (PLAYER_TURN, NARRATION, STATE_CHANGE)
-LATER_KINDS = {"outcome": "M6"}
-"""Kinds docs/03 plans that are not recorded yet, and the milestone that brings them."""
+OUTCOME = "outcome"
+SUPPORTED_KINDS = (PLAYER_TURN, NARRATION, STATE_CHANGE, OUTCOME)
+LATER_KINDS: dict[str, str] = {}
+"""Kinds docs/03 plans that are not recorded yet, and the milestone that brings them (none
+since #217 records ``outcome``)."""
 STATE_FIELDS = ("state", "scope_key", "value", "delta", "reason")
 """The fields only a ``state_change`` carries."""
+OUTCOME_FIELDS = ("effect_id", "outbox_id", "outcome", "resulting_values")
+"""The fields only an ``outcome`` carries."""
+OUTCOME_TURN = 0
+"""The ``turn`` an outcome's result reports: its record has no narrative position."""
 
 CONSUMER_FINISH_REASON = "consumer"
 INGESTED: Literal["ingested"] = "ingested"
@@ -150,6 +179,16 @@ class IngestEvent(BaseModel):
     value: StrictBool | StrictInt | StrictFloat | StrictStr | None = None
     delta: StrictInt | StrictFloat | None = None
     reason: str | None = Field(default=None, max_length=REASON_MAX)
+    effect_id: str | None = Field(default=None, pattern=ULID_PATTERN)
+    outbox_id: str | None = Field(default=None, pattern=ULID_PATTERN)
+    outcome: Literal["confirmed", "failed", "unknown"] | None = None
+    resulting_values: (
+        dict[
+            Annotated[str, Field(min_length=1, max_length=80)],
+            StrictBool | StrictInt | StrictFloat | Annotated[str, Field(max_length=REASON_MAX)],
+        ]
+        | None
+    ) = Field(default=None, max_length=MAX_RESULTING_VALUES)
 
     @field_validator("say", "do", "text", "reason")
     @classmethod
@@ -158,6 +197,18 @@ class IngestEvent(BaseModel):
 
     @model_validator(mode="after")
     def _fields_fit_the_kind(self) -> Self:
+        if self.kind == OUTCOME:
+            if (self.effect_id is None) == (self.outbox_id is None):
+                raise ValueError("an outcome names its effect_id or its outbox_id, not both")
+            if self.outcome is None:
+                raise ValueError("an outcome gives its outcome: confirmed, failed or unknown")
+            if any(getattr(self, name) is not None for name in STATE_FIELDS) or any(
+                v is not None for v in (self.actor_character_id, self.say, self.do, self.text)
+            ):
+                raise ValueError("an outcome carries no actor, text or State fields")
+            return self
+        if any(getattr(self, name) is not None for name in OUTCOME_FIELDS):
+            raise ValueError(f"only an {OUTCOME} carries {', '.join(OUTCOME_FIELDS)}")
         if self.kind == STATE_CHANGE:
             if self.state is None or self.reason is None:
                 raise ValueError("a state_change names its state and gives a reason")
@@ -193,8 +244,9 @@ class IngestEvent(BaseModel):
 
     @property
     def is_turn(self) -> bool:
-        """A narrative turn (``player_turn``, ``narration``), not an inter-turn slot."""
-        return self.kind != STATE_CHANGE
+        """A narrative turn (``player_turn``, ``narration``), not an inter-turn slot or an
+        outcome."""
+        return self.kind not in (STATE_CHANGE, OUTCOME)
 
     @property
     def gated_text(self) -> str:
@@ -291,6 +343,11 @@ class GateGroup:
 
 Gate = Callable[[Sequence[GateGroup]], Awaitable[None]]
 """The input gate (#56) over the new events; raises on a violation."""
+
+Settle = Callable[[AsyncConnection, str, str], Awaitable[Any]]
+"""``settle(conn, story_id, outcome_id)``: enqueue the late settlement of an ingested outcome
+in ``conn``'s transaction (#217; the Engine provides the Orchestrator's, since Core never imports
+it)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -637,6 +694,201 @@ async def _record(
     return results, batch.last.timeline_revision
 
 
+# -- outcomes (#217) ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _Effect:
+    """What an ingested outcome answers: an outbox row, or a consumer-applied effect."""
+
+    outbox_id: str | None
+    effect_id: str | None
+
+
+async def _effect_of(
+    conn: AsyncConnection, story_id: str, index: int, event: IngestEvent
+) -> _Effect:
+    """The effect ``event`` names (an outbox row's id is also its effect id), or 422
+    ``effect_not_found``."""
+    wanted = event.outbox_id or event.effect_id
+    o = external_effect_outbox.c
+    row = await conn.scalar(select(o.id).where(o.story_id == story_id, o.id == wanted))
+    if row is not None:
+        return _Effect(str(row), None)
+    if event.effect_id is not None:
+        e = events.c
+        found = await conn.scalar(
+            select(e.id)
+            .where(
+                e.story_id == story_id,
+                e.type == REQUESTED_EFFECT,
+                e.payload["effect_id"].astext == event.effect_id,
+            )
+            .limit(1)
+        )
+        if found is not None:
+            return _Effect(None, event.effect_id)
+    field = "outbox_id" if event.outbox_id is not None else "effect_id"
+    raise EffectNotFound(
+        f"the story has no external effect {wanted}",
+        {"locator": LOCATOR.format(index=index), field: wanted},
+    )
+
+
+async def _prepare_outcomes(
+    db: AsyncEngine, story_id: str, request: IngestRequest
+) -> tuple[_Prepared, list[_Effect]]:
+    story = await read_story_cast(db, story_id)
+    async with db.connect() as conn:
+        priors = await _priors(conn, story_id, [e.client_event_id for e in request.events])
+        replays, new = _classify(request, priors)
+        effects = [await _effect_of(conn, story_id, i, e) for i, e in new]
+    return _Prepared(story=story, replays=replays, new=new), effects
+
+
+async def _ingest_outcomes(
+    db: AsyncEngine,
+    story_id: str,
+    request: IngestRequest,
+    *,
+    principal: str,
+    idempotency_key: str | None,
+    settle: Settle | None,
+) -> IngestResult:
+    """Record a batch of outcomes (see the module docstring): one position-less operation, no
+    turn slot, no revision bump."""
+    for _ in range(COMMIT_ATTEMPTS):
+        prepared, effects = await _prepare_outcomes(db, story_id, request)
+        if not prepared.new:
+            return _replayed(request, prepared)
+        ids = [new_ulid() for _ in prepared.new]
+        op = Operation(
+            db,
+            story_id=story_id,
+            kind=OperationKind.INTER_TURN,
+            principal=principal,
+            provenance=Provenance.CONSUMER,
+            bumps_revision=False,
+            idempotency_key=idempotency_key,
+            origin=INGESTED,
+        )
+        revision: list[int] = []
+
+        async def step(
+            conn: AsyncConnection,
+            ids: list[str] = ids,
+            prepared: _Prepared = prepared,
+            effects: list[_Effect] = effects,
+            op: Operation = op,
+            revision: list[int] = revision,
+        ) -> None:
+            if await _priors(conn, story_id, [e.client_event_id for _, e in prepared.new]):
+                raise _DuplicateArrived
+            now = clock.now()
+            for outcome_id, (_, event), effect in zip(ids, prepared.new, effects, strict=True):
+                assert event.outcome is not None  # noqa: S101 - the model requires it
+                payload = (
+                    {"resulting_values": dict(event.resulting_values)}
+                    if event.resulting_values
+                    else {}
+                )
+                if effect.outbox_id is not None:
+                    recorded = await core_outbox.record_outcome(
+                        conn,
+                        effect.outbox_id,
+                        event.outcome,
+                        payload=payload,
+                        via=VIA_INGEST,
+                        now=now,
+                        outcome_id=outcome_id,
+                    )
+                else:
+                    assert effect.effect_id is not None  # noqa: S101 - one of the two
+                    recorded = await core_outbox.record_effect_outcome(
+                        conn,
+                        story_id,
+                        effect.effect_id,
+                        event.outcome,
+                        payload=payload,
+                        via=VIA_INGEST,
+                        now=now,
+                        outcome_id=outcome_id,
+                    )
+                if settle is not None and recorded.kind in core_outbox.TERMINAL:
+                    await settle(conn, story_id, outcome_id)
+            current = await conn.scalar(
+                select(stories.c.timeline_revision).where(stories.c.id == story_id)
+            )
+            revision.append(int(current or 0))
+            await conn.execute(
+                insert(client_events),
+                [
+                    {
+                        "story_id": story_id,
+                        "client_event_id": event.client_event_id,
+                        "payload_hash": event.payload_hash,
+                        "operation_id": op.operation_id,
+                        "result": {
+                            "operation_id": op.operation_id,
+                            "turn": OUTCOME_TURN,
+                            "timeline_revision": revision[0],
+                        },
+                    }
+                    for _, event in prepared.new
+                ],
+            )
+
+        try:
+            async with op:
+                for outcome_id, (_, event), effect in zip(ids, prepared.new, effects, strict=True):
+                    assert event.outcome is not None  # noqa: S101 - the model requires it
+                    op.append(
+                        OUTCOME_RECORDED,
+                        OutcomeRecorded(
+                            outcome_id=outcome_id,
+                            outbox_id=effect.outbox_id,
+                            effect_id=effect.effect_id,
+                            status=event.outcome,
+                            received_via="ingest",
+                        ),
+                        provenance=Provenance.CONSUMER,
+                        character_id=None,
+                    )
+                op.add_commit_step(step)
+                await op.commit()
+        except _DuplicateArrived:
+            continue
+        recorded_results = {
+            index: EventResult(
+                client_event_id=event.client_event_id,
+                operation_id=op.operation_id,
+                turn=OUTCOME_TURN,
+                replayed=False,
+            )
+            for index, event in prepared.new
+        }
+        merged = {**{i: r for i, (r, _) in prepared.replays.items()}, **recorded_results}
+        return IngestResult(
+            results=[merged[i] for i in range(len(request.events))],
+            timeline_revision=revision[0],
+        )
+    raise StoryBusy(  # pragma: no cover - three collisions in a row
+        "concurrent ingests of the same outcomes kept colliding; retry",
+        {"reason": "contended", "story_id": story_id},
+    )
+
+
+def _outcomes_alone(request: IngestRequest) -> bool:
+    """Whether the batch is outcomes (422 when it mixes them with turns or State sets)."""
+    found = [e.kind == OUTCOME for e in request.events]
+    if any(found) and not all(found):
+        raise InvalidRequest(
+            "outcomes are ingested in a batch of their own",
+            {"field": "events", "reason": "mixed_outcomes"},
+        )
+    return all(found)
+
+
 class QueueBatch(Protocol):
     """``queue_batch(operation_id, request, concurrency, operation_kind)``: queue the batch as
     one turn (#63), its first operation of ``operation_kind``, and wait for its result (or raise
@@ -661,9 +913,19 @@ async def ingest(
     idempotency_key: str | None = None,
     expected_revision: int | None = None,
     queue_batch: QueueBatch | None = None,
+    settle: Settle | None = None,
 ) -> IngestResult:
     """Record ``request``'s events; see the module docstring for the rules and their order."""
     check_kinds(request)
+    if _outcomes_alone(request):
+        return await _ingest_outcomes(
+            db,
+            story_id,
+            request,
+            principal=principal,
+            idempotency_key=idempotency_key,
+            settle=settle,
+        )
     gated: set[int] = set()
     duplicates = 0
     deadline: float | None = None
@@ -770,6 +1032,7 @@ __all__ = [
     "LATER_KINDS",
     "MAX_EVENTS",
     "NARRATION",
+    "OUTCOME",
     "PLAYER_TURN",
     "STATE_CHANGE",
     "SUPPORTED_KINDS",
@@ -778,6 +1041,7 @@ __all__ = [
     "IngestEvent",
     "IngestRequest",
     "IngestResult",
+    "Settle",
     "check_kinds",
     "gate_groups",
     "ingest",

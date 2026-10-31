@@ -295,6 +295,12 @@ class RespondResponse(MutationResponse):
     state_effects: list[StateEffectModel] = Field(default_factory=list, exclude_if=lambda e: not e)
     """The State changes the turn committed (#187, FR-RESP-7) with their old and new values, a
     ``hidden`` State's only when the request names ``omniscient``; absent when none."""
+    settled_effects: list[StateEffectModel] = Field(
+        default_factory=list, exclude_if=lambda e: not e
+    )
+    """#217 (FR-EXT-21 (e)): the State changes late settlements committed between the previous
+    turn and this one (``source: settlement``; a ``hidden`` State's only for ``omniscient``);
+    absent when none."""
     reconciliation: ReconciliationCountBody | None = Field(
         default=None, exclude_if=lambda r: r is None
     )
@@ -358,6 +364,7 @@ class RespondResponse(MutationResponse):
             reduced_characters=list(result.reduced_characters),
             reconcile=[ReconcileBody(**r) for r in result.reconcile],
             state_effects=[StateEffectModel(**e) for e in result.state_effects],
+            settled_effects=[StateEffectModel(**e) for e in result.settled_effects],
             clock=None if result.clock is None else TurnClockBody.of(result.clock),
             reconciliation=None
             if result.reconciliation is None

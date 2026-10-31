@@ -13816,11 +13816,51 @@
             ],
             "title": "Do"
           },
+          "effect_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effect Id"
+          },
           "kind": {
             "maxLength": 64,
             "minLength": 1,
             "title": "Kind",
             "type": "string"
+          },
+          "outbox_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outbox Id"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "enum": [
+                  "confirmed",
+                  "failed",
+                  "unknown"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
           },
           "reason": {
             "anyOf": [
@@ -13833,6 +13873,39 @@
               }
             ],
             "title": "Reason"
+          },
+          "resulting_values": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "maxLength": 200,
+                      "type": "string"
+                    }
+                  ]
+                },
+                "maxProperties": 20,
+                "propertyNames": {
+                  "maxLength": 80,
+                  "minLength": 1
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resulting Values"
           },
           "say": {
             "anyOf": [
@@ -27808,6 +27881,13 @@
             "title": "Roles",
             "type": "object"
           },
+          "settled_effects": {
+            "items": {
+              "$ref": "#/components/schemas/StateEffectModel"
+            },
+            "title": "Settled Effects",
+            "type": "array"
+          },
           "state_effects": {
             "items": {
               "$ref": "#/components/schemas/StateEffectModel"
@@ -28916,6 +28996,13 @@
             },
             "title": "Roles",
             "type": "object"
+          },
+          "settled_effects": {
+            "items": {
+              "$ref": "#/components/schemas/StateEffectModel"
+            },
+            "title": "Settled Effects",
+            "type": "array"
           },
           "state_effects": {
             "items": {
@@ -65938,7 +66025,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `guardrail_violation`, `state_constraint_violation`, `state_derived`, `state_readonly_external`, `state_unpermitted`, `unsupported_event_kind`, `validation_error`."
+            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `effect_not_found`, `guardrail_violation`, `state_constraint_violation`, `state_derived`, `state_readonly_external`, `state_unpermitted`, `unsupported_event_kind`, `validation_error`."
           },
           "423": {
             "content": {

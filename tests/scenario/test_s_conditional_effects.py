@@ -3,7 +3,7 @@ FR-STATE-12,14, FR-EXT-15,16,21).
 
 Every S-CONDITIONAL-EFFECTS M6 part lives in this file: #216's intent side
 (``test_s_conditional_effects``), #212's synchronous outcome stage (``__sync``, its own
-docstring) and #217's late settlement (``__async``).
+docstring) and #217's late settlement (``__async``, its own docstring).
 
 #216's part, played end to end through ``respond`` with the stub adapter. Cal's gold is owned
 by a write-capable, asynchronous in-process provider (``bank``; #210's ordinary path: the turn
@@ -50,11 +50,13 @@ from epistrel.core.enums import OperationKind, StateChangeSource
 from epistrel.core.propositions import store
 from epistrel.core.states import StateDefinition
 from epistrel.core.states import contingency as ct
+from epistrel.orchestrator.jobs import settlement
 from epistrel.orchestrator.jobs.handlers import outbox as outbox_job
 from epistrel.orchestrator.jobs.handlers import reservations
 from epistrel.orchestrator.structured import staged
 from tests import canon_support as c
 from tests import effect_support as es
+from tests import late_settlement_support as ls
 from tests import multi_support as ms
 from tests import provider_support as ps
 from tests import state_support as ss
@@ -62,7 +64,7 @@ from tests.auth_support import auth_settings
 from tests.event_support import rows
 from tests.fixtures.key_room import KeyRoom, key_room
 from tests.respond_support import body, respond, respond_client
-from tests.story_support import override
+from tests.story_support import WRITE, override
 from tests.structured_turn_support import beat, structured_story, turn_report
 
 pytestmark = pytest.mark.integration
@@ -605,4 +607,125 @@ async def test_s_conditional_effects__sync(
         rows_after = await ps.outbox_rows(engine, story)
         assert sorted(r.status for r in rows_after) == ["confirmed", "failed"]  # no compensation
         await ps.drop_outbox_jobs(engine, story)
+        await ss.set_level(engine, story, None)
+
+
+@pytest.mark.part("M6", "FR-STATE-14; FR-EXT-21")
+async def test_s_conditional_effects__async(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#217's part (FR-EXT-21): an ``asynchronous`` provider's outcome and a consumer-applied
+    effect's outcome reported later through ``ingest`` settle the conditional effects and the
+    reservations at the next inter-turn slot after the last completed turn, never at the
+    requesting turn.
+
+    1. **Asynchronous** (``bank``): Cal buys a sword (the grant ``pending``) and sells his
+       heirloom (``held``); both payments are confirmed by the dispatcher after two more turns:
+       the grant commits at ``h⁺1`` and the sale hands the sword over at ``h⁺2`` (new committed
+       rows at the slots; the intent rows ``converted``); checkpoint ``h`` has neither.
+    2. **Released on failure**: a second sale's payout fails: the hold is released at the next
+       slot, the sword stays Cal's, nothing converts.
+    3. **Consumer-applied** (a read-only provider, #209): a purchase's payment is a request of
+       the consumer; its confirmation through ``ingest {kind: outcome, effect_id}`` settles the
+       grant at the next slot."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids = await structured_story(client, "Cal", "Mira")
+        cal = ids["Cal"]
+        _, fake = await _bank(engine, epistrel, story)
+        await _swords(engine, story, cal)
+
+        # -- 1. A purchase and a sale, confirmed late.
+        stub.reset()
+        ms.renders_for(stub, "Mira", es.render(beat("do", WRAPS, effects=[_trade(cal, 1)])))
+        es.narrator(stub, es.render(beat("narration", "The forge glows.")))
+        bought = await respond(client, story, body(cal, None, do="buys a sword"))
+        assert bought.status_code == 200, bought.text
+        requested = bought.json()["turn"]
+        (payment,) = [e for e in bought.json()["state_effects"] if e["state"] == "gold"]
+        stub.reset()
+        ms.renders_for(stub, "Mira", es.render(beat("say", "I know a buyer.", intent="sincere")))
+        es.narrator(stub, es.render(beat("narration", POSTS, effects=[_trade(cal, -1)])))
+        sold = await respond(client, story, body(cal, None, do="sells his heirloom"))
+        assert sold.status_code == 200, sold.text
+        (payout,) = [e for e in sold.json()["state_effects"] if e["state"] == "gold"]
+        last = await ls.plain(client, stub, story, cal)
+        head = last["turn"]
+        fake.script_writes("gold", "confirmed")
+        grant = await ls.answer(engine, epistrel, payment["outbox_id"])
+        handed = await ls.answer(engine, epistrel, payout["outbox_id"])
+        first = await ls.settle(engine, epistrel, grant)
+        second = await ls.settle(engine, epistrel, handed)
+        assert first.position is not None
+        assert second.position is not None
+        assert (first.position.turn, first.position.slot_k) == (head, 1)
+        assert (second.position.turn, second.position.slot_k) == (head, 2)
+        rows_now = await _sword_rows(engine, story)
+        assert [r.status for r in rows_now] == ["converted", "converted"]
+        settled = await ls.settlement_rows(engine, story)
+        assert sorted((r.narrative_turn, r.slot_k, int(r.delta)) for r in settled) == [
+            (head, 1, 1),
+            (head, 2, -1),
+        ]
+        assert all(r.narrative_turn != requested for r in settled)
+        assert await ls.sword_of(engine, story, cal, head) == 1  # the heirloom, held
+        assert await ls.sword_of(engine, story, cal, head, 1) == 2  # the grant
+        assert await ls.sword_of(engine, story, cal, head, 2) == 1  # the heirloom handed over
+
+        # -- 2. A second sale whose payout fails: the hold is released, nothing converts.
+        stub.reset()
+        ms.renders_for(stub, "Mira", es.render(beat("say", "Another buyer?", intent="sincere")))
+        es.narrator(stub, es.render(beat("narration", POSTS, effects=[_trade(cal, -1)])))
+        again = await respond(client, story, body(cal, None, do="sells the new sword"))
+        assert again.status_code == 200, again.text
+        (refused,) = [e for e in again.json()["state_effects"] if e["state"] == "gold"]
+        fake.script_writes("gold", "failed")
+        failed = await ls.answer(engine, epistrel, refused["outbox_id"])
+        assert (await ls.settle(engine, epistrel, failed)).result == settlement.SETTLED
+        assert [r.status for r in await _sword_rows(engine, story)][-1] == "released"
+        assert await ls.sword_of(engine, story, cal) == 1
+        assert len(await ls.settlement_rows(engine, story)) == 2
+        await ls.drop_jobs(engine, story)
+        await ss.set_level(engine, story, None)
+
+    # -- 3. A consumer-applied effect, confirmed through ingest.
+    name = ps.unique_name("ledger")
+    await ps.register(engine, ps.in_process_spec(name))
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        ps.ScriptedProvider(name, default=1000).attach(epistrel)
+        story, ids = await structured_story(client, "Cal", "Mira")
+        cal = ids["Cal"]
+        await ss.set_level(engine, story, "on")
+        await ps.external_gold(engine, story, name, authorization=es.ANY_CHARACTER)
+        await _swords(engine, story)
+        played = await ls.buy(client, stub, story, cal)
+        (asked,) = [e for e in played["state_effects"] if e["state"] == "gold"]
+        head = (await ls.plain(client, stub, story, cal))["turn"]
+        reported = await client.post(
+            f"/stories/{story}/ingest",
+            json={
+                "events": [
+                    {
+                        "client_event_id": "paid-1",
+                        "kind": "outcome",
+                        "effect_id": asked["effect_id"],
+                        "outcome": "confirmed",
+                    }
+                ]
+            },
+            headers=WRITE,
+        )
+        assert reported.status_code == 201, reported.text
+        (record,) = await ps.outbox_outcomes(engine, story)
+        done = await ls.settle(engine, epistrel, record.id)
+        assert done.position is not None
+        assert (done.position.turn, done.position.slot_k) == (head, 1)
+        assert await ls.sword_of(engine, story, cal, played["turn"]) == 0
+        assert await ls.sword_of(engine, story, cal, head) == 0
+        assert await ls.sword_of(engine, story, cal, head, 1) == 1
+        await ls.drop_jobs(engine, story)
         await ss.set_level(engine, story, None)

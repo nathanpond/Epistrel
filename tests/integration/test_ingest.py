@@ -88,8 +88,9 @@ def code(response: httpx.Response) -> str:
 
 
 async def test_body_validation(stub_settings: Settings, engine: AsyncEngine) -> None:
-    """Malformed bodies are 422 and write nothing; a kind not recorded yet is
-    ``unsupported_event_kind`` naming its milestone."""
+    """Malformed bodies are 422 and write nothing; a kind ingest does not record is
+    ``unsupported_event_kind`` (#217: ``outcome`` is recorded now, so one naming no effect is a
+    ``validation_error``)."""
     async with respond_client(stub_settings, engine) as (client, _):
         story, ids = await new_story(client)
         before = await footprint(engine, story)
@@ -110,12 +111,9 @@ async def test_body_validation(stub_settings: Settings, engine: AsyncEngine) -> 
             refused = await ingest(client, story, *events)
             assert refused.status_code == 422, (events, refused.text)
             assert code(refused) == "validation_error"
-        for kind in ("outcome",):
-            refused = await ingest(client, story, {"client_event_id": "g", "kind": kind})
-            assert refused.status_code == 422, refused.text
-            assert code(refused) == "unsupported_event_kind"
-            assert "M6" in refused.json()["error"]["message"]
-            assert refused.json()["error"]["details"]["milestone"] == "M6"
+        refused = await ingest(client, story, {"client_event_id": "g", "kind": "outcome"})
+        assert refused.status_code == 422, refused.text
+        assert code(refused) == "validation_error"
         unknown = await ingest(client, story, {"client_event_id": "h", "kind": "dream"})
         assert code(unknown) == "unsupported_event_kind"
         assert await footprint(engine, story) == before

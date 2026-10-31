@@ -33,7 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.api import create_app
 from epistrel.config import Settings
-from epistrel.core import clock, projections
+from epistrel.core import clock, ingest, projections, timeline
 from epistrel.core import outbox as core_outbox
 from epistrel.core.db import make_engine
 from epistrel.core.enums import OperationKind, Provenance
@@ -44,9 +44,11 @@ from epistrel.core.ids import new_ulid
 from epistrel.core.media.sweep import collect_blob
 from epistrel.core.memory.consolidation import Window
 from epistrel.observability import logging as telemetry_logging
+from epistrel.orchestrator.jobs import settlement
 from epistrel.orchestrator.jobs.handlers import consolidation, outbox
 from epistrel.orchestrator.jobs.handlers.consolidation import consolidate_window
 from epistrel.orchestrator.providers.in_process import InProcessRegistry
+from epistrel.orchestrator.providers.port import WriteOutcome
 from epistrel.testing import pauses
 from epistrel.testing.determinism import differences, state
 from epistrel.tools import backup
@@ -65,7 +67,7 @@ from tests.auth_support import MEDIA_ROOT, auth_settings
 from tests.conformance.conftest import migrated_database
 from tests.conftest import DUMMY_DSN, REPO_ROOT
 from tests.determinism.test_determinism import Run
-from tests.event_support import rows, scalar
+from tests.event_support import execute_in_tx, rows, scalar
 from tests.idempotency_support import KEY
 from tests.integration.test_erasure_resurrection import resurrection_clauses
 from tests.memory_support import turn, use_structured
@@ -1133,3 +1135,149 @@ async def test_s_erasure_boundary__m6_outbox(
     assert await outbox.send(engine, ann_claim) == "confirmed"
     assert fake.idempotency_keys[-1] == aunt
     await providers.drop_outbox_jobs(engine, story)
+
+
+@pytest.mark.part("M6", "FR-ADMIN-6; FR-EXT-21")
+async def test_s_erasure_boundary__m6_outcome(
+    erasure_settings: Settings, engine: AsyncEngine, states_delivered: None
+) -> None:
+    """M6 (#217, FR-EXT-21 (b)): erasing Bobby, whom two confirmed, unsettled late outcomes
+    reference:
+
+    - an outbox effect ("Bobby's fence") whose origin was rewound before its confirmation
+      arrived, listed ``confirmed_discarded_origin``: its row is redacted in place (the listing
+      keeps the row, its provider and status, its effect redacted), and its outcome record loses
+      its payload and raw hash;
+    - a consumer-applied effect (#209's ``requested_effect``, "Bobby's school fees") confirmed
+      through ``ingest``: the request is redacted with the event log, and its outcome record
+      loses its payload.
+
+    The ``outcome_recorded`` events hold identifiers and codes only, and the erasure ledger and
+    markers hold no outcome content. Complement: Ann's confirmed outcome keeps its payload."""
+    w = await c.world(engine)
+    story, bobby, ann = w.story_id, w.characters["Bobby"], w.characters["Ann"]
+    name = providers.unique_name("bank")
+    await providers.register(engine, providers.write_capable_spec(name, dedupes=True))
+    await providers.bind(engine, story, name, {"player": "p-1"})
+    fake = providers.ScriptedProvider(name)
+    fake.script_writes(
+        "gold", WriteOutcome(status="confirmed", resulting_values={"gold": 95}, raw_hash="h1")
+    )
+    registry = InProcessRegistry()
+    registry.register(name, read=fake.read, write=fake.write)
+
+    # The outbox effect: claimed, its turn rewound, a new turn, then the confirmation.
+    await _outbox_turn(engine, story, name, [])
+    (fence,) = await _outbox_turn(engine, story, name, [(None, "Bobby's fence")])
+    claimed = await outbox.claim(engine, fence, registry=registry)
+    assert isinstance(claimed, outbox.Claimed)
+    head = await scalar(engine, "SELECT next_turn_index FROM stories WHERE id = :s", s=story)
+    await timeline.truncate(
+        engine,
+        story,
+        timeline.TruncateRequest(to_turn=int(head) - 2),
+        principal="p-test",
+    )
+    await _outbox_turn(engine, story, name, [])
+    assert await outbox.send(engine, claimed) == "confirmed"
+    (fenced,) = await rows(engine, "SELECT id FROM outbox_outcomes WHERE outbox_id = :o", o=fence)
+    assert (await settlement.settle(engine, fenced.id)).result == settlement.DISCARDED
+
+    # The consumer-applied effect, and Ann's (the complement), confirmed through ingest.
+    requested = {}
+    for who, why in ((bobby, "Bobby's school fees"), (ann, "Ann's wages")):
+        effect_id = new_ulid()
+        async with Operation(
+            engine, story_id=story, kind=OperationKind.TURN, principal="p-test"
+        ) as op:
+            op.append("player_input", {"text": "pay"}, provenance=Provenance.PLAYER)
+            op.append(
+                "requested_effect",
+                {
+                    "effect_id": effect_id,
+                    "state": "gold",
+                    "scope_key": who,
+                    "delta": -5,
+                    "reason": why,
+                },
+                beat=2,
+            )
+            op.append("message_rendered", {"text": "the coins change hands"})
+            await op.commit()
+        requested[who] = effect_id
+        await ingest.ingest(
+            engine,
+            story,
+            ingest.IngestRequest.model_validate(
+                {
+                    "events": [
+                        {
+                            "client_event_id": f"paid-{effect_id}",
+                            "kind": "outcome",
+                            "effect_id": effect_id,
+                            "outcome": "confirmed",
+                            "resulting_values": {"gold": 95},
+                        }
+                    ]
+                }
+            ),
+            principal="p-test",
+            gate=_no_gate,
+        )
+
+    async with respond_client(erasure_settings, engine) as (client, _):
+        await e.erase(client, "character", bobby, story, confirm_all=True)
+
+    outcomes = {
+        (o.outbox_id or o.effect_id): o for o in await providers.outbox_outcomes(engine, story)
+    }
+    for erased in (fence, requested[bobby]):
+        assert (outcomes[erased].payload, outcomes[erased].raw_hash) == ({}, "")
+        assert outcomes[erased].kind == "confirmed"  # the fact stays, its content does not
+    assert outcomes[requested[ann]].payload == {"resulting_values": {"gold": 95}}
+    (row,) = [r for r in await providers.outbox_rows(engine, story) if r.id == fence]
+    assert not e.naming(row.effect["reason"], ["Bobby"])
+    (listing,) = [
+        entry
+        for entry in (await core_outbox.listings(engine, story)).listings
+        if entry.outbox_id == fence
+    ]
+    assert listing.reason == "confirmed_discarded_origin"
+    assert listing.effect is not None
+    assert not e.naming(json.dumps(listing.effect), ["Bobby"])
+    asked = await rows(
+        engine,
+        "SELECT payload::text AS body FROM events WHERE story_id = :s "
+        "AND type = 'requested_effect'",
+        s=story,
+    )
+    assert not any(e.naming(r.body, ["Bobby"]) for r in asked)
+    recorded = await rows(
+        engine,
+        "SELECT payload FROM events WHERE story_id = :s AND type = 'outcome_recorded'",
+        s=story,
+    )
+    assert len(recorded) == 3
+    for r in recorded:
+        assert set(r.payload) <= {"outcome_id", "outbox_id", "effect_id", "status", "received_via"}
+    (entry,) = await rows(
+        engine,
+        "SELECT counts::text AS counts, scan_term_hashes FROM erasure_ledger WHERE story_ref = :s",
+        s=story,
+    )
+    for held in (entry.counts, " ".join(entry.scan_term_hashes)):
+        assert not e.naming(held, ["Bobby"])
+        assert "fence" not in held
+        assert "school fees" not in held
+    await providers.drop_outbox_jobs(engine, story)
+    await execute_in_tx(
+        engine,
+        (
+            "DELETE FROM jobs WHERE story_id = :s AND kind = :k",
+            {"s": story, "k": settlement.SETTLE},
+        ),
+    )
+
+
+async def _no_gate(groups: Any) -> None:
+    return None

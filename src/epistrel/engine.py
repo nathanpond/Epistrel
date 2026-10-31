@@ -165,6 +165,7 @@ from epistrel.orchestrator.embeddings.adapter import EMBEDDING as EMBEDDING_PORT
 from epistrel.orchestrator.embeddings.adapter import EmbeddingProbe
 from epistrel.orchestrator.embeddings.service import EmbeddingUnreachable
 from epistrel.orchestrator.jobs import queue as job_queue
+from epistrel.orchestrator.jobs import settlement as settlement_job
 from epistrel.orchestrator.jobs.handlers import consolidation as consolidation_job
 from epistrel.orchestrator.jobs.handlers import erasure_reconcile as erasure_reconcile_job
 from epistrel.orchestrator.jobs.handlers import importance as importance_job
@@ -1878,7 +1879,9 @@ class Engine:
         409 ``client_event_conflict`` (different payload), writing nothing. Every new event's
         text passes the input gate on its own before anything is recorded. Under turn
         concurrency (#63) the batch is one turn: refused while a generated turn runs under
-        ``reject``, queued as one ``turn_queue`` row under ``queue`` (as ``respond``)."""
+        ``reject``, queued as one ``turn_queue`` row under ``queue`` (as ``respond``). A batch
+        of ``outcome`` events (#217) is recorded position-less, never waits for a turn, and
+        enqueues each deciding outcome's late settlement (FR-EXT-21)."""
         principal = self.require_principal(ctx)
 
         async def gate(groups: Sequence[ingest.GateGroup]) -> None:
@@ -1923,6 +1926,7 @@ class Engine:
                     idempotency_key=ctx.idempotency_key,
                     expected_revision=ctx.expected_revision,
                     queue_batch=queue_batch,
+                    settle=settlement_job.enqueue,
                 ),
             )
 

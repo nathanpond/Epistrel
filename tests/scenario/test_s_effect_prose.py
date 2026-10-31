@@ -3,7 +3,8 @@ FR-RESP-8).
 
 Every S-EFFECT-PROSE M6 part lives in this file: #209's consumer-applied part
 (``__consumer_applied``), #210's asynchronous part (``__async``, its own docstring), #212's
-part, and #217's outcome tails.
+part, and #217's outcome tails (``__consumer_applied_outcome``, ``__async_outcome``: their
+own docstrings).
 
 #209's part, played end to end through ``respond`` with the stub adapter. Cal's gold is owned by
 a read-only provider (it reads 300); Mira's render declares ``gold -50`` for a sword:
@@ -30,15 +31,18 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core import outbox as core_outbox
+from epistrel.orchestrator.jobs import settlement
 from epistrel.orchestrator.jobs.handlers import outbox as outbox_job
 from epistrel.orchestrator.structured import staged
 from tests import effect_support as es
+from tests import late_settlement_support as ls
 from tests import multi_support as ms
 from tests import provider_support as ps
 from tests import state_support as ss
 from tests.auth_support import auth_settings
 from tests.respond_support import AUTHOR, body, respond, respond_client
-from tests.story_support import override
+from tests.story_support import WRITE, override
 from tests.structured_turn_support import beat, structured_story, turn_report
 
 pytestmark = pytest.mark.integration
@@ -327,4 +331,141 @@ async def test_s_effect_prose__sync(
         assert not any("went through" in t for t in texts)
         assert _tags(await turn_report(engine, story)) == [("external_outcome_unconfirmed", 3)]
         await ps.drop_outbox_jobs(engine, story)
+        await ss.set_level(engine, story, None)
+
+
+REFUSED = "(the game refused it: it did not happen; reconcile the story with that)"
+CONFIRMED = "(the game confirmed it)"
+
+
+def _awaiting(stub: Any) -> str:
+    """The next narrator prompt's ``## Awaiting the game`` section."""
+    (narrator_prompt,) = es.prompts(stub, "NarratorRender")
+    return narrator_prompt.split(AWAITING, 1)[1].split("\n## ", 1)[0]
+
+
+async def _next_turn(client: Any, stub: Any, story: str, cal: str) -> dict[str, Any]:
+    stub.reset()
+    es.narrator(stub, es.render(beat("narration", "Rain taps.")))
+    ms.renders_for(stub, "Mira", es.render(beat("say", "Anything else?")))
+    answer = await respond(client, story, body(cal, None, do="waits"))
+    assert answer.status_code == 200, answer.text
+    return dict(answer.json())
+
+
+@pytest.mark.part("M6", "FR-EXT-15; FR-RESP-8")
+async def test_s_effect_prose__consumer_applied_outcome(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#217's part (FR-EXT-21, moved from #209): a consumer-applied effect's later outcome,
+    reported through ``ingest {kind: outcome, effect_id}``, is recorded and surfaced in the
+    next turn. A failure is reconciled in the narrative: the next narrator prompt's ``##
+    Awaiting the game`` names the purchase as refused (it did not happen); a confirmation as
+    confirmed. ``pending_outcomes`` reaches only the narrator's inputs, never Mira's render (a
+    character learns an outcome only by perception). Each answer is surfaced once: the turn
+    after, the section is gone."""
+    name = ps.unique_name("ledger")
+    await ps.register(engine, ps.in_process_spec(name))
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        ps.ScriptedProvider(name, default=300).attach(epistrel)
+        story, ids = await structured_story(client, "Cal", "Mira")
+        cal = ids["Cal"]
+        await ss.set_level(engine, story, "on")
+        await ps.external_gold(engine, story, name, authorization=es.ANY_CHARACTER)
+        effect_ids = []
+        for spent in ("buys the sword", "buys a shield"):
+            stub.reset()
+            ms.renders_for(stub, "Mira", _mira(cal, TAKES))
+            es.narrator(stub, es.render(beat("narration", "The forge glows.")))
+            answer = await respond(client, story, body(cal, None, do=spent))
+            assert answer.status_code == 200, answer.text
+            effect_ids.append(_pending(answer.json())["effect_id"])
+        reported = await client.post(
+            f"/stories/{story}/ingest",
+            json={
+                "events": [
+                    {
+                        "client_event_id": "out-1",
+                        "kind": "outcome",
+                        "effect_id": effect_ids[0],
+                        "outcome": "failed",
+                    },
+                    {
+                        "client_event_id": "out-2",
+                        "kind": "outcome",
+                        "effect_id": effect_ids[1],
+                        "outcome": "confirmed",
+                    },
+                ]
+            },
+            headers=WRITE,
+        )
+        assert reported.status_code == 201, reported.text
+        for record in await ps.outbox_outcomes(engine, story):
+            assert (await settlement.settle(engine, record.id)).result == settlement.SETTLED
+
+        await _next_turn(client, stub, story, cal)
+        section = _awaiting(stub)
+        assert f"gold -50 (Cal's): {REASON} {REFUSED}" in section
+        assert f"gold -50 (Cal's): {REASON} {CONFIRMED}" in section
+        for prompt in ms.render_prompts(stub, "Mira"):
+            assert AWAITING not in prompt
+            assert REASON not in prompt
+        await _next_turn(client, stub, story, cal)
+        (narrator_prompt,) = es.prompts(stub, "NarratorRender")
+        assert REFUSED not in narrator_prompt  # surfaced once
+        assert CONFIRMED not in narrator_prompt
+        await ls.drop_jobs(engine, story)
+        await ss.set_level(engine, story, None)
+
+
+@pytest.mark.part("M6", "FR-EXT-15; FR-RESP-8")
+async def test_s_effect_prose__async_outcome(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#217's part (FR-EXT-21): a write-capable ``asynchronous`` provider's later ``failed``
+    outcome, recorded by #210's dispatcher (an outcome record, a position-less
+    ``outcome_recorded`` event, a settlement queued), is surfaced in the next turn and
+    reconciled in the narrative: the narrator's ``## Awaiting the game`` names it refused; the
+    reconciliation status lists it ``failed``; Mira's render never sees it."""
+    name = ps.unique_name("bank")
+    await ps.register(engine, ps.write_capable_spec(name))
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        fake = ps.ScriptedProvider(name, default=300).attach(epistrel)
+        story, ids = await structured_story(client, "Cal", "Mira")
+        cal = ids["Cal"]
+        await ss.set_level(engine, story, "on")
+        await ps.external_gold(engine, story, name, authorization=es.ANY_CHARACTER)
+        stub.reset()
+        ms.renders_for(stub, "Mira", _mira(cal, TAKES))
+        es.narrator(stub, es.render(beat("narration", "The forge glows.")))
+        answer = await respond(client, story, body(cal, None, do="buys the sword"))
+        assert answer.status_code == 200, answer.text
+        effect = _pending(answer.json())
+        await _next_turn(client, stub, story, cal)
+        assert f"gold -50 (Cal's): {REASON}" in _awaiting(stub)  # still pending
+
+        fake.script_writes("gold", "failed")
+        sent = await outbox_job.dispatch(
+            engine, effect["outbox_id"], registry=epistrel.in_process_providers
+        )
+        assert sent == "failed"
+        (record,) = await ps.outbox_outcomes(engine, story)
+        assert (record.kind, record.received_via) == ("failed", "dispatcher")
+        assert (await settlement.settle(engine, record.id)).result == settlement.SETTLED
+        await _next_turn(client, stub, story, cal)
+        assert f"gold -50 (Cal's): {REASON} {REFUSED}" in _awaiting(stub)
+        for prompt in ms.render_prompts(stub, "Mira"):
+            assert AWAITING not in prompt
+        listed = (await core_outbox.listings(engine, story)).listings
+        assert [(e.outbox_id, e.reason) for e in listed] == [(effect["outbox_id"], "failed")]
+        await ls.drop_jobs(engine, story)
         await ss.set_level(engine, story, None)

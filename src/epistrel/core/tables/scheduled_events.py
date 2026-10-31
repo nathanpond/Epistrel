@@ -1,5 +1,5 @@
 """``scheduled_events``: canon scheduled events and their lifecycle (FR-CLOCK-9,16,18; docs/02
-§7.1; #196, migration 0094).
+§7.1; #196, migration 0093).
 
 One row is one **version** of a canon scheduled event: the event is the canon ``scheduled``
 proposition it was created with (``proposition_id``, the event's key: every version of one

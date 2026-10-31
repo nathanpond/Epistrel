@@ -10303,3 +10303,6 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision (Rule 1, #210):** OUTBOX-SAFETY treats a refused swap (`UnknownChain` on a dormant chain that continues in more than one way) as a no-op step (`43a58a0`). It failed on seed 338871479051161576603105385108470305848 before #213 was integrated. #213's findings are filed as #657 and #658.
   **Why:** The engine's refusal is correct; the test drew an invalid step.
   **Issue:** #210, #213
+- **Decision:** #217's full suite at `2e2c66b` had 2 failures. (1) `test_module_imports`: a `settlement → jobs.queue → handlers → settlement` import cycle, fixed by importing the queue lazily (Refs #217). (2) `test_outbox_safety__fork`: the same refused-swap `UnknownChain` already fixed in `43a58a0` (#210). Both reran green (7 passed). **#217 is green.**
+  **Why:** Both were attributed by test name and fixed in scope.
+  **Issue:** #217, #210

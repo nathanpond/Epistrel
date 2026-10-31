@@ -273,3 +273,50 @@ async def test_s_knock(
         report = await turn_report(engine, story)
         assert report["commit"]["minimal_commits"] == 0
         assert report["commit"]["dependences"] == 1
+
+
+@pytest.mark.part("M5", "FR-COMMIT-13")
+async def test_s_knock__follow_up(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """#516: the undetermined knock, settled by the follow-up render of a later turn. Turn 2's
+    ``do`` "Jenni opens the door to see who knocked." makes the knocker's identity salient
+    without naming it, so the narrator renders once more, told to settle it, and names the
+    mailman. That claim already fills turn 1's open thunk at detection, so the commit's
+    dependence settles it and the follow-up does not look it up again (a second lookup of the
+    same key, answered differently within the attempt, failed the turn with
+    ``ReadSetInconsistent``): the turn commits, one dependence settles the thunk and no minimal
+    commit is made."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids = await _house(client, engine)
+        knock = await _knock(client, engine, stub, story, ids)
+
+        stub.reset()
+        opens = "Jenni opens the door to see who knocked."
+        stub.script(
+            "generation",
+            [
+                render(beat("do", opens)),
+                render(
+                    beat(
+                        "narration",
+                        "It is the mailman, holding a parcel.",
+                        propositions=[claim("the mailman", "knocked_at", "the door")],
+                    )
+                ),
+            ],
+        )
+        stub.script("salience_detection", [salience_answer((2, opens, WHO))])
+        await played(client, story, body(ids["Wren"], "Go on, open it."))
+        (settled,) = await rows(engine, "SELECT * FROM thunks WHERE story_id = :s", s=story)
+        assert (str(settled.state), settled.id) == ("resolved", knock.id)
+        (knocker,) = await _knockers(engine, story, ids)
+        assert knocker.subject_id == ids["the mailman"]
+        assert settled.resolved_fact_id == knocker.id
+        report = await turn_report(engine, story)
+        assert report["commit"]["dependences"] == 1
+        assert report["commit"]["minimal_commits"] == 0
+        assert report["commit"]["follow_up"]["path"] == "follow_up"

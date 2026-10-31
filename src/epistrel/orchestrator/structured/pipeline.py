@@ -2277,7 +2277,10 @@ async def settle_follow_up(
 ) -> int:
     """At the commit, after the turn's salient references are recorded: each surviving claim of
     the follow-up render that fills one of their (now introduced) thunks is the dependence
-    that settles it (``lifecycle.depend``); answers how many."""
+    that settles it (``lifecycle.depend``); answers how many. A claim that already matched an
+    open thunk at detection (``matched_thunk_id``, an earlier turn's) was settled by
+    ``extraction.apply_dependences`` and is not looked up again (#516: the second lookup of
+    the same key would answer differently within the attempt)."""
     if not checked.follow_up_beats:
         return 0
     lookup = KeyedLookup(conn, read_set)
@@ -2286,6 +2289,7 @@ async def settle_follow_up(
         proposition = c.claim.proposition
         if (
             c.claim.beat not in checked.follow_up_beats
+            or c.claim.matched_thunk_id is not None
             or proposition is None
             or c.claim.channel not in lifecycle.DEPENDENCE_CHANNELS
             or (c.result is not None and c.result.needs_repair)

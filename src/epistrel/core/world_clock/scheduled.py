@@ -11,7 +11,10 @@ story's scheduled events.
   commit writes the canon ``scheduled`` fact (the event an ``event`` entity of the given name,
   its subject the first participant, else the event itself; the planned time an offset, or a
   time of day ``"HH:MM"`` the anchor places at its next occurrence), which
-  ``core.canon.facts.commit_fact`` makes a ``pending`` event of ``scheduled_events``. The owner
+  ``core.canon.facts.commit_fact`` makes a ``pending`` event of ``scheduled_events``. #197: on a
+  clock anchored only to a range, a time of day is held at its frame minute
+  (``stops.place_event``): planned where the range's lower end reaches it, and
+  ``possibly_due`` at once when it already lies inside the range. The owner
   is ``author`` or ``world`` (a character's own plans are created by its turns, #198).
 - ``reschedule_event`` (``PATCH``): the event moves to ``pending`` at its new time, and may stop
   the clock once more. Only the owner, a shared owner, the author or the world may change an
@@ -30,7 +33,7 @@ the event as it stands after it. Log lines carry identifiers only (invariant 3).
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from pydantic import (
@@ -51,14 +54,20 @@ from epistrel.core.enums import (
     RecordProvenance,
     ScheduledStatus,
 )
-from epistrel.core.errors import InvalidRequest, StoryNotFound, ViewpointUnresolved
+from epistrel.core.errors import (
+    ClockUnanchored,
+    InvalidRequest,
+    StoryNotFound,
+    ViewpointUnresolved,
+)
 from epistrel.core.membership import Position
 from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX, OMNISCIENT
 from epistrel.core.tables import characters, entities, stories
 from epistrel.core.tables.propositions import propositions
 from epistrel.core.tables.scheduled_events import OWNER_AUTHOR, OWNER_WORLD
 from epistrel.core.viewpoint import resolve_viewpoint
-from epistrel.core.world_clock import HEAD, clock_at, require_clock, stops, time_basis
+from epistrel.core.world_clock import HEAD, anchor_at, clock_at, require_clock, stops, time_basis
+from epistrel.core.world_clock.anchor import Anchor
 from epistrel.core.world_clock.service import TIME_OF_DAY, _time_of_day
 from epistrel.core.world_clock.slots import open_inter_turn, slot_position
 
@@ -335,6 +344,35 @@ def _shared(shared_owners: Sequence[str] | None, cast: Sequence[str]) -> None:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _Placed:
+    """#197: a time of day a range-anchored clock places: its frame minute, under ``anchor``,
+    at clock offset ``offset``."""
+
+    at: int
+    anchor: Anchor
+    offset: int
+
+
+async def _placed(
+    conn: AsyncConnection, story_id: str, planned: int | str
+) -> tuple[int, _Placed | None]:
+    """A new event's planned offset (``_planned``), or, for a time of day the anchor holds only
+    as a range, the offset where its lower end reaches it and the frame minute (#197)."""
+    try:
+        return await _planned(conn, story_id, planned), None
+    except ClockUnanchored:
+        if not isinstance(planned, str):  # pragma: no cover - an offset is always placed
+            raise
+        anchor = await anchor_at(conn, story_id, HEAD)
+        minute = int(planned[:2]) * 60 + int(planned[3:])
+        if anchor.is_unanchored or minute >= anchor.clockwork.day_minutes:
+            raise
+        current = (await clock_at(conn, story_id, HEAD)).offset_minutes
+        at = anchor.place(minute, current)
+        return anchor.due_window(at)[1], _Placed(at, anchor, current)
+
+
 async def _validated(
     conn: AsyncConnection, story_id: str, request: ScheduledEventCreate, cast: Sequence[str]
 ) -> None:
@@ -378,7 +416,7 @@ async def create_event(
         await require_clock(conn, story_id)
         story = await _story(conn, story_id)
         await _validated(conn, story_id, request, story.cast)
-        planned = await _planned(conn, story_id, request.planned)
+        planned, placed = await _placed(conn, story_id, request.planned)
     written: list[stops.ScheduledEvent] = []
 
     async def step(conn: AsyncConnection) -> None:
@@ -412,6 +450,19 @@ async def create_event(
             )
         found = await stops.event_at(conn, story_id, fact.proposition_id)
         assert found is not None  # noqa: S101 - commit_fact made the fact an event
+        if placed is not None:
+            found = (
+                await stops.place_event(
+                    conn,
+                    op,
+                    story_id,
+                    found,
+                    at=placed.at,
+                    anchor=placed.anchor,
+                    offset=placed.offset,
+                    position=replace(found.position, step=found.position.step + 1),
+                )
+            ).event
         written.append(found)
 
     op = open_inter_turn(

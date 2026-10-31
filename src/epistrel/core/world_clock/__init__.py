@@ -392,7 +392,8 @@ async def commit_anchor(
     basis = await time_basis(conn, story_id)
     offset = basis.at(position) - basis.minute_zero
     current = await anchor_at(conn, story_id, position)
-    if not isinstance(current.refine(statement, offset, position), Anchor):
+    refined = current.refine(statement, offset, position)
+    if not isinstance(refined, Anchor):
         return None
     clock = await clock_definition(conn, story_id)
     assert clock.id is not None  # noqa: S101 - a stored declaration has its id
@@ -400,7 +401,7 @@ async def commit_anchor(
     if statement.weekday is not None:
         stored["weekday_name"] = current.clockwork.weekdays[statement.weekday]
     literal = json.dumps(stored, separators=(",", ":"))
-    return await commit_fact(
+    fact = await commit_fact(
         conn,
         story_id,
         Proposition(
@@ -415,6 +416,13 @@ async def commit_anchor(
         beat=beat,
         slot_k=slot_k,
     )
+    # #197: the refinement re-plans the events held at a time of day (FR-CLOCK-18).
+    from epistrel.core.world_clock import stops  # here: stops imports this package
+
+    await stops.on_refinement(
+        conn, operation, story_id, anchor=refined, offset=offset, position=position
+    )
+    return fact
 
 
 async def clock_before_slot(
@@ -520,7 +528,13 @@ async def record_turn(
                 estimate_meta=None if found.meta is None else dict(found.meta),
                 # #196: a due event's stop; an event the turn itself creates has no row yet.
                 stopped_by_event_id=found.stopped_by
-                if found.stopped_by is not None and _ULID.match(found.stopped_by)
+                if not found.paused
+                and found.stopped_by is not None
+                and _ULID.match(found.stopped_by)
+                else None,
+                # #197: a possibly_due pause names the event it paused for.
+                paused_for_event_id=found.stopped_by
+                if found.paused and found.stopped_by is not None and _ULID.match(found.stopped_by)
                 else None,
             )
         )

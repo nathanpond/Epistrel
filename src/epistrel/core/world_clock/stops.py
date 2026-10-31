@@ -27,7 +27,7 @@ fork point.
 - ``check_advance(advance, present, scene, events=, stops=)`` answers ``Proceed`` (nothing due;
   or, with stops off, the events crossed, surfaced as overdue), ``Stop(event, at_offset)``
   (the first such event: the advance stops at its planned time) or ``Pause`` (#197's
-  ``possibly_due``). Stops apply only when **both** the effective profile's
+  ``possibly_due``, below). Stops apply only when **both** the effective profile's
   ``clock.scheduled_stops`` (#106's flag) and the story's ``world_clock.stop_at_due_events``
   are on (``stops_enabled``).
 - An event stops the clock **at most once**: a stop records ``due`` with ``stopped_clock_at``,
@@ -43,6 +43,23 @@ fork point.
   renders create, ``created``): its cutoff is the earliest stop, every render is capped there, a
   pacing-only overrun is clamped and a skip that crossed it is regenerated, so every render ends
   at or before the turn's end, which is the cutoff.
+
+**A partially anchored clock** (FR-CLOCK-18; #197). An event placed at a time of day while the
+anchor holds only a range keeps that time as its frame minute (``planned_anchor``:
+``core.world_clock.anchor.Anchor.place``); its ``planned`` offset is where the range's lower end
+reaches it (its factual stop, and the base of its grace). It is ``possibly_due`` from the first
+offset where the range's upper end passes it (``window``). With stops on, an advance that
+reaches that point **pauses** there (``pause_at``): the advance is cut like a stop, the event
+becomes ``possibly_due`` with the anchor's revision (``refinement_pause_anchor_rev``), nothing
+surfaces it, and no line calls it due; the next render is steered to establish the time
+(``establish_time``). It pauses at most once per anchor state (revision), never counts as its
+factual stop (``stopped_clock_at`` stays null), and with no refinement a later advance passes it
+and stops factually at ``planned``. A refinement (``on_refinement``, from
+``core.world_clock.commit_anchor``) re-plans every such open event under the new anchor at the
+statement's offset: still in the future → ``pending``; still inside the range →
+``possibly_due`` (it may pause once more: the revision is new); reached within the time-statement
+tolerance → ``due`` (its factual stop; surfaced at the next turn); reached later → surfaced as
+overdue, and ``missed`` past ``planned`` plus its grace.
 
 **Grace and completion** (``turn_steps``): an event that was ``due`` or ``surfaced`` before a
 turn becomes ``missed`` when the turn ends past its planned time plus its ``grace_minutes``
@@ -84,6 +101,7 @@ from epistrel.core.ids import new_ulid
 from epistrel.core.membership import POSITION_MAX, Position, active_only, insert_derived
 from epistrel.core.tables import events
 from epistrel.core.tables.scheduled_events import OWNER_AUTHOR, OWNER_WORLD, scheduled_events
+from epistrel.core.world_clock.anchor import Anchor
 from epistrel.core.world_clock.timing import (
     SIMULTANEOUS,
     TimedBeat,
@@ -122,9 +140,26 @@ CREATED, RESCHEDULED, STOP, OVERDUE, SURFACED_CAUSE = (
 GRACE, LEFT, CANCELLED = "grace", "left", "cancelled"
 SHARED = "shared"
 """#198: the event's shared owners changed (its status and time kept)."""
+PAUSE, ANCHORED = "pause", "anchor"
+"""#197: a ``possibly_due`` pause, and a re-plan by an anchor refinement."""
 CAUSES = frozenset(
-    {CREATED, RESCHEDULED, STOP, OVERDUE, SURFACED_CAUSE, GRACE, LEFT, CANCELLED, SHARED}
+    {
+        CREATED,
+        RESCHEDULED,
+        STOP,
+        OVERDUE,
+        SURFACED_CAUSE,
+        GRACE,
+        LEFT,
+        CANCELLED,
+        SHARED,
+        PAUSE,
+        ANCHORED,
+    }
 )
+STOPPABLE: frozenset[ScheduledStatus] = frozenset({S.PENDING, S.POSSIBLY_DUE})
+"""The statuses whose event still owes its one factual stop (#197: a ``possibly_due`` event
+has only paused)."""
 """Why a lifecycle step happened (``scheduled_event.cause``)."""
 
 
@@ -167,6 +202,13 @@ class ScheduledEvent:
     @property
     def is_open(self) -> bool:
         return self.status in OPEN
+
+    @property
+    def at(self) -> int | None:
+        """#197: the event's frame minute (``Anchor.place``) when it was placed at a time of day
+        on a partially anchored clock; ``None``: its ``planned`` offset is exact."""
+        found = (self.planned_anchor or {}).get("at")
+        return None if found is None else int(found)
 
     def document(self) -> dict[str, Any]:
         """The event as the API answers it (identifiers, offsets and its status)."""
@@ -264,15 +306,16 @@ def pending_between(
     *,
     exclude: Iterable[str] = (),
 ) -> list[ScheduledEvent]:
-    """The ``pending`` events of ``found`` planned in ``(from_offset, to_offset]`` that involve
-    the scene, by planned time (see the module docstring)."""
+    """The events of ``found`` that still owe their factual stop (``pending``, or #197's
+    ``possibly_due``) planned in ``(from_offset, to_offset]`` that involve the scene, by planned
+    time (see the module docstring)."""
     held = set(present)
     skipped = set(exclude)
     return sorted(
         (
             e
             for e in found
-            if e.status is S.PENDING
+            if e.status in STOPPABLE
             and e.event_id not in skipped
             and from_offset < e.planned <= to_offset
             and e.involves(held, scene)
@@ -291,7 +334,7 @@ async def due_between(
     *,
     through: Position | None = None,
 ) -> list[ScheduledEvent]:
-    """The range read (see the module docstring): ``pending`` canon events only, so a
+    """The range read (see the module docstring): canon events only, so a
     belief-only schedule (a ``beliefs`` row, never an event) is never among them."""
     return pending_between(
         await events_at(conn, story_id, through), from_offset, to_offset, present, scene
@@ -333,6 +376,66 @@ class Pause:
 Check = Proceed | Stop | Pause
 
 
+def window(event: ScheduledEvent, anchor: Anchor | None) -> tuple[int, int] | None:
+    """#197: ``(entry, due)`` for an event placed at a time of day (``ScheduledEvent.at``) under
+    ``anchor``: the first offset it is ``possibly_due`` and the first it is ``due``; ``None``
+    for an event with an exact offset or a clock with no anchor."""
+    if event.at is None or anchor is None or anchor.is_unanchored:
+        return None
+    return anchor.due_window(event.at)
+
+
+def pause_at(
+    event: ScheduledEvent,
+    start: int,
+    end: int,
+    anchor: Anchor | None,
+    revision: int,
+    *,
+    moving: bool = False,
+) -> int | None:
+    """#197: where an advance over ``(start, end]`` pauses for ``event`` (``None``: it does not):
+    at the event's ``possibly_due`` entry inside the advance (or at its start, when the event is
+    already possibly due there), before it is certainly due, unless the event already paused
+    for this anchor state. An advance that moves nothing pauses nothing, unless it is a skip
+    (``moving``: a render regenerated under a pause at its start reaches it with no minutes)."""
+    if event.status not in STOPPABLE or end < start or (end == start and not moving):
+        return None
+    if event.refinement_pause_anchor_rev == revision:
+        return None
+    found = window(event, anchor)
+    if found is None:
+        return None
+    entry, due = found
+    at = max(entry, start)
+    if at >= due or at > end:
+        return None
+    return at
+
+
+def _first_pause(
+    found: Iterable[ScheduledEvent],
+    start: int,
+    end: int,
+    present: Iterable[str],
+    scene: str | None,
+    anchor: Anchor | None,
+    revision: int,
+    exclude: Iterable[str] = (),
+    *,
+    moving: bool = False,
+) -> tuple[int, ScheduledEvent] | None:
+    held, skipped = set(present), set(exclude)
+    paused = [
+        (at, e)
+        for e in found
+        if e.event_id not in skipped
+        and e.involves(held, scene)
+        and (at := pause_at(e, start, end, anchor, revision, moving=moving)) is not None
+    ]
+    return min(paused, key=lambda p: (p[0], p[1].planned, p[1].event_id), default=None)
+
+
 def check_advance(
     advance: AdvanceSpan,
     present: Iterable[str],
@@ -341,13 +444,21 @@ def check_advance(
     events: Iterable[ScheduledEvent],
     stops: bool,
     exclude: Iterable[str] = (),
+    anchor: Anchor | None = None,
+    revision: int = 0,
 ) -> Check:
-    """Whether ``advance`` may go on (see the module docstring)."""
-    crossed = pending_between(events, advance.start, advance.end, present, scene, exclude=exclude)
-    if not crossed:
-        return Proceed()
+    """Whether ``advance`` may go on (see the module docstring): a ``Pause`` (#197) when the
+    first thing it reaches is an event's ``possibly_due`` point, before any factual stop."""
+    found = list(events)
+    held = frozenset(present)
+    crossed = pending_between(found, advance.start, advance.end, held, scene, exclude=exclude)
     if not stops:
         return Proceed(overdue=tuple(crossed))
+    paused = _first_pause(found, advance.start, advance.end, held, scene, anchor, revision, exclude)
+    if paused is not None and (not crossed or paused[0] < crossed[0].planned):
+        return Pause(paused[1], paused[0])
+    if not crossed:
+        return Proceed()
     return Stop(crossed[0], crossed[0].planned)
 
 
@@ -395,6 +506,8 @@ class Stopped:
     at: int
     unit: int
     skip: bool
+    pause: bool = False
+    """#197: a ``possibly_due`` pause, not the event's factual stop."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -442,36 +555,68 @@ def cut_turn(
     present: Iterable[str],
     scene: str | None,
     stops: bool,
+    anchor: Anchor | None = None,
+    revision: int = 0,
 ) -> Cut:
-    """The turn's stops and its capped timing (see the module docstring)."""
+    """The turn's stops and its capped timing (see the module docstring); with ``anchor`` (its
+    ``revision``), the ``possibly_due`` pauses too (#197)."""
     held = frozenset(present)
     renders = list(beats)
     uncapped = time_turn(renders, steps, mode, turn_start, owners)
     if mode == SIMULTANEOUS:
         return _simultaneous(
-            renders, steps, turn_start, owners, uncapped, events, held, scene, stops
+            renders,
+            steps,
+            turn_start,
+            owners,
+            uncapped,
+            events,
+            held,
+            scene,
+            stops,
+            anchor,
+            revision,
         )
     taken: list[Stopped] = []
     overdue: list[tuple[ScheduledEvent, int]] = []
     seen: set[str] = set()
+    paused: set[str] = set()
     timing = uncapped
-    for _ in range(len(events) + 1):
-        hit: tuple[int, ScheduledEvent] | None = None
+    for _ in range(2 * len(events) + 1):
+        hit: tuple[int, ScheduledEvent, int, bool] | None = None
         for n, times in enumerate(timing.beat_times):
             crossed = pending_between(events, times.start, times.end, held, scene, exclude=seen)
+            pause = (
+                _first_pause(
+                    events,
+                    times.start,
+                    times.end,
+                    held,
+                    scene,
+                    anchor,
+                    revision,
+                    paused | seen,
+                    moving=_skipped(timing, n),
+                )
+                if stops
+                else None
+            )
+            if pause is not None and (not crossed or pause[0] < crossed[0].planned):
+                hit = (n, pause[1], pause[0], True)
+                break
             if crossed:
-                hit = (n, crossed[0])
+                hit = (n, crossed[0], crossed[0].planned, False)
                 break
         if hit is None:
             break
-        n, event = hit
-        seen.add(event.event_id)
+        n, event, at, pausing = hit
+        (paused if pausing else seen).add(event.event_id)
         if not stops:
             overdue.append((event, n))
             continue
         skip = _skipped(timing, n)
-        renders[n] = replace(renders[n], cap=event.planned, stopped_by=event.event_id)
-        taken.append(Stopped(event, event.planned, n, skip))
+        renders[n] = replace(renders[n], cap=at, stopped_by=event.event_id, paused=pausing)
+        taken.append(Stopped(event, at, n, skip, pausing))
         timing = time_turn(renders, steps, mode, turn_start, owners)
     return Cut(timing, tuple(taken), tuple(overdue), uncapped)
 
@@ -486,28 +631,50 @@ def _simultaneous(
     present: frozenset[str],
     scene: str | None,
     stops: bool,
+    anchor: Anchor | None,
+    revision: int,
 ) -> Cut:
     reached: dict[str, tuple[ScheduledEvent, int]] = {}
     for n, times in enumerate(uncapped.beat_times):
         for event in pending_between(events, turn_start, times.end, present, scene):
             reached.setdefault(event.event_id, (event, n))
-    if not reached:
+    pause = None
+    if stops:
+        end = max((t.end for t in uncapped.beat_times), default=turn_start)
+        pause = _first_pause(
+            events,
+            turn_start,
+            end,
+            present,
+            scene,
+            anchor,
+            revision,
+            moving=any(uncapped.skipping),
+        )
+    if not reached and pause is None:
         return Cut(uncapped, uncapped=uncapped)
     ordered = sorted(reached.values(), key=lambda found: (found[0].planned, found[0].event_id))
     if not stops:
         return Cut(uncapped, overdue=tuple(ordered), uncapped=uncapped)
-    event = ordered[0][0]
-    cutoff = event.planned
+    if pause is not None and (not ordered or pause[0] < ordered[0][0].planned):
+        cutoff, event, pausing = pause[0], pause[1], True
+    else:
+        event, pausing = ordered[0][0], False
+        cutoff = event.planned
     skipped = False
     for n, times in enumerate(uncapped.beat_times):
         if times.end > cutoff:
             skipped = skipped or _skipped(uncapped, n)
-            renders[n] = replace(renders[n], cap=cutoff, stopped_by=event.event_id)
+            renders[n] = replace(renders[n], cap=cutoff, stopped_by=event.event_id, paused=pausing)
     timing = time_turn(renders, steps, SIMULTANEOUS, turn_start, owners)
     if timing.advances and all(a.stopped_by is None for a in timing.advances):
         last = timing.advances[-1]
         timing = replace(
-            timing, advances=(*timing.advances[:-1], replace(last, stopped_by=event.event_id))
+            timing,
+            advances=(
+                *timing.advances[:-1],
+                replace(last, stopped_by=event.event_id, paused=pausing),
+            ),
         )
     regenerated = [
         n
@@ -515,11 +682,12 @@ def _simultaneous(
         if times.end > cutoff and _skipped(uncapped, n)
     ]
     if regenerated:
-        # The event's one stop, at the first render that skipped past it; the others too.
-        stop = Stopped(event, cutoff, regenerated[0], True)
+        # The event's one stop (or pause), at the first render that skipped past it; the
+        # others too.
+        stop = Stopped(event, cutoff, regenerated[0], True, pausing)
         return Cut(timing, (stop,), uncapped=uncapped, also=tuple(regenerated[1:]))
     unit = max(range(len(renders)), key=lambda n: (uncapped.beat_times[n].end, -n))
-    return Cut(timing, (Stopped(event, cutoff, unit, skipped),), uncapped=uncapped)
+    return Cut(timing, (Stopped(event, cutoff, unit, skipped, pausing),), uncapped=uncapped)
 
 
 # -- the lifecycle (writes) ------------------------------------------------------------------------
@@ -607,15 +775,33 @@ async def record(
     """Write one lifecycle step of ``event`` in ``op``'s commit (see the module docstring): its
     ``scheduled_event`` event at ``position`` and the version row it leaves (the plan carried
     over; ``planned`` a reschedule's new time; ``stopped_clock_at`` a stop's offset, kept by
-    every later version until a reschedule clears it; ``shared_owners`` a new sharing, #198)."""
+    every later version until a reschedule clears it; ``refinement_pause_anchor_rev`` #197's
+    pause, kept the same way; ``shared_owners`` a new sharing, #198)."""
     if cause not in CAUSES:
         raise ValueError(f"{cause!r} is not a scheduled event cause")
     status = ScheduledStatus(status)
     rescheduled = cause == RESCHEDULED
-    stopped = None if rescheduled else stopped_clock_at or event.stopped_clock_at
+    stopped = (
+        None
+        if rescheduled
+        else stopped_clock_at
+        if stopped_clock_at is not None
+        else event.stopped_clock_at
+    )
+    pause_rev = (
+        None
+        if rescheduled
+        else refinement_pause_anchor_rev
+        if refinement_pause_anchor_rev is not None
+        else event.refinement_pause_anchor_rev
+    )
     planned_at = event.planned if planned is None else int(planned)
     if shared_owners is not None:
         event = replace(event, shared_owners=tuple(dict.fromkeys(shared_owners)))
+    # #197: a reschedule gives an exact offset, so the time of day it was held at goes.
+    planned_anchor = (
+        None if rescheduled or event.planned_anchor is None else dict(event.planned_anchor)
+    )
     await guard.check_content(
         conn,
         story_id,
@@ -651,14 +837,14 @@ async def record(
         "story_id": story_id,
         "proposition_id": event.event_id,
         "planned_offset_minutes": planned_at,
-        "planned_anchor": None if event.planned_anchor is None else dict(event.planned_anchor),
+        "planned_anchor": planned_anchor,
         "status": status.value,
         "owner": event.owner,
         "shared_owners": list(event.shared_owners),
         "participants": list(event.participants),
         "place_id": event.place_id,
         "grace_minutes": event.grace,
-        "refinement_pause_anchor_rev": refinement_pause_anchor_rev,
+        "refinement_pause_anchor_rev": pause_rev,
         "stopped_clock_at": stopped,
         "operation_id": op.operation_id,
         "source_event_ids": [record_id],
@@ -674,10 +860,11 @@ async def record(
         event,
         status=status,
         planned=planned_at,
+        planned_anchor=planned_anchor,
         version_id=version_id,
         position=position,
         stopped_clock_at=stopped,
-        refinement_pause_anchor_rev=refinement_pause_anchor_rev,
+        refinement_pause_anchor_rev=pause_rev,
         operation_id=op.operation_id,
     )
     return Recorded(written, record_id)
@@ -806,6 +993,153 @@ async def on_canon_fact(
     )
 
 
+# -- a partially anchored clock (#197) -------------------------------------------------------------
+
+
+async def place_event(
+    conn: AsyncConnection,
+    op: FactOperation,
+    story_id: str,
+    event: ScheduledEvent,
+    *,
+    at: int,
+    anchor: Anchor,
+    offset: int,
+    position: Position,
+) -> Recorded:
+    """Hold a just-created ``event`` at frame minute ``at`` (a time of day the range-anchored
+    clock places, ``Anchor.place``): its ``planned`` offset is where the range's lower end
+    reaches it, and it is ``possibly_due`` at once when ``at`` already lies inside the range
+    (FR-CLOCK-18: "immediately, if the anchor is established with E already inside")."""
+    _, due = anchor.due_window(at)
+    placed = replace(event, planned_anchor={"at": int(at)})
+    status = S.POSSIBLY_DUE if anchor.scheduled(at, offset) == "possibly_due" else S.PENDING
+    return await record(
+        conn,
+        op,
+        story_id,
+        placed,
+        status,
+        position=position,
+        cause=CREATED if status is S.PENDING else ANCHORED,
+        planned=due,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class Resolved:
+    """One lifecycle step a refinement resolves an event to (``resolve``): the status, why,
+    its new planned offset (``None``: unchanged) and a factual stop's offset."""
+
+    status: ScheduledStatus
+    cause: str
+    planned: int | None = None
+    stopped_at: int | None = None
+
+
+def resolve(
+    event: ScheduledEvent, anchor: Anchor, offset: int, tolerance: int
+) -> tuple[Resolved, ...]:
+    """What a refinement to ``anchor`` at ``offset`` makes of an event held at a time of day
+    that still owes its factual stop (see the module docstring; pure): nothing when its status
+    and plan stand; ``pending`` or ``possibly_due`` re-planned; ``due`` (its factual stop) when
+    reached within ``tolerance``; else surfaced as overdue, and ``missed`` past its grace."""
+    if event.at is None or event.status not in STOPPABLE or anchor.is_unanchored:
+        return ()
+    entry, due = anchor.due_window(event.at)
+    if offset < due:
+        status = S.PENDING if offset < entry else S.POSSIBLY_DUE
+        if status is event.status and due == event.planned:
+            return ()
+        return (Resolved(status, ANCHORED, due),)
+    late = offset - due
+    if late <= tolerance:
+        # Due now: its one factual stop, surfaced to the next turn.
+        return (Resolved(S.DUE, STOP, max(0, due), offset),)
+    overdue = (Resolved(S.DUE, OVERDUE, max(0, due)), Resolved(S.SURFACED, OVERDUE))
+    if late > event.grace:
+        return (*overdue, Resolved(S.MISSED, GRACE))
+    return overdue
+
+
+async def on_refinement(
+    conn: AsyncConnection,
+    op: FactOperation,
+    story_id: str,
+    *,
+    anchor: Anchor,
+    offset: int,
+    position: Position,
+) -> int:
+    """``core.world_clock.commit_anchor``'s hook (see the module docstring): every open event
+    held at a time of day that still owes its factual stop is resolved (``resolve``) under
+    ``anchor``, the anchor as refined at ``position`` (clock ``offset``). Answers the lifecycle
+    steps written."""
+    from epistrel.core import world_clock  # here: the clock package imports this module
+
+    if anchor.is_unanchored:
+        return 0
+    found = [
+        e for e in await events_at(conn, story_id) if e.status in STOPPABLE and e.at is not None
+    ]
+    if not found:
+        return 0
+    tolerance = int((await world_clock.settings(conn, story_id)).time_statement_tolerance_minutes)
+    written = 0
+    for event in found:
+        current = event
+        for step in resolve(event, anchor, offset, tolerance):
+            done = await record(
+                conn,
+                op,
+                story_id,
+                current,
+                step.status,
+                position=position,
+                cause=step.cause,
+                planned=step.planned,
+                stopped_clock_at=step.stopped_at,
+            )
+            current = done.event
+            written += 1
+            if step.status is S.MISSED:
+                await _observe_refined(conn, op, story_id, done, position)
+    return written
+
+
+async def _observe_refined(
+    conn: AsyncConnection, op: FactOperation, story_id: str, done: Recorded, at: Position
+) -> None:
+    """The present participants observe an event a refinement showed missed (as
+    ``observe_missed``)."""
+    from epistrel.core.tables.propositions import propositions
+
+    present, _ = await present_and_scene(conn, story_id, at.turn)
+    subject = await conn.scalar(
+        select(propositions.c.object_id).where(propositions.c.id == done.event.event_id)
+    )
+    await observe_missed(
+        conn,
+        op,
+        story_id,
+        done.event,
+        record_id=done.record_id,
+        at=at,
+        present=present,
+        subject_id=None if subject is None else str(subject),
+    )
+
+
+def establishing(events: Iterable[ScheduledEvent], revision: int) -> bool:
+    """#197's ``establish_time``: some event paused for the anchor as it stands (``possibly_due``
+    with ``refinement_pause_anchor_rev == revision``), so the next render is steered to
+    establish the current time. Derived from the rows: it follows a truncation, a fork and a
+    refinement (a new revision clears it)."""
+    return any(
+        e.status is S.POSSIBLY_DUE and e.refinement_pause_anchor_rev == revision for e in events
+    )
+
+
 async def observe_missed(
     conn: AsyncConnection,
     op: Any,
@@ -865,17 +1199,21 @@ async def observe_missed(
 
 
 __all__ = [
+    "ANCHORED",
     "CAUSES",
     "EVENT_TYPE",
     "OPEN",
+    "PAUSE",
     "SETTLED",
     "SHARED",
+    "STOPPABLE",
     "AdvanceSpan",
     "Check",
     "Cut",
     "Pause",
     "Proceed",
     "Recorded",
+    "Resolved",
     "ScheduledEvent",
     "Stop",
     "Stopped",
@@ -883,14 +1221,20 @@ __all__ = [
     "create",
     "cut_turn",
     "due_between",
+    "establishing",
     "event_at",
     "events_at",
     "observe_missed",
     "on_canon_fact",
+    "on_refinement",
     "owner_of",
+    "pause_at",
     "pending_between",
+    "place_event",
     "present_and_scene",
     "record",
+    "resolve",
     "sharing",
     "stops_enabled",
+    "window",
 ]

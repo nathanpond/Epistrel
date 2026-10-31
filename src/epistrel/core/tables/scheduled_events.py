@@ -13,8 +13,9 @@ fork point. The table is a membership-flipped content table, not a projection: n
 it from facts.
 
 - ``planned_offset_minutes``: the planned time, as a clock offset from the story's start;
-  ``planned_anchor``: the anchor statement it was planned under, when it was given as a time
-  of day (``null``: an offset);
+  ``planned_anchor``: #197's ``{"at": <frame minute>}`` when it was given as a time of day the
+  anchor holds only as a range (``core.world_clock.anchor.Anchor.place``; ``null``: an exact
+  offset), the offset then being where the range's lower end reaches it;
 - ``owner``: a character id, ``author`` or ``world`` (FR-CLOCK-19); ``shared_owners``: the
   characters it is shared with, who may change it as the owner may (#198, migration 0094; set
   only through the API in M6); ``participants``: character ids; ``place_id``: the event's place

@@ -900,6 +900,14 @@ def _steering(read: TurnRead) -> str:
     return " ".join(x for x in lines if x)
 
 
+def _with_time_steering(steering: str, schedule: stopping.Schedule | None) -> str:
+    """#197: the narrator's steering line(s), with ``prompts.TIME_STEERING`` while an event is
+    paused ``possibly_due`` for the anchor as it stands (``Schedule.establish_time``)."""
+    if schedule is None or not schedule.establish_time:
+        return steering
+    return " ".join(x for x in (steering, prompts.TIME_STEERING) if x)
+
+
 async def _aliases(conn: AsyncConnection, story_id: str, ids: Sequence[str]) -> list[str]:
     """The names and aliases of the cast members ``ids`` (their entities', #139)."""
     found = await conn.execute(
@@ -4209,6 +4217,9 @@ async def play(
             created=created,
         )
         for stopped in found.stops:
+            # #197: a possibly_due pause surfaces nothing (no line calls the event due).
+            if stopped.pause:
+                continue
             if not stopped.skip and all(e.event_id != stopped.event.event_id for e in surfacing):
                 surfacing.append(stopped.event)
         marks, drops = stopping.marks_of(found, timed)
@@ -4837,6 +4848,9 @@ async def play(
             clock_contract=books[0].clock is not None,
             # #200 (FR-CLOCK-11): the objective time, the narrator's alone.
             clock_now=clocking.now_text(books[0].clock),
+            # #197 (FR-CLOCK-18): after a possibly_due pause, the narrator alone is steered to
+            # establish the current time (never a character's context).
+            resolution_steering=_with_time_steering(base.resolution_steering, schedules[0]),
         )
         # #174 (FR-MULTI-6): the primaries' order, the request's or the director's.
         ordered = multi.Ordered(tuple(p.id for p in primaries), multi.REQUEST)

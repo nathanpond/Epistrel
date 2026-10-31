@@ -18,16 +18,29 @@ file): #195's anchor clauses (``test_u_24__anchors``) and its never-picks proper
   random offsets) and random checks, ``evaluate`` is exactly the brute-force answer over every
   admissible (day, minute) value: ``supported`` only when all agree, ``contradicted`` only
   when none holds, and ``uncertain`` whenever two admissible values disagree.
+- ``test_u_24__possibly_due`` (#197, pure: ``Anchor.place``/``due_window``/``scheduled`` and
+  ``core.world_clock.stops.check_advance``): with the anchor range [05:00, 12:00) at offset 0, a
+  10:00 meeting is ``possibly_due`` immediately and ``due`` only at +300 (the lower end reaches
+  10:00); a 13:00 meeting is ``not_due`` at +60 and ``possibly_due`` at +61 (the upper end
+  passes 13:00). A ``scheduled_status`` check is ``due`` only when every admissible value has
+  reached the event (``possibly_due`` is never reported as due). With stops on, a 120-minute
+  advance from 0 pauses at +61 for the 13:00 meeting, not again for the same anchor revision,
+  and stops factually at +480; a new revision may pause again. Complements: an exact anchor has
+  no ``possibly_due`` window (it is due where it is planned), stops off never pause, and an event
+  planned at an exact offset never pauses.
 """
 
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 
 import pytest
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
+from epistrel.core.enums import ScheduledStatus
+from epistrel.core.membership import Position
 from epistrel.core.propositions.model import (
     Granularity,
     Instant,
@@ -44,6 +57,7 @@ from epistrel.core.propositions.vocabulary import (
 )
 from epistrel.core.verify import rules
 from epistrel.core.verify.rules import VerdictKind, VerdictReason
+from epistrel.core.world_clock import stops
 from epistrel.core.world_clock.anchor import (
     GREGORIAN_CLOCKWORK,
     UNKNOWN,
@@ -290,3 +304,107 @@ def test_u_24__never_picks(
     for s in at.segments:
         assert isinstance(s, Segment)
         assert 0 <= s.lo < s.hi <= DAY
+
+
+# -- possibly_due (#197) ---------------------------------------------------------------------------
+
+PRESENT = "01JD0000000000000000000C13"
+
+
+def _morning_range() -> Anchor:
+    """The anchor range [05:00, 12:00) at offset 0 (its first revision)."""
+    found = Anchor.unanchored().refine(Statement(time=((300, 720),)), 0, Position(0))
+    assert isinstance(found, Anchor)
+    return found
+
+
+def _meeting(anchor: Anchor, minute: int) -> stops.ScheduledEvent:
+    """A meeting at ``minute`` of the day, placed by ``anchor`` at offset 0."""
+    at = anchor.place(minute, 0)
+    status = (
+        ScheduledStatus.POSSIBLY_DUE
+        if anchor.scheduled(at, 0) == "possibly_due"
+        else ScheduledStatus.PENDING
+    )
+    return stops.ScheduledEvent(
+        f"01JD0000000000000000000E{minute // 60:02d}",
+        status,
+        anchor.due_window(at)[1],
+        participants=(PRESENT,),
+        planned_anchor={"at": at},
+    )
+
+
+def _check(
+    start: int, end: int, event: stops.ScheduledEvent, anchor: Anchor, rev: int, *, on: bool = True
+) -> stops.Check:
+    return stops.check_advance(
+        stops.AdvanceSpan(start, end),
+        {PRESENT},
+        None,
+        events=[event],
+        stops=on,
+        anchor=anchor,
+        revision=rev,
+    )
+
+
+@pytest.mark.part("M6", "FR-CLOCK-18")
+def test_u_24__possibly_due() -> None:
+    """See the module docstring."""
+    anchor = _morning_range()
+    ten, one = _meeting(anchor, 600), _meeting(anchor, 780)
+    # 10:00 lies inside the range: possibly due immediately, due only at +300.
+    assert ten.at == 600
+    assert ten.status is ScheduledStatus.POSSIBLY_DUE
+    assert anchor.due_window(600) == (-119, 300)
+    assert [anchor.scheduled(600, t) for t in (0, 299, 300)] == ["possibly_due"] * 2 + ["due"]
+    assert ten.planned == 300
+    # 13:00: possibly due once the upper end passes it (+61), due at +480.
+    assert one.status is ScheduledStatus.PENDING
+    assert anchor.due_window(780) == (61, 480)
+    assert [anchor.scheduled(780, t) for t in (60, 61, 479, 480)] == [
+        "not_due",
+        "possibly_due",
+        "possibly_due",
+        "due",
+    ]
+    # A scheduled_status check: due only when every admissible value reached it.
+    checks = {
+        status: [anchor.evaluate(Scheduled(EVENT, status, at=600), t) for t in (0, 300)]
+        for status in ("due", "possibly_due", "not_due")
+    }
+    assert checks == {
+        "due": [Outcome.UNCERTAIN, Outcome.SUPPORTED],
+        "possibly_due": [Outcome.SUPPORTED, Outcome.CONTRADICTED],
+        "not_due": [Outcome.UNCERTAIN, Outcome.CONTRADICTED],
+    }
+    assert anchor.evaluate(Scheduled(EVENT, "due", at=780), 0) is Outcome.CONTRADICTED
+    assert anchor.evaluate(Scheduled(EVENT, "not_due", at=780), 0) is Outcome.SUPPORTED
+    assert anchor.evaluate(Scheduled(EVENT, "due"), 300) is Outcome.UNCERTAIN  # no event known
+
+    # The advance pauses at +61 for the 13:00 meeting, once per anchor revision.
+    rev = anchor.revision
+    assert _check(0, 120, one, anchor, rev) == stops.Pause(one, 61)
+    paused = replace(one, status=ScheduledStatus.POSSIBLY_DUE, refinement_pause_anchor_rev=rev)
+    assert _check(61, 120, paused, anchor, rev) == stops.Proceed()
+    # No refinement: the next advance passes the pause and stops factually at +480.
+    assert _check(61, 600, paused, anchor, rev) == stops.Stop(paused, 480)
+    # A new anchor state (revision) may pause once more, at the advance's start.
+    assert _check(100, 160, paused, anchor, rev + 1) == stops.Pause(paused, 100)
+    # The 10:00 meeting, possibly due already, pauses at the start of the first advance.
+    assert _check(0, 30, ten, anchor, rev) == stops.Pause(ten, 0)
+
+    # Complements: stops off never pause (the factual crossing is overdue) ...
+    assert _check(0, 120, one, anchor, rev, on=False) == stops.Proceed()
+    assert _check(0, 600, one, anchor, rev, on=False) == stops.Proceed(overdue=(one,))
+    # ... an event planned at an exact offset never pauses ...
+    assert _check(0, 120, replace(one, planned_anchor=None), anchor, rev) == stops.Proceed()
+    # ... and under an exact anchor an event is due where it is planned, never possibly due.
+    nine = Anchor.unanchored().refine(_said("9:00 am"), 0, Position(0))
+    assert isinstance(nine, Anchor)
+    at = nine.place(780, 0)
+    assert nine.due_window(at) == (240, 240)
+    assert {nine.scheduled(at, t) for t in range(240)} == {"not_due"}
+    assert stops.window(_meeting(nine, 780), nine) == (240, 240)
+    assert stops.pause_at(_meeting(nine, 780), 0, 600, nine, nine.revision) is None

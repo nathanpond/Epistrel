@@ -138,6 +138,8 @@ class TimedBeat:
     advances and its pacing end there."""
     stopped_by: str | None = None
     """#196: the scheduled event (its key) whose stop ``cap`` is."""
+    paused: bool = False
+    """#197: ``cap`` is a ``possibly_due`` pause for ``stopped_by``, not its factual stop."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +167,9 @@ class Advance:
     """#196: the scheduled event whose stop cut this advance short (FR-CLOCK-16)."""
     meta: Mapping[str, Any] | None = None
     """#199: the change row's ``estimate_meta`` (``TimedAdvance.meta``)."""
+    paused: bool = False
+    """#197: the cut was a ``possibly_due`` pause for ``stopped_by`` (recorded as
+    ``paused_for_event_id``), not its stop."""
 
     @property
     def position(self) -> tuple[int, int]:
@@ -326,7 +331,17 @@ def _recorded(
         for step, moved, reason, stopped, advance in accepted[n]:
             where = at if at is not None else _step_position(beat, step)
             found.append(
-                Advance(moved, advance.source, n, step, reason, *where, stopped, meta=advance.meta)
+                Advance(
+                    moved,
+                    advance.source,
+                    n,
+                    step,
+                    reason,
+                    *where,
+                    stopped,
+                    meta=advance.meta,
+                    paused=stopped is not None and beat.paused,
+                )
             )
         minutes = beat_times[n].end - beat_times[n].start
         if not accepted[n] and minutes > 0:
@@ -341,6 +356,7 @@ def _recorded(
                     "pacing",
                     *where,
                     beat.stopped_by if clamped else None,
+                    paused=clamped and beat.paused,
                 )
             )
         return found

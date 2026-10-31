@@ -133,6 +133,14 @@ KNOWLEDGE_STEERING = (
 )
 """The could-have-known steer (FR-COMMIT-11, #165): the render after a soft flag only."""
 
+TIME_STEERING = (
+    "Nobody here knows exactly what time it is. Have the scene establish the current time "
+    "naturally (someone checks a phone or a watch, a clock strikes), and do not say that any "
+    "appointment has arrived."
+)
+"""The establish-time steer (FR-CLOCK-18, #197): the narrator's renders after a
+``possibly_due`` pause, until the anchor is refined. Never a character's input."""
+
 
 def tokens(text: str) -> int:
     return len(text) // 4
@@ -334,6 +342,7 @@ __all__ = [
     "KNOWLEDGE_STEERING",
     "PLAYER",
     "RESOLUTION_STEERING",
+    "TIME_STEERING",
     "RenderSections",
     "age_inputs",
     "capped",

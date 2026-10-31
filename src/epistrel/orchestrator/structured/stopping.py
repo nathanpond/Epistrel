@@ -17,6 +17,13 @@ advance the turn's renders make, its pacing increments included, goes through
   engine's target, the cutoff), and nothing the original placed after the cutoff is committed:
   the dropped beats and the rejected text never reach the commit.
 
+**A possibly_due pause** (#197; FR-CLOCK-18) cuts the turn the same way (a skip past it is
+regenerated under "time pauses at …", which names no event and calls nothing due; pacing is
+clamped), but it surfaces nothing: the event becomes ``possibly_due`` with the anchor's revision
+(``Planned.pause_rev``), the advance records ``paused_for_event_id``, and the next turn's
+narrator is steered to establish the current time (``Schedule.establish_time``, derived from the
+rows; ``core.world_clock.stops.establishing``).
+
 ``lifecycle`` turns the final cut into the turn's lifecycle steps (``Planned``), which the
 commit writes after the turn's canon (``record``): the stops (``due``, and ``surfaced`` when a
 render of the turn presents the event), the events crossed with stops off (surfaced as
@@ -46,6 +53,7 @@ from epistrel.core.tables.propositions import propositions
 from epistrel.core.tables.scheduled_events import OWNER_WORLD
 from epistrel.core.turns.beats import DeclaredAdvance, TurnBeat
 from epistrel.core.world_clock import stops
+from epistrel.core.world_clock.anchor import Anchor
 from epistrel.core.world_clock.stops import Cut, ScheduledEvent
 from epistrel.core.world_clock.timing import TurnTiming
 from epistrel.orchestrator.structured.clocking import (
@@ -74,11 +82,21 @@ class Schedule:
     minute_zero: int = 0
     grace: int = 30
     """The clock's ``grace_minutes`` (an event the turn creates takes it)."""
+    anchor: Anchor | None = None
+    """#197: the clock's anchor as the turn starts (``None``: unanchored)."""
+    revision: int = 0
+    """#197: its revision (one ``possibly_due`` pause per event per revision)."""
 
     @property
     def due(self) -> tuple[ScheduledEvent, ...]:
         """A previous turn's stops, surfaced to this one."""
         return tuple(e for e in self.events if e.status is S.DUE)
+
+    @property
+    def establish_time(self) -> bool:
+        """#197: an event paused for the anchor as it stands, so the turn's narrator is steered
+        to establish the current time."""
+        return stops.establishing(self.events, self.revision)
 
 
 async def read_schedule(conn: AsyncConnection, story_id: str, turn: int) -> Schedule:
@@ -95,6 +113,7 @@ async def read_schedule(conn: AsyncConnection, story_id: str, turn: int) -> Sche
         )
         names = {str(r.id): str(r.canonical_name) for r in rows}
     settings = await world_clock.settings(conn, story_id)
+    anchor = await world_clock.anchor_at(conn, story_id)
     return Schedule(
         events=found,
         stops=await stops.stops_enabled(conn, story_id),
@@ -103,6 +122,8 @@ async def read_schedule(conn: AsyncConnection, story_id: str, turn: int) -> Sche
         names=names,
         minute_zero=(await world_clock.time_basis(conn, story_id)).minute_zero,
         grace=int(settings.grace_minutes),
+        anchor=None if anchor.is_unanchored else anchor,
+        revision=anchor.revision,
     )
 
 
@@ -174,6 +195,8 @@ def cut(
         present=schedule.present,
         scene=schedule.scene,
         stops=schedule.stops,
+        anchor=schedule.anchor,
+        revision=schedule.revision,
     )
     return found, timed
 
@@ -186,6 +209,8 @@ class StopMark:
     step: int
     cutoff: int
     event_id: str
+    pause: bool = False
+    """#197: a ``possibly_due`` pause, not a due event's stop."""
 
 
 def _start(timing: TurnTiming, beat: TurnBeat) -> int:
@@ -209,7 +234,15 @@ def marks_of(found: Cut, timed: Timed) -> tuple[list[StopMark], set[int]]:
         if not past:
             continue
         first = past[0]
-        marks.append(StopMark(first.beat, int(first.step or 0), stopped.at, stopped.event.event_id))
+        marks.append(
+            StopMark(
+                first.beat,
+                int(first.step or 0),
+                stopped.at,
+                stopped.event.event_id,
+                stopped.pause,
+            )
+        )
         drops.update(b.beat for b in past[1:])
     return marks, drops
 
@@ -220,7 +253,14 @@ def finding_of(mark: StopMark, line: str) -> Finding:
 
 
 def stop_line(mark: StopMark, clock: ClockRead | None, schedule: Schedule) -> str:
-    """The constraint a beat is regenerated under (FR-CLOCK-16)."""
+    """The constraint a beat is regenerated under (FR-CLOCK-16); #197: a pause names no event
+    and says nothing is due."""
+    if mark.pause:
+        return (
+            f"Time pauses at {when(mark.cutoff, clock)}. End this beat at or before that "
+            "moment; narrate nothing after it, and do not say what time it is or that anything "
+            "is due."
+        )
     name = schedule.names.get(mark.event_id, "a scheduled event")
     return (
         f"Time stops at {when(mark.cutoff, clock)}: {name} is due then. End this beat at or "
@@ -277,6 +317,8 @@ class Planned:
     beat: int
     step: int
     stopped_at: int | None = None
+    pause_rev: int | None = None
+    """#197: a ``possibly_due`` pause's anchor revision."""
 
 
 def _advance_position(found: Cut, event_id: str, timed: Timed, unit: int) -> tuple[int, int]:
@@ -301,6 +343,19 @@ def lifecycle(schedule: Schedule, found: Cut, timed: Timed, *, sequential: bool)
             planned.append(Planned(event, S.SURFACED, stops.SURFACED_CAUSE, PLAYER_BEAT, 0))
     for stopped in found.stops:
         beat, step = _advance_position(found, stopped.event.event_id, timed, stopped.unit)
+        if stopped.pause:
+            # #197: possibly due, never surfaced and never its factual stop.
+            planned.append(
+                Planned(
+                    stopped.event,
+                    S.POSSIBLY_DUE,
+                    stops.PAUSE,
+                    beat,
+                    step,
+                    pause_rev=schedule.revision,
+                )
+            )
+            continue
         planned.append(Planned(stopped.event, S.DUE, stops.STOP, beat, step, stopped.at))
         later = stopped.unit + 1 < len(timed.beats)
         if not sequential:
@@ -361,6 +416,14 @@ async def record(
         current = await stops.event_at(conn, story_id, key)
         if current is None:
             continue
+        if step.cause == stops.PAUSE and (
+            current.status not in stops.STOPPABLE
+            or await world_clock.anchor_revision(conn, story_id) != step.pause_rev
+        ):
+            # #197: the turn's own narration refined the anchor (``stops.on_refinement``
+            # resolved the event): the pause, taken under the anchor the turn started with, is
+            # moot.
+            continue
         position = Position(turn, variant, 0, step.beat, step.step)
         done = await stops.record(
             conn,
@@ -371,6 +434,7 @@ async def record(
             position=position,
             cause=step.cause,
             stopped_clock_at=step.stopped_at,
+            refinement_pause_anchor_rev=step.pause_rev,
         )
         written += 1
         if step.status is S.MISSED:
@@ -392,12 +456,17 @@ async def record(
 
 def report(found: Cut | None, planned: Sequence[Planned]) -> dict[str, Any] | None:
     """``turn_report.clock.stops``: the stops and lifecycle steps (offsets, statuses, counts;
-    never a name)."""
+    never a name); #197: ``establish_time`` when the turn paused for a ``possibly_due`` event
+    (the next render is steered to establish the current time)."""
     if found is None:
         return None
     return {
         "cutoff": found.cutoff,
-        "stops": [{"at": s.at, "unit": s.unit, "regenerated": s.skip} for s in found.stops],
+        "stops": [
+            {"at": s.at, "unit": s.unit, "regenerated": s.skip, "pause": s.pause}
+            for s in found.stops
+        ],
+        "establish_time": any(p.cause == stops.PAUSE for p in planned),
         "overdue": len(found.overdue),
         "lifecycle": [
             {"status": p.status.value, "cause": p.cause, "beat": p.beat} for p in planned

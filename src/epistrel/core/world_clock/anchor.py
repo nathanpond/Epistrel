@@ -35,6 +35,15 @@ its day length, months (each with its days), weekdays and year length; a custom 
 is known only when the story states it. The time-of-day bands (``(name, from, to)`` on a 24-hour
 clock, tiling the day; ``check_bands``) are scaled to a custom day's length.
 
+**Scheduled events** (FR-CLOCK-18; #197). An event at a time of day is held at its *frame
+minute* ``at``: ``day * day_minutes + minute`` in the reference day's frame (``place``: the next
+such time at or after the earliest admissible now). Over the admissible hull ``[lo, hi)`` at an
+offset (``hull``), the event is ``possibly_due`` while ``lo < at < hi`` and ``due`` once
+``lo >= at`` (``scheduled``); ``due_window(at)`` gives the first offset of each: ``entry``, where
+``hi`` passes ``at``, and ``due``, where ``lo`` reaches it (the same offset for an exact anchor).
+``evaluate`` decides a ``Scheduled`` check that carries ``at`` the same way, never reporting a
+``possibly_due`` event as due.
+
 **Display** (``AbsoluteRange.display``): the known components and ranges only ("Saturday,
 between 05:00 and 12:00 (morning)"; "Friday or Saturday, between 19:00 and 02:00"); ``None``
 when nothing is known, so the caller shows the offset.
@@ -337,11 +346,12 @@ class Elapsed:
 
 @dataclass(frozen=True, slots=True)
 class Scheduled:
-    """``scheduled_status``: an event's status (``due``, ``not_due`` …). Uncertain until #196
-    keeps scheduled events."""
+    """``scheduled_status``: an event's status (``due``, ``possibly_due``, ``not_due`` …) and,
+    when known, its frame minute ``at`` (#197; ``None``: uncertain)."""
 
     event_id: str
     status: str
+    at: int | None = None
 
 
 Check = Statement | Elapsed | Scheduled
@@ -701,7 +711,7 @@ class Anchor:
     def evaluate(self, check: Check, offset: int) -> Outcome:
         """``check`` at clock offset ``offset`` (see the module docstring)."""
         if isinstance(check, Scheduled):
-            return Outcome.UNCERTAIN
+            return self._scheduled_outcome(check, offset)
         if isinstance(check, Elapsed):
             actual = offset - check.since
             if actual < 0 or check.minutes < 0:
@@ -718,6 +728,59 @@ class Anchor:
         if not any(some for _, some in results):
             return Outcome.CONTRADICTED
         return Outcome.UNCERTAIN
+
+    def _scheduled_outcome(self, check: Scheduled, offset: int) -> Outcome:
+        """A ``scheduled_status`` check (see the module docstring): ``due`` holds for every
+        admissible value only once ``lo >= at``; ``possibly_due`` while ``lo < at < hi``."""
+        if check.at is None or self.is_unanchored:
+            return Outcome.UNCERTAIN
+        lo, hi = self.hull(offset)
+        reached_all, reached_none = lo >= check.at, hi <= check.at
+        if check.status == "due":
+            if reached_all:
+                return Outcome.SUPPORTED
+            return Outcome.CONTRADICTED if reached_none else Outcome.UNCERTAIN
+        if check.status == "not_due":
+            if reached_none:
+                return Outcome.SUPPORTED
+            return Outcome.CONTRADICTED if reached_all else Outcome.UNCERTAIN
+        if check.status == "possibly_due":
+            some = not reached_all and not reached_none
+            return Outcome.SUPPORTED if some else Outcome.CONTRADICTED
+        return Outcome.UNCERTAIN
+
+    # -- scheduled events (#197) --------------------------------------------------------------
+
+    def hull(self, offset: int) -> tuple[int, int]:
+        """The admissible frame minutes ``[lo, hi)`` at ``offset``: from the earliest admissible
+        value to just past the latest (the whole reference day while unanchored)."""
+        day = self.clockwork.day_minutes
+        found = self.absolute_at(offset).segments
+        return (
+            min(s.day * day + s.lo for s in found),
+            max(s.day * day + s.hi for s in found),
+        )
+
+    def place(self, minute: int, offset: int) -> int:
+        """The frame minute of the next ``minute`` of the day at or after the earliest
+        admissible now (at ``offset``)."""
+        day = self.clockwork.day_minutes
+        lo, _ = self.hull(offset)
+        return minute + day * -((minute - lo) // day)
+
+    def due_window(self, at: int) -> tuple[int, int]:
+        """``(entry, due)``: the first offset at which ``hi`` passes ``at`` (``possibly_due``)
+        and the first at which ``lo`` reaches it (``due``)."""
+        lo, hi = self.hull(self.offset_at_anchor)
+        return self.offset_at_anchor + at - hi + 1, self.offset_at_anchor + at - lo
+
+    def scheduled(self, at: int, offset: int) -> str:
+        """An event at frame minute ``at`` at ``offset``: ``due``, ``possibly_due`` or
+        ``not_due`` (never ``due`` while some admissible value has not reached it)."""
+        entry, due = self.due_window(at)
+        if offset >= due:
+            return "due"
+        return "possibly_due" if offset >= entry else "not_due"
 
     # -- refining ----------------------------------------------------------------------------
 

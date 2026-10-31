@@ -195,11 +195,25 @@ async def set_clock(
 async def anchor_at(engine: AsyncEngine, story_id: str, minute: int) -> None:
     """The author's starting anchor: the exact minute of the day ``minute`` at offset 0 (no
     route sets it)."""
-    from epistrel.core.world_clock.anchor import Anchor, statement_of
+    from epistrel.core.world_clock.anchor import statement_of
 
     hour, meridian = (minute // 60) % 12 or 12, "pm" if minute >= 720 else "am"
     statement = statement_of(f"{hour}:{minute % 60:02d} {meridian}")  # one reading only
     assert statement is not None
+    await _set_anchor(engine, story_id, statement)
+
+
+async def anchor_range(engine: AsyncEngine, story_id: str, lo: int, hi: int) -> None:
+    """The author's starting anchor: only a range, the minutes ``[lo, hi)`` of the day, at
+    offset 0 (#197)."""
+    from epistrel.core.world_clock.anchor import Statement
+
+    await _set_anchor(engine, story_id, Statement(time=((lo, hi),)))
+
+
+async def _set_anchor(engine: AsyncEngine, story_id: str, statement: Any) -> None:
+    from epistrel.core.world_clock.anchor import Anchor
+
     found = Anchor.unanchored().refine(statement, 0, Position(0))
     assert isinstance(found, Anchor)
     async with engine.begin() as conn:

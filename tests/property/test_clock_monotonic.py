@@ -48,6 +48,7 @@ from epistrel.core.membership import POSITION_MAX, Position
 from epistrel.core.resolution.time import TimeBasis
 from epistrel.core.world_clock import skips as rules
 from epistrel.core.world_clock import stops
+from epistrel.core.world_clock.anchor import Anchor, Statement
 from epistrel.core.world_clock.timing import (
     SEQUENTIAL,
     SIMULTANEOUS,
@@ -56,7 +57,9 @@ from epistrel.core.world_clock.timing import (
     derive,
     time_turn,
 )
+from epistrel.orchestrator.structured import stopping
 from epistrel.orchestrator.structured import time_estimation as te
+from epistrel.orchestrator.structured.clocking import Timed
 from tests import canon_support as c
 from tests import clock_support as ck
 from tests import state_support as ss
@@ -639,3 +642,165 @@ def test_clock_monotonic__skips(
         (a.source, a.meta) for a in timing.advances
     ]
     assert calls["time_estimation"] == before
+
+
+# -- possibly_due pauses (#197) ----------------------------------------------------------------
+
+ranged = st.tuples(st.integers(0, 1_200), st.integers(2, 600))  # the range's start and width
+refinement = st.one_of(
+    st.none(), st.tuples(st.integers(0, 1_439), st.integers(1, 600))
+)  # a stated range [lo, lo + width) of the day, or no refinement before the turn
+
+
+@pytest.mark.part("M6", "FR-CLOCK-18")
+@settings(max_examples=EXAMPLES, deadline=None)
+@given(
+    st.lists(render, min_size=1, max_size=3),
+    st.sampled_from([SEQUENTIAL, SIMULTANEOUS]),
+    ranged,
+    st.lists(st.integers(0, 1_439), min_size=1, max_size=3),
+    st.lists(refinement, min_size=1, max_size=5),
+)
+def test_clock_monotonic__pauses(
+    renders: list[tuple[int, int, int, list[tuple[int, bool, int, bool]]]],
+    mode: str,
+    anchored: tuple[int, int],
+    minutes: list[int],
+    turns: list[tuple[int, int] | None],
+) -> None:
+    """#197's clauses (FR-CLOCK-18): for any range anchor, meetings at any times of day and
+    any turns of renders, some preceded by a refinement of the anchor (resolved by
+    ``stops.resolve``), each turn cut with stops on (``cut_turn`` with the anchor and its
+    revision): no ``possibly_due`` pause occurs twice for one anchor state (event, revision);
+    every pause lies where the event is ``possibly_due`` (never where it is due) and before its
+    factual stop; the turn's lifecycle (``stopping.lifecycle``) makes a pause ``possibly_due``
+    with the revision, never ``due`` or ``surfaced``, and the line a paused render is
+    regenerated under names no event and calls nothing due; the clock never passes an owed pause
+    point unpaused; an event stops the clock factually at most once."""
+
+    beats: list[TimedBeat] = []
+    steps: dict[int, list[int]] = {}
+    first = 1
+    for count, declared, pacing, advances in renders:
+        found = [
+            TimedAdvance(min(step, declared), minutes=max(0, amount))
+            for step, _, amount, _ in advances
+        ]
+        beats.append(TimedBeat(first, first + count - 1, pacing, tuple(found)))
+        steps[first] = list(range(1, declared + 1))
+        first += count
+    timed = Timed(tuple(beats), steps, {}, tuple(() for _ in beats))
+    lo, width = anchored
+    anchor = Anchor.unanchored().refine(Statement(time=((lo, lo + width),)), 0, Position(0))
+    assert isinstance(anchor, Anchor)
+    events = []
+    for n, minute in enumerate(minutes):
+        at = anchor.place(minute, 0)
+        status = anchor.scheduled(at, 0)
+        if status == "due":
+            continue  # due as it is created: nothing to pause for
+        events.append(
+            stops.ScheduledEvent(
+                f"01J9Z8Q4N5V6W7X8Y9Z0A1C{n:03d}",
+                ScheduledStatus.POSSIBLY_DUE
+                if status == "possibly_due"
+                else ScheduledStatus.PENDING,
+                anchor.due_window(at)[1],
+                participants=(PRESENT,),
+                planned_anchor={"at": at},
+            )
+        )
+    start = 0
+    paused: set[tuple[str, int]] = set()
+    stopped_once: set[str] = set()
+    for refined in turns:
+        if refined is not None:
+            a, w = refined
+            found_anchor = anchor.refine(Statement(time=((a, min(1_440, a + w)),)), start)
+            if isinstance(found_anchor, Anchor):
+                anchor = found_anchor
+                events = [_resolved(e, anchor, start) for e in events]
+        rev = anchor.revision
+        owed = [
+            point
+            for e in events
+            if (point := stops.pause_at(e, start, 10**6, anchor, rev)) is not None
+        ]
+        cut = stops.cut_turn(
+            beats,
+            steps,
+            mode,
+            start,
+            events=events,
+            present={PRESENT},
+            scene=None,
+            stops=True,
+            anchor=anchor,
+            revision=rev,
+        )
+        uncapped = cut.uncapped
+        assert uncapped is not None
+        assert start + sum(a.minutes for a in cut.timing.advances) == cut.timing.turn_end
+        # The clock never passes an owed pause point unpaused.
+        reached = [p for p in owed if p < uncapped.turn_end or p == start < uncapped.turn_end]
+        if reached:
+            assert cut.stops
+            assert min(s.at for s in cut.stops) <= min(reached)
+        schedule = stopping.Schedule(
+            tuple(events), True, frozenset({PRESENT}), None, anchor=anchor, revision=rev
+        )
+        planned = stopping.lifecycle(schedule, cut, timed, sequential=mode == SEQUENTIAL)
+        for s in cut.stops:
+            event = s.event
+            if s.pause:
+                key = (event.event_id, rev)
+                assert key not in paused  # once per anchor state
+                paused.add(key)
+                assert event.at is not None
+                assert anchor.scheduled(event.at, s.at) == "possibly_due"
+                assert s.at < event.planned
+                mine = [p for p in planned if p.event.event_id == event.event_id]
+                assert any(
+                    p.status is ScheduledStatus.POSSIBLY_DUE and p.pause_rev == rev for p in mine
+                )
+                factual = any(o.event.event_id == event.event_id and not o.pause for o in cut.stops)
+                if not factual:
+                    assert all(
+                        p.status not in (ScheduledStatus.DUE, ScheduledStatus.SURFACED)
+                        for p in mine
+                    )
+                line = stopping.stop_line(
+                    stopping.StopMark(1, 0, s.at, event.event_id, pause=True), None, schedule
+                )
+                assert "due then" not in line
+                assert "scheduled event" not in line
+            else:
+                assert s.at == event.planned
+                assert event.event_id not in stopped_once  # one factual stop each
+                stopped_once.add(event.event_id)
+        # The turn's steps applied: a pause is possibly_due at this revision, a stop due.
+        for p in planned:
+            events = [
+                replace(
+                    e,
+                    status=p.status,
+                    refinement_pause_anchor_rev=p.pause_rev
+                    if p.pause_rev is not None
+                    else e.refinement_pause_anchor_rev,
+                )
+                if e.event_id == p.event.event_id
+                else e
+                for e in events
+            ]
+        start = cut.timing.turn_end
+
+
+def _resolved(event: stops.ScheduledEvent, anchor: Anchor, offset: int) -> stops.ScheduledEvent:
+    """``event`` after a refinement to ``anchor`` at ``offset`` (``stops.resolve``'s steps)."""
+    for step in stops.resolve(event, anchor, offset, tolerance=15):
+        event = replace(
+            event,
+            status=step.status,
+            planned=event.planned if step.planned is None else step.planned,
+        )
+    return event

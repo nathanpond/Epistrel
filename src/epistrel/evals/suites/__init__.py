@@ -156,6 +156,13 @@ class Suite:
             raise MalformedCase(f"{self.name}: {path} holds no cases")
         return cases
 
+    def companions(self, sets_dir: Path, sample: int | None) -> list[CaseModel]:
+        """Cases the suite plays besides its labeled set's, after ``--sample`` drew from the
+        set (#201's E-09 plays a seeded sample of the approved ``scenarios`` cases for its
+        pacing-health signal, bounded by ``sample``); none by default. A run given its cases
+        in memory (``SuiteRun.cases``) plays only those."""
+        return []
+
     async def evaluate(self, ctx: CaseContext, case: CaseModel) -> Outcome:
         raise NotImplementedError
 
@@ -219,6 +226,7 @@ from epistrel.evals.suites import e04_importance as _e04  # noqa: E402, F401
 from epistrel.evals.suites import e05_salience as _e05  # noqa: E402, F401
 from epistrel.evals.suites import e06_conformance as _e06  # noqa: E402, F401
 from epistrel.evals.suites import e07_structured_output as _e07  # noqa: E402, F401
+from epistrel.evals.suites import e09_time_estimation as _e09  # noqa: E402, F401
 from epistrel.evals.suites import e10_claim_detection as _e10  # noqa: E402, F401
 from epistrel.evals.suites import e12_interventions as _e12  # noqa: E402, F401
 from epistrel.evals.suites import e13_signals as _e13  # noqa: E402, F401

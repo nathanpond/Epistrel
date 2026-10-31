@@ -171,6 +171,9 @@ class PlayedTurn:
     final: str
     types: tuple[InterventionType, ...]
     fingerprint: str | None
+    repairs: tuple[str, ...] = ()
+    """The tags of the turn report's ``repairs`` entries, in order (#201's pacing health counts
+    ``unprompted_skip``)."""
 
     @property
     def changed(self) -> bool:
@@ -258,9 +261,9 @@ def interventions(report: Mapping[str, Any], final: str, verified: str) -> tuple
 
 async def first_draft(
     ctx: CaseContext, result: RespondResult, names: Mapping[str, str]
-) -> tuple[str, str, tuple[str, ...]]:
-    """The turn's first draft, the deterministic assembly of its released beats, and the
-    intervention types that fired (module docstring)."""
+) -> tuple[str, str, tuple[str, ...], Mapping[str, Any]]:
+    """The turn's first draft, the deterministic assembly of its released beats, the
+    intervention types that fired (module docstring) and its turn report."""
     rendered = [b for b in result.beats if b.kind.startswith(RENDER_PREFIX) and b.beat is not None]
     operation_id = rendered[0].operation_id if rendered else result.message.message_id
     originals = await _rejected_originals(ctx, operation_id) if rendered else {}
@@ -284,14 +287,24 @@ async def first_draft(
     draft = deterministic_assembly(raw, names, viewpoint)
     verified = deterministic_assembly(released, names, viewpoint)
     report = await _report(ctx, operation_id) if rendered else {}
-    return draft, verified, interventions(report, result.message.text, verified)
+    return draft, verified, interventions(report, result.message.text, verified), report
 
 
-async def play(ctx: CaseContext, case: ScenarioCase) -> Played:
-    """Play ``case`` on a new scratch story (module docstring)."""
+def repair_tags(report: Mapping[str, Any]) -> tuple[str, ...]:
+    """The tags of a turn report's ``repairs`` entries, in order."""
+    return tuple(str(e["tag"]) for e in report.get("repairs") or [] if "tag" in e)
+
+
+async def play(
+    ctx: CaseContext, case: ScenarioCase, dials: Mapping[str, Any] | None = None
+) -> Played:
+    """Play ``case`` on a new scratch story (module docstring); ``dials`` (a settings merge
+    patch, #201's ``clock.level = on``) go over the case's configuration's."""
     created = await ctx.story(StorySpec(characters=list(CAST)))
     story_id = created.story_id
-    await scenes.structured(ctx.engine, ctx.principal, story_id, CONFIG_DIALS[case.config])
+    await scenes.structured(
+        ctx.engine, ctx.principal, story_id, {**CONFIG_DIALS[case.config], **(dials or {})}
+    )
     # The seeded profile routes perception (#181): the player reads the turn as the story does
     # (``player_view = story``: every beat in full, FR-RESP-13), and ``_plant`` places the cast.
     await ctx.engine.update_story_settings(ctx.principal, story_id, {"player_view": "story"})
@@ -312,7 +325,7 @@ async def play(ctx: CaseContext, case: ScenarioCase) -> Played:
             }
         )
         result = await ctx.engine.respond(ctx.principal, story_id, request)
-        draft, _, types = await first_draft(ctx, result, names)
+        draft, _, types, report = await first_draft(ctx, result, names)
         played.append(
             PlayedTurn(
                 index=index,
@@ -321,6 +334,7 @@ async def play(ctx: CaseContext, case: ScenarioCase) -> Played:
                 final=result.message.text,
                 types=tuple(t for t in INTERVENTION_TYPES if t in types),
                 fingerprint=result.fingerprint,
+                repairs=repair_tags(report),
             )
         )
     return Played(story_id, case.config, tuple(played), (PLAYER, RENDERER), (*ITEMS, *PLACES))
@@ -372,6 +386,7 @@ __all__ = [
     "first_draft",
     "interventions",
     "play",
+    "repair_tags",
     "script",
     "user_line",
 ]

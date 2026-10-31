@@ -28,14 +28,10 @@ from epistrel.tools.generated import REPO_ROOT
 
 REPORTS_DIR = REPO_ROOT / "docs" / "evals"
 
-PENDING: Mapping[str, str] = MappingProxyType(
-    {
-        "NFR-QUAL-9": "M6 (time estimation is delivered there)",
-    }
-)
-"""Model-dependent guarantee metrics whose suite a later story ships, with that story: time
-estimation's is M6's (#157's suites measure NFR-QUAL-2..7,10, #158's E-12 NFR-QUAL-14). Each
-story removes its entries when its suites register."""
+PENDING: Mapping[str, str] = MappingProxyType({})
+"""Model-dependent guarantee metrics whose suite a later story ships, with that story (#157's
+suites measure NFR-QUAL-2..7,10, #158's E-12 NFR-QUAL-14, #201's E-09 NFR-QUAL-9). Each story
+removes its entries when its suites register; none is pending now."""
 
 
 def _shown(path: Path) -> str:

@@ -30,8 +30,10 @@ from epistrel.core import orphans, turn_gate
 from epistrel.core import outbox as core_outbox
 from epistrel.core.ids import new_ulid
 from epistrel.core.states import contingency
+from epistrel.orchestrator.jobs import settlement
 from epistrel.orchestrator.structured import staged
 from tests import effect_support as es
+from tests import late_settlement_support as ls
 from tests import provider_support as ps
 from tests import staged_support as sp
 from tests.auth_support import auth_settings
@@ -92,8 +94,10 @@ async def test_an_unfinished_staged_turn_keeps_its_slot_until_resumed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async with respond_client(stub_settings, engine) as (client, epistrel):
-        story, cal, _, fake = await sp.sync_story(client, engine, epistrel)
+        story, cal, bank, fake = await sp.sync_story(client, engine, epistrel)
         fake.script_writes("gold", "confirmed")
+        # #217: an earlier turn's payment, still unanswered when the purchase is played.
+        earlier, _ = await ls.intent(engine, story, bank, cal, [])
         sp.script_purchase(epistrel.models.stub, cal)
 
         async def boom(*_: Any, **__: Any) -> Any:
@@ -114,6 +118,12 @@ async def test_an_unfinished_staged_turn_keeps_its_slot_until_resumed(
                 {"s": story},
             ),
         )
+        # #217: the earlier payment's answer arrives late and its settlement is queued; it waits
+        # while the staged turn is incomplete (FR-EXT-21).
+        late = await ls.answer(engine, epistrel, earlier)
+        assert late in [j.payload["outcome_id"] for j in await ls.settle_jobs(engine, story)]
+        assert (await ls.settle(engine, epistrel, late)).result == settlement.WAITING
+        assert await ls.settlement_rows(engine, story) == []
         # A newcomer finds the story busy, and the request schedules the turn's resume (#213).
         held = await turn_gate.acquire(engine, story, new_ulid(), lease_s=30)
         assert held is not None
@@ -135,9 +145,16 @@ async def test_an_unfinished_staged_turn_keeps_its_slot_until_resumed(
             o=op.operation_id,
         )
         assert f"Cal's {sp.REASON} went through." in [t.text for t in texts]
-        assert len(fake.writes) == 1  # answered before the failure: never re-sent
+        # The purchase, answered before the failure (never re-sent), and the earlier payment.
+        assert len(fake.writes) == 2
         assert await _holder(engine, story) == [None]
-        await ps.drop_outbox_jobs(engine, story)
+        # #217: the resumed turn is complete, so the queued settlement proceeds, at the slot
+        # after it, never inside it.
+        settled = await ls.settle(engine, epistrel, late)
+        assert settled.result == settlement.SETTLED
+        assert settled.position is not None
+        assert (settled.position.turn, settled.position.slot_k) == (done.narrative_turn, 1)
+        await ls.drop_jobs(engine, story)
 
 
 async def test_a_pause_or_block_after_intent_does_not_refuse_later_stages(

@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.core.profiles.story import ProfileOverridesPatch, set_overrides
 from epistrel.orchestrator.models.stub import StubAdapter
 from tests import perception_support as ps
+from tests import takeback_support
 from tests import testimony_support as ts
 
 PER_CHARACTER = frozenset({"per_character"})
@@ -25,6 +26,7 @@ async def per_character(
     found: dict[str, Any] = {"multi_character": {"renders": "per_character"}, **settings}
     if model_calls is not None:
         found["budgets"] = {"model_calls": model_calls}
+    takeback_support.overridden(story_id, found)
     await set_overrides(
         engine,
         story_id,

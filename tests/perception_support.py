@@ -21,6 +21,7 @@ from epistrel.core.propositions.vocabulary import (
     LOCATED_IN,
     ON_CHANNEL,
 )
+from tests import takeback_support
 from tests.canon_support import commit
 from tests.event_support import rows
 
@@ -32,6 +33,7 @@ async def perceive(engine: AsyncEngine, story_id: str, level: str = "full") -> N
     """Switch the story to per-character partitions at perception ``level`` (``none`` turns
     both off), as the story's own profile overrides."""
     on = level != "none"
+    takeback_support.overridden(story_id, ("character_knowledge", "perception"))
     await set_overrides(
         engine,
         story_id,

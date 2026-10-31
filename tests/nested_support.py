@@ -21,6 +21,7 @@ from epistrel.core.propositions import registry, store
 from epistrel.core.propositions.model import Interval, Proposition
 from tests import canon_support as c
 from tests import perception_support as ps
+from tests import takeback_support
 from tests import testimony_support as ts
 from tests.event_support import rows
 
@@ -37,6 +38,7 @@ async def enable_nested(
 ) -> None:
     """The story's overrides: partitions with ``testimony`` at perception ``level``, and nested
     beliefs on at ``depth`` (off when ``nested`` is false)."""
+    takeback_support.overridden(story_id, ("character_knowledge", "perception"))
     await set_overrides(
         engine,
         story_id,

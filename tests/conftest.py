@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.config import Settings
 from epistrel.core import ids
 from epistrel.core.db import make_engine, make_sync_engine, normalize_url
+from tests import takeback_support
 from tests.auth_support import ERASURE_LEDGER_DIR, auth_settings, note_session_database
 from tests.perf.census import CENSUS, installed
 
@@ -352,6 +353,22 @@ def _no_embedding_jobs_left(request: pytest.FixtureRequest) -> Iterator[None]:
             "runs on a database of its own (tests.conformance.conftest.migrated_database)",
             pytrace=False,
         )
+
+
+@pytest.fixture(autouse=True)
+def _m5_leftovers_taken_back(request: pytest.FixtureRequest) -> Iterator[None]:
+    """After every test, take back the story overrides and profiles the M5 helpers recorded
+    (``tests.takeback_support``, #517) on the shared database, so a later ``profile_defaults``
+    write does not validate them. The database is requested before the test runs, as for
+    ``_no_embedding_jobs_left``; a test without it only has its record cleared."""
+    sync = request.getfixturevalue("_shared_jobs_db") if "pg_url" in request.fixturenames else None
+    takeback_support.clear()
+    yield
+    if sync is None:
+        takeback_support.clear()
+        return
+    with sync.begin() as conn:
+        takeback_support.take_back(conn)
 
 
 @pytest.fixture

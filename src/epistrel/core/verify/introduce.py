@@ -20,8 +20,10 @@ this turn's memory and in the turn's own records of the claim.
   capitalized name that matches no alias (``unknown_name``). An ambiguous name, a pronoun
   with no antecedent and a relational description that found nobody are never minted.
 - **The slot is a place or object.** The predicate's argument type on that side is ``place``
-  or ``item`` (``MINTED_KINDS``). Literal slots (quantities, durations, dates), ``person``,
-  ``organization``, ``any`` and unregistered predicates (no argument types) never mint.
+  or ``item`` (``MINTED_KINDS``), or (#198, FR-CLOCK-19) ``event``: a plan a ``scheduled``
+  claim creates is a new event entity, created only if the plan is canonized. Literal slots
+  (quantities, durations, dates), ``person``, ``organization``, ``any`` and unregistered
+  predicates (no argument types) never mint.
 - **Not an indefinite.** "something", "a mug", "some ale" leave the argument open
   (``normalize.open_phrase``, FR-COMMIT-5); they are never minted.
 - **Reuse within the turn.** The name is first resolved, with the same resolver, against the
@@ -54,8 +56,9 @@ from epistrel.core.resolution.entities import (
 )
 from epistrel.core.verify.normalize import open_phrase
 
-MINTED_KINDS: frozenset[str] = frozenset({"place", "item"})
-"""The argument types whose unresolved argument mints an entity: a place or an object."""
+MINTED_KINDS: frozenset[str] = frozenset({"place", "item", "event"})
+"""The argument types whose unresolved argument mints an entity: a place or an object, and
+(#198) an event: a new plan ("the bank errand") a ``scheduled`` claim creates."""
 MINTED_DETAILS: frozenset[str] = frozenset({"no_mention", "unknown_name"})
 """The resolver results that mean "no entity holds this name" (see the module docstring)."""
 

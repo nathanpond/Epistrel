@@ -59,7 +59,9 @@ Log lines carry identifiers and counts only (invariant 3); this module logs noth
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
@@ -118,7 +120,11 @@ CREATED, RESCHEDULED, STOP, OVERDUE, SURFACED_CAUSE = (
     "surfaced",
 )
 GRACE, LEFT, CANCELLED = "grace", "left", "cancelled"
-CAUSES = frozenset({CREATED, RESCHEDULED, STOP, OVERDUE, SURFACED_CAUSE, GRACE, LEFT, CANCELLED})
+SHARED = "shared"
+"""#198: the event's shared owners changed (its status and time kept)."""
+CAUSES = frozenset(
+    {CREATED, RESCHEDULED, STOP, OVERDUE, SURFACED_CAUSE, GRACE, LEFT, CANCELLED, SHARED}
+)
 """Why a lifecycle step happened (``scheduled_event.cause``)."""
 
 
@@ -147,6 +153,9 @@ class ScheduledEvent:
     stopped_clock_at: int | None = None
     refinement_pause_anchor_rev: int | None = None
     operation_id: str | None = None
+    shared_owners: tuple[str, ...] = ()
+    """#198 (FR-CLOCK-19): the characters the event is shared with, who may change it as its
+    owner may."""
 
     def involves(self, present: Iterable[str], scene: str | None) -> bool:
         """Whether the event involves the scene: a participant is present, or its place is the
@@ -166,6 +175,7 @@ class ScheduledEvent:
             "status": self.status.value,
             "planned": self.planned,
             "owner": self.owner,
+            "shared_owners": list(self.shared_owners),
             "participants": list(self.participants),
             "place_id": self.place_id,
             "grace_minutes": self.grace,
@@ -201,6 +211,7 @@ def _event_of(row: Any) -> ScheduledEvent:
         if row.refinement_pause_anchor_rev is None
         else int(row.refinement_pause_anchor_rev),
         operation_id=str(row.operation_id),
+        shared_owners=tuple(str(o) for o in getattr(row, "shared_owners", None) or ()),
     )
 
 
@@ -591,21 +602,31 @@ async def record(
     stopped_clock_at: int | None = None,
     planned: int | None = None,
     refinement_pause_anchor_rev: int | None = None,
+    shared_owners: Sequence[str] | None = None,
 ) -> Recorded:
     """Write one lifecycle step of ``event`` in ``op``'s commit (see the module docstring): its
     ``scheduled_event`` event at ``position`` and the version row it leaves (the plan carried
     over; ``planned`` a reschedule's new time; ``stopped_clock_at`` a stop's offset, kept by
-    every later version until a reschedule clears it)."""
+    every later version until a reschedule clears it; ``shared_owners`` a new sharing, #198)."""
     if cause not in CAUSES:
         raise ValueError(f"{cause!r} is not a scheduled event cause")
     status = ScheduledStatus(status)
     rescheduled = cause == RESCHEDULED
     stopped = None if rescheduled else stopped_clock_at or event.stopped_clock_at
     planned_at = event.planned if planned is None else int(planned)
+    if shared_owners is not None:
+        event = replace(event, shared_owners=tuple(dict.fromkeys(shared_owners)))
     await guard.check_content(
         conn,
         story_id,
-        [guard.Content((), frozenset({*event.participants, *filter(None, [event.place_id])}))],
+        [
+            guard.Content(
+                (),
+                frozenset(
+                    {*event.participants, *event.shared_owners, *filter(None, [event.place_id])}
+                ),
+            )
+        ],
         base_revision=getattr(op, "base_revision", None),
         path=__name__,
     )
@@ -633,6 +654,7 @@ async def record(
         "planned_anchor": None if event.planned_anchor is None else dict(event.planned_anchor),
         "status": status.value,
         "owner": event.owner,
+        "shared_owners": list(event.shared_owners),
         "participants": list(event.participants),
         "place_id": event.place_id,
         "grace_minutes": event.grace,
@@ -674,9 +696,10 @@ async def create(
     grace: int | None = None,
     position: Position,
     planned_anchor: Mapping[str, Any] | None = None,
+    shared_owners: Sequence[str] = (),
 ) -> Recorded:
     """A new canon event, ``pending`` at ``position`` (its ``scheduled`` proposition already
-    written; ``grace`` defaults to the clock's ``grace_minutes``)."""
+    written; ``grace`` defaults to the clock's ``grace_minutes``; ``shared_owners``, #198)."""
     from epistrel.core import world_clock  # here: the clock package imports this module
 
     if grace is None:
@@ -690,8 +713,23 @@ async def create(
         place_id=place_id,
         grace=int(grace),
         planned_anchor=planned_anchor,
+        shared_owners=tuple(dict.fromkeys(shared_owners)),
     )
     return await record(conn, op, story_id, event, S.PENDING, position=position, cause=CREATED)
+
+
+_SHARING: ContextVar[tuple[str, ...]] = ContextVar("scheduled_sharing", default=())
+
+
+@contextmanager
+def sharing(shared_owners: Sequence[str]) -> Iterator[None]:
+    """#198: the canon ``scheduled`` facts committed inside are created shared with
+    ``shared_owners`` (the API's ``POST``; ``on_canon_fact`` reads it)."""
+    token = _SHARING.set(tuple(dict.fromkeys(shared_owners)))
+    try:
+        yield
+    finally:
+        _SHARING.reset(token)
 
 
 def owner_of(provenance: RecordProvenance, subject_is_character: bool, subject_id: str) -> str:
@@ -715,9 +753,10 @@ async def on_canon_fact(
     slot_k: int | None,
 ) -> Recorded | None:
     """``commit_fact``'s hook: a new affirmed canon ``scheduled`` fact with a planned time is
-    an event, ``pending`` at the fact's position (participants from its qualifier, else its
-    subject when the subject is a character; ``place`` from its qualifier). A later version of
-    an existing fact, a negated one, a closed set's or a fact before any turn is not."""
+    an event, ``pending`` at the fact's position (participants: its subject when the subject is
+    a character, and its ``participants`` qualifier's characters; ``place`` from its
+    qualifier). A later version of an existing fact, a negated one, a closed set's or a fact
+    before any turn is not."""
     from epistrel.core import world_clock  # here: the clock package imports this module
     from epistrel.core.canon.facts import characters_among
     from epistrel.core.propositions.vocabulary import SCHEDULED
@@ -738,8 +777,9 @@ async def on_canon_fact(
     subject = str(fact.subject_id)
     characters = await characters_among(conn, story_id, [*participants, subject])
     participants = [p for p in participants if p in characters]
-    if not participants and subject in characters:
-        participants = [subject]
+    if subject in characters and subject not in participants:
+        # #198: the subject owns the plan, so it takes part in it (first).
+        participants = [subject, *participants]
     place = proposition.qualifiers.get("place")
     position = Position(
         int(operation.narrative_turn),
@@ -762,6 +802,7 @@ async def on_canon_fact(
         participants=participants,
         place_id=str(place) if isinstance(place, str) else None,
         position=position,
+        shared_owners=_SHARING.get(),
     )
 
 
@@ -828,6 +869,7 @@ __all__ = [
     "EVENT_TYPE",
     "OPEN",
     "SETTLED",
+    "SHARED",
     "AdvanceSpan",
     "Check",
     "Cut",
@@ -849,5 +891,6 @@ __all__ = [
     "pending_between",
     "present_and_scene",
     "record",
+    "sharing",
     "stops_enabled",
 ]

@@ -31226,7 +31226,7 @@
         "type": "object"
       },
       "ScheduledEventBody": {
-        "description": "One scheduled event as the viewpoint reads it: its `event_id`, `name`, `label`\n(`canon`: an event of the story; `belief`: a character's belief-only schedule, which never\nstops the clock), its `status` (`pending`, `possibly_due`, `due`, `surfaced`, `completed`,\n`missed`, `cancelled`; null for a belief), its `planned` offset in minutes from the story's\nstart, its `owner` (a character id, `author` or `world`), `participants`, `place_id`,\n`grace_minutes`, the offset it stopped the clock at (`stopped_clock_at`: it stops it at\nmost once) and, for a belief, the holder's `confidence`.",
+        "description": "One scheduled event as the viewpoint reads it: its `event_id`, `name`, `label`\n(`canon`: an event of the story; `belief`: a character's belief-only schedule, which never\nstops the clock), its `status` (`pending`, `possibly_due`, `due`, `surfaced`, `completed`,\n`missed`, `cancelled`; null for a belief), its `planned` offset in minutes from the story's\nstart, its `owner` (a character id, `author` or `world`), the characters it is shared with\n(`shared_owners`: they may change it as the owner may), `participants`, `place_id`,\n`grace_minutes`, the offset it stopped the clock at (`stopped_clock_at`: it stops it at\nmost once) and, for a belief, the holder's `confidence`.",
         "properties": {
           "confidence": {
             "anyOf": [
@@ -31313,6 +31313,13 @@
             ],
             "title": "Planned"
           },
+          "shared_owners": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Shared Owners",
+            "type": "array"
+          },
           "status": {
             "anyOf": [
               {
@@ -31343,6 +31350,7 @@
           "status",
           "planned",
           "owner",
+          "shared_owners",
           "participants",
           "place_id",
           "grace_minutes",
@@ -31407,6 +31415,14 @@
             "minLength": 1,
             "title": "Proposition",
             "type": "string"
+          },
+          "shared_owners": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Shared Owners",
+            "type": "array"
           }
         },
         "required": [
@@ -31418,7 +31434,7 @@
       },
       "ScheduledEventReschedule": {
         "additionalProperties": false,
-        "description": "``PATCH /stories/{id}/scheduled-events/{event_id}``: the new ``planned`` time (an offset\nin minutes from the story's start, or a time of day ``\"HH:MM\"``).",
+        "description": "``PATCH /stories/{id}/scheduled-events/{event_id}``: the new ``planned`` time (an offset\nin minutes from the story's start, or a time of day ``\"HH:MM\"``) and/or the characters the\nevent is shared with (``shared_owners``, #198: the whole new set; cast character ids). At\nleast one is given.",
         "examples": [
           {
             "planned": 1140
@@ -31432,14 +31448,29 @@
               },
               {
                 "type": "string"
+              },
+              {
+                "type": "null"
               }
             ],
             "title": "Planned"
+          },
+          "shared_owners": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shared Owners"
           }
         },
-        "required": [
-          "planned"
-        ],
         "title": "ScheduledEventReschedule",
         "type": "object"
       },
@@ -69312,7 +69343,7 @@
         ]
       },
       "post": {
-        "description": "Create a canon scheduled event between turns (FR-CLOCK-9): `proposition` names the event, `planned` is an offset in minutes from the story's start or a time of day `\"HH:MM\"` (its next occurrence; 422 `clock_unanchored` unless the anchor fixes the time of day), `participants` are character ids, `place` a place entity id, and `owner` is `author` or `world` (a character's own plans come from its turns). The write is an inter-turn slot after the last turn (a truncation to that turn or earlier discards it). The event is `pending`: with stops on (the profile's `clock.scheduled_stops` and the clock's `stop_at_due_events`), an advance that would carry the clock past it while a participant is present, or the scene is its place, stops at its planned time, once. 409 `module_off` while the story runs the world clock off, `story_archived`, `story_paused` or `revision_conflict`.",
+        "description": "Create a canon scheduled event between turns (FR-CLOCK-9): `proposition` names the event, `planned` is an offset in minutes from the story's start or a time of day `\"HH:MM\"` (its next occurrence; 422 `clock_unanchored` unless the anchor fixes the time of day), `participants` are character ids, `place` a place entity id, and `owner` is `author` or `world` (a character's own plans come from its turns); `shared_owners` are the characters it is shared with (cast character ids, else 422 `viewpoint_unresolved`), who may change it as the owner may (FR-CLOCK-19). The write is an inter-turn slot after the last turn (a truncation to that turn or earlier discards it). The event is `pending`: with stops on (the profile's `clock.scheduled_stops` and the clock's `stop_at_due_events`), an advance that would carry the clock past it while a participant is present, or the scene is its place, stops at its planned time, once. 409 `module_off` while the story runs the world clock off, `story_archived`, `story_paused` or `revision_conflict`.",
         "operationId": "create_scheduled_event",
         "parameters": [
           {
@@ -69700,7 +69731,7 @@
         ]
       },
       "patch": {
-        "description": "Move a scheduled event to a new `planned` time (an offset, or `\"HH:MM\"`): it is `pending` again and may stop the clock once more (FR-CLOCK-9). Only the event's owner, the author or the world may change it (FR-CLOCK-19); the consumer acts as the author. 404 for an unknown event; 422 (`reason: event_settled`) for a cancelled or completed one. 409 `module_off` while the story runs the world clock off, `story_archived`, `story_paused` or `revision_conflict`.",
+        "description": "Move a scheduled event to a new `planned` time (an offset, or `\"HH:MM\"`): it is `pending` again and may stop the clock once more (FR-CLOCK-9). Only the event's owner, a shared owner, the author or the world may change it (FR-CLOCK-19); the consumer acts as the author. `shared_owners` (cast character ids, else 422 `viewpoint_unresolved`) replaces the characters the event is shared with; without `planned` it keeps the event's status and time. 404 for an unknown event; 422 (`reason: event_settled`) for a cancelled or completed one. 409 `module_off` while the story runs the world clock off, `story_archived`, `story_paused` or `revision_conflict`.",
         "operationId": "reschedule_scheduled_event",
         "parameters": [
           {

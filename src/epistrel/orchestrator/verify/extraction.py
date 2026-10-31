@@ -786,11 +786,13 @@ async def verify_detected(
     start: int = 0,
     intent_of: Callable[[DetectedClaim], str | None] | None = None,
     cites_of: Callable[[DetectedClaim], Sequence[str]] | None = None,
+    change_of: Callable[[DetectedClaim], bool] | None = None,
 ) -> list[CheckedClaim]:
     """Verify every detected claim of ``outcome`` (see the module docstring); claim ids are
     ``<operation>:<n>`` from ``start``. A character's ``say`` claim (never the player's own,
     FR-EPI-12) is first-person: it names its speaker as the believer (#166), with its beat's
-    declared intent (``intent_of``) and its render's ``think`` citations (``cites_of``)."""
+    declared intent (``intent_of``) and its render's ``think`` citations (``cites_of``).
+    ``change_of`` (#198): whether the claim's beat states an explicit schedule change."""
     checked: list[CheckedClaim] = []
     on = verifier is not None and verifier.config.on
     for n, claim in enumerate(outcome.claims, start):
@@ -888,6 +890,7 @@ async def verify_detected(
             cites=() if cites_of is None or believer is None else tuple(cites_of(claim)),
             giver=claim.giver,  # #519: a detected transfer's giver (the hand-over exception)
             change=claim.change_cue,  # #518: a stated change may change the actor's own fluent
+            schedule_change=change_of is not None and change_of(claim),
             # #146's resolution exemption: a claim filling an open thunk resolves it, so
             # binding the thunk to a modeled character is reconciliation's to judge (#154,
             # #165), not a permission denial.

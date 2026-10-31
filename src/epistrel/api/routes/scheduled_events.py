@@ -46,7 +46,8 @@ class ScheduledEventBody(BaseModel):
     (`canon`: an event of the story; `belief`: a character's belief-only schedule, which never
     stops the clock), its `status` (`pending`, `possibly_due`, `due`, `surfaced`, `completed`,
     `missed`, `cancelled`; null for a belief), its `planned` offset in minutes from the story's
-    start, its `owner` (a character id, `author` or `world`), `participants`, `place_id`,
+    start, its `owner` (a character id, `author` or `world`), the characters it is shared with
+    (`shared_owners`: they may change it as the owner may), `participants`, `place_id`,
     `grace_minutes`, the offset it stopped the clock at (`stopped_clock_at`: it stops it at
     most once) and, for a belief, the holder's `confidence`."""
 
@@ -56,6 +57,7 @@ class ScheduledEventBody(BaseModel):
     status: str | None
     planned: int | None
     owner: str | None
+    shared_owners: list[str]
     participants: list[str]
     place_id: str | None
     grace_minutes: int | None
@@ -133,7 +135,9 @@ async def list_scheduled_events(
         "event, `planned` is an offset in minutes from the story's start or a time of day "
         '`"HH:MM"` (its next occurrence; 422 `clock_unanchored` unless the anchor fixes the '
         "time of day), `participants` are character ids, `place` a place entity id, and "
-        "`owner` is `author` or `world` (a character's own plans come from its turns). The "
+        "`owner` is `author` or `world` (a character's own plans come from its turns); "
+        "`shared_owners` are the characters it is shared with (cast character ids, else 422 "
+        "`viewpoint_unresolved`), who may change it as the owner may (FR-CLOCK-19). The "
         "write is an inter-turn slot after the last turn (a truncation to that turn or "
         "earlier discards it). The event is `pending`: with stops on (the profile's "
         "`clock.scheduled_stops` and the clock's `stop_at_due_events`), an advance that would "
@@ -160,9 +164,11 @@ async def create_scheduled_event(
     description=(
         'Move a scheduled event to a new `planned` time (an offset, or `"HH:MM"`): it is '
         "`pending` again and may stop the clock once more (FR-CLOCK-9). Only the event's "
-        "owner, the author or the world may change it (FR-CLOCK-19); the consumer acts as the "
-        "author. 404 for an unknown event; 422 (`reason: event_settled`) for a cancelled or "
-        "completed one." + _GATE
+        "owner, a shared owner, the author or the world may change it (FR-CLOCK-19); the "
+        "consumer acts as the author. `shared_owners` (cast character ids, else 422 "
+        "`viewpoint_unresolved`) replaces the characters the event is shared with; without "
+        "`planned` it keeps the event's status and time. 404 for an unknown event; 422 "
+        "(`reason: event_settled`) for a cancelled or completed one." + _GATE
     ),
 )
 async def reschedule_scheduled_event(

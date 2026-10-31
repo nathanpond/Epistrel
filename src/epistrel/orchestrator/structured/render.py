@@ -101,6 +101,7 @@ from epistrel.core.turns.beats import (
     NARRATOR_KINDS,
     DeclaredAdvance,
     DeclaredEffect,
+    DeclaredReschedule,
 )
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models.access import ModelAccessLayer
@@ -294,9 +295,12 @@ MAX_EFFECTS = 8
 STATE_NAME_MAX = 80
 EffectKind = Literal["change", "transfer", "time_advance", "reschedule"]
 TIME_ADVANCE = "time_advance"
-DELIVERED_EFFECT_KINDS = frozenset({"change", "transfer", TIME_ADVANCE})
+RESCHEDULE = "reschedule"
+CLOCK_EFFECTS = frozenset({TIME_ADVANCE, RESCHEDULE})
+"""The effect kinds that name the world clock, not a State."""
+DELIVERED_EFFECT_KINDS = frozenset({"change", "transfer", TIME_ADVANCE, RESCHEDULE})
 """The effect kinds this deployment validates (#187's ``change``, #188's ``transfer``,
-#194's ``time_advance``); ``reschedule`` is #198's."""
+#194's ``time_advance``, #198's ``reschedule``)."""
 MAX_SKIP_MINUTES = 525_960 * 10
 """The longest declared time advance the schema takes (ten years; #199 caps a model-initiated
 one at ``max_unprompted_skip``)."""
@@ -344,6 +348,10 @@ class EffectDecl(_Strict):
     fixes the time of day."""
     step: int | None = Field(default=None, ge=1, le=MAX_STEP_INDEX)
     """#194: the declared step a ``time_advance`` attaches to (``None``: its beat's step)."""
+    event: str | None = Field(default=None, min_length=1, max_length=NAME_MAX)
+    """#198: a ``reschedule``'s event, as the beat names it ("my dentist appointment")."""
+    planned: str | None = Field(default=None, pattern=HHMM)
+    """#198: a ``reschedule``'s new time of day (``"HH:MM"``)."""
 
 
 def declared_of(effects: Sequence[EffectDecl]) -> tuple[DeclaredEffect, ...]:
@@ -366,7 +374,17 @@ def declared_of(effects: Sequence[EffectDecl]) -> tuple[DeclaredEffect, ...]:
             consideration=None if e.consideration is None else e.consideration.strip() or None,
         )
         for e in effects
-        if e.kind != TIME_ADVANCE
+        if e.kind not in CLOCK_EFFECTS
+    )
+
+
+def reschedules_of(effects: Sequence[EffectDecl]) -> tuple[DeclaredReschedule, ...]:
+    """A beat's validated ``reschedule`` effects (#198; ``core.turns.beats
+    .DeclaredReschedule``)."""
+    return tuple(
+        DeclaredReschedule(event=e.event or "", planned=e.planned or "", reason=e.reason.strip())
+        for e in effects
+        if e.kind == RESCHEDULE
     )
 
 
@@ -400,6 +418,29 @@ def _value_fits(state_type: str, value: Any) -> bool:
 
 _ADVANCE_FIELDS = ("minutes", "to", "step")
 """A ``time_advance``'s own fields (#194): never a ``change``'s."""
+_RESCHEDULE_FIELDS = ("event", "planned")
+"""A ``reschedule``'s own fields (#198): never another kind's."""
+
+
+def reschedule_errors(at: str, effect: EffectDecl, *, clock: str | None) -> list[str]:
+    """The structural errors of one ``reschedule`` effect (#198, FR-CLOCK-19): it names the
+    ``world_clock``, the ``event`` and its new ``planned`` time of day (``"HH:MM"``), with a
+    reason, and nothing a ``change`` or a ``time_advance`` gives; the story must run the clock.
+    Whether the speaker may change the event is the beat's statement's classification
+    (``core.world_clock.schedule_statements``), not a structural error."""
+    if clock is None:
+        return [f"{at}: module clock is off: a render declares no reschedule"]
+    errors: list[str] = []
+    if effect.state != WORLD_CLOCK:
+        errors.append(f"{at}.state: a reschedule names the world_clock")
+    if effect.event is None:
+        errors.append(f"{at}.event: a reschedule names the event")
+    if effect.planned is None:
+        errors.append(f"{at}.planned: a reschedule gives the new time of day")
+    for name in (*_ADVANCE_FIELDS, "scope_key", "delta", "value", "counterparty", "silent"):
+        if getattr(effect, name) is not None:
+            errors.append(f"{at}.{name}: not a reschedule's")
+    return errors
 
 
 def advance_errors(
@@ -420,7 +461,7 @@ def advance_errors(
         errors.append(
             f"{at}.to: clock_unanchored: the story has not fixed the time of day; give minutes"
         )
-    for name in ("scope_key", "delta", "value", "counterparty", "silent"):
+    for name in ("scope_key", "delta", "value", "counterparty", "silent", *_RESCHEDULE_FIELDS):
         if getattr(effect, name) is not None:
             errors.append(f"{at}.{name}: not a time advance's")
     return errors
@@ -444,7 +485,7 @@ def effect_errors(
     (``clock``); every other effect needs ``states.level`` ``on``."""
     if not effects:
         return []
-    changes = [(m, e) for m, e in enumerate(effects) if e.kind != TIME_ADVANCE]
+    changes = [(m, e) for m, e in enumerate(effects) if e.kind not in CLOCK_EFFECTS]
     if changes and level != STATES_ON:
         return [
             f"{where}.effects: module states is {level or 'off'}: a render declares no State effect"
@@ -460,9 +501,14 @@ def effect_errors(
             errors += advance_errors(
                 f"{where}.effects.{m}", effect, clock=clock, clock_fixed=clock_fixed
             )
+        elif effect.kind == RESCHEDULE:
+            for name in UNDELIVERED_EFFECT_FIELDS:
+                if getattr(effect, name) is not None:
+                    errors.append(f"{where}.effects.{m}.{name}: not delivered yet")
+            errors += reschedule_errors(f"{where}.effects.{m}", effect, clock=clock)
     for m, effect in changes:
         at = f"{where}.effects.{m}"
-        for name in _ADVANCE_FIELDS:
+        for name in (*_ADVANCE_FIELDS, *_RESCHEDULE_FIELDS):
             if getattr(effect, name) is not None:
                 errors.append(f"{at}.{name}: only a time advance's")
         if effect.kind not in DELIVERED_EFFECT_KINDS:

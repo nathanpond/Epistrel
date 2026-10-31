@@ -131,8 +131,9 @@ def created_events(
         participants = (
             [str(p) for p in raw if str(p) in cast] if isinstance(raw, list | tuple) else []
         )
-        if not participants and str(claim.subject_id) in cast:
-            participants = [str(claim.subject_id)]
+        if str(claim.subject_id) in cast and str(claim.subject_id) not in participants:
+            # #198: the subject owns the plan and takes part in it (``stops.on_canon_fact``).
+            participants = [str(claim.subject_id), *participants]
         place = claim.qualifiers.get("place")
         found.append(
             ScheduledEvent(

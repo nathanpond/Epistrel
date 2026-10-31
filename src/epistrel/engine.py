@@ -2972,8 +2972,10 @@ class Engine:
         request: scheduled_events.ScheduledEventReschedule,
     ) -> scheduled_events.ScheduledEventWritten:
         """Reschedule a scheduled event (FR-CLOCK-9,19): it is ``pending`` again at its new
-        time and may stop the clock once more. Only its owner, the author or the world may
-        change it; the consumer acts as the author. 404 for an unknown event; 422
+        time and may stop the clock once more, and/or replace the characters it is shared with
+        (``shared_owners``, #198; 422 ``viewpoint_unresolved`` for one outside the cast). Only
+        its owner, a shared owner, the author or the world may change it; the consumer acts as
+        the author. 404 for an unknown event; 422
         (``reason: event_settled``) for a cancelled or completed one; 409 ``module_off``,
         ``story_archived``, ``story_paused`` or ``revision_conflict``."""
         principal = self.require_principal(ctx)

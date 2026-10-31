@@ -15,8 +15,10 @@ it from facts.
 - ``planned_offset_minutes``: the planned time, as a clock offset from the story's start;
   ``planned_anchor``: the anchor statement it was planned under, when it was given as a time
   of day (``null``: an offset);
-- ``owner``: a character id, ``author`` or ``world`` (FR-CLOCK-19); ``participants``: character
-  ids; ``place_id``: the event's place (``null``: none);
+- ``owner``: a character id, ``author`` or ``world`` (FR-CLOCK-19); ``shared_owners``: the
+  characters it is shared with, who may change it as the owner may (#198, migration 0094; set
+  only through the API in M6); ``participants``: character ids; ``place_id``: the event's place
+  (``null``: none);
 - ``grace_minutes``: how long after its planned time a surfaced event becomes ``missed``;
 - ``refinement_pause_anchor_rev``: the anchor revision a ``possibly_due`` pause was taken under
   (#197); ``stopped_clock_at``: the clock offset at which the event stopped an advance (its one
@@ -62,6 +64,7 @@ scheduled_events = Table(
     Column("status", pg_enum(ScheduledStatus, "scheduled_status"), nullable=False),
     Column("owner", Text, nullable=False),
     Column("participants", ARRAY(ulid_type()), nullable=False, server_default=text("'{}'")),
+    Column("shared_owners", ARRAY(ulid_type()), nullable=False, server_default=text("'{}'")),
     Column("place_id", ulid_type(), nullable=True),
     Column("grace_minutes", Integer, nullable=False),
     Column("refinement_pause_anchor_rev", Integer, nullable=True),

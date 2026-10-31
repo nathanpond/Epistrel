@@ -219,6 +219,19 @@ class DeclaredAdvance:
 
 
 @dataclass(frozen=True, slots=True)
+class DeclaredReschedule:
+    """One ``reschedule`` a beat declares (FR-CLOCK-19; #198): the event (as the render names
+    it), its new ``planned`` time of day (``"HH:MM"``) and the reason. A declared change: the
+    beat's statement about the event is classified with ``explicit_change``
+    (``core.world_clock.schedule_statements``), so it reschedules the event only when the
+    speaker may change it."""
+
+    event: str
+    planned: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class TurnBeat:
     """One beat of a structured turn: its kind, position, text and actor (``None`` for
     narration), a ``say``'s declared intent, a ``latent``'s visibility, the claims it asserts,
@@ -261,6 +274,8 @@ class TurnBeat:
     input, a ``think``, a reactive reaction or the player's ``co_author`` narration)."""
     advances: tuple[DeclaredAdvance, ...] = ()
     """#194 (FR-CLOCK-7): the time advances the beat declares, in order."""
+    reschedules: tuple[DeclaredReschedule, ...] = ()
+    """#198 (FR-CLOCK-19): the ``reschedule`` effects the beat declares, in order."""
     flashback: bool = False
     """#194 (FR-CLOCK-17): the beat recalls an earlier time: unpaced, unchecked against the
     present, and it moves nothing."""
@@ -725,6 +740,7 @@ __all__ = [
     "BeatKind",
     "DeclaredAdvance",
     "DeclaredEffect",
+    "DeclaredReschedule",
     "Intent",
     "Introduction",
     "ObjectiveRelation",

@@ -420,8 +420,8 @@ def state_proposal_record(row: Any) -> Record:
 
 def scheduled_event_record(row: Any) -> Record:
     """A scheduled event's version (#196): it holds no text of its own (the event's canon
-    ``scheduled`` proposition is indexed with the proposition); its participants, and a
-    character owner, are declared subjects."""
+    ``scheduled`` proposition is indexed with the proposition); its participants, a character
+    owner and its shared owners (#198) are declared subjects."""
     declared: list[Declared] = [
         (SubjectKind.CHARACTER, str(p), f"participants[{index}]")
         for index, p in enumerate(row.participants or ())
@@ -429,6 +429,11 @@ def scheduled_event_record(row: Any) -> Record:
     owner = _str(getattr(row, "owner", None))
     if owner and owner not in ("author", "world"):
         declared.append((SubjectKind.CHARACTER, owner, "owner"))
+    # #198: a shared owner is a declared subject as the owner is.
+    declared += [
+        (SubjectKind.CHARACTER, str(o), f"shared_owners[{index}]")
+        for index, o in enumerate(getattr(row, "shared_owners", None) or ())
+    ]
     return Record(scheduled_events.name, str(row.id), _str(row.story_id), {}, tuple(declared))
 
 

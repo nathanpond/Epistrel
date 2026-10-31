@@ -32,6 +32,12 @@ never guesses (FR-PROP-12):
   default comes from the predicate's temporal kind: an ``event`` is an instant at the position's
   minute; a ``fluent`` or ``permanent`` predicate holds from the position on. An expression that
   does not resolve, or an empty interval (no ``[t, t)`` is ever built), is ``unresolved_time``.
+  #198: a ``scheduled`` claim's time of day ("at three", "15:10") that the grammar does not
+  take is placed at its next occurrence through the clock's anchor
+  (``core.world_clock.schedule_statements.place_time``).
+- **Qualifiers** (#198): an ``id`` or ``ids`` qualifier the sketch names as text ("Jenni",
+  "Jenni and Cal", "the station") is resolved like an argument; one that does not resolve stays
+  as said, which the qualifier check refuses (``argument_type``).
 
 The result is in the predicate's canonical direction (``registry.canonical``). Nothing here
 reads ``facts`` or ``propositions``, and nothing calls a model.
@@ -48,6 +54,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.errors import InvalidRequest
+from epistrel.core.ids import ULID_PATTERN
 from epistrel.core.propositions.model import (
     ANY,
     NONE,
@@ -60,6 +67,7 @@ from epistrel.core.propositions.model import (
     Polarity,
     Predicate,
     Proposition,
+    QualifierKind,
     QualifierValue,
     TemporalKind,
     TypedLiteral,
@@ -283,6 +291,49 @@ def _weak(
     return replace(failed, weak_relation=True, touches_character=touches)
 
 
+def _scheduled_time(
+    predicate: Predicate, text: str, basis: TimeBasis, position: Position
+) -> int | None:
+    """#198: a ``scheduled`` claim's time of day, placed through the clock's anchor."""
+    from epistrel.core.propositions.vocabulary import SCHEDULED
+
+    if predicate.id != SCHEDULED:
+        return None
+    from epistrel.core.world_clock.schedule_statements import place_time
+
+    return place_time(text, basis, position)
+
+
+ULID_RE = re.compile(ULID_PATTERN.strip("^$"))
+_SEVERAL = re.compile(r"\s*(?:,|\band\b|&)\s*", re.IGNORECASE)
+
+
+def _qualifiers(
+    declared: Mapping[str, QualifierValue],
+    predicate: Predicate,
+    speaker: str,
+    context: ResolutionContext,
+) -> dict[str, QualifierValue]:
+    """#198: the sketch's qualifiers, an ``id`` or ``ids`` one named as text resolved like an
+    argument (see the module docstring)."""
+    kinds = predicate.qualifiers or {}
+    found: dict[str, QualifierValue] = {}
+    for name, value in declared.items():
+        kind = kinds.get(name)
+        found[name] = value
+        if not isinstance(value, str) or ULID_RE.fullmatch(value):
+            continue
+        if kind is QualifierKind.ID:
+            one = _entity(value, None, speaker, context)
+            if isinstance(one, str):
+                found[name] = one
+        elif kind is QualifierKind.IDS:
+            ids = [_entity(part, None, speaker, context) for part in _SEVERAL.split(value) if part]
+            if ids and all(isinstance(i, str) for i in ids):
+                found[name] = tuple(str(i) for i in dict.fromkeys(ids))
+    return found
+
+
 def _kind_ok(expected: str, kind: str | None) -> bool:
     return expected == ANY or kind is None or kind == expected
 
@@ -468,11 +519,19 @@ def normalize(
         return Unnormalizable(VerdictReason.ARGUMENT_TYPE, "needs_object")
     if sketch.time_text:
         resolved = resolve_time(sketch.time_text, position, subject_timeline, basis=basis)
-        if not isinstance(resolved, ResolvedTime):
+        placed = (
+            _scheduled_time(predicate, sketch.time_text, basis, position)
+            if not isinstance(resolved, ResolvedTime)
+            else None
+        )
+        if placed is not None:
+            valid_time: Interval | Instant = Instant.of(placed, Granularity.MINUTE)
+        elif not isinstance(resolved, ResolvedTime):
             return Unnormalizable(
                 VerdictReason.UNRESOLVED_TIME, resolved.reason.code.value, resolved
             )
-        valid_time: Interval | Instant = resolved.valid_time
+        else:
+            valid_time = resolved.valid_time
     else:
         valid_time = default_time(predicate, position, basis)
     try:
@@ -481,7 +540,7 @@ def normalize(
             predicate_id=predicate.id,
             object_id=object_id,
             literal=literal,
-            qualifiers=dict(sketch.qualifiers),
+            qualifiers=_qualifiers(sketch.qualifiers, predicate, speaker, context),
             polarity=sketch.polarity,
             valid_time=valid_time,
             event_id=sketch.event_id,

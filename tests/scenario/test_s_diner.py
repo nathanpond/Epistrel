@@ -20,6 +20,10 @@ her own statement), involving her.
   rescheduled to 19:00 → ``pending`` again, and it stops the clock once more.
 - ``test_s_diner__api``: the list for each viewpoint (a character lists only what it holds),
   create, reschedule and cancel between turns, and their keyed replays.
+- ``test_s_diner__report_vs_create`` (#198): a report of the boss's 18:00 meeting is never a
+  change (a sincere error with an antecedent, a hallucination without; a non-owner's "pushed
+  it" refused), shared owners, and Jenni's own errand created, reported and changed from her
+  renders.
 """
 
 from __future__ import annotations
@@ -33,6 +37,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core.epistemic import transitions
 from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Granularity, Instant, Proposition
 from epistrel.core.propositions.vocabulary import SCHEDULED
@@ -48,7 +53,7 @@ from tests.auth_support import auth_settings
 from tests.event_support import rows
 from tests.respond_support import body, respond, respond_client
 from tests.story_support import WRITE
-from tests.structured_turn_support import beat, structured_story, turn_report
+from tests.structured_turn_support import beat, claim, structured_story, turn_report
 
 ELEVEN = 11 * 60
 MEETING = 17 * 60 - ELEVEN
@@ -496,3 +501,283 @@ async def test_s_diner__api(
         off = await client.post(url, json=reservation, headers=WRITE)
         assert off.status_code == 409
         assert off.json()["error"]["code"] == "module_off"
+
+
+SIX = 18 * 60 - ELEVEN
+"""18:00, as an offset from 11:00: the boss's meeting."""
+FIVE = MEETING
+REPAIRED = "I have a meeting later."
+
+
+def plan(text: str, event: str, time: str, **fields: Any) -> dict[str, Any]:
+    """Jenni's ``say`` stating ``event``'s time (a declared ``scheduled`` claim)."""
+    qualifiers = fields.pop("qualifiers", None)
+    sketch = claim("I", "scheduled", event, time=time)
+    if qualifiers:
+        sketch["qualifiers"] = qualifiers
+    return beat("say", text, propositions=[sketch], **fields)
+
+
+async def statement_of(engine: AsyncEngine, story: str) -> dict[str, Any]:
+    """The last turn's schedule statement verdict (its one ``scheduled`` claim)."""
+    (found,) = [
+        v for v in (await turn_report(engine, story))["verify"]["verdicts"] if "schedule" in v
+    ]
+    return dict(found)
+
+
+async def told_five(engine: AsyncEngine, story: str, jenni: str, marcus: str, event: str) -> None:
+    """Earlier, Marcus (her assistant) told Jenni her meeting is at five: her testimony belief
+    (#162), the legitimate antecedent of a sincere error."""
+    (row,) = await rows(
+        engine,
+        "SELECT p.object_id, s.story_minute_zero AS zero FROM propositions p JOIN stories s "
+        "ON s.id = p.story_id WHERE p.id = :p",
+        p=event,
+    )
+    await pt.transit(
+        engine,
+        story,
+        jenni,
+        Proposition(
+            subject_id=jenni,
+            predicate_id=SCHEDULED,
+            object_id=row.object_id,
+            valid_time=Instant.of(int(row.zero) + FIVE, Granularity.MINUTE),
+        ),
+        cause=transitions.Kind.TESTIMONY,
+        source=marcus,
+        outcome="accept",
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-CLOCK-19,10")
+async def test_s_diner__report_vs_create(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    stops_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """Report vs create (FR-CLOCK-19,10; #198), through ``respond`` with per-character
+    partitions:
+
+    - Canon has Jenni's meeting at 18:00 (set by her boss: owner ``world``), and her assistant
+      Marcus told her "five": "my meeting's at five" is a **report**, objectively false
+      (``contradicted``, ``instant_identity``) and belief-consistent: a sincere error that
+      stands; the meeting stays at 18:00, and a skip from 16:45 stops once, at 18:00 (never
+      17:00).
+    - The same statement with no antecedent is a hallucination, repaired; canon unchanged.
+    - "I pushed it to seven" from Jenni is refused as a change (she is not the owner): a report,
+      labelled false, and the meeting stays at 18:00; so is her declared ``reschedule``. The
+      author (the API) can reschedule it, and once it is shared with her (``PATCH
+      shared_owners``) her declared ``reschedule`` changes it; a shared owner that is no
+      character is 422 ``viewpoint_unresolved``.
+    - Her own errand, "I'll go to the bank at three" (with Cal), is a **create** from her render
+      in the turn: a canon event owned by her with both of them as participants, and her
+      ``discovery`` belief citing the canon fact (FR-EPI-14). A bare "the bank's at four" is a
+      report (it does not reschedule); "I'll go at four instead" is a **change**: rescheduled to
+      16:00, back to ``pending``; then "the bank's at four" is a true report."""
+
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+
+        # Report, with an antecedent: a sincere error that stands; canon stays at 18:00.
+        story, ids, meeting = await diner(
+            client, engine, planned=SIX, partitions=True, others=("Marcus",)
+        )
+        await told_five(engine, story, ids["Jenni"], ids["Marcus"], meeting)
+        found = await turn(
+            client, stub, story, ids, plan("My meeting's at five.", "the meeting", "five o'clock")
+        )
+        verdict = await statement_of(engine, story)
+        assert verdict["schedule"] == {
+            "kind": "report",
+            "event_id": meeting,
+            "refused_change": False,
+        }
+        assert (verdict["kind"], verdict["rule"]) == ("contradicted", "instant_identity")
+        assert verdict["speech"]["classification"] == "sincere_error"
+        assert verdict["speech"]["belief_relation"] == "consistent"
+        assert es.regenerations(stub) == []
+        texts = [b["text"] for b in found["beats"] if b["kind"] == "beat_say"]
+        assert "My meeting's at five." in texts
+        assert await ck.statuses(engine, story, meeting) == ["pending"]
+        assert (await event_of(engine, story, meeting)).planned == SIX
+        # The clock stops once, at 18:00: never at 17:00.
+        await ck.advance(engine, story, to=345)
+        found = await turn(
+            client,
+            stub,
+            story,
+            ids,
+            beat("say", "We could talk forever.", effects=[skip(150)]),
+            regenerated=INTERRUPTED,
+        )
+        assert found["clock"]["after"]["offset"] == SIX
+        assert [(s[0], s[2]) for s in await stopped_by(engine, story) if s[2] is not None] == [
+            ("declared_skip", meeting)
+        ]
+        assert await ck.statuses(engine, story, meeting) == ["pending", "due", "surfaced"]
+
+        # Report, with no antecedent: a hallucination, repaired; canon unchanged.
+        story, ids, meeting = await diner(client, engine, planned=SIX, partitions=True)
+        found = await turn(
+            client,
+            stub,
+            story,
+            ids,
+            plan("My meeting's at five.", "the meeting", "five o'clock"),
+            regenerated=REPAIRED,
+        )
+        verdict = await statement_of(engine, story)
+        assert verdict["schedule"]["kind"] == "report"
+        assert verdict["kind"] == "contradicted"
+        assert verdict["speech"]["classification"] == "hallucination_repaired"
+        assert len(es.regenerations(stub)) == 1
+        assert await leak(engine, story, "meeting's at five") == []
+        assert await ck.statuses(engine, story, meeting) == ["pending"]
+        assert (await event_of(engine, story, meeting)).planned == SIX
+
+        # "I pushed it to seven": refused as a change (the world owns it), a report, false.
+        await turn(
+            client,
+            stub,
+            story,
+            ids,
+            plan("I pushed it to seven.", "the meeting", "7 pm"),
+            regenerated=REPAIRED,
+        )
+        verdict = await statement_of(engine, story)
+        assert verdict["schedule"] == {
+            "kind": "report",
+            "event_id": meeting,
+            "refused_change": True,
+        }
+        assert verdict["kind"] == "contradicted"
+        assert await ck.statuses(engine, story, meeting) == ["pending"]
+        assert (await event_of(engine, story, meeting)).planned == SIX
+        # Her declared reschedule is refused the same way.
+        moved = {
+            "kind": "reschedule",
+            "state": "world_clock",
+            "event": "the meeting",
+            "planned": "20:00",
+            "reason": "she would rather go later",
+        }
+        await turn(
+            client,
+            stub,
+            story,
+            ids,
+            beat("say", "Eight, then.", effects=[moved]),
+            regenerated=REPAIRED,
+        )
+        verdict = await statement_of(engine, story)
+        assert (verdict["schedule"]["refused_change"], verdict["kind"]) == (True, "contradicted")
+        assert (await event_of(engine, story, meeting)).planned == SIX
+
+        # Complement: the author reschedules the boss's meeting (the API acts as the author).
+        url = f"/stories/{story}/scheduled-events/{meeting}"
+        patched = await client.patch(url, json={"planned": "19:00"}, headers=WRITE)
+        assert patched.status_code == 200, patched.text
+        assert patched.json()["event"]["planned"] == SIX + 60
+        # Shared with Jenni, her declared reschedule changes it.
+        shared = await client.patch(url, json={"shared_owners": [ids["Jenni"]]}, headers=WRITE)
+        assert shared.status_code == 200, shared.text
+        assert shared.json()["event"]["shared_owners"] == [ids["Jenni"]]
+        assert shared.json()["event"]["planned"] == SIX + 60
+        unknown = await client.patch(
+            url, json={"shared_owners": ["01J9Z8Q4N5V6W7X8Y9Z0A1B2E7"]}, headers=WRITE
+        )
+        assert unknown.status_code == 422
+        assert unknown.json()["error"]["code"] == "viewpoint_unresolved"
+        await turn(client, stub, story, ids, beat("say", "Eight, then.", effects=[moved]))
+        verdict = await statement_of(engine, story)
+        assert verdict["schedule"]["kind"] == "change"
+        assert es.regenerations(stub) == []
+        event = await event_of(engine, story, meeting)
+        assert (event.status.value, event.planned, event.shared_owners) == (
+            "pending",
+            9 * 60,
+            (ids["Jenni"],),
+        )
+        assert await ck.statuses(engine, story, meeting) == ["pending"] * 4
+
+        # Create: her own errand, from her render in the turn, with Cal.
+        story, ids, meeting = await diner(client, engine, partitions=True)
+        await turn(
+            client,
+            stub,
+            story,
+            ids,
+            plan(
+                "I'll go to the bank at three, Cal's coming.",
+                "the bank errand",
+                "3 pm",
+                qualifiers={"participants": "Cal"},
+            ),
+        )
+        verdict = await statement_of(engine, story)
+        assert verdict["schedule"]["kind"] == "create"
+        assert verdict["permission"] == "permitted:own"
+        (bank,) = [e for e in await ck.events(engine, story) if e.planned == 4 * 60]
+        assert (bank.owner, bank.participants, bank.status.value) == (
+            ids["Jenni"],
+            (ids["Jenni"], ids["Cal"]),
+            "pending",
+        )
+        (fact,) = await rows(
+            engine,
+            "SELECT f.id, f.provenance::text AS provenance FROM facts f "
+            "WHERE f.story_id = :s AND f.proposition_id = :p",
+            s=story,
+            p=bank.event_id,
+        )
+        assert fact.provenance == "render"
+        (held,) = await rows(
+            engine,
+            "SELECT kind::text AS kind, antecedent_ref FROM belief_transitions "
+            "WHERE story_id = :s AND holder_character_id = :h",
+            s=story,
+            h=ids["Jenni"],
+        )
+        assert (held.kind, held.antecedent_ref) == (
+            "discovery",
+            {"table": "facts", "id": fact.id},
+        )
+        # A bare "the bank's at four" is a report: false, and it does not reschedule.
+        await turn(
+            client,
+            stub,
+            story,
+            ids,
+            plan("The bank's at four.", "the bank errand", "4 pm"),
+            regenerated=REPAIRED,
+        )
+        verdict = await statement_of(engine, story)
+        assert (verdict["schedule"]["kind"], verdict["kind"]) == ("report", "contradicted")
+        assert await ck.statuses(engine, story, bank.event_id) == ["pending"]
+        # "I'll go at four instead": a change, rescheduled to 16:00.
+        await turn(
+            client, stub, story, ids, plan("I'll go at four instead.", "the bank errand", "4 pm")
+        )
+        verdict = await statement_of(engine, story)
+        assert verdict["schedule"] == {
+            "kind": "change",
+            "event_id": bank.event_id,
+            "refused_change": False,
+        }
+        assert es.regenerations(stub) == []
+        moved_bank = await event_of(engine, story, bank.event_id)
+        assert (moved_bank.status.value, moved_bank.planned) == ("pending", 5 * 60)
+        assert await ck.statuses(engine, story, bank.event_id) == ["pending", "pending"]
+        # A change writes no canon: still the meeting and the one errand.
+        assert {e.event_id for e in await ck.events(engine, story)} == {meeting, bank.event_id}
+        # Now "the bank's at four" is a true report.
+        await turn(client, stub, story, ids, plan("The bank's at four.", "the bank errand", "4 pm"))
+        verdict = await statement_of(engine, story)
+        assert (verdict["schedule"]["kind"], verdict["kind"]) == ("report", "supported")
+        assert verdict["speech"]["classification"] == "sincere"
+        assert es.regenerations(stub) == []
+        assert await ck.statuses(engine, story, bank.event_id) == ["pending", "pending"]

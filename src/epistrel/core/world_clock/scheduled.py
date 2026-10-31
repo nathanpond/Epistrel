@@ -14,8 +14,13 @@ story's scheduled events.
   ``core.canon.facts.commit_fact`` makes a ``pending`` event of ``scheduled_events``. The owner
   is ``author`` or ``world`` (a character's own plans are created by its turns, #198).
 - ``reschedule_event`` (``PATCH``): the event moves to ``pending`` at its new time, and may stop
-  the clock once more. Only the owner, the author or the world may change an event
-  (FR-CLOCK-19, ``may_change``); the consumer acts as the author.
+  the clock once more. Only the owner, a shared owner, the author or the world may change an
+  event (FR-CLOCK-19, ``may_change``); the consumer acts as the author.
+- ``shared_owners`` (#198, FR-CLOCK-19): ``POST`` and ``PATCH`` declare the characters an event
+  is shared with (cast character ids; anything else is 422 ``viewpoint_unresolved``), the only
+  way an event becomes shared in M6. A shared owner may change the event by its own statement
+  as the owner may (``core.world_clock.schedule_statements``). A ``PATCH`` with
+  ``shared_owners`` and no ``planned`` keeps the event's status and time.
 - ``cancel_event`` (``DELETE``): the event is ``cancelled``.
 
 Each write is gated on the clock (409 ``module_off`` while the story runs it off) and answers
@@ -28,7 +33,15 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -38,7 +51,7 @@ from epistrel.core.enums import (
     RecordProvenance,
     ScheduledStatus,
 )
-from epistrel.core.errors import InvalidRequest, StoryNotFound
+from epistrel.core.errors import InvalidRequest, StoryNotFound, ViewpointUnresolved
 from epistrel.core.membership import Position
 from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX, OMNISCIENT
 from epistrel.core.tables import characters, entities, stories
@@ -73,6 +86,8 @@ class ScheduledEventCreate(BaseModel):
     participants: list[StrictStr] = Field(default_factory=list, max_length=20)
     place: StrictStr | None = None
     owner: Literal["author", "world"] = "world"
+    shared_owners: list[StrictStr] = Field(default_factory=list, max_length=20)
+    """#198: the characters the event is shared with (cast character ids)."""
 
     @field_validator("planned")
     @classmethod
@@ -86,16 +101,25 @@ class ScheduledEventCreate(BaseModel):
 
 class ScheduledEventReschedule(BaseModel):
     """``PATCH /stories/{id}/scheduled-events/{event_id}``: the new ``planned`` time (an offset
-    in minutes from the story's start, or a time of day ``"HH:MM"``)."""
+    in minutes from the story's start, or a time of day ``"HH:MM"``) and/or the characters the
+    event is shared with (``shared_owners``, #198: the whole new set; cast character ids). At
+    least one is given."""
 
     model_config = ConfigDict(extra="forbid", json_schema_extra={"examples": [{"planned": 1140}]})
 
-    planned: StrictInt | StrictStr
+    planned: StrictInt | StrictStr | None = None
+    shared_owners: list[StrictStr] | None = Field(default=None, max_length=20)
 
     @field_validator("planned")
     @classmethod
-    def _planned(cls, value: int | str) -> int | str:
-        return ScheduledEventCreate._planned(value)
+    def _planned(cls, value: int | str | None) -> int | str | None:
+        return None if value is None else ScheduledEventCreate._planned(value)
+
+    @model_validator(mode="after")
+    def _something(self) -> ScheduledEventReschedule:
+        if self.planned is None and self.shared_owners is None:
+            raise ValueError("give planned, shared_owners or both")
+        return self
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +138,7 @@ class ScheduledEventView:
     grace_minutes: int | None
     stopped_clock_at: int | None
     confidence: str | None = None
+    shared_owners: tuple[str, ...] = ()
 
     def document(self) -> dict[str, Any]:
         return {
@@ -123,6 +148,7 @@ class ScheduledEventView:
             "status": self.status,
             "planned": self.planned,
             "owner": self.owner,
+            "shared_owners": list(self.shared_owners),
             "participants": list(self.participants),
             "place_id": self.place_id,
             "grace_minutes": self.grace_minutes,
@@ -213,6 +239,7 @@ def _view(event: stops.ScheduledEvent, names: dict[str, str]) -> ScheduledEventV
         place_id=event.place_id,
         grace_minutes=event.grace,
         stopped_clock_at=event.stopped_clock_at,
+        shared_owners=event.shared_owners,
     )
 
 
@@ -298,9 +325,20 @@ async def _planned(conn: AsyncConnection, story_id: str, planned: int | str) -> 
     return await _time_of_day(conn, story_id, planned, current)
 
 
+def _shared(shared_owners: Sequence[str] | None, cast: Sequence[str]) -> None:
+    """#198: every shared owner is a character of the cast (422 ``viewpoint_unresolved``)."""
+    unknown = sorted(set(shared_owners or ()) - set(cast))
+    if unknown:
+        raise ViewpointUnresolved(
+            "a shared owner is not a character of the story",
+            {"field": "body.shared_owners", "reason": "unknown_character", "unknown": unknown},
+        )
+
+
 async def _validated(
     conn: AsyncConnection, story_id: str, request: ScheduledEventCreate, cast: Sequence[str]
 ) -> None:
+    _shared(request.shared_owners, cast)
     unknown = sorted(set(request.participants) - set(cast))
     if unknown:
         raise InvalidRequest(
@@ -355,22 +393,23 @@ async def create_event(
         if request.place is not None:
             qualifiers["place"] = request.place
         subject = request.participants[0] if request.participants else event_entity
-        fact = await commit_fact(
-            conn,
-            story_id,
-            Proposition(
-                subject_id=subject,
-                predicate_id=SCHEDULED,
-                object_id=event_entity,
-                qualifiers=qualifiers,
-                valid_time=Instant.of(zero + planned, Granularity.MINUTE),
-            ),
-            provenance=RecordProvenance.AUTHOR
-            if request.owner == OWNER_AUTHOR
-            else RecordProvenance.IN_WORLD,
-            operation=op,
-            slot_k=position.slot_k,
-        )
+        with stops.sharing(request.shared_owners):
+            fact = await commit_fact(
+                conn,
+                story_id,
+                Proposition(
+                    subject_id=subject,
+                    predicate_id=SCHEDULED,
+                    object_id=event_entity,
+                    qualifiers=qualifiers,
+                    valid_time=Instant.of(zero + planned, Granularity.MINUTE),
+                ),
+                provenance=RecordProvenance.AUTHOR
+                if request.owner == OWNER_AUTHOR
+                else RecordProvenance.IN_WORLD,
+                operation=op,
+                slot_k=position.slot_k,
+            )
         found = await stops.event_at(conn, story_id, fact.proposition_id)
         assert found is not None  # noqa: S101 - commit_fact made the fact an event
         written.append(found)
@@ -402,8 +441,9 @@ async def _answer(
 
 
 def may_change(event: stops.ScheduledEvent, actor: str) -> bool:
-    """FR-CLOCK-19: only the event's owner, the author or the world may change it."""
-    return actor in (event.owner, OWNER_AUTHOR, OWNER_WORLD)
+    """FR-CLOCK-19: only the event's owner, a shared owner (#198), the author or the world may
+    change it."""
+    return actor in (event.owner, *event.shared_owners, OWNER_AUTHOR, OWNER_WORLD)
 
 
 async def _existing(conn: AsyncConnection, story_id: str, event_id: str) -> stops.ScheduledEvent:
@@ -421,17 +461,20 @@ async def _change(
     story_id: str,
     event_id: str,
     *,
-    status: ScheduledStatus,
+    status: ScheduledStatus | None,
     cause: str,
     planned: int | str | None,
     principal: str,
     idempotency_key: str | None,
+    shared_owners: Sequence[str] | None = None,
 ) -> ScheduledEventWritten:
     from epistrel.core.stories import require_writable
 
     await require_writable(db, story_id)
     async with db.connect() as conn:
         await require_clock(conn, story_id)
+        if shared_owners is not None:
+            _shared(shared_owners, (await _story(conn, story_id)).cast)
         current = await _existing(conn, story_id, event_id)
         if not may_change(current, OWNER_AUTHOR):  # pragma: no cover - the author always may
             raise InvalidRequest(
@@ -449,8 +492,20 @@ async def _change(
     async def step(conn: AsyncConnection) -> None:
         position: Position = slot_position(op)
         found = await _existing(conn, story_id, event_id)
+        if status is None:  # #198: only the sharing changes
+            status_now, cause_now = found.status, stops.SHARED
+        else:
+            status_now, cause_now = status, cause
         done = await stops.record(
-            conn, op, story_id, found, status, position=position, cause=cause, planned=offset
+            conn,
+            op,
+            story_id,
+            found,
+            status_now,
+            position=position,
+            cause=cause_now,
+            planned=offset,
+            shared_owners=shared_owners,
         )
         written.append(done.event)
 
@@ -476,16 +531,18 @@ async def reschedule_event(
     principal: str,
     idempotency_key: str | None = None,
 ) -> ScheduledEventWritten:
-    """The event back to ``pending`` at its new time (see the module docstring)."""
+    """The event back to ``pending`` at its new time, and/or its new sharing (see the module
+    docstring)."""
     return await _change(
         db,
         story_id,
         event_id,
-        status=ScheduledStatus.PENDING,
+        status=None if request.planned is None else ScheduledStatus.PENDING,
         cause=stops.RESCHEDULED,
         planned=request.planned,
         principal=principal,
         idempotency_key=idempotency_key,
+        shared_owners=request.shared_owners,
     )
 
 

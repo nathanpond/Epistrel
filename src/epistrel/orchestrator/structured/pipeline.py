@@ -307,6 +307,7 @@ from epistrel.core.viewpoint import (
     try_resolve,
 )
 from epistrel.core.visibility import Visibility
+from epistrel.core.world_clock import schedule_statements
 from epistrel.core.world_clock.service import turn_clock_of
 from epistrel.core.world_clock.timing import SEQUENTIAL as SEQUENTIAL_MODE
 from epistrel.core.world_clock.timing import SIMULTANEOUS as SIMULTANEOUS_MODE
@@ -379,6 +380,7 @@ from epistrel.orchestrator.structured import player_authority as authority_rules
 from epistrel.orchestrator.structured import prompt as prompts
 from epistrel.orchestrator.structured import reconcile as reconcile_rules
 from epistrel.orchestrator.structured import roles as roles_rt
+from epistrel.orchestrator.structured import schedules as schedule_commit
 from epistrel.orchestrator.structured import simultaneous as simultaneous_rules
 from epistrel.orchestrator.structured import steps as render_steps
 from epistrel.orchestrator.structured.eval_hooks import StageClock, eval_hooks
@@ -399,6 +401,7 @@ from epistrel.orchestrator.structured.render import (
     render_params,
     render_schema,
     repair_ages,
+    reschedules_of,
 )
 from epistrel.orchestrator.structured.render import (
     NARRATOR as NARRATOR_VARIANT,
@@ -1101,11 +1104,28 @@ def _beats_of(
                 else decl.hidden.observed,
                 effects=declared_of(decl.effects),
                 advances=advances_of(decl.effects),
+                reschedules=reschedules_of(decl.effects),
                 flashback=decl.flashback,
             )
         )
-        sketches[number] = list(decl.propositions)
+        sketches[number] = [*decl.propositions, *_reschedule_sketches(decl, narrator=narrator)]
     return beats, sketches
+
+
+def _reschedule_sketches(decl: BeatDecl, *, narrator: bool) -> list[PropositionSketch]:
+    """#198 (FR-CLOCK-19): a character's declared ``reschedule`` is its statement that the
+    event is now at the new time, when the beat declares no ``scheduled`` claim of its own: it
+    is classified (with ``explicit_change``) like any schedule statement, so it reschedules the
+    event only when the speaker may change it."""
+    if narrator or decl.kind == NARRATION:
+        return []
+    named = {p.relation.strip().casefold() for p in decl.propositions}
+    if "scheduled" in named:
+        return []
+    return [
+        PropositionSketch(subject="I", relation="scheduled", object=r.event, time=r.planned)
+        for r in reschedules_of(decl.effects)
+    ]
 
 
 def _qualifiers_of(decl: BeatDecl) -> perception.Qualifiers:
@@ -1887,6 +1907,8 @@ async def _check_turn(
     async with db.connect() as conn:
         verifier = await story_verifier(conn, read_set, story_id, models=models, budget=budget)
         verifier.introductions = introductions
+        # #198 (FR-CLOCK-19): a schedule statement is classified over the story's events.
+        verifier.schedules = schedule_statements.Book(conn, story_id, turn)
         for earlier in answers_from:
             if earlier is not None:
                 verifier.adopt_answers(earlier)
@@ -1932,6 +1954,13 @@ async def _check_turn(
         def intent_of(claim: DetectedClaim) -> str | None:
             beat = scopes.get(claim.beat or -1)
             return None if beat is None or beat.kind != SAY else beat.intent
+
+        def change_of(claim: DetectedClaim) -> bool:
+            # #198: the beat's change language, or its declared ``reschedule``.
+            beat = scopes.get(claim.beat or -1)
+            if beat is None:
+                return False
+            return schedule_statements.explicit_change(beat.text, declared=bool(beat.reschedules))
 
         def cites_of(claim: DetectedClaim) -> tuple[str, ...]:
             # #166: the citations of the speaker's think beats in the render (FR-TURN-8).
@@ -1983,6 +2012,7 @@ async def _check_turn(
                 intent_of=intent_of,
                 cites_of=cites_of,
                 asserter_of=asserter_of,
+                change_of=change_of,
             )
             # The same-turn overlay: what this beat may establish, later beats see.
             for request in verifier.canon_requests()[before:]:
@@ -5640,6 +5670,11 @@ async def play(
             requests,
             operation=op,
             registry=registry,
+        )
+        # #198 (FR-CLOCK-19, FR-EPI-14): a new plan's belief citing its canon fact; a change's
+        # reschedule and the speaker's new time.
+        await schedule_commit.committed(
+            conn, op, checked.checked, canonized, settings=settings, registry=registry
         )
         utterance_rows = []
         # #166: each say's stored proposition per claim id (a lie's divergence names it).

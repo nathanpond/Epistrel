@@ -1281,18 +1281,21 @@ async def _erase_scheduled(
     tally: _Tally,
     run: _StoryRun,
 ) -> None:
-    """Scheduled events (#196): every version naming an erased character (a participant or the
-    owner) is deleted, each with a marker; the event's canon ``scheduled`` fact goes with the
-    facts (``_erase_facts``)."""
+    """Scheduled events (#196): every version naming an erased character (a participant, the
+    owner or, #198, a shared owner) is deleted, each with a marker; the event's canon
+    ``scheduled`` fact goes with the facts (``_erase_facts``)."""
     named = set(refs.get(scheduled_events.name, set()))
     if not removed or not named:
         return
     c = scheduled_events.c
     found = await conn.execute(
-        select(c.id, c.owner, c.participants).where(c.story_id == story_id, c.id.in_(sorted(named)))
+        select(c.id, c.owner, c.participants, c.shared_owners).where(
+            c.story_id == story_id, c.id.in_(sorted(named))
+        )
     )
     for row in sorted(found, key=lambda r: str(r.id)):
-        if row.owner not in removed and not set(row.participants or ()) & removed:
+        named_here = {*(row.participants or ()), *(row.shared_owners or ())}
+        if row.owner not in removed and not named_here & removed:
             continue
         await _delete(
             conn,

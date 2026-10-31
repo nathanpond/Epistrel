@@ -20,7 +20,10 @@ variant:** a render that overruns only through its pacing increment is clamped, 
 The pure clauses run the cut (``core.world_clock.stops.cut_turn`` through
 ``orchestrator.structured.stopping``); the integration clause plays the turn through
 ``respond`` with the stub: the regeneration happens once, the ticket and the silver are never
-committed, and the pacing-only variant makes no regeneration call.
+committed, and the pacing-only variant makes no regeneration call. ``__ownership`` (#198) plays
+the ownership variant through ``respond``: a character's "the gate closes at 15:10" never
+creates an event, the narration's does (owned by the world), and Jenni's own departure is
+created from her render in the very turn whose cut it sets.
 """
 
 from __future__ import annotations
@@ -48,6 +51,7 @@ from tests import multi_support as ms
 from tests import perception_support as ps
 from tests import state_support as ss
 from tests.auth_support import auth_settings
+from tests.event_support import rows
 from tests.respond_support import body, respond, respond_client
 from tests.scenario.test_s_diner import leak, skip
 from tests.story_support import WRITE
@@ -289,3 +293,125 @@ async def test_u_25__turn(
         assert found["clock"]["after"]["offset"] == 1
         assert es.regenerations(stub) == []
         assert (await ck.events(engine, story))[0].stopped_clock_at == 1
+
+
+async def bare_station(client: Any, engine: AsyncEngine) -> tuple[str, dict[str, str], str]:
+    """The station at 14:50 (Cal, Jenni and Bobby there), simultaneous renders, and no
+    scheduled event yet: the story, its characters and the station."""
+    story, ids = await es.shop(client, engine, ss.gold(), names=("Cal", "Jenni", "Bobby"))
+    place = await ps.place_entity(engine, story, "the station")
+    for who in ids.values():
+        await ps.put(engine, story, who, place)
+    await ck.set_clock(engine, story, "on")
+    await ck.anchor_at(engine, story, TEN_TO_THREE)
+    await ms.per_character(engine, story, model_calls=30)
+    return story, ids, place
+
+
+async def schedule_verdicts(engine: AsyncEngine, story: str) -> list[dict[str, Any]]:
+    """The last turn's schedule statements' verdicts."""
+    report = await turn_report(engine, story)
+    return [v for v in report["verify"]["verdicts"] if "schedule" in v]
+
+
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-CLOCK-19")
+async def test_u_25__ownership(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    stops_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """The ownership variant through ``respond`` (#198): Jenni's statement that the gate closes
+    at 15:10 is a world claim, never her plan: it creates no event (a report of no event, never
+    canonized). The world's beat (the narration) does create it: a world-owned event at the
+    station. Jenni's own "I'm leaving at ten past three" is her new intention, created from her
+    render in the turn itself: an event she owns and takes part in, which Bobby's fifty-minute
+    wait in the same simultaneous turn is cut at (15:10)."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        gate = claim("the station", "scheduled", "the gate closing", time="3:10 pm")
+
+        # A character's world claim: no event, no canon.
+        story, ids, place = await bare_station(client, engine)
+        stub.reset()
+        said = beat("say", "The gate closes at ten past three.", propositions=[gate])
+        # Said, or narrated in her own ``do``: a world claim either way, never canon.
+        done = beat(
+            "do", "Jenni reads that the gate closes at ten past three.", propositions=[gate]
+        )
+        ms.renders_for(stub, "Jenni", ms.render(said, done))
+        ms.renders_for(stub, "Bobby", ms.render(beat("say", "Hurry.")))
+        await play(client, stub, story, ids)
+        verdicts = await schedule_verdicts(engine, story)
+        assert [v["schedule"] for v in verdicts] == [
+            {"kind": "report", "event_id": None, "refused_change": False}
+        ] * 2
+        assert await ck.events(engine, story) == []
+        scheduled = await rows(
+            engine,
+            "SELECT id FROM facts WHERE story_id = :s AND predicate_id = :p",
+            s=story,
+            p=SCHEDULED,
+        )
+        assert scheduled == []
+
+        # The world's beat makes it: a world-owned event at the station.
+        stub.reset()
+        narrated = {**gate, "qualifiers": {"place": "the station"}}
+        es.narrator(
+            stub,
+            es.render(
+                beat("narration", "The gate closes at ten past three.", propositions=[narrated])
+            ),
+        )
+        ms.renders_for(stub, "Jenni", ms.render(beat("say", "Oh.")))
+        ms.renders_for(stub, "Bobby", ms.render(beat("say", "Hurry.")))
+        answer = await respond(
+            client,
+            story,
+            body(
+                ids["Cal"],
+                None,
+                do="looks at the departures board",
+                render_character_ids=[ids["Jenni"], ids["Bobby"]],
+            ),
+        )
+        assert answer.status_code == 200, answer.text
+        (verdict,) = await schedule_verdicts(engine, story)
+        assert verdict["schedule"]["kind"] == "create"
+        (event,) = await ck.events(engine, story)
+        assert (event.owner, event.place_id, event.participants, event.planned) == (
+            "world",
+            place,
+            (),
+            CUTOFF,
+        )
+
+        # Jenni's own new intention, created from her render in the same simultaneous turn as
+        # Bobby's skip: hers, and the turn is cut at it.
+        story, ids, _ = await bare_station(client, engine)
+        stub.reset()
+        leaving = claim("I", "scheduled", "the train departure", time="3:10 pm")
+        ms.renders_for(
+            stub,
+            "Jenni",
+            ms.render(beat("say", "I'm leaving at ten past three.", propositions=[leaving])),
+        )
+        ms.renders_for(
+            stub,
+            "Bobby",
+            ms.render(beat("do", "They wait fifty minutes.", effects=[skip(50, "they wait")])),
+        )
+        found = await play(client, stub, story, ids)
+        (verdict,) = await schedule_verdicts(engine, story)
+        assert verdict["schedule"]["kind"] == "create"
+        (train,) = await ck.events(engine, story)
+        assert (train.owner, train.participants, train.planned) == (
+            ids["Jenni"],
+            (ids["Jenni"],),
+            CUTOFF,
+        )
+        assert found["clock"]["after"]["offset"] == CUTOFF
+        assert await ck.statuses(engine, story, train.event_id) == ["pending", "due"]

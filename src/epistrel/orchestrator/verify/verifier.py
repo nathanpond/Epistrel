@@ -90,6 +90,19 @@ error, a lie and a joke stand, and none of the last two canonizes. The dimension
 writes what they license at the commit (``orchestrator.epistemic.speech``). Partitions off, or
 verification off, there is no belief dimension and no classification.
 
+**Schedule statements** (FR-CLOCK-19,10; #198). A ``scheduled`` claim of a turn's beat is
+classified first (``schedules``, a ``core.world_clock.schedule_statements.Book``; ``verify(...,
+schedule_change=)``: the beat's change language or declared ``reschedule``), before #166's
+three-way verify. A **create** is checked and canonized as any novel claim is (the canon event
+is the speaker's; the commit gives the speaker its belief). A **change** is ``supported`` (rule
+``coverage``, citing the event): it is neither canonized nor classified as speech, and the commit
+reschedules the event. A **report** of an existing event takes its objective relation from the
+event's planned time (``supported``, or ``contradicted`` by ``instant_identity`` citing the
+event's canon proposition: an event happens at one time), then runs the speaker's belief
+dimension as any first-person claim; a report never canonizes, and neither does a statement
+about a plan that is no event and not the speaker's own (a character's world claim). The result
+carries the classification (``VerifyResult.schedule``).
+
 **Within one turn** a ``Verifier`` is built per turn: identical ``(claim, records)`` requests
 reuse the first validated answer (the structured call's deterministic step), escalations run one
 after the other, and every residual that reached the gate leaves an ``EscalationRecord`` in
@@ -130,11 +143,17 @@ from epistrel.core.propositions.model import (
     Bound,
     Granularity,
     Instant,
+    Polarity,
     Proposition,
     TemporalKind,
 )
 from epistrel.core.propositions.registry import Registry, conditional_owner, load, owner_lookup
-from epistrel.core.propositions.vocabulary import STATE_VALUE, TIME_IS, TIME_OF_DAY_BAND
+from epistrel.core.propositions.vocabulary import (
+    SCHEDULED,
+    STATE_VALUE,
+    TIME_IS,
+    TIME_OF_DAY_BAND,
+)
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.resolution.context import load_time_basis
 from epistrel.core.resolution.time import TimeBasis
@@ -166,6 +185,7 @@ from epistrel.core.verify.rules import (
     VerdictReason,
 )
 from epistrel.core.visibility import Visibility
+from epistrel.core.world_clock import schedule_statements as schedules
 from epistrel.core.world_clock.anchor import Anchor
 from epistrel.observability import stages
 from epistrel.orchestrator.budget import TurnBudget
@@ -239,6 +259,21 @@ UNNORMALIZED_SHAPE = PredicateShape("auto", UNKNOWN, UNKNOWN, UNKNOWN)
 NEIGHBORHOOD_DEPTH = 1
 """The neighborhood an entailment call adds to the fetched records: the claim subject's own
 facts, in both directions."""
+
+
+def speaker_of(asserter: Asserter) -> str:
+    """#198: who makes a schedule statement: the character (a render's, the player's own, a
+    reaction's reactor), ``world`` for a director's or narration's beat, ``author`` for the
+    author's; nobody (``""``) for the ``co_author`` player's narration of another character."""
+    if asserter.kind == "director":
+        return schedules.OWNER_WORLD
+    if asserter.kind == "author":
+        return schedules.OWNER_AUTHOR
+    if asserter.kind == "reactive":
+        return asserter.reactor or ""
+    if asserter.kind == "co_author":
+        return ""
+    return asserter.character_id or ""
 
 
 def mover_of(asserter: Asserter | None, channel: str | None, *, change: bool) -> str | None:
@@ -371,6 +406,16 @@ class VerifyResult:
     state_finding: Finding | None = None
     """#187 (FR-STATE-5,6, FR-VERIFY-12): a State effect or a narrated State change the beat
     must fix (``core.states.effects.Finding``): always repaired, its tag the repair tag."""
+    schedule: schedules.Statement | None = None
+    """#198 (FR-CLOCK-19): a ``scheduled`` claim's classification: a create, a change or a
+    report (``core.world_clock.schedule_statements``)."""
+
+    @property
+    def schedule_kind(self) -> str | None:
+        """``create``, ``change`` or ``report`` (``None``: no schedule statement)."""
+        if self.schedule is None:
+            return None
+        return type(self.schedule).__name__.lower()
 
     @property
     def confabulated(self) -> bool:
@@ -509,7 +554,18 @@ class VerifyResult:
             )
             | ({"speech": self.speech.payload()} if self.speech is not None else {})
             | ({"attribution": self.attribution.payload()} if self.attribution is not None else {})
+            | ({"schedule": self._schedule_payload()} if self.schedule is not None else {})
         )
+
+    def _schedule_payload(self) -> dict[str, Any]:
+        """#198: the statement's class, its event and whether a change was refused."""
+        found = self.schedule
+        event = getattr(found, "event", None)
+        return {
+            "kind": self.schedule_kind,
+            "event_id": None if event is None else event.event_id,
+            "refused_change": bool(getattr(found, "refused_change", False)),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -1498,6 +1554,9 @@ class Verifier:
         """Seconds spent in entailment calls (#155's ``latency_ms_by_stage.entailment``)."""
         self.introductions: Introductions | None = None
         """The turn's minted places and objects (#479), named in prompts and the report."""
+        self.schedules: schedules.Book | None = None
+        """#198: the story's canon scheduled events a ``scheduled`` claim is classified over
+        (``None``: no classification, as before #198)."""
 
     async def verify(
         self,
@@ -1515,6 +1574,7 @@ class Verifier:
         cites: Sequence[str] = (),
         giver: str | None = None,
         change: bool = False,
+        schedule_change: bool = False,
     ) -> VerifyResult | None:
         """``claim``'s verdict as ``viewpoint`` may know it, at narrative ``position`` (canon
         written at or before it); ``None`` when the story's verification is off. A claim that
@@ -1525,11 +1585,27 @@ class Verifier:
         the speaker of a first-person ``say``) adds the belief dimension and the classification,
         with the beat's declared ``intent`` and its ``think``'s ``cites``. ``change`` (#518): the
         claim states a change, so the ``do`` beat's actor may change its own fluent
-        (``mover_of``)."""
+        (``mover_of``). ``schedule_change`` (#198): the beat states an explicit change of a
+        schedule (see "Schedule statements")."""
         if not self.config.on:
             return None
         checking = time.perf_counter()
         where = ref or ClaimRef()
+        statement = await self._statement(claim, asserter, schedule_change)
+        if isinstance(statement, schedules.Change):
+            cited = statement.event.event_id
+            found_change = VerifyResult(
+                claim,
+                Verdict(
+                    VerdictKind.SUPPORTED,
+                    evidence=(rules.Evidence(rules.Rule.COVERAGE, proposition_id=cited),),
+                ),
+                VerdictKind.SUPPORTED,
+                asserter=asserter,
+                schedule=statement,
+            )
+            self.results.append((where, found_change))
+            return found_change
         mover = mover_of(asserter, where.channel, change=change)
         found = await self.source.deterministic(
             claim, holder=holder, viewpoint=viewpoint, position=position, mover=mover
@@ -1540,7 +1616,10 @@ class Verifier:
         stages.observe("verify", time.perf_counter() - checking)
         verdict, fetched = found
         at = _At(viewpoint, position, holder)
-        result = await self._settle(claim, verdict, fetched, at, where, top=True)
+        if isinstance(statement, schedules.Report) and statement.event is not None:
+            result = await self._reported(claim, statement.event)
+        else:
+            result = await self._settle(claim, verdict, fetched, at, where, top=True)
         if (
             result.kind is VerdictKind.NOVEL
             and viewpoint != OMNISCIENT
@@ -1571,6 +1650,8 @@ class Verifier:
                 result = denied
         if believer is not None and self.beliefs is not None:
             result = await self._speech(result, claim, believer, intent, cites, position)
+        if statement is not None:
+            result = dataclasses.replace(result, schedule=statement)
         self.results.append((where, result))
         if result.surfaced:
             self.rendered[id(result)] = await self._render_claim(claim)
@@ -1582,6 +1663,32 @@ class Verifier:
             result.disposition,
         )
         return result
+
+    async def _statement(
+        self, claim: Proposition, asserter: Asserter | None, explicit: bool
+    ) -> schedules.Statement | None:
+        """#198: a ``scheduled`` claim's classification (see "Schedule statements"); ``None``
+        for any other claim, a negated one, or with no ``schedules`` book."""
+        if (
+            self.schedules is None
+            or asserter is None
+            or claim.predicate_id != SCHEDULED
+            or claim.polarity is not Polarity.AFFIRMED
+        ):
+            return None
+        return await self.schedules.statement(claim, speaker_of(asserter), explicit)
+
+    async def _reported(self, claim: Proposition, event: Any) -> VerifyResult:
+        """#198: a report's objective relation: the event's planned time (see "Schedule
+        statements")."""
+        assert self.schedules is not None  # noqa: S101 - a report comes from the book
+        zero = await self.schedules.minute_zero()
+        if schedules.same_time(event, claim, zero):
+            kind, rule = VerdictKind.SUPPORTED, rules.Rule.COVERAGE
+        else:
+            kind, rule = VerdictKind.CONTRADICTED, rules.Rule.INSTANT_IDENTITY
+        verdict = Verdict(kind, evidence=(rules.Evidence(rule, proposition_id=event.event_id),))
+        return VerifyResult(claim, verdict, kind)
 
     async def _hidden(
         self,
@@ -1915,6 +2022,8 @@ class Verifier:
                 continue
             if not r.canonizes:  # #166: a lie, a joke or a hallucination never canonizes
                 continue
+            if r.schedule is not None and not isinstance(r.schedule, schedules.Create):
+                continue  # #198: a change reschedules, a report never writes canon
             predicate_id = r.claim.predicate_id
             if owner_lookup(predicate_id) is not None:
                 if self.config.clock and predicate_id in ANCHORING:

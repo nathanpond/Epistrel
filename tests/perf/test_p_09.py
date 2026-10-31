@@ -271,9 +271,12 @@ async def test_p_09__degradation(stub_settings: Settings, engine: AsyncEngine) -
 @pytest.mark.part("M2", "NFR-PERF-6,7; FR-OBS-3")
 async def test_p_09__deadline(stub_settings: Settings, engine: AsyncEngine) -> None:
     """A slow stub: every call takes 0.7 s and the output policy flags every draft, under a
-    2 s deadline and a retry budget of 5. The first generation answers; the turn regenerates
-    until a call is cut at the deadline (cancelled, recorded as ``timeout``) and the safe
-    fallback is released with cause ``deadline``, by the deadline plus the tolerance. A hanging
+    2 s deadline and a retry budget of 5. The first generation answers; the turn checks and
+    regenerates until a call is cut at the deadline (cancelled, recorded as ``timeout``) and the
+    safe fallback is released with cause ``deadline``, by the deadline plus the tolerance. The
+    assertion is causal, not timed (#537): the cut lands on whichever call follows the first
+    generation (its guardrail check on a slow host, a later generation or check otherwise), and
+    every call before it answered in order (generation, check, generation, ...). A hanging
     first generation is 503 ``model_unavailable`` ``reason=deadline`` whose details carry
     ``model_calls`` and ``elapsed_ms``; a failing one (HTTP 500) carries its failed attempt the
     same way.
@@ -285,7 +288,9 @@ async def test_p_09__deadline(stub_settings: Settings, engine: AsyncEngine) -> N
         story, ids = await new_story(client, PLAYER, FIRST)
         actor = ids[PLAYER]
         await _settings(client, story, turn_deadline=DEADLINE_S, guardrail_retry_budget=5)
-        # 0.7 s calls put the deadline inside the second generation, tolerating 0.6 s of gaps.
+        # 0.7 s calls put the deadline after the first generation; which call it cuts (the
+        # first check, the second generation, ...) depends on the host's speed, so it is not
+        # asserted (#537).
         stub.latency_s = 0.7
 
         turn = (await respond(client, story, body(actor, "Hello."))).json()
@@ -302,12 +307,18 @@ async def test_p_09__deadline(stub_settings: Settings, engine: AsyncEngine) -> N
         turn = answer.json()
         assert took < DEADLINE_S + TOLERANCE_S
         assert turn["degradation_details"] == [{"step": "safe_fallback", "cause": "deadline"}]
-        outcomes = [c["outcome"] for c in turn["model_calls"]]
-        assert turn["model_calls"][0]["purpose"] == "generation"
-        assert outcomes[0] == "ok"
-        assert outcomes[-1] == "timeout"
-        assert all(outcome == "ok" for outcome in outcomes[:-1])
-        assert turn["call_counts"]["generation"] >= 2
+        calls = [(c["purpose"], c["outcome"]) for c in turn["model_calls"]]
+        # The first generation answered, and the cut fell on a later call: the draft the
+        # fallback replaces exists, and the deadline (not the retry budget of 5) ended the turn.
+        assert len(calls) >= 2
+        assert calls[0] == ("generation", "ok")
+        assert calls[-1][1] == "timeout"
+        # Every call before the cut answered, alternating draft and check: the cut call is the
+        # one that followed the last answered call, whichever purpose that was.
+        cycle = ["generation", "guardrail_check"]
+        assert [purpose for purpose, _ in calls] == [cycle[i % 2] for i in range(len(calls))]
+        assert all(outcome == "ok" for _, outcome in calls[:-1])
+        assert turn["call_counts"]["generation"] < 1 + 5
         _accounted(turn)
 
         # A hanging first generation: no draft to fall back from, so 503 at the deadline.

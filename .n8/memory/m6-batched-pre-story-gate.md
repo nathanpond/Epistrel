@@ -22,3 +22,4 @@ For each batch: full-run wall time, attempts, failures, how each was attributed,
 | Batch | Head | Full-run wall | Attempts | Failures | Attribution | Rework | Missed by per-issue subsets |
 |---|---|---|---|---|---|---|---|
 | 1 flakes (#537 #514 #517 #446 #468) | b47fe89 → 7923759 | 24.7 min (12 shards ×6) + `rest` re-run 4.1 min | 2 (the `rest` shard only) | 2 tests + the check-lexicon gate, one cause | By test name, to #446: "clock" (an M6 term) in three M2-part comments | ~5 min (comment rewording) | 1 (the agent didn't run check-lexicon) |
+| 2 M5 bugs (#567 #566 #568 #516 #563 #483 #521) | 1032e43 | 24.7 min | 1 | 0 | — | 0 | 0 |

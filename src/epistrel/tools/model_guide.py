@@ -141,6 +141,12 @@ CATEGORY_DESCRIPTIONS: Mapping[ContentCategory, str] = {
         "The say a witness heard (#162): the speaker's name, the words as the witness perceived "
         "them, the visible manner, the claims they carry and the intent the witness reads."
     ),
+    ContentCategory.TRACKED_VALUES: (
+        "A structured render's tracked values (#187, FR-TURN-11): for a character's render, the "
+        "player-visible States it may change (name, type, scope, unit, aliases, allowed values) "
+        "and the effect syntax, never a value; for the narrator's, every State with its current "
+        "value and constraints."
+    ),
     ContentCategory.BELIEF_STATE: (
         "A structured character render's own belief state (#170, FR-TURN-8): its beliefs as "
         '"you suspect / believe / know ..." lines, its nested beliefs ("you think Bobby '

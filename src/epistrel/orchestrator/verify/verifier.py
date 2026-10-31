@@ -136,6 +136,7 @@ from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.resolution.context import load_time_basis
 from epistrel.core.resolution.time import TimeBasis
 from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX, OMNISCIENT, VerifySettings
+from epistrel.core.states.effects import STATE_UNDECLARED, Finding
 from epistrel.core.tables import entities
 from epistrel.core.verify import permission as permissions
 from epistrel.core.verify import rules, speech_acts, yield_queries
@@ -336,6 +337,9 @@ class VerifyResult:
     recall: resurface.RecallCheck | None = None
     """#172: a first-person recall's check against the speaker's own records (FR-VERIFY-9):
     grounded (``supported``, rule ``recall``) or a confabulation (repaired)."""
+    state_finding: Finding | None = None
+    """#187 (FR-STATE-5,6, FR-VERIFY-12): a State effect or a narrated State change the beat
+    must fix (``core.states.effects.Finding``): always repaired, its tag the repair tag."""
 
     @property
     def confabulated(self) -> bool:
@@ -394,7 +398,10 @@ class VerifyResult:
     def needs_repair(self) -> bool:
         """Whether #151 repairs the claim: contradicted, undecided under ``repair``, or novel
         and not permitted (``repair_tag``); under partitions (#166) a hallucination always
-        (unless surfaced), and never a sincere error, a lie or a joke."""
+        (unless surfaced), and never a sincere error, a lie or a joke; #187: a State finding
+        always."""
+        if self.state_finding is not None:
+            return True
         if self.think_leak is not None or self.confabulated:
             return True  # #172: under every profile (the channel is private)
         if self.recall is not None:
@@ -413,7 +420,11 @@ class VerifyResult:
     def repair_tag(self) -> str | None:
         """``unpermitted`` for a denied novel claim #151 repairs (FR-VERIFY-12);
         ``resolution_conflict`` for a binding reconciliation rejected (#154); ``hallucination``
-        for a first-person claim with no legitimate basis (#166)."""
+        for a first-person claim with no legitimate basis (#166); #187: a State finding's tag
+        (``state_constraint``, ``effect_unresolved``, ``state_undeclared``: a ``state_change``
+        denial)."""
+        if self.state_finding is not None:
+            return self.state_finding.tag
         if self.think_leak is not None:
             return THINK_LEAK
         if self.confabulated:
@@ -423,6 +434,8 @@ class VerifyResult:
         if self.hallucinated:
             return HALLUCINATION
         denied = self.denied
+        if denied is not None and denied.reason is permissions.Reason.STATE_CHANGE:
+            return STATE_UNDECLARED
         return UNPERMITTED if denied is not None and denied.repaired else None
 
     @property
@@ -458,6 +471,11 @@ class VerifyResult:
             | ({"cause": HIDDEN_CONFLICT} if self.hidden_conflict else {})
             | ({"cause": THINK_LEAK, "private_ref": self.think_leak} if self.think_leak else {})
             | ({"recall": self.recall.payload()} if self.recall is not None else {})
+            | (
+                {"cause": self.state_finding.tag, "state": self.state_finding.payload()}
+                if self.state_finding is not None
+                else {}
+            )
             | ({"speech": self.speech.payload()} if self.speech is not None else {})
             | ({"attribution": self.attribution.payload()} if self.attribution is not None else {})
         )

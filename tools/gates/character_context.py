@@ -69,6 +69,8 @@ SECTIONS: dict[str, str] = {
     "just_now": CONTEXT,
     "retrieved_memories": CONTEXT,
     "canon_facts": CONTEXT,
+    "tracked_values": CONTEXT,
+    "tracked_syntax": CONTEXT,
     "rating_guidance": TURN,
     "custom_instructions": TURN,
     "scenario_text": TURN,

@@ -46,6 +46,13 @@ takes nothing else, and ``python -m tools.gates check-character-context`` checks
   the most recent, each "you thought: …". They sit in U-31's pins tier (never cut by the prompt
   cap), so a later render can resurface a recorded state (a grounded callback,
   ``core.epistemic.resurface``) rather than invent one. Omitted when there are none.
+- **Tracked values** (#187, FR-TURN-11; owner decision 2026-10-30): with the story's
+  ``states.level`` at ``on``, the player-visible States the character may change (their
+  ``authorization.sources`` names ``any_character`` or ``character:<id>``;
+  ``core.states.effects.may_declare``), each with its name, type, scope, unit, aliases and
+  allowed values, then the effect syntax with one example. No value is shown: the character's
+  knowledge of a value reaches it only as its beliefs (FR-STATE-8). Absent with ``states.level``
+  anything else, or with no such State.
 - **Ages** (FR-CAT-12, FR-RESP-12, S-AGE-ASSIGNMENT M5; per-character partitions only): the
   character's own true age ("You are 34."). Every other present character on the ``## Scene``
   line gets only an apparent band (``age_band``: "early twenties"), or the exact age when the
@@ -207,6 +214,10 @@ class CharacterContext:
     player_heard: tuple[str, ...] = ()
     """#572: what the character perceived of the input short of its words: an envelope ("Wren
     whispers something to Marcus") or an eavesdropper's part, as working-memory lines."""
+    tracked: tuple[str, ...] = ()
+    """#187: ``## Tracked values``, the States the character may change (no value)."""
+    tracked_syntax: str = ""
+    """#187: the effect syntax and its example (with ``tracked``)."""
     needed: tuple[Needed, ...] = field(default=(), compare=False)
     """The exposures this context needed, which the turn's commit resolves."""
     retrieval: RetrievalResult | None = field(default=None, compare=False)
@@ -342,6 +353,8 @@ def compose(
     player_say: str | None = None,
     player_do: str | None = None,
     player_heard: Sequence[str] = (),
+    tracked: Sequence[str] = (),
+    tracked_syntax: str = "",
 ) -> CharacterContext:
     """The context's sections from already-filtered inputs (see the module docstring). Pure."""
     if working.viewpoint != f"{CHARACTER_VIEWPOINT_PREFIX}{character_id}":
@@ -367,6 +380,8 @@ def compose(
         player_say=player_say,
         player_do=player_do,
         player_heard=tuple(player_heard),
+        tracked=tuple(tracked),
+        tracked_syntax=tracked_syntax if tracked else "",
     )
 
 
@@ -688,6 +703,25 @@ async def _scene_line(
     return f"Location: {where}." + (f" Present: {', '.join(listed)}." if listed else "")
 
 
+async def _tracked(
+    conn: AsyncConnection, story_id: str, character_id: str, settings: ProfileSettings
+) -> tuple[list[str], str]:
+    """#187: the character's ``## Tracked values`` (see the module docstring)."""
+    from epistrel.core import states
+    from epistrel.core.profiles import schema
+    from epistrel.core.states import effects
+
+    level = schema.level_of(settings, states.MODULE)
+    if level != states.ON or not schema.is_delivered(states.MODULE, level):
+        return [], ""
+    found = [
+        d for d in await states.definitions(conn, story_id) if effects.may_declare(d, character_id)
+    ]
+    if not found:
+        return [], ""
+    return [effects.character_line(d) for d in found], effects.syntax(found, character=True)
+
+
 async def build_context(
     conn: AsyncConnection, character_id: str, state: TurnState
 ) -> CharacterContext:
@@ -791,6 +825,7 @@ async def build_context(
         + min(len(nested_lines), NESTED_MAX)
         + min(len(speech_lines), NESTED_MAX),
     }
+    tracked, tracked_syntax = await _tracked(conn, story_id, character_id, settings)
     return compose(
         character_id,
         working=_seal(window, viewpoint),
@@ -811,6 +846,8 @@ async def build_context(
         player_say=player_say,
         player_do=player_do,
         player_heard=player_heard,
+        tracked=tracked,
+        tracked_syntax=tracked_syntax,
     )
 
 

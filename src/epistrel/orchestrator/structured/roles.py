@@ -152,6 +152,9 @@ class TurnRoles:
     rejected: list[tuple[TurnBeat, str]] = field(default_factory=list)
     limited: int = 0
     dropped: dict[str, int] = field(default_factory=dict)
+    state_terms: tuple[str, ...] = ()
+    """#187: how prose names the story's tracked States (``states.level = on`` only): a reaction
+    naming one escalates (``core.epistemic.roles.judge``)."""
 
     def bounds(self) -> Bounds:
         return Bounds(
@@ -161,6 +164,7 @@ class TurnRoles:
             max_words=self.max_words,
             player_id=self.player_id,
             primaries=frozenset(self.rendering),
+            state_terms=self.state_terms,
         )
 
     def silent(self) -> frozenset[str]:
@@ -308,7 +312,7 @@ def collect(
     for beat in own:
         if beat.kind != "do":
             continue
-        for cid, sentence, _, _ in rules.prose_reactions(beat.text, others):
+        for cid, sentence, _, _ in rules.prose_reactions(beat.text, others, roles.state_terms):
             found.append(
                 Reaction(
                     character_id=cid,

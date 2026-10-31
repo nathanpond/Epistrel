@@ -73,6 +73,9 @@ class StagedBeat:
     narrator: bool = False
     verified: tuple[Proposition, ...] = ()
     step: int = 0
+    effects: tuple[Any, ...] = ()
+    """#187: the State effects the beat declares (``core.turns.beats.DeclaredEffect``): a later
+    primary's dry-run folds them in beat order (FR-STATE-6)."""
 
     def working(self, turn: int) -> WorkingBeat:
         return WorkingBeat(

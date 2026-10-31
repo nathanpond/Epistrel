@@ -53,6 +53,22 @@ HISTORY_DESCRIPTION = (
 )
 
 
+class StateEffectModel(BaseModel):
+    """A State change a structured turn committed (#187, FR-RESP-7): the State, its scope key
+    (the character, for a per-character State), the value it found and the one it left, the
+    reason, its source (``turn``), contingency and status. A ``hidden`` State's appears only
+    for ``omniscient``."""
+
+    state: str
+    scope_key: str | None
+    old_value: Any
+    new_value: Any
+    reason: str
+    source: str
+    contingency: str
+    status: str
+
+
 class BeatPropositionModel(BaseModel):
     """A proposition a structured beat asserts, with its verdict (#150)."""
 
@@ -138,7 +154,9 @@ class HistoryItemModel(BaseModel):
     effects: list[dict[str, Any]] | None = Field(
         default=None,
         exclude_if=lambda v: v is None,
-        description="A structured turn's beat (#150): its state effects (empty in M4).",
+        description="A structured turn's beat (#150; omniscient reads only): the State "
+        "changes it committed (#187), each `{state, scope_key, old_value, new_value, reason, "
+        "source, contingency, status}`.",
     )
     labels: UtteranceLabelsModel | None = Field(
         default=None,
@@ -201,6 +219,13 @@ class TurnSummaryModel(BaseModel):
     turn: int
     variant: int | None
     message: TurnMessageModel | None
+    state_effects: list[StateEffectModel] = Field(
+        default_factory=list,
+        exclude_if=lambda e: not e,
+        description="The State changes the turn committed (#187, FR-RESP-7), a `hidden` "
+        "State's only for `omniscient` (visibility only, no audience filter); absent when "
+        "none.",
+    )
 
     @classmethod
     def of(cls, summary: TurnSummary) -> TurnSummaryModel:

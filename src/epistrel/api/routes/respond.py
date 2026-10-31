@@ -11,7 +11,12 @@ from pydantic import BaseModel, Field
 from epistrel.api.deps import ContextDep, EngineDep, RespondAsyncDep, StoryId
 from epistrel.api.idempotency import answered
 from epistrel.api.responses import MutationResponse
-from epistrel.api.routes.history import AudienceFilterValue, ItemModel, item_model
+from epistrel.api.routes.history import (
+    AudienceFilterValue,
+    ItemModel,
+    StateEffectModel,
+    item_model,
+)
 from epistrel.core.profiles.effective import ProfileVersionRef
 from epistrel.core.profiles.fingerprint import QualityStatus
 from epistrel.orchestrator.lite.schemas import RespondRequest, RespondResult
@@ -258,6 +263,9 @@ class RespondResponse(MutationResponse):
     reconcile: list[ReconcileBody] = Field(default_factory=list, exclude_if=lambda r: not r)
     """A structured turn's reconciled concurrent commitments (#177, FR-MULTI-3); absent when
     nothing contradicted."""
+    state_effects: list[StateEffectModel] = Field(default_factory=list, exclude_if=lambda e: not e)
+    """The State changes the turn committed (#187, FR-RESP-7) with their old and new values, a
+    ``hidden`` State's only when the request names ``omniscient``; absent when none."""
 
     @classmethod
     def of(cls, result: RespondResult) -> RespondResponse:
@@ -301,6 +309,7 @@ class RespondResponse(MutationResponse):
             deferred_characters=[DeferredCharacterBody(**d) for d in result.deferred_characters],
             reduced_characters=list(result.reduced_characters),
             reconcile=[ReconcileBody(**r) for r in result.reconcile],
+            state_effects=[StateEffectModel(**e) for e in result.state_effects],
             budget=(
                 None
                 if result.budget is None

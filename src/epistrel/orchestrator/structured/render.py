@@ -16,7 +16,7 @@ wrong and is retried within the deployment's ``structured_retry_budget``:
   rendering character (never the player, never another character; the narrator names none);
 - ``intent`` is a ``say``'s alone (``sincere``, ``deceptive``, ``joking``, ``unspecified``;
   ``unspecified`` when it is left out), ``visibility`` a ``latent``'s alone (``objective`` when
-  left out; ``characters`` names cast members only), ``effects`` is empty in M4; ``hidden``
+  left out; ``characters`` names cast members only); ``hidden``
   (``{noticers, observed: fact | signal}``, cast members only) and ``holder`` (``canon`` only:
   any other is ``viewpoint_cannot_assign_truth``, FR-EPI-8) a ``latent``'s alone (#169);
 - the perception qualifiers (#161) are optional and kind-bound: ``whisper_to``, ``aside`` and
@@ -24,6 +24,20 @@ wrong and is retried within the deployment's ``structured_retry_budget``:
   ``partial_text`` a ``say``'s or a ``do``'s, ``location`` a narration's; what they name is
   validated at routing (``core.epistemic.perception``), where one that cannot be honored is
   repaired, not refused;
+- ``effects`` (#187, FR-TURN-11) are the beat's State effects, ``{kind, state, scope_key?,
+  delta? | value?, counterparty?, reason, justification?, justified_by?, consideration?,
+  silent?, contingency?, prerequisites?}``. Only ``kind = change``, ``reason`` (1 to 200
+  characters) and ``silent`` are delivered: any other kind, or a non-null field another story
+  owns (#188's ``counterparty``, ``justification``, ``justified_by``; #189's
+  ``consideration``; #216's ``contingency``, ``prerequisites``), is invalid. So is an effect
+  naming no State of the story (``world_clock`` included: a time advance is #194's), a
+  ``delta`` on a non-number, both a ``delta`` and a ``value``, a value of the wrong type, a
+  scope key on a story State or naming no cast member, a character-scoped State with no
+  scope key in the narrator's render (a character's defaults to the character), a character
+  render naming a ``hidden`` State (only the narrator's may), an effect on a ``think`` beat,
+  and any effect while the story's ``states.level`` is not ``on`` (named by module). An
+  effect with neither a delta nor a value is structurally valid: it is ``effect_unresolved``,
+  repaired (``orchestrator.structured.effects``);
 - ``propositions`` are #140's text sketches (subject, relation, object, time, negated, and the
   predicate's qualifiers it names, #151);
 - ``introduces`` names each new character a beat introduces (``{name, age?, age_range?,
@@ -77,8 +91,14 @@ from typing import Annotated, Any, ClassVar, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
 
+from epistrel.core.states.model import WORLD_CLOCK
 from epistrel.core.tables.characters import TRUE_AGE_MAX, TRUE_AGE_MIN
-from epistrel.core.turns.beats import BEAT_TEXT_MAX, CHARACTER_KINDS, NARRATOR_KINDS
+from epistrel.core.turns.beats import (
+    BEAT_TEXT_MAX,
+    CHARACTER_KINDS,
+    NARRATOR_KINDS,
+    DeclaredEffect,
+)
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models.access import ModelAccessLayer
 from epistrel.orchestrator.models.adapter import Message, ModelParams
@@ -264,6 +284,142 @@ class RemoteChannelDecl(_Strict):
     participants: list[str] = Field(default_factory=list, max_length=MAX_NAMED)
 
 
+EFFECT_REASON_MAX = 200
+"""A declared effect's reason: at most this many characters (FR-STATE-4's reason)."""
+MAX_EFFECTS = 8
+"""The most effects one beat declares."""
+STATE_NAME_MAX = 80
+EffectKind = Literal["change", "transfer", "time_advance", "reschedule"]
+DELIVERED_EFFECT_KINDS = frozenset({"change"})
+"""The effect kinds this deployment validates (#187); ``transfer`` is #188's, ``time_advance``
+#194's, ``reschedule`` #198's."""
+UNDELIVERED_EFFECT_FIELDS = (
+    "counterparty",
+    "justification",
+    "justified_by",
+    "consideration",
+    "contingency",
+    "prerequisites",
+)
+"""The effect fields later stories validate (#188, #189, #216): non-null is invalid until then."""
+STATES_ON = "on"
+
+
+class CounterpartyDecl(_Strict):
+    """A transfer's other side (#188): the State and its scope key."""
+
+    state: str = Field(min_length=1, max_length=STATE_NAME_MAX)
+    scope_key: str | None = Field(default=None, max_length=NAME_MAX)
+
+
+class EffectDecl(_Strict):
+    """One State effect a beat declares (#187; see the module docstring)."""
+
+    kind: EffectKind = "change"
+    state: str = Field(min_length=1, max_length=STATE_NAME_MAX)
+    scope_key: str | None = Field(default=None, max_length=NAME_MAX)
+    delta: int | float | None = None
+    value: bool | int | float | str | None = None
+    counterparty: CounterpartyDecl | None = None
+    reason: str = Field(min_length=1, max_length=EFFECT_REASON_MAX)
+    justification: str | None = Field(default=None, max_length=EFFECT_REASON_MAX)
+    justified_by: int | None = Field(default=None, ge=0, le=64)
+    consideration: str | None = Field(default=None, max_length=NAME_MAX)
+    silent: bool | None = None
+    contingency: Literal["unconditional", "reservation", "conditional"] | None = None
+    prerequisites: list[Annotated[str, Field(max_length=CITE_MAX)]] | None = Field(
+        default=None, max_length=MAX_CITES
+    )
+
+
+def declared_of(effects: Sequence[EffectDecl]) -> tuple[DeclaredEffect, ...]:
+    """A beat's validated effects as Core takes them (``core.turns.beats.DeclaredEffect``)."""
+    return tuple(
+        DeclaredEffect(
+            state=e.state,
+            reason=e.reason.strip(),
+            scope_key=e.scope_key,
+            delta=e.delta,
+            value=e.value,
+            silent=bool(e.silent),
+        )
+        for e in effects
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class TrackedState:
+    """What a render's schema knows of one of the story's States (#187): its type, scope and
+    visibility (``core.states.StateDefinition``'s)."""
+
+    type: str
+    scope: str
+    visibility: str
+
+
+def _value_fits(state_type: str, value: Any) -> bool:
+    if state_type == "number":
+        return isinstance(value, int | float) and not isinstance(value, bool)
+    if state_type == "boolean":
+        return isinstance(value, bool)
+    return isinstance(value, str)
+
+
+def effect_errors(
+    where: str,
+    kind: str,
+    effects: Sequence[EffectDecl],
+    *,
+    narrator: bool,
+    states: Mapping[str, TrackedState],
+    level: str | None,
+    cast_ids: frozenset[str],
+) -> list[str]:
+    """The structural errors of one beat's ``effects`` (see the module docstring): codes and
+    indices, never a State's name or a value (``details.structural_errors``)."""
+    if not effects:
+        return []
+    if level != STATES_ON:
+        return [
+            f"{where}.effects: module states is {level or 'off'}: a render declares no State effect"
+        ]
+    if kind == "think":
+        return [f"{where}.effects: a think changes nothing"]
+    errors: list[str] = []
+    for m, effect in enumerate(effects):
+        at = f"{where}.effects.{m}"
+        if effect.kind not in DELIVERED_EFFECT_KINDS:
+            errors.append(f"{at}.kind: only a change is delivered")
+        for name in UNDELIVERED_EFFECT_FIELDS:
+            if getattr(effect, name) is not None:
+                errors.append(f"{at}.{name}: not delivered yet")
+        if not effect.reason.strip():
+            errors.append(f"{at}.reason: empty")
+        if effect.state == WORLD_CLOCK:
+            errors.append(f"{at}.state: the world clock moves only by a time advance")
+            continue
+        target = states.get(effect.state)
+        if target is None:
+            errors.append(f"{at}.state: not one of the story's States")
+            continue
+        if not narrator and target.visibility == "hidden":
+            errors.append(f"{at}.state: a hidden State changes only through the narrator")
+        if effect.delta is not None and effect.value is not None:
+            errors.append(f"{at}: a delta or a value, not both")
+        if effect.delta is not None and (target.type != "number" or isinstance(effect.delta, bool)):
+            errors.append(f"{at}.delta: a delta applies to a number State")
+        if effect.value is not None and not _value_fits(target.type, effect.value):
+            errors.append(f"{at}.value: not a {target.type} value")
+        if target.scope == "story" and effect.scope_key is not None:
+            errors.append(f"{at}.scope_key: the State belongs to the story")
+        if target.scope == "character":
+            if effect.scope_key is None and narrator:
+                errors.append(f"{at}.scope_key: name the character whose State it is")
+            if effect.scope_key is not None and effect.scope_key not in cast_ids:
+                errors.append(f"{at}.scope_key: not one of the story's characters")
+    return errors
+
+
 class BeatDecl(_Strict):
     """One beat as a render returns it. The perception qualifiers (#161) are optional and
     explicit: ``addressee`` and ``manner`` (who it is visibly addressed to, how),
@@ -280,7 +436,8 @@ class BeatDecl(_Strict):
     actor_character_id: str | None = None
     intent: IntentName | None = None
     propositions: list[PropositionSketch] = Field(default_factory=list, max_length=MAX_PROPOSITIONS)
-    effects: list[dict[str, Any]] = Field(default_factory=list)
+    effects: list[EffectDecl] = Field(default_factory=list, max_length=MAX_EFFECTS)
+    """#187 (FR-TURN-11): the beat's State effects (``EffectDecl``)."""
     visibility: VisibilityDecl | None = None
     hidden: HiddenDecl | None = None
     """#169: a ``latent``'s hidden commitment (``HiddenDecl``)."""
@@ -468,6 +625,10 @@ class RenderedBeats(_Strict):
     cast_ids: ClassVar[frozenset[str]] = frozenset()
     allowed: ClassVar[frozenset[str]] = CHARACTER_KINDS
     limit: ClassVar[int] = 6
+    states: ClassVar[Mapping[str, TrackedState]] = {}
+    """#187: the story's States by name (what an effect may name)."""
+    states_level: ClassVar[str | None] = None
+    """#187: the story's ``states.level`` (``None``: off); effects need ``on``."""
 
     @model_validator(mode="after")
     def _structure(self) -> Self:
@@ -515,8 +676,17 @@ class RenderedBeats(_Strict):
                     f"{where}.holder: viewpoint_cannot_assign_truth: a latent's truth is canon's "
                     "(a character's view is a belief)"
                 )
-            if beat.effects:
-                raise ValueError(f"{where}.effects: state effects are not delivered yet")
+            found = effect_errors(
+                where,
+                beat.kind,
+                beat.effects,
+                narrator=narrator,
+                states=cls.states,
+                level=cls.states_level,
+                cast_ids=cls.cast_ids,
+            )
+            if found:
+                raise ValueError("; ".join(found))
             for name in beat.qualifiers_declared():
                 if beat.kind not in _SAY_ONLY[name]:
                     raise ValueError(f"{where}.{name}: not a qualifier a {beat.kind} declares")
@@ -562,9 +732,12 @@ def render_schema(
     player_id: str | None,
     cast_ids: Sequence[str],
     max_beats: int,
+    states: Mapping[str, TrackedState] | None = None,
+    states_level: str | None = None,
 ) -> type[RenderedBeats]:
     """The beat schema of one render: a character's (``actor_id``) or the narrator's
-    (``None``), with ``render.max_beats`` as the beats' ``max_items``."""
+    (``None``), with ``render.max_beats`` as the beats' ``max_items``; #187: the story's States
+    and its ``states.level``, which its effects are validated against."""
     name = "NarratorRender" if actor_id is None else "CharacterRender"
     model = create_model(
         name,
@@ -577,6 +750,8 @@ def render_schema(
     model.cast_ids = frozenset(cast_ids)
     model.allowed = NARRATOR_KINDS if actor_id is None else CHARACTER_KINDS
     model.limit = max_beats
+    model.states = dict(states or {})
+    model.states_level = states_level
     return model
 
 
@@ -904,12 +1079,15 @@ __all__ = [
     "AgeRepair",
     "AttributionDecl",
     "BeatDecl",
+    "EffectDecl",
     "IntroductionDecl",
     "PropositionSketch",
     "RenderedBeats",
     "StepDecl",
+    "TrackedState",
     "VisibilityDecl",
     "age_schema",
+    "effect_errors",
     "hold_length",
     "length_chars",
     "length_line",

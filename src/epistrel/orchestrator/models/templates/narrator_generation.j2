@@ -5,7 +5,9 @@ that addresses no character, an open salient reference). The ``system`` block ho
 guidance (always first, FR-RATE-4), the custom instructions, the scenario text, the director's
 notes labelled apart from the facts (#122, FR-SCN-11: the narrator's context alone), the scene
 and who is present, the working memory as the narrator perceives it (omniscient, ``think``
-excluded), the retrieved context and the canon, then the narration contract and, on a
+excluded), the retrieved context and the canon, ``## Tracked values`` (#187: every State, hidden
+ones included, with its value at the turn's start and its constraints, and the effect syntax),
+then the narration contract and, on a
 guardrail regeneration, the constraint lines (#68). The ``user`` block is the player input. -#}
 {% macro line(entry) -%}
 {% if entry.text %}{{ entry.text }}{% else %}{{ entry.name }}:{% if entry.say %} "{{ entry.say }}"{% endif %}{% if entry.do %} *{{ entry.do }}*{% endif %}{% endif %}
@@ -60,6 +62,14 @@ guardrail regeneration, the constraint lines (#68). The ``user`` block is the pl
 {% for fact in canon_facts %}
 - {{ fact }}
 {% endfor %}
+
+{% endif %}
+{% if tracked_values %}
+## Tracked values
+{% for line in tracked_values %}
+- {{ line }}
+{% endfor %}
+{{ tracked_syntax }}
 
 {% endif %}
 {% if open_references %}

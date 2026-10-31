@@ -170,6 +170,27 @@ class AssertedClaim:
 
 
 @dataclass(frozen=True, slots=True)
+class DeclaredEffect:
+    """One State effect a beat declares (FR-TURN-11, FR-STATE-5; #187): the State's name, its
+    scope key (``None``: the story's, or for a character-scoped State the acting character),
+    a ``delta`` or a new ``value`` (both ``None``: unresolved, repaired), the reason (at most
+    200 characters) and whether it is ``silent``. Validated against the State before the repair
+    ladder and committed with the turn (``orchestrator.structured.effects``)."""
+
+    state: str
+    reason: str
+    scope_key: str | None = None
+    delta: Any = None
+    value: Any = None
+    silent: bool = False
+
+    @property
+    def unresolved(self) -> bool:
+        """Neither a delta nor a value: the effect names no concrete amount."""
+        return self.delta is None and self.value is None
+
+
+@dataclass(frozen=True, slots=True)
 class TurnBeat:
     """One beat of a structured turn: its kind, position, text and actor (``None`` for
     narration), a ``say``'s declared intent, a ``latent``'s visibility, the claims it asserts,
@@ -207,6 +228,9 @@ class TurnBeat:
     narrated_by: str | None = None
     """#176 (FR-MULTI-9): a reactive character's reaction, narrated by this character's render
     (``character_id`` is the reactor's)."""
+    effects: tuple[DeclaredEffect, ...] = ()
+    """#187 (FR-TURN-11): the State effects the beat declares, in order (none on the player's
+    input, a ``think``, a reactive reaction or the player's ``co_author`` narration)."""
 
     @property
     def declared(self) -> tuple[AssertedClaim, ...]:
@@ -663,6 +687,7 @@ __all__ = [
     "AgeSource",
     "AssertedClaim",
     "BeatKind",
+    "DeclaredEffect",
     "Intent",
     "Introduction",
     "ObjectiveRelation",

@@ -400,6 +400,10 @@ class RespondResult:
     reconcile: list[dict[str, Any]] = field(default_factory=list)
     """#177 (FR-MULTI-3): a structured turn's reconciled concurrent commitments, ``{proposition,
     winner_beat, loser_beat, rule}``; empty when nothing contradicted."""
+    state_effects: list[dict[str, Any]] = field(default_factory=list)
+    """#187 (FR-RESP-7): the State changes a structured turn committed, ``{state, scope_key,
+    old_value, new_value, reason, source, contingency, status}``, a ``hidden`` State's only for
+    ``omniscient``; empty otherwise."""
 
 
 @dataclass(frozen=True, slots=True)

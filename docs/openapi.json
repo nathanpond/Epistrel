@@ -10687,7 +10687,7 @@
                 "type": "null"
               }
             ],
-            "description": "A structured turn's beat (#150): its state effects (empty in M4).",
+            "description": "A structured turn's beat (#150; omniscient reads only): the State changes it committed (#187), each `{state, scope_key, old_value, new_value, reason, source, contingency, status}`.",
             "title": "Effects"
           },
           "fidelity": {
@@ -15892,7 +15892,7 @@
                 "type": "null"
               }
             ],
-            "description": "A structured turn's beat (#150): its state effects (empty in M4).",
+            "description": "A structured turn's beat (#150; omniscient reads only): the State changes it committed (#187), each `{state, scope_key, old_value, new_value, reason, source, contingency, status}`.",
             "title": "Effects"
           },
           "fidelity": {
@@ -25659,6 +25659,13 @@
             "title": "Roles",
             "type": "object"
           },
+          "state_effects": {
+            "items": {
+              "$ref": "#/components/schemas/StateEffectModel"
+            },
+            "title": "State Effects",
+            "type": "array"
+          },
           "timeline_revision": {
             "title": "Timeline Revision",
             "type": "integer"
@@ -26691,6 +26698,13 @@
             },
             "title": "Roles",
             "type": "object"
+          },
+          "state_effects": {
+            "items": {
+              "$ref": "#/components/schemas/StateEffectModel"
+            },
+            "title": "State Effects",
+            "type": "array"
           },
           "timeline_revision": {
             "title": "Timeline Revision",
@@ -32433,6 +32447,60 @@
         "title": "StageStatus",
         "type": "string"
       },
+      "StateEffectModel": {
+        "description": "A State change a structured turn committed (#187, FR-RESP-7): the State, its scope key\n(the character, for a per-character State), the value it found and the one it left, the\nreason, its source (``turn``), contingency and status. A ``hidden`` State's appears only\nfor ``omniscient``.",
+        "properties": {
+          "contingency": {
+            "title": "Contingency",
+            "type": "string"
+          },
+          "new_value": {
+            "title": "New Value"
+          },
+          "old_value": {
+            "title": "Old Value"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "scope_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Key"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "scope_key",
+          "old_value",
+          "new_value",
+          "reason",
+          "source",
+          "contingency",
+          "status"
+        ],
+        "title": "StateEffectModel",
+        "type": "object"
+      },
       "StatusBody": {
         "description": "The story's status after an archive or unarchive, with its revision.",
         "properties": {
@@ -34763,6 +34831,14 @@
                 "type": "null"
               }
             ]
+          },
+          "state_effects": {
+            "description": "The State changes the turn committed (#187, FR-RESP-7), a `hidden` State's only for `omniscient` (visibility only, no audience filter); absent when none.",
+            "items": {
+              "$ref": "#/components/schemas/StateEffectModel"
+            },
+            "title": "State Effects",
+            "type": "array"
           },
           "turn": {
             "title": "Turn",

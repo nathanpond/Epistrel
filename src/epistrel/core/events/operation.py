@@ -104,6 +104,7 @@ from epistrel.core.concurrency import (
     ReadSet,
     ReadSetSource,
     Rebase,
+    RebaseCheckFailed,
     Regenerate,
     RevalidationRequired,
     RevalidationState,
@@ -926,7 +927,10 @@ class Operation:
                 conn, self.story_id, self._log_events(self.story_id, ids), kind=kind
             )
         for step in self._commit_steps:
-            await step(conn)
+            try:
+                await step(conn)
+            except RebaseCheckFailed as failed:
+                self._rebase_failed(decide, current_revision, failed)
         await self._check_erased(conn, decide, current_revision)
         if self._staged:
             # The subject-reference index (FR-ADMIN-6; #123), after the commit steps so a
@@ -1025,6 +1029,26 @@ class Operation:
         self.attempts.append(record)
         if isinstance(outcome, Regenerate | Abandon | ConfigRecheck):
             raise RevalidationRequired(outcome, state)
+
+    def _rebase_failed(
+        self, decide: Decide | None, current_revision: int, failed: RebaseCheckFailed
+    ) -> None:
+        """A commit step's deterministic check failed (#187, ``RebaseCheckFailed``): a
+        revalidating turn regenerates (``rebase_failed``, within its budget); anything else
+        fails with it."""
+        if decide is None or self.kind is not OperationKind.TURN or not self.attempts:
+            raise failed
+        state = RevalidationState(
+            attempt=len(self.attempts),
+            base_revision=self.base_revision or 0,
+            current_revision=current_revision,
+            control_since_base=False,
+            control_operation_id=None,
+            touched=(),
+        )
+        outcome = Regenerate(reason="rebase_failed")
+        self.attempts[-1] = attempt_record(state, outcome)
+        raise RevalidationRequired(outcome, state) from failed
 
     async def _check_erased(
         self, conn: AsyncConnection, decide: Decide | None, current_revision: int

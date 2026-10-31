@@ -192,6 +192,14 @@ class RevalidationRequired(Exception):
         self.state = state
 
 
+class RebaseCheckFailed(Exception):
+    """Raised by a turn's commit step whose deterministic check no longer holds against the
+    state it is committing over (#187: a State effect a concurrent change made violate its
+    bounds; never repaired inside the commit). ``Operation.commit`` turns it into a
+    ``Regenerate`` (``rebase_failed``) within the turn's budget, as a failed ``REBASE_CHECKS``
+    entry does; outside a revalidating turn it is the failure it is."""
+
+
 def attempt_record(state: RevalidationState, outcome: Decision) -> dict[str, Any]:
     """One entry of ``operations.attempts`` (exposed by ``GET /operations/{id}``, #61)."""
     record: dict[str, Any] = {

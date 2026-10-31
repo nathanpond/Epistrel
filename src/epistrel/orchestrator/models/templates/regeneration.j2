@@ -5,7 +5,7 @@ Edit in place: the ``system`` block holds the generation inputs of the render th
 from (the rating guidance always first, FR-RATE-4; the custom instructions; a scenario story's
 scenario text; the rendering character's definition, or for a narrator beat the director's
 notes; the pinned memories; the scene, the working memory, the retrieved context and the
-canon it may know), then ``## Repair``: the beat as it was rendered, the canon facts it
+canon it may know, and ``## Tracked values``, #187), then ``## Repair``: the beat as it was rendered, the canon facts it
 contradicted, the facts that hang on them (their neighborhood) and one line per constraint the
 rewrite must keep. The ``user`` block is the player input. The rewritten beat comes back as the
 call's ``response_schema`` (one beat of the same kind: its text and the propositions it
@@ -76,6 +76,14 @@ When {{ character.name }} refuses or changes the subject: {{ character.deflectio
 {% for fact in canon_facts %}
 - {{ fact }}
 {% endfor %}
+
+{% endif %}
+{% if tracked_values %}
+## Tracked values
+{% for line in tracked_values %}
+- {{ line }}
+{% endfor %}
+{{ tracked_syntax }}
 
 {% endif %}
 ## Repair

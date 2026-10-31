@@ -107,6 +107,11 @@ class ContentCategory(StrEnum):
     heard Bobby say …"). The rendering character's partition only, never another's, never a
     scalar, a provenance or a divergence."""
     UTTERANCE_TEXT = "utterance_text"
+    TRACKED_VALUES = "tracked_values"
+    """A structured render's ``## Tracked values`` (#187, FR-TURN-11): for a character's render,
+    the player-visible States it may change (name, type, scope, unit, aliases, allowed values)
+    and the effect syntax, never a value; for the narrator's, every State with its current
+    value and constraints."""
     """The say a witness heard (#162): the speaker's name, the words as the witness perceived
     them, the visible manner, the claims they carry and the intent as the witness reads it."""
 
@@ -280,6 +285,14 @@ class GenerationInputs(InputSchema):
     player_requests: Annotated[list[str], C.PLAYER_INPUT] = Field(
         default_factory=list, max_length=16
     )
+    tracked_values: Annotated[list[str], C.TRACKED_VALUES] = Field(
+        default_factory=list, max_length=64
+    )
+    """A structured render's ``## Tracked values`` (#187): one line per State the render may
+    change (a character's: player-visible ones it is authorized for, no value; the narrator's:
+    every State with its value at the turn's start and its constraints)."""
+    tracked_syntax: Annotated[str, C.TRACKED_VALUES] = Field(default="", max_length=1_000)
+    """#187: how to declare a State effect, with one example (present with ``tracked_values``)."""
     """A structured character render's ``## The player asks of you`` (FR-RESP-11; #180): under
     ``player_authority = own_character``, what the player's input described this character
     doing, saying or (never written) thinking, as requests the render complies with or refuses

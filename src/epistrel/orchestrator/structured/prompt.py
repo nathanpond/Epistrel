@@ -31,9 +31,15 @@ the structured genesis's ``director`` items, #149's ``deferred_items``), never a
 definition. ``age_inputs`` builds the age repair's: the guidance, the custom instructions, the
 scene and each introduced character with its clue.
 
+**Tracked values** (#187, FR-TURN-11; owner decision 2026-10-30): with the story's
+``states.level`` at ``on``, a character render's ``## Tracked values`` comes from its
+``CharacterContext`` (the player-visible States it may change, the effect syntax, never a
+value), and the narrator's from ``orchestrator.structured.effects.narrator_lines`` (every State,
+hidden ones included, with its value at the turn's start and its constraints).
+
 **The cap** (``render.prompt_token_budget``, ``len // 4`` tokens): over it, retrieved items
 are dropped from the end first, then canon lines, then working memory from the oldest beat
-(``## Just now`` counts against the cap and is never dropped). The
+(``## Just now`` and ``## Tracked values`` count against the cap and are never dropped). The
 belief state and the private memories sit with the definition and the pins (U-31's top tier):
 they are never dropped before a retrieved item (they are bounded at the source,
 ``context.BELIEFS_MAX`` and ``context.PRIVATE_MAX``).
@@ -83,6 +89,10 @@ class RenderSections:
     belief_steps: bool = False
     """#168 (FR-TURN-12): the rendering character keeps its own beliefs, so its prompt carries
     ``## How to change your mind`` (the step contract and the ``think`` cite instruction)."""
+    tracked: tuple[str, ...] = ()
+    """#187: ``## Tracked values``: counted against the cap, never dropped by it."""
+    tracked_syntax: str = ""
+    """#187: the effect syntax and its example (with ``tracked``)."""
 
 
 RESOLUTION_STEERING = (
@@ -113,6 +123,8 @@ def _size(sections: RenderSections) -> int:
         *sections.segments,
         *sections.working_memory,
         *sections.just_now,
+        *sections.tracked,
+        sections.tracked_syntax,
         *sections.retrieved,
         *sections.canon,
     )
@@ -174,6 +186,8 @@ def character_inputs(
             scene=context.scene,
             working_memory=context.working_memory,
             just_now=context.just_now,
+            tracked=context.tracked,
+            tracked_syntax=context.tracked_syntax,
             retrieved=context.retrieved,
             canon=context.canon,
         ),
@@ -207,6 +221,8 @@ def character_inputs(
         others_present=list(others_present),
         interjections=interjections,
         player_requests=list(player_requests),
+        tracked_values=list(s.tracked),
+        tracked_syntax=s.tracked_syntax,
         retrieved_memories=list(s.retrieved),
         canon_facts=list(s.canon),
     )
@@ -238,6 +254,8 @@ def narrator_inputs(
         retrieved_memories=list(s.retrieved),
         canon_facts=list(s.canon),
         open_references=list(open_references),
+        tracked_values=list(s.tracked),
+        tracked_syntax=s.tracked_syntax,
     )
 
 

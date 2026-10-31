@@ -11,24 +11,38 @@ holds only the 810 purchase, and spending in either story never reaches the othe
 turn over the truncated tail, undoing with a swap brings the old continuation back and the
 balance follows it. Complement: the dormant continuation's purchase is absent from the active
 value and folded by the ``as_recorded`` view.
+
+The turn part: the same timeline, each purchase a structured turn played through ``respond``
+whose render (Mira the smith, scripted) declares the player's ``gold`` effect, committed with
+the turn at its beat (plain turns fill the story up to 809 and 899). Truncating to 800 restores
+the balance, the fork at 850 holds only the 810 purchase, and after a swap the balance follows
+the active continuation. Complement: the swapped-out continuation's turn effect is absent from
+the active value.
 """
 
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Any
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.config import Settings
 from epistrel.core import states
 from epistrel.core.enums import OperationKind, Provenance
 from epistrel.core.events import Operation
 from tests import canon_support as c
+from tests import effect_support as es
+from tests import multi_support as ms
 from tests import state_support as ss
+from tests.auth_support import auth_settings
 from tests.event_support import rows
 from tests.fork_support import fork
 from tests.memory_support import use_structured
 from tests.projection_support import swap, truncate
+from tests.respond_support import body, respond, respond_client
+from tests.structured_turn_support import beat
 
 pytestmark = pytest.mark.integration
 
@@ -118,3 +132,88 @@ async def test_s_state_timetravel__store(engine: AsyncEngine, states_delivered: 
     )
     # The fork never saw any of it.
     assert await ss.value(engine, branch, "gold", branch_player) == START - SWORD - CLOAK
+
+
+@pytest.fixture
+def stub_settings(pg_url: str) -> Settings:
+    return auth_settings(pg_url, model_adapter="stub")
+
+
+async def _buy(
+    client: Any, stub: Any, story: str, ids: dict[str, str], amount: int, what: str
+) -> int:
+    """A structured turn in which Mira's render declares the player's ``gold -amount``;
+    answers its turn number."""
+    stub.reset()
+    ms.renders_for(
+        stub,
+        "Mira",
+        es.render(
+            beat(
+                "do",
+                f"Mira takes the coins and hands Cal {what}.",
+                effects=[es.effect("gold", scope_key=ids["Cal"], delta=-amount, reason=what)],
+            )
+        ),
+    )
+    answer = await respond(client, story, body(ids["Cal"], f"Mira, I'll buy {what}."))
+    assert answer.status_code == 200, answer.text
+    played = answer.json()
+    assert [e["reason"] for e in played["state_effects"]] == [what]
+    turn: int = played["turn"]
+    return turn
+
+
+@pytest.mark.part("M6", "FR-STATE-4")
+async def test_s_state_timetravel__turn(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """The store part's timeline, every purchase declared by a turn's render (see the module
+    docstring)."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids = await es.shop(client, engine, es.gold(), gold_of_player=START)
+        player = ids["Cal"]
+
+        await _messages_to(engine, story, 809)
+        assert await _buy(client, stub, story, ids, SWORD, "a sword") == 810
+        await _messages_to(engine, story, 899)
+        assert await _buy(client, stub, story, ids, SHIELD, "a shield") == 900
+        after = START - SWORD - SHIELD
+        assert await ss.value(engine, story, "gold", player) == after
+        assert await ss.value(engine, story, "gold", player, through=ss.at(800)) == START
+        (sword,) = [r for r in await ss.change_rows(engine, story) if r.reason == "a sword"]
+        assert (sword.source, sword.narrative_turn) == ("turn", 810)
+
+        # Fork at 850: only the 810 purchase; spending in one story never reaches the other.
+        forked = await fork(engine, story, at_turn=850)
+        branch = forked.story_id
+        theirs = {f.name: f.id for f in forked.characters}
+        assert await ss.value(engine, branch, "gold", theirs["Cal"]) == START - SWORD
+        await _buy(client, stub, branch, theirs, CLOAK, "a cloak")
+        await _buy(client, stub, story, ids, RING, "a ring")
+        assert await ss.value(engine, branch, "gold", theirs["Cal"]) == START - SWORD - CLOAK
+        assert await ss.value(engine, story, "gold", player) == after - RING
+
+        # Truncate to 800: the as-of-800 balance.
+        assert await truncate(engine, story, 800) is not None
+        assert await ss.value(engine, story, "gold", player) == START
+        assert await ss.stored_values(engine, story) == await ss.folded_values(engine, story)
+
+        # A new turn over the tail, then a swap: the balance follows the active continuation.
+        await _buy(client, stub, story, ids, BREAD, "bread")
+        assert await ss.value(engine, story, "gold", player) == START - BREAD
+        assert await swap(engine, story) is not None
+        assert await ss.value(engine, story, "gold", player) == after - RING
+        assert await ss.stored_values(engine, story) == await ss.folded_values(engine, story)
+        # Complement: the swapped-out continuation's turn effect is absent from the active
+        # value, and folded only by the as-recorded view.
+        (bread,) = [r for r in await ss.change_rows(engine, story) if r.reason == "bread"]
+        assert (bread.source, bread.membership) == ("turn", "dormant")
+        assert await ss.value(engine, story, "gold", player, view="as_recorded") == Decimal(
+            after - RING - BREAD
+        )
+        assert await ss.value(engine, branch, "gold", theirs["Cal"]) == START - SWORD - CLOAK

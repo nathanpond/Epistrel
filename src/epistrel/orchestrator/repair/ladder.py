@@ -40,6 +40,17 @@ The neighborhood's size (its facts, memories excluded) classifies the repair.
    beat is dropped instead (reported, no fallback text). ``think`` and ``latent`` beats go
    straight to rung 3.
 
+**State findings** (#187, FR-STATE-5,6, FR-VERIFY-12): a beat whose violations include a
+State effect the dry-run refused (``state_constraint``), a change with no concrete amount
+(``effect_unresolved``) or a narrated change with no effect (``state_undeclared``) skips rungs 1
+and 2 (no rewording fixes a declared effect): the regeneration asks the render, with the
+finding's line as its constraint, for the attempt narrated as failing with no effect or a
+smaller one, a concrete amount, or the effect declared (``RegeneratedBeat.effects``; the
+re-check dry-runs them again). The deterministic rung then answers instead of the fallback
+line: a refused effect is narrated as refused (``attempt``, every effect dropped, nothing
+changes), and an unresolved or undeclared change loses its sentence (narrowing) and its
+effect, else the beat becomes the fallback line. A fallback line never keeps an effect.
+
 **Acceptance** (FR-REPAIR-2, FR-GUARD-6). Every rung's output passes the output gate (the
 story's output policies, model-assisted ones included) and is detected again (#148: the
 declared structure and the deterministic detectors for rungs 1 and 2, every layer for rung 3)
@@ -92,6 +103,7 @@ from epistrel.core.repair.rungs import (
 )
 from epistrel.core.resolution.context import load_time_basis
 from epistrel.core.settings_schema import NAME_PLACEHOLDER, OMNISCIENT, VerifySettings
+from epistrel.core.states.effects import STATE_CONSTRAINT, Finding
 from epistrel.core.tables import entities
 from epistrel.core.tables.propositions import closed_sets
 from epistrel.core.turns.beats import BEAT_TEXT_MAX, TurnBeat
@@ -116,9 +128,12 @@ from epistrel.orchestrator.models.registry import (
 from epistrel.orchestrator.models.structured import Uncertain
 from epistrel.orchestrator.policies.output_gate import LAST_RESORT, FallbackLines
 from epistrel.orchestrator.structured.render import (
+    MAX_EFFECTS,
     MAX_PROPOSITIONS,
+    EffectDecl,
     IntentName,
     PropositionSketch,
+    declared_of,
 )
 from epistrel.orchestrator.verify.extraction import EXTRACTION_DEGRADED, CheckedClaim
 from epistrel.orchestrator.verify.verifier import (
@@ -163,6 +178,9 @@ class RegeneratedBeat(BaseModel):
     text: str = Field(min_length=1, max_length=BEAT_TEXT_MAX)
     propositions: list[PropositionSketch] = Field(default_factory=list, max_length=MAX_PROPOSITIONS)
     intent: IntentName | None = None
+    effects: list[EffectDecl] = Field(default_factory=list, max_length=MAX_EFFECTS)
+    """#187: the rewritten beat's State effects (a State finding's repair: none, a smaller one,
+    a concrete amount or the declared change)."""
 
     @model_validator(mode="after")
     def _text(self) -> Self:
@@ -381,6 +399,13 @@ async def _closed_set_members(
     return found
 
 
+def state_findings(violations: Sequence[CheckedClaim]) -> list[Finding]:
+    """#187: the State findings among ``violations``."""
+    return [
+        f for v in violations if v.result is not None and (f := v.result.state_finding) is not None
+    ]
+
+
 def _declared_index(claim: CheckedClaim) -> int | None:
     found = claim.claim.matched_declared_id
     if found is None or "." not in found:
@@ -532,6 +557,9 @@ class RepairLadder:
     ) -> Constraint:
         claim = v.claim.proposition
         cites = tuple(v.result.evidence_ids()) if v.result is not None else ()
+        if v.result is not None and v.result.state_finding is not None:
+            # #187: the finding's own line (a character's names no value it may not know).
+            return Constraint("do_not_assert", v.result.state_finding.line)
         if v.result is not None and v.result.repair_tag == THINK_LEAK:
             # #172: the constraint names no private content (it is in the speaker's prompt).
             return Constraint(
@@ -591,6 +619,7 @@ class RepairLadder:
         degradation: list[tuple[str, str]] = []
         attempts = 0
         violating = {i for v in violations if (i := _declared_index(v)) is not None}
+        stating = state_findings(violations)
 
         def result(
             rung: int,
@@ -667,8 +696,8 @@ class RepairLadder:
                 return None
             return found
 
-        # Rung 1: narrowing.
-        if beat.kind in DETERMINISTIC_KINDS:
+        # Rung 1: narrowing (#187: never for a State finding, which no rewording fixes).
+        if beat.kind in DETERMINISTIC_KINDS and not stating:
             spans = self._spans(beat, violations, sketches)
             text = None if spans is None else narrow(beat.text, spans)
             if text is not None:
@@ -683,7 +712,7 @@ class RepairLadder:
                 if found is not None:
                     return result(NARROWING, found.beat, found, kept)
         # Rung 2: substitution.
-        if beat.kind in DETERMINISTIC_KINDS:
+        if beat.kind in DETERMINISTIC_KINDS and not stating:
             swapped = self._substitution(beat, violations, sketches, context)
             if swapped is not None:
                 text, chosen = swapped
@@ -707,7 +736,9 @@ class RepairLadder:
             self.attempts_used += 1
             attempts += 1
             try:
-                made = await self._regenerate(beat, inputs, context, budget)
+                made = await self._regenerate(
+                    beat, inputs, context, budget, keep_effects=not stating
+                )
                 if made is None:
                     continue
                 candidate, chosen, hash_ = made
@@ -724,8 +755,13 @@ class RepairLadder:
         degradation.append((SAFE_FALLBACK, REPAIR))
         if beat.kind not in DETERMINISTIC_KINDS:
             return result(FALLBACK, None)
+        if stating and len(stating) == len(violations):
+            # #187: the deterministic rung of a State finding (see the module docstring).
+            settled = state_deterministic(beat, stating)
+            if settled is not None:
+                return result(FALLBACK, settled)
         line = await self._fallback_line()
-        return result(FALLBACK, replace(beat, text=line, claims=(), mentions=()))
+        return result(FALLBACK, replace(beat, text=line, claims=(), mentions=(), effects=()))
 
     # -- the rungs ------------------------------------------------------------------------
 
@@ -809,9 +845,13 @@ class RepairLadder:
         base: GenerationInputs,
         context: Context,
         budget: TurnBudget,
+        *,
+        keep_effects: bool = True,
     ) -> tuple[TurnBeat, list[PropositionSketch], str] | None:
         """One ``regeneration`` call: the candidate beat, its declared sketches and the prompt
-        hash, or ``None`` when the model gave nothing usable."""
+        hash, or ``None`` when the model gave nothing usable. #187: the candidate takes the
+        effects the rewrite declares; with none declared it keeps the beat's own unless the
+        repair is a State finding's (``keep_effects`` off)."""
         registry = context.registry
         assert registry is not None  # noqa: S101 - context() loads it
 
@@ -857,7 +897,17 @@ class RepairLadder:
         intent = beat.intent
         if beat.kind == SAY and found.intent is not None:
             intent = found.intent
-        candidate = replace(beat, text=found.text.strip(), intent=intent, claims=(), mentions=())
+        effects = declared_of(found.effects)
+        if not effects and keep_effects:
+            effects = beat.effects
+        candidate = replace(
+            beat,
+            text=found.text.strip(),
+            intent=intent,
+            claims=(),
+            mentions=(),
+            effects=effects,
+        )
         return candidate, list(found.propositions), hash_
 
     async def _fallback_line(self) -> str:
@@ -867,6 +917,68 @@ class RepairLadder:
             if source == "last_resort" or await self.output_ok(text):
                 return text
         return LAST_RESORT.replace(NAME_PLACEHOLDER, self.fallback.name)  # pragma: no cover
+
+
+def state_deterministic(beat: TurnBeat, findings: Sequence[Finding]) -> TurnBeat | None:
+    """#187: the deterministic rung of a beat whose only violations are State findings: a
+    refused effect narrated as refused (every effect dropped: nothing changes); an unresolved or
+    undeclared change without its sentence and its effect; ``None`` when nothing of the beat
+    would be left (the fallback line then)."""
+    refused = [f for f in findings if f.tag == STATE_CONSTRAINT and f.refusal]
+    if refused:
+        return replace(
+            beat,
+            text=refused[0].refusal,
+            claims=(),
+            mentions=(),
+            effects=(),
+            attempt=True,
+        )
+    bad = {f.effect for f in findings if f.effect is not None}
+    effects = tuple(e for n, e in enumerate(beat.effects) if n not in bad)
+    spans = [f.span for f in findings if f.span is not None]
+    if not spans:
+        return replace(beat, claims=(), mentions=(), effects=effects)
+    text = narrow(beat.text, spans)
+    if text is None:
+        return None
+    gone = {f.state for f in findings if f.span is not None}
+    effects = tuple(e for e in effects if e.state not in gone)
+    return replace(beat, text=text, claims=(), mentions=(), effects=effects)
+
+
+def settled(beat: TurnBeat, violations: Sequence[CheckedClaim]) -> RepairResult:
+    """#187: ``beat``'s State findings settled without the ladder (its repair module off, the
+    turn the safe fallback, or a finding the ladder never saw): ``state_deterministic``'s beat
+    (``None``: the beat is dropped), as the deterministic rung's result, so the pipeline merges
+    it like any repair and writes its audit records."""
+    found = state_findings(violations)
+    accepted = None if beat.kind not in DETERMINISTIC_KINDS else state_deterministic(beat, found)
+    repair_class = classify(FALLBACK, 0)
+    return RepairResult(
+        beat=None
+        if accepted is None
+        else replace(accepted, repaired_from=(FALLBACK, repair_class.value)),
+        rung=FALLBACK,
+        attempts=0,
+        rejected=[
+            RejectedRender(
+                beat=beat.beat,
+                attempt=0,
+                rung=FALLBACK,
+                text=beat.text,
+                constraints=tuple(Constraint("do_not_assert", f.line) for f in found),
+                verdicts=_verdicts(violations),
+                detected_claims=_detected(violations),
+            )
+        ],
+        repair_class=repair_class,
+        degradation=[],
+        remaining_violations=[],
+        original=beat,
+        violations=list(violations),
+        context=Context(),
+    )
 
 
 def _surface(p: Proposition, names: Mapping[str, str]) -> str:
@@ -918,4 +1030,6 @@ __all__ = [
     "RejectedRender",
     "RepairLadder",
     "RepairResult",
+    "state_deterministic",
+    "state_findings",
 ]

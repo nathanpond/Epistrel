@@ -18,6 +18,9 @@ Checked on every release and commit:
 - every committed turn's reply passes the policies in force at its commit, and the
   configuration it records equals the configuration current at its commit, so its revisions
   are at least those of every dependency change committed before it.
+
+The M6 part (``test_config_revalidation__m6``, #187): State validation re-checked at the
+rebase and under an interpretive change of a State's declaration (see its docstring).
 """
 
 from __future__ import annotations
@@ -26,7 +29,7 @@ import asyncio
 import contextlib
 import itertools
 from collections import Counter
-from collections.abc import Coroutine
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
@@ -41,19 +44,22 @@ from hypothesis.stateful import (
 )
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from epistrel.core import config_dependencies
+from epistrel.config import Settings
+from epistrel.core import config_dependencies, states
 from epistrel.core.config_changes import read_settings
 from epistrel.core.context import RequestContext
 from epistrel.core.db import make_engine
 from epistrel.core.deployment import apply_settings
-from epistrel.core.enums import Provenance
+from epistrel.core.enums import OperationKind, Provenance, StateChangeSource
 from epistrel.core.errors import RevisionConflict
 from epistrel.core.events import Operation
 from epistrel.core.ids import new_ulid
+from epistrel.core.membership import Position
 from epistrel.core.profiles.fingerprint import RuntimeFacts
 from epistrel.core.profiles.story import ProfileOverridesPatch, set_overrides
 from epistrel.core.ratings import RatingFields, RatingReplacement, create_rating, update_rating
 from epistrel.core.settings_schema import DEFAULT_GUARDRAIL_RETRY_BUDGET
+from epistrel.core.states import StateDefinition
 from epistrel.engine import Engine
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.policies.output_gate import (
@@ -65,10 +71,14 @@ from epistrel.orchestrator.policies.output_gate import (
 from epistrel.orchestrator.policies.rebase import output_passes, output_recheck, staged_replies
 from epistrel.orchestrator.policies.schemas import PolicyFields, PolicyReplacement
 from epistrel.orchestrator.policies.store import guard_context
+from tests import effect_support as es
+from tests import state_support as ss
 from tests.auth_support import auth_settings
 from tests.concurrency_support import HeldModel, HeldTurn, start_turn
-from tests.event_support import execute_in_tx, new_story
+from tests.event_support import execute_in_tx, new_story, rows
 from tests.policy_support import story_item, words
+from tests.respond_support import body, respond, respond_client
+from tests.structured_turn_support import beat
 
 NO_FACTS = RuntimeFacts(models={}, templates={})
 """What the impact report's fingerprints need (#113): no model, no template here."""
@@ -477,3 +487,147 @@ def test_config_revalidation(pg_url: str) -> None:
         assert seen[name] > 0, (name, seen)
     assert sum(n for k, n in seen.items() if k.startswith("quiet_") and "elsewhere" in k), seen
     print(f"CONFIG-REVALIDATION {dict(seen)}")
+
+
+# -- the M6 part (#187): State validation and the State reads -----------------------------------
+
+SWORD = "Mira takes the coins and hands Cal the sword."
+
+
+@pytest.fixture
+def stub_settings(pg_url: str) -> Settings:
+    return auth_settings(pg_url, model_adapter="stub")
+
+
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-CONC-16")
+async def test_config_revalidation__m6(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """A structured turn whose render declares ``gold -500`` for Cal (1,000 gold) is held in
+    its render while the story changes, the changes driven through #185's ``apply_change`` and
+    ``update_definition`` directly:
+
+    - a concurrent set to 300 (a revision-bumping operation): the rebase re-runs the turn's
+      State check, the effect no longer fits, and the turn regenerates (its new render is then
+      repaired in character: nothing is spent);
+    - an authorization change revoking the source (an interpretive member of
+      ``state_definitions``): the configuration re-check fails and the turn regenerates;
+    - complement: a prospective change (an alias) commits the turn unchanged, and a set on
+      another State rebases and commits it with its effect.
+
+    Every committed turn records the State configuration its checks ran under (the
+    ``state_definitions`` dependency, current at its commit)."""
+    reputation = StateDefinition.model_validate(
+        {"name": "reputation", "type": "number", "scope": "story", "initial_value": 0}
+    )
+
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+
+        async def held(during: Callable[[str, str], Awaitable[Any]]) -> Any:
+            story, ids = await es.shop(client, engine, es.gold(), reputation, gold_of_player=1000)
+            cal = ids["Cal"]
+            purchase = es.render(
+                beat(
+                    "do",
+                    SWORD,
+                    effects=[es.effect("gold", scope_key=cal, delta=-500, reason="a sword")],
+                )
+            )
+            stub.reset()
+            stub.script("generation", [purchase, purchase])
+            stub.script("regeneration", ['{"text": "Mira shakes her head: you are short."}'])
+            latch = stub.hold("generation")
+            task = asyncio.ensure_future(
+                respond(client, story, body(cal, "Mira, I'll buy the sword."))
+            )
+            await asyncio.wait_for(latch.entered.wait(), 5)
+            await during(story, cal)
+            latch.release()
+            response = await task
+            assert response.status_code == 200, response.text
+            (row,) = await rows(
+                engine,
+                "SELECT attempts, config_revisions, turn_report FROM operations "
+                "WHERE story_id = :s AND kind = 'turn' AND status = 'committed' "
+                "ORDER BY narrative_turn DESC LIMIT 1",
+                s=story,
+            )
+            async with engine.connect() as conn:
+                current = await config_dependencies.state_definitions_hash(conn, story)
+            assert row.config_revisions["state_definitions"] == current
+            assert row.turn_report["state_effects"]["state_definitions"] == current
+            return story, cal, row, response.json()
+
+        def outcomes(row: Any) -> list[tuple[str, Any]]:
+            return [(a["outcome"], a.get("reason") or a.get("recheck")) for a in row.attempts]
+
+        async def slot(story: str) -> Position:
+            """The inter-turn slot after the story's last turn (where #186's API set goes)."""
+            (found,) = await rows(
+                engine, "SELECT next_turn_index FROM stories WHERE id = :s", s=story
+            )
+            return Position(int(found.next_turn_index) - 1, 0, 1)
+
+        async def set_gold(story: str, cal: str) -> None:
+            await ss.change(
+                engine,
+                story,
+                ss.set_to(
+                    "gold",
+                    300,
+                    scope_key=cal,
+                    reason="a theft",
+                    source=StateChangeSource.CONSUMER,
+                    position=await slot(story),
+                ),
+                kind=OperationKind.CONTROL,
+            )
+
+        async def patch(story: str, member: dict[str, Any]) -> None:
+            async with engine.begin() as conn:
+                await states.update_definition(conn, story, "gold", member, principal="p-author")
+
+        # -- A concurrent set the staged effect no longer fits: the turn regenerates.
+        story, cal, row, played = await held(set_gold)
+        assert outcomes(row) == [("regenerate", "rebase_failed"), ("commit", None)]
+        assert await es.gold_of(engine, story, cal) == 300
+        assert "state_effects" not in played
+        assert [r["tag"] for r in row.turn_report["repairs"]] == ["state_constraint"]
+
+        # -- An authorization change revoking the source: the re-check fails, it regenerates.
+        story, cal, row, played = await held(
+            lambda story, cal: patch(story, {"authorization": {"sources": []}})
+        )
+        assert outcomes(row) == [("recheck", "failed"), ("commit", None)]
+        assert "state_definitions" in row.attempts[0]["config_changed"]
+
+        # -- Complement: a prospective change commits the turn unchanged.
+        story, cal, row, played = await held(
+            lambda story, cal: patch(story, {"aliases": ["coins", "crowns"]})
+        )
+        assert outcomes(row) == [("commit", None)]
+        assert [(e["old_value"], e["new_value"]) for e in played["state_effects"]] == [(1000, 500)]
+
+        # -- Complement: a set on another State rebases and commits with the effect.
+        async def set_reputation(story: str, cal: str) -> None:
+            await ss.change(
+                engine,
+                story,
+                ss.set_to(
+                    "reputation",
+                    5,
+                    reason="gossip",
+                    source=StateChangeSource.CONSUMER,
+                    position=await slot(story),
+                ),
+                kind=OperationKind.CONTROL,
+            )
+
+        story, cal, row, played = await held(set_reputation)
+        assert outcomes(row) == [("rebase", None)]
+        assert [(e["old_value"], e["new_value"]) for e in played["state_effects"]] == [(1000, 500)]

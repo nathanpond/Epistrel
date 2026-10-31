@@ -128,6 +128,20 @@ whose reserved extraction cannot start before the deadline is replaced by the sa
 (``undetected_beats``). ``turn_report.budget`` adds ``minimum``, ``reservation``, ``released``,
 ``used_by_kind`` and ``plan``.
 
+**State effects** (#187, ``orchestrator.structured.effects``; FR-TURN-11, FR-STATE-5,6,
+FR-RESP-7): each attempt reads the story's States (``effects.load``); the renders' schemas
+validate each beat's ``effects`` against them (``render.effect_errors``: ``invalid_structure``),
+the narrator's prompt lists every State with its value and a character's its declarable ones
+(``## Tracked values``). After each primary's verification its effects are dry-run (the
+snapshot plus the turn's earlier effects, #174's stage in a sequential turn) and its prose read
+for State changes it declared no effect for; each finding is a claim that ``needs_repair``
+(``state_constraint``, ``effect_unresolved``, ``state_undeclared``) and goes to the ladder, its
+re-check dry-running the repaired render's effects again. What the ladder could not run for is
+settled deterministically after reconciliation (``settle_states``). The commit applies the
+surviving effects first (``effects.apply_declared``; a violation there regenerates the turn),
+records the turn's State reads for the rebase re-check (``effects.remember``) and the response
+returns the committed changes (``state_effects``; ``turn_report.state_effects``).
+
 **Reconciliation and the audience filter** (#177): after #175's adjudication and the repairs,
 ``reconcile_checked`` reconciles the turn's concurrent commitments on one timeline
 (``orchestrator.structured.reconcile``: a contradictory pair's loser rewritten as an attempt or
@@ -345,7 +359,9 @@ from epistrel.orchestrator.policies.output_gate import (
 )
 from epistrel.orchestrator.policies.rebase import output_passes, output_recheck
 from epistrel.orchestrator.policies.store import guard_context
+from epistrel.orchestrator.repair import ladder as repair_ladder
 from epistrel.orchestrator.repair.ladder import Recheck, RepairLadder, RepairResult
+from epistrel.orchestrator.structured import effects as state_effects
 from epistrel.orchestrator.structured import multi, planner
 from epistrel.orchestrator.structured import player_authority as authority_rules
 from epistrel.orchestrator.structured import prompt as prompts
@@ -362,6 +378,7 @@ from epistrel.orchestrator.structured.render import (
     PropositionSketch,
     RenderedBeats,
     StepDecl,
+    declared_of,
     hold_length,
     length_chars,
     length_line,
@@ -1063,6 +1080,7 @@ def _beats_of(
                 observed="fact"
                 if decl.kind != LATENT or decl.hidden is None
                 else decl.hidden.observed,
+                effects=declared_of(decl.effects),
             )
         )
         sketches[number] = list(decl.propositions)
@@ -2134,6 +2152,7 @@ async def follow_up(
     context: Any,
     render_ids: Sequence[str],
     clock: StageClock | None = None,
+    book: state_effects.Book | None = None,
 ) -> Checked:
     """FR-COMMIT-7's follow-up (#146's AC, #150's pipeline): when a salient reference this turn
     made is still open after its beats were verified, and the turn's budget can pay for one
@@ -2174,6 +2193,7 @@ async def follow_up(
             context=context,
             render_ids=render_ids,
             clock=clock,
+            book=book,
         )
     finally:
         budget.release_to(min(budget.held, held))
@@ -2196,6 +2216,7 @@ async def _follow_up(
     context: Any,
     render_ids: Sequence[str],
     clock: StageClock | None,
+    book: state_effects.Book | None = None,
 ) -> Checked:
     """The follow-up render itself, its budget held (``follow_up``)."""
     start = max((b.beat for b in checked.beats), default=1) + 1
@@ -2221,6 +2242,8 @@ async def _follow_up(
                     player_id=read.player_id,
                     cast_ids=list(read.names),
                     max_beats=settings.render.max_beats,
+                    states=None if book is None else book.tracked(),
+                    states_level=None if book is None else book.level,
                 ),
                 variant=NARRATOR_VARIANT,
                 params=params,
@@ -2436,6 +2459,8 @@ async def repair_turn(
     fallback: FallbackLines,
     narrator_inputs: GenerationInputs,
     only: frozenset[int] | None = None,
+    book: state_effects.Book | None = None,
+    stage: TurnStage | None = None,
 ) -> Checked:
     """FR-REPAIR-1..4 and FR-VERIFY-12 over the turn's verified beats (#151): every rendered
     beat with a claim that ``needs_repair`` goes to ``orchestrator.repair.ladder``, in beat
@@ -2445,7 +2470,9 @@ async def repair_turn(
     salient spans are not read again. After the follow-up render, before any commit
     transaction; a story whose profile has the repair module off (``repair_on``), or a turn
     released as the safe fallback, is left as it is. ``only`` (#174): the beats to look at (a
-    sequential turn's earlier primaries were repaired before the next rendered)."""
+    sequential turn's earlier primaries were repaired before the next rendered). #187: a
+    candidate's State effects are dry-run again with the turn's other beats (``book``,
+    ``stage``)."""
     if not repair_on(configuration) or rendered.finish_reason == "fallback":
         return checked
     wanted = [
@@ -2497,6 +2524,14 @@ async def repair_turn(
         if found.verifier is not None:
             checked.repair_verifiers.append((rung, found.verifier))
         (made,) = found.beats
+        if book is not None and book.on:
+            # #187: the candidate's effects, folded with the turn's other beats'.
+            others = [b for b in checked.beats if b.beat != made.beat]
+            extra = state_effects.findings(
+                book, [*others, made], stage, only=frozenset({made.beat})
+            )
+            found.checked += state_effects.claims_of(extra, [made], operation_id)
+            found.checked = state_effects.covered(found.checked, [made], book)
         return Recheck(
             beat=made,
             claims=found.checked,
@@ -3881,6 +3916,46 @@ async def play(
     """#180 (FR-RESP-11): what the story's ``player_authority`` made of the input (its requests,
     narrated beats and dropped spans); ``say``/``do`` become the player's own remainder."""
     typed_say, typed_do = say, do
+    books: list[state_effects.Book] = [state_effects.Book(story_id)]
+    """#187: the attempt's States (``effects.load``)."""
+    state_settled: list[Any] = []
+    """#187: the State findings settled without the ladder (``settle_states``)."""
+
+    def check_states(target: Checked, stage_: TurnStage | None) -> None:
+        """#187: ``target``'s State findings, recomputed (the dry-run over the snapshot and
+        the turn's earlier effects, and the narrated changes), as claims of their beats."""
+        target.checked = [c for c in target.checked if not state_effects.is_state_claim(c)]
+        found = state_effects.findings(books[0], target.beats, stage_)
+        target.checked += state_effects.claims_of(found, target.beats, op.operation_id)
+        target.checked = state_effects.covered(target.checked, target.beats, books[0])
+
+    def settle_states(target: Checked, stage_: TurnStage | None) -> None:
+        """#187: what the ladder left (an attempt's effects, a beat it could not run for) is
+        settled deterministically, as the deterministic rung's repair (``ladder.settled``): an
+        attempt carries no effect, a refused effect is narrated as refused, an unresolved or
+        undeclared change is removed; whatever still does not fit loses its effects."""
+        target.beats = [
+            replace(b, effects=()) if b.attempt and b.effects else b for b in target.beats
+        ]
+        for _ in range(3):
+            check_states(target, stage_)
+            open_: dict[int, list[CheckedClaim]] = {}
+            for c in target.checked:
+                if state_effects.is_state_claim(c):
+                    open_.setdefault(c.claim.beat or 0, []).append(c)
+            if not open_:
+                return
+            for b in [b for b in target.beats if b.beat in open_]:
+                result = repair_ladder.settled(b, open_[b.beat])
+                state_settled.extend(
+                    f for v in result.violations if v.result and (f := v.result.state_finding)
+                )
+                _merge_repair(target, result)
+        # Never commit an effect that still does not fit.
+        check_states(target, stage_)
+        stuck = {c.claim.beat for c in target.checked if state_effects.is_state_claim(c)}
+        target.beats = [replace(b, effects=()) if b.beat in stuck else b for b in target.beats]
+        target.checked = [c for c in target.checked if not state_effects.is_state_claim(c)]
 
     async def stage_render(
         turn_stage: TurnStage,
@@ -3914,6 +3989,7 @@ async def play(
                     qualifiers=b.qualifiers,
                     narrator=b.narrator,
                     step=b.step,
+                    effects=b.effects,
                 ),
                 verified.get(b.beat, ()),
             )
@@ -4234,6 +4310,11 @@ async def play(
                 )
             budget.hold(cost - extractions)
             budget.reserve(EXTRACTION, extractions)
+        # #187: the attempt's States (their declarations and values at its start).
+        async with db.connect() as conn:
+            books[:] = [await state_effects.load(conn, story_id, settings)]
+        book = books[0]
+        tracked, tracked_syntax = book.narrator_section()
         by_draft: dict[int, Rendered] = {}
         joined = joined_input(say, do)
         base = prompts.RenderSections(
@@ -4264,6 +4345,8 @@ async def play(
             scenario_text=read.inputs.scenario_text,
             director_notes=read.director,
             working_memory=read.narrator_memory,
+            tracked=tracked,
+            tracked_syntax=tracked_syntax,
         )
         # #174 (FR-MULTI-6): the primaries' order, the request's or the director's.
         ordered = multi.Ordered(tuple(p.id for p in primaries), multi.REQUEST)
@@ -4329,6 +4412,9 @@ async def play(
                 deferred=() if plan is None else plan.deferred,
                 deferred_fixed=() if plan is None else plan.deferred_fixed,
             )
+        if turn_roles is not None and book.on:
+            # #187 (FR-MULTI-9): a reaction naming a tracked State escalates.
+            turn_roles.state_terms = book.state_words()
         roles_state[:] = [] if turn_roles is None else [turn_roles]
         cast_by_id = {c.id: c for c in story.cast}
         extraction_each = 1 if plan is not None and plan.reservation.extraction else 0
@@ -4408,6 +4494,8 @@ async def play(
                                 player_id=read.player_id,
                                 cast_ids=cast_ids,
                                 max_beats=max_beats,
+                                states=book.tracked(),
+                                states_level=book.level,
                             ),
                             variant=NARRATOR_VARIANT,
                             params=params,
@@ -4456,6 +4544,8 @@ async def play(
                         player_id=read.player_id if read.player_id != read_k.character.id else None,
                         cast_ids=cast_ids,
                         max_beats=max_beats,
+                        states=book.tracked(),
+                        states_level=book.level,
                     ),
                     variant=STRUCTURED,
                     params=params,
@@ -4652,6 +4742,8 @@ async def play(
                     settle_salience=last,
                     staged_beliefs=turn_stage.accepted(primary.id),
                 )
+                # #187: the render's effects dry-run, its narrated State changes read.
+                check_states(checked_k, turn_stage)
                 if k == 0 and split.narrated:
                     # #180: each narrated beat checked against its character's viewpoint.
                     await authority_rules.verify(
@@ -4701,6 +4793,8 @@ async def play(
                         narrator_inputs=prompts.narrator_inputs(
                             narrator_sections, read.actor, say=say, do=do, budget=budget_tokens
                         ),
+                        book=book,
+                        stage=turn_stage,
                     )
                     checked_k.staged = _restaged(() if merged is None else merged.staged, checked_k)
                     if simultaneous and k == 0:
@@ -4755,7 +4849,10 @@ async def play(
             context=context,
             render_ids=cast_.render_ids,
             clock=clock,
+            book=book,
         )
+        # #187: the whole turn's effects, the follow-up's included, dry-run again.
+        check_states(checked, turn_stage)
         # The follow-up render's own time; its check's is in its stages already.
         checked_s = clock.total(("normalize", "detection", "verify", "entailment")) - checked_s
         clock.add("render", time.perf_counter() - following - checked_s)
@@ -4787,6 +4884,8 @@ async def play(
                     *checked.follow_up_beats,
                 }
             ),
+            book=book,
+            stage=turn_stage,
         )
         clock.add("repair", time.perf_counter() - repairing)
         if simultaneous:
@@ -4819,6 +4918,10 @@ async def play(
             rewritten = next((b for b in checked.beats if b.beat == number), None)
             if staged is not None and rewritten is not None:
                 turn_stage.replace(number, replace(staged, text=rewritten.text, verified=()))
+        # #187: what the ladder left is settled; only effects that fit are committed.
+        state_settled.clear()
+        if book.on:
+            settle_states(checked, turn_stage)
         # #180: whether each requested character complied, from its verified beats.
         authority_rules.outcomes(split, checked.beats, list(read.names.values()))
         # #163: who the turn models (after verify/repair, before routing), their ages found.
@@ -5011,6 +5114,11 @@ async def play(
             character_id=None,
             beat=last + 1,
         )
+        if books[0].on:
+            # #187: the turn's State reads, for the rebase re-check; its effects, first.
+            state_effects.remember(read_set, books[0], checked.beats)
+            if any(b.effects for b in checked.beats):
+                op.add_commit_step(partial(apply_effects, beats=list(checked.beats)))
         op.add_commit_step(partial(write_turn, read=read, rendered=rendered, checked=checked))
         if regenerating is not None:
             op.add_commit_step(fail_queue)
@@ -5030,6 +5138,15 @@ async def play(
                 },
             ),
         )
+
+    async def apply_effects(conn: AsyncConnection, *, beats: Sequence[TurnBeat]) -> None:
+        # #187 (FR-STATE-5,6): the surviving effects, in the commit, before the beats' records.
+        owners = render_steps.beat_steps([b for b in beats if not b.narrator])
+        roles = {cid: r.role for cid, r in roles_state[0].roles.items()} if roles_state else {}
+        with beat_steps(op.operation_id, owners):
+            fixed["state_effects"] = await state_effects.apply_declared(
+                conn, op, beats, books[0], roles=roles
+            )
 
     async def write_turn(
         conn: AsyncConnection, *, read: TurnRead, rendered: Rendered, checked: Checked
@@ -5526,6 +5643,20 @@ async def play(
             ]
         if checked.repairs:
             report["repairs"] = repairs_report(checked)
+        if books[0].on:
+            # #187: what the turn declared, repaired and settled, and what it committed.
+            repaired_states = [
+                f
+                for r in checked.repairs
+                for v in r.violations
+                if v.result is not None and (f := v.result.state_finding) is not None
+            ]
+            report[state_effects.STATE_EFFECTS] = {
+                **state_effects.report(books[0], checked.beats, [*repaired_states, *state_settled]),
+                "settled": len(state_settled),
+                "committed": len(fixed.get("state_effects", [])),
+                "state_definitions": (op.config_revisions or {}).get("state_definitions"),
+            }
         report["eval_hooks"] = eval_hooks(
             report,
             raw_render_event_ids=fixed.get("raw_render_event_ids", []),
@@ -5564,6 +5695,19 @@ async def play(
         )
         beats = filtered.items
         reply = next(item for item in beats if item.kind == "message_rendered")
+        # #187 (FR-RESP-7): the committed State changes, a hidden State's for omniscient only.
+        if isinstance(conn, AsyncConnection):
+            changed = await state_effects.committed(
+                conn, story_id, committed.operation_id, omniscient=is_omniscient(viewpoint)
+            )
+        else:
+            async with conn.connect() as reading:
+                changed = await state_effects.committed(
+                    reading,
+                    story_id,
+                    committed.operation_id,
+                    omniscient=is_omniscient(viewpoint),
+                )
         assert committed.narrative_turn is not None  # noqa: S101 - a committed turn's position
         assert committed.turn_variant is not None  # noqa: S101
         assert committed.timeline_revision is not None  # noqa: S101
@@ -5582,6 +5726,7 @@ async def play(
             "audience_filter": filtered.audience_filter,
             "player_view": view,
             "reconcile": [p.body() for p in reconciled[0].pairs] if reconciled else [],
+            "state_effects": changed,
             "model_calls": list(calls.calls),
             "elapsed_ms": fixed.get("elapsed_ms", budget.elapsed_ms()),
             "call_counts": calls.by_purpose(),

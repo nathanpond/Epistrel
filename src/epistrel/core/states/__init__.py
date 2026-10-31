@@ -70,6 +70,7 @@ from epistrel.core.enums import (
     StateChangeSource,
     StateScope,
     StateType,
+    StateVisibility,
     StoryStatus,
 )
 from epistrel.core.erasure import guard
@@ -429,6 +430,72 @@ async def fold_state(conn: AsyncConnection, story_id: str) -> list[dict[str, Any
     """Every ``state_values`` row of the story, folded from its active changes (the rebuild)."""
     states = await definitions(conn, story_id)
     return list(derive(story_id, states, await _active_rows(conn, story_id, states, None)).values())
+
+
+async def current_values(
+    conn: AsyncConnection, story_id: str, states: Sequence[StateDefinition] | None = None
+) -> dict[tuple[str, str | None], Value | UndefinedType]:
+    """Each State's folded value now, on the active timeline (``core.membership.excluding``
+    honoured), by ``(name, scope key)``: only the keys a counted change has folded (any other
+    key is its State's initial value). #187's dry-run reads its snapshot here."""
+    if states is None:
+        states = await definitions(conn, story_id)
+    by_id = {s.id: s for s in states if s.id is not None}
+    grouped: dict[Key, list[ChangeRow]] = {}
+    for state_id, scope_key, change in await _active_rows(conn, story_id, states, None):
+        grouped.setdefault((state_id, scope_key), []).append(change)
+    found: dict[tuple[str, str | None], Value | UndefinedType] = {}
+    for (state_id, scope_key), changes in grouped.items():
+        state = by_id[state_id]
+        folded = fold(state.initial_value, changes)
+        if folded.count:
+            found[(state.name, scope_key)] = folded.value
+    return found
+
+
+async def turn_effects(
+    conn: AsyncConnection,
+    story_id: str,
+    operation_ids: Sequence[str],
+    *,
+    omniscient: bool,
+) -> dict[str, list[dict[str, Any]]]:
+    """The State changes each of ``operation_ids`` committed (#187, FR-RESP-7), in position
+    order, as the response and history return them: ``{state, scope_key, old_value, new_value,
+    reason, source, contingency, status}`` (plus the ``beat``), a ``hidden`` State's only when
+    ``omniscient`` (C-12's rule; visibility only, no audience filter)."""
+    if not operation_ids:
+        return {}
+    c, d = state_changes.c, state_definitions.c
+    rows = await conn.execute(
+        select(state_changes, d.name.label("state_name"), d.visibility.label("state_visibility"))
+        .select_from(
+            state_changes.join(
+                state_definitions,
+                (d.id == c.state_id) & (d.story_id == c.story_id),
+            )
+        )
+        .where(c.story_id == story_id, c.operation_id.in_(list(operation_ids)))
+        .order_by(c.narrative_turn, c.slot_k, c.beat, c.step, c.id)
+    )
+    found: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        if not omniscient and row.state_visibility != StateVisibility.PLAYER_VISIBLE:
+            continue
+        found.setdefault(str(row.operation_id), []).append(
+            {
+                "state": str(row.state_name),
+                "scope_key": None if row.scope_key is None else str(row.scope_key),
+                "old_value": row.old_value,
+                "new_value": row.new_value,
+                "reason": str(row.reason),
+                "source": str(getattr(row.source, "value", row.source)),
+                "contingency": str(getattr(row.contingency, "value", row.contingency)),
+                "status": str(getattr(row.status, "value", row.status)),
+                "beat": int(row.beat),
+            }
+        )
+    return found
 
 
 def _comparable(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -901,6 +968,7 @@ __all__ = [
     "View",
     "Violation",
     "apply_change",
+    "current_values",
     "define_state",
     "definition",
     "definitions",
@@ -911,6 +979,7 @@ __all__ = [
     "refresh",
     "require_module",
     "state_level",
+    "turn_effects",
     "update_definition",
     "valid_time_at",
     "value_of",

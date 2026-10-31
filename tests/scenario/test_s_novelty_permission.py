@@ -32,6 +32,9 @@ Bobby's render introduces new material in a structured story (the Bobby/Jenni fi
   canonized; spoken by Jenni herself, it is permitted.
 - ``test_s_novelty_permission__reactive`` (M5, #176): the reactive-narration exception: Jenni's
   render narrating Bobby's flinch is accepted, his thought or decision repaired.
+- ``test_s_novelty_permission__m6_d`` (M6, #187): (d) a change to a story State outside a
+  validated effect is ``denied:state_change``, repaired as ``state_undeclared`` and never
+  canonized.
 - ``test_s_novelty_permission__player`` (M5, #180): (c) an action by the player character
   introduced by an NPC render is repaired; the player's input about an NPC is never fact under
   ``own_character``; the exception, a ``co_author`` input narrating an NPC's action, is accepted
@@ -65,6 +68,7 @@ from epistrel.core.verify.permission import (
 from epistrel.core.verify.rules import VerdictKind
 from epistrel.orchestrator.models.registry import DELIVERED, PORTS, RESERVED
 from epistrel.orchestrator.verify.verifier import UNPERMITTED, ClaimRef
+from tests import effect_support as es
 from tests import multi_support as ms
 from tests import novelty_support as ns
 from tests import reactive_support as rs
@@ -596,3 +600,109 @@ async def test_s_novelty_permission__player(
         assert "repairs" not in report
         assert "permitted:co_author" in {v["permission"] for v in report["verify"]["verdicts"]}
         assert {r.provenance for r in await rows(engine, about, s=story, e=key)} == {"player"}
+
+
+# -- the M6 part (#187): (d) a change to a story State outside a validated effect ----------------
+
+
+async def _facts_count(engine: AsyncEngine, story_id: str) -> int:
+    found = await rows(engine, "SELECT count(*) AS n FROM facts WHERE story_id = :s", s=story_id)
+    return int(found[0].n)
+
+
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-VERIFY-12; FR-STATE-5")
+async def test_s_novelty_permission__m6_d(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """(d): Bobby's render narrates his own gold changing with no effect. The tracked State's
+    unit and the change verb make it ``denied:state_change``, repaired as ``state_undeclared``
+    and never canonized: rung 1 asks the render to declare the effect (validated, then
+    committed), the deterministic rung removes the sentence. A declared effect with no amount
+    is ``effect_unresolved`` (FR-STATE-5) and the ladder asks for one."""
+    pockets = "Bobby pockets 20 gold from the till."
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids = await es.shop(client, engine, es.gold(), names=("Cal", "Bobby"))
+        bobby, cal = ids["Bobby"], ids["Cal"]
+
+        async def turn(render: str, regeneration: str, say: str) -> dict[str, Any]:
+            stub.reset()
+            ms.renders_for(stub, "Bobby", render)
+            stub.script("regeneration", [regeneration])
+            response = await respond(client, story, body(cal, say))
+            assert response.status_code == 200, response.text
+            played: dict[str, Any] = response.json()
+            return played
+
+        # -- Declared on rung 1: the regenerated beat declares the effect, which commits.
+        facts_before = await _facts_count(engine, story)
+        played = await turn(
+            es.render(st.beat("do", f"Bobby wipes the bar. {pockets}")),
+            json.dumps(
+                {
+                    "text": f"Bobby wipes the bar. {pockets}",
+                    "effects": [es.effect("gold", scope_key=bobby, delta=20, reason="tips")],
+                }
+            ),
+            "Bobby, any luck tonight?",
+        )
+        (entry,) = (await st.turn_report(engine, story))["repairs"]
+        assert (entry["tag"], entry["rung"], entry["accepted"]) == ("state_undeclared", 3, True)
+        assert entry["verdict"] == "denied"
+        (prompt,) = es.regenerations(stub)
+        assert "This beat changes gold: declare the change as an effect" in prompt
+        verdicts = [
+            v
+            for r in await rows(
+                engine,
+                "SELECT payload FROM events WHERE story_id = :s AND type = 'verify_verdict'",
+                s=story,
+            )
+            for v in r.payload["verdicts"]
+        ]
+        assert [(v["permission"], v["cause"]) for v in verdicts] == [
+            ("denied:state_change", "state_undeclared")
+        ]
+        assert [(e["state"], e["scope_key"], e["new_value"]) for e in played["state_effects"]] == [
+            ("gold", bobby, 20)
+        ]
+        assert await _facts_count(engine, story) == facts_before  # never canonized
+
+        # -- The deterministic rung: a repeat with no effect loses the sentence.
+        played = await turn(
+            es.render(st.beat("do", f"Bobby wipes the bar. {pockets}")),
+            json.dumps({"text": pockets}),
+            "Bobby, any more luck?",
+        )
+        (entry,) = (await st.turn_report(engine, story))["repairs"]
+        assert (entry["tag"], entry["rung"]) == ("state_undeclared", 4)
+        assert "Bobby wipes the bar." in [b["text"] for b in played["beats"]]
+        assert pockets not in played["message"]["text"]
+        assert "state_effects" not in played
+        assert await es.gold_of(engine, story, bobby) == 20
+
+        # -- FR-STATE-5: a declared effect with no amount is unresolved; the ladder asks.
+        played = await turn(
+            es.render(
+                st.beat(
+                    "do",
+                    "Bobby pockets some coins.",
+                    effects=[es.effect("gold", scope_key=bobby, reason="tips")],
+                )
+            ),
+            json.dumps(
+                {
+                    "text": "Bobby pockets five coins.",
+                    "effects": [es.effect("gold", scope_key=bobby, delta=5, reason="tips")],
+                }
+            ),
+            "Bobby, a slow night?",
+        )
+        (entry,) = (await st.turn_report(engine, story))["repairs"]
+        assert (entry["tag"], entry["accepted"]) == ("effect_unresolved", True)
+        assert "Say exactly how much gold changes" in es.regenerations(stub)[0]
+        assert [(e["old_value"], e["new_value"]) for e in played["state_effects"]] == [(20, 25)]

@@ -59,8 +59,11 @@ sibling introduces Jenni's backstory too.
 - ``locked_canon``: the claim's (subject, predicate) has a current ``author_locked`` fact, or
   it sets a character's definition-locked field (``age``, ``name``, ``appearance_of``,
   ``visual_identity_of``: the definition's true age, name, appearance and visual identity);
-- ``state_change``: a change to a story State outside a validated effect (FR-STATE-5): never
-  fires in M4 (States arrive in M6);
+- ``state_change``: a change to a story State outside a validated effect (FR-STATE-5,
+  FR-VERIFY-12; #187): a ``do`` or narration sentence that changes a tracked State (its name,
+  an alias, its unit or its entity, with a change verb of #148's possession, transfer or
+  consumption tables) while the beat declares no effect on it (``state_change``, from
+  ``core.states.effects.narrated``). Its repair reason is ``state_undeclared``;
 - ``player_character``: a render or a director pass asserting the player character's actions,
   speech, thoughts or backstory;
 - ``other_character_secret``: a render asserting another modeled character's secrets,
@@ -287,6 +290,8 @@ class PermissionFacts:
     giver: str | None = None
     """#519: the entity a detected transfer names as handing the item over (``DetectedClaim
     .giver``), or ``None`` (see "The hand-over exception")."""
+    state_change: bool = False
+    """#187: the claim changes a tracked State's value with no validated effect."""
 
 
 # -- the matrix ---------------------------------------------------------------------------------
@@ -333,6 +338,8 @@ def permission(
         name in LOCKED_FIELDS and subject_owner.kind in ("modeled_character", "player_character")
     ):
         return Denied(Reason.LOCKED_CANON)
+    if facts.state_change:
+        return Denied(Reason.STATE_CHANGE)
     if facts.resolves is not None:
         return Permitted(Basis.RESOLUTION)
     modeled = [
@@ -378,6 +385,17 @@ def permission(
     if arrival and subject_owner.character_id != own and not facts.allow_new_arrivals:
         return Denied(Reason.POLICY)
     return _texture(facts, Basis.OWN if subject_owner.character_id == own else Basis.TEXTURE)
+
+
+def state_change(asserter: Asserter, *, validated: bool) -> Permission:
+    """#187 (FR-VERIFY-12, FR-STATE-5): whether ``asserter`` may change a tracked State's value
+    as narrated: the author may; anyone else only through a validated effect (``validated``),
+    else ``state_change`` at its precedence slot (``PermissionFacts.state_change``)."""
+    if asserter.kind == "author":
+        return Permitted(Basis.AUTHOR)
+    if validated:
+        return Permitted(Basis.OWN)
+    return Denied(Reason.STATE_CHANGE)
 
 
 def _reactive(
@@ -700,4 +718,5 @@ __all__ = [
     "permission",
     "recheck",
     "recorded",
+    "state_change",
 ]

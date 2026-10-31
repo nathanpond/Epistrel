@@ -36,7 +36,9 @@ env:
 jobs:
   chaos:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # 120, not 60 (#213): the 2026-10-26 run (40299371007) was cancelled at 60 min, and X-03's M6
+    # staged-turn part adds about 10 min at 500 iterations.
+    timeout-minutes: 120
     permissions:
       contents: read
       issues: write

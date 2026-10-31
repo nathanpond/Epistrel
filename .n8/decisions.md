@@ -10385,3 +10385,6 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision:** #203 found a #218 wording defect: settle-now's API text said "re-verified", which the FR-VERIFY-9 wording rule refuses. Reworded to "re-checked" (Rule 1, Refs #218). Filed #662 (LiteReadSet misses the Lite time and State inputs) and #663 (prompt_only clock still estimates skips). Commented on #632: Lite pacing is done, Lite skips not built; suggest closing.
   **Why:** Found while integrating #203.
   **Issue:** #203, #218
+- **Decision:** The S-EFFECT-CRASH `staged.after_claim` failure at `cd4c72e` was a test-timing assumption, not an engine race. The crash tests' provider had `confirm_wait_max_seconds=1`. When the resumed re-send didn't answer within 1 s, the wait lapsed by specification (FR-EXT-15/17/18), and the turn completed as pending with a lease re-send later. A 1.5 s injected delay reproduces it exactly. `tests/staged_crash_support.http_story` now defaults to a 30 s wait (also used by X-03 M6), with no assertion loosened. **#213 is green.**
+  **Why:** The engine behaves as specified, and the wait ends as soon as every row answers, so the longer bound doesn't slow the tests.
+  **Issue:** #213

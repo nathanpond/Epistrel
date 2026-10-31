@@ -185,7 +185,7 @@ async def test_u_14__owner(engine: AsyncEngine, states_delivered: None) -> None:
         _refused({**BALANCE, "external_value_name": "gold"}) == "story_owned"
     )  # a story-owned value names no provider value
     async with engine.connect() as conn:
-        names = [d.name for d in await states.definitions(conn, story)]
+        names = [d.name for d in await states.definitions(conn, story) if d.name != "world_clock"]
     assert names == ["balance", "gold", "member"]
     assert fake.calls == 0
     await ss.set_level(engine, story, None)

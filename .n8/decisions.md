@@ -9470,7 +9470,7 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Not changed:** the other M7 issues (#220, #223, #226 and #249 already cover the setting and acquisition kind generically), M8–M10, epic AC, and edges. No closures.
 
 
-## Ad-hoc — 2026-10-30
+## Ad-hoc — 2026-10-30 — reconciled by /n8-replan 2026-10-30 (M6,M7)
 
 - **Change:** Owner triage of the milestone-less `needs-triage` issues (decisions recorded on each issue). Scope moves: #518 (a fluent exit/move should supersede, not contradict) → M6, beside #193/#199; #564 (co_author sincere-error label/repair mismatch) → M6, fixed within #598 under ADR-174; #481 (paraphrase duplicates: an event-sourced `same_as` merge plus a duplicate-candidate notice at minting) → M7; #532 (eval runs over REST) → M7, beside #227/#233; #530 (a model error counts only in its label's metrics) → M9, before any floor verdict; new #602 (#456 items 1–2: deadline 422 pre-check, per-purpose latency estimates) and #603 (#588 (a): must three-voice turns fit cydonia) → M9. #456 item 6 (a `7 + G` default) is dropped: NFR-PERF-6's formula stays.
   **Why:** The owner's decisions, 2026-10-30.
@@ -9487,3 +9487,25 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Change:** The remaining milestone-less issues: #482 closed (fixed by 004dd5d); #504 → M7; #522 (multi-character P-04 commit, retrieval and verify budgets; an engine cause) → M6; #502 (P-10 1M/5M capacity steps; compute, not a model) → M9, measured after #471. A new **v2** milestone holds future work outside the v1 roadmap, which `/n8-plan` and `/n8-exec` don't touch until the owner opens v2 planning. #253 is in it.
   **Why:** The owner's decisions, 2026-10-30.
   **Affects:** M6 (#522 joins, unordered), M7 (#504 joins, needing an FR-ADMIN-6 amendment and ADR), M9 (#502 after #471).
+
+## /n8-replan M6,M7 (owner triage) — 2026-10-30
+
+- **Cause:** the 2026-10-30 triage Ad-hoc entry (PR #604). Git since the last replan holds only #604. The code the joined issues name was spot-checked and exists.
+- **Decision:** M6's pre-story order is encoded as edges: #185 (M6's only root) is blocked by all 24 pre-story issues. The order within the group is a recommendation in the milestone description.
+  **Why:** Execution follows the graph. One fan-in onto the single root enforces "before every other story" without 24×N edges.
+- **Decision:** #522 is a time-boxed spike, last in the pre-story group: profile, fix one contained M5 cause, rerun P-04 multi, file the rest.
+  **Why:** It is open-ended; without a box it could absorb an unattended run. The owner approved it.
+- **Decision:** #518 is blocked by #194. An exit supersedes the open-ended placement from its beat's story-time (FR-PROP-9's fluent rule), which needs #194's per-step timing.
+- **Decision:** #504's docs change is a new ADR plus a docs/02 amendment (docs/02:441 and the OpenAPI description). It is not a docs/03 FR-ADMIN-6 amendment as the triage entry said: FR-ADMIN-2 does not restrict subject kinds.
+- **Changed:**
+  - M6: #214's safety-minimum bullet (stale how; #456 builds the create/update and impact-report warning, #214 adds O); edges #518←#194, #564←#598, #214←#456; AC comments on #518, #564 and #522; parity notes on #535, #531, #527 and #534; the live-run rule on #588; a note on #423 (AC unchanged); the M6 description (pre-story item 4, the replan section, a valid order).
+  - M7: #481 (under #24, ←#225), #532 (under #25, ←#233) and #504 (under #26) rewritten as stories; the M7 description (Outcomes 8, 11, 12, phases, the replan section).
+  - Both: type and area labels on all 29 joined issues, with `needs-triage` removed.
+- **Not changed:** no closures, no epic AC, no coverage claims or maps (the joined issues add no requirement IDs to M6 or M7).
+- **Outside scope:** M11's audit emphases should name the new catalog-scope erasure subject (#504). That is left for a later `/n8-replan M11`.
+
+## Ad-hoc — 2026-10-30 (M6 test gate)
+
+- **Change:** For M6's 24 pre-story issues only, `/n8-exec` runs the full suite once per batch instead of after every issue. There are four ordered batches: flakes (#537 #514 #517 #446 #468), then M5 bugs (#567 #566 #568 #516 #563 #483 #521), then decided changes and Console additions (#519 #515 #456 #588 #536 #533 #535 #526 #527 #531 #534), then #522 alone. Each issue still runs its own tests, its area tests and the fast gates. Every M6 feature story (#185 onward) keeps the per-story full-suite gate. The rules and the metrics tables are in `.n8/memory/m6-batched-pre-story-gate.md`.
+  **Why:** The owner's decision, 2026-10-30. The pre-story issues are independent, small fixes, the shape where M4's and M5's batched fix passes caught nothing late. Batching saves roughly 5–6 h of full runs at about 19 min per sharded run. The feature stories share the commit path, verification, the profile schema (#203's `DELIVERED` flip) and the outbox and staged-turn harness: M3 group C's shape, where batching was a net loss because of test pollution across areas.
+  **Affects:** M6 execution method only. No issue's AC or plan changes.

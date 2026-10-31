@@ -921,6 +921,13 @@ async def get_story(story_id: StoryId, ctx: ContextDep, engine: EngineDep) -> St
     "/{story_id}/ingest",
     status_code=http_status.HTTP_201_CREATED,
     response_model=IngestResponse,
+    responses={
+        http_status.HTTP_200_OK: {
+            "model": IngestResponse,
+            "description": "At least one event was ingested before and is replayed "
+            "(`replayed: true`); only the new ones were recorded.",
+        }
+    },
     operation_id="ingest",
     summary="Record consumer events without generating",
     description=INGEST_DESCRIPTION,

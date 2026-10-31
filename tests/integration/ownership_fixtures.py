@@ -718,6 +718,8 @@ CALLS: dict[tuple[str, str], Call] = {
     ("GET", f"{S}/inspect/beliefs"): Call(409, queries=(OMNISCIENT,), prepare=_believing),
     ("GET", f"{S}/inspect/divergences"): Call(409, queries=(OMNISCIENT,)),
     ("GET", f"{S}/inspect/exposures"): Call(409, queries=(OMNISCIENT,)),
+    # #207's snapshotted external facts: no partitions gate, so an empty page for everyone.
+    ("GET", f"{S}/inspect/external-facts"): Call(200, queries=(OMNISCIENT,)),
     # Author pins (#147): a fresh memory pinned, a fresh pinned memory unpinned.
     ("POST", f"{S}/memories/{{memory_id}}/pin"): Call(200, prepare=_memory),
     ("DELETE", f"{S}/memories/{{memory_id}}/pin"): Call(200, prepare=_pinned_memory),

@@ -433,19 +433,38 @@ OWNER_ACTIVE: dict[str, OwnerActive] = {}
 """The conditional owner lookups' tests, by predicate id (``register_owner_lookup(active=)``)."""
 
 
+OwnerBeliefOnly = Callable[[AsyncConnection, str, Proposition], Awaitable[bool]]
+"""Whether a claim on an owner-lookup predicate is known to a character only as its own belief
+(#207: a value an external provider owns), so a ``belief(A)`` holder's canon fallback is not
+consulted for it."""
+OWNER_BELIEF_ONLY: dict[str, OwnerBeliefOnly] = {}
+"""The belief-only tests of owner lookups, by predicate id (``register_owner_lookup(
+belief_only=)``)."""
+
+
 def register_owner_lookup(
-    predicate_id: str, lookup: OwnerLookup, *, active: OwnerActive | None = None
+    predicate_id: str,
+    lookup: OwnerLookup,
+    *,
+    active: OwnerActive | None = None,
+    belief_only: OwnerBeliefOnly | None = None,
 ) -> OwnerLookup:
     """Make ``predicate_id`` an owner-lookup predicate answered by ``lookup``. With ``active``
     the lookup is **conditional** (#195: ``time_is`` is the clock's only while the story runs
     the clock, and an ordinary fact-backed predicate otherwise, as in M4): ``check_with`` reads
     the owner only for a story ``active`` admits, and a pure ``check`` hands the claim to the
-    lookup only when it is given the owner's values."""
+    lookup only when it is given the owner's values. With ``belief_only``, a claim it admits is
+    decided for a ``belief(A)`` holder over A's partition alone (#207: ADR-167's canon fallback
+    never answers an externally owned value, so one A holds no belief about stays ``novel``)."""
     OWNER_LOOKUPS[predicate_id] = lookup
     if active is not None:
         OWNER_ACTIVE[predicate_id] = active
     else:
         OWNER_ACTIVE.pop(predicate_id, None)
+    if belief_only is not None:
+        OWNER_BELIEF_ONLY[predicate_id] = belief_only
+    else:
+        OWNER_BELIEF_ONLY.pop(predicate_id, None)
     return lookup
 
 
@@ -467,6 +486,13 @@ async def owner_active(predicate_id: str, conn: AsyncConnection, story_id: str) 
         return False
     test = OWNER_ACTIVE.get(predicate_id)
     return True if test is None else await test(conn, story_id)
+
+
+async def owner_belief_only(conn: AsyncConnection, story_id: str, claim: Proposition) -> bool:
+    """``claim`` is on an owner-lookup predicate whose ``belief_only`` test admits it: a
+    character knows its value only as its own belief (see ``register_owner_lookup``)."""
+    test = OWNER_BELIEF_ONLY.get(claim.predicate_id)
+    return test is not None and await test(conn, story_id, claim)
 
 
 # -- author declarations (#108's loose lists, typed) --------------------------------------------
@@ -1485,6 +1511,7 @@ __all__ = [
     "IDENTITY",
     "IMPLICATION_MAX_DEPTH",
     "OWNER_ACTIVE",
+    "OWNER_BELIEF_ONLY",
     "OWNER_LOOKUPS",
     "PROPOSABLE",
     "PROPOSAL_OBSERVATIONS",
@@ -1496,6 +1523,7 @@ __all__ = [
     "IdentityReason",
     "ImplicationRule",
     "OwnerActive",
+    "OwnerBeliefOnly",
     "OwnerLookup",
     "PredicateDecl",
     "PredicateList",
@@ -1525,6 +1553,7 @@ __all__ = [
     "list_predicates",
     "load",
     "owner_active",
+    "owner_belief_only",
     "owner_lookup",
     "register_author",
     "register_owner_lookup",

@@ -8900,6 +8900,223 @@
         "title": "ExposuresBody",
         "type": "object"
       },
+      "ExternalFactBody": {
+        "description": "A fact version citing an external read (#205's reference to it, FR-EXT-4): its id, its\nproposition, its scope, valid-time (story-minutes), provenance, authority, and when it was\nrecorded and closed (``tx_to``: ``null`` while current).",
+        "properties": {
+          "authority": {
+            "title": "Authority",
+            "type": "string"
+          },
+          "fact_id": {
+            "title": "Fact Id",
+            "type": "string"
+          },
+          "proposition": {
+            "$ref": "#/components/schemas/Proposition"
+          },
+          "provenance": {
+            "title": "Provenance",
+            "type": "string"
+          },
+          "scope": {
+            "title": "Scope",
+            "type": "string"
+          },
+          "tx_from": {
+            "format": "date-time",
+            "title": "Tx From",
+            "type": "string"
+          },
+          "tx_to": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tx To"
+          },
+          "valid_from": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid From"
+          },
+          "valid_to": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid To"
+          }
+        },
+        "required": [
+          "fact_id",
+          "proposition",
+          "scope",
+          "valid_from",
+          "valid_to",
+          "provenance",
+          "authority",
+          "tx_from",
+          "tx_to"
+        ],
+        "title": "ExternalFactBody",
+        "type": "object"
+      },
+      "ExternalFactsBody": {
+        "description": "A page of the story's external reads by id, the story's revision and ``next_after_id``\n(``null`` on the last page), labelled omniscient.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ExternalReadItemBody"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_after_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next After Id"
+          },
+          "output_viewpoint": {
+            "const": "omniscient",
+            "default": "omniscient",
+            "title": "Output Viewpoint",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "revision",
+          "next_after_id"
+        ],
+        "title": "ExternalFactsBody",
+        "type": "object"
+      },
+      "ExternalReadItemBody": {
+        "description": "One snapshotted external value (FR-EXT-2, FR-ADMIN-5): the ``external_read`` event, the\nprovider and the value's name, the State and its scope key (``null``: story-scoped), the\nvalue read (``null``: unknown), when it was read, the turn and variant that read it, its\nsource (``live``, ``last_known``, ``unknown``) and the facts that cite it.",
+        "properties": {
+          "event_id": {
+            "title": "Event Id",
+            "type": "string"
+          },
+          "facts": {
+            "items": {
+              "$ref": "#/components/schemas/ExternalFactBody"
+            },
+            "title": "Facts",
+            "type": "array"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "read_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Read At"
+          },
+          "scope_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Key"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "state_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State Id"
+          },
+          "turn": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Turn"
+          },
+          "value": {
+            "title": "Value"
+          },
+          "value_name": {
+            "title": "Value Name",
+            "type": "string"
+          },
+          "variant": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Variant"
+          }
+        },
+        "required": [
+          "event_id",
+          "provider",
+          "value_name",
+          "state_id",
+          "scope_key",
+          "value",
+          "read_at",
+          "turn",
+          "variant",
+          "source",
+          "facts"
+        ],
+        "title": "ExternalReadItemBody",
+        "type": "object"
+      },
       "ExtractionShadowBody": {
         "additionalProperties": false,
         "description": "What gating missed, and detection and checking counted apart.",
@@ -64614,6 +64831,179 @@
           }
         ],
         "summary": "Inspect the story's exposures",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
+    "/stories/{story_id}/inspect/external-facts": {
+      "get": {
+        "description": "Each value an external provider answered for the story, as pinned and recorded (`external_read`), with the facts that cite it (FR-EXT-2,4, FR-ADMIN-5), `omniscient` only (422 `viewpoint_unresolved` when no viewpoint is named, 403 `omniscient_required` for a character). A raw read: no provider is called. A page by id (`limit`, at most 500; `after_id` continues); `as_of` keeps the reads positioned through a turn. A story with no reads answers an empty page.",
+        "operationId": "inspect_external_facts",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "viewpoint",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Viewpoint"
+            }
+          },
+          {
+            "in": "query",
+            "name": "as_of",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 2147483647,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "As Of"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExternalFactsBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden: `omniscient_required`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`, `viewpoint_unresolved`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Inspect the story's snapshotted external facts",
         "tags": [
           "stories"
         ]

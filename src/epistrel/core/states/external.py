@@ -13,12 +13,18 @@ never imports ``orchestrator.providers``: it reads what was pinned.
   the source: the version pinned at or before the position read (``PinSource.pinned``). A State
   the turn has not pinned has no value (FR-EXT-2: no earlier turn's read stands in for this
   turn's, and nothing reads speculatively).
-- **Outside a turn** (a later verification of a recorded position, an inspection) Core reads the
-  committed ``external_values``: the latest version at or before the position, of an operation
-  on the active timeline (``core.membership.active_operation``, so a truncated or replaced
-  turn's read no longer answers, and a regenerate's own replaced variant is left out).
+- **Outside a turn** (a later verification of a recorded position, an inspection), and inside
+  one for a **frame-bounded read** of an earlier turn (``through`` before the pins' turn: #164's
+  lazy resolution, #165's could-have-known replay; #207), Core reads the committed
+  ``external_values``, never the current pin: the latest version at or before the position, of
+  an operation on the active timeline (``core.membership.active_operation``, so a truncated or
+  replaced turn's read no longer answers, and a regenerate's own replaced variant is left out).
 
-Pure but for ``pinned_values``'s read; logs nothing (invariant 3).
+**Inspection** (``inspect``, #207; ``GET /stories/{id}/inspect/external-facts``, FR-ADMIN-5):
+the story's ``external_read`` events on the active timeline with the facts citing them, an
+omniscient raw read (the caller applies ``core.epistemic.inspection.omniscient_read``).
+
+Pure but for ``pinned_values``'s and ``inspect``'s reads; logs nothing (invariant 3).
 """
 
 from __future__ import annotations
@@ -27,10 +33,10 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncConnection
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.enums import ExternalValueSource, StateOwner
 from epistrel.core.membership import (
@@ -42,6 +48,13 @@ from epistrel.core.membership import (
 from epistrel.core.states.model import StateDefinition, Value, from_json
 from epistrel.core.tables import operations
 from epistrel.core.tables.states import STORY_SCOPE_KEY, external_values
+
+if TYPE_CHECKING:
+    from epistrel.core.canon.facts import Fact
+
+INSPECT_LIMIT_DEFAULT = 100
+INSPECT_LIMIT_MAX = 500
+"""``inspect``'s page size and its cap (#178's inspection reads keep the same)."""
 
 Key = tuple[str, str | None]
 """An external value within a story: ``(state id, scope key)`` (``None``: story-scoped)."""
@@ -64,6 +77,11 @@ class ExternalPin:
 
 class PinSource(Protocol):
     """A turn's pinned reads as Core reads them (``orchestrator.providers.pinned.PinnedReads``)."""
+
+    @property
+    def turn(self) -> int:
+        """The narrative turn the pins were read for."""
+        ...
 
     def pinned(self, state_id: str, scope_key: str | None, through: Position | None) -> Any:
         """The ``ExternalPin`` of ``(state_id, scope_key)`` pinned at or before ``through``
@@ -114,7 +132,7 @@ async def pinned_values(
     if not wanted:
         return {}
     source = current()
-    if source is not None:
+    if source is not None and (through is None or through.turn >= source.turn):
         found: dict[Key, ExternalPin] = {}
         for key in wanted:
             pin = source.pinned(key[0], key[1], through)
@@ -161,12 +179,111 @@ async def pinned_values(
     return {key: pin for key, (_, pin) in latest.items() if _at_or_before(pin.position, through)}
 
 
+# -- external facts (#207) ----------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalFactItem:
+    """One ``external_read`` (#205) with the facts that reference it: the event, the provider
+    and the value's name, the State and scope key (``None``: story-scoped), the value read
+    (``None``: unknown), when it was read, its turn and variant, its source (``live``,
+    ``last_known``, ``unknown``) and every fact version citing it (``source_event_ids``)."""
+
+    event_id: str
+    provider: str
+    value_name: str
+    state_id: str | None
+    scope_key: str | None
+    value: Any
+    read_at: str | None
+    turn: int | None
+    variant: int | None
+    source: str
+    facts: tuple[Fact, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalFactPage:
+    story_id: str
+    revision: int
+    items: tuple[ExternalFactItem, ...]
+    next_after_id: str | None
+
+
+async def inspect(
+    db: AsyncEngine,
+    story_id: str,
+    *,
+    as_of: int | None = None,
+    limit: int = INSPECT_LIMIT_DEFAULT,
+    after_id: str | None = None,
+) -> ExternalFactPage:
+    """The story's snapshotted external facts (FR-ADMIN-5, FR-EXT-2,4; #207): its
+    ``external_read`` events on the active timeline, positioned at or before turn ``as_of``, by
+    id after ``after_id``, ``limit`` a page, each with the facts that cite it. A raw read: no
+    provider is called. No partitions gate applies (a value read is no character's knowledge),
+    so a story with no reads answers an empty page. 404 for an unknown story."""
+    from epistrel.core.canon import facts as canon_facts
+    from epistrel.core.concurrency import check_expected_revision
+    from epistrel.core.events.types import EXTERNAL_READ
+    from epistrel.core.tables import events
+
+    limit = max(1, min(INSPECT_LIMIT_MAX, limit))
+    e = events.c
+    query = (
+        select(e.id, e.payload, e.narrative_turn, e.turn_variant)
+        .select_from(events.join(operations, operations.c.operation_id == e.operation_id))
+        .where(e.story_id == story_id, e.type == EXTERNAL_READ, active_operation(operations))
+        .order_by(e.id)
+        .limit(limit + 1)
+    )
+    if after_id is not None:
+        query = query.where(e.id > after_id)
+    if as_of is not None:
+        query = query.where(e.narrative_turn <= as_of)
+    async with db.connect() as conn:
+        revision = await check_expected_revision(conn, story_id, None)
+        rows = list(await conn.execute(query))
+        page, more = rows[:limit], len(rows) > limit
+        cited = await canon_facts.citing(conn, story_id, [str(r.id) for r in page])
+    by_event: dict[str, list[Fact]] = {}
+    for fact in cited:
+        for event_id in fact.source_event_ids:
+            by_event.setdefault(event_id, []).append(fact)
+    items = []
+    for row in page:
+        payload = dict(row.payload or {})
+        items.append(
+            ExternalFactItem(
+                event_id=str(row.id),
+                provider=str(payload.get("provider", "")),
+                value_name=str(payload.get("value_name", "")),
+                state_id=payload.get("state_id"),
+                scope_key=payload.get("scope_key"),
+                value=payload.get("value"),
+                read_at=payload.get("read_at"),
+                turn=row.narrative_turn,
+                variant=row.turn_variant,
+                source=str(payload.get("source", "")),
+                facts=tuple(by_event.get(str(row.id), ())),
+            )
+        )
+    return ExternalFactPage(
+        story_id, revision, tuple(items), items[-1].event_id if more and items else None
+    )
+
+
 __all__ = [
+    "INSPECT_LIMIT_DEFAULT",
+    "INSPECT_LIMIT_MAX",
+    "ExternalFactItem",
+    "ExternalFactPage",
     "ExternalPin",
     "Key",
     "PinSource",
     "current",
     "external",
+    "inspect",
     "pinned_values",
     "pinning",
 ]

@@ -156,6 +156,11 @@ class PinnedReads:
     _turn: int = 0
     _started: bool = False
 
+    @property
+    def turn(self) -> int:
+        """The turn the pins are read for (``start``; Core's ``PinSource.turn``)."""
+        return self._turn
+
     # -- the attempt --------------------------------------------------------------------------
 
     def reset(self) -> None:

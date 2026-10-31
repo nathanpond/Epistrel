@@ -25,12 +25,18 @@ shows what no character's partition holds, a partition what no other character m
 character viewpoint 403 ``omniscient_required``; each answer carries ``output_viewpoint:
 "omniscient"``. Service authentication is the only other check (C-28, S-TRUST-BOUNDARY). The
 belief, divergence and exposure reads are 409 ``module_off`` for a story that keeps no character
-partitions. FR-ADMIN-5's snapshotted external facts are M6's. Thin handlers over
-``Engine.inspect_*``.
+partitions.
+
+- ``GET /stories/{id}/inspect/external-facts?viewpoint=omniscient`` → the story's snapshotted
+  external facts (#207, FR-ADMIN-5: each ``external_read`` with the facts citing it; ``as_of``),
+  with no partitions gate: a story with no reads answers an empty page.
+
+Thin handlers over ``Engine.inspect_*``.
 """
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Query
@@ -64,6 +70,7 @@ from epistrel.core.epistemic.partitions import Belief, BeliefInspection, BeliefS
 from epistrel.core.ids import ULID_PATTERN
 from epistrel.core.membership import Position
 from epistrel.core.propositions.model import Proposition
+from epistrel.core.states.external import ExternalFactItem, ExternalFactPage
 
 router = APIRouter(prefix="/stories", tags=["stories"])
 
@@ -603,5 +610,122 @@ async def inspect_exposures(
             as_of=as_of,
             limit=limit,
             after_id=after_id,
+        )
+    )
+
+
+# -- external facts (#207) ------------------------------------------------------------------------
+
+
+class ExternalFactBody(BaseModel):
+    """A fact version citing an external read (#205's reference to it, FR-EXT-4): its id, its
+    proposition, its scope, valid-time (story-minutes), provenance, authority, and when it was
+    recorded and closed (``tx_to``: ``null`` while current)."""
+
+    fact_id: str
+    proposition: Proposition
+    scope: str
+    valid_from: int | None
+    valid_to: int | None
+    provenance: str
+    authority: str
+    tx_from: datetime
+    tx_to: datetime | None
+
+    @classmethod
+    def of(cls, fact: Fact) -> ExternalFactBody:
+        return cls(
+            fact_id=fact.id,
+            proposition=fact.proposition,
+            scope=fact.visibility.scope,
+            valid_from=fact.valid_from,
+            valid_to=fact.valid_to,
+            provenance=fact.provenance.value,
+            authority=fact.authority.value,
+            tx_from=fact.tx_from,
+            tx_to=fact.tx_to,
+        )
+
+
+class ExternalReadItemBody(BaseModel):
+    """One snapshotted external value (FR-EXT-2, FR-ADMIN-5): the ``external_read`` event, the
+    provider and the value's name, the State and its scope key (``null``: story-scoped), the
+    value read (``null``: unknown), when it was read, the turn and variant that read it, its
+    source (``live``, ``last_known``, ``unknown``) and the facts that cite it."""
+
+    event_id: str
+    provider: str
+    value_name: str
+    state_id: str | None
+    scope_key: str | None
+    value: Any
+    read_at: str | None
+    turn: int | None
+    variant: int | None
+    source: str
+    facts: list[ExternalFactBody]
+
+    @classmethod
+    def of(cls, item: ExternalFactItem) -> ExternalReadItemBody:
+        return cls(
+            event_id=item.event_id,
+            provider=item.provider,
+            value_name=item.value_name,
+            state_id=item.state_id,
+            scope_key=item.scope_key,
+            value=item.value,
+            read_at=item.read_at,
+            turn=item.turn,
+            variant=item.variant,
+            source=item.source,
+            facts=[ExternalFactBody.of(f) for f in item.facts],
+        )
+
+
+class ExternalFactsBody(BaseModel):
+    """A page of the story's external reads by id, the story's revision and ``next_after_id``
+    (``null`` on the last page), labelled omniscient."""
+
+    items: list[ExternalReadItemBody]
+    revision: int
+    next_after_id: str | None
+    output_viewpoint: Literal["omniscient"] = "omniscient"
+
+    @classmethod
+    def of(cls, page: ExternalFactPage) -> ExternalFactsBody:
+        return cls(
+            items=[ExternalReadItemBody.of(i) for i in page.items],
+            revision=page.revision,
+            next_after_id=page.next_after_id,
+            output_viewpoint="omniscient",
+        )
+
+
+@router.get(
+    "/{story_id}/inspect/external-facts",
+    response_model=ExternalFactsBody,
+    operation_id="inspect_external_facts",
+    summary="Inspect the story's snapshotted external facts",
+    description=(
+        "Each value an external provider answered for the story, as pinned and recorded "
+        "(`external_read`), with the facts that cite it (FR-EXT-2,4, FR-ADMIN-5), `omniscient` "
+        "only (422 `viewpoint_unresolved` when no viewpoint is named, 403 "
+        "`omniscient_required` for a character). A raw read: no provider is called. A page by "
+        "id (`limit`, at most 500; `after_id` continues); `as_of` keeps the reads positioned "
+        "through a turn. A story with no reads answers an empty page."
+    ),
+)
+async def inspect_external_facts(
+    story_id: StoryId,
+    ctx: ContextDep,
+    engine: EngineDep,
+    viewpoint: str | None = None,
+    as_of: Annotated[int | None, Query(ge=0, le=2_147_483_647)] = None,
+    limit: Annotated[int, Query(ge=1, le=KNOWLEDGE_LIMIT_MAX)] = KNOWLEDGE_LIMIT_DEFAULT,
+    after_id: Annotated[str | None, Query(pattern=ULID_PATTERN)] = None,
+) -> ExternalFactsBody:
+    return ExternalFactsBody.of(
+        await engine.inspect_external_facts(
+            ctx, story_id, viewpoint=viewpoint, as_of=as_of, limit=limit, after_id=after_id
         )
     )

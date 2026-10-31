@@ -595,6 +595,7 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "inspect_beliefs": ("module_off", "omniscient_required", "viewpoint_unresolved"),
     "inspect_divergences": ("module_off", "omniscient_required", "viewpoint_unresolved"),
     "inspect_exposures": ("module_off", "omniscient_required", "viewpoint_unresolved"),
+    "inspect_external_facts": ("omniscient_required", "viewpoint_unresolved"),
     "history": ("omniscient_required", "viewpoint_unresolved", "unknown_chain"),
     "retrieve": ("omniscient_required", "viewpoint_unresolved"),
     "get_story": ("viewpoint_unresolved",),

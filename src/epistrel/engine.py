@@ -135,6 +135,7 @@ from epistrel.core.retrieval import lexical_backend
 from epistrel.core.retrieval import pipeline as retrieval_pipeline
 from epistrel.core.settings_schema import ConfigClass, PlayerView, StorySettings
 from epistrel.core.states import api as state_api
+from epistrel.core.states import external as external_states
 from epistrel.core.states import proposals as state_proposals
 from epistrel.core.tables import events
 from epistrel.core.tables.media import MediaKind, MediaState
@@ -2084,6 +2085,29 @@ class Engine:
             as_of=as_of,
             limit=limit,
             after_id=after_id,
+        )
+
+    @refuses_nul()
+    async def inspect_external_facts(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        viewpoint: str | None,
+        as_of: int | None = None,
+        limit: int = external_states.INSPECT_LIMIT_DEFAULT,
+        after_id: str | None = None,
+    ) -> external_states.ExternalFactPage:
+        """The story's snapshotted external facts (FR-ADMIN-5, FR-EXT-2,4;
+        ``inspect/external-facts``; #207): each ``external_read`` on the active timeline with
+        the facts that cite it, an omniscient read (422 ``viewpoint_unresolved`` / 403
+        ``omniscient_required``) that calls no provider. A page by id (``limit``,
+        ``after_id``); ``as_of`` keeps the reads positioned through a turn. No partitions gate:
+        a story with no reads answers an empty page."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
+        return await external_states.inspect(
+            self.db, story_id, as_of=as_of, limit=limit, after_id=after_id
         )
 
     # -- the structured projections (FR-STORE-3, FR-RET-6; #137) ---------------------------------

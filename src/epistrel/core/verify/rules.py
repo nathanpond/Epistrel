@@ -151,7 +151,12 @@ on such a predicate (a declared rule ``holds ⇒ state_value``) is checked again
 value too: the lookup's ``implied`` turns it into the value its cause states, and a different
 value is ``contradicted`` (``implication``, then ``functional_key`` with the owner's ref). A
 ``belief(A)`` holder never consults the lookup: its record set is A's partition and the canon A
-may read (ADR-167), where a value is an ordinary belief.
+may read (ADR-167), where a value is an ordinary belief. A lookup registered with a
+``belief_only`` test (#207: the value of an externally owned State) is decided over A's
+partition alone: the canon fallback is not consulted, so neither the pinned value nor a fact
+answers for A, and a value A holds no belief about stays ``novel``. An owner's value may be
+``unsettled`` (``OwnedValue.unsettled``: #207's ``advisory`` provider), when the lookup answers
+``uncertain`` with that reason whatever the claim says.
 
 **``verify``** asks the story's effective profile first (#129). With ``verification`` off, it
 is inert: no lookup, no verdict. With ``contradiction_checking`` off, no contradiction rule runs.
@@ -206,6 +211,7 @@ from epistrel.core.propositions.registry import (
     imply,
     load,
     owner_active,
+    owner_belief_only,
     owner_lookup,
     same_event,
 )
@@ -266,6 +272,9 @@ class VerdictReason(StrEnum):
     ARGUMENT_TYPE = "argument_type"
     NO_CLOCK = "no_clock"
     """#195: a clock check on a story that does not run the clock."""
+    ADVISORY = "advisory"
+    """#207: a value an ``advisory`` external provider answered (its ``trust_tier``): it
+    settles no claim either way (the owner's decision, 2026-10-30)."""
 
 
 class Rule(StrEnum):
@@ -295,6 +304,7 @@ CONFIDENCE: Mapping[VerdictReason, float] = {
     VerdictReason.UNRESOLVED_ENTITY: 0.0,
     VerdictReason.UNRESOLVED_TIME: 0.0,
     VerdictReason.NO_CLOCK: 0.0,
+    VerdictReason.ADVISORY: 0.0,
 }
 """``Verdict.confidence`` of an ``uncertain`` verdict, by reason; rule verdicts are 1.0."""
 
@@ -406,6 +416,9 @@ class OwnedValue:
     kind: str
     tolerance: float = 0.0
     entity_id: str | None = None
+    unsettled: VerdictReason | None = None
+    """#207: why the value settles no claim (``advisory``: an advisory provider answered it),
+    so a claim on it is ``uncertain`` with this reason either way; ``None``: it settles."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1729,7 +1742,11 @@ async def check_with(
             position=position,
             options=options,
         )
-        if verdict.kind is not VerdictKind.NOVEL:
+        if verdict.kind is not VerdictKind.NOVEL or await owner_belief_only(
+            lookup.conn, story_id, c
+        ):
+            # #207: an externally owned value is known to A only as A's own belief; the canon
+            # fallback never answers it (an unbelieved value stays novel: hidden to #166).
             if fetched is not None:
                 fetched.extend(held)
             log.debug("verify fetched %d belief records, %d closed sets", len(held), len(closed))

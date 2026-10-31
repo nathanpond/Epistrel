@@ -1,4 +1,4 @@
-"""C-28: story inspection (FR-ADMIN-5, FR-RESP-12, FR-AUTH-1) [M5] (#178).
+"""C-28: story inspection (FR-ADMIN-5, FR-RESP-12, FR-AUTH-1) [M5] (#178), [M6] (#207).
 
 The inspection reads (``/stories/{id}/inspect/beliefs``, ``…/divergences``, ``…/exposures``,
 ``…/ledger``) return a character's belief set, the story's divergences and exposures, and the
@@ -9,6 +9,10 @@ their content appears in a character-viewpoint ``respond`` or history read: cana
 inspected records' ids are searched in every character-viewpoint body, and an AST check shows no
 inspection serializer is reachable from the respond and history routes. Run over REST and the
 library (the ``surface`` fixture).
+
+M6 (``test_c_28__m6``, #207): the same holds for the snapshotted external facts
+(``…/inspect/external-facts``: each ``external_read`` with the facts citing it), which keeps no
+partitions gate.
 """
 
 from __future__ import annotations
@@ -22,9 +26,13 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from tests import canon_support as c
+from tests import effect_support as effects
 from tests import erasure_support as e
+from tests import multi_support as multi
 from tests import partition_support as ps
 from tests import perception_support as perception
+from tests import provider_support as pv
+from tests import state_support as states
 from tests.conformance.conftest import Surface
 from tests.conftest import REPO_ROOT
 from tests.event_support import rows
@@ -36,7 +44,15 @@ pytestmark = pytest.mark.integration
 
 KINDS = ("beliefs", "divergences", "exposures", "ledger")
 CANARY = "C28-CANARY-LOCKET"
-SERIALIZERS = {"BeliefsBody", "DivergencesBody", "ExposuresBody", "LedgerBody", "BeliefItemBody"}
+SERIALIZERS = {
+    "BeliefsBody",
+    "DivergencesBody",
+    "ExposuresBody",
+    "LedgerBody",
+    "BeliefItemBody",
+    "ExternalFactsBody",
+    "ExternalReadItemBody",
+}
 
 
 def _params(kind: str, ann: str) -> dict[str, Any]:
@@ -152,6 +168,98 @@ async def test_c_28__respond(
             assert held.id not in found_text, viewer
     seen = await surface.inspect("beliefs", story, viewpoint="omniscient", character=ids["Jenni"])
     assert held.id in {b["belief_id"] for b in seen.json["beliefs"]}
+
+
+@pytest.mark.part("M6", "FR-ADMIN-5")
+async def test_c_28__m6(
+    surface: Surface,
+    engine: AsyncEngine,
+    states_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#207: the snapshotted external facts (``inspect/external-facts``). Cal's gold is owned by
+    a registered provider; two turns read it (300, then 250), and the narrator's "300" in the
+    first commits an external fact citing its read. ``omniscient`` returns both reads, oldest
+    first, each with its provider, value name, scope key, value, read time, turn, variant and
+    source, the first with the fact that cites it; labelled ``omniscient``, the same under any
+    principal; paged by id; ``as_of`` keeps the reads through a turn. A character viewpoint is
+    refused (403 ``omniscient_required``), no viewpoint 422 ``viewpoint_unresolved``. No
+    partitions gate: a story with no reads answers an empty page. None of it reaches a
+    character-viewpoint respond or history read (the reads' and the fact's ids are searched)."""
+    name = pv.unique_name("ledger")
+    await pv.register(engine, pv.in_process_spec(name, {"gold": "number"}))
+    fake = pv.ScriptedProvider(name).attach(surface.engine)
+    fake.script("gold", 300, 250)
+    stub = surface.engine.models.stub
+    story, ids = await structured_story(surface.client, "Cal", "Mira")
+    cal, mira = ids["Cal"], ids["Mira"]
+    await states.set_level(engine, story, "on")
+    gold = await pv.external_gold(engine, story, name)
+    turns: list[int] = []
+    for narration in ("Rain taps. Cal has 300 gold in all.", "Wind rattles the door."):
+        stub.reset()
+        effects.narrator(stub, effects.render(beat("narration", narration)))
+        multi.renders_for(stub, "Mira", effects.render(beat("say", "Mind the edge.")))
+        played = await surface.respond(
+            story, body(cal, None, do="checks his purse"), viewpoint=f"character:{mira}"
+        )
+        assert played.status == 200, played.code
+        assert played.json is not None
+        turns.append(int(played.json["turn"]))
+        for found in (played, await surface.history(story, viewpoint=f"character:{mira}")):
+            text = json.dumps(found.json)
+            reads = [str(r.id) for r in await pv.external_reads(engine, story)]
+            cited = [str(f.id) for f in await pv.external_facts(engine, story)]
+            assert reads
+            assert not [i for i in (*reads, *cited) if i in text]
+
+    seen = await surface.inspect("external-facts", story, viewpoint="omniscient")
+    assert seen.status == 200, seen.code
+    assert seen.json["output_viewpoint"] == "omniscient"
+    assert seen.json["next_after_id"] is None
+    first, second = seen.json["items"]
+    (fact,) = await pv.external_facts(engine, story)
+    assert {k: first[k] for k in ("provider", "value_name", "state_id", "scope_key")} == {
+        "provider": name,
+        "value_name": "gold",
+        "state_id": gold.id,
+        "scope_key": cal,
+    }
+    recorded = await pv.external_reads(engine, story)
+    assert [(i["event_id"], i["variant"]) for i in (first, second)] == [
+        (str(r.id), r.turn_variant) for r in recorded
+    ]
+    assert [(i["value"], i["turn"], i["source"]) for i in (first, second)] == [
+        (300, turns[0], "live"),
+        (250, turns[1], "live"),
+    ]
+    assert first["read_at"]
+    assert [(f["fact_id"], f["provenance"], f["scope"]) for f in first["facts"]] == [
+        (str(fact.id), "external", "engine")
+    ]
+    assert second["facts"] == []
+    other = await surface.inspect(
+        "external-facts", story, viewpoint="omniscient", principal="p-stranger"
+    )
+    assert other.json == seen.json  # authentication is the only check
+    refused = await surface.inspect("external-facts", story, viewpoint=f"character:{mira}")
+    assert (refused.status, refused.code) == (403, "omniscient_required")
+    unnamed = await surface.inspect("external-facts", story)
+    assert (unnamed.status, unnamed.code) == (422, "viewpoint_unresolved")
+
+    page = await surface.inspect("external-facts", story, viewpoint="omniscient", limit=1)
+    assert [i["event_id"] for i in page.json["items"]] == [first["event_id"]]
+    assert page.json["next_after_id"] == first["event_id"]
+    rest = await surface.inspect(
+        "external-facts", story, viewpoint="omniscient", after_id=first["event_id"]
+    )
+    assert [i["event_id"] for i in rest.json["items"]] == [second["event_id"]]
+    through = await surface.inspect("external-facts", story, viewpoint="omniscient", as_of=turns[0])
+    assert [i["event_id"] for i in through.json["items"]] == [first["event_id"]]
+
+    plain = (await surface.create_story(story_body("Wren", "Ada"))).json
+    empty = await surface.inspect("external-facts", plain["story_id"], viewpoint="omniscient")
+    assert (empty.status, empty.json["items"], empty.json["next_after_id"]) == (200, [], None)
 
 
 def _references(path: Path) -> set[str]:

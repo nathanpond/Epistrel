@@ -35,6 +35,9 @@ Bobby's render introduces new material in a structured story (the Bobby/Jenni fi
 - ``test_s_novelty_permission__m6_d`` (M6, #187): (d) a change to a story State outside a
   validated effect is ``denied:state_change``, repaired as ``state_undeclared`` and never
   canonized.
+- ``test_s_novelty_permission__m6_e`` (M6, #207): (e) a render stating a value of an externally
+  owned State other than the pinned one is ``denied:external_value`` and repaired, never
+  canonized; the pinned value is ``supported``.
 - ``test_s_novelty_permission__player`` (M5, #180): (c) an action by the player character
   introduced by an NPC render is repaired; the player's input about an NPC is never fact under
   ``own_character``; the exception, a ``co_author`` input narrating an NPC's action, is accepted
@@ -71,7 +74,9 @@ from epistrel.orchestrator.verify.verifier import UNPERMITTED, ClaimRef
 from tests import effect_support as es
 from tests import multi_support as ms
 from tests import novelty_support as ns
+from tests import provider_support as pv
 from tests import reactive_support as rs
+from tests import state_support as ss
 from tests import structured_turn_support as st
 from tests import verify_support as vs
 from tests.auth_support import auth_settings
@@ -706,3 +711,77 @@ async def test_s_novelty_permission__m6_d(
         assert (entry["tag"], entry["accepted"]) == ("effect_unresolved", True)
         assert "Say exactly how much gold changes" in es.regenerations(stub)[0]
         assert [(e["old_value"], e["new_value"]) for e in played["state_effects"]] == [(20, 25)]
+
+
+# -- the M6 part (#207): (e) a value of an externally owned predicate ------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-VERIFY-12; FR-EXT-3")
+async def test_s_novelty_permission__m6_e(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """(e): Cal's gold is owned by a registered provider answering 300 (and his ``marks`` by
+    the same provider, hidden, answering 40). Bobby's render stating another value of an
+    externally owned State is ``denied:external_value`` (``owner_of`` answers ``external`` for
+    a ``state_value`` claim on an ``owner = external`` State), repaired as ``unpermitted`` and
+    never canonized: his visible "500" (contradicted by the pin), and the hidden marks he cannot
+    read, "41" (contradicted beyond his view) and even "40" (``novel`` to him, and still no one's
+    to introduce). Complement: his "300", the pinned value, is ``supported``, not ``novel``: no
+    permission is asked and it stands."""
+    name = pv.unique_name("ledger")
+    await pv.register(engine, pv.in_process_spec(name, {"gold": "number", "marks": "number"}))
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        fake = pv.ScriptedProvider(name).attach(epistrel)
+        fake.script("gold", 300)
+        fake.script("marks", 40)
+        story, ids = await es.shop(client, engine, names=("Cal", "Bobby"))
+        cal = ids["Cal"]
+        await pv.external_gold(engine, story, name)
+        await ss.define_all(
+            engine,
+            story,
+            ss.gold(
+                name="marks",
+                aliases=(),
+                unit=None,
+                visibility="hidden",
+                owner="external",
+                provider_id=name,
+            ),
+        )
+
+        async def turn(line: str) -> tuple[dict[str, Any], dict[str, Any]]:
+            stub.reset()
+            ms.renders_for(stub, "Bobby", es.render(st.beat("do", f"Bobby nods. {line}")))
+            stub.script("regeneration", [json.dumps({"text": "Bobby nods."})])
+            response = await respond(client, story, body(cal, "Bobby, how do I stand?"))
+            assert response.status_code == 200, response.text
+            return response.json(), await st.turn_report(engine, story)
+
+        facts_before = await _facts_count(engine, story)
+        for line, kind in (
+            ("Cal has 500 gold in all.", "contradicted"),
+            ("Cal has 41 marks in all.", "contradicted"),
+            ("Cal has 40 marks in all.", "novel"),
+        ):
+            played, report = await turn(line)
+            (verdict,) = [v for v in report["verify"]["verdicts"] if v.get("permission")]
+            assert (verdict["kind"], verdict["permission"]) == (kind, "denied:external_value")
+            assert [d["reason"] for d in report["verify"]["denied"]] == ["external_value"]
+            assert [r["tag"] for r in report["repairs"]] == [UNPERMITTED], line
+            assert line not in played["message"]["text"]
+        assert await _facts_count(engine, story) == facts_before  # never canonized
+
+        # Complement: the pinned value is supported, never novel, and stands.
+        played, report = await turn("Cal has 300 gold in all.")
+        assert [
+            v["kind"] for v in report["verify"]["verdicts"] if v.get("kind") != "supported"
+        ] == []
+        assert not [v for v in report["verify"]["verdicts"] if v.get("permission")]
+        assert "repairs" not in report
+        assert "Cal has 300 gold in all." in played["message"]["text"]

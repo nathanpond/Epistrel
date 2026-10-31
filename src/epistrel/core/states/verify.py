@@ -18,8 +18,10 @@ only through it (ADR-160's owner paths):
   subjects asked (every story State, and the per-character States of the subjects that are
   characters), as the viewpoint may read it: a ``hidden`` State only ``omniscient``.
   An externally owned State's value is its pinned read (#205, ``core.states.external``): the
-  current turn's pin, else the recorded version at or before the position; one with none is
-  left out (a claim on it is ``novel``).
+  current turn's pin, else the recorded version at or before the position (a frame-bounded read
+  of an earlier turn included: never a later or a live one); one with none is left out (a
+  claim on it is ``novel``). A value whose provider is registered ``trust_tier = advisory``
+  (#204's ``external_providers``) is ``unsettled`` (#207).
 - ``verdict`` (pure): over a canon holder's values, a claim is ``supported`` when its value
   matches the fold (a number within the State's ``constraints.tolerance``; an enum and a boolean
   exactly; text case-insensitively) and ``contradicted`` otherwise (``functional_key``; a
@@ -28,7 +30,9 @@ only through it (ADR-160's owner paths):
   longer has) is ``novel``: the claim's permission decides (#148's protected content denies
   it), and a ``state_value`` claim is never canonized. A State with no value yet, or a claim
   of the wrong type, is ``uncertain`` (``unresolved_entity``, ``argument_type``): the safe
-  disposition, with no model call.
+  disposition, with no model call. An advisory provider's value settles nothing (#207, the
+  owner's decision): a claim on it is ``uncertain(advisory)`` whether it matches or not, so an
+  equal claim is not ``supported`` and a differing one is hedged (#151), not repaired.
 - ``implied`` (pure): a declared rule's consequence on ``state_value`` (``holds ⇒
   state_value``: the possession of the entity a possession-style State tracks) as the value
   its cause states (the ``holds`` claim's ``quantity``), which ``verdict`` then checks.
@@ -36,7 +40,11 @@ only through it (ADR-160's owner paths):
 A ``belief(A)`` holder never consults the lookup: A's ``state_value`` beliefs are ordinary
 beliefs (ADR-167), acquired only through ``core.epistemic.transitions.transition()`` (ADR-168):
 an observation of a beat that states the value (``observation.observe`` over
-``RouteBeat.claims``), a verified #168 ``observe`` step, testimony (#162).
+``RouteBeat.claims``), a verified #168 ``observe`` step, testimony (#162). For an externally
+owned State (``external_claim``, the lookup's ``belief_only`` test; #207) A's partition alone
+decides: ADR-167's canon fallback (``check_with`` under ``character:A``) is not consulted, so
+neither the pin nor a fact (an external reference #205 committed, a stale planted one) answers
+for A, and a value A holds no belief about is ``novel`` to A (hidden to #166's classification).
 
 **Detection** (``state_claim``, called by #148's ``core.verify.detect`` with the story's
 ``TrackedState``s). A lone quantity whose unit names a number State (its name, an alias or its
@@ -95,6 +103,8 @@ STATE_QUALIFIER: Final = "state"
 """The ``state_value`` qualifier naming the State (its id): with the subject, the key."""
 REF_PREFIX: Final = "state:"
 """An owner value's ``ref``: ``state:<State id>``."""
+ADVISORY_TIER: Final = "advisory"
+"""#204's ``trust_tier`` whose values settle no claim (#207; ``VerdictReason.ADVISORY``)."""
 
 VALUE_CUES: tuple[str, ...] = (
     "has",
@@ -358,6 +368,12 @@ def verdict(claim: Proposition, owned: Sequence[OwnedValue]) -> Verdict:
     found = _of(claim, owned)
     if found is None:
         return Verdict(VerdictKind.NOVEL)
+    if found.unsettled is not None:
+        # #207: an advisory provider's value settles nothing either way (the owner's decision,
+        # 2026-10-30): an equal claim is not supported, a differing one takes the safe, hedged
+        # disposition (#151), never contradiction and repair. #206 adds ``provider_unknown``
+        # (an ``Unknown`` pinned value) through the same branch.
+        return uncertain(found.unsettled)
     if found.proposition.literal is None or claim.literal is None:
         return uncertain(VerdictReason.UNRESOLVED_ENTITY)
     same = matches(found, claim.literal)
@@ -454,6 +470,7 @@ async def read(
     # #205: an externally owned State's value is its pinned read, never a fold; one with no
     # pin (not read this turn, or never recorded) has no value here.
     remote = external.external(defined)
+    advisory = await _advisory(conn, remote)
     pinned = await external.pinned_values(
         conn,
         story_id,
@@ -486,9 +503,41 @@ async def read(
                     kind=state.type.value,
                     tolerance=float(state.constraints.tolerance),
                     entity_id=state.entity_id,
+                    unsettled=VerdictReason.ADVISORY
+                    if is_external and state.provider_id in advisory
+                    else None,
                 )
             )
     return found
+
+
+async def _advisory(conn: AsyncConnection, remote: Sequence[StateDefinition]) -> frozenset[str]:
+    """The providers among ``remote``'s registered with ``trust_tier = advisory`` (#204's
+    ``external_providers``, a Core table: Core never imports ``orchestrator.providers``)."""
+    from epistrel.core.tables.providers import external_providers
+
+    named = sorted({str(s.provider_id) for s in remote if s.provider_id is not None})
+    if not named:
+        return frozenset()
+    p = external_providers.c
+    found = await conn.scalars(
+        select(p.name).where(p.name.in_(named), p.trust_tier == ADVISORY_TIER)
+    )
+    return frozenset(str(name) for name in found)
+
+
+async def external_claim(conn: AsyncConnection, story_id: str, claim: Proposition) -> bool:
+    """Whether ``claim`` (a ``state_value``) names an externally owned State: a value a
+    character knows only as its own belief (#207; ``register_owner_lookup``'s
+    ``belief_only``), so ADR-167's canon fallback never answers it."""
+    from epistrel.core.tables.states import state_definitions
+
+    state_id = state_of(claim) if claim.predicate_id == STATE_VALUE else None
+    if state_id is None:
+        return False
+    d = state_definitions.c
+    owner = await conn.scalar(select(d.owner).where(d.story_id == story_id, d.id == state_id))
+    return owner is not None and str(getattr(owner, "value", owner)) == StateOwner.EXTERNAL.value
 
 
 class _StateLookup:
@@ -513,7 +562,7 @@ class _StateLookup:
         return implied(consequence, cause, owned)
 
 
-STATE_LOOKUP = register_owner_lookup(STATE_VALUE, _StateLookup())
+STATE_LOOKUP = register_owner_lookup(STATE_VALUE, _StateLookup(), belief_only=external_claim)
 
 
 # -- hidden States in the protected index -----------------------------------------------------
@@ -583,6 +632,7 @@ def value_renderings(value: Value) -> list[str]:
 
 
 __all__ = [
+    "ADVISORY_TIER",
     "PRICE_CUES",
     "REF_PREFIX",
     "STATE_LOOKUP",
@@ -591,6 +641,7 @@ __all__ = [
     "HiddenValue",
     "TrackedState",
     "balance_sentence",
+    "external_claim",
     "hidden_values",
     "implied",
     "matches",

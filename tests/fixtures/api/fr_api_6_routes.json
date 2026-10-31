@@ -1218,6 +1218,11 @@
       "requirement": "FR-ADMIN-5"
     },
     {
+      "method": "GET",
+      "path": "/stories/{story_id}/inspect/external-facts",
+      "requirement": "FR-ADMIN-5"
+    },
+    {
       "method": "POST",
       "path": "/admin/stories/{story_id}/beliefs",
       "requirement": "FR-EPI-7"

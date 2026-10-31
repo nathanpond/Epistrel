@@ -61,7 +61,9 @@ canonizes, and a ``say`` claim only when it is about the speaker's own actions o
 (otherwise it stays an utterance label, FR-TURN-5). A ``Denied`` claim is never canonized:
 it ``needs_repair`` with ``repair_tag = "unpermitted"`` (#151's ladder), except
 ``player_authority``, whose player text stands; it is listed in ``report()["denied"]`` with its
-reason, and its verdict entry carries the permission code.
+reason, and its verdict entry carries the permission code. #207 (FR-EXT-3): a ``contradicted``
+value of an externally owned State in a render or narration (no ``believer``) is asked too, and
+keeps its ``denied:external_value``: a value only the provider decides is no one's to introduce.
 
 **Viewpoint-aware: the speaker's beliefs** (FR-VERIFY-2,5,10, FR-TURN-6,7,8; #166). A
 character's first-person ``say`` claim (``verify(..., believer=, intent=)``; the player's own
@@ -132,7 +134,7 @@ from epistrel.core.propositions.model import (
     TemporalKind,
 )
 from epistrel.core.propositions.registry import Registry, conditional_owner, load, owner_lookup
-from epistrel.core.propositions.vocabulary import TIME_IS, TIME_OF_DAY_BAND
+from epistrel.core.propositions.vocabulary import STATE_VALUE, TIME_IS, TIME_OF_DAY_BAND
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.resolution.context import load_time_basis
 from epistrel.core.resolution.time import TimeBasis
@@ -1525,6 +1527,23 @@ class Verifier:
             result = await self._permit(
                 result, claim, asserter, at, protected=protected, resolves=resolves, giver=giver
             )
+        elif (
+            asserter is not None
+            and believer is None
+            and result.kind is VerdictKind.CONTRADICTED
+            and claim.predicate_id == STATE_VALUE
+        ):
+            # #207 (FR-EXT-3, FR-VERIFY-12): a render's value of an externally owned State that
+            # is not the pinned one is unpermitted (``denied:external_value``) as well as
+            # contradicted; a character's first-person claim (``believer``) is its belief's.
+            denied = await self._permit(
+                result, claim, asserter, at, protected=protected, resolves=resolves, giver=giver
+            )
+            if (
+                denied.denied is not None
+                and denied.denied.reason is permissions.Reason.EXTERNAL_VALUE
+            ):
+                result = denied
         if believer is not None and self.beliefs is not None:
             result = await self._speech(result, claim, believer, intent, cites, position)
         self.results.append((where, result))

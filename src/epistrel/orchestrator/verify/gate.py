@@ -11,16 +11,17 @@ names what may escalate:
 - (c) a partial or ambiguous match the rules do not resolve. Every one is resolved by FR-PROP-10
   now, so no reason escalates under (c) (ADR-162).
 
-``partial_coverage`` and ``granularity_refinement`` are resolved by #140's rules and never reach
-the gate (``RESOLVED_IN_CORE``). ``unresolved_entity``, ``unresolved_time`` and
-``argument_type`` never escalate (``NEVER_ESCALATES``), nor does ``no_clock`` (#195: a clock
-check on a story without the clock): the claim is not about anything the
-model could judge against the records, so it takes the safe disposition at once. Neither does
-``approximate_bounds`` (#467, ADR-162). FR-PROP-10 already resolves it deterministically to
-``uncertain``: the rules showed that the claim holds under some admissible readings of the
-approximate bounds and not under others, and a verdict needs every reading. The model sees the
-same bounds and knows no more about where they lie, so no answer it gave could be taken
-(FR-VERIFY-8). The call would cost budget and latency and could not change the outcome.
+``partial_coverage`` and ``granularity_refinement`` are resolved by #140's rules and never reach the
+gate (``RESOLVED_IN_CORE``). ``unresolved_entity``, ``unresolved_time`` and ``argument_type`` never
+escalate (``NEVER_ESCALATES``), nor does ``no_clock`` (#195: a clock check on a story without the
+clock), nor ``advisory`` (#207: a value an advisory external provider answered, which settles
+nothing by the owner's decision): the claim is not about anything the model could judge against the
+records, so it takes the safe disposition at once. Neither does ``approximate_bounds`` (#467,
+ADR-162). FR-PROP-10 already resolves it deterministically to ``uncertain``: the rules showed that
+the claim holds under some admissible readings of the approximate bounds and not under others, and a
+verdict needs every reading. The model sees the same bounds and knows no more about where they lie,
+so no answer it gave could be taken (FR-VERIFY-8). The call would cost budget and latency and could
+not change the outcome.
 
 **The threshold.** A reason that may escalate does so when the deterministic confidence
 (``Verdict.confidence``: 0.5 for ``world_knowledge``, 0.0 for (a) and ``weak_semantics``) is
@@ -59,7 +60,14 @@ RESOLVED_IN_CORE = frozenset({R.PARTIAL_COVERAGE, R.GRANULARITY_REFINEMENT})
 """Resolved by #140's coverage logic (through their remainders); never escalated."""
 
 NEVER_ESCALATES = frozenset(
-    {R.UNRESOLVED_ENTITY, R.UNRESOLVED_TIME, R.ARGUMENT_TYPE, R.APPROXIMATE_BOUNDS, R.NO_CLOCK}
+    {
+        R.UNRESOLVED_ENTITY,
+        R.UNRESOLVED_TIME,
+        R.ARGUMENT_TYPE,
+        R.APPROXIMATE_BOUNDS,
+        R.NO_CLOCK,
+        R.ADVISORY,
+    }
 )
 """Take the safe disposition directly, whatever the threshold (``approximate_bounds``: #467)."""
 

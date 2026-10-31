@@ -93,7 +93,13 @@ from epistrel.api.routes.engine_profiles import (
     ProfileVersionsBody,
 )
 from epistrel.api.routes.history import HistoryResponse
-from epistrel.api.routes.inspect import BeliefsBody, DivergencesBody, ExposuresBody, LedgerBody
+from epistrel.api.routes.inspect import (
+    BeliefsBody,
+    DivergencesBody,
+    ExposuresBody,
+    ExternalFactsBody,
+    LedgerBody,
+)
 from epistrel.api.routes.media import (
     MediaListBody,
     MediaUploadedBody,
@@ -492,6 +498,14 @@ async def _divergences(engine: Engine, story_id: str) -> dict[str, Any]:
 async def _exposures(engine: Engine, story_id: str) -> dict[str, Any]:
     return dump(
         ExposuresBody.of(await engine.inspect_exposures(CTX, story_id, viewpoint="omniscient"))
+    )
+
+
+async def _external_facts(engine: Engine, story_id: str) -> dict[str, Any]:
+    return dump(
+        ExternalFactsBody.of(
+            await engine.inspect_external_facts(CTX, story_id, viewpoint="omniscient")
+        )
     )
 
 
@@ -1379,6 +1393,14 @@ def _steps() -> list[Step]:
             "inspect_exposures",
             lambda ids: Rest("GET", f"{s}/inspect/exposures", params={"viewpoint": "omniscient"}),
             lambda e, ids: _exposures(e, ids["story"]),
+        ),
+        # #207: the snapshotted external facts (no partitions gate: an empty page here).
+        Step(
+            "inspect_external_facts",
+            lambda ids: Rest(
+                "GET", f"{s}/inspect/external-facts", params={"viewpoint": "omniscient"}
+            ),
+            lambda e, ids: _external_facts(e, ids["story"]),
         ),
         Step(
             "promote_character",

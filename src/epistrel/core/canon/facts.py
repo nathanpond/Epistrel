@@ -903,6 +903,22 @@ async def _written(conn: AsyncConnection, story_id: str, ids: Iterable[str]) -> 
     return {str(r.id): _fact_of(r) for r in found}
 
 
+async def citing(conn: AsyncConnection, story_id: str, event_ids: Iterable[str]) -> list[Fact]:
+    """Every fact version of the story whose ``source_event_ids`` cites one of ``event_ids``
+    (#207's external-facts inspection: the references #205 committed to an ``external_read``),
+    oldest first by id."""
+    wanted = sorted(set(event_ids))
+    if not wanted:
+        return []
+    f = facts.alias("f")
+    found = await conn.execute(
+        _select(f)
+        .where(f.c.story_id == story_id, f.c.source_event_ids.overlap(wanted))
+        .order_by(f.c.id)
+    )
+    return [_fact_of(r) for r in found]
+
+
 def refuse_holder(holder: str | None, field_name: str = "holder") -> None:
     """FR-EPI-8 (#169): canon has one holder. A write naming any other (a character's id, a
     viewpoint) is 422 ``viewpoint_cannot_assign_truth``: a character's divergent view is an owned
@@ -1470,6 +1486,7 @@ __all__ = [
     "canon_links",
     "canon_refs",
     "check_viewpoint",
+    "citing",
     "commit_fact",
     "default_authority",
     "hidden_from",

@@ -134,8 +134,9 @@ class Surface:
         self, kind: str, story_id: str, *, principal: str | None = None, **params: Any
     ) -> Outcome:
         """``GET /stories/{id}/inspect/<kind>`` (``ledger``, ``beliefs``, ``divergences``,
-        ``exposures``; #178) or ``Engine.inspect_<kind>``: ``params`` are the query parameters
-        or the library's keywords (``viewpoint`` among them; omitted when ``None``)."""
+        ``exposures``; #178; ``external-facts``, #207) or ``Engine.inspect_<kind>``: ``params``
+        are the query parameters or the library's keywords (``viewpoint`` among them; omitted
+        when ``None``)."""
         if self.name == "rest":
             query = {k: _query(v) for k, v in params.items() if v is not None}
             headers = bearer() | ({"X-Epistrel-Principal": principal} if principal else {})
@@ -151,10 +152,11 @@ class Surface:
             "beliefs": routes.BeliefsBody,
             "divergences": routes.DivergencesBody,
             "exposures": routes.ExposuresBody,
+            "external-facts": routes.ExternalFactsBody,
         }
 
         async def call() -> dict[str, Any]:
-            method = getattr(self.engine, f"inspect_{kind}")
+            method = getattr(self.engine, f"inspect_{kind.replace('-', '_')}")
             keywords = {"viewpoint": None, **params}
             found = await method(RequestContext(principal=principal), story_id, **keywords)
             return _dump(bodies[kind].of(found))

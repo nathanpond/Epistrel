@@ -46,15 +46,17 @@ acts) and a hand-over by another character all stay ``player_character``.
 
 **Ownership.** ``owner_of`` derives the subject's owner from ``entities.character_id`` and
 ``characters.is_player``: ``player_character``, ``modeled_character`` (an entity with a
-character row), ``external`` (the predicate is owned by an external provider) or ``world``
+character row), ``external`` (the predicate is owned by an external provider, or the claim is
+the value of an externally owned State) or ``world``
 (anything else: places, items, an unmodeled person, who is scene texture). Every
 character-typed argument is inspected, not only the subject: Bobby asserting he is Jenni's
 sibling introduces Jenni's backstory too.
 
 **The matrix (M4).** In precedence order, one reason per denial:
 
-- ``external_value``: the predicate is externally owned (FR-EXT-8): denied to everyone, the
-  author included;
+- ``external_value``: the predicate is externally owned (FR-EXT-8), or (#207, FR-EXT-3) the
+  claim is a ``state_value`` of an externally owned State (``core.states.verify.external_claim``):
+  denied to everyone, the author included;
 - the author may introduce anything else (``author``);
 - ``locked_canon``: the claim's (subject, predicate) has a current ``author_locked`` fact, or
   it sets a character's definition-locked field (``age``, ``name``, ``appearance_of``,
@@ -292,6 +294,8 @@ class PermissionFacts:
     .giver``), or ``None`` (see "The hand-over exception")."""
     state_change: bool = False
     """#187: the claim changes a tracked State's value with no validated effect."""
+    external_state: bool = False
+    """#207: the claim is a ``state_value`` of an externally owned State (FR-EXT-3)."""
 
 
 # -- the matrix ---------------------------------------------------------------------------------
@@ -308,8 +312,11 @@ def _argument_ids(claim: Proposition) -> list[str]:
 
 def owner_of(claim: Proposition, facts: PermissionFacts) -> SubjectOwner:
     """The claim subject's owner: the player character, a modeled character, an external
-    provider (an externally owned predicate) or the world."""
-    if facts.predicate is not None and facts.predicate.owner is PredicateOwner.EXTERNAL:
+    provider (an externally owned predicate, or #207 a ``state_value`` of an externally owned
+    State) or the world."""
+    if facts.external_state or (
+        facts.predicate is not None and facts.predicate.owner is PredicateOwner.EXTERNAL
+    ):
         return SubjectOwner("external")
     found = facts.entities.get(claim.subject_id)
     if found is not None and found.modeled:
@@ -561,9 +568,12 @@ async def facts_for(
                 through_position=through_position,
             )
             placed = placed or bool(found)
+    from epistrel.core.states.verify import external_claim
+
     return PermissionFacts(
         entities=known,
         predicate=predicate,
+        external_state=await external_claim(conn, story_id, claim),
         locked=any(f.author_locked for f in locks),
         placed=placed,
         allow_new_arrivals=await arrival_policy(conn, story_id),

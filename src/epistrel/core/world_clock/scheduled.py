@@ -223,7 +223,7 @@ async def _story(conn: AsyncConnection, story_id: str) -> _Story:
     )
 
 
-async def _names(conn: AsyncConnection, event_ids: Sequence[str]) -> dict[str, str]:
+async def event_names(conn: AsyncConnection, event_ids: Sequence[str]) -> dict[str, str]:
     """Each event's name: its proposition's event entity's canonical name."""
     if not event_ids:
         return {}
@@ -272,7 +272,7 @@ async def list_events(
             field="query.viewpoint",
         )
         found = await stops.events_at(conn, story_id)
-        names = await _names(conn, [e.event_id for e in found])
+        names = await event_names(conn, [e.event_id for e in found])
         if resolved == OMNISCIENT:
             views = [_view(e, names) for e in found]
             return ScheduledEventList(resolved, tuple(views), story.revision)
@@ -312,7 +312,7 @@ async def list_events(
 
 
 async def _object_names(conn: AsyncConnection, proposition_ids: Sequence[str]) -> dict[str, str]:
-    return await _names(conn, proposition_ids)
+    return await event_names(conn, proposition_ids)
 
 
 def _minute_of(valid_time: Any) -> int | None:
@@ -483,7 +483,7 @@ async def _answer(
 ) -> ScheduledEventWritten:
     assert op.timeline_revision is not None  # noqa: S101 - set by a committed story operation
     async with db.connect() as conn:
-        names = await _names(conn, [event.event_id])
+        names = await event_names(conn, [event.event_id])
     return ScheduledEventWritten(
         operation_id=op.operation_id,
         event=_view(event, names),
@@ -629,6 +629,7 @@ __all__ = [
     "ScheduledEventWritten",
     "cancel_event",
     "create_event",
+    "event_names",
     "list_events",
     "may_change",
     "reschedule_event",

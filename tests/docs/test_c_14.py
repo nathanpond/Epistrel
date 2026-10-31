@@ -32,6 +32,7 @@ from epistrel.orchestrator.models import registry
 from epistrel.tools import guarantees as tool
 from epistrel.tools import openapi
 from epistrel.tools.generated import REPO_ROOT
+from tests.profile_support import WITHHELD, withhold
 
 SPEC = REPO_ROOT / "docs" / "03-requirements-spec.md"
 DESIGN_DOCS = re.compile(r"^0[1-5]-")
@@ -44,8 +45,11 @@ ALLOWED = (
 )
 """Phrases that do not call an output verified (they name what was checked, or deny it)."""
 VERIFIED = re.compile(r"\bverified\b", re.IGNORECASE)
-UNDELIVERED = next(row.id for row in GUARANTEES if not row.delivered)
-"""A row that needs a module this deployment has not delivered (a later milestone's)."""
+UNDELIVERED = next(
+    row.id for row in GUARANTEES if any(need.module == WITHHELD for need in row.requires)
+)
+"""A row that needs the module the complement withholds (``profile_support.WITHHELD``: every
+module is delivered since #203)."""
 
 
 def _requirement(req: str) -> str:
@@ -138,6 +142,7 @@ def test_c_14__m4(monkeypatch: pytest.MonkeyPatch) -> None:
         dataclasses.replace(GUARANTEE[UNDELIVERED], delivered_in=None),
         dataclasses.replace(GUARANTEE["verification"], delivered_in="M5"),
     ]
+    withhold(monkeypatch)
     found = tool.problems(broken, delivered=["generation"])
     assert found == [
         "generation: a delivered model purpose with no model-dependent row",

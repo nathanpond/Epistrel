@@ -2,8 +2,7 @@
 of ``tests/seeded_partitions_support`` with a per-sibling allowance, a starting clock and the
 18:00 dinner, a profile running both modules, and reads of what genesis wrote.
 
-The M6 parts (I-27, S-FAMILY, U-27, S-STATE-SCHEMA's publish part) take their bodies from here.
-The modules are #203's to deliver: a test uses the ``seeded_clock_delivered`` fixture."""
+The M6 parts (I-27, S-FAMILY, U-27, S-STATE-SCHEMA's publish part) take their bodies from here."""
 
 from __future__ import annotations
 

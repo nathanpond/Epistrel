@@ -300,7 +300,7 @@ async def test_i_27__lite(stub_settings: Settings, engine: AsyncEngine) -> None:
             None,
         )
         assert shown["counts"] == {**counts}
-        assert shown["unavailable"] == list(scenarios.M3_UNAVAILABLE)
+        assert shown["unavailable"] == scenarios.lite_unavailable()
         assert [c["kind"] for c in shown["cast"]] == ["catalog", "catalog", "catalog", "player"]
         assert [c["role_id"] for c in shown["cast"]] == ["mother", "brother", "aunt", "player"]
         assert shown["cast"][1]["source"] == {

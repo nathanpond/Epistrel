@@ -21,8 +21,9 @@ takes its class from there records it. Leaving the block restores the schema's o
 fixture profile of every M4 integration test: a story pinned to its version 1 (``version: 1`` on
 ``PUT /stories/{id}/engine-profile``, ``engine_profile_version: 1`` on a scenario creation, or
 ``engine_profile_version_pin = 1``) runs under every module M4 delivers. ``structured()`` names
-the same row at its latest version, ``Structured`` (#181: version 2, every M5 module on).
-Migrations ``0047`` and ``0080`` seed it in every database at head, the test databases
+the same row at its latest version, ``Structured`` (#203: version 3, every M5 and M6 module on;
+#181's version 2, ``STRUCTURED_M5_VERSION``, has the M5 modules without the clock and States).
+Migrations ``0047``, ``0080`` and ``0104`` seed it in every database at head, the test databases
 included.
 
 Nothing in ``Engine`` or ``create_app`` imports this module, and Core never does.

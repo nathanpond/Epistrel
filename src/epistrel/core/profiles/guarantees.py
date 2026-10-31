@@ -213,7 +213,9 @@ GUARANTEES: tuple[GuaranteeRow, ...] = (
         "State effect validation and permission checks",
         D,
         on="states_external",
-        delivered_in="M6",
+        note="Under `lite`, or with `states.level = prompt_only`, States are shown in the prompt "
+        "and changed only through the State API (FR-LITE-5): a reply declares no effect, so "
+        "none is validated.",
     ),
     _row(
         "audience_filtering",
@@ -250,9 +252,11 @@ GUARANTEES: tuple[GuaranteeRow, ...] = (
         "clock pacing and stops",
         D,
         on="clock",
-        delivered_in="M6",
-        note="Under `lite`, the clock may run only in its prompt-only form (FR-LITE-5): pacing "
-        "is shown in the prompt and nothing is checked.",
+        needs=(Needs("scheduled_stops"),),
+        note="Under `lite`, the clock may run only in its prompt-only form (FR-LITE-5): it "
+        "advances by pacing and is shown in the prompt, and nothing is checked or stopped. A "
+        "due event stops the clock only when the profile's `clock.scheduled_stops` and the "
+        "story's `stop_at_due_events` are both on; otherwise it is surfaced as overdue.",
     ),
     _row(
         "timeline_concurrency",
@@ -305,7 +309,8 @@ GUARANTEES: tuple[GuaranteeRow, ...] = (
         "NFR-QUAL-9",
         on="clock",
         purposes=("time_estimation",),
-        delivered_in="M6",
+        note="Under `lite` no time skip is estimated: the prompt-only clock advances by "
+        "pacing only.",
     ),
     _row(
         "entailment_fallback",

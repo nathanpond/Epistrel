@@ -283,6 +283,15 @@ async def engine(settings: Settings) -> AsyncIterator[AsyncEngine]:
         await engine.dispose()
 
 
+@pytest.fixture
+def withheld_module(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """One module read as undelivered for the test (``profile_support.WITHHELD``): every module
+    is delivered since #203, so a test of the refusal of an undelivered module withholds one."""
+    from tests import profile_support
+
+    return profile_support.withhold(monkeypatch)
+
+
 _STATES_OFF = text(
     "UPDATE story_profile_overrides SET settings = settings - 'states', revision = revision + 1 "
     "WHERE settings -> 'states' IS NOT NULL"
@@ -355,25 +364,6 @@ async def time_claims_delivered(
         yield
     finally:
         async with engine.begin() as conn:
-            await conn.execute(clock_support.CLOCK_OFF)
-
-
-@pytest.fixture
-async def seeded_clock_delivered(
-    monkeypatch: pytest.MonkeyPatch, engine: AsyncEngine
-) -> AsyncIterator[None]:
-    """The ``states`` module, the ``clock`` and its ``scheduled_stops`` delivered for the test
-    (#202's genesis; #203 delivers them for real), and no story left with a ``states`` or
-    ``clock`` override afterwards (as ``states_delivered``)."""
-    from tests import clock_support, state_support
-
-    clock_support.deliver_stops(monkeypatch)
-    state_support.deliver(monkeypatch)
-    try:
-        yield
-    finally:
-        async with engine.begin() as conn:
-            await conn.execute(_STATES_OFF)
             await conn.execute(clock_support.CLOCK_OFF)
 
 

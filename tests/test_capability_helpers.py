@@ -22,9 +22,10 @@ from epistrel.core.profiles.capabilities import (
     module_names,
     module_on,
 )
+from epistrel.core.profiles.schema import Module
 from epistrel.core.profiles.validate import parse_settings, validate_profile
 from epistrel.core.seeds.profiles import lite_settings, structured_m4_settings
-from tests.profile_support import naming, undelivered_modules
+from tests.profile_support import naming, undelivered_modules, withholding
 
 LITE = parse_settings(lite_settings())
 STRUCTURED = parse_settings(structured_m4_settings())
@@ -50,7 +51,7 @@ SLUGS = (
 )
 
 
-def test_module_on() -> None:
+def test_module_on(withheld_module: Module) -> None:
     """A module is on when its switch picks a delivered level; off otherwise. The pipeline is
     always on, at one of its levels. A module the deployment has not delivered is off even when
     a document switches it on. An unknown module is an error, never an off module."""
@@ -94,7 +95,9 @@ def test_level_at_least() -> None:
     full = parse_settings({"perception": {"level": "full"}})
     assert level_at_least(full, "perception", "co_location")  # delivered (#181)
     clocked = parse_settings({"clock": {"level": "on"}})
-    assert not level_at_least(clocked, "clock", "on")  # not delivered (M6)
+    assert level_at_least(clocked, "clock", "on")  # delivered (#203)
+    with withholding("clock"):
+        assert not level_at_least(clocked, "clock", "on")  # a level not delivered
 
 
 def test_capability_names() -> None:
@@ -153,7 +156,9 @@ def test_the_map_entries() -> None:
         "required_field_repair",
         "floor",
     )
-    assert {e.slug for e in CAPABILITY_MAP if not e.delivered} == {"clock", "states_external"}
+    assert {e.slug for e in CAPABILITY_MAP if not e.delivered} == set()  # every one (#203)
+    with withholding("clock"):
+        assert {e.slug for e in CAPABILITY_MAP if not e.delivered} == {"clock"}
     alternatives = Needs("testimony", "model", only=True)
     assert alternatives.describe() == "`testimony` at `model`"
     assert Needs("verification", "declared").describe() == "`verification` at `declared` or above"

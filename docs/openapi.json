@@ -5895,6 +5895,36 @@
                 "title": "CharacterKnowledge",
                 "type": "object"
               },
+              "clock": {
+                "additionalProperties": false,
+                "description": "The world clock (FR-CLOCK): off, its prompt-only Lite form (FR-LITE-5), or on.",
+                "properties": {
+                  "level": {
+                    "default": "off",
+                    "enum": [
+                      "off",
+                      "prompt_only",
+                      "on"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  },
+                  "scheduled_stops": {
+                    "default": false,
+                    "description": "Stop the clock at scheduled events.",
+                    "title": "Scheduled Stops",
+                    "type": "boolean"
+                  },
+                  "time_claims": {
+                    "default": false,
+                    "description": "Verify time claims against the clock.",
+                    "title": "Time Claims",
+                    "type": "boolean"
+                  }
+                },
+                "title": "Clock",
+                "type": "object"
+              },
               "commitment": {
                 "additionalProperties": false,
                 "description": "Commitment (FR-COMMIT) and its salience detection.",
@@ -6407,6 +6437,24 @@
                   }
                 },
                 "title": "Repair",
+                "type": "object"
+              },
+              "states": {
+                "additionalProperties": false,
+                "description": "States and external data (FR-STATE, FR-EXT): off, prompt-only (FR-LITE-5), or on.",
+                "properties": {
+                  "level": {
+                    "default": "off",
+                    "enum": [
+                      "off",
+                      "prompt_only",
+                      "on"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  }
+                },
+                "title": "States",
                 "type": "object"
               },
               "verification": {
@@ -6580,6 +6628,36 @@
                 "title": "CharacterKnowledge",
                 "type": "object"
               },
+              "clock": {
+                "additionalProperties": false,
+                "description": "The world clock (FR-CLOCK): off, its prompt-only Lite form (FR-LITE-5), or on.",
+                "properties": {
+                  "level": {
+                    "default": "off",
+                    "enum": [
+                      "off",
+                      "prompt_only",
+                      "on"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  },
+                  "scheduled_stops": {
+                    "default": false,
+                    "description": "Stop the clock at scheduled events.",
+                    "title": "Scheduled Stops",
+                    "type": "boolean"
+                  },
+                  "time_claims": {
+                    "default": false,
+                    "description": "Verify time claims against the clock.",
+                    "title": "Time Claims",
+                    "type": "boolean"
+                  }
+                },
+                "title": "Clock",
+                "type": "object"
+              },
               "commitment": {
                 "additionalProperties": false,
                 "description": "Commitment (FR-COMMIT) and its salience detection.",
@@ -7092,6 +7170,24 @@
                   }
                 },
                 "title": "Repair",
+                "type": "object"
+              },
+              "states": {
+                "additionalProperties": false,
+                "description": "States and external data (FR-STATE, FR-EXT): off, prompt-only (FR-LITE-5), or on.",
+                "properties": {
+                  "level": {
+                    "default": "off",
+                    "enum": [
+                      "off",
+                      "prompt_only",
+                      "on"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  }
+                },
+                "title": "States",
                 "type": "object"
               },
               "verification": {
@@ -7513,6 +7609,36 @@
                 "title": "CharacterKnowledge",
                 "type": "object"
               },
+              "clock": {
+                "additionalProperties": false,
+                "description": "The world clock (FR-CLOCK): off, its prompt-only Lite form (FR-LITE-5), or on.",
+                "properties": {
+                  "level": {
+                    "default": "off",
+                    "enum": [
+                      "off",
+                      "prompt_only",
+                      "on"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  },
+                  "scheduled_stops": {
+                    "default": false,
+                    "description": "Stop the clock at scheduled events.",
+                    "title": "Scheduled Stops",
+                    "type": "boolean"
+                  },
+                  "time_claims": {
+                    "default": false,
+                    "description": "Verify time claims against the clock.",
+                    "title": "Time Claims",
+                    "type": "boolean"
+                  }
+                },
+                "title": "Clock",
+                "type": "object"
+              },
               "commitment": {
                 "additionalProperties": false,
                 "description": "Commitment (FR-COMMIT) and its salience detection.",
@@ -8025,6 +8151,24 @@
                   }
                 },
                 "title": "Repair",
+                "type": "object"
+              },
+              "states": {
+                "additionalProperties": false,
+                "description": "States and external data (FR-STATE, FR-EXT): off, prompt-only (FR-LITE-5), or on.",
+                "properties": {
+                  "level": {
+                    "default": "off",
+                    "enum": [
+                      "off",
+                      "prompt_only",
+                      "on"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  }
+                },
+                "title": "States",
                 "type": "object"
               },
               "verification": {
@@ -12701,6 +12845,64 @@
                       }
                     ]
                   },
+                  "clock": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "description": "The world clock (FR-CLOCK): off, its prompt-only Lite form (FR-LITE-5), or on.",
+                        "properties": {
+                          "level": {
+                            "anyOf": [
+                              {
+                                "default": "off",
+                                "enum": [
+                                  "off",
+                                  "prompt_only",
+                                  "on"
+                                ],
+                                "title": "Level",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "scheduled_stops": {
+                            "anyOf": [
+                              {
+                                "default": false,
+                                "description": "Stop the clock at scheduled events.",
+                                "title": "Scheduled Stops",
+                                "type": "boolean"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "time_claims": {
+                            "anyOf": [
+                              {
+                                "default": false,
+                                "description": "Verify time claims against the clock.",
+                                "title": "Time Claims",
+                                "type": "boolean"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "title": "Clock",
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "commitment": {
                     "anyOf": [
                       {
@@ -13607,6 +13809,38 @@
                           }
                         },
                         "title": "Repair",
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "states": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "description": "States and external data (FR-STATE, FR-EXT): off, prompt-only (FR-LITE-5), or on.",
+                        "properties": {
+                          "level": {
+                            "anyOf": [
+                              {
+                                "default": "off",
+                                "enum": [
+                                  "off",
+                                  "prompt_only",
+                                  "on"
+                                ],
+                                "title": "Level",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "title": "States",
                         "type": "object"
                       },
                       {
@@ -18042,6 +18276,36 @@
                 "title": "CharacterKnowledge",
                 "type": "object"
               },
+              "clock": {
+                "additionalProperties": false,
+                "description": "The world clock (FR-CLOCK): off, its prompt-only Lite form (FR-LITE-5), or on.",
+                "properties": {
+                  "level": {
+                    "default": "off",
+                    "enum": [
+                      "off",
+                      "prompt_only",
+                      "on"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  },
+                  "scheduled_stops": {
+                    "default": false,
+                    "description": "Stop the clock at scheduled events.",
+                    "title": "Scheduled Stops",
+                    "type": "boolean"
+                  },
+                  "time_claims": {
+                    "default": false,
+                    "description": "Verify time claims against the clock.",
+                    "title": "Time Claims",
+                    "type": "boolean"
+                  }
+                },
+                "title": "Clock",
+                "type": "object"
+              },
               "commitment": {
                 "additionalProperties": false,
                 "description": "Commitment (FR-COMMIT) and its salience detection.",
@@ -18554,6 +18818,24 @@
                   }
                 },
                 "title": "Repair",
+                "type": "object"
+              },
+              "states": {
+                "additionalProperties": false,
+                "description": "States and external data (FR-STATE, FR-EXT): off, prompt-only (FR-LITE-5), or on.",
+                "properties": {
+                  "level": {
+                    "default": "off",
+                    "enum": [
+                      "off",
+                      "prompt_only",
+                      "on"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  }
+                },
+                "title": "States",
                 "type": "object"
               },
               "verification": {
@@ -20788,6 +21070,36 @@
                 "title": "CharacterKnowledge",
                 "type": "object"
               },
+              "clock": {
+                "additionalProperties": false,
+                "description": "The world clock (FR-CLOCK): off, its prompt-only Lite form (FR-LITE-5), or on.",
+                "properties": {
+                  "level": {
+                    "default": "off",
+                    "enum": [
+                      "off",
+                      "prompt_only",
+                      "on"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  },
+                  "scheduled_stops": {
+                    "default": false,
+                    "description": "Stop the clock at scheduled events.",
+                    "title": "Scheduled Stops",
+                    "type": "boolean"
+                  },
+                  "time_claims": {
+                    "default": false,
+                    "description": "Verify time claims against the clock.",
+                    "title": "Time Claims",
+                    "type": "boolean"
+                  }
+                },
+                "title": "Clock",
+                "type": "object"
+              },
               "commitment": {
                 "additionalProperties": false,
                 "description": "Commitment (FR-COMMIT) and its salience detection.",
@@ -21300,6 +21612,24 @@
                   }
                 },
                 "title": "Repair",
+                "type": "object"
+              },
+              "states": {
+                "additionalProperties": false,
+                "description": "States and external data (FR-STATE, FR-EXT): off, prompt-only (FR-LITE-5), or on.",
+                "properties": {
+                  "level": {
+                    "default": "off",
+                    "enum": [
+                      "off",
+                      "prompt_only",
+                      "on"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  }
+                },
+                "title": "States",
                 "type": "object"
               },
               "verification": {
@@ -21583,6 +21913,36 @@
                 "title": "CharacterKnowledge",
                 "type": "object"
               },
+              "clock": {
+                "additionalProperties": false,
+                "description": "The world clock (FR-CLOCK): off, its prompt-only Lite form (FR-LITE-5), or on.",
+                "properties": {
+                  "level": {
+                    "default": "off",
+                    "enum": [
+                      "off",
+                      "prompt_only",
+                      "on"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  },
+                  "scheduled_stops": {
+                    "default": false,
+                    "description": "Stop the clock at scheduled events.",
+                    "title": "Scheduled Stops",
+                    "type": "boolean"
+                  },
+                  "time_claims": {
+                    "default": false,
+                    "description": "Verify time claims against the clock.",
+                    "title": "Time Claims",
+                    "type": "boolean"
+                  }
+                },
+                "title": "Clock",
+                "type": "object"
+              },
               "commitment": {
                 "additionalProperties": false,
                 "description": "Commitment (FR-COMMIT) and its salience detection.",
@@ -22095,6 +22455,24 @@
                   }
                 },
                 "title": "Repair",
+                "type": "object"
+              },
+              "states": {
+                "additionalProperties": false,
+                "description": "States and external data (FR-STATE, FR-EXT): off, prompt-only (FR-LITE-5), or on.",
+                "properties": {
+                  "level": {
+                    "default": "off",
+                    "enum": [
+                      "off",
+                      "prompt_only",
+                      "on"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  }
+                },
+                "title": "States",
                 "type": "object"
               },
               "verification": {
@@ -22525,6 +22903,64 @@
                       }
                     },
                     "title": "CharacterKnowledge",
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "clock": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "description": "The world clock (FR-CLOCK): off, its prompt-only Lite form (FR-LITE-5), or on.",
+                    "properties": {
+                      "level": {
+                        "anyOf": [
+                          {
+                            "default": "off",
+                            "enum": [
+                              "off",
+                              "prompt_only",
+                              "on"
+                            ],
+                            "title": "Level",
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "scheduled_stops": {
+                        "anyOf": [
+                          {
+                            "default": false,
+                            "description": "Stop the clock at scheduled events.",
+                            "title": "Scheduled Stops",
+                            "type": "boolean"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "time_claims": {
+                        "anyOf": [
+                          {
+                            "default": false,
+                            "description": "Verify time claims against the clock.",
+                            "title": "Time Claims",
+                            "type": "boolean"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "title": "Clock",
                     "type": "object"
                   },
                   {
@@ -23445,6 +23881,38 @@
                   }
                 ]
               },
+              "states": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "description": "States and external data (FR-STATE, FR-EXT): off, prompt-only (FR-LITE-5), or on.",
+                    "properties": {
+                      "level": {
+                        "anyOf": [
+                          {
+                            "default": "off",
+                            "enum": [
+                              "off",
+                              "prompt_only",
+                              "on"
+                            ],
+                            "title": "Level",
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "title": "States",
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "verification": {
                 "anyOf": [
                   {
@@ -23790,6 +24258,36 @@
                   }
                 },
                 "title": "CharacterKnowledge",
+                "type": "object"
+              },
+              "clock": {
+                "additionalProperties": false,
+                "description": "The world clock (FR-CLOCK): off, its prompt-only Lite form (FR-LITE-5), or on.",
+                "properties": {
+                  "level": {
+                    "default": "off",
+                    "enum": [
+                      "off",
+                      "prompt_only",
+                      "on"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  },
+                  "scheduled_stops": {
+                    "default": false,
+                    "description": "Stop the clock at scheduled events.",
+                    "title": "Scheduled Stops",
+                    "type": "boolean"
+                  },
+                  "time_claims": {
+                    "default": false,
+                    "description": "Verify time claims against the clock.",
+                    "title": "Time Claims",
+                    "type": "boolean"
+                  }
+                },
+                "title": "Clock",
                 "type": "object"
               },
               "commitment": {
@@ -24306,6 +24804,24 @@
                 "title": "Repair",
                 "type": "object"
               },
+              "states": {
+                "additionalProperties": false,
+                "description": "States and external data (FR-STATE, FR-EXT): off, prompt-only (FR-LITE-5), or on.",
+                "properties": {
+                  "level": {
+                    "default": "off",
+                    "enum": [
+                      "off",
+                      "prompt_only",
+                      "on"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  }
+                },
+                "title": "States",
+                "type": "object"
+              },
               "verification": {
                 "additionalProperties": false,
                 "description": "Claim verification, a ladder: off, declared claims only, plus claim extraction, plus\nentailment escalation (FR-VERIFY); and contradiction checking (FR-PROP-10).",
@@ -24508,6 +25024,36 @@
                       }
                     },
                     "title": "CharacterKnowledge",
+                    "type": "object"
+                  },
+                  "clock": {
+                    "additionalProperties": false,
+                    "description": "The world clock (FR-CLOCK): off, its prompt-only Lite form (FR-LITE-5), or on.",
+                    "properties": {
+                      "level": {
+                        "default": "off",
+                        "enum": [
+                          "off",
+                          "prompt_only",
+                          "on"
+                        ],
+                        "title": "Level",
+                        "type": "string"
+                      },
+                      "scheduled_stops": {
+                        "default": false,
+                        "description": "Stop the clock at scheduled events.",
+                        "title": "Scheduled Stops",
+                        "type": "boolean"
+                      },
+                      "time_claims": {
+                        "default": false,
+                        "description": "Verify time claims against the clock.",
+                        "title": "Time Claims",
+                        "type": "boolean"
+                      }
+                    },
+                    "title": "Clock",
                     "type": "object"
                   },
                   "commitment": {
@@ -25022,6 +25568,24 @@
                       }
                     },
                     "title": "Repair",
+                    "type": "object"
+                  },
+                  "states": {
+                    "additionalProperties": false,
+                    "description": "States and external data (FR-STATE, FR-EXT): off, prompt-only (FR-LITE-5), or on.",
+                    "properties": {
+                      "level": {
+                        "default": "off",
+                        "enum": [
+                          "off",
+                          "prompt_only",
+                          "on"
+                        ],
+                        "title": "Level",
+                        "type": "string"
+                      }
+                    },
+                    "title": "States",
                     "type": "object"
                   },
                   "verification": {
@@ -33448,6 +34012,36 @@
                 "title": "CharacterKnowledge",
                 "type": "object"
               },
+              "clock": {
+                "additionalProperties": false,
+                "description": "The world clock (FR-CLOCK): off, its prompt-only Lite form (FR-LITE-5), or on.",
+                "properties": {
+                  "level": {
+                    "default": "off",
+                    "enum": [
+                      "off",
+                      "prompt_only",
+                      "on"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  },
+                  "scheduled_stops": {
+                    "default": false,
+                    "description": "Stop the clock at scheduled events.",
+                    "title": "Scheduled Stops",
+                    "type": "boolean"
+                  },
+                  "time_claims": {
+                    "default": false,
+                    "description": "Verify time claims against the clock.",
+                    "title": "Time Claims",
+                    "type": "boolean"
+                  }
+                },
+                "title": "Clock",
+                "type": "object"
+              },
               "commitment": {
                 "additionalProperties": false,
                 "description": "Commitment (FR-COMMIT) and its salience detection.",
@@ -33960,6 +34554,24 @@
                   }
                 },
                 "title": "Repair",
+                "type": "object"
+              },
+              "states": {
+                "additionalProperties": false,
+                "description": "States and external data (FR-STATE, FR-EXT): off, prompt-only (FR-LITE-5), or on.",
+                "properties": {
+                  "level": {
+                    "default": "off",
+                    "enum": [
+                      "off",
+                      "prompt_only",
+                      "on"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  }
+                },
+                "title": "States",
                 "type": "object"
               },
               "verification": {
@@ -34803,6 +35415,36 @@
                     "title": "CharacterKnowledge",
                     "type": "object"
                   },
+                  "clock": {
+                    "additionalProperties": false,
+                    "description": "The world clock (FR-CLOCK): off, its prompt-only Lite form (FR-LITE-5), or on.",
+                    "properties": {
+                      "level": {
+                        "default": "off",
+                        "enum": [
+                          "off",
+                          "prompt_only",
+                          "on"
+                        ],
+                        "title": "Level",
+                        "type": "string"
+                      },
+                      "scheduled_stops": {
+                        "default": false,
+                        "description": "Stop the clock at scheduled events.",
+                        "title": "Scheduled Stops",
+                        "type": "boolean"
+                      },
+                      "time_claims": {
+                        "default": false,
+                        "description": "Verify time claims against the clock.",
+                        "title": "Time Claims",
+                        "type": "boolean"
+                      }
+                    },
+                    "title": "Clock",
+                    "type": "object"
+                  },
                   "commitment": {
                     "additionalProperties": false,
                     "description": "Commitment (FR-COMMIT) and its salience detection.",
@@ -35315,6 +35957,24 @@
                       }
                     },
                     "title": "Repair",
+                    "type": "object"
+                  },
+                  "states": {
+                    "additionalProperties": false,
+                    "description": "States and external data (FR-STATE, FR-EXT): off, prompt-only (FR-LITE-5), or on.",
+                    "properties": {
+                      "level": {
+                        "default": "off",
+                        "enum": [
+                          "off",
+                          "prompt_only",
+                          "on"
+                        ],
+                        "title": "Level",
+                        "type": "string"
+                      }
+                    },
+                    "title": "States",
                     "type": "object"
                   },
                   "verification": {

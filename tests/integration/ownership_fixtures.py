@@ -368,27 +368,99 @@ async def _story_character(client: httpx.AsyncClient, kind: Kind, entity: Entity
     return {"character_id": entity.ids["ada"]}
 
 
+PROMPT_ONLY = {"clock": {"level": "prompt_only"}, "states": {"level": "prompt_only"}}
+"""#203: the Lite story's overrides for the clock, scheduled-event and State routes: the world
+clock and States in their prompt-only Lite forms (FR-LITE-5)."""
+GOLD = {"name": "gold", "type": "number", "initial_value": 10}
+
+
+async def _prompt_only(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """The story runs the clock and States at ``prompt_only`` (#203; a Lite story's forms)."""
+    await _send(
+        client,
+        kind,
+        entity,
+        "PATCH",
+        "/profile-overrides",
+        {"settings": PROMPT_ONLY, "ignore_warnings": True},
+        200,
+    )
+    return {}
+
+
 async def _state_name(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
-    """A State name for the State routes (#186), whose story runs States off until #203."""
+    """A declared State's name for the State routes (#186), on the story running States at
+    ``prompt_only`` (#203)."""
+    await _prompt_only(client, kind, entity)
+    await _post(client, kind, entity, "/states", {"definition": GOLD}, 201)
     return {"name": "gold"}
 
 
 async def _state_proposal(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
-    """A State proposal id for the proposal routes (#192), whose story runs States off until
-    #203 (the module gate answers before the id is looked up)."""
-    return {"proposal_id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2D5"}
+    """A ``proposed`` State proposal for the proposal routes (#192), on the story running States
+    at ``prompt_only`` (#203). No route files one (the analysis is a job), so it is written as
+    the analysis writes it."""
+    await _prompt_only(client, kind, entity)
+    proposal = new_ulid()
+    db = client._transport.app.state.epistrel.db  # type: ignore[attr-defined]
+    async with db.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO state_proposals (id, story_id, name, suggested_type, "
+                "suggested_scope, suggested_unit, created_by_operation_id) VALUES "
+                "(:i, :s, 'arrows', 'number', 'story', 'arrows', :o)"
+            ),
+            {"i": proposal, "s": entity.id, "o": new_ulid()},
+        )
+    return {"proposal_id": proposal}
 
 
 async def _outbox_effect(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
-    """An outbox id for the reconciliation actions (#218), whose story runs States off until
-    #203 (the module gate answers before the id is looked up)."""
-    return {"outbox_id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2F7"}
+    """A listed effect for the reconciliation actions (#218): the story, on ``Structured (M4)``
+    with States on (#203), whose gold a write-capable in-process provider owns, with Wren's
+    purchase of Ada's sword confirmed after the player rewound past it (listed
+    ``confirmed_discarded_origin``)."""
+    from epistrel.core.seeds.profiles import STRUCTURED_M4_PROFILE_ID
+    from tests import late_settlement_support as ls
+
+    epistrel = client._transport.app.state.epistrel  # type: ignore[attr-defined]
+    db = epistrel.db
+    async with db.begin() as conn:
+        await conn.execute(
+            text(
+                "UPDATE stories SET engine_profile_id = :p, engine_profile_version_pin = 1 "
+                "WHERE id = :s"
+            ),
+            {"s": entity.id, "p": STRUCTURED_M4_PROFILE_ID},
+        )
+    bank = await ls.bank(db, epistrel, entity.id)
+    bank.script_writes("gold", "confirmed")
+    await ls.swords(db, entity.id, entity.ids["ada"])
+    listed = await ls.discarded(
+        db, epistrel, entity.id, bank.name, entity.ids["wren"], entity.ids["ada"]
+    )
+    return {"outbox_id": listed}
+
+
+def _refund(entity: Entity) -> dict[str, Any]:
+    """#218: a refund of the listed purchase's payment, to Wren's external gold."""
+    refund = {"state": "gold", "delta": 5, "reason": "refund", "scope_key": entity.ids["wren"]}
+    return {"effect": refund}
 
 
 async def _scheduled_event(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
-    """A scheduled event id for the event writes (#196), whose story runs the clock off until
-    #203 (the module gate answers before the id is looked up)."""
-    return {"event_id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2E6"}
+    """A scheduled event for the event writes (#196), on the story running the clock at
+    ``prompt_only`` (#203)."""
+    await _prompt_only(client, kind, entity)
+    created = await _post(
+        client,
+        kind,
+        entity,
+        "/scheduled-events",
+        {"proposition": "the delivery", "planned": 60},
+        201,
+    )
+    return {"event_id": created["event"]["event_id"]}
 
 
 async def _omniscient(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
@@ -679,43 +751,43 @@ CALLS: dict[tuple[str, str], Call] = {
         200, {"weight": "minor"}, prepare=_story_character
     ),
     ("POST", f"{S}/entities/{{entity_id}}/model"): Call(201, {"true_age": 40}, prepare=_unmodeled),
-    # -- stories: the world clock (#193): read, settings changed, and an advance, which the
-    # story's configuration refuses (409 module_off) until #203 delivers the clock module
+    # -- stories: the world clock (#193): read, settings changed, and an advance, on the story
+    # running the clock at prompt_only (#203: a Lite story's form)
     ("GET", f"{S}/clock"): Call(200),
     ("PATCH", f"{S}/clock"): Call(200, {"mode": "manual"}),
-    ("POST", f"{S}/clock/advance"): Call(409, {"minutes": 30, "reason": "they wait"}),
-    # -- stories: its scheduled events (#196): the list, and writes the story's configuration
-    # refuses (409 module_off) until #203 delivers the clock module
+    ("POST", f"{S}/clock/advance"): Call(
+        200, {"minutes": 30, "reason": "they wait"}, prepare=_prompt_only
+    ),
+    # -- stories: its scheduled events (#196): the list, one created, rescheduled, cancelled
     ("GET", f"{S}/scheduled-events"): Call(200, prepare=_omniscient),
-    ("POST", f"{S}/scheduled-events"): Call(409, {"proposition": "the delivery", "planned": 60}),
+    ("POST", f"{S}/scheduled-events"): Call(
+        201, {"proposition": "the delivery", "planned": 60}, prepare=_prompt_only
+    ),
     ("PATCH", f"{S}/scheduled-events/{{event_id}}"): Call(
-        409, {"planned": 90}, prepare=_scheduled_event
+        200, {"planned": 90}, prepare=_scheduled_event
     ),
-    ("DELETE", f"{S}/scheduled-events/{{event_id}}"): Call(409, prepare=_scheduled_event),
-    # -- stories: its States (#186), which the story's configuration refuses (409 module_off)
-    # until #203 delivers the states module
-    ("GET", f"{S}/states"): Call(409),
-    ("GET", f"{S}/states/{{name}}"): Call(409, prepare=_state_name),
+    ("DELETE", f"{S}/scheduled-events/{{event_id}}"): Call(200, prepare=_scheduled_event),
+    # -- stories: its States (#186), on the story running States at prompt_only (#203)
+    ("GET", f"{S}/states"): Call(200, prepare=_state_name),
+    ("GET", f"{S}/states/{{name}}"): Call(200, prepare=_state_name),
     ("PUT", f"{S}/states/{{name}}"): Call(
-        409, {"delta": 5, "reason": "found a purse"}, prepare=_state_name
+        200, {"delta": 5, "reason": "found a purse"}, prepare=_state_name
     ),
-    ("POST", f"{S}/states"): Call(409, {"definition": {"name": "gold", "type": "number"}}),
-    ("PATCH", f"{S}/states/{{name}}/definition"): Call(409, {"unit": "coins"}, prepare=_state_name),
-    # -- stories: engine-proposed States (#192), which the story's configuration refuses (409
-    # module_off) until #203 delivers the states module
-    ("POST", f"{S}/state-proposals/analyze"): Call(409),
-    ("GET", f"{S}/state-proposals"): Call(409),
+    ("POST", f"{S}/states"): Call(201, {"definition": GOLD}, prepare=_prompt_only),
+    ("PATCH", f"{S}/states/{{name}}/definition"): Call(200, {"unit": "coins"}, prepare=_state_name),
+    # -- stories: engine-proposed States (#192), on the story running States at prompt_only
+    ("POST", f"{S}/state-proposals/analyze"): Call(202, prepare=_prompt_only),
+    ("GET", f"{S}/state-proposals"): Call(200, prepare=_state_proposal),
     ("POST", f"{S}/state-proposals/{{proposal_id}}/approve"): Call(
-        409, {"definition": {}}, prepare=_state_proposal
+        201, {"definition": {}}, prepare=_state_proposal
     ),
-    ("POST", f"{S}/state-proposals/{{proposal_id}}/dismiss"): Call(409, prepare=_state_proposal),
+    ("POST", f"{S}/state-proposals/{{proposal_id}}/dismiss"): Call(200, prepare=_state_proposal),
     # -- stories: the reconciliation status of its external effects (#210)
     ("GET", f"{S}/reconciliation"): Call(200),
-    # #218: the explicit actions on a listed effect, which the story's configuration refuses
-    # (409 module_off) until #203 delivers the states module
-    ("POST", f"{S}/reconciliation/{{outbox_id}}/settle-now"): Call(409, prepare=_outbox_effect),
+    # #218: the explicit actions on a listed effect (#203: on a story running States)
+    ("POST", f"{S}/reconciliation/{{outbox_id}}/settle-now"): Call(200, prepare=_outbox_effect),
     ("POST", f"{S}/reconciliation/{{outbox_id}}/compensate"): Call(
-        409, {"effect": {"state": "gold", "delta": 5, "reason": "refund"}}, prepare=_outbox_effect
+        201, _refund, prepare=_outbox_effect
     ),
     # -- stories: a character's participation role (#176)
     ("PATCH", f"{S}/characters/{{character_id}}/participation"): Call(

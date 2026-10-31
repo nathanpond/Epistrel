@@ -353,7 +353,7 @@ async def test_c_16__m5_capabilities(
     assert CAPABILITY["per_character_renders"].story_settings == MULTI_CHARACTER_SETTINGS
     assert "player_authority" in MULTI_CHARACTER_SETTINGS
     v1 = merged_settings(seeds.profile_defaults(), seeds.STRUCTURED_M4_SETTINGS)
-    v2 = merged_settings(seeds.profile_defaults(), seeds.STRUCTURED_SETTINGS)
+    v2 = merged_settings(seeds.profile_defaults(), seeds.STRUCTURED_M5_SETTINGS)
     assert set(CAPABILITY) - set(holding(v1)) >= {
         "partitions",
         "perception_co_location",
@@ -377,11 +377,15 @@ async def test_c_16__m5_capabilities(
     (published_structured,) = [p for p in guarantee_tool.SEEDED if p.profile_id == structured()]
     assert (published_structured.name, published_structured.version) == (
         seeds.STRUCTURED_NAME,
-        2,
+        seeds.STRUCTURED_VERSION,  # the latest: 2 in M5 (#203 adds 3)
     )
     table = guarantee_tool.render()
     assert table == (guarantee_tool.TABLE_PATH).read_text(encoding="utf-8")
-    assert f"### {seeds.STRUCTURED_NAME}\n\nProfile `{structured()}`, version 2 as seeded." in table
+    latest = seeds.STRUCTURED_VERSION
+    assert (
+        f"### {seeds.STRUCTURED_NAME}\n\nProfile `{structured()}`, version {latest} as seeded."
+        in table
+    )
     assert "`player_authority`" in table.split("### Lite", 1)[1].split("### ", 1)[0]
 
     # The story settings.
@@ -440,14 +444,21 @@ async def test_c_16__m5_capabilities(
 
         # The seeded profile.
         head = (await client.get(f"{PROFILES}/{structured()}", headers=READ)).json()
-        assert (head["name"], head["version"]) == (seeds.STRUCTURED_NAME, 2)
-        assert head["settings"] == seeds.structured_settings()
+        assert head["name"] == seeds.STRUCTURED_NAME
+        second = (
+            await client.get(
+                f"{PROFILES}/{structured()}",
+                params={"version": seeds.STRUCTURED_M5_VERSION},
+                headers=READ,
+            )
+        ).json()
+        assert second["settings"] == seeds.structured_m5_settings()
         first = (
             await client.get(f"{PROFILES}/{structured()}", params={"version": 1}, headers=READ)
         ).json()
         assert first["settings"] == seeds.structured_m4_settings()
         assert module_on(
-            parse_settings(merged(seeds.profile_defaults(), head["settings"])), "partitions"
+            parse_settings(merged(seeds.profile_defaults(), second["settings"])), "partitions"
         )
 
         # A turn-less story pinned to version 1 moves to version 2 through the report.
@@ -484,7 +495,7 @@ async def test_c_16__m5_capabilities(
         after = (await client.get(f"/stories/{story}/effective-config", headers=READ)).json()
         assert after["profile"] == {
             "id": structured(),
-            "version": 2,
+            "version": seeds.STRUCTURED_VERSION,  # the latest: 2 in M5 (#203 adds 3)
             "pinned": False,
             "deleted": False,
         }
@@ -569,7 +580,7 @@ async def test_c_16__m5_seed_pins(scratch_database: str) -> None:
                 {"p": structured_m4(), "s": on_profile},
             )
         changes = await scalar(db, "SELECT count(*) FROM config_changes")
-        command.upgrade(cfg, "head")
+        command.upgrade(cfg, "0080")  # #203's 0104 adds version 3 (test_capability_map_m6)
         head = (
             await rows(
                 db,
@@ -583,7 +594,7 @@ async def test_c_16__m5_seed_pins(scratch_database: str) -> None:
             "SELECT settings FROM engine_profile_versions WHERE profile_id = :p AND version = 2",
             p=structured(),
         )
-        assert version == seeds.structured_settings()
+        assert version == seeds.structured_m5_settings()
         pins = {
             r.id: r.engine_profile_version_pin
             for r in await rows(db, "SELECT id, engine_profile_version_pin FROM stories")

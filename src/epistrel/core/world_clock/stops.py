@@ -464,7 +464,8 @@ def check_advance(
 
 async def stops_enabled(conn: AsyncConnection, story_id: str) -> bool:
     """Whether stops apply: the effective profile's ``clock.scheduled_stops`` (delivered) and
-    the clock's ``stop_at_due_events`` are both on."""
+    the clock's ``stop_at_due_events`` are both on, with the clock at ``on`` (#203: the
+    ``prompt_only`` clock stores ``stop_at_due_events`` and never stops)."""
     from epistrel.core import world_clock  # here: the clock package imports this module
     from epistrel.core.profiles import schema
     from epistrel.core.profiles.effective import effective_configuration
@@ -472,6 +473,8 @@ async def stops_enabled(conn: AsyncConnection, story_id: str) -> bool:
     settings = (await effective_configuration(conn, story_id, validate=False)).settings
     level = schema.level_of(settings, "scheduled_stops")
     if level is None or not schema.is_delivered("scheduled_stops", level):
+        return False
+    if schema.level_of(settings, world_clock.MODULE) != schema.ON:
         return False
     return bool((await world_clock.settings(conn, story_id)).stop_at_due_events)
 

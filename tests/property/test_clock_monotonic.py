@@ -60,12 +60,18 @@ from epistrel.core.world_clock.timing import (
 from epistrel.orchestrator.structured import stopping
 from epistrel.orchestrator.structured import time_estimation as te
 from epistrel.orchestrator.structured.clocking import Timed
+from epistrel.orchestrator.verify.verifier import VerifyConfig
 from tests import canon_support as c
 from tests import clock_support as ck
+from tests import effect_support as es
+from tests import multi_support as ms
 from tests import state_support as ss
+from tests import structured_turn_support as st_turn
+from tests.auth_support import auth_settings
 from tests.event_support import rows
 from tests.fork_support import fork
 from tests.projection_support import swap, truncate, untruncate
+from tests.respond_support import body, everything_sent, respond, respond_client
 
 NIGHTLY = os.environ.get("EPISTREL_HYPOTHESIS_PROFILE") == "nightly"
 EXAMPLES = 3_000 if NIGHTLY else 300
@@ -804,3 +810,88 @@ def _resolved(event: stops.ScheduledEvent, anchor: Anchor, offset: int) -> stops
             planned=event.planned if step.planned is None else step.planned,
         )
     return event
+
+
+CLOCK_ROWS = (
+    "SELECT count(*) AS n FROM state_changes c JOIN state_definitions d ON d.id = c.state_id "
+    "WHERE c.story_id = :s AND d.name = 'world_clock'"
+)
+TIME_SECTIONS = ("## Time\n", "## Your sense of time")
+
+
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-CLOCK-1")
+async def test_clock_monotonic__clock_off(
+    pg_url: str,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With the clock delivered for real (#203: no test patch), a structured story whose
+    ``clock.level`` is off keeps no clock: its turns, whose beats narrate times ("at 15:10")
+    and speak them, write no ``state_changes`` row for its clock, ``respond`` carries no
+    ``clock``, no clock predicate is checked (every verification of its turns runs with
+    ``VerifyConfig.clock`` off), and no render's prompt has a time section (``## Time``,
+    ``## Your sense of time``).
+
+    Complement: with the clock ``on`` the same turn carries ``clock``, its prompts a time
+    section and its verification the clock checks, and a plain turn advances the clock."""
+    checked: list[bool] = []
+    real = VerifyConfig.of
+
+    def seen(profile: Any, deployment: Any = None) -> VerifyConfig:
+        found = real(profile, deployment)
+        checked.append(found.clock)
+        return found
+
+    monkeypatch.setattr(VerifyConfig, "of", staticmethod(seen))
+    stub_settings = auth_settings(pg_url, model_adapter="stub")
+    narrated = st_turn.render(
+        st_turn.beat("narration", "At 15:10 the bell rings over the door."),
+    )
+    spoken = st_turn.render(
+        st_turn.beat("say", "It's 15:10 already, and the shop closes soon.", intent="sincere")
+    )
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids = await st_turn.structured_story(client, "Cal", "Mira")
+        await ck.anchor_at(engine, story, 15 * 60)
+        for n in range(2):
+            stub.reset()
+            ms.renders_for(stub, "Mira", spoken)
+            es.narrator(stub, narrated)
+            answer = await respond(client, story, body(ids["Cal"], None, do=f"waits, {n}"))
+            assert answer.status_code == 200, answer.text
+            assert "clock" not in answer.json()
+            sent = everything_sent(stub)
+            assert not any(section in sent for section in TIME_SECTIONS)
+        (found,) = await rows(engine, CLOCK_ROWS, s=story)
+        assert found.n == 0
+        assert checked
+        assert not any(checked)  # no verification ran with its clock checks on
+        checked.clear()
+
+        # Complement: the clock on.
+        await ck.set_clock(engine, story, "on", stops=False)
+        stub.reset()
+        ms.renders_for(stub, "Mira", spoken)
+        es.narrator(stub, narrated)
+        answer = await respond(client, story, body(ids["Cal"], None, do="waits again"))
+        assert answer.status_code == 200, answer.text
+        assert "clock" in answer.json()
+        assert any(section in everything_sent(stub) for section in TIME_SECTIONS)
+        assert checked
+        assert all(checked)  # the verification ran with its clock checks on
+        stub.reset()
+        ms.renders_for(stub, "Mira", st_turn.render(st_turn.beat("say", "Mind the step.")))
+        es.narrator(
+            stub,
+            st_turn.render(
+                st_turn.beat("narration", "The bell rings over the door as the light fades.")
+            ),
+        )
+        answer = await respond(client, story, body(ids["Cal"], None, do="waits once more"))
+        assert answer.status_code == 200, answer.text
+        assert answer.json()["clock"]["after"]["offset"] > 0
+        (found,) = await rows(engine, CLOCK_ROWS, s=story)
+        assert found.n > 0

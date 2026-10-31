@@ -309,7 +309,13 @@ class GenerationInputs(InputSchema):
     )
     """A structured render's ``## Tracked values`` (#187): one line per State the render may
     change (a character's: player-visible ones it is authorized for, no value; the narrator's:
-    every State with its value at the turn's start and its constraints)."""
+    every State with its value at the turn's start and its constraints). A Lite prompt's
+    (#203, FR-LITE-5): one line per player-visible State with its value, shown only."""
+    lite_time: Annotated[list[str], C.SCENE] = Field(default_factory=list, max_length=65)
+    """A Lite prompt's ``## Time`` (#203, FR-LITE-5): the world clock as the turn starts and the
+    open canon scheduled events with their planned times (``orchestrator.lite.context``); empty
+    with the clock off and in every structured prompt (whose renders take ``clock_now`` and
+    ``time_belief``)."""
     tracked_syntax: Annotated[str, C.TRACKED_VALUES] = Field(default="", max_length=1_000)
     """#187: how to declare a State effect, with one example (present with ``tracked_values``)."""
     external_data: Annotated[list[str], C.EXTERNAL_DATA] = Field(

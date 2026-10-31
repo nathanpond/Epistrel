@@ -271,7 +271,8 @@ CAPABILITY_MAP: tuple[CapabilityEntry, ...] = (
         "FR-STATE; FR-EXT",
         Needs("states", "on"),
         notes="Under `lite`, States apply only in the prompt-only form of FR-LITE-5, and no "
-        "external-data provider is used.",
+        "external-data provider is used. Directives on externally owned values (FR-EXT-8) "
+        "arrive in M7.",
     ),
     _entry(
         "per_character_renders",

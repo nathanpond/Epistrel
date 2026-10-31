@@ -137,6 +137,9 @@ async def test_s_clock_timeline(
     """See the module docstring (each numbered case in order)."""
     async with respond_client(stub_settings, engine) as (client, epistrel):
         story, ids = await new_story(client)
+        # Replies too short to pace (#203: a Lite turn paces its input and reply, under 5
+        # words: 0 minutes), so only the consumer's advances move the clock here.
+        epistrel.models.stub.when("", "Mm.", purpose="generation")
 
         # 1. The clock exists from creation; off, it is inert.
         off = await _clock(client, story)

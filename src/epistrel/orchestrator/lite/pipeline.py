@@ -42,7 +42,11 @@
    configuration's polish budget (``repair.polish.max_regenerations``; none with the polish
    pass off) and the turn budget, then releases the safe fallback line. It
    stages the input as beat 1, every rejected text as a ``guardrail_output_rejected`` audit
-   event, and the released reply as beat 2. A touched read set regenerates the same operation;
+   event, and the released reply as beat 2. With the prompt-only world clock (#203, FR-LITE-5)
+   the read phase also reads the prompt's ``## Time`` and ``## Tracked values``
+   (``lite.context``), and the commit writes the turn's one pacing advance (#194's rule over the
+   input and the reply as one render; nothing is verified). A touched read set regenerates the
+   same operation;
    an interpretive configuration change the turn depends on (a rating's guardrails, a policy,
    ``minor_age_threshold``, the default output viewpoint) re-checks the reply under the new
    configuration before it commits (``policies.rebase``, #64). A regeneration the budget's
@@ -140,6 +144,7 @@ from epistrel.observability.logging import get_logger
 from epistrel.observability.metrics import count_degradation
 from epistrel.orchestrator.budget import GUARDRAIL_OUTPUT, TurnBudget, plan_lite_budget
 from epistrel.orchestrator.lite.cast import ResolvedCast, resolve_cast
+from epistrel.orchestrator.lite.context import LiteContext, pace, read_lite_context
 from epistrel.orchestrator.lite.prompt import assemble, model_params, prompt_hash
 from epistrel.orchestrator.lite.schemas import (
     PIN_QUARANTINED,
@@ -598,11 +603,15 @@ async def _play(
     stamped: list[Stamp] = []
     """The configuration the turn runs under (#109), stamped by its latest read phase."""
 
+    lite_context: list[LiteContext] = [LiteContext()]
+    """The prompt-only clock and States (#203), read in the latest read phase's snapshot."""
+
     async def begin(conn: AsyncConnection) -> tuple[TurnInputs, ResolvedGeneration]:
         reading = time.perf_counter()
         inputs = await read_turn_inputs(
             conn, story_id, before_turn=before_turn, configuration=configuration
         )
+        lite_context[0] = await read_lite_context(conn, story_id, before_turn=before_turn)
         timing.assemble_s += time.perf_counter() - reading
         resolved = resolve_generation(inputs.generation, request.prompt_params)
         # The configuration's fingerprint (FR-PROF-16), from the captured configuration and
@@ -656,7 +665,9 @@ async def _play(
 
         async def _produce(constraints: tuple[str, ...], attempt: int) -> Draft:
             assembling = time.perf_counter()
-            payload = assemble(inputs, cast, say=say, do=do, constraints=constraints)
+            payload = assemble(
+                inputs, cast, say=say, do=do, constraints=constraints, context=lite_context[0]
+            )
             settings = resolved.model_copy(
                 update={"temperature": raised_temperature(resolved.temperature, attempt)}
             )
@@ -706,10 +717,15 @@ async def _play(
             rejected=[rejected_event(r) for r in outcome.rejected],
             corrected_from=corrected_from,
         )
+        # #203 (FR-CLOCK-6, FR-LITE-5): the prompt-only clock's one pacing advance.
+        op.add_commit_step(partial(paced, reply=outcome.draft.text))
         if regenerating is not None:
             op.add_commit_step(fail_queue)
 
     failed_queue: list[str] = []
+
+    async def paced(conn: AsyncConnection, *, reply: str) -> None:
+        await pace(conn, op, story_id, say=joined_input(say, do), reply=reply)
 
     async def write_report(conn: AsyncConnection) -> None:
         # ``elapsed_ms`` is fixed here, in the commit transaction, and the turn report is

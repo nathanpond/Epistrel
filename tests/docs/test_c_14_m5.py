@@ -146,11 +146,12 @@ def test_c_14__guarantee_rows() -> None:
     """NFR-QUAL-1's metrics feed the ``paraphrase_detection`` row: model-dependent, measured by
     NFR-QUAL-1, held under partitions, and declared by both zero-leak suites (q04 and the
     private-thought suite), so their reports name the row. NFR-PRIV-4's structural isolation is
-    ``structural_knowledge_separation``, deterministic. Under the seeded ``Structured`` (version
-    2) both it and audience filtering are provided, and under Lite neither is, which the
-    published table states in prose; no milestone is named for any of them any more. The table
-    states NFR-PRIV-4's order of controls in docs/02's words (#170 AC5, #577): context assembly
-    is the primary privacy control, output scanning a secondary, measured one."""
+    ``structural_knowledge_separation``, deterministic. Under the seeded ``Structured`` (its
+    latest version) both it and audience filtering are provided, and under Lite neither is,
+    which the published table states in prose; no milestone is named for any of them any more.
+    The table states NFR-PRIV-4's order of controls in docs/02's words (#170 AC5, #577):
+    context assembly is the primary privacy control, output scanning a secondary, measured
+    one."""
     row = GUARANTEE["paraphrase_detection"]
     assert (row.kind, row.metric, row.delivered_in) == (Kind.model_dependent, "NFR-QUAL-1", None)
     for suite_name in METRICS.values():

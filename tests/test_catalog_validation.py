@@ -68,6 +68,10 @@ def _entry(
     )
 
 
+UNDELIVERED = "undelivered"
+"""A capability no deployment delivers (every module is delivered since #203)."""
+
+
 def _context(capabilities: frozenset[str] = DEPLOYMENT_CAPABILITIES) -> ValidationContext:
     """A context for checks that read no database (the connection is never touched)."""
     settings = DeploymentState(
@@ -212,18 +216,18 @@ async def test_runner_lists_what_the_deployment_cannot_run() -> None:
     nor appear), but a check the deployment cannot run is still listed. A check for another
     entry type does not run."""
     always = _probe("always")
-    needs = _probe("needs", capability="states")
+    needs = _probe("needs", capability=UNDELIVERED)
     report = await validation.run(_subject({}), _context(), checks=[always, needs])
     assert (always.ran, needs.ran, report.unavailable) == (True, False, ["needs"])
 
-    granted = _probe("needs", capability="states")
+    granted = _probe("needs", capability=UNDELIVERED)
     report = await validation.run(
-        _subject({}), _context(DEPLOYMENT_CAPABILITIES | {"states"}), checks=[granted]
+        _subject({}), _context(DEPLOYMENT_CAPABILITIES | {UNDELIVERED}), checks=[granted]
     )
     assert (granted.ran, report.unavailable) == (True, [])
 
     gate, after = _probe("gate", gate=True, error=True), _probe("after")
-    later = _probe("later", capability="states")
+    later = _probe("later", capability=UNDELIVERED)
     report = await validation.run(_subject({}), _context(), checks=[gate, after, later])
     assert (after.ran, [e.code for e in report.errors]) == (False, ["gate_failed"])
     assert report.unavailable == ["later"]
@@ -266,7 +270,7 @@ def test_the_checks_and_the_capabilities() -> None:
     delivered = set(DELIVERED["pipeline"]) | {name for name in DELIVERED if name != "pipeline"}
     assert delivered | {"providers"} == DEPLOYMENT_CAPABILITIES
     assert {"lite", "rolling_summary", "pins", "polish", "budgets", "models"} <= delivered
-    assert "states" not in delivered
+    assert "states" in delivered  # #203
 
 
 async def test_capability_checks_never_pass_silently() -> None:

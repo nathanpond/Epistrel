@@ -13,10 +13,14 @@ from __future__ import annotations
 
 import json
 import re
+import types
 from collections.abc import Iterator
+from contextlib import contextmanager
 from itertools import combinations, product
 from typing import Any
+from unittest import mock
 
+import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 from tools.gates.spec import expand_ids
 
@@ -106,8 +110,32 @@ deliver more."""
 
 
 def undelivered_modules() -> list[Module]:
-    """Every module this deployment has not delivered at any level."""
+    """Every module this deployment has not delivered at any level (none since #203: a test
+    that needs one withholds it, ``withhold``)."""
     return [m for m in schema.MODULES if m.name not in schema.DELIVERED]
+
+
+WITHHELD = "states"
+"""The module a test withholds once every module is delivered (#203), so the refusal of an
+undelivered module stays exercised: the last one the schema declares that a Lite document may
+switch on (its ``prompt_only`` level), and that no seeded profile's version 1 names."""
+
+
+def _withheld(module: str) -> types.MappingProxyType[str, frozenset[str]]:
+    return types.MappingProxyType({k: v for k, v in schema.DELIVERED.items() if k != module})
+
+
+def withhold(monkeypatch: pytest.MonkeyPatch, module: str = WITHHELD) -> Module:
+    """Read ``module`` as undelivered for the test (``undelivered_modules()`` then names it)."""
+    monkeypatch.setattr(schema, "DELIVERED", _withheld(module))
+    return schema.MODULE[module]
+
+
+@contextmanager
+def withholding(module: str = WITHHELD) -> Iterator[Module]:
+    """``withhold`` for a block."""
+    with mock.patch.object(schema, "DELIVERED", _withheld(module)):
+        yield schema.MODULE[module]
 
 
 def undelivered_levels() -> list[tuple[Module, str]]:
@@ -127,16 +155,33 @@ def naming(module: Module, level: str | None = None) -> dict[str, Any]:
     return nest(module.switch, on_value(module, level))
 
 
+def _undelivered_value() -> tuple[str, Any]:
+    """The first value of a delivered setting that names an undelivered feature
+    (``schema.UNDELIVERED_VALUES``)."""
+    path, refused = next(iter(schema.UNDELIVERED_VALUES.items()))
+    return path, refused[0]
+
+
 def undelivered() -> dict[str, Any]:
-    """A settings document that switches on the first module (in schema order) this
-    deployment has not delivered at any level: what a test may send as settings that cannot
-    run, whichever milestone it is."""
-    return naming(undelivered_modules()[0])
+    """A settings document that cannot run, whichever milestone it is: it switches on the first
+    module (in schema order) this deployment has not delivered at any level, or, once every
+    module is delivered (#203), sets the first undelivered value of a delivered setting
+    (``schema.UNDELIVERED_VALUES``)."""
+    modules = undelivered_modules()
+    if modules:
+        return naming(modules[0])
+    return nest(*_undelivered_value())
 
 
 def undelivered_finding() -> dict[str, Any]:
     """The ``undelivered`` entry a refusal of ``undelivered()`` names."""
-    module = undelivered_modules()[0]
+    modules = undelivered_modules()
+    if not modules:
+        path, _ = _undelivered_value()
+        owner = schema.owner_of(path)
+        assert owner is not None, path
+        return {"module": owner[0], "level": None, "setting": path}
+    module = modules[0]
     assert module.switch is not None, module.name
     return {
         "module": module.name,

@@ -1132,7 +1132,7 @@ async def test_c_15__story_creation(settings: Settings, engine: AsyncEngine) -> 
         assert set(card["counts"]) == {"errors", "conflicts", "warnings", "deferred", "inactive"}
         assert set(card["counts"]["deferred"]) == {"by_class", "by_capability"}
         assert card["counts"]["deferred"]["by_capability"] == lg.counted(lg.expected_deferred(body))
-        assert card["unavailable"] == list(scenarios.M3_UNAVAILABLE)
+        assert card["unavailable"] == scenarios.lite_unavailable()
         mother_card = card["cast"][0]
         assert (mother_card["kind"], mother_card["role_id"], mother_card["name"]) == (
             "catalog",
@@ -1249,56 +1249,7 @@ def replay_surfaces(pg_url: str, tmp_path_factory: pytest.TempPathFactory) -> An
         )
 
 
-REPLAY_EXCLUDED: dict[str, str] = {
-    **{
-        operation: (
-            "a State write (#186) needs the states module, which #203 delivers: until then "
-            "C-03's story runs States off and the write answers 409 module_off (its replay "
-            "under a key is covered by test_s_state_schema__api and __define, which deliver "
-            "the module)"
-        )
-        for operation in ("set_state", "define_state", "update_state_definition")
-    },
-    **{
-        operation: (
-            "a State proposal call (#192) needs the states module, which #203 delivers: until "
-            "then C-03's story runs States off and the call answers 409 module_off (its replay "
-            "under a key is covered by test_s_state_schema__proposals, which delivers the "
-            "module)"
-        )
-        for operation in (
-            "analyze_state_proposals",
-            "approve_state_proposal",
-            "dismiss_state_proposal",
-        )
-    },
-    "advance_clock": (
-        "a world clock advance (#193) needs the clock module, which #203 delivers: until then "
-        "C-03's story runs the clock off and the advance answers 409 module_off (its replay "
-        "under a key is covered by test_s_clock_timeline, which delivers the module)"
-    ),
-    **{
-        operation: (
-            "a scheduled event write (#196) needs the clock module, which #203 delivers: until "
-            "then C-03's story runs the clock off and the write answers 409 module_off (its "
-            "replay under a key is covered by test_s_diner__api, which delivers the module)"
-        )
-        for operation in (
-            "create_scheduled_event",
-            "reschedule_scheduled_event",
-            "cancel_scheduled_event",
-        )
-    },
-    **{
-        operation: (
-            "a reconciliation action (#218) needs the states module, which #203 delivers, and "
-            "an effect listed for it: until then C-03's story runs States off and the action "
-            "answers 409 module_off (its replay under a key is covered by "
-            "test_s_reservation_expiry__actions, which delivers the module)"
-        )
-        for operation in ("settle_now", "compensate")
-    },
-}
+REPLAY_EXCLUDED: dict[str, str] = {}
 """Mutating routes the replay does not reach, each with the reason
 (``replay_support.REPLACED_NOT_STORED`` names the one replayed without a stored result)."""
 

@@ -11,7 +11,8 @@ Structured at its latest version, read from ``core.seeds.profiles`` over the dep
 defaults, with no database) saying which steps it provides, with the guarantees it does not
 provide in prose, where its perception is ``none`` that no audience filtering applies, and under
 ``lite`` the story settings whose only effect is a prompt instruction
-(``core.genesis.settings_map.PROMPT_ONLY``: ``player_authority``).
+(``core.genesis.settings_map.PROMPT_ONLY``: ``player_authority``) and that the clock and States
+run only in their prompt-only, unverified forms (FR-LITE-5; #203).
 
 Rendering refuses a table that does not hold together (``GuaranteeError``), so ``--check`` and
 ``--write`` both fail:
@@ -105,8 +106,8 @@ SEEDED: tuple[SeededProfile, ...] = (
         seeds.STRUCTURED_VERSION,
     ),
 )
-"""The seeded profiles, in seeding order, each at its latest version (#181: ``Structured``
-version 2; its version 1, ``Structured (M4)``, is not published)."""
+"""The seeded profiles, in seeding order, each at its latest version (#203: ``Structured``
+version 3; its earlier versions, ``Structured (M4)`` and M5's version 2, are not published)."""
 
 
 def problems(
@@ -227,6 +228,11 @@ def _profile(profile: SeededProfile) -> list[str]:
             f"Story settings whose only effect under this profile is a prompt instruction: "
             f"{prompt_only}. Under `lite`, `player_authority` (FR-RESP-11) only tells the model "
             "whose actions the player may narrate: nothing checks that the reply honours it.",
+            "",
+            "Under `lite`, the world clock and States run only in their prompt-only forms "
+            "(FR-LITE-5), and nothing about them is checked: the prompt shows the current time, "
+            "the scheduled events and the player-visible States' values, the clock advances by "
+            "pacing, and States change only through the State API.",
             "",
         ]
     if not audience.provided(effective) and schema.level_of(effective, "perception") is None:

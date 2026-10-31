@@ -1106,9 +1106,7 @@ PUBLISH_CASES: list[tuple[dict[str, Any], list[tuple[str, str | None, str | None
 
 
 @pytest.mark.part("M6", "FR-STATE-3")
-async def test_s_state_schema__publish(
-    stub_settings: Settings, engine: AsyncEngine, seeded_clock_delivered: None
-) -> None:
+async def test_s_state_schema__publish(stub_settings: Settings, engine: AsyncEngine) -> None:
     """The author declares the scenario's States, and publishing checks them (the
     ``state_schema`` check, which runs once ``states`` is delivered): the Sunday Dinner with its
     allowance, a derived State declared before the one it reads, its starting clock and its

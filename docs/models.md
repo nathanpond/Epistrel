@@ -77,6 +77,7 @@ Writes the reply of a Lite turn from the story's prompt sections; in a structure
 | `player_authority` | `constraint` |
 | `player_requests` | `player_input` |
 | `tracked_values` | `tracked_values` |
+| `lite_time` | `scene` |
 | `tracked_syntax` | `tracked_values` |
 | `external_data` | `external_data` |
 | `pending_outcomes` | `tracked_values` |
@@ -403,6 +404,7 @@ Rewrites one beat of a structured render that contradicted canon or asserted wha
 | `player_authority` | `constraint` |
 | `player_requests` | `player_input` |
 | `tracked_values` | `tracked_values` |
+| `lite_time` | `scene` |
 | `tracked_syntax` | `tracked_values` |
 | `external_data` | `external_data` |
 | `pending_outcomes` | `tracked_values` |

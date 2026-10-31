@@ -16,7 +16,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import outbox as core_outbox
-from epistrel.core import states
+from epistrel.core import states, timeline
 from epistrel.core.enums import (
     OperationKind,
     StateChangeKind,
@@ -37,6 +37,7 @@ from tests import multi_support as ms
 from tests import provider_support as ps
 from tests import state_support as ss
 from tests.event_support import execute_in_tx, rows
+from tests.projection_support import CONTROL_PRINCIPAL
 from tests.respond_support import body, respond
 from tests.structured_turn_support import beat
 
@@ -63,9 +64,12 @@ def sword_state(entity: str, **fields: Any) -> StateDefinition:
     )
 
 
-async def bank(engine: AsyncEngine, epistrel: Any, story: str) -> ps.ScriptedProvider:
-    """``story``'s gold, owned by a fresh write-capable asynchronous in-process provider."""
-    name = ps.unique_name("bank")
+async def bank(
+    engine: AsyncEngine, epistrel: Any, story: str, name: str | None = None
+) -> ps.ScriptedProvider:
+    """``story``'s gold, owned by a fresh write-capable asynchronous in-process provider
+    (``name``: a fixed name, on a database of the caller's own)."""
+    name = name or ps.unique_name("bank")
     await ps.register(engine, ps.write_capable_spec(name))
     fake = ps.ScriptedProvider(name, default=1000).attach(epistrel)
     await ss.set_level(engine, story, "on")
@@ -315,3 +319,31 @@ __all__ = [
     "trade",
     "turn",
 ]
+
+
+async def discarded(
+    engine: AsyncEngine, epistrel: Any, story: str, provider: str, payer: str, seller: str
+) -> str:
+    """S-LATE-SETTLEMENT's discarded origin: ``payer`` buys ``seller``'s sword (claimed), the
+    player rewinds before the purchase and plays a new turn, then the confirmation arrives →
+    listed ``confirmed_discarded_origin``, nothing granted. Answers the outbox row's id."""
+    sale = [
+        Side(seller, -1, StateContingency.CONDITIONAL, StateChangeKind.TRANSFER_OUT),
+        Side(payer, 1, StateContingency.CONDITIONAL, StateChangeKind.TRANSFER_IN),
+    ]
+    found, origin = await intent(engine, story, provider, payer, sale)
+    assert origin.narrative_turn is not None
+    claimed = await outbox_job.claim(engine, found, registry=epistrel.in_process_providers)
+    assert isinstance(claimed, outbox_job.Claimed)
+    await timeline.truncate(
+        engine,
+        story,
+        timeline.TruncateRequest(to_turn=origin.narrative_turn - 1),
+        principal=CONTROL_PRINCIPAL,
+    )
+    await turn(engine, story, "do something else")
+    assert await outbox_job.send(engine, claimed) == "confirmed"
+    settled = await settle(engine, epistrel, await last_outcome(engine, found))
+    assert settled.result == settlement.DISCARDED
+    assert (found, "confirmed_discarded_origin") in await listed(engine, story)
+    return found

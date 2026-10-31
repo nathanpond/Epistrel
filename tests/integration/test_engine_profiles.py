@@ -83,6 +83,7 @@ from epistrel.core.profiles.schema import (
     PROSPECTIVE,
     RELEVANT,
     DependencyRule,
+    Module,
     ProfileSettings,
     Purposes,
     Quality,
@@ -154,6 +155,7 @@ from tests.profile_support import (
     undelivered_levels,
     undelivered_modules,
     violating,
+    withholding,
 )
 from tests.respond_support import body as respond_body
 from tests.respond_support import generation_calls, respond_client
@@ -295,7 +297,7 @@ class _Untagged(BaseModel):
 
 
 @pytest.mark.part("M3", "FR-PROF-2,3,4")
-async def test_u_28__schema(engine: AsyncEngine) -> None:
+async def test_u_28__schema(engine: AsyncEngine, withheld_module: Module) -> None:
     """Every setting of the profile schema carries its three tags: behavioral or
     data-producing, interpretive or prospective, quality-relevant or not (complement: a fixture
     schema's settings that lack a tag, or carry two of a kind, are each reported). Every setting
@@ -797,7 +799,9 @@ async def test_c_16__two_stage(scratch: Space) -> None:
         assert await configuration_rows(scratch.db) == still
 
     # -- a creation the scenario's recommendation is not met by: held, then confirmed
-    lacking = undelivered_modules()[0].name
+    with withholding() as withheld:  # every module is delivered since #203
+        lacking = undelivered_modules()[0].name
+    assert lacking == withheld.name
     lite = Configuration(LITE_PRESET_ID, 1, parse_settings(lite_settings()))
     facts = RuntimeFacts(models={}, templates={})
     recommended = Recommendation(capabilities=(lacking, "lite"), recommended_by="SCN@1")
@@ -975,7 +979,7 @@ async def test_u_28__effective(scratch: Space) -> None:
         # -- what cannot run is refused and nothing is stored; what can is stored
         unchanged = await configuration_rows(scratch.db)
         refused(
-            await _overrides(client, story, naming(undelivered_modules()[0])),
+            await _overrides(client, story, undelivered()),
             422,
             "invalid_profile",
         )
@@ -1237,7 +1241,7 @@ async def test_c_17__dependencies(stub_settings: Settings, engine: AsyncEngine) 
     async with respond_client(stub_settings, engine) as (client, _):
         base = await ok(await client.post(PROFILES, json=profile_body(), headers=headers(A)), 201)
         path = f"{PROFILES}/{base['id']}"
-        for module in undelivered_modules():
+        with withholding() as module:  # every module is delivered since #203
             for method, url, body in (
                 ("POST", PROFILES, profile_body(settings=naming(module))),
                 ("PUT", path, {"name": "Brisk Lite", "settings": naming(module)}),

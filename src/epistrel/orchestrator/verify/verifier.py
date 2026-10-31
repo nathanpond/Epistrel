@@ -154,6 +154,7 @@ from epistrel.core.epistemic import perception, resurface
 from epistrel.core.membership import Position as NarrativePosition
 from epistrel.core.membership import step_of
 from epistrel.core.profiles.effective import effective_configuration
+from epistrel.core.profiles.schema import ON as ON_LEVEL
 from epistrel.core.profiles.schema import ProfileSettings, is_delivered, level_of
 from epistrel.core.propositions.model import (
     Bound,
@@ -368,9 +369,10 @@ class VerifyConfig:
     """#195: the story runs the world clock (``clock.level`` on or ``prompt_only``, delivered):
     its clock checks anchor the clock, and ``time_is`` is the clock's, not a fact."""
     time_claims: bool = False
-    """#200 (FR-CLOCK-10): with the clock, the profile's ``clock.time_claims`` (delivered): a
-    character's own time claim (``say``, ``think``, ``do``) is checked against its time
-    belief. Off, it is checked as narration's is: objectively only."""
+    """#200 (FR-CLOCK-10): with the clock ``on`` (#203: never ``prompt_only``), the profile's
+    ``clock.time_claims`` (delivered): a character's own time claim (``say``, ``think``,
+    ``do``) is checked against its time belief. Off, it is checked as narration's is:
+    objectively only."""
 
     @property
     def on(self) -> bool:
@@ -397,7 +399,11 @@ class VerifyConfig:
             entailment_max_records=d.entailment_max_records,
             neighborhood_max_facts=d.neighborhood_max_facts,
             clock=clocked,
-            time_claims=clocked and claims is not None and is_delivered(TIME_CLAIMS, claims),
+            # #203: the prompt-only clock verifies no time claim.
+            time_claims=clocked
+            and clock == ON_LEVEL
+            and claims is not None
+            and is_delivered(TIME_CLAIMS, claims),
         )
 
     @classmethod

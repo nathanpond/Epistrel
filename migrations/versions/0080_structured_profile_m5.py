@@ -8,7 +8,7 @@ perception routing and per-character renders (``core.profiles.schema.DELIVERED``
   delivers that it does not name yet is added at its off value (``M5_PROFILE_DEFAULTS``). A value
   already there is kept.
 - The seeded ``Structured (M4)`` profile (``STRUCTURED_M4_PROFILE_ID``) is updated in place, the
-  owner's decision: renamed ``Structured``, with a new version (``STRUCTURED_SETTINGS``, the next
+  owner's decision: renamed ``Structured``, with a new version (``STRUCTURED_M5_SETTINGS``, the next
   after its current one: 2 on a deployment that never edited it) that turns every M5 module on.
   The id is unchanged.
 - Every story that follows the profile's latest version is pinned to that version first
@@ -45,7 +45,7 @@ from epistrel.core.seeds.profiles import (
     STRUCTURED_M4_NAME,
     STRUCTURED_NAME,
     STRUCTURED_PROFILE_ID,
-    structured_settings,
+    structured_m5_settings,
 )
 
 revision: str = "0080"
@@ -119,7 +119,7 @@ def upgrade() -> None:
         {
             "p": STRUCTURED_PROFILE_ID,
             "v": int(current) + 1,
-            "s": json.dumps(structured_settings()),
+            "s": json.dumps(structured_m5_settings()),
             "by": SEED_PRINCIPAL,
         },
     )

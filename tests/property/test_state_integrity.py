@@ -52,13 +52,20 @@ from epistrel.core.enums import (
 )
 from epistrel.core.errors import InvalidRequest, ModuleOff
 from epistrel.core.membership import Position
+from epistrel.core.profiles import schema
 from epistrel.core.states import StateChange, StateDefinition, Undefined, model
 from tests import canon_support as c
+from tests import effect_support as es
+from tests import multi_support as ms
 from tests import state_support as ss
+from tests.auth_support import auth_settings
 from tests.event_support import rows
 from tests.fork_support import fork
 from tests.memory_support import use_structured
 from tests.projection_support import swap, truncate, untruncate
+from tests.respond_support import body, respond, respond_client
+from tests.story_support import WRITE
+from tests.structured_turn_support import beat
 
 NIGHTLY = os.environ.get("EPISTREL_HYPOTHESIS_PROFILE") == "nightly"
 EXAMPLES = 3_000 if NIGHTLY else 300
@@ -579,3 +586,79 @@ async def test_state_integrity__module_off(engine: AsyncEngine, states_delivered
     await ss.change(engine, story, ss.delta("gold", 1, scope_key=cal))
     assert await ss.value(engine, story, "gold", cal) == Decimal(6)
     assert len(await ss.stored_values(engine, story)) == 1
+
+
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-STATE-1")
+async def test_state_integrity__m6_inertness(
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """With States delivered for real (#203: no test patch), the module is inert where its
+    level is off. On a structured story with ``states.level = off``: declaring a State in core
+    (#185) is ``module_off``, and so are the State API's read, set and declaration (#186, 409);
+    a turn whose render declares a ``change`` effect (#187) is refused as
+    ``invalid_structure``, no ``## Tracked values`` section reaches any render's prompt, and no
+    ``state_changes`` row is written. Under ``prompt_only`` effects stay refused the same way
+    (the Lite form takes API sets only), with no section either.
+
+    Complement: with the level ``on`` the same story's character render does get its
+    ``## Tracked values``."""
+    stub_settings = auth_settings(pg_url, model_adapter="stub")
+    assert schema.is_delivered("states", "prompt_only")
+    assert schema.is_delivered("states", schema.ON)
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids = await es.shop(client, engine, es.gold(), gold_of_player=100)
+        cal = ids["Cal"]
+        await ss.set_level(engine, story, "off")
+        with pytest.raises(ModuleOff) as off:
+            await ss.define(engine, story, ss.gold(name="silver"))
+        assert off.value.details["module"] == "states"
+        s = f"/stories/{story}"
+        for method, path, payload in (
+            ("GET", f"{s}/states", None),
+            ("PUT", f"{s}/states/gold", {"delta": 5, "reason": "a purse"}),
+            ("POST", f"{s}/states", {"definition": {"name": "silver", "type": "number"}}),
+        ):
+            refused = await client.request(
+                method,
+                path,
+                json=payload,
+                params={"viewpoint": "omniscient"} if method == "GET" else None,
+                headers=WRITE,
+            )
+            assert refused.status_code == 409, (path, refused.text)
+            assert refused.json()["error"]["code"] == "module_off"
+        changes = len(await ss.change_rows(engine, story))
+
+        for level in ("off", "prompt_only"):
+            await ss.set_level(engine, story, level)
+            stub.reset()
+            ms.renders_for(
+                stub,
+                "Mira",
+                es.render(
+                    beat(
+                        "do",
+                        "Mira takes the coins.",
+                        effects=[es.effect("gold", scope_key=cal, delta=-5, reason="a nail")],
+                    )
+                ),
+            )
+            es.narrator(stub, es.render(beat("narration", "Smoke curls.")))
+            answer = await respond(client, story, body(cal, None, do="asks for a nail"))
+            assert answer.status_code == 503, (level, answer.text)
+            assert answer.json()["error"]["details"]["reason"] == "invalid_structure", level
+            assert all("## Tracked values" not in p for p in ms.render_prompts(stub, "Mira"))
+            assert all("## Tracked values" not in p for p in es.prompts(stub, "NarratorRender"))
+            assert len(await ss.change_rows(engine, story)) == changes, level
+        assert await es.gold_of(engine, story, cal) == 100
+
+        # Complement: on, the character render reads its tracked values.
+        await ss.set_level(engine, story, "on")
+        stub.reset()
+        ms.renders_for(stub, "Mira", es.render(beat("say", "A nail, then.", intent="sincere")))
+        es.narrator(stub, es.render(beat("narration", "Smoke curls.")))
+        played = await respond(client, story, body(cal, None, do="asks for a nail"))
+        assert played.status_code == 200, played.text
+        assert any("## Tracked values" in p for p in ms.render_prompts(stub, "Mira"))

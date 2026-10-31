@@ -52,7 +52,6 @@ async def test_i_27__m6(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    seeded_clock_delivered: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The Sunday Dinner created with States and the clock on.

@@ -59,6 +59,14 @@ CAST = tuple(
 )
 
 
+CLOCK_OFF: Mapping[str, Any] = {
+    "clock": {"level": "off", "time_claims": False, "scheduled_stops": False}
+}
+"""The fixture's story runs ``Structured`` with the world clock off (#203): its 5,000 turns are
+written in bulk with no clock advance, so their story-times are the clock-off stand-in's (ten
+minutes a turn), which the planted occasions' times are authored on."""
+
+
 class Fixture:
     """A built fixture: its story, people by name and the builder key of each planted beat."""
 
@@ -91,7 +99,7 @@ async def build_fixture(engine: Engine, ctx: RequestContext, scratch: Scratch) -
 
     created = await scratch.create(StorySpec(characters=list(CAST)))
     story = created.story_id
-    await scenes.structured(engine, ctx, story)
+    await scenes.structured(engine, ctx, story, CLOCK_OFF)
     people = await scenes.add_entities(
         engine, created, [scenes.EntitySpec(n) for n in content.PEOPLE]
     )

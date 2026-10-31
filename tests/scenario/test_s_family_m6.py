@@ -4,7 +4,7 @@ The M5 part lives in ``tests/scenario/test_s_family.py`` (one file per test ID a
 The scenario is the Sunday Dinner of ``tests/seeded_clock_support``: the family of
 ``tests/seeded_partitions_support`` with a per-sibling allowance, a starting clock (Sunday
 1987-10-25, 14:00) and the world's 18:00 dinner. Played through the REST app with the stub
-adapter; the modules are delivered for the test (``seeded_clock_delivered``).
+adapter.
 """
 
 from __future__ import annotations
@@ -40,7 +40,6 @@ async def test_s_family__m6(
     stub_settings: Settings,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
-    seeded_clock_delivered: None,
 ) -> None:
     """The family's starting clock, its State trackers and the pre-scheduled dinner come from
     the scenario, read through the story's own API right after creation.

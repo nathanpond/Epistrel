@@ -31,25 +31,18 @@ scenarios' scripted renders make it deterministic.
 
 The stub's answer is scripted per case (``stub_answer``: the range's midpoint at confidence
 0.9), so CI's ``--fail-on-gate`` stub run gates on the harness.
-
-**The clock module** is #203's to deliver (``core.profiles.schema.DELIVERED``). Until then the
-suite delivers it for its own run (``ClockDelivery``, opened in ``setup`` and closed in
-``teardown``), as #179's zero-leak suites delivered the M5 modules until #181; once the clock is
-delivered the patch does nothing, and #203 removes it.
 """
 
 from __future__ import annotations
 
 import json
 import random
-import types
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import Field, ValidationError, model_validator
 
-from epistrel.core.profiles import schema
 from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.states.effects import UNPROMPTED_SKIP
 from epistrel.core.stories import CharacterSpec, StorySpec
@@ -95,29 +88,6 @@ PACING_CASES = 10
 PACING_SEED = 201
 PACING_PREFIX = "pacing-"
 CALL_DEADLINE_S = 300.0
-
-
-CLOCK_LEVELS = frozenset({"prompt_only", schema.ON})
-"""The ``clock`` levels #203 delivers."""
-
-
-class ClockDelivery:
-    """The ``clock`` module delivered for a run until #203 delivers it (module docstring):
-    ``open`` in ``Suite.setup``, ``close`` in ``Suite.teardown``; nothing when it is delivered."""
-
-    def __init__(self) -> None:
-        self._before: Mapping[str, frozenset[str]] | None = None
-
-    def open(self) -> None:
-        if self._before is not None or schema.is_delivered("clock", schema.ON):
-            return
-        self._before = schema.DELIVERED
-        schema.DELIVERED = types.MappingProxyType({**schema.DELIVERED, "clock": CLOCK_LEVELS})
-
-    def close(self) -> None:
-        if self._before is not None:
-            schema.DELIVERED = self._before
-            self._before = None
 
 
 def family_id(family: str) -> str:
@@ -226,12 +196,10 @@ class E09Suite(Suite):
     def __init__(self) -> None:
         self.scratch: Scratch | None = None
         self.route: Route | None = None
-        self.delivery = ClockDelivery()
 
     async def setup(self, engine: Engine, ctx: RequestContext) -> None:
         from epistrel.evals.runner import Scratch
 
-        self.delivery.open()
         self.scratch = Scratch(engine, "e09-clock")
         created = await self.scratch.create(
             StorySpec(
@@ -253,7 +221,6 @@ class E09Suite(Suite):
                 await self.scratch.delete_all()
         finally:
             self.scratch, self.route = None, None
-            self.delivery.close()
 
     def companions(self, sets_dir: Path, sample: int | None) -> list[CaseModel]:
         return pacing_cases(sets_dir, sample)
@@ -335,14 +302,12 @@ def _pacing_totals(outcomes: Sequence[Outcome]) -> tuple[int, int]:
 
 
 __all__ = [
-    "CLOCK_LEVELS",
     "CLOCK_ON",
     "FAMILIES",
     "KINDS",
     "PACING",
     "PACING_CASES",
     "WITHIN",
-    "ClockDelivery",
     "E09Suite",
     "PacingCase",
     "TimeEstimationCase",

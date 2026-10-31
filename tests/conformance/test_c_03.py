@@ -18,6 +18,7 @@ an operation without a route, or without a step here, fails ``test_c_03``.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -192,6 +193,7 @@ from epistrel.core.feedback import FeedbackRequest
 from epistrel.core.feedback_export import FeedbackExportRequest
 from epistrel.core.feedback_reporting import FeedbackGroupBy, FeedbackReviewList
 from epistrel.core.fork import Forked, ForkRequest
+from epistrel.core.ids import new_ulid
 from epistrel.core.ingest import IngestRequest
 from epistrel.core.media.assets import MediaUpload
 from epistrel.core.media.uploads import UploadOpen
@@ -251,13 +253,11 @@ PRINCIPAL = "p-parity"
 CTX = RequestContext(principal=PRINCIPAL)
 GOLD = {"name": "gold", "type": "number", "initial_value": 10}
 """A State the State steps declare (#186)."""
-PROPOSAL = "01J9Z8Q4N5V6W7X8Y9Z0A1B2D5"
-EVENT = "01J9Z8Q4N5V6W7X8Y9Z0A1B2E6"
-"""#196: a scheduled event id (the clock's gate answers before it is looked up)."""
-"""A State proposal id the proposal steps name (#192; refused by the module gate first)."""
-OUTBOX = "01J9Z8Q4N5V6W7X8Y9Z0A1B2F7"
-"""#218: a listed effect's outbox id (refused by the states module gate first)."""
-COMPENSATION = {"effect": {"state": "gold", "delta": 5, "reason": "a refund"}}
+PROMPT_ONLY = {"clock": {"level": "prompt_only"}, "states": {"level": "prompt_only"}}
+"""#203: the Lite story's overrides from the clock steps on: the world clock and States in their
+prompt-only Lite forms (FR-LITE-5), so the clock, scheduled-event and State calls run."""
+PROPOSED = ("arrows", "lanterns")
+"""#203: the two State proposals the approval and the dismissal decide (``_proposed``)."""
 REPLY = "The innkeeper sets down a mug and says nothing."
 TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
 SIGNED = re.compile(r"([?&](?:exp|sig)=)[^&]*")
@@ -389,6 +389,77 @@ async def _structured_fork(engine: Engine, ids: Ids) -> None:
             ),
             {"s": ids["fork"], "p": STRUCTURED_M4_PROFILE_ID},
         )
+
+
+async def _prompt_only(engine: Engine, ids: Ids) -> None:
+    """#203: the Lite story runs the clock and States at ``prompt_only`` (``PROMPT_ONLY``)."""
+    async with engine.db.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO story_profile_overrides (story_id, settings, revision) "
+                "VALUES (:s, CAST(:o AS jsonb), 1) ON CONFLICT (story_id) DO UPDATE "
+                "SET settings = story_profile_overrides.settings || excluded.settings, "
+                "revision = story_profile_overrides.revision + 1"
+            ),
+            {"s": ids["story"], "o": json.dumps(PROMPT_ONLY)},
+        )
+
+
+async def _proposed(engine: Engine, ids: Ids) -> None:
+    """#203: two ``proposed`` State proposals (``PROPOSED``) as the analysis files them, under
+    the analysis step's request operation: no public call writes one (the analysis is a job)."""
+    async with engine.db.begin() as conn:
+        for name in PROPOSED:
+            ids[f"proposal_{name}"] = new_ulid()
+            await conn.execute(
+                text(
+                    "INSERT INTO state_proposals (id, story_id, name, suggested_type, "
+                    "suggested_scope, suggested_unit, created_by_operation_id) VALUES "
+                    "(:i, :s, :n, 'number', 'story', :n, :o)"
+                ),
+                {
+                    "i": ids[f"proposal_{name}"],
+                    "s": ids["story"],
+                    "n": name,
+                    "o": ids["analysis"],
+                },
+            )
+
+
+async def _listed_effects(engine: Engine, ids: Ids) -> None:
+    """#218 (#203): a side story (``listed_story``, the canon world on ``Structured (M4)`` with
+    States on) whose gold a write-capable in-process provider owns, with two purchases listed
+    ``confirmed_discarded_origin`` (``listed``, ``refunded``): the explicit actions need a
+    listed effect, which no public call creates."""
+    from tests import canon_support as canon
+    from tests import late_settlement_support as ls
+    from tests import state_support as ss
+
+    world = await canon.world(engine.db)
+    story = world.story_id
+    async with engine.db.begin() as conn:
+        await conn.execute(
+            text(
+                "UPDATE stories SET engine_profile_id = :p, engine_profile_version_pin = 1 "
+                "WHERE id = :s"
+            ),
+            {"s": story, "p": STRUCTURED_M4_PROFILE_ID},
+        )
+    payer, seller = world.characters["Cal"], world.characters["Ann"]
+    bank = await ls.bank(engine.db, engine, story, "parity-bank")
+    bank.script_writes("gold", "confirmed")
+    await ls.swords(engine.db, story, seller)
+    ids["listed"] = await ls.discarded(engine.db, engine, story, bank.name, payer, seller)
+    await ss.change(engine.db, story, ss.set_to("sword", 1, scope_key=seller, reason="restock"))
+    ids["refunded"] = await ls.discarded(engine.db, engine, story, bank.name, payer, seller)
+    ids["listed_story"], ids["payer"] = story, payer
+
+
+def _compensation(ids: Ids) -> dict[str, Any]:
+    """#218: a refund of the listed purchase's payment, to its payer's external gold."""
+    return {
+        "effect": {"state": "gold", "delta": 5, "reason": "a refund", "scope_key": ids["payer"]}
+    }
 
 
 async def _consolidate(engine: Engine, story_id: str) -> dict[str, Any]:
@@ -1455,12 +1526,13 @@ def _steps() -> list[Step]:
                 )
             ),
         ),
-        # #193: the world clock read, its settings changed, and an advance its story's
-        # configuration refuses (409 module_off) until #203 delivers the clock module.
+        # #193: the world clock read, its settings changed, and an advance, on the Lite story
+        # running the clock and States at prompt_only from here on (#203).
         Step(
             "get_clock",
             lambda ids: Rest("GET", f"{s}/clock"),
             lambda e, ids: _clock(e.get_clock(CTX, ids["story"])),
+            prepare=_prompt_only,
         ),
         Step(
             "update_clock",
@@ -1478,9 +1550,7 @@ def _steps() -> list[Step]:
                 )
             ),
         ),
-        # #196: the scheduled events listed, and the writes its story's configuration refuses
-        # (409 module_off) until #203 delivers the clock module (the gate answers before the
-        # event is looked up).
+        # #196: the scheduled events listed, one created, rescheduled and cancelled.
         Step(
             "list_scheduled_events",
             lambda ids: Rest("GET", f"{s}/scheduled-events", params={"viewpoint": "omniscient"}),
@@ -1500,24 +1570,34 @@ def _steps() -> list[Step]:
                     ScheduledEventCreate(proposition="the delivery", planned=60),
                 )
             ),
+            _keep("event", "event", "event_id"),
         ),
         Step(
             "reschedule_scheduled_event",
-            lambda ids: Rest("PATCH", f"{s}/scheduled-events/{EVENT}", {"planned": 90}),
+            lambda ids: Rest("PATCH", f"{s}/scheduled-events/{{event}}", {"planned": 90}),
             lambda e, ids: _scheduled_written(
                 e.reschedule_scheduled_event(
-                    CTX, ids["story"], EVENT, ScheduledEventReschedule(planned=90)
+                    CTX, ids["story"], ids["event"], ScheduledEventReschedule(planned=90)
                 )
             ),
         ),
         Step(
             "cancel_scheduled_event",
-            lambda ids: Rest("DELETE", f"{s}/scheduled-events/{EVENT}"),
-            lambda e, ids: _scheduled_written(e.cancel_scheduled_event(CTX, ids["story"], EVENT)),
+            lambda ids: Rest("DELETE", f"{s}/scheduled-events/{{event}}"),
+            lambda e, ids: _scheduled_written(
+                e.cancel_scheduled_event(CTX, ids["story"], ids["event"])
+            ),
         ),
-        # #186: the State API, which the story's configuration refuses (409 module_off) until
-        # #203 delivers the states module: both reads, a set, a declaration and a definition
-        # change.
+        # #186: the State API: a declaration, both reads, a set and a definition change.
+        Step(
+            "define_state",
+            lambda ids: Rest("POST", f"{s}/states", {"definition": GOLD}),
+            lambda e, ids: _state_declared(
+                e.define_state(
+                    CTX, ids["story"], StateDefineRequest.model_validate({"definition": GOLD})
+                )
+            ),
+        ),
         Step(
             "get_states",
             lambda ids: Rest("GET", f"{s}/states", params={"viewpoint": "omniscient"}),
@@ -1536,28 +1616,19 @@ def _steps() -> list[Step]:
             ),
         ),
         Step(
-            "define_state",
-            lambda ids: Rest("POST", f"{s}/states", {"definition": GOLD}),
-            lambda e, ids: _state_declared(
-                e.define_state(
-                    CTX, ids["story"], StateDefineRequest.model_validate({"definition": GOLD})
-                )
-            ),
-        ),
-        Step(
             "update_state_definition",
             lambda ids: Rest("PATCH", f"{s}/states/gold/definition", {"unit": "coins"}),
             lambda e, ids: _state_definition(
                 e.update_state_definition(CTX, ids["story"], "gold", {"unit": "coins"})
             ),
         ),
-        # #192: engine-proposed States, which the story's configuration refuses (409
-        # module_off) until #203 delivers the states module: an analysis, the list, and an
-        # approval and a dismissal (the gate answers before the proposal is looked up).
+        # #192: engine-proposed States: an analysis, the list, and an approval and a dismissal
+        # of two proposals filed under the analysis's request (``_proposed``).
         Step(
             "analyze_state_proposals",
             lambda ids: Rest("POST", f"{s}/state-proposals/analyze"),
             lambda e, ids: _analysis_queued(e.analyze_state_proposals(CTX, ids["story"])),
+            _keep("analysis", "operation_id"),
         ),
         Step(
             "list_state_proposals",
@@ -1570,34 +1641,47 @@ def _steps() -> list[Step]:
             lambda ids: Rest("GET", f"{s}/reconciliation"),
             lambda e, ids: _reconciliation(e.reconciliation(CTX, ids["story"])),
         ),
-        # #218: the explicit actions on a listed effect (409 module_off on both surfaces until
-        # #203 delivers the states module; the gate answers before the effect is looked up).
+        # #218: the explicit actions on listed effects, on a side story whose purchases were
+        # confirmed after the player rewound past them (``_listed``).
         Step(
             "settle_now",
-            lambda ids: Rest("POST", f"{s}/reconciliation/{OUTBOX}/settle-now"),
-            lambda e, ids: _settled_now(e.settle_now(CTX, ids["story"], OUTBOX)),
+            lambda ids: Rest("POST", "/stories/{listed_story}/reconciliation/{listed}/settle-now"),
+            lambda e, ids: _settled_now(e.settle_now(CTX, ids["listed_story"], ids["listed"])),
+            prepare=_listed_effects,
         ),
         Step(
             "compensate",
-            lambda ids: Rest("POST", f"{s}/reconciliation/{OUTBOX}/compensate", COMPENSATION),
+            lambda ids: Rest(
+                "POST",
+                "/stories/{listed_story}/reconciliation/{refunded}/compensate",
+                _compensation(ids),
+            ),
             lambda e, ids: _compensated(
                 e.compensate(
-                    CTX, ids["story"], OUTBOX, CompensateRequest.model_validate(COMPENSATION)
+                    CTX,
+                    ids["listed_story"],
+                    ids["refunded"],
+                    CompensateRequest.model_validate(_compensation(ids)),
                 )
             ),
         ),
         Step(
             "approve_state_proposal",
-            lambda ids: Rest("POST", f"{s}/state-proposals/{PROPOSAL}/approve", {"definition": {}}),
-            lambda e, ids: _proposal_approved(
-                e.approve_state_proposal(CTX, ids["story"], PROPOSAL, StateProposalApproveRequest())
+            lambda ids: Rest(
+                "POST", f"{s}/state-proposals/{{proposal_arrows}}/approve", {"definition": {}}
             ),
+            lambda e, ids: _proposal_approved(
+                e.approve_state_proposal(
+                    CTX, ids["story"], ids["proposal_arrows"], StateProposalApproveRequest()
+                )
+            ),
+            prepare=_proposed,
         ),
         Step(
             "dismiss_state_proposal",
-            lambda ids: Rest("POST", f"{s}/state-proposals/{PROPOSAL}/dismiss"),
+            lambda ids: Rest("POST", f"{s}/state-proposals/{{proposal_lanterns}}/dismiss"),
             lambda e, ids: _proposal_dismissed(
-                e.dismiss_state_proposal(CTX, ids["story"], PROPOSAL)
+                e.dismiss_state_proposal(CTX, ids["story"], ids["proposal_lanterns"])
             ),
         ),
         Step(

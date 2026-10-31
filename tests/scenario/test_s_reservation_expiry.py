@@ -48,7 +48,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.config import Settings
-from epistrel.core import clock, states, timeline
+from epistrel.core import clock, states
 from epistrel.core import outbox as core_outbox
 from epistrel.core.enums import (
     StateChangeKind,
@@ -61,7 +61,6 @@ from epistrel.core.ids import new_ulid
 from epistrel.core.membership import Position
 from epistrel.orchestrator.jobs import settlement
 from epistrel.orchestrator.jobs import timers as timer_api
-from epistrel.orchestrator.jobs.handlers import outbox as outbox_job
 from epistrel.orchestrator.jobs.handlers import reservations
 from tests import canon_support as c
 from tests import late_settlement_support as ls
@@ -69,7 +68,6 @@ from tests import provider_support as ps
 from tests import state_support as ss
 from tests.auth_support import auth_settings
 from tests.event_support import execute_in_tx, rows, scalar
-from tests.projection_support import CONTROL_PRINCIPAL
 from tests.respond_support import respond_client
 from tests.story_support import WRITE
 from tests.structured_turn_support import structured_story
@@ -412,35 +410,6 @@ async def _settled_after(engine: AsyncEngine, epistrel: Any, outbox_id: str) -> 
     return await ls.settle(engine, epistrel, await ls.answer(engine, epistrel, outbox_id))
 
 
-async def _discarded(
-    engine: AsyncEngine, epistrel: Any, story: str, bank: str, cal: str, mira: str
-) -> str:
-    """S-LATE-SETTLEMENT's discarded origin: the purchase claimed, the player rewinds before it
-    and plays a new turn, then the confirmation arrives → listed, nothing granted."""
-    sale = [
-        ls.Side(mira, -1, StateContingency.CONDITIONAL, StateChangeKind.TRANSFER_OUT),
-        ls.Side(cal, 1, StateContingency.CONDITIONAL, StateChangeKind.TRANSFER_IN),
-    ]
-    swords = await ls.sword_of(engine, story, cal)
-    discarded, origin = await ls.intent(engine, story, bank, cal, sale)
-    assert origin.narrative_turn is not None
-    claimed = await outbox_job.claim(engine, discarded, registry=epistrel.in_process_providers)
-    assert isinstance(claimed, outbox_job.Claimed)
-    await timeline.truncate(
-        engine,
-        story,
-        timeline.TruncateRequest(to_turn=origin.narrative_turn - 1),
-        principal=CONTROL_PRINCIPAL,
-    )
-    await ls.turn(engine, story, "do something else")
-    assert await outbox_job.send(engine, claimed) == "confirmed"
-    found = await ls.settle(engine, epistrel, await ls.last_outcome(engine, discarded))
-    assert found.result == settlement.DISCARDED
-    assert (discarded, "confirmed_discarded_origin") in await ls.listed(engine, story)
-    assert await ls.sword_of(engine, story, cal) == swords
-    return discarded
-
-
 async def _conflicted(
     engine: AsyncEngine, epistrel: Any, story: str, bank: str, cal: str, mira: str
 ) -> str:
@@ -495,7 +464,7 @@ async def test_s_reservation_expiry__actions(
 
             # Discarded origin: settle-now re-verifies and grants it at the next slot, under a
             # key: the retry replays the stored result and writes nothing.
-            discarded = await _discarded(engine, epistrel, story, bank, cal, mira)
+            discarded = await ls.discarded(engine, epistrel, story, bank, cal, mira)
             done = await _settle_now(client, story, discarded, key="settle-1")
             assert done.status_code == 200, done.text
             assert done.json()["result"] == "settled"
@@ -520,7 +489,7 @@ async def test_s_reservation_expiry__actions(
 
             # Discarded origin, compensated: a refund row, idempotent under its key.
             await ss.change(engine, story, ss.set_to("sword", 1, scope_key=mira, reason="restock"))
-            refunded = await _discarded(engine, epistrel, story, bank, cal, mira)
+            refunded = await ls.discarded(engine, epistrel, story, bank, cal, mira)
             made = await _compensate(
                 client, story, refunded, {**REFUND, "delta": PAYOUT, "scope_key": cal}, key="comp-1"
             )

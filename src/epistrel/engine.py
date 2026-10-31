@@ -3068,6 +3068,7 @@ class Engine:
             material={"story_id": story_id},
         )
 
+    @refuses_nul()
     async def list_state_proposals(
         self, ctx: RequestContext, story_id: str
     ) -> state_proposals.ProposalList:

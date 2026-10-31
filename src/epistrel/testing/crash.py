@@ -17,6 +17,18 @@ The points:
 - ``before_commit``: everything is written, the transaction is not committed;
 - ``after_commit_before_response``: committed, the caller has not been answered.
 
+A staged turn's stage boundaries (#213; FR-EXT-17, ``orchestrator.structured.staged``), each
+hit once per staged turn by whichever process runs that stage:
+
+- ``staged.before_intent_commit``: the turn planned staged, its intent not committed;
+- ``staged.after_intent``: the intent committed, nothing claimed;
+- ``staged.after_claim``: the claim committed (``awaiting_outcome``), nothing sent;
+- ``staged.after_send``: the provider answered a send (``jobs.handlers.outbox.send``), the
+  answer not recorded;
+- ``staged.after_outcome``: the outcome transaction committed (``outcome_recorded``), the
+  completion not;
+- ``staged.after_completion``: the completion committed, the response not stored.
+
 This module imports nothing but the standard library, so ``epistrel.core`` can call it.
 ``epistrel.testing.faults`` (the child-process harness) re-exports ``crash_at`` and ``hit``.
 """
@@ -28,13 +40,24 @@ import sys
 from collections import Counter
 from dataclasses import dataclass
 
-POINTS = (
+COMMIT_POINTS = (
     "before_lock",
     "after_events",
     "during_projection",
     "before_commit",
     "after_commit_before_response",
 )
+"""The commit path's points (#75)."""
+STAGED_POINTS = (
+    "staged.before_intent_commit",
+    "staged.after_intent",
+    "staged.after_claim",
+    "staged.after_send",
+    "staged.after_outcome",
+    "staged.after_completion",
+)
+"""A staged turn's stage boundaries (#213)."""
+POINTS = (*COMMIT_POINTS, *STAGED_POINTS)
 ENABLE_VAR = "EPISTREL_TEST_FAULTS"
 CRASH_VAR = "EPISTREL_TEST_CRASH_AT"
 EXIT_STATUS = 137
@@ -108,11 +131,13 @@ def hit(point: str, kind: str | None = None) -> None:
 
 
 __all__ = [
+    "COMMIT_POINTS",
     "CRASH_MARKER",
     "CRASH_VAR",
     "ENABLE_VAR",
     "EXIT_STATUS",
     "POINTS",
+    "STAGED_POINTS",
     "CrashPlan",
     "armed",
     "crash_at",

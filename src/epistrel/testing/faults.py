@@ -20,7 +20,18 @@ port. Options the child applies to itself before serving:
   crash point (``epistrel.testing.crash``) ends it with ``os._exit(137)`` after printing
   ``EPISTREL-FAULT crash <point> <kind>``. ``crash`` may be changed between restarts;
 - ``mode``: ``EPISTREL_MODE`` (``all`` by default; ``api`` runs no job worker, so a harness
-  drains jobs itself).
+  drains jobs itself);
+- ``stub_rules`` (#213): ``StubRule``s the child's stub adapter answers with
+  (``StubAdapter.when``), so a child plays scripted turns (a staged turn's render declaring an
+  effect, its outcome step). They may be changed between restarts;
+- ``deliver`` (#213): modules the child treats as delivered (``core.profiles.schema.
+  DELIVERED``, as the ``states_delivered`` fixture does in-process; ``states`` until #203
+  delivers it for real).
+
+A staged turn's provider is an HTTP one (``HttpManifestProvider``) the test process serves, so
+its sends survive a kill; its ``provider_allowed_hosts`` is a deployment setting the child reads
+from the shared database per request, and its ``confirm_wait_max_seconds`` is in the provider's
+manifest: neither needs an option here.
 
 **Its port (#468).** The child binds its listening socket itself before serving and reports the
 port it got (``EPISTREL-FAULT listening <port>``), so no port is picked and then bound later by
@@ -52,6 +63,7 @@ import argparse
 import asyncio
 import contextlib
 import errno
+import json
 import os
 import shutil
 import signal
@@ -59,11 +71,20 @@ import socket
 import sys
 import tempfile
 import weakref
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
+from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
 
 from epistrel.core import readset
-from epistrel.testing.crash import POINTS, CrashPlan, crash_at, hit
+from epistrel.testing.crash import (
+    COMMIT_POINTS,
+    POINTS,
+    STAGED_POINTS,
+    CrashPlan,
+    crash_at,
+    hit,
+)
 
 FAULT_MARKER = "EPISTREL-FAULT"
 BEFORE_COMMIT = "before-commit"
@@ -78,6 +99,30 @@ START_TIMEOUT_S = 30.0
 MARKER_TIMEOUT_S = 30.0
 START_ATTEMPTS = 3
 """How many children ``start`` runs before giving up on finding a free port (#468)."""
+
+
+@dataclass(frozen=True, slots=True)
+class StubRule:
+    """One answer of the child's stub adapter (``StubAdapter.when``): requests (of ``purpose``,
+    when given) whose messages hold every one of ``needles`` are answered ``response``."""
+
+    needles: tuple[str, ...]
+    response: str
+    purpose: str | None = None
+
+
+class StubRules:
+    """Collects ``StubRule``s through the stub's own ``when`` (``tests``' scripting helpers take
+    it in place of a stub)."""
+
+    def __init__(self) -> None:
+        self.rules: list[StubRule] = []
+
+    def when(
+        self, substring: str | tuple[str, ...], response: str, purpose: str | None = None
+    ) -> None:
+        needles = (substring,) if isinstance(substring, str) else tuple(substring)
+        self.rules.append(StubRule(needles, response, purpose))
 
 
 def free_port() -> int:
@@ -103,6 +148,8 @@ class EngineProcess:
         turn_start_delay_s: float = 0.0,
         crash: CrashPlan | None = None,
         mode: str = "all",
+        stub_rules: Sequence[StubRule] = (),
+        deliver: Sequence[str] = (),
     ) -> None:
         self.database_url = database_url
         self.credential = credential
@@ -114,6 +161,8 @@ class EngineProcess:
         self.turn_start_delay_s = turn_start_delay_s
         self.crash = crash
         self.mode = mode
+        self.stub_rules = list(stub_rules)
+        self.deliver = list(deliver)
         self.media_root = tempfile.mkdtemp(prefix="epistrel-faults-media-")
         weakref.finalize(self, shutil.rmtree, self.media_root, ignore_errors=True)
         self.erasure_ledger_dir = tempfile.mkdtemp(prefix="epistrel-faults-ledger-")
@@ -159,6 +208,12 @@ class EngineProcess:
             self.port_retries += 1
         raise RuntimeError(f"the engine process found no free port in {START_ATTEMPTS} attempts")
 
+    def _rules_file(self) -> str:
+        """The child's ``stub_rules``, written to a file in its own directory."""
+        path = Path(self.media_root, "stub-rules.json")
+        path.write_text(json.dumps([asdict(r) for r in self.stub_rules]), encoding="utf-8")
+        return str(path)
+
     async def _spawn(self) -> bool:
         """Run a child on ``self.port`` and wait until it bound it (``True``, ``self.port`` the
         port it got) or found it taken (``False``, the child reaped)."""
@@ -177,6 +232,10 @@ class EngineProcess:
             args.append("--pause-before-commit")
         if self.turn_start_delay_s > 0:
             args += ["--turn-start-delay-s", str(self.turn_start_delay_s)]
+        if self.stub_rules:
+            args += ["--stub-rules", self._rules_file()]
+        for module in self.deliver:
+            args += ["--deliver", module]
         bound: asyncio.Future[int | None] = asyncio.get_running_loop().create_future()
         self.process = await asyncio.create_subprocess_exec(
             *args,
@@ -315,12 +374,35 @@ def _delay_turn_starts(delay_s: float) -> None:
     Operation.begin = delayed  # type: ignore[method-assign]
 
 
+def _deliver(modules: Sequence[str]) -> None:
+    """Treat ``modules`` as delivered with every level they declare (the child's counterpart of
+    the ``states_delivered`` fixture)."""
+    import types
+
+    from epistrel.core.profiles import schema
+
+    levels = {"states": frozenset({"prompt_only", schema.ON})}
+    schema.DELIVERED = types.MappingProxyType(
+        {**schema.DELIVERED, **{m: levels[m] for m in modules}}
+    )
+
+
+def _script_stub(app: Any, path: str) -> None:
+    """Install the ``StubRule``s at ``path`` on the app's stub adapter."""
+    rules = json.loads(Path(path).read_text(encoding="utf-8"))
+    stub = app.state.epistrel.models.stub
+    for rule in rules:
+        stub.when(tuple(rule["needles"]), rule["response"], purpose=rule["purpose"])
+
+
 def serve(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="epistrel.testing.faults serve")
     parser.add_argument("--port", type=int, required=True, help="0: any free port")
     parser.add_argument("--lease-s", type=float, default=1.0)
     parser.add_argument("--pause-before-commit", action="store_true")
     parser.add_argument("--turn-start-delay-s", type=float, default=0.0)
+    parser.add_argument("--stub-rules", default=None)
+    parser.add_argument("--deliver", action="append", default=[])
     args = parser.parse_args(argv)
 
     import uvicorn
@@ -335,13 +417,18 @@ def serve(argv: list[str] | None = None) -> int:
         _pause_turn_commits()
     if args.turn_start_delay_s > 0:
         _delay_turn_starts(args.turn_start_delay_s)
+    if args.deliver:
+        _deliver(args.deliver)
+    app = create_app()
+    if args.stub_rules:
+        _script_stub(app, args.stub_rules)
     sock = _bind(args.port)
     if sock is None:
         print(f"{FAULT_MARKER} {ADDRESS_IN_USE} {args.port}", flush=True)
         return EX_ADDRESS_IN_USE
     port = int(sock.getsockname()[1])
     print(f"{FAULT_MARKER} {LISTENING} {port}", flush=True)
-    config = uvicorn.Config(create_app(), host=HOST, port=port, log_level="warning")
+    config = uvicorn.Config(app, host=HOST, port=port, log_level="warning")
     uvicorn.Server(config).run(sockets=[sock])
     return 0
 
@@ -386,13 +473,17 @@ if __name__ == "__main__":  # pragma: no cover - the child process entry point
 __all__ = [
     "ADDRESS_IN_USE",
     "BEFORE_COMMIT",
+    "COMMIT_POINTS",
     "EX_ADDRESS_IN_USE",
     "FAULT_MARKER",
     "LISTENING",
     "POINTS",
+    "STAGED_POINTS",
     "START_ATTEMPTS",
     "CrashPlan",
     "EngineProcess",
+    "StubRule",
+    "StubRules",
     "crash_at",
     "free_port",
     "hit",

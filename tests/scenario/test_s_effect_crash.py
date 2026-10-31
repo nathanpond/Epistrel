@@ -20,30 +20,40 @@ from __future__ import annotations
 import ast
 import asyncio
 import json
+import secrets
 import time
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+import httpx2 as httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core import outbox as core_outbox
+from epistrel.core.db import make_engine
 from epistrel.core.ids import new_ulid
 from epistrel.core.membership import Position
+from epistrel.core.operation_view import read_operation
 from epistrel.core.turns.staged import FORK_CLOSURE
 from epistrel.orchestrator.jobs import settlement
-from epistrel.orchestrator.jobs.handlers import outbox as outbox_job
+from epistrel.orchestrator.jobs.handlers import outbox as dispatcher
 from epistrel.orchestrator.providers import pinned
 from epistrel.orchestrator.providers.port import WriteOutcome
 from epistrel.orchestrator.structured import staged
+from epistrel.testing import crash
+from epistrel.testing.faults import EngineProcess, StubRule
 from tests import effect_support as es
 from tests import hot_set_support as hs
 from tests import multi_support as ms
 from tests import provider_support as ps
+from tests import staged_crash_support as sc
+from tests import staged_support as sp
 from tests import state_support as ss
-from tests.auth_support import auth_settings
+from tests.auth_support import CREDENTIAL_A, auth_settings
+from tests.conformance.conftest import migrated_database
 from tests.event_support import execute_in_tx, rows
 from tests.respond_support import body, respond, respond_client
 from tests.story_support import READ, WRITE, override
@@ -686,7 +696,7 @@ async def test_s_effect_crash__late_confirmation(
                 {"i": row.id},
             ),
         )
-        resent = await outbox_job.expire(engine, row.id, registry=epistrel.in_process_providers)
+        resent = await dispatcher.expire(engine, row.id, registry=epistrel.in_process_providers)
         assert resent == "resent:confirmed"
         (record,) = [r for r in await ps.outbox_outcomes(engine, story) if r.kind == "confirmed"]
         (recorded,) = await rows(
@@ -722,4 +732,417 @@ async def test_s_effect_crash__late_confirmation(
                 {"s": story, "k": settlement.SETTLE},
             ),
         )
+
+
+# -- #213: resume after a crash at each stage boundary ---------------------------------------
+
+LEASE_S = 1.0
+"""The child's idempotency and turn-slot leases: a retry takes a crashed original over soon."""
+CRASHED = 137
+DEDUPED_CASES: tuple[tuple[str, str | None], ...] = (
+    ("staged.before_intent_commit", None),
+    ("staged.after_intent", "intent_committed"),
+    ("staged.after_claim", "awaiting_outcome"),
+    ("staged.after_send", "awaiting_outcome"),
+    ("staged.after_outcome", "outcome_recorded"),
+    ("staged.after_completion", "completed"),
+)
+"""Each crash point of S-EFFECT-CRASH (1)-(6), with the stage the turn is left at."""
+DONE_AT = {
+    None: [],
+    "intent_committed": ["intent"],
+    "awaiting_outcome": ["intent", "claim"],
+    "outcome_recorded": ["intent", "claim", "outcome"],
+    "completed": ["intent", "claim", "outcome", "completion"],
+}
+STAGES = ["intent", "claim", "outcome", "completion", "response"]
+
+
+async def _restart(
+    child: EngineProcess, rules: list[StubRule], plan: crash.CrashPlan | None = None
+) -> None:
+    await child.kill()
+    child.stub_rules = rules
+    child.crash = plan
+    await child.start()
+
+
+async def _crashed(child: EngineProcess, story: sc.Staged, key: str) -> None:
+    """Cal's purchase under ``key``, which the child dies of (its crash point fired)."""
+    answer = await sc.buy(child, story, key)
+    assert answer is None, answer.text if answer is not None else ""
+    assert await child.wait_exit(10) == CRASHED
+
+
+async def _retried(child: EngineProcess, story: sc.Staged, key: str) -> dict[str, Any]:
+    """The same purchase retried under ``key`` once the crashed original's leases lapsed."""
+    await asyncio.sleep(LEASE_S + 0.2)
+    answer = await sc.buy(child, story, key)
+    assert answer is not None
+    assert answer.status_code == 200, answer.text
+    return dict(answer.json())
+
+
+async def _finished(db: AsyncEngine, child: EngineProcess, story: sc.Staged, key: str) -> Any:
+    """Exactly one turn committed for the story and completed with every stage done once, one
+    dispatch effect, one finished response stored under ``key``; answers the operation."""
+    ops = await sc.staged_ops(db, story)
+    committed = [o for o in ops if o.status == "committed"]
+    assert len(committed) == 1, ops
+    (op,) = committed
+    assert op.turn_stage == "completed"
+    assert sc.logged(op) == STAGES
+    (row,) = await ps.outbox_rows(db, story.story)
+    assert row.operation_id == op.operation_id
+    keys = await rows(
+        db,
+        "SELECT status, operation_id, result IS NOT NULL AS stored FROM idempotency_keys "
+        "WHERE scope_id = :s AND key = :k",
+        s=story.story,
+        k=key,
+    )
+    assert [(k.status, k.operation_id, k.stored) for k in keys] == [("done", op.operation_id, True)]
+    async with httpx.AsyncClient(base_url=child.base_url, timeout=30) as client:
+        view = await client.get(f"/operations/{op.operation_id}", headers=READ)
+    assert view.status_code == 200, view.text
+    assert [(s["name"], s["status"]) for s in view.json()["stages"]] == [
+        (name, "done") for name in STAGES
+    ]
+    return op
+
+
+async def _at_crash(db: AsyncEngine, story: sc.Staged, stage: str | None) -> None:
+    """The turn as the crash left it: at ``stage`` (``None``: nothing of it committed), its
+    operation view showing the stages done so far."""
+    ops = await sc.staged_ops(db, story)
+    if stage is None:
+        assert [o.status for o in ops] == ["in_flight"], ops
+        assert await ps.outbox_rows(db, story.story) == []
+        return
+    (op,) = ops
+    assert (op.status, op.turn_stage) == ("committed", stage)
+    view = await read_operation(db, op.operation_id)
+    assert view.staged is True
+    done = [s.name for s in view.stages if s.status.value == "done"]
+    assert done == DONE_AT[stage], view.stages
+
+
+@pytest.mark.part("M6", "FR-EXT-2,16,17,18,19,20; FR-CONC-6; FR-RESP-8")
+async def test_s_effect_crash(pg_url: str, engine: AsyncEngine, states_delivered: None) -> None:
+    """#213 (FR-EXT-17): a staged turn resumes from its last committed stage after a crash.
+
+    A child engine plays "I buy the sword." on a synchronous, deduplicating provider (the
+    ``GameServer`` in this process); it is killed at each stage boundary (``crash_at``) and the
+    request retried with the same key:
+
+    1. before intent: nothing committed; one fresh turn, one dispatch;
+    2. after intent, before the claim: no regeneration; the dispatcher claims and sends once;
+    3. after the claim, before the send: re-sent under the same provider key; one purchase;
+    4. after the provider succeeded, before the outcome was recorded: the re-send is
+       deduplicated (two requests, one purchase) and ``confirmed`` is recorded once;
+    5. after the outcome, the outcome-step render failing every attempt: the purchase stays
+       confirmed and the turn completes with the deterministic outcome narration, routed to
+       the actor's place; and without a crash, the in-process render failing every attempt
+       completes the same way;
+    6. after completion, before the response was stored: the response is recomposed from the
+       committed beats for the stored request's output viewpoint, identical on a second retry.
+
+    In every case exactly one turn, one dispatch effect and one finished response exist, and
+    the operation view shows the stage the crash left the turn at. **Non-deduplicating
+    provider:** a crash after the claim moves the row to ``unknown``, listed for
+    reconciliation, never re-sent (the server's count stays at its pre-crash value), and the turn
+    completes narrating the purchase as still pending. Complement: a crash in an ordinary turn
+    leaves no partial turn, and its retry commits one."""
+    with migrated_database(pg_url, f"epistrel_sec_{secrets.token_hex(4)}") as url:
+        settings = auth_settings(url, model_adapter="stub")
+        db = make_engine(settings)
+        child = EngineProcess(url, CREDENTIAL_A, lease_s=LEASE_S, mode="all", deliver=["states"])
+        try:
+            async with ps.allowed_hosts(db, [ps.LOOPBACK]):
+                await child.start()
+                await _deduped_cases(db, child)
+                await _render_failing(db, child)
+                await _non_deduplicating(db, child)
+                await _ordinary_turn(db, child)
+        finally:
+            await child.kill()
+            await db.dispose()
+
+
+async def _deduped_cases(db: AsyncEngine, child: EngineProcess) -> None:
+    for point, stage in DEDUPED_CASES:
+        with ps.game_server() as server:
+            failing = point == "staged.after_outcome"
+            async with httpx.AsyncClient(base_url=child.base_url, timeout=60) as client:
+                story = await sc.http_story(client, db, server, perceived=failing)
+            rules = sc.purchase_rules(story.cal, failing=failing)
+            await _restart(child, rules, crash.crash_at(point))
+            key = f"sec-{point}"
+            await _crashed(child, story, key)
+            await _at_crash(db, story, stage)
+            sent_before = len(server.keys)
+            await _restart(child, rules)
+            played = await _retried(child, story, key)
+            op = await _finished(db, child, story, key)
+            (row,) = await ps.outbox_rows(db, story.story)
+            assert server.purchases == 1, point
+            assert set(server.keys) == {row.id}, point  # one provider key throughout
+            assert row.status == "confirmed", point
+            confirmed = [
+                o for o in await ps.outbox_outcomes(db, story.story) if o.kind == "confirmed"
+            ]
+            assert len(confirmed) == 1, point
+            outcomes = await ps.external_outcomes(db, story.story)
+            assert [o.payload["status"] for o in outcomes] == ["confirmed"], point
+            text = played["message"]["text"]
+            if point == "staged.after_claim":
+                assert sent_before == 0
+                assert len(server.keys) == 1  # sent once, by the resume
+            elif point == "staged.after_send":
+                assert sent_before == 1
+                assert len(server.keys) == 2  # re-sent under the same key, deduplicated
+            if point == "staged.after_outcome":
+                assert DETERMINISTIC in text
+                report = (await sc.staged_ops(db, story))[0]
+                assert sc.logged(report) == STAGES
+                await _located(db, story, op.operation_id)
+            if point == "staged.after_completion":
+                again = await sc.buy(child, story, key)
+                assert again is not None
+                assert again.status_code == 200, again.text
+                assert again.headers.get("Idempotent-Replay") == "true"
+                assert again.json() == played  # identical on a second retry
+                assert played["output_viewpoint"] == f"character:{story.cal}"
+                assert sp.WENT in text  # the original's rendered outcome step, recomposed
+            await ps.drop_outbox_jobs(db, story.story)
+
+
+DETERMINISTIC = f"Cal's {sp.REASON} went through."
+PENDING = f"Cal's {sp.REASON} is still pending."
+
+
+async def _located(db: AsyncEngine, story: sc.Staged, operation_id: str) -> None:
+    """The deterministic narration is one narrator beat at the actor's place (the forge),
+    routed per perceiver: a memory for each character there."""
+    found = await rows(
+        db,
+        "SELECT id, payload FROM events WHERE operation_id = :o AND type = 'beat_narration' "
+        "AND payload->>'text' = :t",
+        o=operation_id,
+        t=DETERMINISTIC,
+    )
+    assert len(found) == 1
+    (forge,) = await rows(
+        db, "SELECT id FROM entities WHERE story_id = :s AND kind = 'place'", s=story.story
+    )
+    assert found[0].payload["perception"]["location"] == forge.id
+    holders = await rows(
+        db,
+        "SELECT holder_character_id AS h, fidelity FROM memories WHERE story_id = :s "
+        "AND :e = ANY(source_event_ids) ORDER BY 1",
+        s=story.story,
+        e=found[0].id,
+    )
+    mira = next(i for i in await _cast(db, story.story) if i != story.cal)
+    assert {r.h for r in holders} == {story.cal, mira}
+    assert all(r.fidelity is not None for r in holders)
+
+
+async def _cast(db: AsyncEngine, story_id: str) -> list[str]:
+    found = await rows(db, "SELECT id FROM characters WHERE story_id = :s", s=story_id)
+    return [r.id for r in found]
+
+
+async def _render_failing(db: AsyncEngine, child: EngineProcess) -> None:
+    """(5), without a crash: the outcome render fails every attempt in the request itself."""
+    with ps.game_server() as server:
+        async with httpx.AsyncClient(base_url=child.base_url, timeout=60) as client:
+            story = await sc.http_story(client, db, server)
+        await _restart(child, sc.purchase_rules(story.cal, failing=True))
+        answer = await sc.buy(child, story, "sec-render")
+        assert answer is not None
+        assert answer.status_code == 200, answer.text
+        assert DETERMINISTIC in answer.json()["message"]["text"]
+        await _finished(db, child, story, "sec-render")
+        report = await rows(
+            db,
+            "SELECT turn_report->'staged'->'outcome_step' AS step FROM operations "
+            "WHERE story_id = :s AND turn_stage IS NOT NULL",
+            s=story.story,
+        )
+        assert report[0].step["deterministic"] is True
+        assert report[0].step["cause"] == "render_failed"
+        assert server.purchases == 1
+        await ps.drop_outbox_jobs(db, story.story)
+
+
+async def _non_deduplicating(db: AsyncEngine, child: EngineProcess) -> None:
+    with ps.game_server(dedupe=False) as server:
+        async with httpx.AsyncClient(base_url=child.base_url, timeout=60) as client:
+            story = await sc.http_story(client, db, server)
+        rules = sc.purchase_rules(story.cal)
+        await _restart(child, rules, crash.crash_at("staged.after_claim"))
+        await _crashed(child, story, "sec-nodedupe")
+        await _at_crash(db, story, "awaiting_outcome")
+        assert server.keys == []
+        await _restart(child, rules)
+        played = await _retried(child, story, "sec-nodedupe")
+        await _finished(db, child, story, "sec-nodedupe")
+        assert PENDING in played["message"]["text"]
+        (row,) = await ps.outbox_rows(db, story.story)
+        assert row.status == "unknown"
+        async with httpx.AsyncClient(base_url=child.base_url, timeout=30) as client:
+            listed = await client.get(f"/stories/{story.story}/reconciliation", headers=READ)
+        assert (row.id, "unknown") in {
+            (e["outbox_id"], e["status"]) for e in listed.json()["listings"]
+        }
+        # The lease timer's turn: a non-deduplicating provider is never re-sent.
+        await execute_in_tx(
+            db,
+            (
+                "UPDATE external_effect_outbox SET claim_lease_until = now() - interval '1 s' "
+                "WHERE id = :o",
+                {"o": row.id},
+            ),
+        )
+        assert await dispatcher.expire(db, row.id) == "unknown"
+        assert server.keys == []  # never sent: the pre-crash count
+        assert server.purchases == 0
+        await ps.drop_outbox_jobs(db, story.story)
+
+
+async def _ordinary_turn(db: AsyncEngine, child: EngineProcess) -> None:
+    """Complement (#75): a crash in an ordinary turn's commit leaves nothing of it."""
+    async with httpx.AsyncClient(base_url=child.base_url, timeout=60) as client:
+        story_id, ids = await structured_story(client, "Cal", "Mira")
+    story = await sc.settled(db, sc.Staged(story_id, ids["Cal"], ""))
+    await _restart(child, sc.plain_rules(), crash.crash_at("before_commit", 1, "turn"))
+    await _crashed(child, story, "sec-plain")
+    (dead,) = await sc.staged_ops(db, story)
+    assert dead.status == "in_flight"
+    assert (
+        await rows(db, "SELECT id FROM events WHERE operation_id = :o", o=dead.operation_id) == []
+    )
+    await _restart(child, sc.plain_rules())
+    await _retried(child, story, "sec-plain")
+    ops = await sc.staged_ops(db, story)
+    committed = [o for o in ops if o.status == "committed"]
+    assert len(committed) == 1
+    assert committed[0].turn_stage is None
+
+
+HOLD_S = 0.5
+"""How long the race's held claim keeps the row locked while the truncation waits on it."""
+
+
+async def _holder(engine: AsyncEngine, story: str) -> Any:
+    (found,) = await rows(engine, "SELECT in_flight_turn FROM stories WHERE id = :s", s=story)
+    return found.in_flight_turn
+
+
+async def _truncate(client: Any, story: str, turn: int) -> Any:
+    return await client.post(
+        f"/stories/{story}/truncate", json={"to_turn": turn - 1}, headers=WRITE
+    )
+
+
+@pytest.mark.part("M6", "FR-EXT-17,18")
+async def test_s_effect_crash__race(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    drained_embedding_jobs: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#213 (FR-EXT-17): a discard racing the staged turn's claim, on two connections with
+    injected delays.
+
+    1. **One instant before the claim.** The turn's intent committed; its claim is delayed until
+       a truncation committed. The effect is cancelled (never sent, nothing to reconcile), the
+       turn abandoned, its slot given back at the truncation, and the respond answers 409
+       ``timeline_changed``.
+    2. **One instant after the claim.** The claim's transaction holds the row lock while a
+       truncation starts: the truncation waits on the lock (the row lock serializes the two),
+       then returns the effect ``reconciliation_required`` although no bytes were sent yet; the
+       turn is abandoned, its slot given back, the row listed. Complement: the effect is never
+       ``cancelled``."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+
+        # -- 1. A truncation one instant before the claim.
+        story, cal, _, fake = await _sync_story(client, engine, epistrel)
+        sp.script_purchase(stub, cal)
+        arrived, gate = asyncio.Event(), asyncio.Event()
+        claim = dispatcher.claim
+
+        async def late(db: Any, outbox_id: str, **kwargs: Any) -> Any:
+            arrived.set()
+            await gate.wait()
+            return await claim(db, outbox_id, **kwargs)
+
+        with monkeypatch.context() as patched:
+            patched.setattr(dispatcher, "claim", late)
+            playing = asyncio.create_task(sp.buy(client, story, cal))
+            await asyncio.wait_for(arrived.wait(), 60)
+            op = await sp.staged_op(engine, story)
+            assert op.turn_stage == "intent_committed"
+            cut = await _truncate(client, story, op.narrative_turn)
+            assert cut.status_code == 200, cut.text
+            assert cut.json()["reconciliation_required"] == []
+            assert await _holder(engine, story) is None  # the slot given back at once
+            gate.set()
+            answer = await asyncio.wait_for(playing, 60)
+        assert answer.status_code == 409, answer.text
+        assert answer.json()["error"]["code"] == "timeline_changed"
+        (row,) = await ps.outbox_rows(engine, story)
+        assert row.status == "cancelled"
+        assert fake.writes == []
+        assert (await sp.staged_op(engine, story)).turn_stage == "abandoned"
+        await ps.drop_outbox_jobs(engine, story)
+
+        # -- 2. A truncation one instant after the claim, before any byte is sent.
+        story, cal, _, fake = await _sync_story(client, engine, epistrel)
+        sp.script_purchase(stub, cal)
+        locked, hold = asyncio.Event(), asyncio.Event()
+        sending, send_gate = asyncio.Event(), asyncio.Event()
+        mark_claimed = core_outbox.mark_claimed
+        send = dispatcher.send
+
+        async def held(conn: Any, *args: Any, **kwargs: Any) -> Any:
+            found = await mark_claimed(conn, *args, **kwargs)
+            locked.set()
+            await hold.wait()  # the claim's transaction keeps the row locked
+            return found
+
+        async def gated(db: Any, claimed: Any) -> Any:
+            sending.set()
+            await send_gate.wait()
+            return await send(db, claimed)
+
+        with monkeypatch.context() as patched:
+            patched.setattr(core_outbox, "mark_claimed", held)
+            patched.setattr(dispatcher, "send", gated)
+            playing = asyncio.create_task(sp.buy(client, story, cal))
+            await asyncio.wait_for(locked.wait(), 60)
+            op = await sp.staged_op(engine, story)
+            cutting = asyncio.create_task(_truncate(client, story, op.narrative_turn))
+            await asyncio.sleep(HOLD_S)
+            assert not cutting.done()  # waiting on the claim's row lock
+            hold.set()
+            cut = await asyncio.wait_for(cutting, 60)
+            assert cut.status_code == 200, cut.text
+            (row,) = await ps.outbox_rows(engine, story)
+            assert [e["outbox_id"] for e in cut.json()["reconciliation_required"]] == [row.id]
+            assert fake.writes == []  # no byte sent yet
+            assert row.status == "claimed"
+            assert await _holder(engine, story) is None
+            send_gate.set()
+            answer = await asyncio.wait_for(playing, 60)
+        assert answer.status_code == 409, answer.text
+        assert (await sp.staged_op(engine, story)).turn_stage == "abandoned"
+        listed = (await core_outbox.listings(engine, story)).listings
+        assert ("reconciliation_required", row.id) in {(e.reason, e.outbox_id) for e in listed}
+        (row,) = await ps.outbox_rows(engine, story)
+        assert row.status != "cancelled"
+        await ps.drop_outbox_jobs(engine, story)
         await ss.set_level(engine, story, None)

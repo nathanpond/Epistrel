@@ -13,6 +13,12 @@ Two providers a test can register and drive:
   every request it received (method, path, raw query, headers, body). Use it with
   ``allowed_hosts(engine, [stub.host])`` (the deployment's ``provider_allowed_hosts``,
   restored afterwards).
+- ``GameServer`` (#213): a ``StubServer`` playing a game's bank for ``http_spec`` +
+  ``write_template``, so an engine in a child process (``EngineProcess``) dispatches to the test
+  process and the count survives a kill. It answers reads with the balance, applies each
+  purchase (``POST /players/p-1/spend``) once per ``Idempotency-Key`` (``dedupe``; switched off,
+  every request is a purchase), counts them (``purchases``, ``keys``), can answer with the
+  resulting balance (``resulting``) or never answer (``never_answer``: until ``release``).
 
 Registration bodies: ``in_process_spec`` and ``http_spec`` (and ``read_template``,
 ``write_template``) build ``POST /admin/external-providers`` bodies; ``register`` writes one
@@ -25,7 +31,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
-from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -560,6 +566,8 @@ class StubServer:
     def __init__(self) -> None:
         self.routes: dict[tuple[str, str], list[Reply]] = {}
         self.received: list[Received] = []
+        self.handler: Callable[[Received], Reply | None] | None = None
+        """Answers a request before ``routes`` (``None`` from it: the routes answer)."""
         self._lock = threading.Lock()
         stub = self
 
@@ -575,12 +583,13 @@ class StubServer:
                     body = json.loads(raw) if raw else None
                 except ValueError:
                     body = raw.decode(errors="replace")
+                received = Received(self.command, raw_path, query, dict(self.headers), body)
                 with stub._lock:
-                    stub.received.append(
-                        Received(self.command, raw_path, query, dict(self.headers), body)
-                    )
+                    stub.received.append(received)
                     queue = stub.routes.get((self.command, raw_path))
                     reply = (queue.pop(0) if len(queue) > 1 else queue[0]) if queue else None
+                if stub.handler is not None:
+                    reply = stub.handler(received) or reply
                 if reply is None:
                     reply = Reply(404, {"error": "no route"})
                 if reply.delay:
@@ -633,6 +642,101 @@ class StubServer:
         self._server.server_close()
 
 
+def _number(value: Decimal) -> int | float:
+    return int(value) if value == value.to_integral_value() else float(value)
+
+
+PLAYER = "p-1"
+"""The player id a ``GameServer`` story binds (``external_gold``'s default binding)."""
+NEVER_ANSWER_S = 30.0
+"""How long a ``never_answer`` purchase holds its request at most (the adapter's own timeout
+ends it first)."""
+
+
+class GameServer(StubServer):
+    """A game's bank on the loopback (see the module docstring). ``balance`` is the player's
+    gold; a purchase adds its ``amount`` (a negative delta) once per ``Idempotency-Key`` when
+    ``dedupe``, on every request otherwise."""
+
+    def __init__(
+        self,
+        *,
+        balance: Any = 300,
+        dedupe: bool = True,
+        resulting: bool = True,
+        never_answer: bool = False,
+    ) -> None:
+        super().__init__()
+        self.balance = Decimal(str(balance))
+        self.dedupe = dedupe
+        self.resulting = resulting
+        self.never_answer = never_answer
+        self.release = threading.Event()
+        """Set to let a ``never_answer`` purchase answer."""
+        self.keys: list[str] = []
+        """The ``Idempotency-Key`` of every purchase request, in order (re-sends included)."""
+        self.purchases = 0
+        """Purchases applied to the balance."""
+        self._answers: dict[str, dict[str, Any]] = {}
+        self.handler = self._game
+
+    @property
+    def read_path(self) -> str:
+        return f"/players/{PLAYER}/gold"
+
+    @property
+    def spend_path(self) -> str:
+        return f"/players/{PLAYER}/spend"
+
+    def spec(self, name: str, **fields: Any) -> dict[str, Any]:
+        """``http_spec`` for this server: ``gold`` read and written here, synchronous,
+        deduplicating as the server does (``fields`` over that)."""
+        return http_spec(
+            self.base_url,
+            name,
+            write=write_template(self.base_url),
+            **{"dedupes_dispatch": self.dedupe, **fields},
+        )
+
+    def _game(self, received: Received) -> Reply | None:
+        if received.method == "GET" and received.path == self.read_path:
+            with self._lock:
+                return Reply(200, {"balance": _number(self.balance)})
+        if received.method != "POST" or received.path != self.spend_path:
+            return None
+        headers = {k.lower(): v for k, v in received.headers.items()}
+        key = headers.get("idempotency-key", "")
+        with self._lock:
+            self.keys.append(key)
+            if self.dedupe and key in self._answers:
+                return Reply(200, self._answers[key])
+        if self.never_answer:
+            self.release.wait(NEVER_ANSWER_S)
+        amount = Decimal(str((received.body or {}).get("amount") or 0))
+        with self._lock:
+            if self.dedupe and key in self._answers:
+                return Reply(200, self._answers[key])
+            self.balance += amount
+            self.purchases += 1
+            answer: dict[str, Any] = {"status": "ok"}
+            if self.resulting:
+                answer["values"] = {"gold": _number(self.balance)}
+            self._answers[key] = answer
+            return Reply(200, answer)
+
+
+@contextmanager
+def game_server(**fields: Any) -> Iterator[GameServer]:
+    """A started ``GameServer`` (``fields`` its options), stopped afterwards."""
+    server = GameServer(**fields)
+    server.start()
+    try:
+        yield server
+    finally:
+        server.release.set()
+        server.stop()
+
+
 @contextmanager
 def stub_server() -> Iterator[StubServer]:
     """A started ``StubServer``, stopped afterwards."""
@@ -647,6 +751,7 @@ __all__ = [
     "LOOPBACK",
     "PRINCIPAL",
     "Fail",
+    "GameServer",
     "Received",
     "Reply",
     "ScriptedProvider",
@@ -660,6 +765,7 @@ __all__ = [
     "external_outcomes",
     "external_reads",
     "external_value_rows",
+    "game_server",
     "http_spec",
     "in_process_spec",
     "outbox_jobs",

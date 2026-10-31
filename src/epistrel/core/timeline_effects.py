@@ -19,7 +19,8 @@ the transaction of the membership flip:
 - **A staged turn** (#212, FR-EXT-17,19) that leaves the active timeline before its completion
   (``turn_stage`` ``intent_committed``, ``awaiting_outcome`` or ``outcome_recorded``) is
   ``abandoned``: its remaining stages never commit (a later stage's continuation is refused),
-  and its rows are classified as above.
+  its rows are classified as above, and (#213) the story's turn slot it held is given back in
+  the same transaction.
 
 Nothing here writes an outbox row: no compensation is ever issued automatically. ``superseded``
 never arrives through a flip (``core.membership.FLIP_TARGETS``): only #143's reflections are
@@ -139,15 +140,24 @@ async def classify_discarded(
     """``core.membership``'s follower: classify the outbox rows of ``operation_ids`` after
     their flip to ``to`` (see the module docstring)."""
     if Membership(to) is not Membership.ACTIVE and operation_ids:
-        # #212: a staged turn discarded before its completion is abandoned.
-        await conn.execute(
-            update(operations)
-            .where(
-                operations.c.operation_id.in_(list(operation_ids)),
-                operations.c.turn_stage.in_(sorted(s.value for s in UNFINISHED_TURN_STAGES)),
+        # #212: a staged turn discarded before its completion is abandoned; #213: the turn
+        # slot it held is given back at once (FR-EXT-17: its stages 4-5 never run).
+        abandoned = list(
+            await conn.scalars(
+                update(operations)
+                .where(
+                    operations.c.operation_id.in_(list(operation_ids)),
+                    operations.c.turn_stage.in_(sorted(s.value for s in UNFINISHED_TURN_STAGES)),
+                )
+                .values(turn_stage=StagedTurnStage.ABANDONED.value)
+                .returning(operations.c.operation_id)
             )
-            .values(turn_stage=StagedTurnStage.ABANDONED.value)
         )
+        if abandoned and story_id is not None:
+            from epistrel.core import turn_gate  # here: the gate's module imports Operation's
+
+            for operation_id in abandoned:
+                await turn_gate.release(conn, story_id, str(operation_id))
     rows = await core_outbox.locked_of(conn, story_id, operation_ids)
     if not rows:
         return

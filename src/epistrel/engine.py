@@ -104,6 +104,7 @@ from epistrel.core.idempotency import (
     QueuedOriginal,
     Replayed,
     ResultCodec,
+    StagedOriginal,
 )
 from epistrel.core.idempotency import Scope as KeyScope
 from epistrel.core.ids import new_ulid
@@ -219,6 +220,7 @@ from epistrel.orchestrator.providers import registry as provider_registry
 from epistrel.orchestrator.providers.manifest import ProviderRegistration, ProviderSpec
 from epistrel.orchestrator.ratings import suggest as rating_suggestion_driver
 from epistrel.orchestrator.structured import pipeline as structured_turn
+from epistrel.orchestrator.structured import staged as staged_turns
 from epistrel.orchestrator.verify import extraction as extraction_job
 from epistrel.testing import crash
 
@@ -855,6 +857,14 @@ class Engine:
                     replayed=True,
                 )
                 return found
+            except StagedOriginal as original:
+                # #213 (FR-EXT-17): the original committed a staged turn and died; this retry
+                # resumes it from its last committed stage and answers its finished response.
+                try:
+                    value = await self._resume_staged(call, original.operation_id)
+                except BaseException:
+                    await call.release()
+                    raise
             except BaseException:
                 await call.release()
                 raise
@@ -865,6 +875,19 @@ class Engine:
             crash.hit("after_commit_before_response", operation)
             finished: T = await call.finish(value)
             return finished
+
+    async def _resume_staged(self, call: IdempotentCall, operation_id: str) -> Any:
+        """#213: resume the staged turn ``operation_id`` for a same-key retry (it took the key
+        over: ``StagedOriginal``), store its recomposed finished response under the key with
+        the turn's ``response`` stage, and answer it."""
+        value = await staged_turns.resume_for_response(
+            self.db,
+            operation_id,
+            registry=self.in_process_providers,
+            wait_s=IDEMPOTENCY_WAIT_S,
+        )
+        await staged_turns.store_response_of(self.db, operation_id, call, value)
+        return value
 
     @staticmethod
     def require_principal(ctx: RequestContext) -> str:

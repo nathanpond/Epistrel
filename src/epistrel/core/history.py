@@ -953,6 +953,94 @@ def _turns(
     return list(turns.values())
 
 
+@dataclass(frozen=True, slots=True)
+class StagedMessage:
+    """#213: a resumed staged turn's message: its text and the audience filtering it was
+    assembled under (``MessageRendered.perception_level``/``player_view``; ``None`` when it was
+    not filtered)."""
+
+    text: str
+    perception_level: str | None
+    player_view: str | None
+
+
+async def staged_message(
+    conn: AsyncConnection,
+    story_id: str,
+    operation_id: str,
+    viewpoint: str,
+    *,
+    player_view: PlayerView,
+    extra: Sequence[audience_rules.AudienceBeat],
+) -> StagedMessage:
+    """#213 (FR-EXT-17, FR-RESP-8,13): the message a staged turn resumed without its request's
+    render context completes with: the deterministic assembly of the turn's committed beats
+    and ``extra`` (the deterministic outcome narration it is about to commit, each with its
+    qualifiers), as ``viewpoint`` receives them (#177's audience filter over the scene at the
+    turn's start and its committed moves, as a history read filters them)."""
+    from epistrel.core.epistemic import scene as scenes
+    from epistrel.core.memory import records
+
+    rows = [r for r in await _rows(conn, story_id, operation_id=operation_id) if _is_beat(r)]
+    heard: list[audience_rules.AudienceBeat] = []
+    for row in rows:
+        stored = perception.Qualifiers.of((row.payload or {}).get("perception"))
+        for channel, part in _parts(row):
+            heard.append(
+                audience_rules.AudienceBeat(
+                    kind=channel,
+                    beat=int(row.beat or 0),
+                    character_id=row.actor_character_id,
+                    text=part,
+                    qualifiers=stored
+                    if channel == "say" or row.kind != INPUT_KIND
+                    else perception.Qualifiers(),
+                    source=row.kind != INPUT_KIND,
+                )
+            )
+    heard += [dataclasses.replace(b, source=True) for b in extra]
+    found = await conn.execute(
+        select(characters.c.id, characters.c.name).where(characters.c.story_id == story_id)
+    )
+    names = {str(r.id): str(r.name) for r in found}
+    level = (
+        perception.NONE if is_omniscient(viewpoint) else await scenes.current_level(conn, story_id)
+    )
+    turn = next((int(r.narrative_turn) for r in rows if r.narrative_turn is not None), None)
+    scene: perception.SceneState | None = None
+    places: Mapping[str, str] | None = None
+    if level != perception.NONE and turn is not None:
+        scene, moves = await scenes.load_scene(conn, story_id, turn)
+        heard = _with_moves(heard, moves)
+        _, places = await records.places_and_names(conn, story_id)
+    filtered = audience_rules.filter_for_viewpoint(
+        heard,
+        viewpoint,
+        scene=scene,
+        level=level,
+        names=names,
+        places=places,
+        player_view=player_view,
+    )
+    assembled = [
+        AssemblyBeat(
+            s.beat.kind,
+            s.text,
+            s.beat.character_id,
+            s.beat.beat,
+            audience_rules.CONTENT if player_view == audience_rules.STORY_VIEW else s.fidelity,
+        )
+        for s in filtered.seen
+        if s.beat.source is True
+    ]
+    routed = level != perception.NONE and scene is not None
+    return StagedMessage(
+        text=deterministic_assembly(assembled, names, viewpoint),
+        perception_level=str(level) if routed else None,
+        player_view=str(player_view) if routed else None,
+    )
+
+
 @asynccontextmanager
 async def _connection(db: AsyncEngine | AsyncConnection) -> AsyncIterator[AsyncConnection]:
     if isinstance(db, AsyncConnection):
@@ -968,11 +1056,13 @@ __all__ = [
     "MAX_LIMIT",
     "History",
     "HistoryItem",
+    "StagedMessage",
     "TurnBeats",
     "TurnMessage",
     "TurnSummary",
     "filtered_turn_beats",
     "read_history",
+    "staged_message",
     "story_player_view",
     "turn_beats",
 ]

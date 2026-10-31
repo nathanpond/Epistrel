@@ -53,6 +53,10 @@ truncations and their undoing, and asserts the settlement clause: no late settle
 positioned or valid-timed before the head at which its outcome arrived (an inter-turn slot of
 that head or a later turn, its story-time not before that head's end), and every confirmed
 outcome is either settled in the active timeline or listed for reconciliation.
+
+``test_outbox_safety__crash`` (#213, FR-EXT-16,17) kills a staged turn at a drawn stage
+boundary and retries it under the same idempotency key: a retry under one key never produces a
+second turn or dispatch, and no committed stage is rolled back by a later stage's failure.
 """
 
 from __future__ import annotations
@@ -84,6 +88,7 @@ from epistrel.core.variants import ChainRef, SwapRequest, list_chains
 from epistrel.orchestrator.jobs import settlement
 from epistrel.orchestrator.jobs.handlers import outbox
 from epistrel.orchestrator.providers.in_process import InProcessRegistry
+from epistrel.testing import crash
 from tests import canon_support as c
 from tests import late_settlement_support as ls
 from tests import projection_support as projections
@@ -1232,3 +1237,188 @@ def test_outbox_safety__settlement(pg_url: str, monkeypatch: pytest.MonkeyPatch)
     assert seen["listed"] > 0, seen
     assert seen[settlement.SETTLED] > 0, seen
     assert seen[settlement.DISCARDED] > 0, seen
+
+
+# -- #213: crashes between a staged turn's stages (FR-EXT-16,17) ---------------------------------
+
+CRASH_EXAMPLES = 8
+CrashDrawn = tuple[str, bool, str]
+"""Where the staged turn dies (a ``crash.STAGED_POINTS`` boundary), whether its provider
+deduplicates, and what the game answers."""
+crash_examples = st.tuples(
+    st.sampled_from(crash.STAGED_POINTS), st.booleans(), st.sampled_from(("confirmed", "failed"))
+)
+CRASH_CASES: tuple[CrashDrawn, ...] = tuple(
+    (point, point != "staged.after_claim", "confirmed") for point in crash.STAGED_POINTS
+)
+"""Every boundary once (a non-deduplicating provider at the claim's)."""
+
+
+class Crash(Exception):
+    """The process 'dies' at a stage boundary: the hit raises, so nothing after it runs."""
+
+
+async def _key_buy(client: Any, story: str, cal: str, key: str) -> Any:
+    from tests.idempotency_support import KEY
+    from tests.respond_support import body
+    from tests.story_support import WRITE
+
+    try:
+        return await client.post(
+            f"/stories/{story}/respond",
+            json=body(cal, None, do="buys the sword"),
+            headers={**WRITE, KEY: key},
+        )
+    except Crash:
+        return None
+
+
+async def _committed_stages(engine: AsyncEngine, story: str) -> tuple[list[str], int, set[str]]:
+    """The staged turn's logged stages, its revision and its event ids (empty: none committed)."""
+    async with engine.connect() as conn:
+        op = (
+            await conn.execute(
+                text(
+                    "SELECT operation_id, stage_log, timeline_revision FROM operations "
+                    "WHERE story_id = :s AND turn_stage IS NOT NULL"
+                ),
+                {"s": story},
+            )
+        ).one_or_none()
+        if op is None:
+            return [], 0, set()
+        ids = set(
+            await conn.scalars(
+                text("SELECT id FROM events WHERE operation_id = :o"), {"o": op.operation_id}
+            )
+        )
+    from epistrel.orchestrator.structured.staged import STAGES
+
+    logged = [e["stage"] for e in op.stage_log or [] if e.get("stage") in STAGES]
+    return logged, int(op.timeline_revision), ids
+
+
+async def _crash_example(
+    url: str, drawn: CrashDrawn, seen: Counter[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from epistrel.orchestrator.structured import staged as staged_rules
+    from tests import staged_support as sp
+    from tests.respond_support import respond_client
+
+    point, dedupes, answer = drawn
+    settings_ = auth_settings(url, model_adapter="stub")
+    engine = make_engine(settings_)
+    fired: list[str] = []
+    real_hit = crash.hit
+
+    def hit(name: str, kind: str | None = None) -> None:
+        if name == point and not fired:
+            fired.append(name)
+            raise Crash(name)
+        real_hit(name, kind)
+
+    try:
+        async with respond_client(settings_, engine) as (client, epistrel):
+            story, cal, _, fake = await sp.sync_story(
+                client, engine, epistrel, dedupes=dedupes, confirm_wait_max_seconds=1
+            )
+            fake.script_writes("gold", answer)
+            sp.script_purchase(epistrel.models.stub, cal)
+            key = f"crash-{new_ulid()}"
+            with monkeypatch.context() as patched:
+                patched.setattr(crash, "hit", hit)
+                first = await _key_buy(client, story, cal, key)
+            assert fired == [point]
+            stages, revision, events_ = await _committed_stages(engine, story)
+            # The process that ran the turn is gone: its slot lease lapses.
+            async with engine.begin() as conn:
+                await conn.execute(
+                    text(
+                        "UPDATE stories SET in_flight_lease_until = clock_timestamp() "
+                        "- interval '1 second' WHERE id = :s AND in_flight_turn IS NOT NULL"
+                    ),
+                    {"s": story},
+                )
+            if first is not None and first.status_code == 200:
+                # Died in a send: the request completed without the answer (still pending);
+                # the lease timer's turn re-sends or moves it to unknown.
+                (row,) = await ps.outbox_rows(engine, story)
+                await outbox.expire(
+                    engine, row.id, registry=epistrel.in_process_providers, force=True
+                )
+                seen["completed_pending"] += 1
+            else:
+                retried = await _key_buy(client, story, cal, key)
+                assert retried is not None
+                assert retried.status_code == 200, retried.text
+                seen["resumed"] += 1
+            after, revision_after, events_after = await _committed_stages(engine, story)
+            # No committed stage is rolled back by a later stage's failure.
+            assert after[: len(stages)] == stages, (point, stages, after)
+            assert revision_after >= revision
+            assert events_ <= events_after
+            assert after == list(staged_rules.STAGES), (point, after)
+            # A retry under one key never produces a second turn or dispatch.
+            turns = await _turn_ops(engine, story, key)
+            assert turns == 1, point
+            rows_ = await ps.outbox_rows(engine, story)
+            assert len(rows_) == 1, point
+            if dedupes:
+                assert len(set(fake.idempotency_keys)) <= 1
+                assert len(fake.writes) - fake.deduped <= 1
+            else:
+                assert len(fake.idempotency_keys) <= 1, point  # never sent twice
+            seen[point] += 1
+            await ps.drop_outbox_jobs(engine, story)
+            await ss.set_level(engine, story, None)
+    finally:
+        await engine.dispose()
+
+
+async def _turn_ops(engine: AsyncEngine, story: str, key: str) -> int:
+    async with engine.connect() as conn:
+        found = await conn.scalar(
+            text(
+                "SELECT count(*) FROM operations WHERE story_id = :s AND idempotency_key = :k "
+                "AND kind = 'turn' AND status = 'committed'"
+            ),
+            {"s": story, "k": key},
+        )
+    return int(found or 0)
+
+
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-EXT-16,17")
+def test_outbox_safety__crash(
+    pg_url: str, monkeypatch: pytest.MonkeyPatch, drained_embedding_jobs: None
+) -> None:
+    """#213 (FR-EXT-16,17): a staged turn dies at a drawn stage boundary (an induced failure at
+    the boundary's crash point; the provider deduplicating or not, the game confirming or
+    refusing) and is retried under the same idempotency key, its slot lease lapsed (a death in
+    a send leaves the request to complete with the purchase pending, and the lease timer's
+    re-send to follow). A retry under one key never produces a second turn or dispatch (one
+    committed turn for the key, one outbox row, no key sent twice to a non-deduplicating
+    provider, one purchase applied by a deduplicating one); no committed stage is rolled back by
+    a later stage's failure (the stages, revision and events committed before the failure all
+    stand); and every turn ends completed with its five stages."""
+    ss.deliver(monkeypatch)
+    seen: Counter[str] = Counter()
+
+    @settings(
+        max_examples=CRASH_EXAMPLES,
+        deadline=None,
+        suppress_health_check=[HealthCheck.function_scoped_fixture, HealthCheck.too_slow],
+    )
+    @given(drawn=crash_examples)
+    @example(drawn=CRASH_CASES[0])
+    @example(drawn=CRASH_CASES[1])
+    @example(drawn=CRASH_CASES[2])
+    @example(drawn=CRASH_CASES[3])
+    @example(drawn=CRASH_CASES[4])
+    @example(drawn=CRASH_CASES[5])
+    def safety(drawn: CrashDrawn) -> None:
+        asyncio.run(_crash_example(pg_url, drawn, seen, monkeypatch))
+
+    safety()
+    assert all(seen[p] >= 1 for p in crash.STAGED_POINTS), seen
+    assert seen["resumed"] >= 1, seen

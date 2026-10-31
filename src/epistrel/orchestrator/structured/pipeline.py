@@ -428,6 +428,7 @@ from epistrel.orchestrator.verify.verifier import (
     Verifier,
     story_verifier,
 )
+from epistrel.testing import crash
 
 log = get_logger(__name__)
 
@@ -5748,6 +5749,8 @@ async def play(
             # #212 (FR-EXT-16): the intent stage; the turn slot stays held until completion.
             op.turn_stage = StagedTurnStage.INTENT_COMMITTED
             op.stage_turn(staged_turns.INTENT)
+            # #213: planned staged, the intent not committed.
+            crash.hit("staged.before_intent_commit")
         else:
             op.turn_stage = None
             op.drop_turn_stages()
@@ -6558,6 +6561,8 @@ async def play(
         ``orchestrator.structured.staged``): claim every synchronous row, wait for their
         outcomes with the deadline clock paused (NFR-PERF-6), record them in one transaction,
         then complete the turn with its outcome step."""
+        # #213: the intent committed, nothing claimed.
+        crash.hit("staged.after_intent")
         book = books[0]
         synchronous = staged_turns.synchronous_of(book, fixed.get("requested", ()))
         start = await staged_turns.next_beat(db, op.operation_id)
@@ -6574,6 +6579,8 @@ async def play(
         finally:
             budget.resume()
         await complete_staged(answers, recorded, start)
+        # #213: the completion committed, the response not stored.
+        crash.hit("staged.after_completion")
 
     async def subject_places(answers: Mapping[str, staged_turns.Answer]) -> dict[str, str]:
         """#212: each outcome's subject character (the effect's scope key, else the actor) and
@@ -6590,6 +6597,17 @@ async def play(
             place = state.at(subject)
             if place is not None:
                 found.setdefault(subject, place)
+        return found
+
+    async def actor_place() -> str | None:
+        """#213: where the turn's actor is once the intent's moves are made (the deterministic
+        outcome narration is located there)."""
+        read_ = staged_ctx[0].read
+        async with db.connect() as conn:
+            state, moves = await scene_loader.load_scene(conn, story_id, read_.turn)
+        for _, step in sorted(moves.items()):
+            state = state.moved(step)
+        found: str | None = state.at(read_.actor.id)
         return found
 
     def located(beat: TurnBeat, places: Mapping[str, str], names: Mapping[str, str]) -> TurnBeat:
@@ -6729,7 +6747,7 @@ async def play(
     ) -> None:
         """#212 stage 4: the outcome step rendered (``render_outcome_step``), or, when no
         render can start before the deadline or the render fails,
-        ``staged_turns.deterministic_outcome`` (#213 completes it); its beats committed as
+        ``staged_turns.deterministic_outcome`` (#213); its beats committed as
         later beats of the turn through the turn's commit hooks (``write_turn``), with the
         turn's message composed over every committed beat; ``turn_stage = completed``, the
         slot given back."""
@@ -6759,11 +6777,13 @@ async def play(
                 log.warning("staged turn: outcome render failed: %s", type(exc).__name__)
                 cause = "render_failed"
         if out is None:
-            names = dict(read_.names)
-            beats = [
-                located(b, places, names)
-                for b in staged_turns.deterministic_outcome(answers, start)
-            ]
+            # #213 (FR-EXT-17): the deterministic outcome narration, at the actor's place.
+            beats = staged_turns.deterministic_outcome(
+                answers,
+                start,
+                actor=read_.names.get(read_.actor.id) or read_.actor.name,
+                location=await actor_place(),
+            )
             out = (
                 Rendered(
                     beats=beats,
@@ -7010,6 +7030,12 @@ async def play(
                 # A discard abandoned the turn meanwhile (FR-EXT-17): its remaining stages
                 # never commit, and the slot it held goes back now.
                 await turn_gate.release_now(db, story_id, op.operation_id)
+                raise
+            except Exception:
+                # #213 (FR-EXT-17): a failed stage leaves the turn at its last committed stage,
+                # holding its slot; the slot's lease ends now, so a same-key retry (or the
+                # recovery sweep) resumes the turn at once.
+                await turn_gate.lapse(db, story_id, op.operation_id)
                 raise
     timing.observe(calls)
     if op.is_staged_turn:

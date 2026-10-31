@@ -22,6 +22,7 @@ itself; this is the fork's deterministic counterpart, written without a model.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from types import SimpleNamespace
 from typing import Any
 
@@ -181,26 +182,7 @@ async def _close(conn: AsyncConnection, fork_id: str, principal: str, row: Any) 
         turn_variant=variant,
         base_revision=row.base_revision,
     )
-    source = records.Beat(
-        "narration",
-        FORK_CLOSURE,
-        ids[0],
-        beat=beat,
-        provenance=RecordProvenance.DIRECTOR,
-    )
-    level = await scene_loader.current_level(conn, fork_id)
-    if level == perception.NONE:
-        await records.write_episodic(conn, writer, [source])
-    else:
-        state, moves = await scene_loader.load_scene(conn, fork_id, turn)
-        for _, step in sorted(moves.items()):
-            state = state.moved(step)
-        routed = perception.route_turn(
-            [perception.RouteBeat("narration", beat, None, perception.Qualifiers(), source=source)],
-            state,
-            level,
-        )
-        await perception.deliver(conn, writer, routed)
+    await route_narration(conn, writer, fork_id, turn, [(closure, ids[0])])
     entry = {"stage": "completion", "status": "done", "at": clock.now().isoformat(), "revision": 1}
     await conn.execute(
         update(operations)
@@ -213,4 +195,50 @@ async def _close(conn: AsyncConnection, fork_id: str, principal: str, row: Any) 
     )
 
 
-__all__ = ["FORK_CLOSURE", "close_in_fork"]
+async def route_narration(
+    conn: AsyncConnection,
+    writer: Any,
+    story_id: str,
+    turn: int,
+    beats: Sequence[tuple[TurnBeat, str]],
+) -> None:
+    """Route a staged turn's deterministic narration beats (each with its committed event's
+    id), written under ``writer`` (the turn's operation), like any committed beat: through
+    ``core.epistemic.perception`` against the scene at the turn's start once the turn's moves
+    are made, each beat with its own qualifiers (its location); episodic memories under
+    perception ``none``. The fork's closure (``close_in_fork``) and #213's resumed completion
+    (``orchestrator.structured.staged.resume``) use it."""
+    sources = [
+        (
+            beat,
+            records.Beat(
+                "narration",
+                beat.text,
+                event_id,
+                beat=beat.beat,
+                provenance=RecordProvenance.DIRECTOR,
+            ),
+        )
+        for beat, event_id in beats
+    ]
+    if not sources:
+        return
+    level = await scene_loader.current_level(conn, story_id)
+    if level == perception.NONE:
+        await records.write_episodic(conn, writer, [source for _, source in sources])
+        return
+    state, moves = await scene_loader.load_scene(conn, story_id, turn)
+    for _, step in sorted(moves.items()):
+        state = state.moved(step)
+    routed = perception.route_turn(
+        [
+            perception.RouteBeat("narration", beat.beat, None, beat.qualifiers, source=source)
+            for beat, source in sources
+        ],
+        state,
+        level,
+    )
+    await perception.deliver(conn, writer, routed)
+
+
+__all__ = ["FORK_CLOSURE", "close_in_fork", "route_narration"]

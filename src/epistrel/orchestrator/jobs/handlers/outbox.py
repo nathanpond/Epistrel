@@ -38,7 +38,9 @@ its lease lapses is re-sent under the same key when the provider deduplicates (a
 timer is a row and the move is one transaction, so it happens once across worker restarts.
 
 ``outbox_recovery`` (every ``RECOVERY_INTERVAL``): enqueues a dispatch job for every ``intended``
-executable row with no live job (a notification lost, a job that ended without claiming).
+executable row with no live job (a notification lost, a job that ended without claiming), and
+(#213) resumes every staged turn whose slot lease lapsed short of its completion
+(``orchestrator.structured.staged.resume_stalled``).
 
 The dispatcher bumps no revision: the outcome is a record on the row (timeline-independent),
 written with #217's position-less ``outcome_recorded`` event by an operation of no slot
@@ -93,6 +95,7 @@ from epistrel.orchestrator.providers.port import (
     WriteOutcome,
 )
 from epistrel.orchestrator.providers.registry import provider_for
+from epistrel.testing import crash
 
 logger = logging.getLogger(__name__)
 
@@ -302,6 +305,8 @@ async def send(db: AsyncEngine, claimed: Claimed) -> str:
         # Raised once the request may have left: ambiguous (FR-EXT-16).
         logger.warning("outbox row %s send raised %s", claimed.outbox_id, type(exc).__name__)
         outcome = WriteOutcome(status="unknown")
+    # #213: the provider answered, the answer not recorded.
+    crash.hit("staged.after_send")
     status = outcome_status(outcome)
     answer = Answered(
         outcome_id=settlement.new_outcome_id(),
@@ -420,17 +425,23 @@ async def expire(
     registry: InProcessRegistry | None = None,
     lease: timedelta = CLAIM_LEASE,
     transport: httpx2.AsyncBaseTransport | None = None,
+    force: bool = False,
 ) -> str:
     """The lease timer (see the module docstring): answers what it did, ``resent:<status>``,
-    ``unknown``, ``held`` or ``settled`` (nothing to do)."""
+    ``unknown``, ``held`` or ``settled`` (nothing to do). ``force`` (#213: a staged turn's
+    ``resume``, which took the turn over from a dead process): the claim is treated as lapsed
+    whatever its lease says, and only a ``claimed`` row (sent or not, never answered) is
+    handled."""
     found = _registry(registry)
     claimed: Claimed | None = None
     async with db.begin() as conn:
         row = await core_outbox.locked(conn, outbox_id)
         if row is None or not row.executable or str(row.status) not in (CLAIMED, UNKNOWN):
             return "settled"
+        if force and str(row.status) != CLAIMED:
+            return "settled"
         now = clock.now()
-        if row.claim_lease_until is None or row.claim_lease_until > now:
+        if not force and (row.claim_lease_until is None or row.claim_lease_until > now):
             return "settled"
         if row.erased_at is not None or await core_outbox.erased_since(
             conn, str(row.story_id), row.claimed_at
@@ -519,7 +530,12 @@ async def _lease(ctx: JobContext) -> JobOutput:
 
 
 async def _recover(ctx: JobContext) -> JobOutput:
-    return JobOutput(result={"enqueued": await recover(ctx.db)})
+    enqueued = await recover(ctx.db)
+    # #213 (FR-EXT-17): the staged turns whose process died, resumed from their last stage.
+    from epistrel.orchestrator.structured import staged  # here: staged imports this module
+
+    resumed = await staged.resume_stalled(ctx.db, registry=bound())
+    return JobOutput(result={"enqueued": enqueued, "resumed": resumed})
 
 
 OUTBOX_DISPATCH_HANDLER = JobHandler(

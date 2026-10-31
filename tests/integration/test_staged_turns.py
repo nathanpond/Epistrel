@@ -3,7 +3,8 @@
 - **The slot and the sweeps.** A staged turn stuck short of its completion (its outcome
   transaction failed) keeps its story's turn slot past its lease: a newcomer's ``acquire``
   finds it busy, the lapsed-lease reclaim and ``orphans.fail_orphans`` skip it (never
-  ``failed``, never ``turn_interrupted``, the slot kept); #213 resumes it.
+  ``failed``, never ``turn_interrupted``); #213: the newcomer's request schedules its resume,
+  which records the outcome and completes it, then gives the slot back.
 - **A pause or an erasure block after intent** does not refuse the turn's later stages (the
   same operation's work); a pause before intent refuses the turn with 409 ``story_paused``.
 - **A discard** (a truncation while the turn waits) abandons it: ``turn_stage = abandoned``,
@@ -83,7 +84,7 @@ async def _waiting(
     return story, cal, fake, released, playing
 
 
-async def test_an_unfinished_staged_turn_keeps_its_slot(
+async def test_an_unfinished_staged_turn_keeps_its_slot_until_resumed(
     stub_settings: Settings,
     engine: AsyncEngine,
     states_delivered: None,
@@ -113,15 +114,29 @@ async def test_an_unfinished_staged_turn_keeps_its_slot(
                 {"s": story},
             ),
         )
+        # A newcomer finds the story busy, and the request schedules the turn's resume (#213).
         held = await turn_gate.acquire(engine, story, new_ulid(), lease_s=30)
         assert held is not None
         assert held.operation_id == op.operation_id
         assert op.operation_id not in await orphans.fail_orphans(engine, grace_s=0)
         assert op.operation_id not in await orphans.reclaim_expired_slots(engine)
         again = await sp.staged_op(engine, story)
-        assert (again.status, again.turn_stage) == ("committed", "awaiting_outcome")
-        holder = await _holder(engine, story)
-        assert holder == [op.operation_id]
+        assert again.status == "committed"  # never failed, never turn_interrupted
+        await staged.settle_kicked()
+        # #213: resumed from its last committed stage: the outcome recorded once, the turn
+        # completed with the deterministic narration, the slot given back.
+        done = await sp.staged_op(engine, story)
+        assert (done.status, done.turn_stage) == ("committed", "completed")
+        assert await sp.stage_names(engine, story) == ["intent", "claim", "outcome", "completion"]
+        texts = await rows(
+            engine,
+            "SELECT payload->>'text' AS text FROM events WHERE operation_id = :o "
+            "AND type = 'beat_narration'",
+            o=op.operation_id,
+        )
+        assert f"Cal's {sp.REASON} went through." in [t.text for t in texts]
+        assert len(fake.writes) == 1  # answered before the failure: never re-sent
+        assert await _holder(engine, story) == [None]
         await ps.drop_outbox_jobs(engine, story)
 
 

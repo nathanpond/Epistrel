@@ -16,11 +16,18 @@ operation committed, consistent counters, and projections equal to a rebuild fro
 A client-side oracle of each story's head turn must agree with the database.
 
 ``EPISTREL_CHAOS_ITERATIONS`` (default 20, the quick form PR CI runs; the weekly run uses 500)
-and ``EPISTREL_CHAOS_SEED`` (printed) replay a run.
+and ``EPISTREL_CHAOS_SEED`` (printed) replay a run. The M2 part draws the commit path's crash
+points (``COMMIT_POINTS``); a Lite turn never reaches a staged turn's.
+
+**M6** (``test_x_03__m6``, #213; FR-EXT-17): the same harness over staged turns (a synchronous
+provider served by a ``GameServer`` in this process): every crash
+leaves each staged turn at a stage boundary, never mid-stage, and every one resumes to
+``completed``; its tally line, printed with the seed, counts the staged turns.
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
 import random
 import secrets
@@ -34,7 +41,10 @@ import pytest
 from epistrel.core import timeline
 from epistrel.core.db import make_engine
 from epistrel.orchestrator.models.access import ModelAccessLayer
-from epistrel.testing.faults import POINTS, EngineProcess, crash_at
+from epistrel.orchestrator.structured import staged
+from epistrel.testing.faults import COMMIT_POINTS, POINTS, EngineProcess, crash_at
+from tests import provider_support as ps
+from tests import staged_crash_support as sc
 from tests.auth_support import CREDENTIAL_A, auth_settings
 from tests.conformance.conftest import migrated_database
 from tests.crash_support import drain_jobs, in_flight_keys, integrity, recover
@@ -232,7 +242,11 @@ async def _iteration(
     tally: Tally,
     iteration: int,
 ) -> None:
-    plan = None if rng.random() < NO_KILL else crash_at(rng.choice(POINTS), rng.randint(1, NTH_MAX))
+    plan = (
+        None
+        if rng.random() < NO_KILL
+        else crash_at(rng.choice(COMMIT_POINTS), rng.randint(1, NTH_MAX))
+    )
     child.crash = plan
     await child.start()
     touched: set[str] = set()
@@ -283,5 +297,215 @@ async def _final(db: Any, pool: list[Story], tally: Tally) -> None:
         db,
         "SELECT idempotency_key FROM operations WHERE status = 'committed' "
         "AND idempotency_key IS NOT NULL GROUP BY idempotency_key HAVING count(*) > 1",
+    )
+    assert doubled == [], f"seed={SEED}: keys with two commits {doubled}"
+
+
+# -- M6: staged turns (#213; FR-EXT-17) ------------------------------------------------------
+
+STAGED_OPS = 5
+"""Staged purchases per round (one crash plan, one child start)."""
+ROUNDS = max(4, ITERATIONS // 10)
+"""The M6 part's rounds, tied to ``EPISTREL_CHAOS_ITERATIONS``: 4 in the quick run (20 staged
+turns), 50 in the weekly one (250 staged turns, at least the 200 #213 asks for). A round costs
+a child start, so the weekly run's time stays within the chaos job's."""
+STAGED_NTH_MAX = 3
+BOUNDARIES = {
+    "intent_committed": ["intent"],
+    "awaiting_outcome": ["intent", "claim"],
+    "outcome_recorded": ["intent", "claim", "outcome"],
+    "completed": ["intent", "claim", "outcome", "completion"],
+}
+"""The stages a staged turn has logged at each ``turn_stage`` (``completed``: and maybe its
+``response``)."""
+
+
+@dataclass
+class StagedTally:
+    kills: Counter[str] = field(default_factory=Counter)
+    staged: int = 0
+    """Staged turns played (each one answered once)."""
+    retried: int = 0
+    found_at: Counter[str] = field(default_factory=Counter)
+    """The stages the story's staged turns were found at after each crash."""
+
+
+async def _boundaries(db: Any, story: str, setup: frozenset[str]) -> list[str]:
+    """Every way a staged turn of ``story`` is not at a stage boundary: its logged stages are
+    not the ones its ``turn_stage`` says, or a later stage's rows exist without an earlier
+    stage's (the outbox row unclaimed after the claim; outcome events before the outcome stage;
+    a message before the completion)."""
+    problems: list[str] = []
+    ops = await rows(
+        db,
+        "SELECT operation_id, status::text AS status, turn_stage::text AS stage, stage_log "
+        "FROM operations WHERE story_id = :s AND turn_stage IS NOT NULL",
+        s=story,
+    )
+    for op in ops:
+        if op.operation_id in setup:
+            continue
+        logged = [e["stage"] for e in op.stage_log or [] if e.get("stage") in staged.STAGES]
+        expected = BOUNDARIES.get(op.stage)
+        if op.status != "committed" or expected is None:
+            problems.append(f"{op.operation_id}: {op.status} {op.stage}")
+            continue
+        if logged not in (expected, [*expected, "response"]) or (
+            "response" in logged and op.stage != "completed"
+        ):
+            problems.append(f"{op.operation_id}: {op.stage} logged {logged}")
+        found = await rows(
+            db,
+            "SELECT type, count(*) AS n FROM events WHERE operation_id = :o GROUP BY type",
+            o=op.operation_id,
+        )
+        counts = {r.type: int(r.n) for r in found}
+        outbox = await rows(
+            db,
+            "SELECT status FROM external_effect_outbox WHERE operation_id = :o",
+            o=op.operation_id,
+        )
+        if not outbox or not any(t.startswith("beat_") for t in counts):
+            problems.append(f"{op.operation_id}: no intent rows")
+        if "claim" in logged and any(r.status == "intended" for r in outbox):
+            problems.append(f"{op.operation_id}: claimed stage with an unclaimed row")
+        if counts.get("external_outcome") and "outcome" not in logged:
+            problems.append(f"{op.operation_id}: an outcome before its stage")
+        messages = counts.get("message_rendered", 0)
+        if messages != (1 if op.stage == "completed" else 0):
+            problems.append(f"{op.operation_id}: {messages} message(s) at {op.stage}")
+    return problems
+
+
+async def _staged_stages(db: Any, story: str, setup: frozenset[str]) -> Counter[str]:
+    found = await rows(
+        db,
+        "SELECT operation_id, turn_stage::text AS stage FROM operations "
+        "WHERE story_id = :s AND turn_stage IS NOT NULL",
+        s=story,
+    )
+    return Counter(r.stage for r in found if r.operation_id not in setup)
+
+
+@pytest.mark.chaos
+@pytest.mark.chaos_quick
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-EXT-17")
+async def test_x_03__m6(pg_url: str, engine: Any, states_delivered: None) -> None:
+    """#213 (FR-EXT-17): kills at random points across staged turns.
+
+    A child engine (``api`` mode, as the M2 part: the harness is the worker; a staged turn's
+    request claims and sends its effects itself) plays staged purchases on a synchronous,
+    deduplicating provider (``GameServer`` in this process), ``STAGED_OPS`` per
+    round (``ROUNDS``, tied to ``EPISTREL_CHAOS_ITERATIONS``), each round under a crash plan
+    drawn over every crash point (the commit path's, which a staged turn's stages hit too, and
+    the stage boundaries ``staged.*``; 20 % of rounds get none). When the child dies, every
+    staged turn is found at a stage boundary, never mid-stage: its logged stages are the ones
+    its ``turn_stage`` says and no row of a later stage exists without the earlier stage's. The
+    harness then runs the worker's recovery pass (which resumes stalled staged turns), starts
+    the child again and retries the request under its key. Each round ends with a kill and a
+    recovery pass, after which every staged turn has resumed to ``completed`` (or
+    ``abandoned``) at a boundary.
+
+    Complements: crash points fired, the interrupted requests were retried and answered, the
+    tally (printed with the seed) counts the staged turns: at least 20 in the quick run and 200
+    at 500 iterations; every key maps to one committed turn, one purchase each, and the story
+    passes the M2 predicate at the end."""
+    rng = random.Random(SEED + 6)  # noqa: S311 - a replayable seed, not a secret
+    tally = StagedTally()
+    print(f"\nX-03 staged seed={SEED} iterations={ITERATIONS} rounds={ROUNDS} ops={STAGED_OPS}")
+    with (
+        migrated_database(pg_url, f"epistrel_x03m6_{secrets.token_hex(4)}") as url,
+        ps.game_server(balance=10**9) as server,
+    ):
+        settings = auth_settings(url, model_adapter="stub")
+        db = make_engine(settings)
+        child = EngineProcess(url, CREDENTIAL_A, lease_s=LEASE_S, mode="api", deliver=["states"])
+        try:
+            async with ps.allowed_hosts(db, [ps.LOOPBACK]):
+                await child.start()
+                async with httpx.AsyncClient(base_url=child.base_url, timeout=60) as client:
+                    story = await sc.http_story(client, db, server)
+                child.stub_rules = sc.purchase_rules(story.cal)
+                await child.kill()
+                for iteration in range(ROUNDS):
+                    await _staged_iteration(db, child, rng, story, tally, iteration)
+                await _staged_final(db, story, tally)
+        finally:
+            await child.kill()
+            await db.dispose()
+    print(
+        f"X-03 staged staged_turns={tally.staged} kills={dict(tally.kills)} "
+        f"retried={tally.retried} found_at={dict(tally.found_at)} purchases={server.purchases}"
+    )
+    assert sum(tally.kills.values()) > 0, f"seed={SEED}: no crash point fired"
+    assert tally.retried == sum(tally.kills.values()), f"seed={SEED}"
+    assert tally.staged == ROUNDS * STAGED_OPS, f"seed={SEED}"
+    assert tally.staged >= (200 if ITERATIONS >= 500 else 20), f"seed={SEED}: {tally.staged}"
+    assert server.purchases == tally.staged, f"seed={SEED}: one purchase per staged turn"
+
+
+async def _staged_iteration(
+    db: Any,
+    child: EngineProcess,
+    rng: random.Random,
+    story: sc.Staged,
+    tally: StagedTally,
+    iteration: int,
+) -> None:
+    plan = (
+        None
+        if rng.random() < NO_KILL
+        else crash_at(rng.choice(POINTS), rng.randint(1, STAGED_NTH_MAX))
+    )
+    context = f"seed={SEED} iteration={iteration} plan={plan}"
+    child.crash = plan
+    await child.start()
+    for step in range(STAGED_OPS):
+        key = f"x03m6-{SEED}-{iteration}-{step}"
+        answer = await sc.buy(child, story, key)
+        if answer is None:
+            assert plan is not None, context
+            assert await child.wait_exit(10) == CRASHED, context
+            tally.kills[plan.point] += 1
+            assert await _boundaries(db, story.story, story.setup) == [], context
+            tally.found_at.update(await _staged_stages(db, story.story, story.setup))
+            await recover(db)
+            child.crash = None
+            await child.start()
+            await asyncio.sleep(LEASE_S + 0.2)
+            answer = await sc.buy(child, story, key)
+            assert answer is not None, f"{context}: the retry crashed"
+            tally.retried += 1
+        assert answer.status_code == 200, f"{context}: {answer.text}"
+        tally.staged += 1
+    await child.kill()
+    await recover(db)
+    assert await _boundaries(db, story.story, story.setup) == [], context
+    stages = await _staged_stages(db, story.story, story.setup)
+    assert set(stages) <= {"completed", "abandoned"}, f"{context}: {stages}"
+
+
+async def _staged_final(db: Any, story: sc.Staged, tally: StagedTally) -> None:
+    """Every staged turn completed with its response stored, one committed turn per key, and
+    the story sound (the M2 predicate)."""
+    assert await integrity(db, [story.story]) == [], f"seed={SEED}"
+    assert await in_flight_keys(db) == [], f"seed={SEED}"
+    found = await rows(
+        db,
+        "SELECT o.turn_stage::text AS stage, o.stage_log, k.status FROM operations o "
+        "JOIN idempotency_keys k ON k.operation_id = o.operation_id "
+        "WHERE o.story_id = :s AND o.turn_stage IS NOT NULL",
+        s=story.story,
+    )
+    assert len(found) == tally.staged, f"seed={SEED}"
+    for row in found:
+        logged = [e["stage"] for e in row.stage_log or [] if e.get("stage") in staged.STAGES]
+        assert (row.stage, row.status, logged) == ("completed", "done", list(staged.STAGES))
+    doubled = await rows(
+        db,
+        "SELECT idempotency_key FROM operations WHERE story_id = :s AND status = 'committed' "
+        "AND idempotency_key IS NOT NULL GROUP BY idempotency_key HAVING count(*) > 1",
+        s=story.story,
     )
     assert doubled == [], f"seed={SEED}: keys with two commits {doubled}"

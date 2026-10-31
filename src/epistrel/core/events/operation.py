@@ -585,6 +585,63 @@ class Operation:
         )
         self.status = OperationStatus.IN_FLIGHT
 
+    @classmethod
+    async def resumed(cls, db: Database, operation_id: str) -> Operation | None:
+        """#213 (FR-EXT-17): the committed staged turn ``operation_id`` as its row stands, ready
+        for ``reopen`` in a process other than the one that began it (``orchestrator.
+        structured.staged.resume``); ``None`` when there is no such committed staged turn. It
+        holds the story's turn slot while unfinished (the resume took the slot over), so the
+        stage that completes it gives the slot back."""
+        o = operations.c
+        query = select(
+            o.story_id,
+            o.kind,
+            o.principal,
+            o.idempotency_key,
+            o.viewpoint,
+            o.origin,
+            o.narrative_turn,
+            o.turn_variant,
+            o.parent_variant,
+            o.membership_tx,
+            o.timeline_revision,
+            o.base_revision,
+            o.turn_stage,
+            o.config_revisions,
+        ).where(
+            o.operation_id == operation_id,
+            o.status == OperationStatus.COMMITTED.value,
+            o.turn_stage.is_not(None),
+        )
+        if isinstance(db, AsyncConnection):
+            row = (await db.execute(query)).one_or_none()
+        else:
+            async with db.connect() as conn:
+                row = (await conn.execute(query)).one_or_none()
+        if row is None or row.story_id is None or row.narrative_turn is None:
+            return None
+        op = cls(
+            db,
+            story_id=str(row.story_id),
+            kind=OperationKind(row.kind),
+            principal=str(row.principal),
+            idempotency_key=row.idempotency_key,
+            viewpoint=row.viewpoint,
+            origin=row.origin,
+            operation_id=operation_id,
+        )
+        op.status = OperationStatus.COMMITTED
+        op.narrative_turn = int(row.narrative_turn)
+        op.turn_variant = None if row.turn_variant is None else int(row.turn_variant)
+        op.parent_variant = None if row.parent_variant is None else int(row.parent_variant)
+        op.tx_time = row.membership_tx
+        op.timeline_revision = None if row.timeline_revision is None else int(row.timeline_revision)
+        op.base_revision = None if row.base_revision is None else int(row.base_revision)
+        op.turn_stage = StagedTurnStage(row.turn_stage)
+        op.config_revisions = row.config_revisions
+        op.holds_turn_slot = True
+        return op
+
     async def begin(self, read: Callable[[AsyncConnection], Awaitable[Any]] | None = None) -> Any:
         """Insert the ``in_flight`` operations row and capture the base. Takes no story lock.
 

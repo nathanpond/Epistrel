@@ -6,7 +6,8 @@ docs/02 §7.1; #185, migration 0084).
   (``{min, max, non_negative, allowed_values, tolerance}``), ``initial_value`` (the fold's base;
   ``NULL``: undefined until set), the ``aliases`` and ``unit`` that let prose name it, the
   ``entity_id`` a possession-style State tracks, ``visibility``, ``owner`` (``story`` or
-  ``external``, with its ``provider_id``), ``silent``, the effect rules (``rules``,
+  ``external``, with its ``provider_id`` and the provider's ``external_value_name``, #204),
+  ``silent``, the effect rules (``rules``,
   ``authorization``, ``transfer``; #188), ``reservation_expiry_minutes`` (#216) and
   ``created_by``. The built-in ``world_clock`` (#193, migration 0085; type ``clock``) also
   fills the clock's settings, one column each (``mode``, ``anchor``, ``pacing_table``,
@@ -109,6 +110,7 @@ state_definitions = Table(
     Column("visibility", pg_enum(StateVisibility, "state_visibility"), nullable=False),
     Column("owner", pg_enum(StateOwner, "state_owner"), nullable=False),
     Column("provider_id", Text, nullable=True),
+    Column("external_value_name", Text, nullable=True),
     Column("silent", Boolean, nullable=False, server_default=text("false")),
     Column("rules", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
     Column("authorization", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
@@ -130,6 +132,9 @@ state_definitions = Table(
     UniqueConstraint("story_id", "name"),
     CheckConstraint("length(name) BETWEEN 1 AND 80", name="name_length"),
     CheckConstraint("owner <> 'external' OR provider_id IS NOT NULL", name="external_provider"),
+    CheckConstraint(
+        "(owner = 'external') = (external_value_name IS NOT NULL)", name="external_value_name"
+    ),
     CheckConstraint(
         "reservation_expiry_minutes IS NULL OR reservation_expiry_minutes > 0",
         name="reservation_expiry",

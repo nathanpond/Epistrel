@@ -812,6 +812,8 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "client_events": "ingest de-duplication: client ids and the ids of the events written",
     "audit_log": "deployment audit records: identifiers and outcomes (docs/04's M4 clause)",
     "story_profile_overrides": "engine-profile dial values (numbers and enums)",
+    "story_provider_bindings": "a story's ids at its providers (#204): opaque game identifiers "
+    "(an account or player id), never prose",
     "rating_check_jobs": "a rating check's progress and verdicts by record key and policy id",
     "guardrail_check_results": "verdicts by record key and policy id",
     "promissory_ledger": "the promissory ledger (#146): ids, positions, kinds and discharge "
@@ -850,6 +852,8 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "engine_profiles": "an engine profile's name and owner principal (configuration)",
     "engine_profile_versions": "engine-profile dial values (numbers and enums)",
     "model_config": "model endpoints, model names, parameters and an encrypted key",
+    "external_providers": "deployment configuration (#204): provider names, request templates "
+    "with secret references, policies; no story content",
     "entity_relations": "entity ids, principals and free-text relation names",
     "ownership_events": "ownership changes: entity ids, principals, relation names",
     "offboarding_jobs": "a principal's offboarding: ids, actions, counts and its report of ids",

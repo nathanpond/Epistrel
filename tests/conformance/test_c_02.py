@@ -2,22 +2,30 @@
 in-process library; the operator endpoints delivered so far are served under ``/admin``; no MCP
 server is exposed (#73, re-running #44's assertions against the full app). M3 part
 (``test_c_02__admin_prefix``, #128): M3's operator endpoints (offboarding, erasure, feedback
-export) are under ``/admin`` and matched by #44's operator patterns."""
+export) are under ``/admin`` and matched by #44's operator patterns. M6 part
+(``test_c_02__m6_admin``, #204): providers are registered under ``/admin/external-providers``
+and called as providers; no MCP transport."""
 
 from __future__ import annotations
 
 from collections.abc import Iterator
 
+import httpx2 as httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.routing import APIRoute, iter_route_contexts
 from fastapi.testclient import TestClient
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 import epistrel
 from epistrel.api import create_app
 from epistrel.api.auth import EXEMPT_ROUTES, unguarded_routes
 from epistrel.api.routes.admin import ADMIN_PREFIX, is_operator_path
+from epistrel.core.ids import new_ulid
 from epistrel.engine import Engine, library_only_methods, operations
+from epistrel.orchestrator.providers import registry
+from epistrel.orchestrator.providers.port import Binding
+from tests import provider_support as ps
 from tests.auth_support import auth_settings, bearer
 
 MCP_MARKERS = ("mcp", "/sse", "model-context")
@@ -233,3 +241,62 @@ def test_c_02__low_level_calls(dummy_dsn: str) -> None:
         assert name in names, name
     assert unreachable(app) == []
     assert unguarded_routes(app) == []
+
+
+M6_OPERATOR_PATHS = ("/admin/external-providers", "/admin/external-providers/{name}")
+"""docs/04 C-02 [M6]'s operator endpoints: provider registration (#204)."""
+
+M6_STORY_PATHS = (
+    "/stories/{story_id}/providers",
+    "/stories/{story_id}/providers/{name}/binding",
+)
+"""A story's own bindings to its providers (#204): the story's, not the operator's."""
+
+
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-EXT-1")
+async def test_c_02__m6_admin(pg_url: str, engine: AsyncEngine) -> None:
+    """Providers are registered under ``/admin/external-providers`` (matched by the operator
+    patterns), and a provider registered there is called as a provider: its manifest's value is
+    read through the port. M6 has no MCP transport: no route, and nothing answers at the usual
+    MCP endpoints.
+
+    Complements asserted: the registration paths outside ``/admin`` would be reported as
+    misplaced, and a story's own binding routes are not operator paths."""
+
+    app = create_app(auth_settings(pg_url, mode="all"))
+    paths = {path for _, path, _ in served(app)}
+    assert set(M6_OPERATOR_PATHS) <= paths
+    assert set(M6_STORY_PATHS) <= paths
+    assert [path for path in M6_OPERATOR_PATHS if not is_operator_path(path)] == []
+    outside = [path.removeprefix(ADMIN_PREFIX) for path in M6_OPERATOR_PATHS]
+    assert [path for path in outside if not is_operator_path(path)] == []
+    assert [path for path in M6_STORY_PATHS if is_operator_path(path)] == []
+    misplaced = [p for p in paths if is_operator_path(p) and not p.startswith(ADMIN_PREFIX)]
+    assert misplaced == []
+    assert mcp_routes(app) == []
+    assert unreachable(app) == []
+    assert unguarded_routes(app) == []
+
+    lib: Engine = app.state.epistrel
+    lib.bind(engine)
+    name = ps.unique_name("called")
+    fake = ps.ScriptedProvider(name).attach(lib)
+    fake.script("gold", 42)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        made = await client.post(
+            "/admin/external-providers",
+            json=ps.in_process_spec(name),
+            headers={**bearer(), "X-Epistrel-Principal": "p-operator"},
+        )
+        assert made.status_code == 201, made.text
+        for probe in MCP_PROBES:
+            assert (await client.get(probe, headers=bearer())).status_code == 404, probe
+    async with engine.connect() as conn:
+        provider = await registry.provider_for(conn, name, in_process=lib.in_process_providers)
+    story = new_ulid()
+    found = await provider.read("gold", Binding(story, name, {}), None)
+    assert str(found.value) == "42"
+    assert fake.reads == [("gold", story, None)]

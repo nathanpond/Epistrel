@@ -53,9 +53,9 @@ UNUSED_SETTINGS = {
     "interaction_mode": "multi_character",
     "ambiguous_retcon_timing": "history_rewrite",
     "backfill_conflict_policy": "history_rewrite",
-    "required_providers": "providers",
 }
-"""Each story setting a Lite story keeps inactive, with the capability it waits for."""
+"""Each story setting a Lite story keeps inactive, with the capability it waits for
+(``required_providers`` is live since #204 delivered ``providers``)."""
 
 
 def sunday_dinner(locked: str, default: str) -> dict[str, Any]:

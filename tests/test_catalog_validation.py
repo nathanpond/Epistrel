@@ -236,7 +236,8 @@ async def test_runner_lists_what_the_deployment_cannot_run() -> None:
 def test_the_checks_and_the_capabilities() -> None:
     """The ordered checks, each named once: the document check first (it gates), the three
     capability-gated ones last. The deployment's capabilities are each delivered level of the
-    pipeline and every other delivered module (``DELIVERED``): not States."""
+    pipeline and every other delivered module (``DELIVERED``), not States; and ``providers``,
+    delivered with the provider registry (#204)."""
     names = [check.name for check in validation.CHECKS]
     assert names == [
         "document",
@@ -263,7 +264,7 @@ def test_the_checks_and_the_capabilities() -> None:
         "state_schema": "states",
     }
     delivered = set(DELIVERED["pipeline"]) | {name for name in DELIVERED if name != "pipeline"}
-    assert delivered == DEPLOYMENT_CAPABILITIES
+    assert delivered | {"providers"} == DEPLOYMENT_CAPABILITIES
     assert {"lite", "rolling_summary", "pins", "polish", "budgets", "models"} <= delivered
     assert "states" not in delivered
 

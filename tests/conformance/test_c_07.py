@@ -1,6 +1,7 @@
 """C-07: adapter swap and capability reporting (docs/04), the M2 parts: the swap (#51) and
 protocol vs per-purpose capability (#54); and the M4 part (#138): the embedding adapter and the
-lexical backend swap the same way, and the model matrix reports the embedding endpoint."""
+lexical backend swap the same way, and the model matrix reports the embedding endpoint; and the
+M6 part (#204): the external-provider adapters swap the same way."""
 
 from __future__ import annotations
 
@@ -8,6 +9,7 @@ import ast
 import dataclasses
 import hashlib
 import re
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +17,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.core.ids import new_ulid
 from epistrel.core.retrieval import LexicalFilters, LexicalSearch, TsvectorLexicalSearch, search
 from epistrel.engine import Engine
 from epistrel.orchestrator.jobs import queue
@@ -23,8 +26,19 @@ from epistrel.orchestrator.models import config as model_config
 from epistrel.orchestrator.models.access import ModelAccessLayer
 from epistrel.orchestrator.models.capability import STRUCTURED_CALLS, assess
 from epistrel.orchestrator.models.registry import DELIVERED
+from epistrel.orchestrator.providers import registry as provider_registry
+from epistrel.orchestrator.providers.http_manifest import HttpManifestProvider
+from epistrel.orchestrator.providers.in_process import InProcessProvider
+from epistrel.orchestrator.providers.port import (
+    Binding,
+    Effect,
+    ExternalProvider,
+    ProviderUnavailable,
+    WriteOutcome,
+)
 from epistrel.tools import model_matrix as mm
 from epistrel.tools.model_matrix import embedding_row
+from tests import provider_support as ps
 from tests.auth_support import auth_settings
 from tests.conformance.suite import GENERATION_MODEL, run_suite
 from tests.embedding_support import embedding_db, run_jobs, say, structured_story, vectors
@@ -247,3 +261,135 @@ async def test_c_07__adapters(pg_url: str) -> None:
     rendered = mm.render([], [dataclasses.asdict(row)])
     assert "## Embedding" in rendered
     assert "| stub: stub | ✓ | stub | 64 | 64 |" in rendered
+
+
+# -- M6: the external-provider adapters (#204) ------------------------------------------------
+
+LEDGER = {"p-1": 640, "p-2": 75}
+"""The game's balances, by player id: what both adapters read."""
+OUTBOX_KEY = "01OUTBOX0000000000000000AA"
+
+
+def core_mentions_of_provider_adapters() -> list[str]:
+    """Modules under core that import the Orchestrator's provider package or name an adapter."""
+    found: list[str] = []
+    for path in sorted(CORE.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            names: list[str] = []
+            if isinstance(node, ast.ImportFrom) and node.module:
+                names = [node.module]
+            elif isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            if any(n.startswith("epistrel.orchestrator.providers") for n in names):
+                found.append(f"{path.name}: {names}")
+        source = path.read_text()
+        if "HttpManifestProvider" in source or "InProcessProvider" in source:
+            found.append(f"{path.name}: names an adapter")
+    return found
+
+
+async def _conformance(provider: Any, name: str, story: str) -> tuple[list[Any], list[str]]:
+    """The C-06 adapter assertions both adapters must pass: the port's protocol, each
+    binding's own typed value, a confirmed write with its resulting values under the effect's
+    idempotency key, the same key's resend answered alike, and an unanswerable read as the
+    port's adapter error. Answers the values read and the outcomes."""
+    assert isinstance(provider, ExternalProvider)
+    assert provider.name == name
+    values = [
+        (await provider.read("gold", Binding(story, name, {"player": p}), None)).value
+        for p in ("p-1", "p-2")
+    ]
+    effect = Effect("gold", OUTBOX_KEY, delta=Decimal(-40))
+    binding = Binding(story, name, {"player": "p-1"})
+    first = await provider.write(effect, binding)
+    resent = await provider.write(effect, binding)
+    with pytest.raises(ProviderUnavailable) as down:
+        await provider.read("gold", Binding(story, name, {"player": "down"}), None)
+    assert down.value.provider == name
+    return values, [first.status, resent.status, str((first.resulting_values or {})["gold"])]
+
+
+@pytest.mark.integration
+@pytest.mark.part("M6", "NFR-PORT-2")
+async def test_c_07__m6(pg_url: str, engine: AsyncEngine) -> None:
+    """The external-provider adapters swap with no Engine Core change: the same C-06
+    conformance run passes for a declarative HTTP manifest (``HttpManifestProvider`` over a
+    loopback stub) and for in-process callables (``InProcessProvider``), each resolved by name
+    from its registration through the same ``provider_for``, and nothing under
+    ``src/epistrel/core`` changes or names an adapter. (No model-matrix row: the owner's
+    decision of 2026-10-30.)
+
+    Complements asserted: the two runs really used different transports (the stub saw the
+    HTTP run's requests only, the callables the in-process run's only), and an in-process
+    provider with no callable registered in this process is the port's adapter error."""
+    assert core_mentions_of_provider_adapters() == []
+    before = core_digest()
+    story = new_ulid()
+    results: dict[str, tuple[list[Any], list[str]]] = {}
+    calls: dict[str, int] = {}
+    epistrel = Engine.from_settings(auth_settings(pg_url))
+
+    # The HTTP manifest over a loopback stub.
+    with ps.stub_server() as stub:
+        for player, balance in LEDGER.items():
+            stub.route("GET", f"/players/{player}/gold", ps.Reply(200, {"balance": balance}))
+        stub.route("GET", "/players/down/gold", ps.Reply(503, {"error": "down"}))
+        stub.route(
+            "POST", "/players/p-1/spend", ps.Reply(200, {"status": "ok", "values": {"gold": 600}})
+        )
+        async with ps.allowed_hosts(engine, [stub.host]):
+            http_name = ps.unique_name("http")
+            await ps.register(
+                engine,
+                ps.http_spec(stub.base_url, http_name, write=ps.write_template(stub.base_url)),
+            )
+            async with engine.connect() as conn:
+                provider = await provider_registry.provider_for(
+                    conn, http_name, in_process=epistrel.in_process_providers
+                )
+            assert isinstance(provider, HttpManifestProvider)
+            results["http"] = await _conformance(provider, http_name, story)
+        sent = [r for r in stub.received if r.method == "POST"]
+        assert {r.headers["Idempotency-Key"] for r in sent} == {OUTBOX_KEY}
+        assert sent[0].body == {"amount": -40, "note": "spend -40"}
+        calls["http"] = len(stub.received)
+
+    # In-process callables over the same ledger.
+    in_process_name = ps.unique_name("inproc")
+    await ps.register(engine, ps.in_process_spec(in_process_name, writable=["gold"]))
+    seen: list[str] = []
+    first_outcomes: dict[str, WriteOutcome] = {}
+
+    def read(value: str, binding: Binding, scope_key: str | None) -> Any:
+        seen.append(binding.external_ids["player"])
+        if binding.external_ids["player"] == "down":
+            raise ConnectionError("the game is down")
+        return LEDGER[binding.external_ids["player"]]
+
+    async def write(effect: Effect, binding: Binding) -> WriteOutcome:
+        seen.append(effect.idempotency_key)
+        return first_outcomes.setdefault(
+            effect.idempotency_key, WriteOutcome("confirmed", resulting_values={"gold": 600})
+        )
+
+    async with engine.connect() as conn:
+        orphan = await provider_registry.provider_for(
+            conn, in_process_name, in_process=epistrel.in_process_providers
+        )
+    with pytest.raises(ProviderUnavailable) as unregistered:
+        await orphan.read("gold", Binding(story, in_process_name, {"player": "p-1"}), None)
+    assert unregistered.value.reason == "not_registered"
+    epistrel.register_in_process_provider(in_process_name, read=read, write=write)
+    async with engine.connect() as conn:
+        provider = await provider_registry.provider_for(
+            conn, in_process_name, in_process=epistrel.in_process_providers
+        )
+    assert isinstance(provider, InProcessProvider)
+    results["in_process"] = await _conformance(provider, in_process_name, story)
+    calls["in_process"] = len(seen)
+
+    expected = ([Decimal(640), Decimal(75)], ["confirmed", "confirmed", "600"])
+    assert results["http"] == expected
+    assert results["in_process"] == expected
+    assert calls == {"http": 5, "in_process": 5}
+    assert core_digest() == before

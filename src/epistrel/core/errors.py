@@ -1237,3 +1237,70 @@ class GateThresholdNotFound(EpistrelError):
 
     code = "not_found"
     http_status = 404
+
+
+# -- external-data providers (FR-EXT-1,6; #204) ---------------------------------------------------
+
+
+class ProviderNotFound(EpistrelError):
+    """No external-data provider is registered under the name a call gives (FR-EXT-1; #204).
+    ``details``: ``provider``."""
+
+    code = "not_found"
+    http_status = 404
+
+
+class ProviderExists(EpistrelError):
+    """A registration names a provider already registered (#204): replace it with ``PUT``.
+    ``details``: ``provider``. Nothing is written."""
+
+    code = "provider_exists"
+    http_status = 409
+
+
+class ProviderInUse(EpistrelError):
+    """Deleting a provider a story's State names (#204: ``state_definitions.provider_id`` has no
+    foreign key, so the delete is refused). ``details``: ``provider`` and ``stories`` (their
+    ids). Nothing is written."""
+
+    code = "provider_in_use"
+    http_status = 409
+
+
+class InvalidManifest(InvalidRequest):
+    """A provider registration's manifest breaks a rule (FR-EXT-1, FR-EXT-5; #204): an unknown
+    placeholder, a placeholder in a URL's scheme, host or port, a URL that is not ``https`` (or
+    ``http`` on a loopback host), a host the deployment's ``provider_allowed_hosts`` lacks, a
+    path expression outside ``$``/``.key``/``[n]``, or a write template on a provider that is not
+    write-capable. ``details``: ``field`` (the manifest member) and ``reason``. Nothing is
+    written."""
+
+    code = "invalid_manifest"
+    http_status = 422
+
+
+class BindingIncomplete(EpistrelError):
+    """A story's binding to a provider lacks a key the provider's manifest substitutes
+    (``{binding.<key>}``; #204). ``details``: ``provider`` and ``missing`` (the keys). Nothing
+    is written."""
+
+    code = "binding_incomplete"
+    http_status = 422
+
+
+class ProviderUnbound(EpistrelError):
+    """A turn of a story that needs a provider (an externally owned State names it, or the
+    story's ``required_providers`` lists it) has no binding to it (#204): it fails closed before
+    anything is recorded. ``details``: ``story_id`` and ``providers`` (the unbound ones)."""
+
+    code = "provider_unbound"
+    http_status = 422
+
+
+class ProviderUnregistered(EpistrelError):
+    """A story created from a scenario requires providers the deployment has not registered
+    (``story_settings_defaults.required_providers``; #204). ``details``: ``providers`` (the
+    missing ones). Nothing is written."""
+
+    code = "provider_unregistered"
+    http_status = 422

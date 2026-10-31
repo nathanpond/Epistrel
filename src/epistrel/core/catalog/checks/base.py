@@ -34,12 +34,16 @@ from epistrel.core.settings_schema import DeploymentSettings
 from epistrel.core.tables.ownership import EntityType
 
 PIPELINE = "pipeline"
+PROVIDERS = "providers"
+"""External-data providers (#204): no profile module, delivered with the provider registry
+(``/admin/external-providers``), independent of #203's flip of ``states`` and ``clock``."""
 
 
 def delivered_capabilities() -> frozenset[str]:
     """The capabilities this deployment has delivered (#106's ``DELIVERED``): every module's
-    name, except the pipeline, which is named by each of its delivered levels."""
-    found: set[str] = set()
+    name, except the pipeline, which is named by each of its delivered levels; and
+    ``providers`` (#204)."""
+    found: set[str] = {PROVIDERS}
     for module, levels in DELIVERED.items():
         if module == PIPELINE:
             found.update(levels)

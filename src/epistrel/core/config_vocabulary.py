@@ -18,6 +18,7 @@ from pydantic import AfterValidator, BaseModel, WithJsonSchema
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.profiles.store import PROFILE_FAMILY
 from epistrel.core.profiles.story import ASSIGNMENT_SETTING, OVERRIDES_SETTING, VERSION_SETTING
+from epistrel.core.providers import PROVIDER_FAMILY, REQUIRED_PROVIDERS
 from epistrel.core.ratings.change import RATING_SETTING
 from epistrel.core.settings_schema import (
     PROFILE_DEFAULTS,
@@ -80,7 +81,14 @@ def _superseded_names(names: Mapping[str, str], generation: str) -> tuple[str, .
 
 DeploymentSettingFilter = _setting_filter(
     DeploymentSettings,
-    ("model_config", "policy", "rating", PROFILE_FAMILY, "verify_gate_threshold"),
+    (
+        "model_config",
+        "policy",
+        "rating",
+        PROFILE_FAMILY,
+        "verify_gate_threshold",
+        PROVIDER_FAMILY,
+    ),
     (
         *_setting_names(ProfileSettings, f"{PROFILE_DEFAULTS}."),
         *_superseded_names(SUPERSEDED_DEPLOYMENT_SETTINGS, "lite_generation_defaults"),
@@ -89,7 +97,9 @@ DeploymentSettingFilter = _setting_filter(
 """A deployment-scope ``setting`` filter: a deployment setting (one of the engine profiles'
 defaults, ``profile_defaults.<path>``, included), or a model configuration, global policy,
 rating or engine profile version (#113: ``engine_profile:<id>``, ``engine_profile:<id>.<path>``)
-row family, or a shape's live gate threshold (#155: ``verify_gate_threshold:<shape>``)."""
+row family, or a shape's live gate threshold (#155: ``verify_gate_threshold:<shape>``), or an
+external-data provider's registration (#204: ``external_provider:<name>``,
+``external_provider:<name>.<field>``)."""
 
 StorySettingFilter = _setting_filter(
     StorySettings,
@@ -98,6 +108,7 @@ StorySettingFilter = _setting_filter(
         ASSIGNMENT_SETTING,
         VERSION_SETTING,
         RATING_SETTING,
+        REQUIRED_PROVIDERS,
         *_setting_names(ProfileSettings, f"{OVERRIDES_SETTING}."),
         *_superseded_names(SUPERSEDED_STORY_SETTINGS, "generation_settings"),
     ),
@@ -106,8 +117,9 @@ StorySettingFilter = _setting_filter(
 (``engine_profile_id``, and ``engine_profile_version_pin`` for a pin, #181) or one of its
 overrides (``profile_overrides.<path>``; #113), its rating (``content_rating_id``; #118), the
 story's policy rows, or a character's participation role (#176: ``participation:<character
-id>``). M2's names of the dials #113 moved stay filterable: rows written before the move keep
-them."""
+id>``), and the story's live ``required_providers`` (#204: moved there by its first provider
+binding when genesis kept it inactive). M2's names of the dials #113 moved stay filterable:
+rows written before the move keep them."""
 
 
 __all__ = ["DeploymentSettingFilter", "StorySettingFilter"]

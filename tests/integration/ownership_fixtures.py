@@ -338,6 +338,31 @@ async def _unsignable(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> 
     return {}
 
 
+PROVIDER = "ownership-ledger"
+"""An in-process provider the binding routes name (#204): registered once, deployment-wide."""
+BINDING = {"external_ids": {"player": "p-1"}}
+
+
+async def _provider(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """The provider registered (an earlier case may have registered it: 409 then)."""
+    body = {
+        "name": PROVIDER,
+        "trust_tier": "authoritative",
+        "transport": "in_process",
+        "manifest": {"values": {"gold": {"type": "number", "writable": False}}},
+    }
+    response = await client.post("/admin/external-providers", json=body, headers=headers(OWNER))
+    assert response.status_code in (201, 409), response.text
+    return {"name": PROVIDER}
+
+
+async def _bound(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """The story bound to the provider by its owner (#204)."""
+    found = await _provider(client, kind, entity)
+    await _send(client, kind, entity, "PUT", f"/providers/{PROVIDER}/binding", BINDING, 200)
+    return found
+
+
 async def _story_character(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
     """The story's non-player character, Ada, for a promotion (#114)."""
     return {"character_id": entity.ids["ada"]}
@@ -670,6 +695,11 @@ CALLS: dict[tuple[str, str], Call] = {
     ("DELETE", f"{S}/memories/{{memory_id}}/pin"): Call(200, prepare=_pinned_memory),
     # Retrieval (#141): the debugging read, omniscient.
     ("GET", f"{S}/retrieve"): Call(200, queries=({"q": "the game", **OMNISCIENT},)),
+    # -- stories: the story's bindings to its providers (#204): bound by each requester, and
+    # read after the owner bound it.
+    ("PUT", f"{S}/providers/{{name}}/binding"): Call(200, BINDING, prepare=_provider),
+    ("GET", f"{S}/providers"): Call(200, prepare=_bound),
+    ("GET", f"{S}/providers/{{name}}/binding"): Call(200, prepare=_bound),
     # -- stories: message ratings (#112). Each requester rates a fresh story's reply, retracts
     # the owner's rating (none of its own: still 204), and reads its own rating of a reply all
     # three rated alike.

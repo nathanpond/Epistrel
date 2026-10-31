@@ -342,7 +342,6 @@ COMPLETE: dict[str, Any] = {
                 "message": "Keep the farm's address vague.",
             }
         ],
-        "required_providers": ["weather"],
     },
     "recommendation": {"engine_profile_id": "lite", "capabilities": ["per_character_partitions"]},
     "visual_style": {"prompt": "oil painting, muted autumn palette", "negative_prompt": "text"},
@@ -355,7 +354,9 @@ COMPLETE: dict[str, Any] = {
 has a role of each fill mode (an open one, one locked to a pinned catalog character, one
 pre-filled by default) and the player's. Its seeds use every disclosure, and every seed but the
 world's names several audience tokens (levels, a role and a named group). Its role characters
-are ids no character has: ``complete_with`` names real ones, which a publish needs (#111)."""
+are ids no character has: ``complete_with`` names real ones, which a publish needs (#111). It
+requires no provider: since #204 a story created from a scenario needs every required provider
+registered (``tests/conformance/test_c_06.py`` covers ``required_providers``)."""
 
 CARD_ROLES: list[dict[str, Any]] = [
     {

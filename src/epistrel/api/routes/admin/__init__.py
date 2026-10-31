@@ -19,6 +19,7 @@ from epistrel.api.routes.admin import (
     mutation,
     offboarding,
     policies,
+    providers,
     ratings,
     reembed,
     settings,
@@ -36,6 +37,7 @@ router.include_router(ratings.router)
 router.include_router(settings.router)
 router.include_router(policies.router)
 router.include_router(model_config.router)
+router.include_router(providers.router)
 router.include_router(reembed.router)
 router.include_router(offboarding.router)
 router.include_router(erasure.router)
@@ -47,7 +49,6 @@ _SEGMENT = r"(?:^|/){}(?:/|$)"
 
 _OPERATOR_SEGMENTS = (
     r"model-config",  # model configuration
-    r"(?:external-)?providers?",  # provider configuration and registration
     r"policies",  # global policies
     r"content-ratings",  # content-rating definitions (not the per-story content-rating)
     r"eras(?:e|ure)",  # erasure
@@ -67,6 +68,9 @@ _OPERATOR_SEGMENTS = (
 OPERATOR_PATH_PATTERNS: tuple[re.Pattern[str], ...] = (
     *(re.compile(_SEGMENT.format(segment)) for segment in _OPERATOR_SEGMENTS),
     re.compile(r"^/settings(?:/|$)"),  # deployment settings; /stories/{id}/settings is not
+    # Provider configuration and registration; a story's own bindings to its providers
+    # (``/stories/{id}/providers[/{name}/binding]``, #204) are the story's, not the operator's.
+    re.compile(r"^(?!/stories/[^/]+/providers(?:/|$))(?:.*/)?(?:external-)?providers?(?:/|$)"),
 )
 """FR-AUTH-1's operator enumeration, including paths not built yet. A route outside ``/admin``
 whose path matches one of these is misplaced."""

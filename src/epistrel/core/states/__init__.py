@@ -12,7 +12,9 @@ declaration's shape, typed values, constraints and the fold) are ``core.states.m
 - ``define_state(conn, op, story_id, definition)`` stores a declaration in ``op``'s commit
   transaction (a commit step), after the shape rules (``model.validate_definition``): 409
   ``state_name_taken`` for a name the story holds, 422 for an ``entity_id`` that is not one of
-  the story's entities.
+  the story's entities. An externally owned State (#204) names a registered provider whose
+  manifest owns its ``external_value_name`` with the same type (422 ``validation_error``,
+  ``reason`` ``unknown_provider``, ``unknown_value`` or ``type_mismatch``).
 - ``update_definition(conn, story_id, name, patch, *, principal)`` changes a declaration in place
   (owner decision 2026-10-30): a JSON merge patch over its members, under the story row lock, as
   a story configuration change. Each changed member records one ``config_changes`` row
@@ -64,10 +66,12 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import ColumnElement, delete, func, insert, literal, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from epistrel.core import providers
 from epistrel.core.config_changes import ConfigScope, record_config_change
 from epistrel.core.enums import (
     StateChangeKind,
     StateChangeSource,
+    StateOwner,
     StateScope,
     StateType,
     StateVisibility,
@@ -257,6 +261,7 @@ def _definition_of(row: Any) -> StateDefinition:
         visibility=row.visibility,
         owner=row.owner,
         provider_id=row.provider_id,
+        external_value_name=row.external_value_name,
         silent=bool(row.silent),
         rules=dict(row.rules or {}),
         authorization=dict(row.authorization or {}),
@@ -631,6 +636,7 @@ def _definition_row(story_id: str, state: StateDefinition, op: Operation) -> dic
         "visibility": state.visibility.value,
         "owner": state.owner.value,
         "provider_id": state.provider_id,
+        "external_value_name": state.external_value_name,
         "silent": state.silent,
         "rules": dict(state.rules),
         "authorization": dict(state.authorization),
@@ -690,6 +696,14 @@ async def define_state(
         raise StateNameTaken(
             f"the story already has a State {checked.name!r}",
             {"story_id": story_id, "state": checked.name},
+        )
+    if checked.owner is StateOwner.EXTERNAL:
+        # One declaration path for both owners (FR-STATE-2): an external one names a registered
+        # provider whose manifest owns the value, with the same type (#204).
+        assert checked.provider_id is not None  # noqa: S101 - validate_definition requires it
+        assert checked.external_value_name is not None  # noqa: S101 - defaulted there
+        await providers.check_external_value(
+            conn, checked.provider_id, checked.external_value_name, checked.type.value
         )
     if checked.entity_id is not None:
         known = await conn.scalar(

@@ -1053,6 +1053,38 @@ class VerifySettings(BaseModel):
     with the model, for a promotion (#155)."""
 
 
+PROVIDER_HOSTS_MAX = 100
+PROVIDER_HOST_PATTERN = (
+    r"^(?:[A-Za-z0-9.-]{1,253}|\[[0-9A-Fa-f:.]{2,45}\]|[0-9A-Fa-f:]{2,45})(?::[0-9]{1,5})?$"
+)
+"""A host (a name, an IPv4 address, or an IPv6 address bare or in brackets), optionally with
+``:<port>``."""
+
+
+def _lower_host(value: str) -> str:
+    return value.lower()
+
+
+ProviderHost = Annotated[
+    str, Field(max_length=260, pattern=PROVIDER_HOST_PATTERN), AfterValidator(_lower_host)
+]
+
+
+class ProviderSettings(BaseModel):
+    """Which hosts an external-data provider's HTTP manifest may call (FR-EXT-1, FR-EXT-5;
+    #204), stored under ``deployment_state.settings``. ``provider_allowed_hosts`` lists hosts,
+    each optionally with ``:<port>``: a manifest URL's host (and its port, when the entry names
+    one) must match an entry exactly, at registration and again at call time after
+    substitution. Empty (the default) refuses every ``http`` provider. Prospective: a
+    registration or call checks the list when it runs."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    provider_allowed_hosts: Annotated[list[ProviderHost], PROSPECTIVE] = Field(
+        default_factory=list, max_length=PROVIDER_HOSTS_MAX
+    )
+
+
 DEFAULT_THUNKS_MAX_OPEN = 500
 THUNKS_MAX_OPEN_LIMIT = 100_000
 
@@ -1165,6 +1197,7 @@ class DeploymentSettings(
     EmbeddingSettings,
     RetrievalSettings,
     VerifySettings,
+    ProviderSettings,
 ):
     """Every deployment setting ``/admin/settings`` reads and writes (#64): the
     ``deployment_state`` columns (``DEPLOYMENT_COLUMNS``) and the ``settings`` document's

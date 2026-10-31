@@ -237,6 +237,8 @@ ERROR_STATUS: dict[str, int] = {
     "fact_superseded": 409,
     "fact_inactive": 409,
     "gate_not_promotable": 409,
+    "provider_exists": 409,
+    "provider_in_use": 409,
     "length_required": 411,
     "draft_too_large": 413,
     "media_too_large": 413,
@@ -303,6 +305,10 @@ ERROR_STATUS: dict[str, int] = {
     "unsupported_event_kind": 422,
     "validation_error": 422,
     "viewpoint_unresolved": 422,
+    "binding_incomplete": 422,
+    "invalid_manifest": 422,
+    "provider_unbound": 422,
+    "provider_unregistered": 422,
     "story_busy": 423,
     "budget_exhausted": 503,
     "config_key_missing": 503,
@@ -400,7 +406,15 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         # persona a pending catalog-scope erasure reaches (#346).
         "erasure_pending",
         "ledger_unavailable",
+        # The scenario's required providers, and the request's provider bindings (#204).
+        "provider_unregistered",
+        "binding_incomplete",
     ),
+    # External-data providers (#204).
+    "register_external_provider": (*_ADMIN_CONFIG, "invalid_manifest", "provider_exists"),
+    "replace_external_provider": (*_ADMIN_CONFIG, "invalid_manifest"),
+    "delete_external_provider": (*_ADMIN_CONFIG, "provider_in_use"),
+    "bind_provider": ("binding_incomplete", "story_archived"),
     "list_media": ("ledger_unavailable",),
     # Gate tightening (#155): a promotion below the rule; an unknown shape's promote or delete.
     "promote_verify_gate": ("gate_not_promotable", "not_found"),
@@ -408,6 +422,7 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "respond": (
         *_GATED,
         *_TURN,
+        "provider_unbound",
         "story_archived",
         "story_paused",
         "story_busy",
@@ -416,6 +431,7 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "regenerate": (
         *_GATED,
         *_TURN,
+        "provider_unbound",
         "story_archived",
         "story_paused",
         "story_busy",

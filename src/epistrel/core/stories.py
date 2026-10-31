@@ -73,7 +73,7 @@ from pydantic import (
 from sqlalchemy import Table, and_, delete, func, insert, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import audit, clock, ownership, pause
+from epistrel.core import audit, clock, ownership, pause, providers
 from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.enums import OperationKind, OperationStatus, Provenance, StoryStatus
 from epistrel.core.epistemic import modeling
@@ -109,6 +109,7 @@ from epistrel.core.ownership import Owner, RelationFilter
 from epistrel.core.profiles import store as profiles
 from epistrel.core.profiles.effective import ProfileVersionRef, StoryProfileRef
 from epistrel.core.profiles.impact import ImpactReport
+from epistrel.core.providers import ProviderBindings
 from epistrel.core.ratings import require_assignable
 from epistrel.core.resolution.entities import add_entities, character_spec
 from epistrel.core.settings_schema import (
@@ -179,6 +180,7 @@ from epistrel.core.tables.propositions import (
     predicates,
     propositions,
 )
+from epistrel.core.tables.providers import story_provider_bindings
 from epistrel.core.tables.readset import proposition_changes
 from epistrel.core.tables.states import state_changes, state_definitions, state_values
 from epistrel.core.tables.utterances import utterances
@@ -208,6 +210,8 @@ STORY_TABLES: tuple[Table, ...] = (
     placement,
     relationships,
     story_profile_overrides,
+    # Provider bindings (#204): a story's ids at its providers; a fork reads the same values.
+    story_provider_bindings,
     policies,
     genesis_deferred,
     character_snapshots,
@@ -488,6 +492,12 @@ class StorySpec(BaseModel):
         description="The story's owner principal (default: the requesting principal; never "
         "`system`). Recorded, never interpreted.",
     )
+    provider_bindings: ProviderBindings = Field(
+        default_factory=dict,
+        description="The story's ids at its external-data providers (#204): "
+        "`{provider: {external_ids}}`, each provider registered and each binding giving every "
+        "`{binding.<key>}` its manifest uses (422 `binding_incomplete`).",
+    )
 
 
 # -- results --------------------------------------------------------------------------------
@@ -675,6 +685,8 @@ async def create_story_from(
                 **columns,
             )
         )
+        # The story's ids at its providers (#204), checked against each manifest.
+        await providers.bind_all(conn, story_id, spec.provider_bindings)
 
     async def insert_cast(conn: AsyncConnection) -> None:
         # One multi-row VALUES (not executemany) so ``age_recorded_at`` can be the commit's

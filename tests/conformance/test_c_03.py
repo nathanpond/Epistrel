@@ -51,6 +51,15 @@ from epistrel.api.routes.admin.mutation import (
 )
 from epistrel.api.routes.admin.offboarding import OffboardingPlanBody, OffboardingQueuedBody
 from epistrel.api.routes.admin.policies import PolicyBody, PolicyList, PolicyMutation
+from epistrel.api.routes.admin.providers import (
+    BindingBody,
+    BindingList,
+    BindingMutation,
+    ProviderBody,
+    ProviderItem,
+    ProviderList,
+    ProviderMutation,
+)
 from epistrel.api.routes.admin.ratings import RatingDetailBody, RatingList, RatingMutation
 from epistrel.api.routes.admin.settings import SettingsBody
 from epistrel.api.routes.admin.stories import (
@@ -178,6 +187,7 @@ from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Cardinality, Interval, Proposition
 from epistrel.core.propositions.registry import ApproveRequest
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME, MEMBER_OF
+from epistrel.core.providers import BindingRequest
 from epistrel.core.ratings import RatingFields, RatingReplacement
 from epistrel.core.ratings.change import RatingChangeRequest, RatingCheckStarted
 from epistrel.core.ratings.suggest import SuggestionRequest
@@ -201,6 +211,7 @@ from epistrel.orchestrator.lite.schemas import RegenerateRequest, RespondRequest
 from epistrel.orchestrator.models.config import ConfigReplacement
 from epistrel.orchestrator.policies.schemas import PolicyFields, PolicyReplacement
 from epistrel.orchestrator.policies.seeds.policies import MINORS_POLICY_ID
+from epistrel.orchestrator.providers.manifest import ProviderRegistration, ProviderSpec
 from epistrel.testing.normalize import Normalizer
 from tests.auth_support import auth_settings, bearer
 from tests.character_support import complete as complete_character
@@ -2328,6 +2339,53 @@ def _steps() -> list[Step]:
             lambda ids: Rest("DELETE", "/admin/model-config/generation"),
             lambda e, ids: _model_remove(e),
         ),
+        # -- external-data providers (#204): registration and a story's binding
+        Step(
+            "register_external_provider",
+            lambda ids: Rest("POST", "/admin/external-providers", PROVIDER),
+            lambda e, ids: _provider_written(
+                e.register_external_provider(CTX, ProviderRegistration.model_validate(PROVIDER))
+            ),
+        ),
+        Step(
+            "list_external_providers",
+            lambda ids: Rest("GET", "/admin/external-providers"),
+            lambda e, ids: _providers(e),
+        ),
+        Step(
+            "get_external_provider",
+            lambda ids: Rest("GET", PROVIDER_PATH),
+            lambda e, ids: _provider(e),
+        ),
+        Step(
+            "replace_external_provider",
+            lambda ids: Rest("PUT", PROVIDER_PATH, PROVIDER_EDIT),
+            lambda e, ids: _provider_written(
+                e.replace_external_provider(
+                    CTX, PROVIDER_NAME, ProviderSpec.model_validate(PROVIDER_EDIT)
+                )
+            ),
+        ),
+        Step(
+            "bind_provider",
+            lambda ids: Rest("PUT", BINDING_PATH, BINDING),
+            lambda e, ids: _bound(e, ids["story"]),
+        ),
+        Step(
+            "provider_bindings",
+            lambda ids: Rest("GET", "/stories/{story}/providers"),
+            lambda e, ids: _bindings(e, ids["story"]),
+        ),
+        Step(
+            "provider_binding",
+            lambda ids: Rest("GET", BINDING_PATH),
+            lambda e, ids: _binding(e, ids["story"]),
+        ),
+        Step(
+            "delete_external_provider",
+            lambda ids: Rest("DELETE", PROVIDER_PATH),
+            lambda e, ids: _no_content(e.delete_external_provider(CTX, PROVIDER_NAME)),
+        ),
     ]
 
 
@@ -2975,6 +3033,58 @@ async def _model_remove(engine: Engine) -> dict[str, Any]:
     return await _model_config_write(engine, "generation", write)
 
 
+PROVIDER_NAME = "parity-ledger"
+PROVIDER_PATH = f"/admin/external-providers/{PROVIDER_NAME}"
+BINDING_PATH = "/stories/{story}/providers/" + PROVIDER_NAME + "/binding"
+PROVIDER: dict[str, Any] = {
+    "name": PROVIDER_NAME,
+    "trust_tier": "authoritative",
+    "transport": "in_process",
+    "manifest": {"values": {"gold": {"type": "number", "writable": False}}},
+}
+PROVIDER_EDIT: dict[str, Any] = {
+    **{k: v for k, v in PROVIDER.items() if k != "name"},
+    "unavailability": "unknown",
+}
+BINDING: dict[str, Any] = {"external_ids": {"player": "p-1"}}
+
+
+async def _provider_written(call: Awaitable[Any]) -> dict[str, Any]:
+    write = await call
+    return dump(ProviderMutation.written(write.provider, write.config_revision))
+
+
+async def _providers(engine: Engine) -> dict[str, Any]:
+    return dump(ProviderList.of(*await engine.list_external_providers(CTX)))
+
+
+async def _provider(engine: Engine) -> dict[str, Any]:
+    revision, row = await engine.get_external_provider(CTX, PROVIDER_NAME)
+    return dump(ProviderItem(config_revision=revision, **ProviderBody.fields_of(row)))
+
+
+async def _bound(engine: Engine, story_id: str) -> dict[str, Any]:
+    write = await engine.bind_provider(
+        CTX, story_id, PROVIDER_NAME, BindingRequest.model_validate(BINDING)
+    )
+    return dump(
+        BindingMutation(
+            timeline_revision=write.timeline_revision,
+            activated_required_providers=write.activated,
+            **BindingBody.of(write.binding).model_dump(),
+        )
+    )
+
+
+async def _bindings(engine: Engine, story_id: str) -> dict[str, Any]:
+    found = await engine.provider_bindings(CTX, story_id)
+    return dump(BindingList(bindings=[BindingBody.of(b) for b in found]))
+
+
+async def _binding(engine: Engine, story_id: str) -> dict[str, Any]:
+    return dump(BindingBody.of(await engine.provider_binding(CTX, story_id, PROVIDER_NAME)))
+
+
 # -- running the sequence --------------------------------------------------------------------------
 
 
@@ -3295,4 +3405,4 @@ def test_c_03_bites_on_a_method_without_a_route_or_step(dummy_dsn: str) -> None:
 
     app = create_app(auth_settings(dummy_dsn))
     assert parity_gaps(Wider, app, _steps()) == ["brand_new_operation"]
-    assert parity_gaps(Engine, app, _steps()[:-1]) == ["remove_model_override"]
+    assert parity_gaps(Engine, app, _steps()[:-1]) == ["delete_external_provider"]

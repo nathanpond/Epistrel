@@ -51,6 +51,7 @@ from epistrel.core import (
     variants,
 )
 from epistrel.core import control as control_ops
+from epistrel.core import providers as core_providers
 from epistrel.core import story_settings as settings_store
 from epistrel.core.canon.facts import Fact
 from epistrel.core.catalog import characters as catalog_characters
@@ -203,6 +204,10 @@ from epistrel.orchestrator.policies.schemas import (
     PolicyReplacement,
     StoryPolicyItem,
 )
+from epistrel.orchestrator.providers import bindings as provider_binding
+from epistrel.orchestrator.providers import in_process as provider_in_process
+from epistrel.orchestrator.providers import registry as provider_registry
+from epistrel.orchestrator.providers.manifest import ProviderRegistration, ProviderSpec
 from epistrel.orchestrator.ratings import suggest as rating_suggestion_driver
 from epistrel.orchestrator.structured import pipeline as structured_turn
 from epistrel.orchestrator.verify import extraction as extraction_job
@@ -319,6 +324,17 @@ CODECS: dict[str, ResultCodec[Any]] = {
         model_config.ConfigWrite, status=204, revision_field=_CONFIG
     ),
     "retry_reembed": ResultCodec.of(ReembedRetry, revision_field=_CONFIG),
+    # External-data providers (#204): deployment-scoped registrations, and a story's binding.
+    "register_external_provider": ResultCodec.of(
+        provider_registry.ProviderWrite, status=201, revision_field=_CONFIG
+    ),
+    "replace_external_provider": ResultCodec.of(
+        provider_registry.ProviderWrite, revision_field=_CONFIG
+    ),
+    "delete_external_provider": ResultCodec.of(
+        provider_registry.ProviderWrite, status=204, revision_field=_CONFIG
+    ),
+    "bind_provider": ResultCodec.of(provider_binding.BindingWrite),
     # Gate tightening (#155): deployment-scoped writes of a shape's threshold.
     "set_verify_gate": ResultCodec.of(yield_queries.GateWrite, revision_field=_CONFIG),
     "promote_verify_gate": ResultCodec.of(yield_queries.GateWrite, revision_field=_CONFIG),
@@ -629,6 +645,9 @@ class Engine:
         # EPISTREL_MEDIA_ROOT, or S3; prepared at start-up by ``prepare_media``), the signer of
         # content URLs and of the moderation hook's requests, and the ffmpeg seam that takes a
         # video's poster from its first frame and probes videos (tests replace it).
+        # This process's in-process provider callables (#204;
+        # ``register_in_process_provider``).
+        self.in_process_providers = provider_in_process.InProcessRegistry()
         self.media: BlobStore = make_store(settings)
         self.signer = Signer(settings.config_key)
         self.posters: PosterExtractor = FfmpegTools(settings.ffmpeg_path)
@@ -1766,6 +1785,9 @@ class Engine:
                     respond_async=respond_async,
                 )
 
+            # A story that needs a provider it has no binding to fails closed before anything
+            # is recorded (#204; #205's reads rely on it).
+            await provider_binding.require_bound(self.db, story_id)
             if await self._plays_structured(story_id):
                 # The story's effective configuration runs the structured pipeline (#150).
                 return await structured_turn.respond(
@@ -2594,6 +2616,7 @@ class Engine:
             )
 
         async def run(ctx: RequestContext) -> RegenerateResult:
+            await provider_binding.require_bound(self.db, story_id)  # as respond's (#204)
             if await self._plays_structured(story_id):
                 # A structured story's regenerate (#154): the commit boundary reverts what the
                 # replaced variant committed.
@@ -3384,6 +3407,114 @@ class Engine:
             ),
             material={"purpose": purpose},
         )
+
+    # -- external-data providers (FR-EXT-1,6; #204) -------------------------------------------
+    # Deployment-scoped registrations (each write an interpretive configuration change, read
+    # afresh by the next operation that resolves the provider), and each story's bindings.
+
+    @refuses_nul()
+    async def list_external_providers(
+        self, ctx: RequestContext
+    ) -> tuple[int, list[core_providers.ProviderRow]]:
+        """``config_revision`` and every registered provider (manifests as registered: template
+        text and secret references, never a secret)."""
+        return await provider_registry.listing(self.db)
+
+    @refuses_nul()
+    async def get_external_provider(
+        self, ctx: RequestContext, name: str
+    ) -> tuple[int, core_providers.ProviderRow]:
+        """``config_revision`` and one registered provider (404 when unknown)."""
+        return await provider_registry.entry(self.db, name)
+
+    async def register_external_provider(
+        self, ctx: RequestContext, registration: ProviderRegistration
+    ) -> provider_registry.ProviderWrite:
+        """Register a provider (201): its manifest is validated against the deployment's
+        ``provider_allowed_hosts`` (422 ``invalid_manifest``); a name already registered is 409
+        ``provider_exists``."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "register_external_provider",
+            lambda _: provider_registry.register(self.db, registration, principal=principal),
+            material={"body": _body(registration)},
+        )
+
+    async def replace_external_provider(
+        self, ctx: RequestContext, name: str, spec: ProviderSpec
+    ) -> provider_registry.ProviderWrite:
+        """Replace a provider's registration; it takes effect at the next operation that
+        resolves the provider (FR-EXT-6). A replacement that changes nothing writes nothing."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "replace_external_provider",
+            lambda _: provider_registry.replace(self.db, name, spec, principal=principal),
+            material={"name": name, "body": _body(spec)},
+        )
+
+    async def delete_external_provider(
+        self, ctx: RequestContext, name: str
+    ) -> provider_registry.ProviderWrite:
+        """Delete a provider (REST 204); 409 ``provider_in_use`` while a story's State names
+        it. Stories' bindings to it are kept (identifiers only)."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "delete_external_provider",
+            lambda _: provider_registry.delete(self.db, name, principal=principal),
+            material={"name": name},
+        )
+
+    def register_in_process_provider(
+        self,
+        name: str,
+        *,
+        read: provider_in_process.ReadCallable,
+        write: provider_in_process.WriteCallable | None = None,
+    ) -> None:
+        """Register this process's callables for the ``in_process`` provider ``name``
+        (library-only, not story-scoped; the provider's ``external_providers`` row is still
+        required). Another process (a separate worker) has none: there a read is an adapter
+        error and a write stays ``intended`` (#206, #210)."""
+        self.in_process_providers.register(name, read=read, write=write)
+
+    async def bind_provider(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        name: str,
+        request: core_providers.BindingRequest,
+    ) -> provider_binding.BindingWrite:
+        """Bind the story to provider ``name`` with its external ids (idempotent: the same ids
+        again change nothing). 422 ``binding_incomplete`` for ids that leave a
+        ``{binding.<key>}`` of the manifest uncovered; 404 for an unregistered provider. A story
+        whose ``required_providers`` genesis kept inactive gets it live (#204)."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "bind_provider",
+            lambda _: provider_binding.bind_story(
+                self.db, story_id, name, request, principal=principal
+            ),
+            story_id=story_id,
+            material={"name": name, "body": _body(request)},
+        )
+
+    @refuses_nul()
+    async def provider_bindings(
+        self, ctx: RequestContext, story_id: str
+    ) -> list[core_providers.ProviderBinding]:
+        """The story's bindings to its providers, by provider name."""
+        return await provider_binding.story_bindings(self.db, story_id)
+
+    @refuses_nul()
+    async def provider_binding(
+        self, ctx: RequestContext, story_id: str, name: str
+    ) -> core_providers.ProviderBinding:
+        """The story's binding to provider ``name`` (404 when it has none)."""
+        return await provider_binding.story_binding(self.db, story_id, name)
 
     # -- the character catalog (FR-CAT-1,3,9; FR-SCN-10; FR-API-6; #103) ----------------------
     # Deployment-scoped: each write is one transaction recording a story-less ``control``

@@ -907,6 +907,139 @@
         "title": "BeliefsBody",
         "type": "object"
       },
+      "BindingBody": {
+        "description": "A story's binding to one provider.",
+        "properties": {
+          "bound_at": {
+            "format": "date-time",
+            "title": "Bound At",
+            "type": "string"
+          },
+          "external_ids": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "External Ids",
+            "type": "object"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "external_ids",
+          "bound_at"
+        ],
+        "title": "BindingBody",
+        "type": "object"
+      },
+      "BindingList": {
+        "description": "The story's bindings, by provider name.",
+        "properties": {
+          "bindings": {
+            "items": {
+              "$ref": "#/components/schemas/BindingBody"
+            },
+            "title": "Bindings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "bindings"
+        ],
+        "title": "BindingList",
+        "type": "object"
+      },
+      "BindingMutation": {
+        "description": "The binding as stored, with the story's (unchanged) ``timeline_revision`` and, when the\nbinding made the story's ``required_providers`` live (#204), that list.",
+        "properties": {
+          "activated_required_providers": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activated Required Providers"
+          },
+          "bound_at": {
+            "format": "date-time",
+            "title": "Bound At",
+            "type": "string"
+          },
+          "external_ids": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "External Ids",
+            "type": "object"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "provider",
+          "external_ids",
+          "bound_at"
+        ],
+        "title": "BindingMutation",
+        "type": "object"
+      },
+      "BindingRequest": {
+        "additionalProperties": false,
+        "description": "A story's ids at one provider: ``{binding.<key>}`` of its manifest substitutes\n``external_ids[<key>]`` (``PUT /stories/{id}/providers/{name}/binding``, and each entry of\na story creation's ``provider_bindings``).",
+        "examples": [
+          {
+            "external_ids": {
+              "player_id": "p-48151623"
+            }
+          }
+        ],
+        "properties": {
+          "external_ids": {
+            "maxProperties": 32,
+            "patternProperties": {
+              "^[A-Za-z0-9_]{1,64}$": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "title": "External Ids",
+            "type": "object"
+          }
+        },
+        "required": [
+          "external_ids"
+        ],
+        "title": "BindingRequest",
+        "type": "object"
+      },
       "Bound": {
         "additionalProperties": false,
         "description": "One end of an interval: exact (``inner == outer``) or approximate (see the module\ndocstring for which side is outer).",
@@ -24351,6 +24484,644 @@
         "title": "Proposition",
         "type": "object"
       },
+      "ProviderBody": {
+        "description": "A registered provider, as registered (secret references only), with when it was\ncreated and last changed and the deployment ``config_revision`` of its last change.",
+        "properties": {
+          "changed_at_revision": {
+            "title": "Changed At Revision",
+            "type": "integer"
+          },
+          "confirm_wait_max_seconds": {
+            "title": "Confirm Wait Max Seconds",
+            "type": "integer"
+          },
+          "confirmation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmation"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "dedupes_dispatch": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dedupes Dispatch"
+          },
+          "freshness_minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Freshness Minutes"
+          },
+          "manifest": {
+            "additionalProperties": true,
+            "title": "Manifest",
+            "type": "object"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "returns_resulting_values": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Returns Resulting Values"
+          },
+          "transport": {
+            "title": "Transport",
+            "type": "string"
+          },
+          "trust_tier": {
+            "title": "Trust Tier",
+            "type": "string"
+          },
+          "unavailability": {
+            "title": "Unavailability",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "write_capable": {
+            "title": "Write Capable",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "trust_tier",
+          "transport",
+          "manifest",
+          "write_capable",
+          "confirmation",
+          "dedupes_dispatch",
+          "returns_resulting_values",
+          "unavailability",
+          "freshness_minutes",
+          "confirm_wait_max_seconds",
+          "changed_at_revision",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ProviderBody",
+        "type": "object"
+      },
+      "ProviderItem": {
+        "description": "One provider, with the ``config_revision`` it was read at.",
+        "properties": {
+          "changed_at_revision": {
+            "title": "Changed At Revision",
+            "type": "integer"
+          },
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "confirm_wait_max_seconds": {
+            "title": "Confirm Wait Max Seconds",
+            "type": "integer"
+          },
+          "confirmation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmation"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "dedupes_dispatch": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dedupes Dispatch"
+          },
+          "freshness_minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Freshness Minutes"
+          },
+          "manifest": {
+            "additionalProperties": true,
+            "title": "Manifest",
+            "type": "object"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "returns_resulting_values": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Returns Resulting Values"
+          },
+          "transport": {
+            "title": "Transport",
+            "type": "string"
+          },
+          "trust_tier": {
+            "title": "Trust Tier",
+            "type": "string"
+          },
+          "unavailability": {
+            "title": "Unavailability",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "write_capable": {
+            "title": "Write Capable",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "trust_tier",
+          "transport",
+          "manifest",
+          "write_capable",
+          "confirmation",
+          "dedupes_dispatch",
+          "returns_resulting_values",
+          "unavailability",
+          "freshness_minutes",
+          "confirm_wait_max_seconds",
+          "changed_at_revision",
+          "created_at",
+          "updated_at",
+          "config_revision"
+        ],
+        "title": "ProviderItem",
+        "type": "object"
+      },
+      "ProviderList": {
+        "description": "Every registered provider, by name, and the deployment's ``config_revision``.",
+        "properties": {
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "providers": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderBody"
+            },
+            "title": "Providers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "config_revision",
+          "providers"
+        ],
+        "title": "ProviderList",
+        "type": "object"
+      },
+      "ProviderMutation": {
+        "description": "A provider after a write, with the ``config_revision`` the write produced.",
+        "properties": {
+          "changed_at_revision": {
+            "title": "Changed At Revision",
+            "type": "integer"
+          },
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "confirm_wait_max_seconds": {
+            "title": "Confirm Wait Max Seconds",
+            "type": "integer"
+          },
+          "confirmation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmation"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "dedupes_dispatch": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dedupes Dispatch"
+          },
+          "freshness_minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Freshness Minutes"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "manifest": {
+            "additionalProperties": true,
+            "title": "Manifest",
+            "type": "object"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "returns_resulting_values": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Returns Resulting Values"
+          },
+          "transport": {
+            "title": "Transport",
+            "type": "string"
+          },
+          "trust_tier": {
+            "title": "Trust Tier",
+            "type": "string"
+          },
+          "unavailability": {
+            "title": "Unavailability",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "write_capable": {
+            "title": "Write Capable",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "config_revision",
+          "name",
+          "trust_tier",
+          "transport",
+          "manifest",
+          "write_capable",
+          "confirmation",
+          "dedupes_dispatch",
+          "returns_resulting_values",
+          "unavailability",
+          "freshness_minutes",
+          "confirm_wait_max_seconds",
+          "changed_at_revision",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ProviderMutation",
+        "type": "object"
+      },
+      "ProviderRegistration": {
+        "additionalProperties": false,
+        "description": "``POST /admin/external-providers``: a new provider, by name.",
+        "examples": [
+          {
+            "freshness_minutes": 10,
+            "manifest": {
+              "values": {
+                "gold": {
+                  "read": {
+                    "headers": {
+                      "Authorization": "Bearer {secret.GAME_TOKEN}"
+                    },
+                    "url": "https://api.game.example/players/{binding.player_id}/gold",
+                    "value_path": "$.balance"
+                  },
+                  "type": "number"
+                }
+              }
+            },
+            "name": "game_ledger",
+            "transport": "http",
+            "trust_tier": "authoritative",
+            "unavailability": "last_known"
+          }
+        ],
+        "properties": {
+          "confirm_wait_max_seconds": {
+            "default": 10,
+            "maximum": 300.0,
+            "minimum": 1.0,
+            "title": "Confirm Wait Max Seconds",
+            "type": "integer"
+          },
+          "confirmation": {
+            "anyOf": [
+              {
+                "enum": [
+                  "synchronous",
+                  "asynchronous"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmation"
+          },
+          "dedupes_dispatch": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dedupes Dispatch"
+          },
+          "freshness_minutes": {
+            "anyOf": [
+              {
+                "maximum": 525600.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Freshness Minutes"
+          },
+          "manifest": {
+            "additionalProperties": true,
+            "description": "The tracked values the provider owns: for `http`, each value's `type` and its `read` (and, write-capable, `write`) request templates; for `in_process`, each value's `type` and `writable`. Templates may use `{binding.<key>}`, `{story.id}`, `{value.scope_key}`, `{effect.delta}`, `{effect.value}`, `{effect.idempotency_key}` (writes) and `{secret.<NAME>}` (the environment's `EPISTREL_PROVIDER_SECRET_<NAME>`; never stored or returned). Paths are `$`, `.key` and `[n]` only.",
+            "title": "Manifest",
+            "type": "object"
+          },
+          "name": {
+            "pattern": "^[a-z][a-z0-9_.-]{0,63}$",
+            "title": "Name",
+            "type": "string"
+          },
+          "returns_resulting_values": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Returns Resulting Values"
+          },
+          "transport": {
+            "enum": [
+              "http",
+              "in_process"
+            ],
+            "title": "Transport",
+            "type": "string"
+          },
+          "trust_tier": {
+            "enum": [
+              "authoritative",
+              "advisory"
+            ],
+            "title": "Trust Tier",
+            "type": "string"
+          },
+          "unavailability": {
+            "default": "last_known",
+            "enum": [
+              "fail_turn",
+              "last_known",
+              "unknown"
+            ],
+            "title": "Unavailability",
+            "type": "string"
+          },
+          "write_capable": {
+            "default": false,
+            "title": "Write Capable",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "trust_tier",
+          "transport",
+          "manifest",
+          "name"
+        ],
+        "title": "ProviderRegistration",
+        "type": "object"
+      },
+      "ProviderSpec": {
+        "additionalProperties": false,
+        "description": "A provider's registration without its name (``PUT``: replaces every field).",
+        "examples": [
+          {
+            "freshness_minutes": 10,
+            "manifest": {
+              "values": {
+                "gold": {
+                  "read": {
+                    "headers": {
+                      "Authorization": "Bearer {secret.GAME_TOKEN}"
+                    },
+                    "url": "https://api.game.example/players/{binding.player_id}/gold",
+                    "value_path": "$.balance"
+                  },
+                  "type": "number"
+                }
+              }
+            },
+            "transport": "http",
+            "trust_tier": "authoritative",
+            "unavailability": "last_known"
+          }
+        ],
+        "properties": {
+          "confirm_wait_max_seconds": {
+            "default": 10,
+            "maximum": 300.0,
+            "minimum": 1.0,
+            "title": "Confirm Wait Max Seconds",
+            "type": "integer"
+          },
+          "confirmation": {
+            "anyOf": [
+              {
+                "enum": [
+                  "synchronous",
+                  "asynchronous"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmation"
+          },
+          "dedupes_dispatch": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dedupes Dispatch"
+          },
+          "freshness_minutes": {
+            "anyOf": [
+              {
+                "maximum": 525600.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Freshness Minutes"
+          },
+          "manifest": {
+            "additionalProperties": true,
+            "description": "The tracked values the provider owns: for `http`, each value's `type` and its `read` (and, write-capable, `write`) request templates; for `in_process`, each value's `type` and `writable`. Templates may use `{binding.<key>}`, `{story.id}`, `{value.scope_key}`, `{effect.delta}`, `{effect.value}`, `{effect.idempotency_key}` (writes) and `{secret.<NAME>}` (the environment's `EPISTREL_PROVIDER_SECRET_<NAME>`; never stored or returned). Paths are `$`, `.key` and `[n]` only.",
+            "title": "Manifest",
+            "type": "object"
+          },
+          "returns_resulting_values": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Returns Resulting Values"
+          },
+          "transport": {
+            "enum": [
+              "http",
+              "in_process"
+            ],
+            "title": "Transport",
+            "type": "string"
+          },
+          "trust_tier": {
+            "enum": [
+              "authoritative",
+              "advisory"
+            ],
+            "title": "Trust Tier",
+            "type": "string"
+          },
+          "unavailability": {
+            "default": "last_known",
+            "enum": [
+              "fail_turn",
+              "last_known",
+              "unknown"
+            ],
+            "title": "Unavailability",
+            "type": "string"
+          },
+          "write_capable": {
+            "default": false,
+            "title": "Write Capable",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "trust_tier",
+          "transport",
+          "manifest"
+        ],
+        "title": "ProviderSpec",
+        "type": "object"
+      },
       "PublishRequest": {
         "additionalProperties": false,
         "description": "``POST /catalog/{characters|scenarios}/{id}/publish``: the draft revision being published\n(FR-CAT-3); a stale one is 409 ``draft_stale``.",
@@ -31113,6 +31884,16 @@
             "title": "Protected Index Max",
             "type": "integer"
           },
+          "provider_allowed_hosts": {
+            "items": {
+              "maxLength": 260,
+              "pattern": "^(?:[A-Za-z0-9.-]{1,253}|\\[[0-9A-Fa-f:.]{2,45}\\]|[0-9A-Fa-f:]{2,45})(?::[0-9]{1,5})?$",
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Provider Allowed Hosts",
+            "type": "array"
+          },
           "public_base_url": {
             "anyOf": [
               {
@@ -32468,6 +33249,20 @@
             ],
             "title": "Protected Index Max"
           },
+          "provider_allowed_hosts": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Allowed Hosts"
+          },
           "public_base_url": {
             "anyOf": [
               {
@@ -33407,6 +34202,16 @@
             ],
             "title": "Projection",
             "type": "string"
+          },
+          "provider_bindings": {
+            "description": "The story's ids at its external-data providers (#204): `{provider: {external_ids}}`, each provider registered and each binding giving every `{binding.<key>}` its manifest uses (422 `binding_incomplete`).",
+            "patternProperties": {
+              "^[a-z][a-z0-9_.-]{0,63}$": {
+                "$ref": "#/components/schemas/BindingRequest"
+              }
+            },
+            "title": "Provider Bindings",
+            "type": "object"
           },
           "scenario": {
             "$ref": "#/components/schemas/ScenarioRef"
@@ -34479,6 +35284,16 @@
             "default": null,
             "description": "The story's owner principal (default: the requesting principal; never `system`). Recorded, never interpreted.",
             "title": "Owner"
+          },
+          "provider_bindings": {
+            "description": "The story's ids at its external-data providers (#204): `{provider: {external_ids}}`, each provider registered and each binding giving every `{binding.<key>}` its manifest uses (422 `binding_incomplete`).",
+            "patternProperties": {
+              "^[a-z][a-z0-9_.-]{0,63}$": {
+                "$ref": "#/components/schemas/BindingRequest"
+              }
+            },
+            "title": "Provider Bindings",
+            "type": "object"
           },
           "settings": {
             "$ref": "#/components/schemas/CreationSettings"
@@ -36973,6 +37788,7 @@
                           "profile_defaults.verification.level",
                           "profile_defaults.verification.safe_disposition",
                           "protected_index_max",
+                          "provider_allowed_hosts",
                           "public_base_url",
                           "rating_check_model_calls_per_record",
                           "rating_check_retention_days",
@@ -36994,7 +37810,7 @@
                         "type": "string"
                       },
                       {
-                        "pattern": "^(model_config|policy|rating|engine_profile|verify_gate_threshold):\\S*$",
+                        "pattern": "^(model_config|policy|rating|engine_profile|verify_gate_threshold|external_provider):\\S*$",
                         "type": "string"
                       }
                     ]
@@ -38555,6 +39371,627 @@
           }
         ],
         "summary": "Read claim detection's shadow report",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/external-providers": {
+      "get": {
+        "operationId": "list_external_providers",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List the external-data providers",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "description": "Register a provider: its manifest is checked (placeholders, `$`/`.key`/`[n]` paths,\nhttps or loopback, the deployment's `provider_allowed_hosts`) and refused with 422\n`invalid_manifest` at the offending member.",
+        "operationId": "register_external_provider",
+        "parameters": [
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderRegistration"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderMutation"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `config_conflict`, `idempotency_conflict`, `provider_exists`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `invalid_manifest`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Register an external-data provider",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/external-providers/{name}": {
+      "delete": {
+        "description": "Delete a provider no story's State names (else 409 `provider_in_use`, listing the\nstories).",
+        "operationId": "delete_external_provider",
+        "parameters": [
+          {
+            "description": "The provider's name (lowercase letters, digits, `_`, `.`, `-`).",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "description": "The provider's name (lowercase letters, digits, `_`, `.`, `-`).",
+              "examples": [
+                "game_ledger"
+              ],
+              "pattern": "^[a-z][a-z0-9_.-]{0,63}$",
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `config_conflict`, `idempotency_conflict`, `provider_in_use`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete an external-data provider",
+        "tags": [
+          "admin"
+        ]
+      },
+      "get": {
+        "operationId": "get_external_provider",
+        "parameters": [
+          {
+            "description": "The provider's name (lowercase letters, digits, `_`, `.`, `-`).",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "description": "The provider's name (lowercase letters, digits, `_`, `.`, `-`).",
+              "examples": [
+                "game_ledger"
+              ],
+              "pattern": "^[a-z][a-z0-9_.-]{0,63}$",
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderItem"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read an external-data provider",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "description": "Replace every field of the registration; it applies from the next operation that\nresolves the provider (a turn already under way keeps what it resolved).",
+        "operationId": "replace_external_provider",
+        "parameters": [
+          {
+            "description": "The provider's name (lowercase letters, digits, `_`, `.`, `-`).",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "description": "The provider's name (lowercase letters, digits, `_`, `.`, `-`).",
+              "examples": [
+                "game_ledger"
+              ],
+              "pattern": "^[a-z][a-z0-9_.-]{0,63}$",
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderSpec"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderMutation"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `config_conflict`, `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `invalid_manifest`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Replace an external-data provider's registration",
         "tags": [
           "admin"
         ]
@@ -56704,7 +58141,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `cast_limit_exceeded`, `creation_conflicts`, `eligibility_failed`, `entry_archived`, `guardrail_violation`, `locked_slot_reassigned`, `not_published`, `override_not_allowed`, `persona_required`, `player_role_fixed`, `profile_deleted`, `rating_check_failed`, `rating_retired`, `seed_unnormalizable`, `slot_required`, `validation_error`, `viewpoint_unresolved`."
+            "description": "Invalid request; nothing was written: `binding_incomplete`, `budget_below_safety_minimum`, `cast_limit_exceeded`, `creation_conflicts`, `eligibility_failed`, `entry_archived`, `guardrail_violation`, `locked_slot_reassigned`, `not_published`, `override_not_allowed`, `persona_required`, `player_role_fixed`, `profile_deleted`, `provider_unregistered`, `rating_check_failed`, `rating_retired`, `seed_unnormalizable`, `slot_required`, `validation_error`, `viewpoint_unresolved`."
           },
           "503": {
             "content": {
@@ -58659,6 +60096,7 @@
                           "profile_overrides.verification.safe_disposition",
                           "reactive_interjections",
                           "regenerate_retry_budget",
+                          "required_providers",
                           "sequence_order",
                           "simultaneous_tie_break",
                           "turn_concurrency",
@@ -63918,6 +65356,427 @@
         ]
       }
     },
+    "/stories/{story_id}/providers": {
+      "get": {
+        "operationId": "provider_bindings",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BindingList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List the story's provider bindings",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/stories/{story_id}/providers/{name}/binding": {
+      "get": {
+        "description": "The story's ids at one provider (404 when it has no binding to it).",
+        "operationId": "provider_binding",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The provider's name (lowercase letters, digits, `_`, `.`, `-`).",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "description": "The provider's name (lowercase letters, digits, `_`, `.`, `-`).",
+              "examples": [
+                "game_ledger"
+              ],
+              "pattern": "^[a-z][a-z0-9_.-]{0,63}$",
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BindingBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read the story's binding to a provider",
+        "tags": [
+          "settings"
+        ]
+      },
+      "put": {
+        "description": "Store the story's ids at a provider (replacing any it had); each `{binding.<key>}` of\nthe manifest needs its key (422 `binding_incomplete`). The timeline revision is unchanged.",
+        "operationId": "bind_provider",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The provider's name (lowercase letters, digits, `_`, `.`, `-`).",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "description": "The provider's name (lowercase letters, digits, `_`, `.`, `-`).",
+              "examples": [
+                "game_ledger"
+              ],
+              "pattern": "^[a-z][a-z0-9_.-]{0,63}$",
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BindingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BindingMutation"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `binding_incomplete`, `validation_error`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Bind the story to a provider",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
     "/stories/{story_id}/regenerate": {
       "post": {
         "description": "Play the latest turn again: its recorded input (never re-sent by you, and checked by the input policies again) is answered anew as the next variant of the same turn, and the old variant becomes `dormant` (swap back to it with `POST /stories/{id}/swap`). `turn`, when given, must be the latest turn (422). `render_character_ids`, `output_viewpoint` and `prompt_params` override the values the turn was played with; omitted, the recorded ones are reused. A latest turn without a reply (an ingested player turn, a narration turn) is 422 `nothing_to_regenerate`. The answer is the respond body plus `previous_variant`. While another turn of the story runs the regenerate is 423 `story_busy` (it is never queued); queued turns fail with `timeline_changed`. `Idempotency-Key` and `X-Epistrel-Expected-Revision` are optional.",
@@ -64081,7 +65940,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `guardrail_violation`, `nothing_to_regenerate`, `validation_error`, `viewpoint_unresolved`."
+            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `guardrail_violation`, `nothing_to_regenerate`, `provider_unbound`, `validation_error`, `viewpoint_unresolved`."
           },
           "423": {
             "content": {
@@ -64856,7 +66715,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `guardrail_violation`, `validation_error`, `viewpoint_unresolved`."
+            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `guardrail_violation`, `provider_unbound`, `validation_error`, `viewpoint_unresolved`."
           },
           "423": {
             "content": {

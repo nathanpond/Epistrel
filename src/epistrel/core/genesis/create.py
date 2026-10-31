@@ -78,7 +78,11 @@ rows (ordinal: role order; a catalog character's definition rendered from its sn
 ``render_definition``, its safe fallback and deflection style copied; a player's persona
 snapshot), one ``character_snapshots`` row per catalog character (its whole published
 version), the scenario's policies as ``story`` policies (``write_policies``, the Engine's),
-and a ``player`` relation per player principal (FR-AUTH-6). The opening narration is turn 1:
+a ``player`` relation per player principal (FR-AUTH-6), and the request's
+``provider_bindings`` (#204: each provider registered, each binding covering its manifest's
+``{binding.<key>}``). The scenario's ``required_providers`` are a live setting since #204
+delivered ``providers``; before any model call, each must be registered (422
+``provider_unregistered`` naming the missing ones). The opening narration is turn 1:
 a ``turn`` operation recording one ``message_rendered`` beat (provenance ``system``, no
 character, ``present_character_ids`` the characters of ``opening.roles_present``), stamped
 with the guardrail set in force (#118). A scenario with no opening (a companion copied alone,
@@ -100,7 +104,7 @@ from pydantic import ValidationError
 from sqlalchemy import func, insert, null, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import audit, clock, ownership
+from epistrel.core import audit, clock, ownership, providers
 from epistrel.core.catalog import personas as catalog_personas
 from epistrel.core.catalog.characters import version_card
 from epistrel.core.catalog.checks import (
@@ -193,7 +197,12 @@ from epistrel.core.genesis.models import (
     player_role_entries,
     resolve_personas,
 )
-from epistrel.core.genesis.settings_map import MULTI_CHARACTER, genesis_capabilities, is_used
+from epistrel.core.genesis.settings_map import (
+    MULTI_CHARACTER,
+    SETTING_CAPABILITIES,
+    genesis_capabilities,
+    is_used,
+)
 from epistrel.core.ids import new_ulid
 from epistrel.core.policies.model import Target
 from epistrel.core.ports import Ports
@@ -209,6 +218,7 @@ from epistrel.core.profiles.impact import (
 )
 from epistrel.core.profiles.schema import Purposes
 from epistrel.core.propositions.registry import load as load_registry
+from epistrel.core.providers import REQUIRED_PROVIDERS
 from epistrel.core.ratings import load_graph
 from epistrel.core.ratings.change import (
     Direction,
@@ -955,6 +965,9 @@ def _settings(
         values["player_view"] = defaults.player_view
     if defaults.player_authority is not None:
         values["player_authority"] = defaults.player_authority
+    if defaults.required_providers and is_used(SETTING_CAPABILITIES[REQUIRED_PROVIDERS]):
+        # Live since #204 delivered ``providers``: a turn needs each one bound.
+        values[REQUIRED_PROVIDERS] = list(defaults.required_providers)
     inactive = materialized.settings()
     if inactive:
         values[INACTIVE_KEY] = inactive
@@ -1717,6 +1730,8 @@ async def genesis(
             started.append(op)
             await insert_cast(conn, story_id, found, op.operation_id)
             await write_policies(conn, story_id, found.draft.story_settings_defaults.policies)
+            # The story's ids at its providers (#204), checked against each manifest.
+            await providers.bind_all(conn, story_id, request.provider_bindings)
             for player in sorted({m.principal for m in found.members if m.principal}):
                 await ownership.relate_in(
                     conn, EntityType.STORY, story_id, player, PLAYER, principal=principal
@@ -1821,6 +1836,11 @@ async def create_from_scenario(
 ) -> CreatedStory | CreationHeld:
     """Create a story from ``request`` (see the module docstring)."""
     found = await plan(db, request, ports=ports)
+    async with db.connect() as conn:
+        # Every provider the scenario requires is registered (#204), before any model call.
+        await providers.require_registered(
+            conn, found.draft.story_settings_defaults.required_providers
+        )
     await check_rating(db, found, rating_check, principal=principal)
     await gate(genesis_texts(found), found.rating_id, [m.true_age for m in found.members])
     profile_id, version, document_, warnings = await choose_profile(db, found)

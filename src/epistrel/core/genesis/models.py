@@ -63,6 +63,7 @@ from epistrel.core.errors import InvalidRequest
 from epistrel.core.ids import Ulid
 from epistrel.core.ownership import Owner, Principal
 from epistrel.core.profiles.impact import CAMEL_CASE, TwoStageRequest
+from epistrel.core.providers import ProviderBindings
 from epistrel.core.tables import character_catalog, personas
 from epistrel.core.tables.characters import DEFLECTION_STYLE_MAX, TRUE_AGE_MAX, TRUE_AGE_MIN
 
@@ -371,6 +372,12 @@ class StoryFromScenario(TwoStageRequest):
         "`system`). Recorded, never interpreted.",
     )
     projection: Projection = "card"
+    provider_bindings: ProviderBindings = Field(
+        default_factory=dict,
+        description="The story's ids at its external-data providers (#204): "
+        "`{provider: {external_ids}}`, each provider registered and each binding giving every "
+        "`{binding.<key>}` its manifest uses (422 `binding_incomplete`).",
+    )
 
 
 def is_scenario_body(body: Any) -> bool:

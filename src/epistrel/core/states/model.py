@@ -9,7 +9,8 @@ typed values, constraints and the fold. Nothing here reads or writes the databas
 ``tolerance`` a numeric claim is compared within, #191), an ``initial_value`` (``None``: undefined
 until set), the ``aliases`` and ``unit`` prose may name it by, the ``entity_id`` a
 possession-style State tracks, a ``visibility``, an ``owner`` (``story``, or ``external`` with its
-``provider_id`` and no ``rules``), ``silent``, the effect rules (``rules``, ``authorization``,
+``provider_id``, the provider's ``external_value_name`` (default: the State's name; #204) and no
+``rules``), ``silent``, the effect rules (``rules``, ``authorization``,
 ``transfer``; #188's), ``reservation_expiry_minutes`` (#216's) and who declared it
 (``created_by``). ``validate_definition`` applies the shape rules and raises 422
 ``validation_error`` with ``details.reason``; the name ``world_clock`` is reserved for the
@@ -75,6 +76,8 @@ RESERVED_NAMES: frozenset[str] = frozenset({WORLD_CLOCK})
 """Names ``define_state`` refuses with ``reason: reserved_state`` (#193 extends the guard)."""
 NAME_MAX = 80
 NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,79}$")
+EXTERNAL_VALUE_PATTERN = NAME_PATTERN
+"""A provider's value name (its manifest's ``values`` keys; #204) follows the State name rule."""
 TEXT_MAX = 200
 """The longest ``text`` value (FR-STATE-1's short text)."""
 REASON_MAX = 200
@@ -109,6 +112,7 @@ IMMUTABLE_MEMBERS: tuple[str, ...] = (
     "scope",
     "owner",
     "provider_id",
+    "external_value_name",
     "entity_id",
     "initial_value",
     "created_by",
@@ -310,6 +314,7 @@ class StateDefinition(BaseModel):
     visibility: StateVisibility = StateVisibility.PLAYER_VISIBLE
     owner: StateOwner = StateOwner.STORY
     provider_id: str | None = None
+    external_value_name: str | None = None
     silent: bool = False
     rules: dict[str, Any] = Field(default_factory=dict)
     authorization: dict[str, Any] = Field(default_factory=dict)
@@ -336,6 +341,7 @@ class StateDefinition(BaseModel):
             "visibility": self.visibility.value,
             "owner": self.owner.value,
             "provider_id": self.provider_id,
+            "external_value_name": self.external_value_name,
             "silent": self.silent,
             "rules": dict(self.rules),
             "authorization": dict(self.authorization),
@@ -554,9 +560,24 @@ def validate_definition(
             )
         if d.rules:
             raise _invalid("an externally owned value has no rules", "rules", "external_rules")
+        if d.external_value_name is None:
+            # The provider's value of the State's own name, unless it names another (#204).
+            d = d.model_copy(update={"external_value_name": d.name})
+        elif not EXTERNAL_VALUE_PATTERN.match(d.external_value_name):
+            raise _invalid(
+                "a provider's value name is a letter, then letters, digits and underscores",
+                "external_value_name",
+                "name",
+            )
     elif d.provider_id is not None:
         raise _invalid(
             "only an externally owned value names a provider", "provider_id", "story_owned"
+        )
+    elif d.external_value_name is not None:
+        raise _invalid(
+            "only an externally owned value names a provider's value",
+            "external_value_name",
+            "story_owned",
         )
     c = d.constraints
     if d.type is StateType.ENUM:

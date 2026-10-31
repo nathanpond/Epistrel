@@ -70,6 +70,7 @@ from epistrel.core.tables.propositions import (
     predicates,
     propositions,
 )
+from epistrel.core.tables.providers import external_providers, story_provider_bindings
 from epistrel.core.tables.rating_checks import guardrail_check_results, rating_check_jobs
 from epistrel.core.tables.ratings import content_rating_versions, content_ratings
 from epistrel.core.tables.readset import proposition_changes
@@ -105,6 +106,7 @@ __all__ = [
     "escalations",
     "events",
     "exposures",
+    "external_providers",
     "extraction_shadow",
     "facts",
     "gate_threshold_history",
@@ -143,6 +145,7 @@ __all__ = [
     "stories",
     "story_heads",
     "story_profile_overrides",
+    "story_provider_bindings",
     "story_texts",
     "subject_references",
     "thunks",

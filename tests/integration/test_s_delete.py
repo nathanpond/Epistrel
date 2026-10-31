@@ -41,6 +41,7 @@ from tests import (
     memory_support,
     nested_support,
     partition_support,
+    provider_support,
     state_support,
 )
 from tests import erasure_support as erasure
@@ -366,6 +367,10 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
             kind=OperationKind.CONTROL,
         )
         await state_support.set_level(engine, story_id, None)
+    # A provider binding (#204): the story's ids at a registered provider.
+    provider = provider_support.unique_name("deleted")
+    await provider_support.register(engine, provider_support.in_process_spec(provider))
+    await provider_support.bind(engine, story_id, provider, {"player": "p-1"})
 
 
 def _due() -> datetime:

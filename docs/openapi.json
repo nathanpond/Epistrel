@@ -25824,11 +25824,35 @@
       },
       "RelatedItem": {
         "additionalProperties": false,
-        "description": "One entity with relations naming the principal, and those relations' names.",
+        "description": "One entity with relations naming the principal, and those relations' names, with an\nowned item's display fields (#526): its name, status, latest version and listing status\n(``null`` where its type has none).",
         "properties": {
           "id": {
             "title": "Id",
             "type": "string"
+          },
+          "listing_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A catalog entry's listing status.",
+            "title": "Listing Status"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "As an owned item's name, held back by the same rules: `null` for a story that is `blocked_by_erasure` after a restore and for an entry a pending catalog-scope erasure reaches, until its erasure is reapplied, and for a media candidate (private, FR-IMG-7).",
+            "title": "Name"
           },
           "relations": {
             "items": {
@@ -25836,11 +25860,39 @@
             },
             "title": "Relations",
             "type": "array"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A story's or catalog entry's status, a media asset's state, a profile's `active` or `deleted`; `null` for a persona.",
+            "title": "Status"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The latest published version, where versioned.",
+            "title": "Version"
           }
         },
         "required": [
           "id",
-          "relations"
+          "relations",
+          "name",
+          "status",
+          "version",
+          "listing_status"
         ],
         "title": "RelatedItem",
         "type": "object"
@@ -55478,7 +55530,7 @@
     },
     "/principals/{principal_id}": {
       "get": {
-        "description": "Every entity linked to the principal (FR-AUTH-7), by type: `owned` (its `owner_principal`) and `related` (the entities with a relation naming it, with the relations' names). Stories, catalog characters, scenarios, personas, media assets and engine profiles each answer `{count, items, next_cursor}`, newest first. An owned item is `{id, name, status, version, listing_status}` (`null` where the type has none), and a character's names its companion scenario (`companion`), which follows it and is not listed under scenarios. Archived stories and entries, retired media and deleted profiles are listed with their status. A story held `blocked_by_erasure` after a restore is listed with a `null` `name` until its erasure is reapplied (FR-ADMIN-7). `limit` (1 to 200) applies to every page; each page continues with its own cursor, `cursor[<type>]` or `cursor[related.<type>]` (422 `cursor_invalid` for one another page gave). A principal nothing names answers empty pages: principals are opaque and never resolved. Ownership and relations gate nothing (FR-AUTH-8).",
+        "description": "Every entity linked to the principal (FR-AUTH-7), by type: `owned` (its `owner_principal`) and `related` (the entities with a relation naming it, with the relations' names). Stories, catalog characters, scenarios, personas, media assets and engine profiles each answer `{count, items, next_cursor}`, newest first. An owned item is `{id, name, status, version, listing_status}` (`null` where the type has none), and a character's names its companion scenario (`companion`), which follows it and is not listed under scenarios. A related item is `{id, relations, name, status, version, listing_status}`, with an owned item's display fields (a media candidate's `name` is `null`). Archived stories and entries, retired media and deleted profiles are listed with their status. A story held `blocked_by_erasure` after a restore is listed with a `null` `name`, owned or related, until its erasure is reapplied (FR-ADMIN-7). `limit` (1 to 200) applies to every page; each page continues with its own cursor, `cursor[<type>]` or `cursor[related.<type>]` (422 `cursor_invalid` for one another page gave). A principal nothing names answers empty pages: principals are opaque and never resolved. Ownership and relations gate nothing (FR-AUTH-8).",
         "operationId": "lookup_principal",
         "parameters": [
           {

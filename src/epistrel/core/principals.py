@@ -15,7 +15,9 @@ it owns the presets.
   reconciler holds ``blocked_by_erasure`` is listed with a ``null`` name (#359), and so is an
   owned entry a pending catalog-scope erasure reaches (``without_names``; #346).
 - **Related** (``entity_relations``): for each type, the entities with at least one relation
-  naming the principal, ``{id, relations: [names]}``, newest relation first. An entity both
+  naming the principal, ``{id, relations: [names], name, status, version, listing_status}``,
+  newest relation first. The display fields are an owned item's, read in the page's one query
+  and held back by the same rules (#526); a media candidate's name is ``null``. An entity both
   owned and related is listed in both.
 
 Pages are keyset pages, newest first: on ``(updated_at, id)``, or ``(created_at, id)`` for the
@@ -124,12 +126,26 @@ class OwnedPage(BaseModel):
 
 
 class RelatedItem(BaseModel):
-    """One entity with relations naming the principal, and those relations' names."""
+    """One entity with relations naming the principal, and those relations' names, with an
+    owned item's display fields (#526): its name, status, latest version and listing status
+    (``null`` where its type has none)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     id: str
     relations: list[str]
+    name: str | None = Field(
+        description="As an owned item's name, held back by the same rules: `null` for a story "
+        "that is `blocked_by_erasure` after a restore and for an entry a pending catalog-scope "
+        "erasure reaches, until its erasure is reapplied, and for a media candidate (private, "
+        "FR-IMG-7)."
+    )
+    status: str | None = Field(
+        description="A story's or catalog entry's status, a media asset's state, a profile's "
+        "`active` or `deleted`; `null` for a persona."
+    )
+    version: int | None = Field(description="The latest published version, where versioned.")
+    listing_status: str | None = Field(description="A catalog entry's listing status.")
 
 
 class RelatedPage(BaseModel):
@@ -374,7 +390,21 @@ async def _related_page(
     key = f"{RELATED_PREFIX}{TYPE_KEYS[entity_type]}"
     grouped = _related(entity_type, principal)
     count = int(await conn.scalar(select(func.count()).select_from(grouped)) or 0)
-    query = select(grouped.c.id, grouped.c.at, grouped.c.relations)
+    spec = OWNED[entity_type]
+    name = spec.name
+    if entity_type is EntityType.MEDIA:
+        name = case((media_assets.c.state == MediaState.CANDIDATE.value, null()), else_=name)
+    # The display fields come from each entity's own row, joined into the page's one query
+    # (#526; no read per item). An outer join: a relation whose entity is gone still lists.
+    query = select(
+        grouped.c.id,
+        grouped.c.at,
+        grouped.c.relations,
+        name.label("name"),
+        spec.status.label("status"),
+        spec.version.label("version"),
+        spec.listing_status.label("listing_status"),
+    ).select_from(grouped.outerjoin(spec.table, spec.table.c.id == grouped.c.id))
     position = _position(principal, key, cursor)
     if position is not None:
         query = query.where(
@@ -388,7 +418,14 @@ async def _related_page(
         ).all()
     )
     items = [
-        RelatedItem(id=str(row.id), relations=sorted(row.relations, key=lambda n: n.encode()))
+        RelatedItem(
+            id=str(row.id),
+            relations=sorted(row.relations, key=lambda n: n.encode()),
+            name=row.name,
+            status=None if row.status is None else str(row.status),
+            version=row.version,
+            listing_status=row.listing_status,
+        )
         for row in rows[:limit]
     ]
     return RelatedPage(count=count, items=items, next_cursor=_next(principal, key, rows, limit))
@@ -404,18 +441,31 @@ UNNAMED_WHEN_REACHED: Mapping[str, str] = {
 
 
 def without_names(lookup: PrincipalLookup, hides: Callable[[str, str], bool]) -> PrincipalLookup:
-    """``lookup`` with a ``null`` name for every owned entry ``hides(entity_type, id)``: one a
-    pending catalog-scope erasure reaches is listed, as a blocked story is (#359), without
-    what it names until the erasure is reapplied (#346)."""
-    updates: dict[str, OwnedPage] = {}
-    for page_name, entity_type in UNNAMED_WHEN_REACHED.items():
-        page: OwnedPage = getattr(lookup.owned, page_name)
+    """``lookup`` with a ``null`` name for every owned or related entry ``hides(entity_type,
+    id)``: one a pending catalog-scope erasure reaches is listed, as a blocked story is (#359),
+    without what it names until the erasure is reapplied (#346, #526)."""
+
+    def unnamed(page: Any, entity_type: str) -> Any:
         items = [
             item.model_copy(update={"name": None}) if hides(entity_type, item.id) else item
             for item in page.items
         ]
-        updates[page_name] = page.model_copy(update={"items": items})
-    return lookup.model_copy(update={"owned": lookup.owned.model_copy(update=updates)})
+        return page.model_copy(update={"items": items})
+
+    owned = {
+        key: unnamed(getattr(lookup.owned, key), entity_type)
+        for key, entity_type in UNNAMED_WHEN_REACHED.items()
+    }
+    related = {
+        key: unnamed(getattr(lookup.related, key), entity_type)
+        for key, entity_type in UNNAMED_WHEN_REACHED.items()
+    }
+    return lookup.model_copy(
+        update={
+            "owned": lookup.owned.model_copy(update=owned),
+            "related": lookup.related.model_copy(update=related),
+        }
+    )
 
 
 def lookup_principal_id(value: str, *, field: str = "path.principal_id") -> str:

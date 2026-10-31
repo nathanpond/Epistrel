@@ -14,6 +14,7 @@ from datetime import timedelta
 from typing import Any
 
 import pytest
+from sqlalchemy import text
 
 from epistrel.core import clock, offboarding
 from epistrel.core.ids import new_ulid
@@ -39,6 +40,7 @@ from tests.offboarding_support import (
     unique,
     world,
 )
+from tests.profile_support import PROFILES
 from tests.story_support import story_body
 
 pytestmark = pytest.mark.integration
@@ -77,13 +79,29 @@ async def test_lookup_groups_owned_and_related(pg_url: str) -> None:
         assert owned["engine_profiles"]["items"][0]["status"] == "active"
         assert related["characters"] == {
             "count": 1,
-            "items": [{"id": w.others_character, "relations": ["editor"]}],
+            "items": [
+                {
+                    "id": w.others_character,
+                    "relations": ["editor"],
+                    "name": "Ivo Strand",
+                    "status": "draft",
+                    "version": None,
+                    "listing_status": "private",
+                }
+            ],
             "next_cursor": None,
         }
         assert related["stories"]["count"] == 0
         player = await lookup(s.client, w.player)
         assert player["related"]["stories"]["items"] == [
-            {"id": w.shared_story, "relations": ["player"]}
+            {
+                "id": w.shared_story,
+                "relations": ["player"],
+                "name": "A story",
+                "status": "active",
+                "version": None,
+                "listing_status": None,
+            }
         ]
         assert all(page["count"] == 0 for page in player["owned"].values())
         nobody = await lookup(s.client, unique("p-nobody"))
@@ -94,6 +112,58 @@ async def test_lookup_groups_owned_and_related(pg_url: str) -> None:
             )
         system = await lookup(s.client, "system")
         assert system["owned"]["engine_profiles"]["count"] >= 1
+
+
+async def test_related_items_carry_the_owned_items_display_fields(pg_url: str) -> None:
+    """#526: a related item of every type carries the display fields an owned item of the same
+    entity has (``name``, ``status``, ``version``, ``listing_status``), read in one query per
+    type; a story held ``blocked_by_erasure`` is listed related with a ``null`` name, as it is
+    owned."""
+    async with offboarding_db(pg_url) as s:
+        w = await world(s.client, s.db)
+        targets = {
+            "stories": f"/stories/{w.own_story}",
+            "characters": f"/catalog/characters/{w.character}",
+            "scenarios": f"/catalog/scenarios/{w.scenario}",
+            "personas": f"/personas/{w.persona}",
+            "media": f"/media/{w.kept_image}",
+            "engine_profiles": f"{PROFILES}/{w.profile}",
+        }
+        for path in targets.values():
+            await ok(
+                await s.client.post(
+                    f"{path}/relations",
+                    json={"principal": w.player, "relation": "watcher"},
+                    headers=headers(w.a),
+                ),
+                201,
+            )
+        owned = (await lookup(s.client, w.a))["owned"]
+        related = (await lookup(s.client, w.player))["related"]
+        for key, path in targets.items():
+            entity_id = path.rsplit("/", 1)[1]
+            (mine,) = [item for item in owned[key]["items"] if item["id"] == entity_id]
+            (theirs,) = [item for item in related[key]["items"] if item["id"] == entity_id]
+            expected = {k: v for k, v in mine.items() if k != "companion"}
+            assert {k: v for k, v in theirs.items() if k != "relations"} == expected, key
+            assert theirs["name"] is not None, key
+        assert {item["id"]: item["name"] for item in related["stories"]["items"]} == {
+            w.shared_story: "A story",
+            w.own_story: "A story",
+        }
+        async with s.db.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE stories SET status = 'blocked_by_erasure', "
+                    "status_before_block = status WHERE id = :s"
+                ),
+                {"s": w.shared_story},
+            )
+        held = (await lookup(s.client, w.player))["related"]["stories"]["items"]
+        (item,) = [i for i in held if i["id"] == w.shared_story]
+        assert (item["name"], item["status"]) == (None, "blocked_by_erasure")
+        (other,) = [i for i in held if i["id"] == w.own_story]
+        assert other["name"] == "A story", "only the held story loses its name"
 
 
 async def test_lookup_pages_each_type_with_its_own_cursor(pg_url: str) -> None:

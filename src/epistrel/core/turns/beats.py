@@ -192,6 +192,9 @@ class DeclaredEffect:
     justification: str | None = None
     justified_by: int | None = None
     declared: Any = None
+    consideration: str | None = None
+    """#189 (FR-STATE-11): the item the effect pays for (an entity of the story, by id, name
+    or alias), whose availability and ownership are its preconditions."""
 
     @property
     def unresolved(self) -> bool:

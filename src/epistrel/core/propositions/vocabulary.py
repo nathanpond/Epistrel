@@ -66,6 +66,7 @@ ADJACENT_TO = "01JPRED0000000000000000030"
 ON_CHANNEL = "01JPRED0000000000000000031"
 SPOKE_TO = "01JPRED0000000000000000032"
 SPOKE = "01JPRED0000000000000000033"
+AGREED_TO = "01JPRED0000000000000000034"
 STATE_VALUE = "01JPRED0000000000000000035"
 CLOCK_ANCHOR = "01JPRED0000000000000000036"
 TIME_OF_DAY_BAND = "01JPRED0000000000000000037"
@@ -541,6 +542,19 @@ CORE_PREDICATES: tuple[Predicate, ...] = (
         "value is an ordinary belief, acquired by observation or testimony.",
     ),
     _core(
+        STATES,
+        id=AGREED_TO,
+        name="agreed_to",
+        cardinality=_M,
+        temporal_kind=_EVENT,
+        docs="The subject agreed to an action at the instant (#189, FR-STATE-11): the object is "
+        "what the action is about (the item a sale pays for, else the other party). An action's "
+        "preconditions read it as the counterparty's consent (`core.states.preconditions`). "
+        "Consent is only an `agreed_to` a verified `say` or `do` beat of the subject declares, "
+        "or a narrator beat declares; it is never inferred from prose. Negated, the subject "
+        "refused.",
+    ),
+    _core(
         WORLD_CLOCK,
         id=CLOCK_ANCHOR,
         name="clock_anchor",
@@ -610,6 +624,7 @@ def family_of(predicate_id: str) -> Family:
 
 __all__ = [
     "ADJACENT_TO",
+    "AGREED_TO",
     "BARRIERS",
     "CLOCK_ANCHOR",
     "CLOCK_CHECKS",

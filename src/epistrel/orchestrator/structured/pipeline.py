@@ -3978,6 +3978,14 @@ async def play(
         target.checked += state_effects.claims_of(found, target.beats, op.operation_id)
         target.checked = state_effects.covered(target.checked, target.beats, books[0])
 
+    async def read_states(target: Checked, stage_: TurnStage | None, turn: int) -> None:
+        """#189 (FR-STATE-11): the canon the action preconditions of ``target``'s effects read
+        (each a keyed lookup of the turn's read set), before ``check_states`` checks them."""
+        async with db.connect() as conn:
+            await state_effects.read_preconditions(
+                conn, read_set, books[0], target.beats, stage_, turn=turn
+            )
+
     def settle_states(target: Checked, stage_: TurnStage | None) -> None:
         """#187: what the ladder left (an attempt's effects, a beat it could not run for) is
         settled deterministically, as the deterministic rung's repair (``ladder.settled``): an
@@ -4826,6 +4834,7 @@ async def play(
                     staged_beliefs=turn_stage.accepted(primary.id),
                 )
                 # #187: the render's effects dry-run, its narrated State changes read.
+                await read_states(checked_k, turn_stage, read_k.turn)
                 check_states(checked_k, turn_stage)
                 if k == 0 and split.narrated:
                     # #180: each narrated beat checked against its character's viewpoint.
@@ -4935,6 +4944,7 @@ async def play(
             book=book,
         )
         # #187: the whole turn's effects, the follow-up's included, dry-run again.
+        await read_states(checked, turn_stage, read_k.turn)
         check_states(checked, turn_stage)
         # The follow-up render's own time; its check's is in its stages already.
         checked_s = clock.total(("normalize", "detection", "verify", "entailment")) - checked_s

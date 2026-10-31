@@ -17,10 +17,12 @@ come through #174's ``TurnStage`` (``StagedBeat.effects``; a ``simultaneous`` tu
 are each folded alone over the snapshot, and a shared State they break together is #175's
 conflict, ``state_conflicts``). Each effect is authorized before the bounds (#188,
 ``core.states.authorize``: its beat's asserter, ``source_of``; the turn's beats as the evidence
-a justification cites, ``evidence_of``): an unpermitted one is ``state_unpermitted``, repaired
-like a refused one; one above a cap is rewritten down to it deterministically before anything
-else sees it (``cap``: ``state_capped``, its declared amount kept for the response). Each ``do`` and
-narration beat is read for a State change it narrates with no effect
+a justification cites, ``evidence_of``; #189: the action preconditions over the canon
+``read_preconditions`` read through the turn's keyed lookups before each dry-run): an
+unpermitted one is ``state_unpermitted``, repaired like a refused one; one above a cap is
+rewritten down to it deterministically before anything else sees it (``cap``:
+``state_capped``, its declared amount kept for the response). Each ``do`` and narration beat
+is read for a State change it narrates with no effect
 (``core.states.effects.narrated``). Each finding becomes a checked claim of its beat
 (``claims_of``) whose ``VerifyResult.state_finding`` makes it ``needs_repair`` with the
 finding's tag: ``state_constraint``, ``effect_unresolved`` or ``state_undeclared`` (a
@@ -82,6 +84,7 @@ from epistrel.core.resolution.entities import NARRATOR
 from epistrel.core.states import StateChange, StateDefinition, Undefined, UndefinedType
 from epistrel.core.states import authorize as permission
 from epistrel.core.states import effects as rules
+from epistrel.core.states import preconditions as action_preconditions
 from epistrel.core.states.authorize import Evidence, Source
 from epistrel.core.states.effects import Finding, Planned
 from epistrel.core.states.model import Value, to_json
@@ -121,6 +124,9 @@ class Book:
     external: dict[tuple[str, str | None], Value | None] = field(default_factory=dict)
     """#205: the turn's pinned external values by ``(State name, scope key)``
     (``PinnedReads.by_name``): the narrator sees an externally owned State only when pinned."""
+    preconditions: action_preconditions.Canon | None = None
+    """#189: the canon the attempt read for its effects' action preconditions
+    (``read_preconditions``; ``None``: not read yet, so none is checked)."""
 
     @property
     def on(self) -> bool:
@@ -286,12 +292,50 @@ def _dry_run(
 ) -> list[Finding]:
     ordered = planned(beats, stage)
     evidence = evidence_of(beats, stage)
+    context = (
+        None
+        if book.preconditions is None
+        else action_preconditions.context_of(book.preconditions, beats, stage)
+    )
     if not simultaneous:
-        return rules.dry_run(book.definitions, book.values, ordered, evidence=evidence)[1]
+        return rules.dry_run(
+            book.definitions, book.values, ordered, evidence=evidence, preconditions=context
+        )[1]
     found: list[Finding] = []
     for group in _alone(ordered):
-        found += rules.dry_run(book.definitions, book.values, group, evidence=evidence)[1]
+        found += rules.dry_run(
+            book.definitions, book.values, group, evidence=evidence, preconditions=context
+        )[1]
     return sorted(found, key=lambda f: (f.beat, f.effect if f.effect is not None else -1))
+
+
+async def read_preconditions(
+    conn: AsyncConnection,
+    read_set: StructuredReadSet,
+    book: Book,
+    beats: Sequence[TurnBeat],
+    stage: TurnStage | None,
+    *,
+    turn: int,
+) -> None:
+    """#189 (FR-STATE-11): read, through the turn's keyed lookups, the canon the action
+    preconditions of ``beats``' (and ``stage``'s) declared effects need (``core.states
+    .preconditions.read``) into ``book``, before the dry-run that checks them. Nothing is read
+    when effects are off or no effect is declared."""
+    if not book.on:
+        return
+    effects = []
+    for p in planned(beats, stage):
+        definition = book.definitions.get(p.effect.state)
+        if definition is None:
+            continue
+        key = rules.scope_of(p.effect, definition, p.actor)
+        effects.append(replace(rules.effect_of(p.effect, definition, key), beat=p.beat))
+    if not effects:
+        return
+    book.preconditions = await action_preconditions.read(
+        conn, read_set, book.story_id, turn, effects, beats, stage
+    )
 
 
 def findings(
@@ -922,6 +966,7 @@ __all__ = [
     "level_of",
     "load",
     "planned",
+    "read_preconditions",
     "recheck",
     "recheck_authorization",
     "recorded",

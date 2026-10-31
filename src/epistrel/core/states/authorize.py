@@ -38,7 +38,9 @@ of a source (``Source``), given the turn's effects already authorized (``Authori
    verb tables, ``categories_of``); ``loot`` and ``reward`` a ``possession`` category or a
    narration beat; any other label only the beat. A cited beat that does not exist or does not
    fit is ``justification`` whatever the list.
-3. **Preconditions** (#189): every hook in ``PRECONDITIONS`` may refuse.
+3. **Preconditions** (#189, ``core.states.preconditions``): counterparty consent, the item's
+   availability, co-location and ownership, verified as propositions; every hook in
+   ``PRECONDITIONS`` may refuse (``precondition:<name>``).
 4. **Balance.** A transfer of a ``conserved`` State whose other side is tracked must balance:
    the other side's delta, when declared, is the negation of this one's, else
    ``unbalanced_transfer``. A transfer that is not conserved may be unbalanced.
@@ -346,6 +348,8 @@ class StateEffect:
     justification: str | None = None
     justified_by: int | None = None
     consideration: str | None = None
+    beat: int | None = None
+    """The number of the beat that declares it (#189: the same beat's possession change)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -390,9 +394,11 @@ class Capped:
 
 
 Decision = Permitted | Unpermitted | Capped
-Precondition = Callable[[StateEffect, Source, StateDefinition], Unpermitted | None]
+Precondition = Callable[[StateEffect, Source, StateDefinition, Any], Unpermitted | None]
 PRECONDITIONS: list[Precondition] = []
-"""#189's seam: action preconditions verified as propositions, after the justification."""
+"""#189's seam: action preconditions verified as propositions, after the justification
+(``core.states.preconditions.evaluate``; its last argument is ``authorize``'s ``context``, the
+turn's beats and the canon the attempt read, ``None`` when there is none to check against)."""
 
 
 def direction_of(delta: Decimal | None) -> Direction | None:
@@ -490,11 +496,12 @@ def authorize(
     definitions: Mapping[str, StateDefinition] | None = None,
     current: Value | UndefinedType | None = None,
     evidence: Mapping[int, Evidence] | None = None,
+    context: Any = None,
 ) -> Decision:
     """Whether ``asserter`` may make ``effect`` (see the module docstring): ``definitions``
     the story's States (a transfer's other side), ``current`` the value it finds, ``evidence``
     the turn's beats a justification may cite (``None``: not checked, as for a source that needs
-    none)."""
+    none), ``context`` what the ``PRECONDITIONS`` hooks read (#189)."""
     found = definitions or {definition.name: definition}
     if asserter.kind == "reactive":
         return Unpermitted(REACTIVE_ASSERTER)
@@ -524,7 +531,7 @@ def authorize(
         if not _justified(effect, labels, evidence):
             return Unpermitted(JUSTIFICATION)
     for hook in PRECONDITIONS:
-        refused = hook(effect, asserter, definition)
+        refused = hook(effect, asserter, definition, context)
         if refused is not None:
             return refused
     if (

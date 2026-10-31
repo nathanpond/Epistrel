@@ -13,7 +13,10 @@ refused effect changes nothing the later ones see. #188: an effect with a ``sour
 beat's asserter) is first authorized (``core.states.authorize``: source, justification,
 preconditions, transfer balance, caps): an unpermitted one is ``state_unpermitted`` (the reason
 its ``constraint``), repaired like a refused one; one above a cap is ``state_capped`` with the
-``amount`` the cap leaves. A ``transfer`` folds its tracked other side too.
+``amount`` the cap leaves. A ``transfer`` folds its tracked other side too. #189: the action
+preconditions (``core.states.preconditions``, given as ``dry_run``'s ``preconditions``) refuse
+an effect as ``state_unpermitted`` with ``precondition:<name>``; a sale whose item is named
+nowhere is ``effect_unresolved`` with the constraint ``consideration``.
 
 **Narrated changes** (``mentions``). A ``do`` or ``narration`` sentence that names a tracked
 State (its name, an alias, its unit, or the name of the entity it tracks) and holds a change
@@ -39,7 +42,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from functools import cache
-from typing import Final, Literal
+from typing import Any, Final, Literal
 
 from epistrel.core.enums import StateType, StateVisibility
 from epistrel.core.repair.rungs import sentences
@@ -81,6 +84,17 @@ INVALID_EFFECT = "invalid_effect"
 """The constraint of a repaired render's effect that names no State it may change."""
 UNDEFINED = "undefined"
 """The constraint of a delta on a State with no value yet."""
+CONSIDERATION = "consideration"
+"""#189: the constraint of an ``effect_unresolved`` sale whose item is named nowhere."""
+PRECONDITION_PREFIX = "precondition:"
+"""#189: the prefix of an unmet action precondition's reason (``core.states.preconditions``)."""
+_PRECONDITION_RULES: dict[str, str] = {
+    "consent": "the other side has not agreed to it",
+    "availability": "what it pays for is not there to be had",
+    "co_location": "the two sides are not in the same place",
+    "ownership": "what it pays for is not the seller's to sell",
+}
+"""How a repair line and a refusal name an unmet precondition (no name, no value)."""
 Tag = Literal[
     "state_constraint", "effect_unresolved", "state_undeclared", "state_unpermitted", "state_capped"
 ]
@@ -196,6 +210,7 @@ def effect_of(
         counterparty=other,
         justification=effect.justification,
         justified_by=effect.justified_by,
+        consideration=effect.consideration,
     )
 
 
@@ -218,13 +233,16 @@ def dry_run(
     planned: Sequence[Planned],
     *,
     evidence: Mapping[int, Evidence] | None = None,
+    preconditions: Any = None,
 ) -> tuple[list[Passed], list[Finding]]:
     """Fold ``planned`` (in order) over ``values`` (each key's value at the turn's start; a key
     not given is its State's initial value): what passes and what is refused (see the module
     docstring). #188: an effect with a ``source`` is authorized first (``core.states.authorize``,
     ``evidence`` the turn's beats a justification may cite): refused as ``state_unpermitted``,
     or ``state_capped`` with the amount the caps leave; a transfer's tracked other side is
-    folded and bounded too."""
+    folded and bounded too. #189: ``preconditions`` (``core.states.preconditions.Context``) is
+    what the action-precondition hook reads; a sale whose item is named nowhere is
+    ``effect_unresolved`` (constraint ``consideration``)."""
     running: dict[Key, Value | UndefinedType] = {}
     passed: list[Passed] = []
     found: list[Finding] = []
@@ -249,7 +267,7 @@ def dry_run(
             found.append(refused)
             continue
         value, delta = _typed(definition, p.effect)
-        typed = effect_of(p.effect, definition, key[1])
+        typed = replace(effect_of(p.effect, definition, key[1]), beat=p.beat)
         if p.source is not None:
             decision = permission.authorize(
                 typed,
@@ -259,7 +277,17 @@ def dry_run(
                 definitions=definitions,
                 current=current,
                 evidence=evidence,
+                context=preconditions,
             )
+            if isinstance(decision, Unpermitted) and decision.reason == EFFECT_UNRESOLVED:
+                # #189: a sale whose item is named nowhere; rung 1 asks the render to name it.
+                found.append(
+                    replace(
+                        _finding(definition, p, key, CONSIDERATION, current, Undefined),
+                        tag=EFFECT_UNRESOLVED,
+                    )
+                )
+                continue
             if isinstance(decision, Unpermitted):
                 found.append(
                     _finding(
@@ -549,6 +577,10 @@ def _rule(definition: StateDefinition, constraint: str | None) -> str:
         return f"both sides of a {name} transfer must match"
     if constraint == permission.CAP:
         return f"{name} cannot change that much at once"
+    if constraint is not None and constraint.startswith(PRECONDITION_PREFIX):
+        rule = _PRECONDITION_RULES.get(constraint[len(PRECONDITION_PREFIX) :])
+        if rule is not None:
+            return rule
     return f"{name} cannot change like that"
 
 
@@ -589,6 +621,12 @@ def constraint_line(finding: Finding, definition: StateDefinition | None, *, nar
             f"The action is only an attempt and it fails: {rule}{known}. Narrate it falling "
             "short in character (someone says so, or it simply does not happen), and declare "
             f"no effect on it, or a smaller one.{justify}"
+        )
+    if finding.tag == EFFECT_UNRESOLVED and finding.constraint == CONSIDERATION:
+        return (
+            f"Name what this {name} pays for: declare the effect's `consideration` (the item "
+            "the payment buys), or narrate the exchange of the item in the same beat, or remove "
+            "the payment."
         )
     if finding.tag == EFFECT_UNRESOLVED:
         return (

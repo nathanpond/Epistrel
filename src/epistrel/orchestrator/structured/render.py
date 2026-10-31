@@ -28,8 +28,8 @@ wrong and is retried within the deployment's ``structured_retry_budget``:
   delta? | value?, counterparty?, reason, justification?, justified_by?, consideration?,
   silent?, contingency?, prerequisites?}``. Only ``kind = change``, ``reason`` (1 to 200
   characters) and ``silent`` are delivered: any other kind, or a non-null field another story
-  owns (#188's ``counterparty``, ``justification``, ``justified_by``; #189's
-  ``consideration``; #216's ``contingency``, ``prerequisites``), is invalid. So is an effect
+  owns (#188's ``counterparty``, ``justification``, ``justified_by``; #216's ``contingency``,
+  ``prerequisites``), is invalid. So is an effect
   naming no State of the story (``world_clock`` included: a time advance is #194's), a
   ``delta`` on a non-number, both a ``delta`` and a ``value``, a value of the wrong type, a
   scope key on a story State or naming no cast member, a character-scoped State with no
@@ -37,7 +37,9 @@ wrong and is retried within the deployment's ``structured_retry_budget``:
   render naming a ``hidden`` State (only the narrator's may), an effect on a ``think`` beat,
   and any effect while the story's ``states.level`` is not ``on`` (named by module). An
   effect with neither a delta nor a value is structurally valid: it is ``effect_unresolved``,
-  repaired (``orchestrator.structured.effects``);
+  repaired (``orchestrator.structured.effects``). #189's ``consideration`` names the item a
+  payment is for (an entity of the story, resolved when the effect's preconditions are
+  checked, ``core.states.preconditions``);
 - ``propositions`` are #140's text sketches (subject, relation, object, time, negated, and the
   predicate's qualifiers it names, #151);
 - ``introduces`` names each new character a beat introduces (``{name, age?, age_range?,
@@ -294,11 +296,11 @@ DELIVERED_EFFECT_KINDS = frozenset({"change", "transfer"})
 """The effect kinds this deployment validates (#187's ``change``, #188's ``transfer``);
 ``time_advance`` is #194's, ``reschedule`` #198's."""
 UNDELIVERED_EFFECT_FIELDS = (
-    "consideration",
     "contingency",
     "prerequisites",
 )
-"""The effect fields later stories validate (#189, #216): non-null is invalid until then."""
+"""The effect fields later stories validate (#216): non-null is invalid until then (#189
+delivered ``consideration``)."""
 STATES_ON = "on"
 
 
@@ -347,6 +349,7 @@ def declared_of(effects: Sequence[EffectDecl]) -> tuple[DeclaredEffect, ...]:
             else (e.counterparty.state, e.counterparty.scope_key, e.counterparty.delta),
             justification=None if e.justification is None else e.justification.strip(),
             justified_by=e.justified_by,
+            consideration=None if e.consideration is None else e.consideration.strip() or None,
         )
         for e in effects
     )

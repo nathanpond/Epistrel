@@ -550,7 +550,7 @@ CORE_PREDICATES: tuple[Predicate, ...] = (
         docs="The subject agreed to an action at the instant (#189, FR-STATE-11): the object is "
         "what the action is about (the item a sale pays for, else the other party). An action's "
         "preconditions read it as the counterparty's consent (`core.states.preconditions`). "
-        "Consent is only an `agreed_to` a verified `say` or `do` beat of the subject declares, "
+        "Consent is only an `agreed_to` a kept `say` or `do` beat of the subject declares, "
         "or a narrator beat declares; it is never inferred from prose. Negated, the subject "
         "refused.",
     ),

@@ -466,13 +466,14 @@ class ScheduledStatus(StrEnum):
 class ExternalValueSource(StrEnum):
     """Where an ``external_values`` version came from (FR-EXT-2,7,20; #205): a live ``read``,
     the ``last_known`` recorded value or ``unknown`` under the provider's unavailability policy
-    (#206), or a write's ``confirmation`` carrying the resulting values (#215). Postgres enum
-    ``external_value_source``."""
+    (#206), a write's ``confirmation`` carrying the resulting values, or one ``post_effect_read``
+    after a confirmed effect (#215, FR-EXT-20). Postgres enum ``external_value_source``."""
 
     READ = "read"
     LAST_KNOWN = "last_known"
     UNKNOWN = "unknown"
     CONFIRMATION = "confirmation"
+    POST_EFFECT_READ = "post_effect_read"
 
 
 PG_ENUM_TYPES: dict[str, type[StrEnum]] = {

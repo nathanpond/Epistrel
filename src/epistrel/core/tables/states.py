@@ -39,9 +39,13 @@ docs/02 §7.1; #185, migration 0084).
   read (``position_*``: the turn's input, beat 0 and step 0, for a read at turn start; the
   claim's beat and step for one made on demand during verification; FR-STORE-31). It carries
   the State (``state_id``), the scope key (``''`` for a story-scoped State), the ``version``
-  (1 for a read; #215's confirmations add later ones), the ``value`` (``NULL``: unknown, #206),
-  its ``source`` and the event's operation (``operation_id``: a read follows its turn's
-  membership through it). Rebuilt from the log; a fork refolds it from the copied events.
+  (1 for a read), the ``value`` (``NULL``: unknown, #206), its ``source`` and the event's
+  operation (``operation_id``: a read follows its turn's membership through it). #215
+  (migration 0097, FR-EXT-20): a confirmed effect adds later versions of a read, from an
+  ``external_outcome`` event (``confirmation`` or ``unknown``) or a ``post_effect_read``;
+  ``base_event_id`` names the version-1 read a version extends (a read's own event for a
+  read), unique with ``version`` per State and scope key. Rebuilt from the log; a fork
+  refolds it from the copied events.
 """
 
 from __future__ import annotations
@@ -263,8 +267,18 @@ external_values = Table(
     Column("version", Integer, nullable=False),
     Column("value", JSONB(none_as_null=True), nullable=True),
     Column("source", pg_enum(ExternalValueSource, "external_value_source"), nullable=False),
+    Column("base_event_id", ulid_type(), nullable=False),
     PrimaryKeyConstraint("event_id"),
     CheckConstraint("version > 0", name="version"),
+)
+Index(
+    "uq_external_values_version",
+    external_values.c.story_id,
+    external_values.c.state_id,
+    external_values.c.scope_key,
+    external_values.c.base_event_id,
+    external_values.c.version,
+    unique=True,
 )
 Index(
     "ix_external_values_story_state_scope_position",

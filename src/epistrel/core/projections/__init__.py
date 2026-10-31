@@ -55,7 +55,8 @@ NESTED_BELIEF_STATE = register_projection(NestedBeliefStateProjection())
 STATE_VALUES = register_projection(StateValuesProjection())
 """The State values (#185), folded from the story's active State changes."""
 EXTERNAL_VALUES = register_projection(ExternalValuesProjection())
-"""The external values (#205), folded from the story's ``external_read`` events."""
+"""The external values (#205), folded from the story's ``external_read`` and (#215)
+``external_outcome`` events."""
 STORED_STATE = (*STRUCTURED, BELIEF_STATE, NESTED_BELIEF_STATE, STATE_VALUES, EXTERNAL_VALUES)
 """The projections a fork refolds rather than copies: those folded from stored state, and the
 external values (#205), folded from the copied ``external_read`` events (FR-STORE-17)."""

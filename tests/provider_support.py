@@ -369,6 +369,83 @@ async def external_facts(engine: AsyncEngine, story_id: str) -> list[Any]:
         return list(found)
 
 
+# -- post-effect versions (#215) ---------------------------------------------------------------
+
+
+async def record_read(
+    engine: AsyncEngine, story_id: str, gold: Any, scope_key: str | None, value: Any
+) -> tuple[int, str]:
+    """Commit one turn whose only event is a version-1 ``external_read`` of ``gold`` (under
+    ``scope_key``) answering ``value``, at the turn's input (beat 0, step 0); answers the turn
+    and the read's event id."""
+    from datetime import UTC, datetime
+
+    from epistrel.core.enums import OperationKind, Provenance
+    from epistrel.core.events.operation import Operation
+    from epistrel.core.events.types import EXTERNAL_READ, ExternalRead
+
+    async with Operation(
+        engine, story_id=story_id, kind=OperationKind.TURN, principal=PRINCIPAL
+    ) as op:
+        op.append(
+            EXTERNAL_READ,
+            ExternalRead(
+                provider=str(gold.provider_id),
+                value_name="gold",
+                state_id=str(gold.id),
+                scope_key=scope_key,
+                query_hash="0" * 64,
+                value=value,
+                read_at=datetime.now(UTC),
+            ),
+            provenance=Provenance.SYSTEM,
+            beat=0,
+            step=0,
+        )
+        await op.commit()
+    turn = int(op.narrative_turn or 0)
+    async with engine.connect() as conn:
+        event_id = await conn.scalar(
+            text("SELECT id FROM events WHERE operation_id = :o AND type = 'external_read'"),
+            {"o": op.operation_id},
+        )
+    return turn, str(event_id)
+
+
+@asynccontextmanager
+async def outcome_op(
+    engine: AsyncEngine, story_id: str, *, turn: int | None = None
+) -> AsyncIterator[Any]:
+    """An operation an outcome is recorded in: at turn ``turn``'s active variant (the outcome
+    step's transaction, #212), or with no ``turn`` in the next inter-turn slot ``N⁺k`` (a late
+    settlement, #217). The caller commits it."""
+    from epistrel.core.enums import OperationKind
+    from epistrel.core.events.operation import Operation
+
+    async with Operation(
+        engine,
+        story_id=story_id,
+        kind=OperationKind.INTER_TURN,
+        principal=PRINCIPAL,
+        turn=turn,
+        slot=turn is None,
+    ) as op:
+        yield op
+
+
+async def external_outcomes(engine: AsyncEngine, story_id: str) -> list[Any]:
+    """The story's ``external_outcome`` events, in log order, with their positions."""
+    async with engine.connect() as conn:
+        found = await conn.execute(
+            text(
+                "SELECT e.id, e.payload, e.narrative_turn, e.slot_k, e.beat, e.step FROM events e "
+                "WHERE e.story_id = :s AND e.type = 'external_outcome' ORDER BY e.seq"
+            ),
+            {"s": story_id},
+        )
+        return list(found)
+
+
 # -- the outbox (#210) --------------------------------------------------------------------------
 
 
@@ -564,6 +641,7 @@ __all__ = [
     "drop_outbox_jobs",
     "external_facts",
     "external_gold",
+    "external_outcomes",
     "external_reads",
     "external_value_rows",
     "http_spec",
@@ -571,8 +649,10 @@ __all__ = [
     "outbox_jobs",
     "outbox_outcomes",
     "outbox_rows",
+    "outcome_op",
     "read_template",
     "reconstruction",
+    "record_read",
     "register",
     "stub_server",
     "unique_name",

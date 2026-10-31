@@ -37,6 +37,16 @@ rebased turn keeps its reads). A regeneration restarts the read phase, which cal
 the next attempt reads live again. Replay, rebuild and fork fold the recorded events and never
 reach this module.
 
+**Post-effect versions** (#215, FR-EXT-20). The read stays version 1, never changed. After a
+write-capable effect is confirmed, its outcome transaction (#212's stage 3, or #217's late
+settlement at an inter-turn slot ``N⁺k``) records the next version of the affected value at
+its own position (``settle_value``): the confirmation's resulting value when the provider
+``returns_resulting_values`` (``write_confirmation_version``, an ``external_outcome`` event,
+source ``confirmation``); else one recorded post-effect read (``post_effect_read``, an
+``external_read`` event, source ``post_effect_read``); else ``Unknown`` (``record_unknown``),
+so the exact resulting value is unknown for narration. ``pinned`` answers the latest version at
+or before a position. No resulting value is ever computed from the read and the effect's delta.
+
 Logs carry the provider's and the value's names only (invariant 3).
 """
 
@@ -57,7 +67,13 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.core import providers as core_providers
 from epistrel.core import states
 from epistrel.core.enums import ExternalValueSource, Provenance, StateScope, StateVisibility
-from epistrel.core.events.types import EXTERNAL_READ, ExternalRead
+from epistrel.core.events.types import (
+    EXTERNAL_OUTCOME,
+    EXTERNAL_READ,
+    ExternalOutcome,
+    ExternalRead,
+    OutcomeVersion,
+)
 from epistrel.core.membership import Position
 from epistrel.core.propositions.model import Proposition
 from epistrel.core.states import external
@@ -73,6 +89,7 @@ from epistrel.orchestrator.providers.port import (
     ExternalProvider,
     ProviderUnavailable,
     ReadResult,
+    WriteOutcome,
 )
 from epistrel.orchestrator.providers.registry import provider_for
 from epistrel.orchestrator.providers.sanitize import Sanitized, in_domain, render_block, sanitize
@@ -108,6 +125,8 @@ class PinnedValue:
     """The provider's ``trust_tier`` as registered when it was read (the block's ``tier``)."""
     truncated: bool = False
     """#208: a ``text`` value was capped at ``sanitize.TEXT_MAX`` characters."""
+    base_event_id: str | None = None
+    """#215: the version-1 read a ``post_effect_read`` versions (``None`` for a turn's read)."""
 
     @property
     def value(self) -> Value | None:
@@ -131,6 +150,8 @@ class PinnedValue:
             source=self.source,
             origin_event_id=self.origin_event_id,
             truncated=self.truncated,
+            version=self.pin.version,
+            base_event_id=self.base_event_id,
         )
 
     def block(self) -> str:
@@ -153,6 +174,40 @@ def scope_of(definition: StateDefinition, subject: str) -> str | None:
     return None if definition.scope is StateScope.STORY else subject
 
 
+@dataclass(frozen=True, slots=True)
+class Answer:
+    """One live read's outcome (``PinnedReads.answer``): the provider's row, the value's name,
+    the story's binding ids, the scope key, and either the adapter's answer with its clean
+    value or the adapter error."""
+
+    row: core_providers.ProviderRow
+    value_name: str
+    external_ids: Mapping[str, str]
+    scope_key: str | None
+    read: tuple[ReadResult, Sanitized] | ProviderUnavailable
+
+    def pinned(self, pin: ExternalPin, *, base_event_id: str | None = None) -> PinnedValue:
+        """The answer pinned as ``pin`` (its value the clean one), with what its
+        ``external_read`` event records."""
+        assert not isinstance(self.read, ProviderUnavailable)  # noqa: S101 - an answer only
+        result, clean = self.read
+        post = pin.source is ExternalValueSource.POST_EFFECT_READ
+        return PinnedValue(
+            pin=pin,
+            provider=self.row.name,
+            value_name=self.value_name,
+            query_hash=query_hash(
+                self.row.name, self.value_name, self.external_ids, self.scope_key
+            ),
+            raw_hash=result.raw_hash,
+            read_at=result.at,
+            source="post_effect_read" if post else "live",
+            tier=self.row.trust_tier,
+            truncated=clean.truncated,
+            base_event_id=base_event_id,
+        )
+
+
 @dataclass
 class PinnedReads:
     """A structured turn's pinned external reads (see the module docstring)."""
@@ -171,6 +226,9 @@ class PinnedReads:
     policies: list[unavailability.Applied] = field(default_factory=list)
     """#206: the attempt's unavailability policy applications, in the order they were read."""
     _pins: dict[ValueRef, PinnedValue] = field(default_factory=dict)
+    _versions: dict[ValueRef, list[ExternalPin]] = field(default_factory=dict)
+    """#215: the later versions of a pinned value (a confirmation's, a post-effect read's or an
+    ``Unknown``), recorded by this module's writers at their own positions."""
     _definitions: dict[str, StateDefinition] | None = None
     _turn: int = 0
     _started: bool = False
@@ -186,6 +244,7 @@ class PinnedReads:
         """A new attempt (the read phase ran again): every pin is dropped, so a regenerated
         turn reads live again (FR-CONC-9)."""
         self._pins.clear()
+        self._versions.clear()
         self.policies.clear()
         self._definitions = None
         self._started = False
@@ -236,6 +295,25 @@ class PinnedReads:
             return found
         definition = (await self.definitions())[ref[0]]
         at = position or Position(self._turn)
+        answer = await self.answer(definition, ref[1])
+        if isinstance(answer.read, ProviderUnavailable):
+            pinned = await self.unavailable(
+                definition, ref, at, answer.read, answer.row, answer.external_ids
+            )
+            self._pins[ref] = pinned
+            return pinned
+        pinned = answer.pinned(ExternalPin(ref[0], ref[1], answer.read[1].value, at))
+        self._pins[ref] = pinned
+        log.debug(
+            "external read pinned", extra={"provider": answer.row.name, "value": answer.value_name}
+        )
+        return pinned
+
+    async def answer(self, definition: StateDefinition, scope_key: str | None) -> Answer:
+        """One live read of ``definition``'s value under ``scope_key`` (#204's adapter as
+        registered now, the story's binding), timed as the ``external_read`` stage and counted
+        in ``live_reads``, typed and cleaned (#208); an adapter error (a malformed answer
+        included) is answered, not raised, for the caller's policy."""
         assert definition.provider_id is not None  # noqa: S101 - an external State names one
         value_name = str(definition.external_value_name or definition.name)
         provider_name = definition.provider_id
@@ -254,35 +332,15 @@ class PinnedReads:
         reading = time.perf_counter()
         self.live_reads += 1
         try:
-            result = await self.read(adapter, row, value_name, binding, ref[1])
+            result = await self.read(adapter, row, value_name, binding, scope_key)
             # #208: typed and cleaned before it is pinned; a malformed answer is an adapter
             # error (provider_malformed), so the unavailability policy applies to it too.
             clean = self.sanitize(definition, result, row)
         except ProviderUnavailable as error:
             stages.observe("external_read", time.perf_counter() - reading)
-            pinned = await self.unavailable(definition, ref, at, error, row, external_ids)
-            self._pins[ref] = pinned
-            return pinned
+            return Answer(row, value_name, external_ids, scope_key, error)
         stages.observe("external_read", time.perf_counter() - reading)
-        pinned = PinnedValue(
-            pin=ExternalPin(
-                state_id=ref[0],
-                scope_key=ref[1],
-                value=clean.value,
-                position=at,
-                source=ExternalValueSource.READ,
-            ),
-            provider=provider_name,
-            value_name=value_name,
-            query_hash=query_hash(provider_name, value_name, external_ids, ref[1]),
-            raw_hash=result.raw_hash,
-            read_at=result.at,
-            tier=row.trust_tier,
-            truncated=clean.truncated,
-        )
-        self._pins[ref] = pinned
-        log.debug("external read pinned", extra={"provider": provider_name, "value": value_name})
-        return pinned
+        return Answer(row, value_name, external_ids, scope_key, (result, clean))
 
     async def read(
         self,
@@ -376,14 +434,23 @@ class PinnedReads:
     # -- Core's PinSource -------------------------------------------------------------------
 
     def pinned(self, state_id: str, scope_key: str | None, through: Position | None) -> Any:
-        """Core's read of the pin (``core.states.external.PinSource``): the version of
-        ``(state_id, scope_key)`` pinned at or before ``through``, else ``None``."""
-        found = self._pins.get((state_id, scope_key))
-        if found is None:
+        """Core's read of the pin (``core.states.external.PinSource``): the latest version of
+        ``(state_id, scope_key)`` pinned at or before ``through`` (the read, or a later version
+        #215's writers recorded), by position then version; else ``None``."""
+        ref = (state_id, scope_key)
+        found = self._pins.get(ref)
+        versions = [*([found.pin] if found is not None else []), *self._versions.get(ref, ())]
+        candidates = [
+            pin for pin in versions if through is None or pin.position.at_or_before(through)
+        ]
+        if not candidates:
             return None
-        if through is not None and not found.pin.position.at_or_before(through):
-            return None
-        return found.pin
+        return max(candidates, key=lambda pin: (pin.position.key(), pin.version))
+
+    def add_version(self, pin: ExternalPin) -> None:
+        """#215: record a later version of a pinned value (``pinned`` answers it from its
+        position on). Never replaces the read: version 1 is immutable."""
+        self._versions.setdefault((pin.state_id, pin.scope_key), []).append(pin)
 
     # -- what the turn records --------------------------------------------------------------
 
@@ -418,10 +485,243 @@ class PinnedReads:
             )
 
 
+# -- post-effect versions (#215, FR-EXT-20) -----------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class OutcomeTarget:
+    """The external value a write's outcome may version: the State (``definition``) under
+    ``scope_key``, the position the outcome is recorded at (the outcome step, #212, or a late
+    settlement's inter-turn slot ``N⁺k``, #217), and the read chain the new version continues
+    (``core.states.external.version_base``)."""
+
+    definition: StateDefinition
+    scope_key: str | None
+    position: Position
+    base: external.VersionBase
+
+    @property
+    def state_id(self) -> str:
+        return str(self.definition.id)
+
+    @property
+    def value_name(self) -> str:
+        return str(self.definition.external_value_name or self.definition.name)
+
+    def pin(self, value: Value | None, source: ExternalValueSource) -> ExternalPin:
+        """The new version as Core reads it."""
+        return ExternalPin(
+            state_id=self.state_id,
+            scope_key=self.scope_key,
+            value=value,
+            position=self.position,
+            version=self.base.next_version,
+            source=source,
+        )
+
+
+async def outcome_target(
+    db: AsyncEngine,
+    story_id: str,
+    definition: StateDefinition,
+    scope_key: str | None,
+    position: Position,
+) -> OutcomeTarget | None:
+    """The ``OutcomeTarget`` of ``definition``'s value at ``position``: the committed version it
+    continues; ``None`` when no read of it was ever recorded (there is nothing to version, and
+    the outcome records none)."""
+    async with db.connect() as conn:
+        base = await external.version_base(conn, story_id, str(definition.id), scope_key, position)
+    return None if base is None else OutcomeTarget(definition, scope_key, position, base)
+
+
+@dataclass(frozen=True, slots=True)
+class Outcome:
+    """A write's outcome as the outcome event records it: the outbox row and its effect, the
+    adapter's ``WriteOutcome`` and when it was answered."""
+
+    outbox_id: str
+    effect_id: str
+    answer: WriteOutcome
+    answered_at: datetime
+
+    def event(self, version: OutcomeVersion | None = None) -> ExternalOutcome:
+        """The ``external_outcome`` payload, recording ``version`` if any."""
+        resulting = self.answer.resulting_values
+        return ExternalOutcome(
+            outbox_id=self.outbox_id,
+            effect_id=self.effect_id,
+            status=self.answer.status,
+            raw_hash=self.answer.raw_hash,
+            answered_at=self.answered_at,
+            resulting_values=(
+                json.loads(json.dumps(dict(resulting), default=str)) if resulting else None
+            ),
+            version=version,
+        )
+
+
+def stage_outcome(
+    op: Operation, outcome: Outcome, position: Position, version: OutcomeVersion | None = None
+) -> ExternalOutcome:
+    """Stage the ``external_outcome`` event of ``outcome`` at ``position``'s beat and step (the
+    operation is the outcome step's, #212, or the settlement slot's, #217), recording the
+    post-effect ``version`` it decides, if any."""
+    payload = outcome.event(version)
+    op.append(
+        EXTERNAL_OUTCOME,
+        payload,
+        provenance=Provenance.SYSTEM,
+        character_id=None,
+        beat=position.beat,
+        step=position.step,
+    )
+    return payload
+
+
+def _version(target: OutcomeTarget, value: Value | None, *, known: bool) -> OutcomeVersion:
+    return OutcomeVersion(
+        state_id=target.state_id,
+        scope_key=target.scope_key,
+        value=None if value is None else to_json(value),
+        version=target.base.next_version,
+        base_event_id=target.base.base_event_id,
+        source="confirmation" if known else "unknown",
+    )
+
+
+def write_confirmation_version(
+    op: Operation,
+    target: OutcomeTarget,
+    outcome: Outcome,
+    provider: core_providers.ProviderRow,
+    *,
+    pins: PinnedReads | None = None,
+) -> ExternalPin | None:
+    """A confirmation's resulting value as the next version of ``target`` (FR-EXT-20): when the
+    outcome is ``confirmed``, the provider declares ``returns_resulting_values`` and its
+    ``resulting_values`` (the manifest's ``resulting_values_path``) carry the value, typed and
+    cleaned like a read (#208), the ``external_outcome`` event is staged recording it (source
+    ``confirmation``) and the new version is answered (and added to ``pins``). Otherwise
+    nothing is staged and ``None`` is answered. The value is the provider's, as answered."""
+    if outcome.answer.status != "confirmed" or not provider.returns_resulting_values:
+        return None
+    resulting = outcome.answer.resulting_values or {}
+    if target.value_name not in resulting:
+        return None
+    declared = provider.values().get(target.value_name, {}).get("type")
+    try:
+        clean = sanitize(
+            resulting[target.value_name],
+            str(declared),
+            provider=provider.name,
+            name=target.value_name,
+            state_type=target.definition.type,
+            allowed_values=target.definition.constraints.allowed_values,
+        )
+    except ProviderUnavailable:
+        return None
+    stage_outcome(op, outcome, target.position, _version(target, clean.value, known=True))
+    pin = target.pin(clean.value, ExternalValueSource.CONFIRMATION)
+    if pins is not None:
+        pins.add_version(pin)
+    return pin
+
+
+async def post_effect_read(
+    op: Operation, reads: PinnedReads, target: OutcomeTarget
+) -> ExternalPin | None:
+    """One recorded post-effect read of ``target`` (FR-EXT-20): when the provider's manifest
+    declares the value, read it once (``PinnedReads.answer``: #204's adapter, #208's
+    sanitizing) and stage it as an ``external_read`` event with ``source = post_effect_read``,
+    the next version of the read it extends, at the target's position; answers the new version
+    (added to ``reads``). An adapter error (an unreachable provider, a malformed answer) or an
+    undeclared value answers ``None`` and stages nothing: #206's unavailability policy does not
+    apply mid-stage."""
+    definition = target.definition
+    assert definition.provider_id is not None  # noqa: S101 - an external State names one
+    async with reads.db.connect() as conn:
+        row = await core_providers.find_provider(conn, definition.provider_id)
+    if row is None or target.value_name not in row.values():
+        return None
+    answer = await reads.answer(definition, target.scope_key)
+    if isinstance(answer.read, ProviderUnavailable):
+        log.info(
+            "post-effect read unavailable",
+            extra={"provider": row.name, "value": target.value_name, "reason": answer.read.reason},
+        )
+        return None
+    pin = target.pin(answer.read[1].value, ExternalValueSource.POST_EFFECT_READ)
+    pinned = answer.pinned(pin, base_event_id=target.base.base_event_id)
+    op.append(
+        EXTERNAL_READ,
+        pinned.event(),
+        provenance=Provenance.SYSTEM,
+        character_id=None,
+        beat=target.position.beat,
+        step=target.position.step,
+    )
+    reads.add_version(pin)
+    return pin
+
+
+def record_unknown(
+    op: Operation, target: OutcomeTarget, outcome: Outcome, *, pins: PinnedReads | None = None
+) -> external.Unknown:
+    """Neither the confirmation nor a post-effect read gave the resulting value (FR-EXT-20,11):
+    the ``external_outcome`` event is staged recording an ``Unknown`` next version of
+    ``target``, so a claim of the exact resulting value from the target's position on is
+    ``uncertain(provider_unknown)``, while the effect itself ("you paid 50") is unaffected."""
+    stage_outcome(op, outcome, target.position, _version(target, None, known=False))
+    pin = target.pin(None, ExternalValueSource.UNKNOWN)
+    if pins is not None:
+        pins.add_version(pin)
+    return external.Unknown(target.state_id, target.scope_key, pin)
+
+
+async def settle_value(
+    op: Operation,
+    reads: PinnedReads,
+    target: OutcomeTarget,
+    outcome: Outcome,
+    provider: core_providers.ProviderRow,
+) -> ExternalPin | external.Unknown | None:
+    """Record a write's outcome with the post-effect version of its value it decides
+    (FR-EXT-20, docs/02 §4.8), staging the one ``external_outcome`` event:
+
+    1. a confirmation carrying the resulting value: its version (``write_confirmation_version``);
+    2. else one recorded ``post_effect_read``, the outcome recording no version;
+    3. else an ``Unknown`` version (``record_unknown``).
+
+    A ``failed`` or ``unknown`` outcome versions nothing (the value is as last read): the
+    outcome is recorded alone and ``None`` answered. The resulting value is never computed
+    from the read and the effect's delta."""
+    if outcome.answer.status != "confirmed":
+        stage_outcome(op, outcome, target.position)
+        return None
+    confirmed = write_confirmation_version(op, target, outcome, provider, pins=reads)
+    if confirmed is not None:
+        return confirmed
+    read = await post_effect_read(op, reads, target)
+    if read is not None:
+        stage_outcome(op, outcome, target.position)
+        return read
+    return record_unknown(op, target, outcome, pins=reads)
+
+
 __all__ = [
+    "Answer",
+    "Outcome",
+    "OutcomeTarget",
     "PinnedReads",
     "PinnedValue",
     "ValueRef",
+    "outcome_target",
+    "post_effect_read",
     "query_hash",
+    "record_unknown",
     "scope_of",
+    "settle_value",
+    "stage_outcome",
+    "write_confirmation_version",
 ]

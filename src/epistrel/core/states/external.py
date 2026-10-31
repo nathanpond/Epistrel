@@ -20,6 +20,15 @@ never imports ``orchestrator.providers``: it reads what was pinned.
   an operation on the active timeline (``core.membership.active_operation``, so a truncated or
   replaced turn's read no longer answers, and a regenerate's own replaced variant is left out).
 
+**Versions** (#215, FR-EXT-20). A turn's read is version 1 and is never changed. A confirmed
+external effect adds later versions of it, each a row of its own at its own position (the
+outcome step, or a late settlement's inter-turn slot ``N⁺k``): the confirmation's resulting
+value, one recorded post-effect read, or ``Unknown``. A version names the read it extends
+(``base_event_id``); ``version_base`` answers the chain a new version continues and its next
+number. ``pinned_value_at`` is the value at a position: the latest version at or before it by
+``Position.key()`` (so a version at ``N⁺k`` orders after turn N and before N+1), or ``Unknown``.
+No value is ever computed from a version and a change.
+
 **Inspection** (``inspect``, #207; ``GET /stories/{id}/inspect/external-facts``, FR-ADMIN-5):
 the story's ``external_read`` events on the active timeline with the facts citing them, an
 omniscient raw read (the caller applies ``core.epistemic.inspection.omniscient_read``).
@@ -29,7 +38,8 @@ omniscient raw read (the caller applies ``core.epistemic.inspection.omniscient_r
 (``core.epistemic.observation``) that a value is pinned ``Unknown`` this turn, so no one newly
 learns it.
 
-Pure but for ``pinned_values``'s, ``last_read``'s and ``inspect``'s reads; logs nothing
+Pure but for ``pinned_values``'s (``pinned_value_at``'s), ``version_base``'s, ``last_read``'s
+and ``inspect``'s reads; logs nothing
 (invariant 3).
 """
 
@@ -42,7 +52,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.enums import ExternalValueSource, StateOwner
@@ -92,8 +102,8 @@ class PinSource(Protocol):
         ...
 
     def pinned(self, state_id: str, scope_key: str | None, through: Position | None) -> Any:
-        """The ``ExternalPin`` of ``(state_id, scope_key)`` pinned at or before ``through``
-        (``None``: the latest), or ``None`` when the turn has pinned none."""
+        """The ``ExternalPin`` of ``(state_id, scope_key)``: the latest version the turn has
+        pinned at or before ``through`` (``None``: the latest), or ``None`` when it has none."""
         ...
 
 
@@ -187,6 +197,90 @@ async def pinned_values(
     return {key: pin for key, (_, pin) in latest.items() if _at_or_before(pin.position, through)}
 
 
+# -- versions (#215) ----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Unknown:
+    """No known value of an external value at a position (FR-EXT-11,20): ``pin`` is the
+    recorded ``Unknown`` version answering there, or ``None`` when nothing was recorded."""
+
+    state_id: str
+    scope_key: str | None
+    pin: ExternalPin | None = None
+
+
+async def pinned_value_at(
+    conn: AsyncConnection,
+    story_id: str,
+    definition: StateDefinition,
+    scope_key: str | None,
+    position: Position,
+) -> ExternalPin | Unknown:
+    """The value of the externally owned State ``definition`` (under ``scope_key``; ``None``:
+    story-scoped) at ``position``: the latest version at or before it by ``Position.key()``
+    (``pinned_values``: the current turn's pins, or the committed versions on the active
+    timeline), or ``Unknown`` when there is none or the latest one is pinned ``Unknown``."""
+    state_id = str(definition.id)
+    found = await pinned_values(
+        conn, story_id, [definition], [(state_id, scope_key)], through=position
+    )
+    pin = found.get((state_id, scope_key))
+    if pin is None:
+        return Unknown(state_id, scope_key)
+    if pin.source is ExternalValueSource.UNKNOWN:
+        return Unknown(state_id, scope_key, pin)
+    return pin
+
+
+@dataclass(frozen=True, slots=True)
+class VersionBase:
+    """Where a new post-effect version of an external value goes: the version-1 read it extends
+    (``base_event_id``) and its number (``next_version``)."""
+
+    base_event_id: str
+    next_version: int
+
+
+async def version_base(
+    conn: AsyncConnection,
+    story_id: str,
+    state_id: str,
+    scope_key: str | None,
+    position: Position,
+) -> VersionBase | None:
+    """The chain a post-effect version of ``(state_id, scope_key)`` at ``position`` continues:
+    the base read of the latest committed version at or before ``position`` on the active
+    timeline, and one more than that chain's highest version; ``None`` when no version was
+    recorded (there is no read to version). Reads version numbers only, never a value."""
+    v = external_values.c
+    scope = STORY_SCOPE_KEY if scope_key is None else scope_key
+    latest = await conn.scalar(
+        select(v.base_event_id)
+        .select_from(external_values.join(operations, operations.c.operation_id == v.operation_id))
+        .where(
+            v.story_id == story_id,
+            v.state_id == state_id,
+            v.scope_key == scope,
+            active_operation(operations),
+            position_key(external_values, "position") <= position_literal(position),
+        )
+        .order_by(position_key(external_values, "position").desc(), v.version.desc())
+        .limit(1)
+    )
+    if latest is None:
+        return None
+    highest = await conn.scalar(
+        select(func.max(v.version)).where(
+            v.story_id == story_id,
+            v.state_id == state_id,
+            v.scope_key == scope,
+            v.base_event_id == latest,
+        )
+    )
+    return VersionBase(str(latest), int(highest or 0) + 1)
+
+
 # -- unavailability (#206) ---------------------------------------------------------------------
 
 
@@ -200,19 +294,34 @@ class RecordedRead:
     read_at: datetime
 
 
+LAST_READ_SOURCES: tuple[ExternalValueSource, ...] = (
+    ExternalValueSource.READ,
+    ExternalValueSource.POST_EFFECT_READ,
+    ExternalValueSource.CONFIRMATION,
+)
+"""The versions ``last_read`` may answer: the provider's own answers (a live read, #215's
+post-effect read, a confirmation's resulting value), never a ``last_known`` or ``Unknown``."""
+
+
 async def last_read(
     conn: AsyncConnection, story_id: str, state_id: str, scope_key: str | None
 ) -> RecordedRead | None:
-    """The most recent live read (``source = read``, a value) of ``(state_id, scope_key)`` on
-    the story's active timeline (an operation ``core.membership.active_operation`` keeps), by
-    position, with its event's ``read_at``; ``None`` when there is none (#206's ``last_known``,
-    FR-EXT-7). A ``last_known`` or ``Unknown`` pin is never a candidate: freshness is measured
-    from the provider's own answer."""
+    """The most recent value the provider itself answered for ``(state_id, scope_key)``
+    (``LAST_READ_SOURCES``, a value) on the story's active timeline (an operation
+    ``core.membership.active_operation`` keeps), by position and version, with when it
+    answered (an ``external_read``'s ``read_at``, an ``external_outcome``'s ``answered_at``);
+    ``None`` when there is none (#206's ``last_known``, FR-EXT-7). A ``last_known`` or
+    ``Unknown`` pin is never a candidate: freshness is measured from the provider's own answer.
+    #215: a confirmation's or a post-effect read's version is newer than the read it versions,
+    so a ``last_known`` stand-in never falls back to the pre-effect value."""
     from epistrel.core.tables import events
 
     v = external_values.c
+    answered = func.coalesce(
+        events.c.payload["read_at"].astext, events.c.payload["answered_at"].astext
+    )
     query = (
-        select(v.event_id, v.value, events.c.payload["read_at"].astext.label("read_at"))
+        select(v.event_id, v.value, answered.label("read_at"))
         .select_from(
             external_values.join(operations, operations.c.operation_id == v.operation_id).join(
                 events, events.c.id == v.event_id
@@ -222,7 +331,7 @@ async def last_read(
             v.story_id == story_id,
             v.state_id == state_id,
             v.scope_key == (STORY_SCOPE_KEY if scope_key is None else scope_key),
-            v.source == ExternalValueSource.READ,
+            v.source.in_(LAST_READ_SOURCES),
             v.value.is_not(None),
             active_operation(operations),
         )
@@ -351,17 +460,22 @@ async def inspect(
 __all__ = [
     "INSPECT_LIMIT_DEFAULT",
     "INSPECT_LIMIT_MAX",
+    "LAST_READ_SOURCES",
     "ExternalFactItem",
     "ExternalFactPage",
     "ExternalPin",
     "Key",
     "PinSource",
     "RecordedRead",
+    "Unknown",
+    "VersionBase",
     "current",
     "external",
     "inspect",
     "last_read",
+    "pinned_value_at",
     "pinned_values",
     "pinning",
     "unknown_now",
+    "version_base",
 ]

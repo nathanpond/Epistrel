@@ -607,10 +607,11 @@ class StateSet(EventPayload):
 
 EXTERNAL_READ = "external_read"
 """The event type of a recorded external-data read (#205)."""
-EXTERNAL_READ_SOURCES: tuple[str, ...] = ("live", "last_known", "unknown")
+EXTERNAL_READ_SOURCES: tuple[str, ...] = ("live", "last_known", "unknown", "post_effect_read")
 """``ExternalRead.source``: a ``live`` read, or the value the provider's unavailability policy
 pinned instead (#206: the ``last_known`` recorded value, citing ``origin_event_id``, or
-``unknown``)."""
+``unknown``), or the one read made after a confirmed effect (#215, FR-EXT-20:
+``post_effect_read``, a later version of the read ``base_event_id`` names)."""
 
 
 @register(EXTERNAL_READ, category=EventCategory.INPUT)
@@ -635,10 +636,57 @@ class ExternalRead(EventPayload):
     value: JsonValue = None
     raw_hash: str = ""
     read_at: datetime
-    source: Literal["live", "last_known", "unknown"] = "live"
+    source: Literal["live", "last_known", "unknown", "post_effect_read"] = "live"
     origin_event_id: str | None = Field(default=None, exclude_if=lambda v: v is None)
     truncated: bool = Field(default=False, exclude_if=lambda v: not v)
     """#208: a ``text`` value was capped before it was pinned (only the capped value is kept)."""
+    version: int = Field(default=1, ge=1, exclude_if=lambda v: v == 1)
+    """#215: the value's version (1: a turn's read; a ``post_effect_read`` a later one)."""
+    base_event_id: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    """#215: the version-1 read a ``post_effect_read`` versions (``None``: this event is one)."""
+
+
+EXTERNAL_OUTCOME = "external_outcome"
+"""The event type of a write-capable provider's recorded outcome (#215 defines it; #212's
+outcome transaction and #217's settlement write it)."""
+OUTCOME_VERSION_SOURCES: tuple[str, ...] = ("confirmation", "unknown")
+"""``OutcomeVersion.source``: the confirmation's own resulting value, or ``unknown``."""
+
+
+class OutcomeVersion(EventPayload):
+    """The post-effect version of an external value an outcome records (FR-EXT-20, #215): the
+    State and scope key, the value (the State's stored form; ``None``: unknown), its version
+    and the version-1 read it extends (``base_event_id``), and its ``source``:
+    ``confirmation`` (the provider's resulting value) or ``unknown`` (neither the confirmation
+    nor a post-effect read gave one: the exact resulting value is unknown for narration)."""
+
+    state_id: str
+    scope_key: str | None = None
+    value: JsonValue = None
+    version: int = Field(ge=2)
+    base_event_id: str
+    source: Literal["confirmation", "unknown"]
+
+
+@register(EXTERNAL_OUTCOME, category=EventCategory.INPUT)
+class ExternalOutcome(EventPayload):
+    """What a write-capable provider answered for an outbox row (FR-EXT-16,20; #215): the row
+    (``outbox_id``) and its effect, the status, the raw answer's SHA-256 (never the body),
+    when it was answered, the provider's ``resulting_values`` as answered (by value name), and
+    the post-effect ``version`` of the effect's value it decides (``None``: none, e.g. a failed
+    effect, or a confirmation whose value a recorded ``post_effect_read`` versions instead).
+    Positioned at the outcome step (#212) or at the settlement's inter-turn slot (#217);
+    ``core.projections.external`` folds its ``version`` into ``external_values``."""
+
+    outbox_id: str
+    effect_id: str
+    status: Literal["confirmed", "failed", "unknown"]
+    raw_hash: str = ""
+    answered_at: datetime
+    resulting_values: dict[str, JsonValue] | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
+    version: OutcomeVersion | None = Field(default=None, exclude_if=lambda v: v is None)
 
 
 REQUESTED_EFFECT = "requested_effect"

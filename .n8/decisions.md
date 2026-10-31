@@ -9509,3 +9509,10 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Change:** For M6's 24 pre-story issues only, `/n8-exec` runs the full suite once per batch instead of after every issue. There are four ordered batches: flakes (#537 #514 #517 #446 #468), then M5 bugs (#567 #566 #568 #516 #563 #483 #521), then decided changes and Console additions (#519 #515 #456 #588 #536 #533 #535 #526 #527 #531 #534), then #522 alone. Each issue still runs its own tests, its area tests and the fast gates. Every M6 feature story (#185 onward) keeps the per-story full-suite gate. The rules and the metrics tables are in `.n8/memory/m6-batched-pre-story-gate.md`.
   **Why:** The owner's decision, 2026-10-30. The pre-story issues are independent, small fixes, the shape where M4's and M5's batched fix passes caught nothing late. Batching saves roughly 5–6 h of full runs at about 19 min per sharded run. The feature stories share the commit path, verification, the profile schema (#203's `DELIVERED` flip) and the outbox and staged-turn harness: M3 group C's shape, where batching was a net loss because of test pollution across areas.
   **Affects:** M6 execution method only. No issue's AC or plan changes.
+
+## /n8-exec M6 — 2026-10-30
+
+- **Decision:** Branch `milestone/m6-the-world` off `origin/main` at `7d181b3`. Preflight: M6 is planned (60 open issues), M5 is closed, and every Ad-hoc entry naming M6 is reconciled. The test-gate entry (2026-10-30) changes method only. The replans ran today against this HEAD, so there is no drift.
+  **Why:** /n8-exec §1 preconditions.
+- **Decision:** The 24 pre-story issues run as parallel worktree agents per batch (the batches and barriers are in `.n8/memory/m6-batched-pre-story-gate.md`). The main session posts all GitHub comments and runs the CI-equivalent sharded full suite once per batch. Feature stories (#185 onward) are gated per story.
+  **Why:** The owner's 2026-10-30 test-gate decision. Agents can't edit issues in auto mode (learned in the M6 replan), so GitHub writes stay in the main session.

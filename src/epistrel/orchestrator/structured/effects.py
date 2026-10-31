@@ -127,6 +127,19 @@ class Book:
     preconditions: action_preconditions.Canon | None = None
     """#189: the canon the attempt read for its effects' action preconditions
     (``read_preconditions``; ``None``: not read yet, so none is checked)."""
+    clock: Any = None
+    """#194: the world clock as the attempt starts (``orchestrator.structured.clocking.
+    ClockRead``; ``None``: the story does not run it): the render schemas read its level."""
+
+    @property
+    def clock_level(self) -> str | None:
+        """#194: the clock's level (``None``: off): a time advance needs it."""
+        return None if self.clock is None else str(self.clock.level)
+
+    @property
+    def clock_fixed(self) -> bool:
+        """#194: whether the anchor fixes the time of day (a ``to`` advance needs it)."""
+        return bool(self.clock is not None and self.clock.fixed)
 
     @property
     def on(self) -> bool:

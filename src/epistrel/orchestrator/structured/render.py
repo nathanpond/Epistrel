@@ -99,6 +99,7 @@ from epistrel.core.turns.beats import (
     BEAT_TEXT_MAX,
     CHARACTER_KINDS,
     NARRATOR_KINDS,
+    DeclaredAdvance,
     DeclaredEffect,
 )
 from epistrel.orchestrator.budget import TurnBudget
@@ -292,9 +293,14 @@ MAX_EFFECTS = 8
 """The most effects one beat declares."""
 STATE_NAME_MAX = 80
 EffectKind = Literal["change", "transfer", "time_advance", "reschedule"]
-DELIVERED_EFFECT_KINDS = frozenset({"change", "transfer"})
-"""The effect kinds this deployment validates (#187's ``change``, #188's ``transfer``);
-``time_advance`` is #194's, ``reschedule`` #198's."""
+TIME_ADVANCE = "time_advance"
+DELIVERED_EFFECT_KINDS = frozenset({"change", "transfer", TIME_ADVANCE})
+"""The effect kinds this deployment validates (#187's ``change``, #188's ``transfer``,
+#194's ``time_advance``); ``reschedule`` is #198's."""
+MAX_SKIP_MINUTES = 525_960 * 10
+"""The longest declared time advance the schema takes (ten years; #199 caps a model-initiated
+one at ``max_unprompted_skip``)."""
+HHMM = r"^([01][0-9]|2[0-3]):[0-5][0-9]$"
 UNDELIVERED_EFFECT_FIELDS = (
     "contingency",
     "prerequisites",
@@ -331,10 +337,18 @@ class EffectDecl(_Strict):
     prerequisites: list[Annotated[str, Field(max_length=CITE_MAX)]] | None = Field(
         default=None, max_length=MAX_CITES
     )
+    minutes: int | None = Field(default=None, ge=0, le=MAX_SKIP_MINUTES)
+    """#194: a ``time_advance``'s duration ("twenty minutes later": 20)."""
+    to: str | None = Field(default=None, pattern=HHMM)
+    """#194: a ``time_advance``'s target time of day (``"HH:MM"``), only when the clock's anchor
+    fixes the time of day."""
+    step: int | None = Field(default=None, ge=1, le=MAX_STEP_INDEX)
+    """#194: the declared step a ``time_advance`` attaches to (``None``: its beat's step)."""
 
 
 def declared_of(effects: Sequence[EffectDecl]) -> tuple[DeclaredEffect, ...]:
-    """A beat's validated effects as Core takes them (``core.turns.beats.DeclaredEffect``)."""
+    """A beat's validated State effects as Core takes them (``core.turns.beats.
+    DeclaredEffect``); its time advances are ``advances_of``'s."""
     return tuple(
         DeclaredEffect(
             state=e.state,
@@ -352,6 +366,17 @@ def declared_of(effects: Sequence[EffectDecl]) -> tuple[DeclaredEffect, ...]:
             consideration=None if e.consideration is None else e.consideration.strip() or None,
         )
         for e in effects
+        if e.kind != TIME_ADVANCE
+    )
+
+
+def advances_of(effects: Sequence[EffectDecl]) -> tuple[DeclaredAdvance, ...]:
+    """A beat's validated ``time_advance`` effects (#194; ``core.turns.beats.
+    DeclaredAdvance``)."""
+    return tuple(
+        DeclaredAdvance(reason=e.reason.strip(), minutes=e.minutes, to=e.to, step=e.step)
+        for e in effects
+        if e.kind == TIME_ADVANCE
     )
 
 
@@ -373,6 +398,34 @@ def _value_fits(state_type: str, value: Any) -> bool:
     return isinstance(value, str)
 
 
+_ADVANCE_FIELDS = ("minutes", "to", "step")
+"""A ``time_advance``'s own fields (#194): never a ``change``'s."""
+
+
+def advance_errors(
+    at: str, effect: EffectDecl, *, clock: str | None, clock_fixed: bool
+) -> list[str]:
+    """The structural errors of one ``time_advance`` effect (#194, FR-CLOCK-7): it names the
+    ``world_clock`` and gives ``minutes`` or a ``to`` (``"HH:MM"``, only when the clock's anchor
+    fixes the time of day: else ``clock_unanchored``, and the render is asked for minutes),
+    with a reason, and nothing a ``change`` gives; the story must run the clock."""
+    if clock is None:
+        return [f"{at}: module clock is off: a render declares no time advance"]
+    errors: list[str] = []
+    if effect.state != WORLD_CLOCK:
+        errors.append(f"{at}.state: a time advance moves the world_clock")
+    if (effect.minutes is None) == (effect.to is None):
+        errors.append(f"{at}: a time advance gives minutes or a to time, one of them")
+    if effect.to is not None and not clock_fixed:
+        errors.append(
+            f"{at}.to: clock_unanchored: the story has not fixed the time of day; give minutes"
+        )
+    for name in ("scope_key", "delta", "value", "counterparty", "silent"):
+        if getattr(effect, name) is not None:
+            errors.append(f"{at}.{name}: not a time advance's")
+    return errors
+
+
 def effect_errors(
     where: str,
     kind: str,
@@ -382,12 +435,17 @@ def effect_errors(
     states: Mapping[str, TrackedState],
     level: str | None,
     cast_ids: frozenset[str],
+    clock: str | None = None,
+    clock_fixed: bool = False,
 ) -> list[str]:
     """The structural errors of one beat's ``effects`` (see the module docstring): codes and
-    indices, never a State's name or a value (``details.structural_errors``)."""
+    indices, never a State's name or a value (``details.structural_errors``). A
+    ``time_advance`` is checked by ``advance_errors`` (#194) under the clock's level
+    (``clock``); every other effect needs ``states.level`` ``on``."""
     if not effects:
         return []
-    if level != STATES_ON:
+    changes = [(m, e) for m, e in enumerate(effects) if e.kind != TIME_ADVANCE]
+    if changes and level != STATES_ON:
         return [
             f"{where}.effects: module states is {level or 'off'}: a render declares no State effect"
         ]
@@ -395,7 +453,18 @@ def effect_errors(
         return [f"{where}.effects: a think changes nothing"]
     errors: list[str] = []
     for m, effect in enumerate(effects):
+        if effect.kind == TIME_ADVANCE:
+            for name in UNDELIVERED_EFFECT_FIELDS:
+                if getattr(effect, name) is not None:
+                    errors.append(f"{where}.effects.{m}.{name}: not delivered yet")
+            errors += advance_errors(
+                f"{where}.effects.{m}", effect, clock=clock, clock_fixed=clock_fixed
+            )
+    for m, effect in changes:
         at = f"{where}.effects.{m}"
+        for name in _ADVANCE_FIELDS:
+            if getattr(effect, name) is not None:
+                errors.append(f"{at}.{name}: only a time advance's")
         if effect.kind not in DELIVERED_EFFECT_KINDS:
             errors.append(f"{at}.kind: only a change or a transfer is delivered")
         for name in UNDELIVERED_EFFECT_FIELDS:
@@ -505,7 +574,11 @@ class BeatDecl(_Strict):
     new belief it reasons from rests on. Checked, never trusted: a citation is confirmed only
     when it names the antecedent the engine's own search finds."""
     step: int | None = Field(default=None, ge=1, le=MAX_STEP_INDEX)
-    """The ``act`` step that owns this ``say`` or ``do`` (#168, FR-TURN-12; ``None``: none)."""
+    """The ``act`` (or #194's ``time``) step that owns this ``say`` or ``do`` (#168,
+    FR-TURN-12; ``None``: none)."""
+    flashback: bool = False
+    """#194 (FR-CLOCK-17): the beat recalls an earlier time. Its time expressions are not
+    checked against the present, it gets no pacing increment and moves nothing."""
 
     def qualifiers_declared(self) -> list[str]:
         """The perception qualifiers this beat declares (#161)."""
@@ -525,15 +598,17 @@ _QUALIFIER_FIELDS = (
 )
 
 
-StepKind = Literal["observe", "believe", "act"]
+StepKind = Literal["observe", "believe", "act", "time"]
 ConfidenceName = Literal["unknown", "suspected", "believed", "known"]
 
 
 class StepDecl(_Strict):
     """One declared causal step of a character's render (#168, FR-TURN-12): ``observe`` (what
     the character perceives: a ``proposition``), ``believe`` (what it concludes: a
-    ``proposition`` and ``cites``, the earlier steps (indices) or records (ids) it rests on) or
-    ``act`` (what it does: the ``say``/``do`` beats naming its index). ``confidence`` is a
+    ``proposition`` and ``cites``, the earlier steps (indices) or records (ids) it rests on),
+    ``act`` (what it does: the ``say``/``do`` beats naming its index) or ``time`` (#194,
+    FR-CLOCK-17: a step for timing alone, which cites nothing, writes no belief and owns the
+    beats naming it like an ``act``; a time advance attaches to it). ``confidence`` is a
     ``believe``'s (``believed`` when left out)."""
 
     index: int = Field(ge=1, le=MAX_STEP_INDEX)
@@ -553,6 +628,10 @@ class StepDecl(_Strict):
         return [c for c in self.cites if isinstance(c, str)]
 
 
+_OWNING = frozenset({"act", "time"})
+"""The step kinds that own beats (#168's ``act``, #194's ``time``)."""
+
+
 def _steps_structure(steps: Sequence[StepDecl], beats: Sequence[BeatDecl]) -> None:
     """The declared steps' structural rules (#168; see the module docstring): indices ``1..n``
     in order, a ``believe`` and an ``observe`` name a proposition, a step cites existing steps
@@ -562,6 +641,9 @@ def _steps_structure(steps: Sequence[StepDecl], beats: Sequence[BeatDecl]) -> No
         for n, beat in enumerate(beats):
             if beat.step is not None:
                 raise ValueError(f"beats.{n}.step: the render declares no steps")
+            for m, effect in enumerate(beat.effects):
+                if effect.kind == TIME_ADVANCE and effect.step is not None:
+                    raise ValueError(f"beats.{n}.effects.{m}.step: the render declares no steps")
         return
     indices = [s.index for s in steps]
     if indices != list(range(1, len(steps) + 1)):
@@ -575,12 +657,14 @@ def _steps_structure(steps: Sequence[StepDecl], beats: Sequence[BeatDecl]) -> No
             raise ValueError(f"{where}.confidence: only a believe step declares a confidence")
         if step.kind == "observe" and step.cites:
             raise ValueError(f"{where}.cites: an observe step cites nothing")
+        if step.kind == "time" and (step.cites or step.proposition is not None):
+            raise ValueError(f"{where}: a time step cites nothing and names no proposition")
         for cited in step.step_cites():
             if cited == step.index:
                 raise ValueError(f"{where}.cites: a step cannot cite itself")
             if cited not in kinds:
                 raise ValueError(f"{where}.cites: no step {cited}")
-            if step.kind == "believe" and kinds[cited] == "act":
+            if step.kind == "believe" and kinds[cited] in _OWNING:
                 raise ValueError(f"{where}.cites: a believe step never cites an act")
     graph = {s.index: s.step_cites() for s in steps}
     state: dict[int, int] = {}
@@ -598,8 +682,11 @@ def _steps_structure(steps: Sequence[StepDecl], beats: Sequence[BeatDecl]) -> No
         if state.get(node) is None:
             visit(node)
     for n, beat in enumerate(beats):
-        if beat.step is not None and kinds.get(beat.step) != "act":
+        if beat.step is not None and kinds.get(beat.step) not in _OWNING:
             raise ValueError(f"beats.{n}.step: names no act step")
+        for m, effect in enumerate(beat.effects):
+            if effect.kind == TIME_ADVANCE and effect.step is not None and effect.step not in kinds:
+                raise ValueError(f"beats.{n}.effects.{m}.step: no step {effect.step}")
     records = {c for s in steps for c in s.record_cites()}
     for n, beat in enumerate(beats):
         if beat.kind == "think" and beat.cites and not set(beat.cites) <= records:
@@ -674,6 +761,10 @@ class RenderedBeats(_Strict):
     """#187: the story's States by name (what an effect may name)."""
     states_level: ClassVar[str | None] = None
     """#187: the story's ``states.level`` (``None``: off); effects need ``on``."""
+    clock_level: ClassVar[str | None] = None
+    """#194: the story's ``clock.level`` (``None``: off); a time advance needs the clock."""
+    clock_fixed: ClassVar[bool] = False
+    """#194: whether the clock's anchor fixes the time of day (a ``to`` advance needs it)."""
 
     @model_validator(mode="after")
     def _structure(self) -> Self:
@@ -729,6 +820,8 @@ class RenderedBeats(_Strict):
                 states=cls.states,
                 level=cls.states_level,
                 cast_ids=cls.cast_ids,
+                clock=cls.clock_level,
+                clock_fixed=cls.clock_fixed,
             )
             if found:
                 raise ValueError("; ".join(found))
@@ -779,10 +872,13 @@ def render_schema(
     max_beats: int,
     states: Mapping[str, TrackedState] | None = None,
     states_level: str | None = None,
+    clock_level: str | None = None,
+    clock_fixed: bool = False,
 ) -> type[RenderedBeats]:
     """The beat schema of one render: a character's (``actor_id``) or the narrator's
     (``None``), with ``render.max_beats`` as the beats' ``max_items``; #187: the story's States
-    and its ``states.level``, which its effects are validated against."""
+    and its ``states.level``, which its effects are validated against; #194: the clock's level
+    and whether its anchor fixes the time of day, which its time advances are."""
     name = "NarratorRender" if actor_id is None else "CharacterRender"
     model = create_model(
         name,
@@ -797,6 +893,8 @@ def render_schema(
     model.limit = max_beats
     model.states = dict(states or {})
     model.states_level = states_level
+    model.clock_level = clock_level
+    model.clock_fixed = clock_fixed
     return model
 
 

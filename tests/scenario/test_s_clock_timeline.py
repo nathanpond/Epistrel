@@ -381,6 +381,11 @@ async def test_s_clock_timeline__anchor(
         for who in (cal, mira):
             await ps.put(engine, story, who, market)
         await ck.set_level(engine, story, "on")
+        # #194: manual mode, so no pacing moves the clock between the offsets asserted here.
+        manual = await client.patch(
+            f"/stories/{story}/clock", json={"mode": "manual"}, headers=WRITE
+        )
+        assert manual.status_code == 200, manual.text
         assert (await ck.advance(engine, story, 130)).after.offset_minutes == 130
         assert (await _anchor_at(engine, story)).is_unanchored
 

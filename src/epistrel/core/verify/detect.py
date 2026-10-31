@@ -368,6 +368,9 @@ class DetectBeat:
     text: str
     speaker: str = NARRATOR
     declared: tuple[DeclaredClaim, ...] = ()
+    flashback: bool = False
+    """#194 (FR-CLOCK-17): a flashback's time expressions are never checked against the present:
+    its clock times and time-of-day statements become no claim."""
 
 
 def shape_of(p: Proposition) -> tuple[Any, ...]:
@@ -1216,8 +1219,10 @@ def _detect_beat(
         )
     _verb_hits(work, env.registry, env)
     lone = _quantities(work)
-    lone += _times(work, env.scene_entity)
-    if env.basis.advances is not None:
+    clocked = _times(work, env.scene_entity)
+    if not beat.flashback:
+        lone += clocked
+    if env.basis.advances is not None and not beat.flashback:
         lone += _clock_statements(work, env)
     mention_claims = _mentions(work, _declared_ids(beat), env.scene_entity, seed=seed)
     found_claims: list[DetectedClaim] = []

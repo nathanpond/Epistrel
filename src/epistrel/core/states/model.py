@@ -417,21 +417,36 @@ class ClockSettings(BaseModel):
         }
 
 
-def check_clock_settings(settings: ClockSettings) -> ClockSettings:
-    """The shape rules of the clock's settings (422 ``validation_error``)."""
-    table = settings.pacing_table
-    if not table or table[0][0] != 0:
+def check_pacing_table(
+    table: Sequence[Sequence[int | None]],
+) -> tuple[tuple[int, int | None, int], ...]:
+    """The pacing table's shape (FR-CLOCK-6; #194): rows ``[lo, hi | null, minutes]`` of
+    half-open word ranges ``[lo, hi)``, starting at 0 words, contiguous and ascending, only the
+    last open-ended, nothing negative (422 ``validation_error``, ``reason: shape``). Answers the
+    table as tuples (``core.world_clock.pacing`` applies it)."""
+    rows: list[tuple[int, int | None, int]] = []
+    for row in table:
+        if len(row) != 3 or row[0] is None or row[2] is None:
+            raise _invalid("a pacing row is [lo, hi | null, minutes]", "pacing_table", "shape")
+        rows.append((int(row[0]), None if row[1] is None else int(row[1]), int(row[2])))
+    if not rows or rows[0][0] != 0:
         raise _invalid("the pacing table starts at 0 words", "pacing_table", "shape")
-    for index, (start, end, minutes) in enumerate(table):
-        last = index == len(table) - 1
+    for index, (start, end, minutes) in enumerate(rows):
+        last = index == len(rows) - 1
         if minutes < 0 or start < 0:
             raise _invalid("pacing rows are not negative", "pacing_table", "shape")
         if last != (end is None):
             raise _invalid(
                 "only the pacing table's last row is open-ended", "pacing_table", "shape"
             )
-        if end is not None and (end <= start or table[index + 1][0] != end):
+        if end is not None and (end <= start or rows[index + 1][0] != end):
             raise _invalid("the pacing table's rows are contiguous", "pacing_table", "shape")
+    return tuple(rows)
+
+
+def check_clock_settings(settings: ClockSettings) -> ClockSettings:
+    """The shape rules of the clock's settings (422 ``validation_error``)."""
+    check_pacing_table(settings.pacing_table)
     check_calendar(settings.calendar)
     check_bands(settings.bands)
     if not _digits_ok(settings.elapsed_tolerance_factor):

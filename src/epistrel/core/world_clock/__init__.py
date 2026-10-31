@@ -31,9 +31,15 @@ nothing here handles them.
   inclusive value) for callers that resolve many positions (#141's time grammar,
   normalization, retrieval windows); ``clock_off_basis()`` is the stand-in a caller with no
   story uses. No other module builds a ``TimeBasis`` (``tests/integration/
-  test_story_time_source.py``). An operation's events are stamped as it commits, before its
-  commit steps: an advance a turn writes in a step (#194's pacing) must be made known to the
-  stamp of the beats after it (#194's).
+  test_story_time_source.py``).
+
+**In-turn times** (#194, FR-CLOCK-6,17; ``core.world_clock.pacing``, ``core.world_clock.timing``):
+a structured turn's timing (``TurnTiming``) is derived before it commits and set on its
+operation (``Operation.turn_times``); while the operation commits (``turn_scope``) the story's
+``time_basis`` carries it (``TimeBasis.in_turn``), so every record the turn writes, its events
+(stamped before the commit steps run) and every commit step's facts, transitions and exposures
+alike, takes its step's start, and ``record_turn`` writes the turn's advances (one per pacing
+increment or declared skip, ``source = pacing | declared_skip``) in the commit's first step.
 
 **The anchor** (#195; ``core.world_clock.anchor``): the clock's absolute time, never more than
 the story established. Each statement that establishes or refines it is a commitment, a fact on
@@ -57,7 +63,9 @@ Log lines carry identifiers and counts only (invariant 3); this module logs noth
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -70,7 +78,7 @@ from epistrel.core import states
 from epistrel.core.enums import StateChangeKind, StateChangeSource, StateChangeStatus
 from epistrel.core.errors import ClockBackward, InvalidRequest, ModuleOff, StoryNotFound
 from epistrel.core.membership import Position, active_only
-from epistrel.core.resolution.time import YEAR, TimeBasis, as_position
+from epistrel.core.resolution.time import YEAR, TimeBasis, TurnTimes, as_position
 from epistrel.core.resolution.time import Advance as BasisAdvance
 from epistrel.core.resolution.time import Position as AnyPosition
 from epistrel.core.settings_schema import OMNISCIENT
@@ -93,6 +101,7 @@ if TYPE_CHECKING:
     from epistrel.core.canon.facts import Fact, FactOperation
     from epistrel.core.enums import RecordProvenance
     from epistrel.core.events.operation import Operation
+    from epistrel.core.world_clock.timing import TurnTiming
 
 MODULE = "clock"
 HEAD = Position(2**31 - 1)
@@ -409,9 +418,37 @@ def clock_off_basis(minute_zero: int = 0, epoch: datetime | None = None) -> Time
     return TimeBasis(minute_zero=minute_zero, epoch=epoch)
 
 
+_IN_TURN: ContextVar[tuple[str, Any] | None] = ContextVar("epistrel_clock_in_turn", default=None)
+
+
+@contextmanager
+def turn_scope(story_id: str, operation: Any) -> Iterator[None]:
+    """Within the block, ``story_id``'s time basis carries ``operation``'s in-turn times
+    (``operation.turn_times``, a ``TurnTiming``) at its position once the commit has placed it
+    (``narrative_turn``, ``turn_variant``): see the module docstring."""
+    token = _IN_TURN.set((story_id, operation))
+    try:
+        yield
+    finally:
+        _IN_TURN.reset(token)
+
+
+def _in_turn(story_id: str) -> TurnTimes | None:
+    scope = _IN_TURN.get()
+    if scope is None or scope[0] != story_id:
+        return None
+    operation = scope[1]
+    timing = getattr(operation, "turn_times", None)
+    if timing is None or operation.narrative_turn is None or operation.slot_k:
+        return None
+    found: TurnTimes = timing.times(int(operation.narrative_turn), int(operation.turn_variant or 0))
+    return found
+
+
 async def time_basis(conn: AsyncConnection, story_id: str) -> TimeBasis:
     """The story's time basis (see the module docstring): the clock's active advances, its
-    anchor and bands when the story runs the clock, the stand-in otherwise."""
+    anchor and bands when the story runs the clock (and a committing turn's in-turn times), the
+    stand-in otherwise."""
     row = await _story_row(conn, story_id)
     zero, epoch = int(row.story_minute_zero), row.story_epoch
     if await clock_level(conn, story_id) is None:
@@ -425,7 +462,33 @@ async def time_basis(conn: AsyncConnection, story_id: str) -> TimeBasis:
         advances=advances,
         anchor=None if anchor.is_unanchored else anchor,
         bands=tuple(found.bands),
+        in_turn=_in_turn(story_id),
     )
+
+
+async def record_turn(
+    conn: AsyncConnection, op: Operation, story_id: str, timing: TurnTiming
+) -> list[Advance]:
+    """Write a structured turn's advances (``timing.advances``) in ``op``'s commit, each at its
+    in-turn position (``core.world_clock.timing``): its first commit step, so every later step
+    reads the clock it leaves. Nothing when the story does not run the clock."""
+    if await clock_level(conn, story_id) is None or op.narrative_turn is None:
+        return []
+    turn, variant = int(op.narrative_turn), int(op.turn_variant or 0)
+    written = []
+    for found in timing.advances:
+        written.append(
+            await advance(
+                conn,
+                op,
+                story_id,
+                minutes=found.minutes,
+                source=found.source,
+                position=Position(turn, variant, 0, found.beat_position, found.step_position),
+                reason=found.reason,
+            )
+        )
+    return written
 
 
 def anchor_epoch(anchor: Anchor, minute_zero: int = 0) -> datetime | None:
@@ -549,8 +612,10 @@ __all__ = [
     "display",
     "elapsed_since",
     "full_years",
+    "record_turn",
     "require_clock",
     "settings",
     "story_time_at",
     "time_basis",
+    "turn_scope",
 ]

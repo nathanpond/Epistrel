@@ -31,6 +31,9 @@ sees what the render's earlier beats established and nothing later.
   ``observation``, a fact → ``discovery``, a belief → ``inference``.
 - ``act``: owns the beats that name it; verified when reached (its beats are verified as
   beats).
+- ``time`` (#194, FR-CLOCK-17): a step for timing alone. It owns the beats naming it like an
+  ``act``, cites nothing and is never verified as a belief step: it is accepted when reached and
+  writes nothing (a time advance attaches to it, ``core.world_clock.timing``).
 
 **What a verdict does.** A verified ``believe`` joins the speaker's belief record set for the
 rest of the turn (``BeliefSource.stage``, ``replay.stage_path``), so a later ``say`` of what it
@@ -72,7 +75,9 @@ from epistrel.core.propositions.model import Proposition
 
 log = logging.getLogger(__name__)
 
-OBSERVE, BELIEVE, ACT = "observe", "believe", "act"
+OBSERVE, BELIEVE, ACT, TIME = "observe", "believe", "act", "time"
+OWNING = frozenset({ACT, TIME})
+"""The steps that own beats and are accepted when reached, never verified as beliefs."""
 SELF_ATTESTATION = "self_attestation"
 UNVERIFIED_OBJECT = "unverified_object"
 NO_PERCEPTION_PATH = "no_perception_path"
@@ -174,8 +179,8 @@ class StepVerifier:
         return self.verdicts
 
     async def _verify(self, step: Step) -> None:
-        if step.kind == ACT:
-            found = StepVerdict(step.index, ACT, True)
+        if step.kind in OWNING:
+            found = StepVerdict(step.index, step.kind, True)
         elif step.kind == OBSERVE:
             found = await self._observe(step)
         else:
@@ -422,7 +427,9 @@ __all__ = [
     "ACT",
     "BELIEVE",
     "OBSERVE",
+    "OWNING",
     "SELF_ATTESTATION",
+    "TIME",
     "Observed",
     "Step",
     "StepOracle",

@@ -421,6 +421,10 @@ class Operation:
         ``slot_k`` no operation at ``N`` has taken (a slot number, like a variant, is never
         reused)."""
         self.slot_k: int | None = None
+        self.turn_times: Any = None
+        """#194: a structured turn's in-turn timing (``core.world_clock.timing.TurnTiming``):
+        while it commits, the story's time basis gives every position of the turn its step's
+        start (``core.world_clock.turn_scope``), its events' stamps included."""
         self._stages: list[dict[str, Any]] = []
         self.status: OperationStatus | None = None
         self.narrative_turn: int | None = None
@@ -848,6 +852,15 @@ class Operation:
     # -- the commit transaction --------------------------------------------------------------
 
     async def _write(self, conn: AsyncConnection, decide: Decide | None) -> None:
+        if self.turn_times is None or self.story_id is None:
+            await self._write_body(conn, decide)
+            return
+        from epistrel.core import world_clock  # here: the clock reads States, which use this
+
+        with world_clock.turn_scope(self.story_id, self):
+            await self._write_body(conn, decide)
+
+    async def _write_body(self, conn: AsyncConnection, decide: Decide | None) -> None:
         kind = self.kind.value
         self._followed = []
         crash.hit("before_lock", kind)

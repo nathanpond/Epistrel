@@ -96,6 +96,39 @@ operation's variant and its minutes."""
 
 
 @dataclass(frozen=True, slots=True)
+class TurnTimes:
+    """A committing turn's in-turn story-times (#194, FR-CLOCK-17; ``core.world_clock.timing``):
+    for each render (FR-CLOCK-17's beat) its beats ``first..last`` and each of its steps' start,
+    as minutes after the turn's start, and the turn's end. A record at ``(beat, step)`` of the
+    turn takes its step's start (a step timing does not know, the start of the latest known step
+    before it: a step-0 record, its render's step-0 start); a beat after every
+    render (the turn's own records) the turn's end; a beat before them (the player's input) the
+    turn's start."""
+
+    turn: int
+    variant: int
+    units: tuple[tuple[int, int, tuple[tuple[int, int], ...]], ...]
+    """Each render's ``(first beat, last beat, ((step, start), ...))``."""
+    end: int
+    owners: tuple[tuple[int, int], ...] = ()
+    """Each beat's own step (a record at ``(beat, 0)`` of a beat a step owns is that step's)."""
+
+    def offset(self, beat: int, step: int) -> int:
+        """Minutes after the turn's start at which a record at ``(beat, step)`` starts."""
+        if not self.units:
+            return 0
+        if step == 0:
+            step = dict(self.owners).get(beat, 0)
+        for first, last, starts in self.units:
+            if first <= beat <= last:
+                known = [(s, start) for s, start in starts if s <= step]
+                return max(known)[1] if known else 0
+        if beat > max(last for _, last, _ in self.units):
+            return self.end
+        return 0
+
+
+@dataclass(frozen=True, slots=True)
 class TimeBasis:
     """The story's time basis, which ``core.world_clock`` builds (#193; no other module does):
     where the story starts (``stories.story_minute_zero``), the calendar anchor
@@ -111,6 +144,11 @@ class TimeBasis:
     """#195: the clock's anchor (``None``: the clock is off, or nothing is anchored)."""
     bands: tuple[tuple[str, str, str], ...] | None = None
     """#195: the clock's time-of-day bands (``None``: the clock is off; the grammar's own)."""
+    in_turn: TurnTimes | None = None
+    """#194: a committing turn's in-turn times (``core.world_clock.turn_scope``): ``at`` a
+    position of that turn is the turn's start plus its step's start, so every record a step
+    writes takes the step's start (a simultaneous turn's renders each start at the turn's
+    start, which no fold of positioned advances can say)."""
 
     def at(self, position: Position) -> int:
         """The story-minute of ``position``, the moment it starts: ``minute_zero`` plus the
@@ -128,6 +166,20 @@ class TimeBasis:
         if self.advances is None:
             return self.minute_zero + turn_of(position) * self.minutes_per_turn
         found = as_position(position)
+        times = self.in_turn
+        if (
+            times is not None
+            and not inclusive
+            and found.turn == times.turn
+            and found.slot_k == 0
+            and (not found.variant or not times.variant or found.variant == times.variant)
+        ):
+            start = self._fold(NarrativePosition(found.turn, found.variant), inclusive=False)
+            return start + times.offset(found.beat, found.step)
+        return self._fold(found, inclusive=inclusive)
+
+    def _fold(self, found: NarrativePosition, *, inclusive: bool) -> int:
+        assert self.advances is not None  # noqa: S101 - the clock's basis
         key = found.key()
         return self.minute_zero + sum(
             minutes
@@ -577,6 +629,7 @@ __all__ = [
     "Position",
     "SubjectTimeline",
     "TimeBasis",
+    "TurnTimes",
     "as_position",
     "calendar_words",
     "find_time_expressions",

@@ -15,7 +15,9 @@ who is present, #137), ``## What you remember`` (its working memory, FR-MEM-5), 
 described this character doing, as requests to comply with or refuse), then ``## Tracked values``
 (#187: the player-visible States it may change and the effect syntax, never a value), then
 ``## How to change your mind`` (the step contract and the ``think`` cite instruction, when the
-character keeps its own beliefs; #168, ``steps_contract.j2``), the beat contract, the requested length as a target in words (#464) and, on a guardrail
+character keeps its own beliefs; #168, ``steps_contract.j2``), ``## Time`` (#194: time
+advances, ``time`` steps and ``flashback``, when the story runs the world clock;
+``clock_contract.j2``), the beat contract, the requested length as a target in words (#464) and, on a guardrail
 regeneration, one constraint line per violated output
 policy (#68). The director's notes never appear here (FR-SCN-11: the narrator's alone). The
 ``user`` block is the player input as the character perceived it (#572: the words it perceived,
@@ -136,6 +138,7 @@ You may narrate their brief, visible reactions in `reactions` (`character_id`, `
 
 {% endif %}
 {% include "steps_contract.j2" %}
+{% include "clock_contract.j2" %}
 ## Your part
 You render {{ voiced_characters | join(", ") }} only; never speak, think or act for {{ player_input.name }}.
 Answer with typed beats in order: `say` (speech, with its intent: sincere, deceptive, joking or unspecified), `think` (a private thought), `do` (an observable action) and `latent` (a fact of the world that is true but not shown, with who may know it).

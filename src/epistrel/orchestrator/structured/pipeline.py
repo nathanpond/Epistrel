@@ -170,7 +170,7 @@ from typing import Any, cast
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import idempotency, pause, turn_gate
+from epistrel.core import idempotency, pause, turn_gate, world_clock
 from epistrel.core.canon import facts as canon_facts
 from epistrel.core.canon.canonize import CanonRequest, canonize_all
 from epistrel.core.commit import boundary, hidden, lifecycle, matching
@@ -214,7 +214,7 @@ from epistrel.core.events.types import (
 )
 from epistrel.core.genesis.structured import deferred_items
 from epistrel.core.history import filtered_turn_beats
-from epistrel.core.membership import active_operation, beat_steps, excluding
+from epistrel.core.membership import Position, active_operation, beat_steps, excluding, step_of
 from epistrel.core.memory import records
 from epistrel.core.policies.evaluate import evaluate
 from epistrel.core.policies.model import ModelAssistedRule, Target
@@ -224,7 +224,7 @@ from epistrel.core.profiles.fingerprint import Stamp
 from epistrel.core.profiles.reservation import extraction_on
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.propositions import store
-from epistrel.core.propositions.model import Polarity, Proposition
+from epistrel.core.propositions.model import Polarity, Proposition, TemporalKind
 from epistrel.core.propositions.registry import (
     Registry,
     auto_name,
@@ -307,6 +307,9 @@ from epistrel.core.viewpoint import (
 )
 from epistrel.core.visibility import Visibility
 from epistrel.core.world_clock.service import turn_clock_of
+from epistrel.core.world_clock.timing import SEQUENTIAL as SEQUENTIAL_MODE
+from epistrel.core.world_clock.timing import SIMULTANEOUS as SIMULTANEOUS_MODE
+from epistrel.core.world_clock.timing import TurnTiming, restamp
 from epistrel.observability import stages
 from epistrel.observability.logging import get_logger
 from epistrel.observability.metrics import (
@@ -369,8 +372,8 @@ from epistrel.orchestrator.providers.in_process import InProcessRegistry
 from epistrel.orchestrator.providers.pinned import PinnedReads
 from epistrel.orchestrator.repair import ladder as repair_ladder
 from epistrel.orchestrator.repair.ladder import Recheck, RepairLadder, RepairResult
+from epistrel.orchestrator.structured import clocking, multi, planner
 from epistrel.orchestrator.structured import effects as state_effects
-from epistrel.orchestrator.structured import multi, planner
 from epistrel.orchestrator.structured import player_authority as authority_rules
 from epistrel.orchestrator.structured import prompt as prompts
 from epistrel.orchestrator.structured import reconcile as reconcile_rules
@@ -386,6 +389,7 @@ from epistrel.orchestrator.structured.render import (
     PropositionSketch,
     RenderedBeats,
     StepDecl,
+    advances_of,
     declared_of,
     hold_length,
     length_chars,
@@ -1095,6 +1099,8 @@ def _beats_of(
                 if decl.kind != LATENT or decl.hidden is None
                 else decl.hidden.observed,
                 effects=declared_of(decl.effects),
+                advances=advances_of(decl.effects),
+                flashback=decl.flashback,
             )
         )
         sketches[number] = list(decl.propositions)
@@ -1645,7 +1651,11 @@ async def check_turn(
     the rendering character's acceptances of earlier staged beats (``staged_beliefs``) staged
     there too."""
     owners = render_steps.beat_steps([b for b in rendered.beats if not b.narrator])
-    with beat_steps(str(kwargs["operation_id"]), owners), replay.staged_paths():
+    with (
+        beat_steps(str(kwargs["operation_id"]), owners),
+        replay.staged_paths(),
+        clocking.render_scope(story_id, read.turn, rendered.beats, steps=_render_steps(rendered)),
+    ):
         for accepted in kwargs.get("staged_beliefs", ()):
             replay.stage_path(
                 accepted.witness, accepted.proposition, accepted.position, f"beat:{accepted.beat}"
@@ -1811,7 +1821,9 @@ async def _check_turn(
     # #180: the ``co_author`` player's narrated beats are detected with the input, by layers
     # (a) and (b) only, each in its character's own view.
     input_beats += [
-        DetectBeat(b.beat, b.kind, b.text, _speaker(b), declared.get(b.beat, ()))
+        DetectBeat(
+            b.beat, b.kind, b.text, _speaker(b), declared.get(b.beat, ()), flashback=b.flashback
+        )
         for b in rendered.beats
         if authority_rules.is_narrated(b)
     ]
@@ -1826,7 +1838,14 @@ async def _check_turn(
         if render_group:
             groups.append(
                 [
-                    DetectBeat(b.beat, b.kind, b.text, _speaker(b), declared.get(b.beat, ()))
+                    DetectBeat(
+                        b.beat,
+                        b.kind,
+                        b.text,
+                        _speaker(b),
+                        declared.get(b.beat, ()),
+                        flashback=b.flashback,
+                    )
                     for b in render_group
                 ]
             )
@@ -2272,6 +2291,8 @@ async def _follow_up(
                     max_beats=settings.render.max_beats,
                     states=None if book is None else book.tracked(),
                     states_level=None if book is None else book.level,
+                    clock_level=None if book is None else book.clock_level,
+                    clock_fixed=False if book is None else book.clock_fixed,
                 ),
                 variant=NARRATOR_VARIANT,
                 params=params,
@@ -2604,6 +2625,46 @@ async def repair_turn(
         _merge_repair(checked, result)
         checked.degradation += result.degradation
     return checked
+
+
+async def _restamped(
+    conn: AsyncConnection,
+    op: Operation,
+    requests: Sequence[CanonRequest],
+    timing: TurnTiming,
+    registry: Registry,
+) -> list[CanonRequest]:
+    """#194 (FR-CLOCK-17): each request's claim restamped at its beat's step's start
+    (``core.world_clock.timing.restamp``), a fluent's held to the next step's start; in the
+    commit, inside the turn's time scope (``world_clock.turn_scope``)."""
+    assert op.story_id is not None  # noqa: S101 - a structured turn's operation
+    assert op.narrative_turn is not None  # noqa: S101 - placed by the commit
+    turn, variant = int(op.narrative_turn), int(op.turn_variant or 0)
+    basis = await world_clock.time_basis(conn, op.story_id)
+    now = basis.at(Position(turn, variant))
+    found = []
+    for request in requests:
+        if request.beat is None or request.anchors_clock:
+            found.append(request)
+            continue
+        step = step_of(request.beat, op.operation_id)
+        start = basis.at(Position(turn, variant, 0, request.beat, step))
+        following = timing.next_start(request.beat, step)
+        predicate = registry.get(request.claim.predicate_id)
+        stamped = restamp(
+            request.claim.valid_time,
+            now=now,
+            start=start,
+            next_start=None if following is None else now + following - timing.turn_start,
+            durative=predicate is not None and predicate.temporal_kind is TemporalKind.FLUENT,
+        )
+        if stamped == request.claim.valid_time:
+            found.append(request)
+        else:
+            found.append(
+                replace(request, claim=request.claim.model_copy(update={"valid_time": stamped}))
+            )
+    return found
 
 
 def canon_requests(checked: Checked, requests: Sequence[CanonRequest]) -> list[CanonRequest]:
@@ -3950,6 +4011,8 @@ async def play(
     narrated beats and dropped spans); ``say``/``do`` become the player's own remainder."""
     typed_say, typed_do = say, do
     books: list[state_effects.Book] = [state_effects.Book(story_id)]
+    timings: list[TurnTiming | None] = [None]
+    """#194: the turn's pacing and in-turn timing (``None``: the story does not run the clock)."""
     """#187: the attempt's States (``effects.load``)."""
     pins = PinnedReads(db, story_id, in_process=providers or InProcessRegistry())
     """#205: the turn's pinned external reads, shared by every primary; each attempt's read
@@ -4396,6 +4459,9 @@ async def play(
         # #187: the attempt's States (their declarations and values at its start).
         async with db.connect() as conn:
             books[:] = [await state_effects.load(conn, story_id, settings)]
+            # #194: the world clock as the attempt starts (its renders' time advances, pacing).
+            books[0].clock = await clocking.read_clock(conn, story_id)
+        clocking.attempt(story_id, books[0].clock)
         book = books[0]
         # #205: the attempt's external reads at the turn's input (every player-visible external
         # State in the actor's scope), outside any transaction; the narrator's tracked values
@@ -4437,6 +4503,8 @@ async def play(
             tracked_syntax=tracked_syntax,
             # #208: the pinned provider values, fenced data for the narrator alone.
             external=pins.blocks() if book.on else (),
+            # #194: the time contract, when the story runs the world clock.
+            clock_contract=books[0].clock is not None,
         )
         # #174 (FR-MULTI-6): the primaries' order, the request's or the director's.
         ordered = multi.Ordered(tuple(p.id for p in primaries), multi.REQUEST)
@@ -4587,6 +4655,8 @@ async def play(
                                 max_beats=max_beats,
                                 states=book.tracked(),
                                 states_level=book.level,
+                                clock_level=book.clock_level,
+                                clock_fixed=book.clock_fixed,
                             ),
                             variant=NARRATOR_VARIANT,
                             params=params,
@@ -4637,6 +4707,8 @@ async def play(
                         max_beats=max_beats,
                         states=book.tracked(),
                         states_level=book.level,
+                        clock_level=book.clock_level,
+                        clock_fixed=book.clock_fixed,
                     ),
                     variant=STRUCTURED,
                     params=params,
@@ -5099,6 +5171,20 @@ async def play(
         missing = undetected_beats(checked)
         if missing:  # pragma: no cover - every path detects what it releases
             raise RuntimeError(f"structured turn would commit beats without detection: {missing}")
+        # #194 (FR-CLOCK-6,17): the turn's pacing and in-turn timing, after reconciliation.
+        op.turn_times = timings[0] = (
+            None
+            if books[0].clock is None
+            else clocking.timed_turn(
+                books[0].clock,
+                checked.beats,
+                say=say or "",
+                do=do or "",
+                player_last=1 + len(split.narrated),
+                steps=_declared_steps(checked),
+                mode=SIMULTANEOUS_MODE if simultaneous else SEQUENTIAL_MODE,
+            )
+        )
         stage(op, read, rendered, checked, outcome, composition)
 
     def stage(
@@ -5207,6 +5293,9 @@ async def play(
             character_id=None,
             beat=last + 1,
         )
+        if timings[0] is not None:
+            # #194: the turn's clock advances, the commit's first step.
+            op.add_commit_step(partial(record_clock, timing=timings[0]))
         if books[0].on:
             # #187: the turn's State reads, for the rebase re-check; its effects, first.
             state_effects.remember(read_set, books[0], checked.beats)
@@ -5223,6 +5312,10 @@ async def play(
             op.add_commit_step(fail_queue)
 
     failed_queue: list[str] = []
+
+    async def record_clock(conn: AsyncConnection, *, timing: TurnTiming) -> None:
+        # #194: the pacing increments and declared skips, at their in-turn positions.
+        await world_clock.record_turn(conn, op, story_id, timing)
 
     async def fail_queue(conn: AsyncConnection) -> None:
         # A regenerate is a control action: the story's queued turns fail with it (#66).
@@ -5295,10 +5388,14 @@ async def play(
         kept, latent_requests, identity_requests, identity_refused = await identity_requests_of(
             conn, story_id, checked, kept, latent_requests, partitioned=partitioned
         )
+        requests = canon_requests(checked, [*kept, *latent_requests])
+        if timings[0] is not None:
+            # #194 (FR-CLOCK-17): each claim at its step's start, a durative one to the next.
+            requests = await _restamped(conn, op, requests, timings[0], registry)
         canonized = await canonize_all(
             conn,
             story_id,
-            canon_requests(checked, [*kept, *latent_requests]),
+            requests,
             operation=op,
             registry=registry,
         )
@@ -5679,6 +5776,9 @@ async def play(
             # #168: the render's declared causal steps (#174: every primary's).
             "steps": _steps_report(checked),
         }
+        if timings[0] is not None:
+            # #194: the turn's pacing and in-turn timing.
+            report["clock"] = clocking.report(timings[0])
         if roles_state:
             # #176: the turn's roles and what reactive narration made of them.
             report["roles"] = roles_state[0].report()
@@ -6031,6 +6131,22 @@ def _degradation(
             steps.append(DegradationStep(step=step, cause=cause))
     # NFR-PERF-7's steps first, in its order; the rest as taken (#156).
     return sorted(steps, key=lambda s: planner.ladder_rank(s.step))
+
+
+def _render_steps(rendered: Rendered) -> dict[int, list[int]]:
+    """#194: the render's declared step indices, by the beat they sit at."""
+    if not rendered.steps:
+        return {}
+    return {rendered.steps_beat: [s.index for s in rendered.steps]}
+
+
+def _declared_steps(checked: Checked) -> dict[int, list[int]]:
+    """#194: each character render's declared step indices, by the beat its steps sit at."""
+    if checked.step_sets:
+        return {s.first_beat: [step.index for step in s.steps] for s in checked.step_sets}
+    if checked.steps:
+        return {checked.steps_beat: [step.index for step in checked.steps]}
+    return {}
 
 
 def _steps_report(checked: Checked) -> dict[str, Any]:

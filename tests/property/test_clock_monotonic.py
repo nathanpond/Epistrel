@@ -2,8 +2,9 @@
 of its recorded active advances, and replay reproduces it (docs/04 §6; FR-CLOCK-1,2,12; #193).
 
 Every CLOCK-MONOTONIC M6 function lives in this file (the traceability gate counts a test ID per
-milestone in one file), one M6 marker each: #193's fold part here, and #194, #196, #197, #199
-and #203 add ``__suffix`` functions for their clauses.
+milestone in one file), one M6 marker each: #193's fold part here, #194's timing clauses
+(``__timing``, docstring there), and #196, #197, #199 and #203 add ``__suffix`` functions for
+their clauses.
 
 **In memory** (``test_clock_monotonic``, 300 examples in CI): any set of non-negative advances,
 each at a position ``(turn, variant, slot_k, beat, step)``, on a timeline whose turns each have
@@ -31,6 +32,7 @@ from __future__ import annotations
 import os
 import random
 from collections import Counter
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -44,6 +46,14 @@ from epistrel.core.errors import ClockBackward
 from epistrel.core.events import Operation
 from epistrel.core.membership import POSITION_MAX, Position
 from epistrel.core.resolution.time import TimeBasis
+from epistrel.core.world_clock.timing import (
+    SEQUENTIAL,
+    SIMULTANEOUS,
+    TimedAdvance,
+    TimedBeat,
+    derive,
+    time_turn,
+)
 from tests import canon_support as c
 from tests import clock_support as ck
 from tests import state_support as ss
@@ -282,3 +292,105 @@ async def test_clock_monotonic__postgres(engine: AsyncEngine, clock_delivered: N
     await _check(engine, story)
     assert await ck.offset(engine, story) == active_before - 11
     assert await ck.offset(engine, story, view=states.View.AS_RECORDED) >= active_before
+
+
+# -- in-turn timing (#194) ----------------------------------------------------------------------
+
+render = st.tuples(
+    st.integers(1, 3),  # beats
+    st.integers(0, 3),  # declared steps
+    st.integers(0, 3),  # pacing increment
+    st.lists(
+        st.tuples(
+            st.integers(0, 3),  # the step it attaches to
+            st.booleans(),  # minutes (else a target offset)
+            st.integers(-30, 90),  # minutes, or the target's distance from the turn start
+            st.booleans(),  # a flashback's
+        ),
+        max_size=3,
+    ),
+)
+
+
+@pytest.mark.part("M6", "FR-CLOCK-6,17")
+@settings(max_examples=EXAMPLES, deadline=None)
+@given(
+    st.lists(render, min_size=1, max_size=5),
+    st.sampled_from([SEQUENTIAL, SIMULTANEOUS]),
+    st.integers(0, 10_000),
+    st.integers(0, 2_000),
+)
+def test_clock_monotonic__timing(
+    renders: list[tuple[int, int, int, list[tuple[int, bool, int, bool]]]],
+    mode: str,
+    start: int,
+    zero: int,
+) -> None:
+    """#194's clauses (FR-CLOCK-6,17): for any turn of renders (beats, declared steps, a pacing
+    increment, advances at steps: durations or targets, some behind the clock, some a
+    flashback's), the recorded advances fold to the turn's end; every render's start and end
+    and every step's start equal what ``derive`` rebuilds from the recorded advances
+    (sequential renders chained end to start, simultaneous renders sharing the turn's start, the
+    turn ending at the latest end); along a sequential turn the clock at each step's position is
+    its start; and every record a step writes in the commit (``TimeBasis.in_turn``) takes its
+    step's start. Complement: a target behind where the render stands moves nothing."""
+    beats: list[TimedBeat] = []
+    steps: dict[int, list[int]] = {}
+    first = 1
+    for count, declared, pacing, advances in renders:
+        found = []
+        for step, is_minutes, amount, flashback in advances:
+            step = min(step, declared)
+            if is_minutes:
+                found.append(TimedAdvance(step, minutes=max(0, amount), flashback=flashback))
+            else:
+                found.append(TimedAdvance(step, to_offset=start + amount, flashback=flashback))
+        beats.append(TimedBeat(first, first + count - 1, pacing, tuple(found)))
+        steps[first] = list(range(1, declared + 1))
+        first += count
+    timing = time_turn(beats, steps, mode, start)
+
+    # The recorded advances fold to the turn's end; nothing moves backward.
+    assert all(a.minutes >= 0 for a in timing.advances)
+    assert start + sum(a.minutes for a in timing.advances) == timing.turn_end
+    for n, beat in enumerate(beats):
+        moved = [a for a in beat.advances if not a.flashback]
+        refused = [a for m, a in timing.contradicted if m == n]
+        assert all(a.to_offset is not None and not a.flashback for a in refused)
+        assert len(refused) <= len(moved)
+    # Sequential renders chain end to start; simultaneous renders share the turn's start.
+    times = timing.beat_times
+    if mode == SEQUENTIAL:
+        assert times[0].start == start
+        assert all(times[n].start == times[n - 1].end for n in range(1, len(times)))
+        assert timing.turn_end == times[-1].end
+    else:
+        assert all(t.start == start for t in times)
+        assert timing.turn_end == max(t.end for t in times)
+    assert all(t.start <= t.end for t in times)
+    # Rebuilt from the recorded advances, the timing is the same.
+    rebuilt = derive(timing.advances, timing.layout, steps, mode, start)
+    assert rebuilt.turn_end == timing.turn_end
+    if mode == SEQUENTIAL:
+        assert rebuilt.beat_times == timing.beat_times
+        assert rebuilt.step_starts == timing.step_starts
+    # The clock along a sequential turn: each step's position folds to its start.
+    turn, variant = 7, 1
+    before = TimeBasis(minute_zero=zero, advances=(((turn - 1, 0, 0, 0), 1, start),))
+    recorded = tuple(
+        ((turn, 0, a.beat_position, a.step_position), variant, a.minutes) for a in timing.advances
+    )
+    basis = replace(before, advances=(*(before.advances or ()), *recorded))
+    assert basis.through(Position.end_of(turn)) == zero + timing.turn_end
+    if mode == SEQUENTIAL:
+        for (n, step), at in timing.step_starts:
+            position = Position(turn, variant, 0, beats[n].first_beat, step)
+            assert basis.at(position) == zero + at
+    # In the commit, every record a step writes takes the step's start.
+    committing = replace(basis, in_turn=timing.times(turn, variant))
+    for (n, step), at in timing.step_starts:
+        for beat_index in range(beats[n].first_beat, beats[n].last_beat + 1):
+            position = Position(turn, variant, 0, beat_index, step)
+            assert committing.at(position) == zero + timing.step_start(n, step)
+            assert timing.step_start(n, step) == at
+    assert committing.at(Position(turn, variant, 0, first, 0)) == zero + timing.turn_end

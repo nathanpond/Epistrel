@@ -26,6 +26,13 @@ statements, which ``Verifier.canon_requests`` turns into ``clock_anchor`` commit
 ``uncertain(approximate_bounds)`` otherwise; a time this module cannot read is
 ``uncertain(unresolved_time)``. No verdict ever picks a value inside a range.
 
+**Within a timed turn** (#194, FR-CLOCK-17): while a structured turn's render is verified or its
+commit runs, the story's time basis carries the turn's in-turn times
+(``core.world_clock.turn_scope``), and the read marks its value ``at_claim``: the check is made
+at the claim's own time (its valid-time's exact start: its step's start) rather than at the
+read's position, so "at 15:40 she starts driving" at 15:05 is checked at 15:40, the time its
+step starts.
+
 Log lines carry identifiers and counts only (invariant 3); this module logs nothing.
 """
 
@@ -116,6 +123,7 @@ async def read(
             minute_zero=basis.minute_zero,
             tolerance=found.time_statement_tolerance_minutes,
             factor=float(found.elapsed_tolerance_factor),
+            at_claim=basis.in_turn is not None,
         )
     ]
 
@@ -128,11 +136,13 @@ def owned_value(
     minute_zero: int = 0,
     tolerance: int = 15,
     factor: float = 2.0,
+    at_claim: bool = False,
 ) -> OwnedValue:
     """The clock as the lookup hands it to ``verdict``: ``anchor`` at clock offset ``offset``
-    with the tolerances (see the module docstring)."""
+    with the tolerances (see the module docstring); ``at_claim`` (#194): checked at the claim's
+    own time, within a timed turn."""
     clockwork = anchor.clockwork
-    payload = {
+    payload: dict[str, Any] = {
         "anchor": anchor.document(),
         "calendar": clockwork.calendar.document(),
         "bands": [list(b) for b in clockwork.bands],
@@ -141,6 +151,8 @@ def owned_value(
         "tolerance": tolerance,
         "factor": factor,
     }
+    if at_claim:
+        payload["at_claim"] = True
     return OwnedValue(
         proposition=Proposition(
             subject_id=clock_id,
@@ -229,6 +241,9 @@ def verdict(claim: Proposition, owned: Sequence[OwnedValue]) -> Verdict:
     value, payload = found
     anchor = _anchor(payload)
     offset = int(payload.get("offset", 0))
+    own = _claim_minute(claim) if payload.get("at_claim") else None
+    if own is not None:
+        offset = own - int(payload.get("minute_zero", 0))
     check = check_of(claim, anchor, payload)
     if check is None:
         return uncertain(VerdictReason.UNRESOLVED_TIME)
@@ -262,6 +277,15 @@ def verdict(claim: Proposition, owned: Sequence[OwnedValue]) -> Verdict:
     if isinstance(check, Scheduled | Elapsed):
         return uncertain(VerdictReason.UNRESOLVED_TIME)
     return uncertain(VerdictReason.APPROXIMATE_BOUNDS)
+
+
+def _claim_minute(claim: Proposition) -> int | None:
+    """The exact story-minute a claim's valid-time starts at (``None``: not exact)."""
+    found = claim.valid_time
+    if isinstance(found, Instant):
+        return found.at if found.granularity is Granularity.MINUTE else None
+    start = found.start
+    return None if start is None or start.inner != start.outer else int(start.inner)
 
 
 def refinement(statement: Statement, tolerance: int, day_minutes: int = 1440) -> Statement:

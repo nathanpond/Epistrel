@@ -203,6 +203,19 @@ class DeclaredEffect:
 
 
 @dataclass(frozen=True, slots=True)
+class DeclaredAdvance:
+    """One time advance a beat declares (FR-TURN-11, FR-CLOCK-7; #194): ``minutes`` or a time
+    of day ``to`` (``"HH:MM"``), the declared step it attaches to (``None``: the beat's own) and
+    its reason. Timed with the turn (``core.world_clock.timing``) and committed as a
+    ``declared_skip`` advance of the world clock."""
+
+    reason: str
+    minutes: int | None = None
+    to: str | None = None
+    step: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class TurnBeat:
     """One beat of a structured turn: its kind, position, text and actor (``None`` for
     narration), a ``say``'s declared intent, a ``latent``'s visibility, the claims it asserts,
@@ -243,6 +256,11 @@ class TurnBeat:
     effects: tuple[DeclaredEffect, ...] = ()
     """#187 (FR-TURN-11): the State effects the beat declares, in order (none on the player's
     input, a ``think``, a reactive reaction or the player's ``co_author`` narration)."""
+    advances: tuple[DeclaredAdvance, ...] = ()
+    """#194 (FR-CLOCK-7): the time advances the beat declares, in order."""
+    flashback: bool = False
+    """#194 (FR-CLOCK-17): the beat recalls an earlier time: unpaced, unchecked against the
+    present, and it moves nothing."""
 
     @property
     def declared(self) -> tuple[AssertedClaim, ...]:
@@ -702,6 +720,7 @@ __all__ = [
     "AgeSource",
     "AssertedClaim",
     "BeatKind",
+    "DeclaredAdvance",
     "DeclaredEffect",
     "Intent",
     "Introduction",

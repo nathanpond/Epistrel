@@ -283,6 +283,10 @@ class GenerationInputs(InputSchema):
     """A structured character render's step contract (FR-TURN-12, FR-TURN-8; #168,
     ``steps_contract.j2``): the fixed ``## How to change your mind`` section, present when the
     rendering character keeps its own beliefs (per-character partitions)."""
+    clock_contract: Annotated[bool, C.CONSTRAINT] = False
+    """A structured render's time contract (FR-CLOCK-6,7,17; #194, ``clock_contract.j2``): the
+    fixed ``## Time`` section (time advances, ``time`` steps, ``flashback``), present when the
+    story runs the world clock."""
     player_input: PlayerInput
     player_authority: Annotated[Literal["", "own_character", "co_author"], C.CONSTRAINT] = ""
     """A Lite prompt's ``## Player authority`` (FR-RESP-11; #180): the story's setting, rendered

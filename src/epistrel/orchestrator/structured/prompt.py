@@ -104,6 +104,9 @@ class RenderSections:
     """#208: the narrator's ``## External data``, one fenced block per pinned provider value
     (``PinnedReads.blocks``): counted against the cap, never dropped by it, never a
     character's (``character_inputs`` empties it)."""
+    clock_contract: bool = False
+    """#194: the story runs the world clock, so the render's prompt carries ``## Time`` (time
+    advances, ``time`` steps and ``flashback``)."""
 
 
 RESOLUTION_STEERING = (
@@ -229,6 +232,7 @@ def character_inputs(
         resolution_steering=s.resolution_steering,
         length_target=s.length_target,
         belief_steps=s.belief_steps,
+        clock_contract=s.clock_contract,
         player_input=_perceived_player(actor, context),
         scene=s.scene,
         working_memory=list(s.working_memory),
@@ -272,6 +276,7 @@ def narrator_inputs(
         tracked_values=list(s.tracked),
         tracked_syntax=s.tracked_syntax,
         external_data=list(s.external),
+        clock_contract=s.clock_contract,
     )
 
 

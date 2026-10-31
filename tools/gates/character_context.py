@@ -86,6 +86,7 @@ SECTIONS: dict[str, str] = {
     "resolution_steering": TURN,
     "length_target": TURN,
     "belief_steps": TURN,
+    "clock_contract": TURN,
     "others_present": TURN,
     "interjections": TURN,
     "player_requests": TURN,

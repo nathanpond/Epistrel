@@ -404,6 +404,7 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "respond": (
         *_GATED,
         *_TURN,
+        "module_off",
         "story_archived",
         "story_paused",
         "story_busy",

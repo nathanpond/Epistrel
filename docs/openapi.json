@@ -159,7 +159,7 @@
         "type": "object"
       },
       "AdjudicationBody": {
-        "description": "One settled conflict of a ``simultaneous`` turn (#175, FR-MULTI-8): the contested\nobject's entity id, the character whose action stood, the one whose action became an\nattempt, and the rule: ``request_order`` or ``director``.",
+        "description": "One settled conflict of a ``simultaneous`` turn (#175, FR-MULTI-8): the contested\nobject's entity id, the character whose action stood, the one whose action became an\nattempt, and the rule: ``request_order``, ``director`` or ``state:<name>`` (M6).",
         "properties": {
           "loser": {
             "title": "Loser",
@@ -62981,7 +62981,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`, `timeline_changed`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_paused`, `timeline_changed`."
           },
           "422": {
             "content": {

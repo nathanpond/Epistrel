@@ -797,6 +797,10 @@ def validate_definition(
             "positive",
         )
     check_rules_shape(d)
+    # #188 (FR-STATE-10,12): the effect rules' shapes, and rules only from a ``rule`` source.
+    from epistrel.core.states.authorize import check_effect_rules
+
+    check_effect_rules(d)
     return d.model_copy(update={"initial_value": initial, "aliases": aliases, "unit": unit})
 
 

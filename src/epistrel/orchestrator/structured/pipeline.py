@@ -184,6 +184,7 @@ from epistrel.core.enums import (
     OperationStatus,
     Provenance,
     RecordProvenance,
+    StateType,
     StoryStatus,
 )
 from epistrel.core.epistemic import audience as audience_rules
@@ -195,6 +196,7 @@ from epistrel.core.epistemic import perception, replay
 from epistrel.core.epistemic import scene as scene_loader
 from epistrel.core.epistemic import testimony as testimony_rules
 from epistrel.core.epistemic import transitions as belief_transitions
+from epistrel.core.epistemic.conflicts import STATE as STATE_CONFLICT
 from epistrel.core.epistemic.context import CharacterContext
 from epistrel.core.epistemic.stage import Acceptance, StagedBeat, TurnStage
 from epistrel.core.erasure.index import index_records
@@ -250,6 +252,7 @@ from epistrel.core.settings_schema import (
     ResolvedGeneration,
     VerifySettings,
     resolve_generation,
+    state_tie_break_name,
 )
 from epistrel.core.states import external as external_values
 from epistrel.core.tables import entity_aliases, events, facts, operations, stories
@@ -2550,8 +2553,12 @@ async def repair_turn(
             checked.repair_verifiers.append((rung, found.verifier))
         (made,) = found.beats
         if book is not None and book.on:
-            # #187: the candidate's effects, folded with the turn's other beats'.
+            # #187: the candidate's effects, folded with the turn's other beats'; #188: an
+            # effect a repair adds stays under the turn's caps too (rewritten down to them).
             others = [b for b in checked.beats if b.beat != made.beat]
+            made = next(
+                b for b in state_effects.cap(book, [*others, made], stage)[0] if b.beat == made.beat
+            )
             extra = state_effects.findings(
                 book, [*others, made], stage, only=frozenset({made.beat})
             )
@@ -3949,12 +3956,25 @@ async def play(
     phase resets them, so a regenerated turn reads live again and a rebased one keeps them."""
     state_settled: list[Any] = []
     """#187: the State findings settled without the ladder (``settle_states``)."""
+    state_capped: dict[tuple[int, int], Any] = {}
+    """#188: the effects a cap repaired down (``state_effects.cap``), by ``(beat, effect)``."""
+    simultaneous_turn = [False]
+    """#188: whether the turn's primaries render ``simultaneous``: each one's effects are then
+    folded alone, and a shared State they break together is a conflict (#175)."""
 
     def check_states(target: Checked, stage_: TurnStage | None) -> None:
         """#187: ``target``'s State findings, recomputed (the dry-run over the snapshot and
-        the turn's earlier effects, and the narrated changes), as claims of their beats."""
+        the turn's earlier effects, and the narrated changes), as claims of their beats; #188:
+        an effect above a cap is first rewritten down to it."""
+        target.beats, capped = state_effects.cap(
+            books[0], target.beats, stage_, simultaneous=simultaneous_turn[0]
+        )
+        for f in capped:
+            state_capped[(f.beat, f.effect or 0)] = f
         target.checked = [c for c in target.checked if not state_effects.is_state_claim(c)]
-        found = state_effects.findings(books[0], target.beats, stage_)
+        found = state_effects.findings(
+            books[0], target.beats, stage_, simultaneous=simultaneous_turn[0]
+        )
         target.checked += state_effects.claims_of(found, target.beats, op.operation_id)
         target.checked = state_effects.covered(target.checked, target.beats, books[0])
 
@@ -4087,11 +4107,18 @@ async def play(
     ) -> None:
         """#175 (FR-MULTI-8; ``orchestrator.structured.simultaneous``): the simultaneous turn's
         conflicts, detected over its verified effects, settled by the story's tie-break; each
-        losing beat repaired in character as an attempt (its effect dropped) and restaged."""
-        rule, warning = multi.tie_break_of(story.settings, request)
-        report_multi.tie_break = rule
-        report_multi.tie_break_warning = warning
+        losing beat repaired in character as an attempt (its effect dropped) and restaged.
+        #188: conflicting effects on a shared State are conflicts too, and a ``state:<name>``
+        tie-break settles them by that State's values at the turn's start."""
         async with db.connect() as conn:
+            valued = await state_effects.tie_break_book(conn, story_id, books[0])
+            rule, warning = multi.tie_break_of(
+                story.settings,
+                request,
+                [n for n, d in valued.definitions.items() if d.type is StateType.NUMBER],
+            )
+            report_multi.tie_break = rule
+            report_multi.tie_break_warning = warning
             registry = await load_registry(conn, story_id)
             conflicts = await simultaneous_rules.conflicts_of(
                 checked.checked,
@@ -4103,10 +4130,22 @@ async def play(
                 story_id=story_id,
             )
             object_names = await _entity_names(conn, story_id, [c.object_id for c in conflicts])
+        shared = state_effects.state_conflicts(books[0], checked.beats, [p.id for p in order])
+        conflicts = sorted([*conflicts, *shared], key=lambda c: (c.effects[0].key(), c.object_id))
         if not conflicts:
             return
         winners: dict[str, str] | None = None
-        if rule == simultaneous_rules.DIRECTOR:
+        rule_name = simultaneous_rules.DIRECTOR
+        designated = state_tie_break_name(rule)
+        if designated is not None:
+            rule_name = STATE_CONFLICT  # the response's rule: ``state``
+            winners = simultaneous_rules.state_winners(
+                conflicts,
+                state_effects.tie_break_values(
+                    valued, designated, sorted({c for x in conflicts for c in x.characters})
+                ),
+            )
+        elif rule == simultaneous_rules.DIRECTOR:
             judged = [c for c in conflicts if not any(e.player for e in c.effects)]
             if judged:
                 winners, cause = await simultaneous_rules.director_winners(
@@ -4133,8 +4172,9 @@ async def play(
                     checked.degradation.append(
                         (simultaneous_rules.DIRECTOR_TIEBREAK_SKIPPED, cause)
                     )
-        settled = simultaneous_rules.settle(conflicts, winners)
+        settled = simultaneous_rules.settle(conflicts, winners, rule_name=rule_name)
         report_multi.adjudications = [a.report() for a in settled]
+        by_object = {c.object_id: c for c in conflicts}
         settled_pairs[:] = [(a.winner_beat, a.loser_beat) for a in settled]
         losing = simultaneous_rules.losing_claims(checked.checked, settled)
         by_beat = {b.beat: b for b in checked.beats}
@@ -4144,11 +4184,16 @@ async def play(
             beat = by_beat.get(adjudication.loser_beat)
             if beat is None:
                 continue
+            actor = read.names.get(adjudication.loser, "Someone")
+            conflict = by_object[adjudication.object_id]
             result = simultaneous_rules.attempt_repair(
                 beat,
                 losing.get(beat.beat, []),
-                actor=read.names.get(adjudication.loser, "Someone"),
+                actor=actor,
                 obj=object_names.get(adjudication.object_id, "it"),
+                text=state_effects.refusal_of(books[0], checked.beats, beat, actor, conflict)
+                if conflict.rules == (STATE_CONFLICT,)
+                else None,
             )
             _merge_repair(checked, result)
             staged = turn_stage.get(beat.beat)
@@ -4412,6 +4457,7 @@ async def play(
         # #175 (FR-MULTI-5,8): several primaries in ``simultaneous`` mode render against the
         # turn's starting state, verified alone, then adjudicated.
         simultaneous = len(order) > 1 and mode == multi.SIMULTANEOUS
+        simultaneous_turn[0] = simultaneous
         turn_stage = TurnStage(
             op.operation_id,
             read.turn,
@@ -5695,7 +5741,11 @@ async def play(
                 if v.result is not None and (f := v.result.state_finding) is not None
             ]
             report[state_effects.STATE_EFFECTS] = {
-                **state_effects.report(books[0], checked.beats, [*repaired_states, *state_settled]),
+                **state_effects.report(
+                    books[0],
+                    checked.beats,
+                    [*repaired_states, *state_settled, *state_capped.values()],
+                ),
                 "settled": len(state_settled),
                 "committed": len(fixed.get("state_effects", [])),
                 "state_definitions": (op.config_revisions or {}).get("state_definitions"),
@@ -5741,7 +5791,11 @@ async def play(
         # #187 (FR-RESP-7): the committed State changes, a hidden State's for omniscient only.
         if isinstance(conn, AsyncConnection):
             changed = await state_effects.committed(
-                conn, story_id, committed.operation_id, omniscient=is_omniscient(viewpoint)
+                conn,
+                story_id,
+                committed.operation_id,
+                omniscient=is_omniscient(viewpoint),
+                done=fixed.get("state_effects", ()),
             )
         else:
             async with conn.connect() as reading:
@@ -5750,6 +5804,7 @@ async def play(
                     story_id,
                     committed.operation_id,
                     omniscient=is_omniscient(viewpoint),
+                    done=fixed.get("state_effects", ()),
                 )
         assert committed.narrative_turn is not None  # noqa: S101 - a committed turn's position
         assert committed.turn_variant is not None  # noqa: S101

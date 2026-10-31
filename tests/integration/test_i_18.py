@@ -514,10 +514,12 @@ def _story_settings(cast: list[str]) -> st.SearchStrategy[dict[str, Any]]:
         "turn_concurrency": st.sampled_from(["reject", "queue"]),
         "allow_new_arrivals": st.none() | st.booleans(),
         "default_output_viewpoint": st.none() | st.sampled_from([f"character:{c}" for c in cast]),
-        # M5's multi-character settings (#174-#176); ``state:<name>`` is refused until M6.
+        # M5's multi-character settings (#174-#176); #188: ``state:<name>`` only for the
+        # numeric State the fixture defines (``_no_bypass_setup``).
         "interaction_mode": st.none() | st.sampled_from(["sequential", "simultaneous"]),
         "sequence_order": st.none() | st.sampled_from(["request", "director"]),
-        "simultaneous_tie_break": st.none() | st.sampled_from(["request_order", "director"]),
+        "simultaneous_tie_break": st.none()
+        | st.sampled_from(["request_order", "director", f"state:{TIE_BREAK_STATE}"]),
         "reactive_interjections": st.booleans(),
         "player_view": st.sampled_from(["character", "story"]),  # #177
         "player_authority": st.sampled_from(["own_character", "co_author"]),  # #180
@@ -528,6 +530,29 @@ def _story_settings(cast: list[str]) -> st.SearchStrategy[dict[str, Any]]:
             for name, info in StorySettings.model_fields.items()
         }
     )
+
+
+TIE_BREAK_STATE = "initiative"
+"""#188: the numeric State ``_no_bypass_setup`` defines, so the strategy may draw
+``state:initiative`` as a tie-break."""
+
+
+async def _tie_break_state(engine: AsyncEngine, story: str) -> None:
+    """Define the fixture's numeric State (#188), leaving the story's module levels as they
+    were."""
+    from epistrel.core.states import StateDefinition
+    from tests import state_support as ss
+
+    with ss.delivered():
+        await ss.set_level(engine, story, "on")
+        await ss.define(
+            engine,
+            story,
+            StateDefinition.model_validate(
+                {"name": TIE_BREAK_STATE, "type": "number", "scope": "character"}
+            ),
+        )
+        await ss.set_level(engine, story, None)
 
 
 async def _no_bypass_setup(url: str, word: str) -> tuple[str, list[str], str]:
@@ -546,6 +571,7 @@ async def _no_bypass_setup(url: str, word: str) -> tuple[str, list[str], str]:
                 }
             ),
         )
+        await _tie_break_state(engine, created.story_id)
         policy = await global_policy(lib, words(word))
         return created.story_id, [c.id for c in created.characters], policy.id
     finally:

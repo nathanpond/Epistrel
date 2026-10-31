@@ -173,7 +173,13 @@ class DeclaredEffect:
     scope key (``None``: the story's, or for a character-scoped State the acting character),
     a ``delta`` or a new ``value`` (both ``None``: unresolved, repaired), the reason (at most
     200 characters) and whether it is ``silent``. Validated against the State before the repair
-    ladder and committed with the turn (``orchestrator.structured.effects``)."""
+    ladder and committed with the turn (``orchestrator.structured.effects``).
+
+    #188 (FR-STATE-10,12): ``kind`` is ``change`` or ``transfer``; a transfer names its
+    ``counterparty`` (``(state, scope_key, delta)``: the other side, whose ``delta`` ``None``
+    mirrors this one's); ``justification`` is the label of the event that justifies the change
+    and ``justified_by`` the number of the turn's beat that narrates it; ``declared`` is the
+    amount the render declared when a cap repaired it down (``core.states.authorize``)."""
 
     state: str
     reason: str
@@ -181,6 +187,11 @@ class DeclaredEffect:
     delta: Any = None
     value: Any = None
     silent: bool = False
+    kind: str = "change"
+    counterparty: tuple[str, str | None, Any] | None = None
+    justification: str | None = None
+    justified_by: int | None = None
+    declared: Any = None
 
     @property
     def unresolved(self) -> bool:

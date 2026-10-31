@@ -24,7 +24,9 @@ alone and before routing and composition:
    (``located_in``) that could relate the places are read first through the turn's
    ``KeyedLookup``, so they are keys of the turn's read set (``containment_facts``).
 3. The tie-break (``simultaneous_tie_break``, ``multi.tie_break_of``): ``request_order`` (the
-   earlier-named primary's action stands) or ``director``: one ``generation`` call
+   earlier-named primary's action stands), ``state:<name>`` (#188: the primary with the higher
+   value of that numeric State at the turn's start wins, ``state_winners``; a tie falls back to
+   request order) or ``director``: one ``generation`` call
    (``director_tiebreak.j2``, its answer ``{adjudications: [{object, winner}]}``) seeing only
    the conflicting ``say``/``do`` texts and the scene, optional work (``budget
    .DIRECTOR_TIEBREAK``) that falls back to request order with ``director_tiebreak_skipped``
@@ -40,8 +42,14 @@ alone and before routing and composition:
    reconciliation), and the rejected text is a ``render_rejected`` audit record (rung 2, class
    ``substitution``); a losing ``latent`` is dropped. The attempt keeps its beat's slot.
 
+#188: two primaries' declared effects on one shared State that it cannot take together are one
+more conflict (``core.epistemic.conflicts.detect_state_conflicts``, object ``state:<name>``),
+settled by the same tie-break; the loser's beat becomes the attempt narrated as refused, its
+effects dropped.
+
 ``turn_report.multi.adjudications`` and the response's ``adjudications`` list ``{object,
-winner, loser, rule}`` (``rule`` ∈ ``request_order``, ``director``; ``object`` an entity id).
+winner, loser, rule}`` (``rule`` ∈ ``request_order``, ``director``, ``state``: #188's
+designated State decided; ``object`` an entity id, or ``state:<name>[:<scope key>]``).
 A non-conflicting turn records none. Log lines carry ids and counts only (invariant 3).
 """
 
@@ -50,6 +58,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from decimal import Decimal
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -282,10 +291,14 @@ async def director_winners(
 
 
 def settle(
-    conflicts: Sequence[Conflict], winners: Mapping[str, str] | None = None
+    conflicts: Sequence[Conflict],
+    winners: Mapping[str, str] | None = None,
+    *,
+    rule_name: str = DIRECTOR,
 ) -> list[Adjudication]:
-    """One winner per conflict, in order (see the module docstring): the director's when it
-    judged the object and the player took no part, else the earliest in request order."""
+    """One winner per conflict, in order (see the module docstring): the one ``winners`` names
+    (the director's, or #188's ``state:<name>`` value, ``rule_name``) when the player took no
+    part, else the earliest in request order."""
     lost: set[int] = set()
     found: list[Adjudication] = []
     for conflict in conflicts:
@@ -295,7 +308,7 @@ def settle(
         chosen = None if winners is None else winners.get(conflict.object_id)
         player = any(e.player for e in live)
         if chosen is not None and not player and any(e.character_id == chosen for e in live):
-            rule, winner = DIRECTOR, next(e for e in live if e.character_id == chosen)
+            rule, winner = rule_name, next(e for e in live if e.character_id == chosen)
         else:
             rule, winner = REQUEST_ORDER, live[0]
         seen: set[str] = set()
@@ -324,12 +337,36 @@ def attempt_text(actor: str, obj: str) -> str:
     return f"{actor} reaches for {obj}, but it is already gone."
 
 
+def state_winners(
+    conflicts: Sequence[Conflict], values: Mapping[str, Decimal | None]
+) -> dict[str, str]:
+    """#188's ``state:<name>`` tie-break: the winner of each conflict whose acting characters'
+    ``values`` (each one's value of the designated State at the turn's start) hold a single
+    highest; a tie, or a value missing, leaves the conflict to request order."""
+    found: dict[str, str] = {}
+    for c in conflicts:
+        ranked = [(values.get(cid), cid) for cid in c.characters]
+        known = [(v, cid) for v, cid in ranked if v is not None]
+        if len(known) != len(ranked) or not known:
+            continue
+        top = max(v for v, _ in known)
+        leaders = [cid for v, cid in known if v == top]
+        if len(leaders) == 1:
+            found[c.object_id] = leaders[0]
+    return found
+
+
 def attempt_repair(
-    beat: TurnBeat, violations: Sequence[CheckedClaim], *, actor: str, obj: str
+    beat: TurnBeat,
+    violations: Sequence[CheckedClaim],
+    *,
+    actor: str,
+    obj: str,
+    text: str | None = None,
 ) -> RepairResult:
     """The losing ``beat`` repaired in character as an attempt (see the module docstring): the
     repair ladder's result shape, so the pipeline merges it like any repair and writes its
-    ``render_rejected``."""
+    ``render_rejected``; ``text`` the attempt's own words (#188: a shared State's refusal)."""
     rejected = RejectedRender(
         beat=beat.beat,
         attempt=0,
@@ -343,9 +380,10 @@ def attempt_repair(
         if beat.kind != "do"
         else replace(
             beat,
-            text=attempt_text(actor, obj),
+            text=text or attempt_text(actor, obj),
             claims=(),
             mentions=(),
+            effects=(),
             attempt=True,
             repaired_from=(SUBSTITUTION, RepairClass.SUBSTITUTION.value),
         )
@@ -430,5 +468,6 @@ __all__ = [
     "effects_of",
     "losing_claims",
     "settle",
+    "state_winners",
     "validated_winners",
 ]

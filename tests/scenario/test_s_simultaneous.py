@@ -19,7 +19,9 @@ adapter, each primary's render scripted by its name in the prompt:
   Jenni, so Bobby's beat becomes the attempt (``rule: director``); a director naming someone who
   did not act falls back to request order with ``director_tiebreak_skipped``;
 - the complement: two non-conflicting actions both stand and no adjudication is recorded;
-- ``state:<name>`` (M6) is 422 ``not_yet`` on the settings PATCH and as a request override.
+- M6 (#188): with ``simultaneous_tie_break = state:initiative`` the higher initiative wins
+  (``test_s_simultaneous__state_tie_break``), and two purchases one shared purse cannot cover
+  are one conflict settled by the same tie-break.
 """
 
 from __future__ import annotations
@@ -31,15 +33,18 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core.enums import StateChangeSource
 from epistrel.core.epistemic.conflicts import Effect, detect_conflicts
 from epistrel.core.epistemic.perception import CO_LOCATION, RouteBeat, SceneState, route_turn
 from epistrel.core.propositions import registry
 from epistrel.core.propositions.model import Interval, Polarity, Proposition
 from epistrel.core.propositions.vocabulary import HOLDS, LOCATED_AT, LOCATED_IN
+from epistrel.core.states import StateDefinition
 from epistrel.core.verify.rules import Options, Record
 from epistrel.orchestrator.structured import simultaneous
 from tests import multi_support as ms
 from tests import perception_support as ps
+from tests import state_support as ss
 from tests.auth_support import auth_settings
 from tests.event_support import rows
 from tests.fixtures.key_room import KeyRoom, key_room
@@ -255,7 +260,7 @@ async def test_s_simultaneous__no_conflict(
     drained_embedding_jobs: None,
 ) -> None:
     """The complement: two non-conflicting actions both stand, nothing is adjudicated or
-    repaired; ``state:<name>`` is M6's (422 ``not_yet``)."""
+    repaired; a malformed tie-break is 422."""
     async with respond_client(stub_settings, engine) as (client, epistrel):
         stub = epistrel.models.stub
         room = await key_room(client, engine)
@@ -275,19 +280,6 @@ async def test_s_simultaneous__no_conflict(
         assert "repairs" not in report
         assert await _holders(engine, room) == {room.bobby}
 
-        # state:<name> is accepted by the schema and refused until M6.
-        refused = await client.patch(
-            f"/stories/{room.story_id}/settings",
-            json={"simultaneous_tie_break": "state:initiative"},
-            headers=WRITE,
-        )
-        assert refused.status_code == 422, refused.text
-        assert refused.json()["error"]["details"]["reason"] == "not_yet"
-        refused = await respond(
-            client, room.story_id, _ask(room, simultaneous_tie_break="state:initiative")
-        )
-        assert refused.status_code == 422, refused.text
-        assert refused.json()["error"]["details"]["reason"] == "not_yet"
         malformed = await respond(
             client, room.story_id, _ask(room, simultaneous_tie_break="initiative")
         )
@@ -489,3 +481,149 @@ def test_s_simultaneous__routing() -> None:
     together = route_turn(beats, scene, CO_LOCATION, mode="simultaneous")
     assert together[1].of("bobby") is not None
     assert together[0].of("jenni") is not None
+
+
+# -- M6 (#188): the designated-State tie-break and shared-State conflicts ---------------------
+
+INITIATIVE = {"name": "initiative", "type": "number", "scope": "character", "initial_value": 0}
+PURSE = {
+    "name": "purse",
+    "type": "number",
+    "scope": "story",
+    "constraints": {"non_negative": True},
+    "initial_value": 500,
+    "unit": "gold",
+}
+MOOD = {"name": "mood", "type": "enum", "constraints": {"allowed_values": ["calm"]}}
+BOBBY_PAYS = "Bobby pays 400 gold from the purse."
+JENNI_PAYS = "Jenni pays 300 gold from the purse."
+
+
+async def _initiative(engine: AsyncEngine, room: KeyRoom, bobby: int, jenni: int) -> None:
+    for character, value in ((room.bobby, bobby), (room.jenni, jenni)):
+        await ss.change(
+            engine,
+            room.story_id,
+            ss.set_to(
+                "initiative",
+                value,
+                scope_key=character,
+                reason="rolled",
+                source=StateChangeSource.CONSUMER,
+            ),
+        )
+
+
+def _script_purse(stub: Any) -> None:
+    for name, text, delta in (("Bobby", BOBBY_PAYS, -400), ("Jenni", JENNI_PAYS, -300)):
+        effect = {"kind": "change", "state": "purse", "delta": delta, "reason": "a payment"}
+        ms.renders_for(stub, name, ms.render(beat("do", text, effects=[effect])))
+
+
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-MULTI-8")
+async def test_s_simultaneous__state_tie_break(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """With ``simultaneous_tie_break = state:initiative`` the higher initiative at the turn's
+    start wins the key (``rule: state``), and two payments one shared purse cannot
+    cover together are one conflict (``state:purse``) settled the same way: only the winner's
+    effect commits, and the loser's beat is the attempt narrated as refused. The tie-break must
+    name a numeric State of the story (422 ``tie_break_state_invalid`` on the settings PATCH);
+    a request naming no such State falls back to request order with that warning.
+
+    Complement: equal initiative falls back to request order, which picks the first-named
+    character (Bobby)."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        room = await key_room(client, engine)
+        await ss.set_level(engine, room.story_id, "on")
+
+        async def tie_break(value: str) -> Any:
+            return await client.patch(
+                f"/stories/{room.story_id}/settings",
+                json={"simultaneous_tie_break": value},
+                headers=WRITE,
+            )
+
+        refused = await tie_break("state:initiative")  # no such State yet
+        assert refused.status_code == 422, refused.text
+        assert refused.json()["error"]["details"]["reason"] == "tie_break_state_invalid"
+        await ss.define_all(
+            engine,
+            room.story_id,
+            *(StateDefinition.model_validate(d) for d in (INITIATIVE, PURSE, MOOD)),
+        )
+        refused = await tie_break("state:mood")  # not a number
+        assert refused.status_code == 422, refused.text
+        assert refused.json()["error"]["details"]["reason"] == "tie_break_state_invalid"
+        accepted = await tie_break("state:initiative")
+        assert accepted.status_code == 200, accepted.text
+        await _initiative(engine, room, bobby=2, jenni=5)
+
+        # -- The key: Jenni's higher initiative wins; Bobby's action is the attempt.
+        stub.reset()
+        _script_conflict(stub)
+        played = await _play(client, room)
+        rule = "state"
+        assert played["adjudications"] == [
+            {"object": room.key, "winner": room.jenni, "loser": room.bobby, "rule": rule}
+        ]
+        report = await turn_report(engine, room.story_id)
+        assert report["multi"]["tie_break"] == "state:initiative"
+        assert BOBBY_ATTEMPT in [b["text"] for b in played["beats"]]
+        assert await _holders(engine, room) == {room.jenni}
+
+        # -- A shared State: together the payments break the purse; one conflict group.
+        stub.reset()
+        _script_purse(stub)
+        played = await _play(client, room)
+        assert played["adjudications"] == [
+            {"object": "state:purse", "winner": room.jenni, "loser": room.bobby, "rule": rule}
+        ]
+        texts = [b["text"] for b in played["beats"]]
+        assert JENNI_PAYS in texts
+        assert BOBBY_PAYS not in texts
+        assert any(t.startswith("Bobby tries") for t in texts)
+        assert [(e["state"], e["new_value"]) for e in played["state_effects"]] == [("purse", 200)]
+        assert await ss.value(engine, room.story_id, "purse") == 200
+
+        bobby_first = [
+            {
+                "object": "state:purse",
+                "winner": room.bobby,
+                "loser": room.jenni,
+                "rule": "request_order",
+            }
+        ]
+
+        # -- A request naming no numeric State: request order, with the warning.
+        await _refill(engine, room)
+        stub.reset()
+        _script_purse(stub)
+        played = await _play(client, room, simultaneous_tie_break="state:mood")
+        assert "tie_break_state_invalid" in [w["kind"] for w in played["warnings"]]
+        assert played["adjudications"] == bobby_first
+        assert await ss.value(engine, room.story_id, "purse") == 100
+
+        # -- Complement: equal initiative falls back to request order (Bobby, named first).
+        await _initiative(engine, room, bobby=3, jenni=3)
+        await _refill(engine, room)
+        stub.reset()
+        _script_purse(stub)
+        played = await _play(client, room)
+        assert played["adjudications"] == bobby_first
+        assert BOBBY_PAYS in [b["text"] for b in played["beats"]]
+        assert await ss.value(engine, room.story_id, "purse") == 100
+
+
+async def _refill(engine: AsyncEngine, room: KeyRoom) -> None:
+    """The shared purse back to 500."""
+    await ss.change(
+        engine,
+        room.story_id,
+        ss.set_to("purse", 500, reason="refilled", source=StateChangeSource.CONSUMER),
+    )

@@ -290,26 +290,25 @@ MAX_EFFECTS = 8
 """The most effects one beat declares."""
 STATE_NAME_MAX = 80
 EffectKind = Literal["change", "transfer", "time_advance", "reschedule"]
-DELIVERED_EFFECT_KINDS = frozenset({"change"})
-"""The effect kinds this deployment validates (#187); ``transfer`` is #188's, ``time_advance``
-#194's, ``reschedule`` #198's."""
+DELIVERED_EFFECT_KINDS = frozenset({"change", "transfer"})
+"""The effect kinds this deployment validates (#187's ``change``, #188's ``transfer``);
+``time_advance`` is #194's, ``reschedule`` #198's."""
 UNDELIVERED_EFFECT_FIELDS = (
-    "counterparty",
-    "justification",
-    "justified_by",
     "consideration",
     "contingency",
     "prerequisites",
 )
-"""The effect fields later stories validate (#188, #189, #216): non-null is invalid until then."""
+"""The effect fields later stories validate (#189, #216): non-null is invalid until then."""
 STATES_ON = "on"
 
 
 class CounterpartyDecl(_Strict):
-    """A transfer's other side (#188): the State and its scope key."""
+    """A transfer's other side (#188): the State (one the story does not track is untracked)
+    and its scope key, and its delta when it is not the negation of the effect's own."""
 
     state: str = Field(min_length=1, max_length=STATE_NAME_MAX)
     scope_key: str | None = Field(default=None, max_length=NAME_MAX)
+    delta: int | float | None = None
 
 
 class EffectDecl(_Strict):
@@ -342,6 +341,12 @@ def declared_of(effects: Sequence[EffectDecl]) -> tuple[DeclaredEffect, ...]:
             delta=e.delta,
             value=e.value,
             silent=bool(e.silent),
+            kind=e.kind,
+            counterparty=None
+            if e.counterparty is None
+            else (e.counterparty.state, e.counterparty.scope_key, e.counterparty.delta),
+            justification=None if e.justification is None else e.justification.strip(),
+            justified_by=e.justified_by,
         )
         for e in effects
     )
@@ -389,7 +394,7 @@ def effect_errors(
     for m, effect in enumerate(effects):
         at = f"{where}.effects.{m}"
         if effect.kind not in DELIVERED_EFFECT_KINDS:
-            errors.append(f"{at}.kind: only a change is delivered")
+            errors.append(f"{at}.kind: only a change or a transfer is delivered")
         for name in UNDELIVERED_EFFECT_FIELDS:
             if getattr(effect, name) is not None:
                 errors.append(f"{at}.{name}: not delivered yet")
@@ -417,6 +422,43 @@ def effect_errors(
                 errors.append(f"{at}.scope_key: name the character whose State it is")
             if effect.scope_key is not None and effect.scope_key not in cast_ids:
                 errors.append(f"{at}.scope_key: not one of the story's characters")
+        errors += _transfer_errors(at, effect, target, states=states, cast_ids=cast_ids)
+    return errors
+
+
+def _transfer_errors(
+    at: str,
+    effect: EffectDecl,
+    target: TrackedState,
+    *,
+    states: Mapping[str, TrackedState],
+    cast_ids: frozenset[str],
+) -> list[str]:
+    """#188 (FR-STATE-12): a transfer moves a number by a delta to or from its counterparty;
+    a change names none. A counterparty the story tracks follows its State's scope."""
+    other = effect.counterparty
+    if effect.kind != "transfer":
+        return [f"{at}.counterparty: only a transfer names a counterparty"] if other else []
+    errors: list[str] = []
+    if target.type != "number" or effect.delta is None:
+        errors.append(f"{at}: a transfer moves a number State by a delta")
+    if other is None:
+        return [*errors, f"{at}.counterparty: a transfer names its counterparty"]
+    if other.state == WORLD_CLOCK:
+        return [*errors, f"{at}.counterparty.state: the world clock is no counterparty"]
+    if isinstance(other.delta, bool):
+        errors.append(f"{at}.counterparty.delta: a number")
+    found = states.get(other.state)
+    if found is None:
+        return errors  # untracked: the State's authorization decides whether it may be named
+    if found.type != "number":
+        errors.append(f"{at}.counterparty.state: a transfer moves a number State")
+    if found.scope == "story" and other.scope_key is not None:
+        errors.append(f"{at}.counterparty.scope_key: the State belongs to the story")
+    if found.scope == "character" and (other.scope_key is None or other.scope_key not in cast_ids):
+        errors.append(f"{at}.counterparty.scope_key: name one of the story's characters")
+    if other.state == effect.state and other.scope_key == effect.scope_key:
+        errors.append(f"{at}.counterparty: a transfer moves value between two parties")
     return errors
 
 

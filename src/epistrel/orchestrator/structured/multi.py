@@ -13,9 +13,10 @@ and a request that overrides ``interaction_mode``, ``sequence_order`` or ``simul
 is 409 ``module_off``. The player's own character is never a primary of a multi-primary turn (422
 ``player_cannot_render``). ``simultaneous`` (#175) renders every primary against the turn's starting
 state (``orchestrator.structured.simultaneous``); its tie-break (``tie_break_of``) is the request's
-``simultaneous_tie_break``, else the story's, else ``request_order``; a request naming
-``state:<name>`` is 422 ``not_yet`` (M6), and a stored one falls back to request order with
-``tie_break_state_not_yet``.
+``simultaneous_tie_break``, else the story's, else ``request_order``. A ``state:<name>``
+tie-break (#188) needs ``<name>`` to be a numeric State of the story when the turn runs; one
+that names a since-removed or non-numeric State falls back to request order with
+``tie_break_state_invalid``.
 
 **Order** (FR-MULTI-6, ``order_of``): request order, or under ``sequence_order = director`` the
 narrator's one ordering call (``director_order``: ``generation`` with ``director_order.j2``, its
@@ -43,7 +44,7 @@ them. Log lines carry ids and counts only
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
@@ -55,9 +56,9 @@ from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.settings_schema import (
     DEFAULT_INTERACTION_MODE,
     REQUEST_ORDER_TIE_BREAK,
-    STATE_TIE_BREAK_PREFIX,
+    TIE_BREAK_STATE_INVALID,
     StorySettings,
-    refuse_state_tie_break,
+    state_tie_break_name,
 )
 from epistrel.core.turns import CastEntry
 from epistrel.observability.metrics import DIRECTOR_ORDER as DIRECTOR_ORDER_METRIC
@@ -88,8 +89,6 @@ DIRECTOR_VARIANT = "director_order"
 INACTIVE = "inactive"
 OVERRIDES = ("interaction_mode", "sequence_order", "simultaneous_tie_break")
 """The request fields that override a story's multi-character settings."""
-TIE_BREAK_STATE_NOT_YET = "tie_break_state_not_yet"
-"""Warning: the story's stored ``state:<name>`` tie-break is M6's, so request order stood."""
 
 DIRECTOR_ORDER_SKIPPED = "director_order_skipped"
 """Degradation: the director's ordering call could not be made or answered nothing usable, so
@@ -146,9 +145,13 @@ def order_of(story: StorySettings, request: Any = None) -> str:
     return inactive if inactive in (REQUEST, DIRECTOR) else REQUEST
 
 
-def tie_break_of(story: StorySettings, request: Any = None) -> tuple[str, str | None]:
-    """A ``simultaneous`` turn's tie-break (FR-MULTI-8): ``request_order`` or ``director``, and
-    the warning when a stored ``state:<name>`` (M6) fell back to request order."""
+def tie_break_of(
+    story: StorySettings, request: Any = None, numeric_states: Collection[str] = ()
+) -> tuple[str, str | None]:
+    """A ``simultaneous`` turn's tie-break (FR-MULTI-8): ``request_order``, ``director`` or
+    ``state:<name>`` (#188: ``<name>`` one of ``numeric_states``, the story's number States),
+    and the warning when a ``state:<name>`` naming none fell back to request order
+    (``tie_break_state_invalid``)."""
     found = (
         getattr(request, "simultaneous_tie_break", None)
         or story.simultaneous_tie_break
@@ -156,8 +159,9 @@ def tie_break_of(story: StorySettings, request: Any = None) -> tuple[str, str | 
     )
     if found is None:
         return REQUEST_ORDER_TIE_BREAK, None
-    if str(found).startswith(STATE_TIE_BREAK_PREFIX):
-        return REQUEST_ORDER_TIE_BREAK, TIE_BREAK_STATE_NOT_YET
+    name = state_tie_break_name(found)
+    if name is not None and name not in numeric_states:
+        return REQUEST_ORDER_TIE_BREAK, TIE_BREAK_STATE_INVALID
     return str(found), None
 
 
@@ -199,9 +203,6 @@ def check(
         if len(named) > 1:
             raise _invalid("a structured turn renders one character", "one_render_character")
         return
-    refuse_state_tie_break(
-        getattr(request, "simultaneous_tie_break", None), "body.simultaneous_tie_break"
-    )
     if len(named) <= 1:
         return
     if len(named) > MAX_PRIMARIES:
@@ -336,7 +337,7 @@ class MultiReport:
     tie_break: str | None = None
     """#175: the tie-break a simultaneous turn settled its conflicts by."""
     tie_break_warning: str | None = None
-    """#175: ``tie_break_state_not_yet`` when a stored ``state:<name>`` fell back."""
+    """#188: ``tie_break_state_invalid`` when a ``state:<name>`` fell back."""
     adjudications: list[dict[str, Any]] = field(default_factory=list)
     """#175: ``{object, winner, loser, rule}`` per settled conflict."""
 
@@ -377,7 +378,7 @@ __all__ = [
     "REQUEST",
     "SEQUENTIAL",
     "SIMULTANEOUS",
-    "TIE_BREAK_STATE_NOT_YET",
+    "TIE_BREAK_STATE_INVALID",
     "DirectorOrder",
     "MultiReport",
     "Ordered",

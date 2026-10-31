@@ -183,7 +183,8 @@ class RespondRequest(BaseModel):
     ``director``); needs per-character renders (409 ``module_off`` otherwise)."""
     simultaneous_tie_break: str | None = Field(default=None, pattern=TIE_BREAK_PATTERN)
     """#175: how this ``simultaneous`` turn settles conflicting actions, over the story's
-    setting (``request_order``, ``director``; ``state:<name>`` is 422 ``not_yet`` until M6);
+    setting (``request_order``, ``director`` or #188's ``state:<name>``, which falls back to
+    request order with ``tie_break_state_invalid`` when it names no number State);
     needs per-character renders (409 ``module_off`` otherwise)."""
     roles: dict[Ulid, ParticipationRole] | None = Field(default=None, max_length=MAX_ROLES)
     """#176 (FR-MULTI-7): this turn's participation role per present character, over its stored

@@ -4764,7 +4764,7 @@
               }
             ],
             "default": null,
-            "description": "How a ``simultaneous`` turn settles two primaries' conflicting actions on one object\n(FR-MULTI-8; #175): ``request_order`` (the earlier-named primary's action stands),\n``director`` (one optional narrator call chooses the winner; request order when it cannot\nbe made) or ``state:<name>`` (a designated State; M6, refused 422 ``not_yet`` until then).\n``None``: ``request_order``. The loser's action is repaired in character as an attempt. A\nrequest overrides it. Prospective.",
+            "description": "How a ``simultaneous`` turn settles two primaries' conflicting actions on one object\n(FR-MULTI-8; #175): ``request_order`` (the earlier-named primary's action stands),\n``director`` (one optional narrator call chooses the winner; request order when it cannot\nbe made) or ``state:<name>`` (a numeric State of the story; #188).\n``None``: ``request_order``. The loser's action is repaired in character as an attempt. A\nrequest overrides it. Prospective.",
             "title": "Simultaneous Tie Break"
           },
           "turn_concurrency": {
@@ -34770,9 +34770,49 @@
       "StateEffectModel": {
         "description": "A State change a structured turn committed (#187, FR-RESP-7): the State, its scope key\n(the character, for a per-character State), the value it found and the one it left, the\nreason, its source (``turn``), contingency and status. A ``hidden`` State's appears only\nfor ``omniscient``.",
         "properties": {
+          "capped": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#188 (FR-STATE-10): true when a cap repaired the effect down; absent otherwise.",
+            "title": "Capped"
+          },
           "contingency": {
             "title": "Contingency",
             "type": "string"
+          },
+          "counterparty": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#188 (FR-STATE-12): `untracked` or `external` when a transfer's other side is not a story State, so only this side was written.",
+            "title": "Counterparty"
+          },
+          "declared": {
+            "description": "#188: the amount the render declared before a cap repaired it down.",
+            "title": "Declared"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#188: `transfer_in` or `transfer_out` for one side of a transfer; absent for a change.",
+            "title": "Kind"
           },
           "new_value": {
             "title": "New Value"
@@ -36537,7 +36577,7 @@
               }
             ],
             "default": null,
-            "description": "How a ``simultaneous`` turn settles two primaries' conflicting actions on one object\n(FR-MULTI-8; #175): ``request_order`` (the earlier-named primary's action stands),\n``director`` (one optional narrator call chooses the winner; request order when it cannot\nbe made) or ``state:<name>`` (a designated State; M6, refused 422 ``not_yet`` until then).\n``None``: ``request_order``. The loser's action is repaired in character as an attempt. A\nrequest overrides it. Prospective.",
+            "description": "How a ``simultaneous`` turn settles two primaries' conflicting actions on one object\n(FR-MULTI-8; #175): ``request_order`` (the earlier-named primary's action stands),\n``director`` (one optional narrator call chooses the winner; request order when it cannot\nbe made) or ``state:<name>`` (a numeric State of the story; #188).\n``None``: ``request_order``. The loser's action is repaired in character as an attempt. A\nrequest overrides it. Prospective.",
             "title": "Simultaneous Tie Break"
           },
           "turn_concurrency": {
@@ -68599,7 +68639,7 @@
         ]
       },
       "patch": {
-        "description": "Change the story's settings with a JSON merge patch (RFC 7396): a key present sets that setting and `null` resets it to its default. A story's settings describe the story: `turn_concurrency` (`reject` | `queue`), `turn_queue_max` (1-50; `null`: the deployment's default, 5), `default_output_viewpoint` (`character:<id>` of the cast, never `omniscient`), `regenerate_retry_budget` (0-10), `lite_summary_chunk` (2-200 rows per summary segment), `audit_retention_days` (1-3650; `null`: the deployment's) and `allow_new_arrivals` (whether a director pass, or a render as scene texture, may introduce new arrivals; default `true`), `interaction_mode` (`sequential` | `simultaneous`: how a turn with several primaries renders them; `null`: the scenario's, else `sequential`), `sequence_order` (`request` | `director`: who orders a sequential turn's primaries; `null`: `request`) and `simultaneous_tie_break` (`request_order` | `director` | `state:<name>`: how a simultaneous turn settles conflicting actions; `null`: `request_order`; `state:<name>` is 422 `not_yet` until M6), `reactive_interjections` (whether reactive narration may give a reactive character a brief interjection; default `false`), `player_view` (`character` | `story`: whether a character viewpoint's output holds only what that character perceived, the audience filter, or every beat; default `character`; a no-op where perception is `none`) and `player_authority` (`own_character` | `co_author`: whether player input describing another character is a request that character resolves or narration of its observable actions, checked against its viewpoint and never its thoughts; default `own_character`; a Lite story gets it as a prompt instruction only). An unknown key is 422. The engine's dials are the story's engine profile's, overridden per story with `PATCH /stories/{id}/profile-overrides` (FR-PROF-5): a key that moved there (`generation_settings`, `lite_window_messages`, `lite_summary_max_tokens`, `max_model_calls_per_turn`, `turn_deadline`, `guardrail_retry_budget`) is 422 with `details.reason: superseded` and the profile setting that replaced it in `details.replacement`. `policies` (optional) upserts the story's own policies; an item that would relax a policy refuses the whole request with 422 `cannot_relax` before anything is written.\n\nEvery setting but `default_output_viewpoint`, `allow_new_arrivals` and `player_authority` is prospective: it applies to requests that arrive after the write, never to a turn already running; those three are interpretive (a turn in flight is checked against them when it commits). A write that changes something moves the story's `config_revision`. The answer carries the budget the story's next turn plans with (`effective_budget`).",
+        "description": "Change the story's settings with a JSON merge patch (RFC 7396): a key present sets that setting and `null` resets it to its default. A story's settings describe the story: `turn_concurrency` (`reject` | `queue`), `turn_queue_max` (1-50; `null`: the deployment's default, 5), `default_output_viewpoint` (`character:<id>` of the cast, never `omniscient`), `regenerate_retry_budget` (0-10), `lite_summary_chunk` (2-200 rows per summary segment), `audit_retention_days` (1-3650; `null`: the deployment's) and `allow_new_arrivals` (whether a director pass, or a render as scene texture, may introduce new arrivals; default `true`), `interaction_mode` (`sequential` | `simultaneous`: how a turn with several primaries renders them; `null`: the scenario's, else `sequential`), `sequence_order` (`request` | `director`: who orders a sequential turn's primaries; `null`: `request`) and `simultaneous_tie_break` (`request_order` | `director` | `state:<name>`: how a simultaneous turn settles conflicting actions; `null`: `request_order`; `state:<name>` names a number State of the story, else 422 `tie_break_state_invalid`), `reactive_interjections` (whether reactive narration may give a reactive character a brief interjection; default `false`), `player_view` (`character` | `story`: whether a character viewpoint's output holds only what that character perceived, the audience filter, or every beat; default `character`; a no-op where perception is `none`) and `player_authority` (`own_character` | `co_author`: whether player input describing another character is a request that character resolves or narration of its observable actions, checked against its viewpoint and never its thoughts; default `own_character`; a Lite story gets it as a prompt instruction only). An unknown key is 422. The engine's dials are the story's engine profile's, overridden per story with `PATCH /stories/{id}/profile-overrides` (FR-PROF-5): a key that moved there (`generation_settings`, `lite_window_messages`, `lite_summary_max_tokens`, `max_model_calls_per_turn`, `turn_deadline`, `guardrail_retry_budget`) is 422 with `details.reason: superseded` and the profile setting that replaced it in `details.replacement`. `policies` (optional) upserts the story's own policies; an item that would relax a policy refuses the whole request with 422 `cannot_relax` before anything is written.\n\nEvery setting but `default_output_viewpoint`, `allow_new_arrivals` and `player_authority` is prospective: it applies to requests that arrive after the write, never to a turn already running; those three are interpretive (a turn in flight is checked against them when it commits). A write that changes something moves the story's `config_revision`. The answer carries the budget the story's next turn plans with (`effective_budget`).",
         "operationId": "update_story_settings",
         "parameters": [
           {

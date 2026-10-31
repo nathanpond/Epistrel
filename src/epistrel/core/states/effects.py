@@ -9,7 +9,11 @@ started) plus the turn's earlier effects that passed: a ``delta`` adds, a ``valu
 effect with neither is ``effect_unresolved`` (FR-STATE-5: a vague amount); one whose result
 breaks the State's constraints (``model.violation``) is ``state_constraint`` (FR-STATE-6: the
 action was an attempt), and so is a delta on a State with no value yet (``undefined``). A
-refused effect changes nothing the later ones see.
+refused effect changes nothing the later ones see. #188: an effect with a ``source`` (its
+beat's asserter) is first authorized (``core.states.authorize``: source, justification,
+preconditions, transfer balance, caps): an unpermitted one is ``state_unpermitted`` (the reason
+its ``constraint``), repaired like a refused one; one above a cap is ``state_capped`` with the
+``amount`` the cap leaves. A ``transfer`` folds its tracked other side too.
 
 **Narrated changes** (``mentions``). A ``do`` or ``narration`` sentence that names a tracked
 State (its name, an alias, its unit, or the name of the entity it tracks) and holds a change
@@ -32,13 +36,23 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from functools import cache
 from typing import Final, Literal
 
 from epistrel.core.enums import StateType, StateVisibility
 from epistrel.core.repair.rungs import sentences
+from epistrel.core.states import authorize as permission
+from epistrel.core.states.authorize import (
+    Authorized,
+    Capped,
+    Counterparty,
+    Evidence,
+    Source,
+    StateEffect,
+    Unpermitted,
+)
 from epistrel.core.states.model import (
     StateDefinition,
     Undefined,
@@ -57,12 +71,24 @@ EFFECT_UNRESOLVED: Final = "effect_unresolved"
 STATE_UNDECLARED: Final = "state_undeclared"
 """A narrated State change with no validated effect (FR-VERIFY-12, #144's ``denied:state_change``;
 #190's ``undeclared`` is the same finding): declare it, or remove the sentence."""
+STATE_UNPERMITTED: Final = "state_unpermitted"
+"""A declared effect its State does not authorize (FR-STATE-10, #188: a source, justification,
+transfer or cap refusal; ``constraint`` the reason): unpermitted novelty, repaired."""
+STATE_CAPPED: Final = "state_capped"
+"""A declared effect larger than its State's caps allow (FR-STATE-10, #188): repaired down to
+the cap deterministically (``amount``)."""
 INVALID_EFFECT = "invalid_effect"
 """The constraint of a repaired render's effect that names no State it may change."""
 UNDEFINED = "undefined"
 """The constraint of a delta on a State with no value yet."""
-Tag = Literal["state_constraint", "effect_unresolved", "state_undeclared"]
-TAGS: frozenset[str] = frozenset({STATE_CONSTRAINT, EFFECT_UNRESOLVED, STATE_UNDECLARED})
+Tag = Literal[
+    "state_constraint", "effect_unresolved", "state_undeclared", "state_unpermitted", "state_capped"
+]
+TAGS: frozenset[str] = frozenset(
+    {STATE_CONSTRAINT, EFFECT_UNRESOLVED, STATE_UNDECLARED, STATE_UNPERMITTED, STATE_CAPPED}
+)
+REFUSED_TAGS: frozenset[str] = frozenset({STATE_CONSTRAINT, STATE_UNPERMITTED})
+"""The tags of a refused effect: the deterministic rung narrates the attempt as failing."""
 
 NARRATED_KINDS: frozenset[str] = frozenset({"do", "narration"})
 """The beats whose prose is read for an undeclared State change."""
@@ -94,6 +120,8 @@ class Finding:
     """The repair constraint the ladder hands the render (``constraint_line``)."""
     refusal: str = field(default="", compare=False)
     """The deterministic rung's text for a refused effect (``refusal_text``)."""
+    amount: Decimal | None = None
+    """``state_capped``: the signed delta the cap leaves (#188)."""
 
     def payload(self) -> dict[str, object]:
         """The verdict payload's part: codes and ids only."""
@@ -119,12 +147,14 @@ class Passed:
 @dataclass(frozen=True, slots=True)
 class Planned:
     """One declared effect in the turn's order: its beat, index, the beat's actor (a
-    character-scoped State defaults to it) and the effect."""
+    character-scoped State defaults to it) and the effect; ``source`` who asserts it (#188:
+    ``None`` skips ``authorize``)."""
 
     beat: int
     index: int
     actor: str | None
     effect: DeclaredEffect
+    source: Source | None = None
 
 
 def scope_of(effect: DeclaredEffect, definition: StateDefinition, actor: str | None) -> str | None:
@@ -146,17 +176,59 @@ def _typed(
     return raw, None
 
 
+def effect_of(
+    effect: DeclaredEffect, definition: StateDefinition, scope_key: str | None
+) -> StateEffect:
+    """``effect`` as ``core.states.authorize`` takes it (#188)."""
+    value, delta = _typed(definition, effect)
+    other = None
+    if effect.counterparty is not None:
+        name, other_scope, other_delta = effect.counterparty
+        other = Counterparty(
+            name, other_scope, None if other_delta is None else number(other_delta)
+        )
+    return StateEffect(
+        state=definition.name,
+        scope_key=scope_key,
+        kind=effect.kind,
+        delta=delta,
+        value=value,
+        counterparty=other,
+        justification=effect.justification,
+        justified_by=effect.justified_by,
+    )
+
+
+def _current(
+    definition: StateDefinition,
+    key: Key,
+    running: Mapping[Key, Value | UndefinedType],
+    values: Mapping[Key, Value | UndefinedType],
+) -> Value | UndefinedType:
+    if key in running:
+        return running[key]
+    if key in values:
+        return values[key]
+    return Undefined if definition.initial_value is None else definition.initial_value
+
+
 def dry_run(
     definitions: Mapping[str, StateDefinition],
     values: Mapping[Key, Value | UndefinedType],
     planned: Sequence[Planned],
+    *,
+    evidence: Mapping[int, Evidence] | None = None,
 ) -> tuple[list[Passed], list[Finding]]:
     """Fold ``planned`` (in order) over ``values`` (each key's value at the turn's start; a key
     not given is its State's initial value): what passes and what is refused (see the module
-    docstring)."""
+    docstring). #188: an effect with a ``source`` is authorized first (``core.states.authorize``,
+    ``evidence`` the turn's beats a justification may cite): refused as ``state_unpermitted``,
+    or ``state_capped`` with the amount the caps leave; a transfer's tracked other side is
+    folded and bounded too."""
     running: dict[Key, Value | UndefinedType] = {}
     passed: list[Passed] = []
     found: list[Finding] = []
+    so_far: list[Authorized] = []
     for p in planned:
         definition = definitions.get(p.effect.state)
         if definition is None:
@@ -171,17 +243,41 @@ def dry_run(
             )
             continue
         key = (definition.name, scope_of(p.effect, definition, p.actor))
-        if key in running:
-            current = running[key]
-        elif key in values:
-            current = values[key]
-        else:
-            current = Undefined if definition.initial_value is None else definition.initial_value
+        current = _current(definition, key, running, values)
         refused = _refused(definition, p, key, current)
         if refused is not None:
             found.append(refused)
             continue
         value, delta = _typed(definition, p.effect)
+        typed = effect_of(p.effect, definition, key[1])
+        if p.source is not None:
+            decision = permission.authorize(
+                typed,
+                p.source,
+                so_far,
+                definition=definition,
+                definitions=definitions,
+                current=current,
+                evidence=evidence,
+            )
+            if isinstance(decision, Unpermitted):
+                found.append(
+                    _finding(
+                        definition, p, key, decision.reason, current, Undefined, STATE_UNPERMITTED
+                    )
+                )
+                continue
+            if isinstance(decision, Capped):
+                cut: Value | UndefinedType = (
+                    current + decision.amount if isinstance(current, Decimal) else Undefined
+                )
+                found.append(
+                    replace(
+                        _finding(definition, p, key, permission.CAP, current, cut, STATE_CAPPED),
+                        amount=decision.amount,
+                    )
+                )
+                continue
         attempted: Value | UndefinedType
         if delta is not None:
             if isinstance(current, UndefinedType) or not isinstance(current, Decimal):
@@ -195,9 +291,45 @@ def dry_run(
         if broken is not None:
             found.append(_finding(definition, p, key, broken, current, attempted))
             continue
+        other = _other_side(definitions, typed, delta, running, values)
+        if isinstance(other, str):
+            found.append(_finding(definition, p, key, other, current, attempted))
+            continue
         running[key] = attempted
         passed.append(Passed(p.beat, p.index, key, current, attempted))
+        if other is not None:
+            other_key, other_old, other_new = other
+            running[other_key] = other_new
+            passed.append(Passed(p.beat, p.index, other_key, other_old, other_new))
+        so_far += permission.authorized(typed, permission.change_of(typed, current), definitions)
     return passed, found
+
+
+def _other_side(
+    definitions: Mapping[str, StateDefinition],
+    effect: StateEffect,
+    delta: Decimal | None,
+    running: Mapping[Key, Value | UndefinedType],
+    values: Mapping[Key, Value | UndefinedType],
+) -> tuple[Key, Value | UndefinedType, Value] | str | None:
+    """A transfer's tracked other side folded: its key, old and new value; the constraint it
+    would break; ``None`` when there is none (a change, or an untracked or external side)."""
+    other = effect.counterparty
+    if effect.kind != permission.TRANSFER or other is None or delta is None:
+        return None
+    if not permission.tracked(definitions, other.state):
+        return None
+    definition = definitions[other.state]
+    if definition.scope.value == "character" and other.scope_key is None:
+        return INVALID_EFFECT
+    key = (definition.name, None if definition.scope.value == "story" else other.scope_key)
+    current = _current(definition, key, running, values)
+    moved = other.delta if other.delta is not None else -delta
+    if not isinstance(current, Decimal):
+        return UNDEFINED
+    attempted = current + moved
+    broken = violation(definition, attempted)
+    return broken if broken is not None else (key, current, attempted)
 
 
 def _refused(
@@ -230,9 +362,10 @@ def _finding(
     constraint: str,
     current: Value | UndefinedType,
     attempted: Value | UndefinedType,
+    tag: Tag = STATE_CONSTRAINT,
 ) -> Finding:
     return Finding(
-        STATE_CONSTRAINT,
+        tag,
         p.beat,
         definition.name,
         definition.id,
@@ -404,6 +537,18 @@ def _rule(definition: StateDefinition, constraint: str | None) -> str:
         return f"{name} cannot become that"
     if constraint == INVALID_EFFECT:
         return f"{name} cannot change that way"
+    if constraint in (permission.SOURCE, permission.REACTIVE_ASSERTER):
+        return f"this cannot change {name}"
+    if constraint == permission.COUNTERPARTY:
+        return f"{name} cannot move to or from there"
+    if constraint == permission.WORLD_GAIN:
+        return f"{name} cannot simply appear: only the world grants it"
+    if constraint == permission.JUSTIFICATION:
+        return f"nothing in this turn justifies that change to {name}"
+    if constraint == permission.UNBALANCED:
+        return f"both sides of a {name} transfer must match"
+    if constraint == permission.CAP:
+        return f"{name} cannot change that much at once"
     return f"{name} cannot change like that"
 
 
@@ -417,17 +562,33 @@ def _shown(value: Value | UndefinedType, definition: StateDefinition) -> str:
 def constraint_line(finding: Finding, definition: StateDefinition | None, *, narrator: bool) -> str:
     """The repair constraint of ``finding`` (see the module docstring)."""
     name = finding.state if definition is None else label(definition)
-    if finding.tag == STATE_CONSTRAINT:
+    if finding.tag == STATE_CAPPED and finding.amount is not None:
+        return (
+            f"{name} can change by at most {to_json(abs(finding.amount))} here: declare that "
+            "amount and narrate no more than it."
+        )
+    if finding.tag in REFUSED_TAGS:
         rule = name if definition is None else _rule(definition, finding.constraint)
         known = (
             f" ({finding.state} is {_shown(finding.current, definition)})"
             if narrator and definition is not None
             else ""
         )
+        justify = ""
+        if finding.constraint == permission.JUSTIFICATION and definition is not None:
+            labels = [
+                *permission.authorization_of(definition).increase,
+                *permission.authorization_of(definition).decrease,
+            ]
+            named = f" (one of: {', '.join(dict.fromkeys(labels))})" if labels else ""
+            justify = (
+                f" Or declare the event that justifies it: `justification`{named} and "
+                "`justified_by`, the number of the beat that narrates it."
+            )
         return (
             f"The action is only an attempt and it fails: {rule}{known}. Narrate it falling "
             "short in character (someone says so, or it simply does not happen), and declare "
-            "no effect on it, or a smaller one."
+            f"no effect on it, or a smaller one.{justify}"
         )
     if finding.tag == EFFECT_UNRESOLVED:
         return (
@@ -467,15 +628,12 @@ CHARACTER_SOURCE = "character:"
 
 def may_declare(definition: StateDefinition, character_id: str) -> bool:
     """Whether ``character_id``'s render is told it may change ``definition`` (owner decision
-    2026-10-30): a player-visible State whose ``authorization.sources`` names
-    ``any_character`` or ``character:<id>`` (#188 enforces the sources; until then they only
-    shape the prompt)."""
+    2026-10-30): a player-visible State whose ``authorization.sources`` admit
+    ``character:<id>`` (``any_character``, or the default sources; #188's
+    ``core.states.authorize`` enforces them)."""
     if not visible_to_characters(definition):
         return False
-    sources = definition.authorization.get("sources") or ()
-    if isinstance(sources, str):
-        sources = (sources,)
-    return ANY_CHARACTER in sources or f"{CHARACTER_SOURCE}{character_id}" in sources
+    return permission.source_permitted(definition, f"{CHARACTER_SOURCE}{character_id}")
 
 
 def _shape(definition: StateDefinition) -> list[str]:
@@ -587,8 +745,11 @@ __all__ = [
     "EXTERNAL_VALUE",
     "INVALID_EFFECT",
     "NARRATED_KINDS",
+    "REFUSED_TAGS",
+    "STATE_CAPPED",
     "STATE_CONSTRAINT",
     "STATE_UNDECLARED",
+    "STATE_UNPERMITTED",
     "TAGS",
     "UNDEFINED",
     "Finding",
@@ -602,6 +763,7 @@ __all__ = [
     "character_line",
     "constraint_line",
     "dry_run",
+    "effect_of",
     "label",
     "may_declare",
     "mentions",

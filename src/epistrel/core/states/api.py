@@ -88,6 +88,7 @@ from epistrel.core.events.types import StateDefined as StateDefinedEvent
 from epistrel.core.events.types import StateSet as StateSetEvent
 from epistrel.core.membership import Position, active_only
 from epistrel.core.settings_schema import StorySettings
+from epistrel.core.states.authorize import source_permitted
 from epistrel.core.states.model import (
     REASON_MAX,
     WORLD_CLOCK,
@@ -499,10 +500,10 @@ def _reserved() -> InvalidRequest:
 
 
 def sources_admit(state: StateDefinition, source: str) -> bool:
-    """Whether ``state``'s ``authorization.sources`` admit ``source`` (#188's rule; an empty or
-    absent list is its default, which admits every source)."""
-    sources = state.authorization.get("sources")
-    return not sources or source in sources
+    """Whether ``state``'s ``authorization.sources`` admit ``source`` (#188's rule,
+    ``core.states.authorize.source_permitted``: an absent list is the default, which admits
+    every source)."""
+    return source_permitted(state, source)
 
 
 async def check_settable(

@@ -662,11 +662,13 @@ async def turn_effects(
     operation_ids: Sequence[str],
     *,
     omniscient: bool,
+    with_ids: bool = False,
 ) -> dict[str, list[dict[str, Any]]]:
     """The State changes each of ``operation_ids`` committed (#187, FR-RESP-7), in position
     order, as the response and history return them: ``{state, scope_key, old_value, new_value,
-    reason, source, contingency, status}`` (plus the ``beat``), a ``hidden`` State's only when
-    ``omniscient`` (C-12's rule; visibility only, no audience filter)."""
+    reason, source, contingency, status}`` (plus the ``beat``; ``with_ids``: also the
+    ``change_id`` and the row's ``kind``, #188), a ``hidden`` State's only when ``omniscient``
+    (C-12's rule; visibility only, no audience filter)."""
     if not operation_ids:
         return {}
     c, d = state_changes.c, state_definitions.c
@@ -696,6 +698,11 @@ async def turn_effects(
                 "contingency": str(getattr(row.contingency, "value", row.contingency)),
                 "status": str(getattr(row.status, "value", row.status)),
                 "beat": int(row.beat),
+                **(
+                    {"change_id": str(row.id), "kind": str(getattr(row.kind, "value", row.kind))}
+                    if with_ids
+                    else {}
+                ),
             }
         )
     return found
@@ -1271,6 +1278,56 @@ async def apply_change(
     return Applied(new_id, state.id, current, attempted, position, minutes)
 
 
+async def numeric_states(conn: AsyncConnection, story_id: str) -> frozenset[str]:
+    """The names of the story's active ``number`` States (a ``state:<name>`` tie-break's)."""
+    return frozenset(
+        d.name for d in await definitions(conn, story_id) if d.type is StateType.NUMBER
+    )
+
+
+async def validate_state_tie_break(
+    conn: AsyncConnection, story_id: str, value: object, *, field: str
+) -> None:
+    """422 ``validation_error`` (``reason: tie_break_state_invalid``) when ``value`` is a
+    ``state:<name>`` tie-break naming no numeric State of the story (FR-MULTI-8; #188): on the
+    settings PATCH and at genesis, after the scenario's States exist (#202)."""
+    from epistrel.core.settings_schema import TIE_BREAK_STATE_INVALID, state_tie_break_name
+
+    name = state_tie_break_name(value)
+    if name is None or name in await numeric_states(conn, story_id):
+        return
+    message = "a state:<name> tie-break names a number State of the story"
+    raise InvalidRequest(
+        message,
+        {
+            "field": field,
+            "reason": TIE_BREAK_STATE_INVALID,
+            "errors": [{"field": field, "message": message, "type": "value_error"}],
+        },
+    )
+
+
+async def apply_transfer(
+    conn: AsyncConnection, op: Operation, own: StateChange, other: StateChange | None
+) -> list[Applied] | Violation:
+    """Both sides of one transfer (FR-STATE-12; #188), written together: ``own`` and ``other``,
+    each a ``transfer_out`` or ``transfer_in`` row with its signed delta (``other`` ``None``: the
+    other side is untracked or external, and the tracked side alone is written). Either side's
+    ``Violation`` writes neither (a savepoint)."""
+    savepoint = await conn.begin_nested()
+    done: list[Applied] = []
+    for change in (own, other):
+        if change is None:
+            continue
+        found = await apply_change(conn, op, change)
+        if isinstance(found, Violation):
+            await savepoint.rollback()
+            return found
+        done.append(found)
+    await savepoint.commit()
+    return done
+
+
 __all__ = [
     "CLOCK_ADVANCE_ROUTE",
     "DERIVED",
@@ -1289,6 +1346,7 @@ __all__ = [
     "View",
     "Violation",
     "apply_change",
+    "apply_transfer",
     "change_position",
     "check_active_names",
     "current_values",
@@ -1300,6 +1358,7 @@ __all__ = [
     "fold_state",
     "folded_at",
     "follow_operations",
+    "numeric_states",
     "operation_position",
     "refresh",
     "require_module",
@@ -1309,5 +1368,6 @@ __all__ = [
     "turn_effects",
     "update_definition",
     "valid_time_at",
+    "validate_state_tie_break",
     "value_of",
 ]

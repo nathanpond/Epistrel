@@ -601,7 +601,7 @@ async def test_config_revalidation__m6(
 
         # -- An authorization change revoking the source: the re-check fails, it regenerates.
         story, cal, row, played = await held(
-            lambda story, cal: patch(story, {"authorization": {"sources": []}})
+            lambda story, cal: patch(story, {"authorization": {"sources": ["consumer"]}})
         )
         assert outcomes(row) == [("recheck", "failed"), ("commit", None)]
         assert "state_definitions" in row.attempts[0]["config_changed"]

@@ -226,26 +226,21 @@ DEFAULT_PLAYER_AUTHORITY: PlayerAuthority = "own_character"
 DEFAULT_INTERACTION_MODE: InteractionMode = "sequential"
 TIE_BREAK_PATTERN = r"^(request_order|director|state:[a-z][a-z0-9_]{0,63})$"
 """FR-MULTI-8 (#175): a ``simultaneous`` turn's tie-break, ``request_order`` (the earlier-named
-primary's action stands), ``director`` (one narrator call chooses) or ``state:<name>`` (a
-designated State such as initiative: M6's, accepted by the schema and refused 422 ``not_yet``
-until then, ``refuse_state_tie_break``)."""
+primary's action stands), ``director`` (one narrator call chooses) or ``state:<name>`` (#188: a
+numeric State of the story, such as initiative; the higher value at the turn's start wins,
+``core.states.validate_state_tie_break``)."""
 REQUEST_ORDER_TIE_BREAK = "request_order"
 STATE_TIE_BREAK_PREFIX = "state:"
+TIE_BREAK_STATE_INVALID = "tie_break_state_invalid"
+"""#188: a ``state:<name>`` tie-break that names no numeric State of the story: refused 422 when
+it is written, and a turn falls back to request order with this warning."""
 
 
-def refuse_state_tie_break(value: str | None, field: str) -> None:
-    """422 ``validation_error`` (``reason: not_yet``) for a ``state:<name>`` tie-break: the
-    designated-State tie-break is M6's (#175; FR-MULTI-8)."""
-    if value is not None and value.startswith(STATE_TIE_BREAK_PREFIX):
-        message = "a designated-State tie-break (state:<name>) is not delivered yet"
-        raise InvalidRequest(
-            message,
-            {
-                "field": field,
-                "reason": "not_yet",
-                "errors": [{"field": field, "message": message, "type": "value_error"}],
-            },
-        )
+def state_tie_break_name(value: object) -> str | None:
+    """The State a ``state:<name>`` tie-break names (``None`` for any other value)."""
+    if isinstance(value, str) and value.startswith(STATE_TIE_BREAK_PREFIX):
+        return value[len(STATE_TIE_BREAK_PREFIX) :]
+    return None
 
 
 TURN_QUEUE_MAX_MIN = 1
@@ -389,7 +384,7 @@ class StorySettings(BaseModel):
     """How a ``simultaneous`` turn settles two primaries' conflicting actions on one object
     (FR-MULTI-8; #175): ``request_order`` (the earlier-named primary's action stands),
     ``director`` (one optional narrator call chooses the winner; request order when it cannot
-    be made) or ``state:<name>`` (a designated State; M6, refused 422 ``not_yet`` until then).
+    be made) or ``state:<name>`` (a numeric State of the story; #188).
     ``None``: ``request_order``. The loser's action is repaired in character as an attempt. A
     request overrides it. Prospective."""
 

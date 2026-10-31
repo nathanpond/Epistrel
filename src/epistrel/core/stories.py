@@ -53,7 +53,7 @@ guardrail violation stays in character.
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -119,7 +119,7 @@ from epistrel.core.settings_schema import (
     StorySettings,
     superseded,
 )
-from epistrel.core.states import define_state
+from epistrel.core.states import define_state, validate_state_tie_break
 from epistrel.core.states.model import world_clock_definition
 from epistrel.core.tables import (
     audit_log,
@@ -737,6 +737,11 @@ async def create_story_from(
         await index_rows(conn, stories, stories.c.id == story_id, story_record)
         # Every story's world clock (FR-CLOCK-1; #193), inert while its profile has it off.
         await define_state(conn, op, story_id, world_clock_definition(), builtin=True)
+        # #188 (FR-MULTI-8): a state:<name> tie-break names a number State the genesis made
+        # (#202 creates a scenario's States before this check).
+        await validate_state_tie_break(
+            conn, story_id, _tie_break(settings), field="body.settings.simultaneous_tie_break"
+        )
 
     op = Operation(
         db,
@@ -781,6 +786,17 @@ async def create_story_from(
         timeline_revision=op.timeline_revision,
         content_rating=rating,
     )
+
+
+def _tie_break(settings: Mapping[str, Any]) -> Any:
+    """The stored ``simultaneous_tie_break``: the story's own, else the one genesis kept
+    ``inactive`` (#181)."""
+    found = settings.get("simultaneous_tie_break")
+    if found is not None:
+        return found
+    inactive = settings.get("inactive")
+    entry = inactive.get("simultaneous_tie_break") if isinstance(inactive, Mapping) else None
+    return entry.get("value") if isinstance(entry, Mapping) else None
 
 
 def _check_unique_names(cast: Sequence[CharacterSpec]) -> None:

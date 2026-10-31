@@ -67,6 +67,29 @@ class StateEffectModel(BaseModel):
     source: str
     contingency: str
     status: str
+    kind: str | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="#188: `transfer_in` or `transfer_out` for one side of a transfer; absent "
+        "for a change.",
+    )
+    capped: bool | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="#188 (FR-STATE-10): true when a cap repaired the effect down; absent "
+        "otherwise.",
+    )
+    declared: Any = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="#188: the amount the render declared before a cap repaired it down.",
+    )
+    counterparty: str | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="#188 (FR-STATE-12): `untracked` or `external` when a transfer's other "
+        "side is not a story State, so only this side was written.",
+    )
 
 
 class BeatPropositionModel(BaseModel):

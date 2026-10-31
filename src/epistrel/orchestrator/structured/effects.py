@@ -13,8 +13,13 @@ with its value and constraints (``Book.narrator_section``), and the dry-run the 
 **The dry-run** (``findings``), after verification and before #151's ladder: every declared
 effect of the turn's beats is folded in beat order (``core.states.effects.dry_run``) over the
 snapshot plus the earlier effects that passed; in a ``sequential`` turn the earlier primaries'
-come through #174's ``TurnStage`` (``StagedBeat.effects``). #188's ``authorize()`` is the
-seam before the bounds once it lands: until then only the bounds are checked. Each ``do`` and
+come through #174's ``TurnStage`` (``StagedBeat.effects``; a ``simultaneous`` turn's primaries
+are each folded alone over the snapshot, and a shared State they break together is #175's
+conflict, ``state_conflicts``). Each effect is authorized before the bounds (#188,
+``core.states.authorize``: its beat's asserter, ``source_of``; the turn's beats as the evidence
+a justification cites, ``evidence_of``): an unpermitted one is ``state_unpermitted``, repaired
+like a refused one; one above a cap is rewritten down to it deterministically before anything
+else sees it (``cap``: ``state_capped``, its declared amount kept for the response). Each ``do`` and
 narration beat is read for a State change it narrates with no effect
 (``core.states.effects.narrated``). Each finding becomes a checked claim of its beat
 (``claims_of``) whose ``VerifyResult.state_finding`` makes it ``needs_repair`` with the
@@ -54,8 +59,9 @@ Log lines carry counts only (invariant 3).
 from __future__ import annotations
 
 import logging
+import re
 import weakref
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
@@ -66,6 +72,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from epistrel.core import states
 from epistrel.core.concurrency import RebaseCheckFailed
 from epistrel.core.enums import StateChangeKind, StateChangeSource, StateOwner
+from epistrel.core.epistemic.conflicts import Conflict, StateClaim, detect_state_conflicts
 from epistrel.core.errors import ModuleOff, StateNotFound
 from epistrel.core.membership import Position, step_of
 from epistrel.core.profiles import schema
@@ -73,9 +80,11 @@ from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.readset import StructuredReadSet, register_rebase_check
 from epistrel.core.resolution.entities import NARRATOR
 from epistrel.core.states import StateChange, StateDefinition, Undefined, UndefinedType
+from epistrel.core.states import authorize as permission
 from epistrel.core.states import effects as rules
+from epistrel.core.states.authorize import Evidence, Source
 from epistrel.core.states.effects import Finding, Planned
-from epistrel.core.states.model import Value
+from epistrel.core.states.model import Value, to_json
 from epistrel.core.tables import characters, entities
 from epistrel.core.turns.beats import TurnBeat
 from epistrel.core.verify.detect import DetectedClaim
@@ -205,20 +214,84 @@ def _narrator(beat: TurnBeat) -> bool:
     return beat.narrator or beat.character_id is None
 
 
+def source_of(beat: TurnBeat) -> Source:
+    """Who asserts ``beat``'s effects, as #188's ``authorize`` reads it (``asserter_of``)."""
+    asserter = asserter_of(beat)
+    return Source(asserter.kind, asserter.character_id)  # type: ignore[arg-type]
+
+
+def _staged_source(narrator: bool, character_id: str | None) -> Source:
+    if narrator or character_id is None:
+        return Source("director")
+    return Source("character", character_id)
+
+
 def planned(beats: Sequence[TurnBeat], stage: TurnStage | None = None) -> list[Planned]:
     """The turn's declared effects in beat order: ``beats``' own, and a staged beat's (#174)
-    where ``beats`` has no beat of that number."""
-    by_number: dict[int, tuple[str | None, tuple[Any, ...]]] = {}
+    where ``beats`` has no beat of that number, each with its asserter (#188)."""
+    by_number: dict[int, tuple[str | None, tuple[Any, ...], Source]] = {}
     if stage is not None:
         for s in stage.beats:
-            by_number[s.beat] = (None if s.narrator else s.character_id, tuple(s.effects))
+            by_number[s.beat] = (
+                None if s.narrator else s.character_id,
+                tuple(s.effects),
+                _staged_source(s.narrator, s.character_id),
+            )
     for b in beats:
-        by_number[b.beat] = (None if _narrator(b) else b.character_id, b.effects)
+        by_number[b.beat] = (None if _narrator(b) else b.character_id, b.effects, source_of(b))
     return [
-        Planned(number, n, actor, effect)
-        for number, (actor, effects) in sorted(by_number.items())
+        Planned(number, n, actor, effect, source)
+        for number, (actor, effects, source) in sorted(by_number.items())
         for n, effect in enumerate(effects)
     ]
+
+
+def evidence_of(beats: Sequence[TurnBeat], stage: TurnStage | None = None) -> dict[int, Evidence]:
+    """The turn's beats a justification may cite (#188): every beat verification kept (present,
+    not an attempt), with the #148 categories its text holds."""
+    found: dict[int, Evidence] = {}
+    if stage is not None:
+        for s in stage.beats:
+            found[s.beat] = Evidence(
+                s.beat,
+                s.kind,
+                permission.categories_of(s.text),
+                s.narrator or s.kind == "narration",
+            )
+    for b in beats:
+        if b.attempt:
+            found.pop(b.beat, None)
+            continue
+        found[b.beat] = Evidence(
+            b.beat, b.kind, permission.categories_of(b.text), _narrator(b) or b.kind == "narration"
+        )
+    return found
+
+
+def _alone(planned_: Sequence[Planned]) -> list[list[Planned]]:
+    """A ``simultaneous`` turn's effects by asserting primary (the narrator's and the input's
+    together), each folded alone over the snapshot."""
+    groups: dict[str | None, list[Planned]] = {}
+    for p in planned_:
+        groups.setdefault(p.actor, []).append(p)
+    return list(groups.values())
+
+
+def _dry_run(
+    book: Book,
+    beats: Sequence[TurnBeat],
+    stage: TurnStage | None,
+    *,
+    simultaneous: bool = False,
+) -> list[Finding]:
+    ordered = planned(beats, stage)
+    evidence = evidence_of(beats, stage)
+    if not simultaneous:
+        return rules.dry_run(book.definitions, book.values, ordered, evidence=evidence)[1]
+    found: list[Finding] = []
+    for group in _alone(ordered):
+        found += rules.dry_run(book.definitions, book.values, group, evidence=evidence)[1]
+    return sorted(found, key=lambda f: (f.beat, f.effect if f.effect is not None else -1))
 
 
 def findings(
@@ -227,12 +300,13 @@ def findings(
     stage: TurnStage | None = None,
     *,
     only: frozenset[int] | None = None,
+    simultaneous: bool = False,
 ) -> list[Finding]:
     """What the dry-run and the narrated-change read find in ``beats`` (those of ``only``,
     when given), each with its repair line and refusal (see the module docstring)."""
     if not book.on:
         return []
-    _, refused = rules.dry_run(book.definitions, book.values, planned(beats, stage))
+    refused = _dry_run(book, beats, stage, simultaneous=simultaneous)
     by_number = {b.beat: b for b in beats}
     found = [f for f in refused if f.beat in by_number]
     for b in beats:
@@ -264,6 +338,187 @@ def _decorated(book: Book, beat: TurnBeat, finding: Finding) -> Finding:
         line=rules.constraint_line(finding, definition, narrator=narrator),
         refusal=rules.refusal_text(beat.kind, actor, definition, finding.constraint),
     )
+
+
+_AMOUNT = r"(?<![\w.,]){}(?![\w]|[.,]\d)"
+
+
+def _renumbered(text: str, declared: Decimal, capped: Decimal) -> str:
+    """``text`` with the first literal of ``declared``'s magnitude ("100000", "100,000")
+    rewritten to ``capped``'s, in the same form (the narration repaired to match the cap)."""
+    old, new = abs(declared), abs(capped)
+    if old != old.to_integral_value() or new != new.to_integral_value():
+        forms = [(f"{old.normalize():f}", f"{new.normalize():f}")]
+    else:
+        forms = [(f"{int(old):,}", f"{int(new):,}"), (str(int(old)), str(int(new)))]
+    for was, now in forms:
+        hit = re.search(_AMOUNT.format(re.escape(was)), text)
+        if hit is not None:
+            return text[: hit.start()] + now + text[hit.end() :]
+    return text
+
+
+def capped_beat(beat: TurnBeat, found: Sequence[Finding]) -> TurnBeat:
+    """``beat`` with each of its ``state_capped`` findings' effects rewritten down to the cap
+    (#188's deterministic repair): the effect's delta (or a set's value) becomes what the cap
+    leaves, its ``declared`` amount is kept, a counterparty's own delta follows, and the
+    narration's literal amount is rewritten to match."""
+    effects = list(beat.effects)
+    text = beat.text
+    for f in found:
+        if f.tag != rules.STATE_CAPPED or f.effect is None or f.amount is None:
+            continue
+        if not 0 <= f.effect < len(effects):
+            continue
+        e = effects[f.effect]
+        first = e.delta if e.delta is not None else e.value
+        declared = e.declared if e.declared is not None else first
+        if e.delta is not None:
+            was = Decimal(str(e.delta))
+            other = e.counterparty
+            if other is not None and other[2] is not None:
+                other = (other[0], other[1], to_json(-f.amount))
+            effects[f.effect] = replace(
+                e, delta=to_json(f.amount), declared=declared, counterparty=other
+            )
+        else:
+            if isinstance(f.attempted, UndefinedType) or not isinstance(f.current, Decimal):
+                continue
+            was = Decimal(str(e.value)) - f.current
+            effects[f.effect] = replace(e, value=to_json(f.attempted), declared=declared)
+        text = _renumbered(text, was, f.amount)
+    return replace(beat, effects=tuple(effects), text=text)
+
+
+MAX_CAP_PASSES = 32
+"""The most effects one turn's caps rewrite (one per pass, in beat order)."""
+
+
+def cap(
+    book: Book,
+    beats: Sequence[TurnBeat],
+    stage: TurnStage | None = None,
+    *,
+    simultaneous: bool = False,
+) -> tuple[list[TurnBeat], list[Finding]]:
+    """``beats`` with every effect above its State's caps rewritten down to them
+    (``capped_beat``), and the ``state_capped`` findings it settled; one at a time in beat
+    order, so a per-turn cap holds across the turn's effects (a later one capped to what the
+    earlier leave)."""
+    if not book.on:
+        return list(beats), []
+    out = list(beats)
+    settled: list[Finding] = []
+    numbers = {b.beat for b in beats}
+    for _ in range(MAX_CAP_PASSES):
+        capped = [
+            f
+            for f in _dry_run(book, out, stage, simultaneous=simultaneous)
+            if f.tag == rules.STATE_CAPPED and f.beat in numbers
+        ]
+        if not capped:
+            break
+        first = min(capped, key=lambda f: (f.beat, f.effect or 0))
+        out = [capped_beat(b, [first]) if b.beat == first.beat else b for b in out]
+        settled.append(first)
+    return out, settled
+
+
+# -- a simultaneous turn's shared States (#188) ------------------------------------------------
+
+
+async def tie_break_book(conn: AsyncConnection, story_id: str, book: Book) -> Book:
+    """The States a ``state:<name>`` tie-break reads: the turn's book, or (with State effects
+    off) the story's States and their values read now."""
+    if book.on:
+        return book
+    found = await states.definitions(conn, story_id)
+    return Book(
+        story_id,
+        book.level,
+        {d.name: d for d in found},
+        await states.current_values(conn, story_id, found),
+    )
+
+
+def state_claims(book: Book, beats: Sequence[TurnBeat], order: Sequence[str]) -> list[StateClaim]:
+    """A ``simultaneous`` turn's primaries' declared effects on their State values (``order``
+    the primaries in request order; the narrator's and the input's take no part), for
+    ``core.epistemic.conflicts.detect_state_conflicts``."""
+    rank = {c: n + 1 for n, c in enumerate(order)}
+    found: list[StateClaim] = []
+    for p in planned([b for b in beats if not b.attempt]):
+        definition = book.definitions.get(p.effect.state)
+        if definition is None or p.actor is None or p.actor not in rank:
+            continue
+        found.append(
+            StateClaim(
+                p.beat,
+                p.actor,
+                rank[p.actor],
+                definition.name,
+                rules.scope_of(p.effect, definition, p.actor),
+                p.index,
+            )
+        )
+    return found
+
+
+def breaks(book: Book, beats: Sequence[TurnBeat]) -> Callable[[Sequence[StateClaim]], bool]:
+    """Whether a shared State value cannot take a group of primaries' effects together: they
+    set it to two values, or, folded in request order over the snapshot, one is refused."""
+    effects = {(p.beat, p.index): p for p in planned(beats)}
+
+    def check(group: Sequence[StateClaim]) -> bool:
+        chosen = [effects[(c.beat, c.index)] for c in group if (c.beat, c.index) in effects]
+        sets = {
+            str(p.effect.value)
+            for p in chosen
+            if p.effect.delta is None and p.effect.value is not None
+        }
+        if len(sets) > 1:
+            return True
+        _, refused = rules.dry_run(book.definitions, book.values, chosen)
+        return bool(refused)
+
+    return check
+
+
+def state_conflicts(book: Book, beats: Sequence[TurnBeat], order: Sequence[str]) -> list[Conflict]:
+    """A ``simultaneous`` turn's conflicts over shared States (#188; see the module
+    docstring)."""
+    if not book.on:
+        return []
+    return detect_state_conflicts(state_claims(book, beats, order), breaks=breaks(book, beats))
+
+
+def tie_break_values(book: Book, name: str, characters: Sequence[str]) -> dict[str, Decimal | None]:
+    """Each of ``characters``' value of the number State ``name`` at the turn's start (a story
+    State's one value for all; #188's ``state:<name>`` tie-break)."""
+    definition = book.definitions.get(name)
+    if definition is None:
+        return {}
+    found: dict[str, Decimal | None] = {}
+    for cid in characters:
+        key = (name, None if definition.scope.value == "story" else cid)
+        value = book.values.get(key, definition.initial_value)
+        found[cid] = value if isinstance(value, Decimal) else None
+    return found
+
+
+def refusal_of(
+    book: Book, beats: Sequence[TurnBeat], beat: TurnBeat, actor: str | None, conflict: Conflict
+) -> str:
+    """The losing beat's attempt in a shared-State conflict: its State's refusal narrated (the
+    constraint the group's effects, folded in request order, break; two values set at once
+    cannot both hold)."""
+    claims = [e for e in conflict.effects if isinstance(e, StateClaim)]
+    definition = book.definitions.get(claims[0].state) if claims else None
+    effects = {(p.beat, p.index): p for p in planned(beats)}
+    chosen = [effects[(c.beat, c.index)] for c in claims if (c.beat, c.index) in effects]
+    _, refused = rules.dry_run(book.definitions, book.values, chosen)
+    constraint = refused[0].constraint if refused else "allowed_values"
+    return rules.refusal_text(beat.kind, actor, definition, constraint)
 
 
 def asserter_of(beat: TurnBeat) -> Asserter:
@@ -366,12 +621,29 @@ def is_state_claim(claim: CheckedClaim) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class Committed:
-    """One effect the commit applied."""
+    """One effect the commit applied: for a transfer (#188) ``other`` is its tracked other
+    side's row, and ``counterparty`` ``untracked`` or ``external`` when that side is not one;
+    ``declared`` the amount the render declared when a cap repaired it down."""
 
     beat: int
     state: str
     scope_key: str | None
     applied: states.Applied
+    other: states.Applied | None = None
+    counterparty: str | None = None
+    declared: Any = None
+
+    def notes(self) -> dict[str, dict[str, Any]]:
+        """What the response adds to this effect's rows (#188), by change id."""
+        own: dict[str, Any] = {}
+        if self.declared is not None:
+            own.update(capped=True, declared=self.declared)
+        if self.counterparty is not None:
+            own["counterparty"] = self.counterparty
+        found = {self.applied.change_id: own} if own else {}
+        if self.other is not None and self.declared is not None:
+            found[self.other.change_id] = {"capped": True}
+        return found
 
 
 def _change(
@@ -387,12 +659,16 @@ def _change(
         step_of(p.beat, op.operation_id),
     )
     if effect.delta is not None:
+        delta = Decimal(str(effect.delta))
+        kind = StateChangeKind.DELTA
+        if effect.kind == permission.TRANSFER:
+            kind = StateChangeKind.TRANSFER_OUT if delta < 0 else StateChangeKind.TRANSFER_IN
         return StateChange(
             state=definition.name,
             reason=effect.reason,
             source=StateChangeSource.TURN,
-            kind=StateChangeKind.DELTA,
-            delta=Decimal(str(effect.delta)),
+            kind=kind,
+            delta=delta,
             scope_key=scope,
             asserter_role=role,
             position=position,
@@ -406,6 +682,35 @@ def _change(
         scope_key=scope,
         asserter_role=role,
         position=position,
+    )
+
+
+def _other_change(
+    own: StateChange, p: Planned, book: Book
+) -> tuple[StateChange | None, str | None]:
+    """A transfer's other side (#188): the tracked side's change (``transfer_in`` for an
+    outgoing one, and the reverse), or ``None`` with ``untracked``/``external``."""
+    other = p.effect.counterparty
+    if p.effect.kind != permission.TRANSFER or other is None or own.delta is None:
+        return None, None
+    name, scope_key, declared = other
+    kind = permission.counterparty_kind(book.definitions, name)
+    if kind is not None:
+        return None, kind
+    definition = book.definitions[name]
+    delta = -Decimal(own.delta) if declared is None else Decimal(str(declared))
+    return (
+        StateChange(
+            state=name,
+            reason=own.reason,
+            source=StateChangeSource.TURN,
+            kind=StateChangeKind.TRANSFER_OUT if delta < 0 else StateChangeKind.TRANSFER_IN,
+            delta=delta,
+            scope_key=None if definition.scope.value == "story" else scope_key,
+            asserter_role=own.asserter_role,
+            position=own.position,
+        ),
+        None,
     )
 
 
@@ -425,14 +730,29 @@ async def apply_declared(
         if definition is None:
             raise RebaseCheckFailed("a State the turn changes is gone")
         role = None if p.actor is None else (roles or {}).get(p.actor, "primary")
+        own = _change(op, p, definition, role)
+        other, counterparty = _other_change(own, p, book)
+        written: list[states.Applied] | states.Applied | states.Violation
         try:
-            found = await states.apply_change(conn, op, _change(op, p, definition, role))
+            if p.effect.kind == permission.TRANSFER:
+                written = await states.apply_transfer(conn, op, own, other)
+            else:
+                written = await states.apply_change(conn, op, own)
         except (StateNotFound, ModuleOff) as exc:
             raise RebaseCheckFailed("the turn's States changed under it") from exc
-        if isinstance(found, states.Violation):
+        if isinstance(written, states.Violation):
             raise RebaseCheckFailed("a State moved since the turn's snapshot")
+        found, *rest = written if isinstance(written, list) else [written]
         done.append(
-            Committed(p.beat, definition.name, rules.scope_of(p.effect, definition, p.actor), found)
+            Committed(
+                p.beat,
+                definition.name,
+                rules.scope_of(p.effect, definition, p.actor),
+                found,
+                other=rest[0] if rest else None,
+                counterparty=counterparty,
+                declared=p.effect.declared,
+            )
         )
     log.debug("state effects: %d committed", len(done))
     return done
@@ -447,6 +767,7 @@ class _Recorded:
     story_id: str
     planned: tuple[Planned, ...]
     interpretive: Mapping[str, list[Any]]
+    evidence: Mapping[int, Evidence] = field(default_factory=dict)
 
 
 _RECORDED: dict[int, tuple[weakref.ref[StructuredReadSet], _Recorded]] = {}
@@ -465,6 +786,7 @@ def remember(read_set: StructuredReadSet, book: Book, beats: Sequence[TurnBeat])
             book.story_id,
             found,
             {n: book.definitions[n].interpretive() for n in touched if n in book.definitions},
+            evidence_of(beats),
         ),
     )
 
@@ -501,6 +823,31 @@ async def recheck(conn: AsyncConnection, op: Operation) -> bool:
 register_rebase_check(recheck)
 
 
+async def recheck_authorization(conn: AsyncConnection, op: Operation) -> bool:
+    """#188's rebase re-check (``state_authorization``, FR-STATE-10, FR-CONC-16): the turn's
+    effects authorized again under the commit-time definitions (a source revoked, a
+    justification list or a cap changed through ``update_definition``); any refusal, or an
+    effect a cap would now cut, regenerates the turn; it is never repaired inside the commit."""
+    source = op.read_set_source
+    if not isinstance(source, StructuredReadSet):
+        return True
+    found = recorded(source)
+    if found is None or not found.planned:
+        return True
+    current = {d.name: d for d in await states.definitions(conn, found.story_id)}
+    if any(p.effect.state not in current for p in found.planned):
+        return False
+    values = await states.current_values(conn, found.story_id, list(current.values()))
+    _, refused = rules.dry_run(current, values, found.planned, evidence=found.evidence)
+    unpermitted = [f for f in refused if f.tag in (rules.STATE_UNPERMITTED, rules.STATE_CAPPED)]
+    if unpermitted:
+        log.debug("rebase re-check: %d effects no longer authorized", len(unpermitted))
+    return not unpermitted
+
+
+register_rebase_check(recheck_authorization)
+
+
 # -- the response --------------------------------------------------------------------------------
 
 RESPONSE_FIELDS = (
@@ -516,11 +863,33 @@ RESPONSE_FIELDS = (
 
 
 async def committed(
-    conn: AsyncConnection, story_id: str, operation_id: str, *, omniscient: bool
+    conn: AsyncConnection,
+    story_id: str,
+    operation_id: str,
+    *,
+    omniscient: bool,
+    done: Sequence[Committed] = (),
 ) -> list[dict[str, Any]]:
-    """The response's ``state_effects`` (FR-RESP-7; see the module docstring)."""
-    found = await states.turn_effects(conn, story_id, [operation_id], omniscient=omniscient)
-    return [{k: e[k] for k in RESPONSE_FIELDS} for e in found.get(operation_id, [])]
+    """The response's ``state_effects`` (FR-RESP-7; see the module docstring); ``done`` the
+    commit's effects, whose notes (#188: ``capped`` with the ``declared`` amount, a transfer's
+    ``counterparty: untracked|external``, the row's ``kind`` for a transfer side) it adds."""
+    notes: dict[str, dict[str, Any]] = {}
+    for c in done:
+        notes.update(c.notes())
+    found = await states.turn_effects(
+        conn, story_id, [operation_id], omniscient=omniscient, with_ids=True
+    )
+    out: list[dict[str, Any]] = []
+    for e in found.get(operation_id, []):
+        row = {k: e[k] for k in RESPONSE_FIELDS}
+        if e["kind"] in TRANSFER_KINDS:
+            row["kind"] = e["kind"]
+        row.update(notes.get(e["change_id"], {}))
+        out.append(row)
+    return out
+
+
+TRANSFER_KINDS = frozenset({StateChangeKind.TRANSFER_IN.value, StateChangeKind.TRANSFER_OUT.value})
 
 
 def report(book: Book, beats: Sequence[TurnBeat], repaired: Sequence[Finding]) -> dict[str, Any]:
@@ -541,16 +910,27 @@ __all__ = [
     "Committed",
     "apply_declared",
     "asserter_of",
+    "breaks",
+    "cap",
+    "capped_beat",
     "claims_of",
     "committed",
     "covered",
+    "evidence_of",
     "findings",
     "is_state_claim",
     "level_of",
     "load",
     "planned",
     "recheck",
+    "recheck_authorization",
     "recorded",
+    "refusal_of",
     "remember",
     "report",
+    "source_of",
+    "state_claims",
+    "state_conflicts",
+    "tie_break_book",
+    "tie_break_values",
 ]

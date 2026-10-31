@@ -41,7 +41,8 @@ The neighborhood's size (its facts, memories excluded) classifies the repair.
    straight to rung 3.
 
 **State findings** (#187, FR-STATE-5,6, FR-VERIFY-12): a beat whose violations include a
-State effect the dry-run refused (``state_constraint``), a change with no concrete amount
+State effect the dry-run refused (``state_constraint``; #188's ``state_unpermitted``, an
+effect its State does not authorize, is repaired the same way), a change with no concrete amount
 (``effect_unresolved``) or a narrated change with no effect (``state_undeclared``) skips rungs 1
 and 2 (no rewording fixes a declared effect): the regeneration asks the render, with the
 finding's line as its constraint, for the attempt narrated as failing with no effect or a
@@ -103,7 +104,7 @@ from epistrel.core.repair.rungs import (
 )
 from epistrel.core.resolution.context import load_time_basis
 from epistrel.core.settings_schema import NAME_PLACEHOLDER, OMNISCIENT, VerifySettings
-from epistrel.core.states.effects import STATE_CONSTRAINT, Finding
+from epistrel.core.states.effects import REFUSED_TAGS, Finding
 from epistrel.core.tables import entities
 from epistrel.core.tables.propositions import closed_sets
 from epistrel.core.turns.beats import BEAT_TEXT_MAX, TurnBeat
@@ -924,7 +925,7 @@ def state_deterministic(beat: TurnBeat, findings: Sequence[Finding]) -> TurnBeat
     refused effect narrated as refused (every effect dropped: nothing changes); an unresolved or
     undeclared change without its sentence and its effect; ``None`` when nothing of the beat
     would be left (the fallback line then)."""
-    refused = [f for f in findings if f.tag == STATE_CONSTRAINT and f.refusal]
+    refused = [f for f in findings if f.tag in REFUSED_TAGS and f.refusal]
     if refused:
         return replace(
             beat,

@@ -18,6 +18,8 @@ from tests import state_support as ss
 from tests.structured_turn_support import structured_story
 
 ANY_CHARACTER = {"sources": ["any_character"]}
+DIRECTOR_ONLY = {"sources": ["director"]}
+"""#188: only the narrator's world pass may change the State."""
 NARRATOR_MARKER = "You are the narrator."
 """A line only the narrator's render prompt holds."""
 
@@ -36,7 +38,7 @@ def suspicion(**kw: Any) -> StateDefinition:
         "initial_value": 0,
         "visibility": "hidden",
         "aliases": ("unease",),
-        "authorization": ANY_CHARACTER,
+        "authorization": DIRECTOR_ONLY,
     }
     found.update(kw)
     return StateDefinition.model_validate(found)
@@ -119,6 +121,7 @@ def no_value(prompt: str, *values: object) -> None:
 
 __all__ = [
     "ANY_CHARACTER",
+    "DIRECTOR_ONLY",
     "NARRATOR_MARKER",
     "effect",
     "gold",

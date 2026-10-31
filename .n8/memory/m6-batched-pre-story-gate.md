@@ -24,3 +24,6 @@ For each batch: full-run wall time, attempts, failures, how each was attributed,
 | 1 flakes (#537 #514 #517 #446 #468) | b47fe89 → 7923759 | 24.7 min (12 shards ×6) + `rest` re-run 4.1 min | 2 (the `rest` shard only) | 2 tests + the check-lexicon gate, one cause | By test name, to #446: "clock" (an M6 term) in three M2-part comments | ~5 min (comment rewording) | 1 (the agent didn't run check-lexicon) |
 | 2 M5 bugs (#567 #566 #568 #516 #563 #483 #521) | 1032e43 | 24.7 min | 1 | 0 | — | 0 | 0 |
 | 3 decided + Console (#519 #515 #456 #588 #536 #533 #535 #526 #527 #531 #534) | e7d6ce8 | 26.5 min | 1 | 0 | — (one cherry-pick conflict in test_c_03 imports, resolved before the run) | ~2 min | 0 |
+| 4 spike (#522) | 5b6df38 | 28.6 min | 1 | 0 | — | 0 | 0 |
+
+**Summary:** 4 batched full runs (about 105 min in total, plus one 4-minute shard rerun) instead of 24 per-issue runs (about 24 × 25 min ≈ 10 h at today's suite time). One failure was caught late: batch 1's check-lexicon, a comment word. It was attributed by test name and fixed in about 5 minutes. No cross-issue test pollution was seen. The per-issue subsets missed 1 failure, because an agent skipped one fast gate; the brief now lists every gate.

@@ -9583,3 +9583,12 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision:** #518's regression test stays unmarked (no `part("M6", …)`).
   **Why:** FR-PROP-9 is M4 and FR-TURN-9 is M5. An M6 marker would fail check-traceability without a new §22/§15 cell, which the owner's triage said not to add (the joined issues add no M6 IDs).
   **Issue:** #518
+- **Decision:** #185 is developed in a worktree while the #522 spike runs. Its commit lands on the milestone branch only after #522's commit and batch 4's full-suite gate, so the branch keeps the graph's order (#185←#522). #185 then gets its own per-story full suite.
+  **Why:** #522 is a time-boxed profiling spike, about 2.5 h, with no code contract #185 needs. Idling the run for it wastes hours. The edge exists so M6 builds on fixed code, and integration order preserves that.
+  **Issue:** #185, #522
+- **Decision:** #522 spike outcome. Profiling the cached multi seed found no single slow query. A two-primary turn costs about 2.9 s of engine CPU and about 1,700 SQL statements, and the 10 stories share one event loop. The one contained fix: the protected index's `_belief_terms` reads partitions only for the people the speaker can't know, via a new optional `partition(objects_=…)` filter, with identical terms. That cut CPU per turn by 38% and wall time by 24%. Commit, retrieval and verify medians in-process are unchanged.
+  - Local 15-minute P-04 multi runs (busy host, indicative only): commit within budget 0.8% → 0.8%, verify 95% → 95%, retrieval 81.7% → 71.0% (noise; the in-process median is unchanged), engine p95 11.1 s → 7.8 s.
+  - The eight remaining causes are filed as #615–#622: private-record partition reads, canon-read JIT, the object-side fact lookup without an index, retrieval's HNSW, lexical and `last_accessed_at` costs, commit re-reads, the first multi turn's one-at-a-time writes, predicate registry reloads, and consolidation scheduling inside the commit.
+  - No perf result was committed (the runs were demos). The P-04 AC still needs `weekly-multi` or a full 30-minute run on a quiet host.
+  **Why:** The owner's time box: profile, fix one contained cause, rerun, file the rest. The biggest local cost was M5's #172 code. The commit causes span modules or need migrations.
+  **Issue:** #522

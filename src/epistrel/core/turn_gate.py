@@ -505,13 +505,16 @@ async def enqueue(
     origin: str,
     queue_max: int,
     hand_over: Any = None,
+    operation_kind: OperationKind = OperationKind.TURN,
 ) -> int:
     """Queue a turn; return its position (turns ahead of it).
 
     One transaction under the story row lock: 423 ``story_busy`` ``{reason: queue_full}``
     when ``queue_max`` turns already wait; else the ``operations`` row (``queued``, the
     request's key and viewpoint) and the ``turn_queue`` row, and ``hand_over(conn, owner)``
-    hands the request's ``Idempotency-Key`` to the queue (#61) in the same transaction."""
+    hands the request's ``Idempotency-Key`` to the queue (#61) in the same transaction.
+    ``operation_kind``: the queued operation's kind (an ingest batch that starts with a
+    ``state_change`` starts with an ``inter_turn`` slot, #186)."""
     async with db.begin() as conn:
         row = await _lock_story(conn, story_id)
         depth = await _depth(conn, story_id)
@@ -532,7 +535,7 @@ async def enqueue(
             insert(operations).values(
                 operation_id=operation_id,
                 story_id=story_id,
-                kind=OperationKind.TURN.value,
+                kind=operation_kind.value,
                 principal=principal,
                 status=OperationStatus.QUEUED.value,
                 idempotency_key=idempotency_key,

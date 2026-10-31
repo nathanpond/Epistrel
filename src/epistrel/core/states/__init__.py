@@ -11,10 +11,12 @@ declaration's shape, typed values, constraints and the fold) are ``core.states.m
 
 - ``define_state(conn, op, story_id, definition)`` stores a declaration in ``op``'s commit
   transaction (a commit step), after the shape rules (``model.validate_definition``): 409
-  ``state_name_taken`` for a name the story holds, 422 for an ``entity_id`` that is not one of
-  the story's entities. An externally owned State (#204) names a registered provider whose
-  manifest owns its ``external_value_name`` with the same type (422 ``validation_error``,
-  ``reason`` ``unknown_provider``, ``unknown_value`` or ``type_mismatch``).
+  ``state_name_taken`` for a name an active State of the story holds (one a truncation
+  discarded is free again, #186; ``check_active_names`` refuses the edit that would restore
+  it over a newer one), 422 for an ``entity_id`` that is not one of the story's entities.
+  An externally owned State (#204) names a registered provider whose manifest owns its
+  ``external_value_name`` with the same type (422 ``validation_error``, ``reason``
+  ``unknown_provider``, ``unknown_value`` or ``type_mismatch``).
 - ``update_definition(conn, story_id, name, patch, *, principal)`` changes a declaration in place
   (owner decision 2026-10-30): a JSON merge patch over its members, under the story row lock, as
   a story configuration change. Each changed member records one ``config_changes`` row
@@ -63,7 +65,17 @@ from enum import StrEnum
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import ColumnElement, delete, func, insert, literal, select, tuple_, update
+from sqlalchemy import (
+    ColumnElement,
+    and_,
+    delete,
+    func,
+    insert,
+    literal,
+    select,
+    tuple_,
+    update,
+)
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core import providers
@@ -636,6 +648,49 @@ async def follow_operations(
     return changed
 
 
+async def check_active_names(
+    conn: AsyncConnection, story_id: str | None, operation_ids: Sequence[str]
+) -> None:
+    """After a flip made ``operation_ids`` active again (an untruncation, a swap): 409
+    ``state_name_taken`` when a State they declared shares its name with another active State
+    of its story (#186: a name is held by one active State; the flip's transaction rolls back).
+    The deferred ``ex_state_definitions_active_name`` constraint is the backstop."""
+    ids = sorted(set(operation_ids))
+    if not ids:
+        return
+    d = state_definitions.c
+    other = state_definitions.alias("other")
+    where: list[ColumnElement[bool]] = [
+        d.operation_id.in_(ids),
+        active_only(state_definitions),
+    ]
+    if story_id is not None:
+        where.append(d.story_id == story_id)
+    clash = (
+        await conn.execute(
+            select(d.story_id, d.name)
+            .join(
+                other,
+                and_(
+                    other.c.story_id == d.story_id,
+                    other.c.name == d.name,
+                    other.c.id != d.id,
+                    active_only(other),
+                ),
+            )
+            .where(*where)
+            .order_by(d.name)
+            .limit(1)
+        )
+    ).one_or_none()
+    if clash is not None:
+        raise StateNameTaken(
+            f"the story already has an active State {clash.name!r}: the edit would restore "
+            "another State of that name",
+            {"story_id": str(clash.story_id), "state": clash.name},
+        )
+
+
 # -- defining -------------------------------------------------------------------------------
 
 
@@ -718,7 +773,13 @@ async def define_state(
         await require_module(conn, story_id)
     d = state_definitions.c
     taken = await conn.scalar(
-        select(d.id).where(d.story_id == story_id, d.name == checked.name).limit(1)
+        select(d.id)
+        .where(
+            d.story_id == story_id,
+            d.name == checked.name,
+            active_only(state_definitions),
+        )
+        .limit(1)
     )
     if taken is not None:
         raise StateNameTaken(
@@ -1069,6 +1130,7 @@ __all__ = [
     "View",
     "Violation",
     "apply_change",
+    "check_active_names",
     "current_values",
     "define_state",
     "definition",

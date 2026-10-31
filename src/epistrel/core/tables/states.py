@@ -1,21 +1,22 @@
 """``state_definitions``, ``state_changes`` and ``state_values``: story States (FR-STATE-1,2,4,6;
 docs/02 §7.1; #185, migration 0084).
 
-- **``state_definitions``** — one row per State a story declares: its ``name`` (unique in the
-  story), ``type`` (``state_type``), ``scope`` (``story`` or ``character``), ``constraints``
-  (``{min, max, non_negative, allowed_values, tolerance}``), ``initial_value`` (the fold's base;
-  ``NULL``: undefined until set), the ``aliases`` and ``unit`` that let prose name it, the
-  ``entity_id`` a possession-style State tracks, ``visibility``, ``owner`` (``story`` or
-  ``external``, with its ``provider_id`` and the provider's ``external_value_name``, #204),
-  ``silent``, the effect rules (``rules``,
-  ``authorization``, ``transfer``; #188), ``reservation_expiry_minutes`` (#216) and
-  ``created_by``. The built-in ``world_clock`` (#193, migration 0085; type ``clock``) also
-  fills the clock's settings, one column each (``mode``, ``anchor``, ``pacing_table``,
-  ``max_unprompted_skip_minutes``, ``stop_at_due_events``, ``grace_minutes``,
-  ``time_statement_tolerance_minutes``, ``elapsed_tolerance_factor``, ``time_awareness``,
-  ``bands``, ``calendar``); they are ``NULL`` for every other State (CHECK ``clock_settings``).
-  It is a derived record (``core.membership``): ``operation_id`` is the operation
-  that defined it, and its membership follows that operation only. ``core.states``'s
+- **``state_definitions``** — one row per State a story declares: its ``name`` (unique among the
+  story's active States: ``ex_state_definitions_active_name``, deferred to the commit, #186,
+  migration 0088; a declaration a truncation discarded frees its name), ``type`` (``state_type``),
+  ``scope`` (``story`` or ``character``), ``constraints`` (``{min, max, non_negative,
+  allowed_values, tolerance}``), ``initial_value`` (the fold's base; ``NULL``: undefined until
+  set), the ``aliases`` and ``unit`` that let prose name it, the ``entity_id`` a possession-style
+  State tracks, ``visibility``, ``owner`` (``story`` or ``external``, with its ``provider_id``
+  and the provider's ``external_value_name``, #204),
+  ``silent``, the effect rules (``rules``, ``authorization``, ``transfer``; #188),
+  ``reservation_expiry_minutes`` (#216) and ``created_by``. The built-in ``world_clock`` (#193,
+  migration 0085; type ``clock``) also fills the clock's settings, one column each (``mode``,
+  ``anchor``, ``pacing_table``, ``max_unprompted_skip_minutes``, ``stop_at_due_events``,
+  ``grace_minutes``, ``time_statement_tolerance_minutes``, ``elapsed_tolerance_factor``,
+  ``time_awareness``, ``bands``, ``calendar``); they are ``NULL`` for every other State (CHECK
+  ``clock_settings``). It is a derived record (``core.membership``): ``operation_id`` is the
+  operation that defined it, and its membership follows that operation only. ``core.states``'s
   ``update_definition`` changes the row in place; its history is the ``config_changes`` log.
 - **``state_changes``** — one row per change: the State (``state_id``, no foreign key: integrity
   is ``core.states.apply_change``'s), the character it is scoped to (``scope_key``), its
@@ -49,10 +50,9 @@ from sqlalchemy import (
     SmallInteger,
     Table,
     Text,
-    UniqueConstraint,
     text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, ExcludeConstraint
 
 from epistrel.core.enums import (
     ClockMode,
@@ -69,6 +69,7 @@ from epistrel.core.enums import (
 )
 from epistrel.core.membership import (
     DerivedTable,
+    active_only_predicate,
     derived_columns,
     derived_indexes,
     position_group,
@@ -84,6 +85,11 @@ MUTABLE_STATE_CHANGE_COLUMNS: tuple[str, ...] = ("membership", "membership_tx")
 
 ERASURE_STATE_CHANGE_COLUMNS: tuple[str, ...] = ("reason", "value", "old_value", "new_value")
 """The columns an erasure may also rewrite (redaction of a subject's name)."""
+
+ACTIVE_NAME_CONSTRAINT = "ex_state_definitions_active_name"
+"""A name is held by at most one active State of a story (#186): checked at the commit, so an
+untruncation or a swap that would reactivate a taken name is refused by ``core.states`` first
+(409 ``state_name_taken``) and by this constraint as a backstop."""
 
 CLOCK_SETTINGS_CHECK = (
     "(type = 'clock') = (mode IS NOT NULL) AND (type = 'clock' OR (anchor IS NULL "
@@ -129,7 +135,15 @@ state_definitions = Table(
     Column("bands", JSONB(none_as_null=True), nullable=True),
     Column("calendar", Text, nullable=True),
     *derived_columns(),
-    UniqueConstraint("story_id", "name"),
+    ExcludeConstraint(
+        ("story_id", "="),
+        ("name", "="),
+        name=ACTIVE_NAME_CONSTRAINT,
+        using="btree",
+        where=text(active_only_predicate()),
+        deferrable=True,
+        initially="DEFERRED",
+    ),
     CheckConstraint("length(name) BETWEEN 1 AND 80", name="name_length"),
     CheckConstraint("owner <> 'external' OR provider_id IS NOT NULL", name="external_provider"),
     CheckConstraint(
@@ -224,6 +238,7 @@ state_values = Table(
 )
 
 __all__ = [
+    "ACTIVE_NAME_CONSTRAINT",
     "CLOCK_SETTINGS_CHECK",
     "ERASURE_STATE_CHANGE_COLUMNS",
     "MUTABLE_STATE_CHANGE_COLUMNS",

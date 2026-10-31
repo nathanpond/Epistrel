@@ -28,9 +28,11 @@ def open_inter_turn(
     source: Provenance,
     principal: str | None,
     idempotency_key: str | None = None,
+    operation_id: str | None = None,
 ) -> Operation:
     """An inter-turn slot operation of ``story_id`` (see the module docstring); ``source`` is
-    who originated its records."""
+    who originated its records. ``operation_id``: the id it takes (#186's sets take the story's
+    turn slot under it first)."""
     return Operation(
         db,
         story_id=story_id,
@@ -39,6 +41,7 @@ def open_inter_turn(
         provenance=Provenance(source),
         bumps_revision=True,
         idempotency_key=idempotency_key,
+        operation_id=operation_id,
         slot=True,
     )
 

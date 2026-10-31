@@ -368,6 +368,11 @@ async def _story_character(client: httpx.AsyncClient, kind: Kind, entity: Entity
     return {"character_id": entity.ids["ada"]}
 
 
+async def _state_name(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """A State name for the State routes (#186), whose story runs States off until #203."""
+    return {"name": "gold"}
+
+
 async def _believing(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
     """The query naming the story's non-player character, Ada, whose belief projection the
     read answers (#159): a ``query.``-prefixed value is a query parameter, not a path value."""
@@ -652,6 +657,15 @@ CALLS: dict[tuple[str, str], Call] = {
     ("GET", f"{S}/clock"): Call(200),
     ("PATCH", f"{S}/clock"): Call(200, {"mode": "manual"}),
     ("POST", f"{S}/clock/advance"): Call(409, {"minutes": 30, "reason": "they wait"}),
+    # -- stories: its States (#186), which the story's configuration refuses (409 module_off)
+    # until #203 delivers the states module
+    ("GET", f"{S}/states"): Call(409),
+    ("GET", f"{S}/states/{{name}}"): Call(409, prepare=_state_name),
+    ("PUT", f"{S}/states/{{name}}"): Call(
+        409, {"delta": 5, "reason": "found a purse"}, prepare=_state_name
+    ),
+    ("POST", f"{S}/states"): Call(409, {"definition": {"name": "gold", "type": "number"}}),
+    ("PATCH", f"{S}/states/{{name}}/definition"): Call(409, {"unit": "coins"}, prepare=_state_name),
     # -- stories: a character's participation role (#176)
     ("PATCH", f"{S}/characters/{{character_id}}/participation"): Call(
         200, {"role": "primary", "fixed": True}, prepare=_story_character

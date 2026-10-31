@@ -567,6 +567,26 @@ class ClockAdvanced(EventPayload):
     to_offset: int | None = None
 
 
+@register("state_defined", category=EventCategory.CONTROL)
+class StateDefined(EventPayload):
+    """A State declared between turns (FR-STATE-3,9; #186's ``POST /stories/{id}/states``), in
+    an inter-turn slot, and by whom (``source``). The declaration itself is the slot's
+    ``state_definitions`` row; this event makes the slot's operation one a fork copies."""
+
+    source: str
+
+
+@register("state_set", category=EventCategory.CONTROL)
+class StateSet(EventPayload):
+    """A State set between turns (FR-STATE-9; #186's ``PUT /stories/{id}/states/{name}`` and
+    ingest's ``state_change``), in an inter-turn slot: by whom (``source``) and how (``kind``:
+    ``set`` or ``delta``). The change itself is the slot's ``state_changes`` row (no value or
+    reason here); this event makes the slot's operation one a fork copies."""
+
+    source: str
+    kind: str
+
+
 @register("belief_authored", category=EventCategory.CONTROL)
 class BeliefAuthored(EventPayload):
     """An author directed a character's belief (FR-EPI-7's author direction; #160's

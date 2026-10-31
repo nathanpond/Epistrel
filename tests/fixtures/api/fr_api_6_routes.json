@@ -1254,6 +1254,31 @@
     },
     {
       "method": "GET",
+      "path": "/stories/{story_id}/states",
+      "requirement": "FR-STATE-9"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/states/{name}",
+      "requirement": "FR-STATE-9"
+    },
+    {
+      "method": "PUT",
+      "path": "/stories/{story_id}/states/{name}",
+      "requirement": "FR-STATE-9"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/states",
+      "requirement": "FR-STATE-3"
+    },
+    {
+      "method": "PATCH",
+      "path": "/stories/{story_id}/states/{name}/definition",
+      "requirement": "FR-STATE-3"
+    },
+    {
+      "method": "GET",
       "path": "/admin/evals/extraction-shadow",
       "requirement": "FR-OBS-4"
     },

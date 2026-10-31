@@ -292,6 +292,9 @@ ERROR_STATUS: dict[str, int] = {
     "seed_memory_invalid": 422,
     "span_not_found": 422,
     "state_constraint_violation": 422,
+    "state_readonly_external": 422,
+    "state_unpermitted": 422,
+    "state_derived": 422,
     "clock_backward": 422,
     "clock_unanchored": 422,
     "pin_limit_exceeded": 422,
@@ -447,6 +450,12 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "timeline_changed",
         "unsupported_event_kind",
         "erased_subject_referenced",
+        # an ingested state_change (#186): the refusals a State set has
+        "module_off",
+        "state_constraint_violation",
+        "state_readonly_external",
+        "state_unpermitted",
+        "state_derived",
     ),
     # The world clock (#193): a consumer's advance between turns, and its settings.
     "advance_clock": (
@@ -458,6 +467,34 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "erased_subject_referenced",
     ),
     "update_clock": ("story_archived",),
+    # The State API (#186): reads for a viewpoint, and sets and declarations at inter-turn slots
+    # (as a turn, they wait for or are refused by one in flight), and definition updates.
+    "get_states": ("module_off", "viewpoint_unresolved"),
+    "get_state": ("module_off", "viewpoint_unresolved"),
+    "set_state": (
+        "story_archived",
+        "story_paused",
+        "story_busy",
+        "module_off",
+        "state_constraint_violation",
+        "state_readonly_external",
+        "state_unpermitted",
+        "state_derived",
+        "erased_subject_referenced",
+    ),
+    "define_state": (
+        "story_archived",
+        "story_paused",
+        "story_busy",
+        "module_off",
+        "state_name_taken",
+        "erased_subject_referenced",
+    ),
+    "update_state_definition": (
+        "story_archived",
+        "module_off",
+        "state_constraint_violation",
+    ),
     # A predicate proposal's decision (#131): an archived story's registry is read-only.
     "approve_predicate": ("story_archived",),
     "reject_predicate": ("story_archived",),

@@ -224,3 +224,18 @@ async def change_rows(engine: AsyncEngine, story_id: str) -> list[Any]:
 def at(turn: int, slot_k: int = 0) -> Position:
     """Checkpoint ``turn`` (``N``), or its slot ``N⁺k``."""
     return Position.end_of(turn, slot_k)
+
+
+async def declared(epistrel: Any, story_id: str, **definition: Any) -> dict[str, Any]:
+    """Declare a State through the library's State API (#186; ``epistrel`` is an ``Engine``),
+    as the consumer: an inter-turn slot operation. Returns the stored definition."""
+    from epistrel.core.context import RequestContext
+    from epistrel.core.states.api import StateDefineRequest
+
+    done = await epistrel.define_state(
+        RequestContext(principal="p-author"),
+        story_id,
+        StateDefineRequest.model_validate({"definition": definition}),
+    )
+    found: dict[str, Any] = done.definition
+    return found

@@ -1,7 +1,8 @@
 """C-12: the output viewpoint contract (FR-RESP-12, FR-AUTH-2) [M2] (#59); the structured
 pipeline's part (FR-RESP-8,12) [M4] (#152); the audience filter's output clauses and the
 ``player_view`` setting (FR-RESP-12,13) [M5] (#177), and the M5 read rules on the inspection reads
-and history (``test_c_12__m5_reads``, #178).
+and history (``test_c_12__m5_reads``, #178); the State reads (FR-RESP-12) [M6]
+(``test_c_12__m6_states``, #186).
 
 Every respond and history read is produced for one output viewpoint, resolved the same way
 over REST and in the library: ``test_c_12`` and ``test_c_12__structured`` run every check
@@ -16,12 +17,15 @@ from typing import Any
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.core.context import RequestContext
 from epistrel.core.enums import OperationKind
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.events import Operation
 from epistrel.core.settings_schema import StorySettings
+from epistrel.core.states.api import StateSetRequest
 from epistrel.core.viewpoint import PRIVATE_CHANNELS, validate_default_viewpoint
 from tests import perception_support as ps
+from tests import state_support as st
 from tests.conformance.conftest import Surface
 from tests.respond_support import FIRST, PLAYER, SECOND, body
 from tests.story_support import WRITE, character, count, story_body
@@ -474,3 +478,88 @@ async def test_c_12__m5_reads(
     assert WHISPER not in str(bobby)
     wren = (await surface.history(story, viewpoint=_vp(ids["Wren"]))).json
     assert ("say", WHISPER) in _channels(wren, "items")
+
+
+HIDDEN_STATE = "trust"
+VISIBLE_STATE = "gold"
+
+
+async def _states_story(surface: Surface, engine: AsyncEngine) -> tuple[str, dict[str, str]]:
+    """A story running States with a player-visible ``gold`` and a ``hidden`` per-character
+    ``trust`` the first character holds 3 of (#186), declared and set through the library."""
+    story, ids = await _story(surface)
+    await st.set_level(engine, story, "prompt_only")
+    await st.declared(surface.engine, story, name=VISIBLE_STATE, type="number", initial_value=10)
+    await st.declared(
+        surface.engine,
+        story,
+        name=HIDDEN_STATE,
+        type="number",
+        scope="character",
+        visibility="hidden",
+        initial_value=0,
+    )
+    await surface.engine.set_state(
+        RequestContext(principal="p-author"),
+        story,
+        HIDDEN_STATE,
+        StateSetRequest(value=3, scope_key=ids[FIRST], reason="she is warming to him"),
+    )
+    return story, ids
+
+
+def _names(read: dict[str, Any]) -> list[str]:
+    return [s["name"] for s in read["states"]]
+
+
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-RESP-12")
+async def test_c_12__m6_states(
+    surface: Surface, engine: AsyncEngine, states_delivered: None
+) -> None:
+    """State reads (#186): a list read for a character viewpoint returns only player-visible
+    States (the hidden one is left out entirely, the character's own value of it too), and a
+    named read of the hidden State that does not name ``omniscient`` is rejected with 404,
+    exactly as an unknown name is. The viewpoint falls back as history's does (the actor, then
+    the story's default; 422 when none resolves), and the story's ``player_view = story`` never
+    widens a States read. Run over REST and the library.
+
+    Complement: ``omniscient`` named gets both States, the hidden one's values included."""
+    story, ids = await _states_story(surface, engine)
+    player, first = ids[PLAYER], ids[FIRST]
+    for viewpoint in (_vp(player), _vp(first)):
+        read = (await surface.states(story, viewpoint=viewpoint)).json
+        assert read["output_viewpoint"] == viewpoint
+        assert _names(read) == [VISIBLE_STATE]
+        assert HIDDEN_STATE not in json.dumps(read)
+        assert read["clock"]["offset"] == 0
+        hidden = await surface.state(story, HIDDEN_STATE, viewpoint=viewpoint)
+        unknown = await surface.state(story, "unknown", viewpoint=viewpoint)
+        assert (hidden.status, hidden.code) == (unknown.status, unknown.code) == (404, "not_found")
+        assert {k: v for k, v in (hidden.details or {}).items() if k != "state"} == {
+            k: v for k, v in (unknown.details or {}).items() if k != "state"
+        }
+    defaulted = (await surface.states(story)).json
+    assert (defaulted["output_viewpoint"], _names(defaulted)) == (_vp(player), [VISIBLE_STATE])
+    acting = (await surface.states(story, actor_character_id=first)).json
+    assert (acting["output_viewpoint"], _names(acting)) == (_vp(first), [VISIBLE_STATE])
+    assert (await surface.state(story, HIDDEN_STATE, actor_character_id=first)).status == 404
+
+    patched = await surface.client.patch(
+        f"/stories/{story}/settings", json={"player_view": "story"}, headers=WRITE
+    )
+    assert patched.status_code == 200, patched.text
+    widened = (await surface.states(story, viewpoint=_vp(first))).json
+    assert _names(widened) == [VISIBLE_STATE]
+    assert (await surface.state(story, HIDDEN_STATE, viewpoint=_vp(first))).status == 404
+
+    cast = [character(n, 30) for n in (PLAYER, FIRST)]
+    bare = (await surface.create_story({"name": "No default", "characters": cast})).json
+    unresolved = await surface.states(bare["story_id"])
+    assert (unresolved.status, unresolved.code) == (422, "viewpoint_unresolved")
+
+    seen = (await surface.states(story, viewpoint="omniscient")).json
+    assert _names(seen) == [VISIBLE_STATE, HIDDEN_STATE]
+    trust = (await surface.state(story, HIDDEN_STATE, viewpoint="omniscient")).json["state"]
+    assert trust["values"] == {player: 0, first: 3, ids[SECOND]: 0}
+    assert trust["visibility"] == "hidden"

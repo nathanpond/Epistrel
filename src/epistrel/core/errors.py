@@ -1135,8 +1135,10 @@ class StateNotFound(EpistrelError):
 
 
 class StateNameTaken(EpistrelError):
-    """A State declaration reuses a name the story already holds (FR-STATE-1; #185: names are
-    unique per story). ``details``: ``story_id`` and ``state``. Nothing is written."""
+    """A State declaration reuses a name a State on the story's active timeline holds (FR-STATE-1;
+    #185; #186: a declaration a truncation discarded frees its name), or an untruncation or a
+    swap would make two active States share one. ``details``: ``story_id`` and ``state``.
+    Nothing is written."""
 
     code = "state_name_taken"
     http_status = 409
@@ -1149,6 +1151,33 @@ class StateConstraintViolation(EpistrelError):
     written."""
 
     code = "state_constraint_violation"
+    http_status = 422
+
+
+class StateReadonlyExternal(EpistrelError):
+    """A set of an externally owned State through the State API (FR-STATE-2,9, FR-EXT-8; #186):
+    its value is the provider's, written through the external path (#209, #210). ``details``:
+    ``story_id`` and ``state``. Nothing is written."""
+
+    code = "state_readonly_external"
+    http_status = 422
+
+
+class StateUnpermitted(EpistrelError):
+    """A State write from a source the State's ``authorization.sources`` does not admit
+    (FR-STATE-9; #186, owner decision 2026-10-30; #188 owns the full rule): an API set or an
+    ingested ``state_change`` of a State whose sources omit ``consumer``. ``details``:
+    ``story_id``, ``state``, ``reason`` (``source``) and ``source``. Nothing is written."""
+
+    code = "state_unpermitted"
+    http_status = 422
+
+
+class StateDerived(EpistrelError):
+    """A direct set of a derived State (FR-STATE-7; #186, #192): its value is recomputed from
+    other States. ``details``: ``story_id`` and ``state``. Nothing is written."""
+
+    code = "state_derived"
     http_status = 422
 
 

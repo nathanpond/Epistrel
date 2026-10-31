@@ -1,16 +1,22 @@
 """Ingest: record consumer events into authoritative history without generating (FR-RESP-10).
 
 A body carries up to ``MAX_EVENTS`` events, each with a ``client_event_id`` unique within the
-story. Two kinds exist in M2:
+story. Three kinds are recorded:
 
 - ``player_turn``: an actor's ``say``/``do``, recorded as a ``player_input`` event at beat 1;
 - ``narration``: consumer-authored ``text`` with no actor, recorded as a ``message_rendered``
-  event at beat 1 with no character, ``finish_reason`` ``consumer`` and no model or prompt hash.
+  event at beat 1 with no character, ``finish_reason`` ``consumer`` and no model or prompt hash;
+- ``state_change`` (#186): ``{state, scope_key?, value | delta, reason}``, a consumer set of a
+  story State (FR-STATE-9), with the refusals ``PUT /stories/{id}/states/{name}`` has
+  (``core.states.api``; ``state_unpermitted`` included).
 
-Both are narrative turns: each event is its own ``turn`` operation (``origin = ingested``,
-provenance ``consumer``, no viewpoint) at the next turn index, and each bumps the timeline
-revision (FR-CONC-1). The batch is all or nothing (``OperationBatch``). ``outcome`` and
-``state_change`` arrive in M6 and are refused 422 ``unsupported_event_kind``.
+The first two are narrative turns: each event is its own ``turn`` operation (``origin =
+ingested``, provenance ``consumer``, no viewpoint) at the next turn index. A ``state_change`` is
+an ``inter_turn`` slot operation (source ``consumer``) in the next slot after the last turn
+written before it in the batch, or after the story's last completed turn when none precedes it:
+batch order is position order. Each bumps the timeline revision (FR-CONC-1), and none advances
+the world clock (#193). The batch is all or nothing (``OperationBatch``). ``outcome`` arrives
+with #217 and is refused 422 ``unsupported_event_kind``.
 
 **Deduplication.** Every text is NFC-normalised and trimmed, then the event's payload hash is
 the SHA-256 of its canonical JSON without ``client_event_id`` (``None`` fields left out, keys
@@ -42,13 +48,23 @@ import time
 import unicodedata
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, Self
+from typing import Any, Literal, Protocol, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
 from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import pause, turn_gate
+from epistrel.core import pause, states, turn_gate
 from epistrel.core.concurrency import (
     Abandon,
     Commit,
@@ -73,11 +89,14 @@ from epistrel.core.errors import (
 )
 from epistrel.core.events import Operation, OperationBatch, UnregisteredEventType
 from epistrel.core.events.operation import Withdrawn
-from epistrel.core.events.types import MessageRendered, PlayerInput
+from epistrel.core.events.types import MessageRendered, PlayerInput, StateSet
 from epistrel.core.ids import new_ulid
+from epistrel.core.states import api as state_api
+from epistrel.core.states.model import REASON_MAX, Violation
 from epistrel.core.tables import client_events
 from epistrel.core.turn_gate import Concurrency
 from epistrel.core.turns import INPUT_BEAT, StoryCast, joined_input, read_story_cast
+from epistrel.core.world_clock.slots import slot_position
 
 MAX_EVENTS = 50
 MAX_TEXT_CHARS = 8_000
@@ -88,9 +107,12 @@ MAX_ACTOR_ID_CHARS = 64
 
 PLAYER_TURN = "player_turn"
 NARRATION = "narration"
-SUPPORTED_KINDS = (PLAYER_TURN, NARRATION)
-LATER_KINDS = {"outcome": "M6", "state_change": "M6"}
-"""Kinds docs/03 plans that M2 does not record yet, and the milestone that brings them."""
+STATE_CHANGE = "state_change"
+SUPPORTED_KINDS = (PLAYER_TURN, NARRATION, STATE_CHANGE)
+LATER_KINDS = {"outcome": "M6"}
+"""Kinds docs/03 plans that are not recorded yet, and the milestone that brings them."""
+STATE_FIELDS = ("state", "scope_key", "value", "delta", "reason")
+"""The fields only a ``state_change`` carries."""
 
 CONSUMER_FINISH_REASON = "consumer"
 INGESTED: Literal["ingested"] = "ingested"
@@ -108,7 +130,7 @@ def normalised(value: str | None) -> str | None:
 
 
 class IngestEvent(BaseModel):
-    """One event to record. ``kind`` is free text here so that a kind M2 does not record is
+    """One event to record. ``kind`` is free text here so that a kind not recorded yet is
     refused with ``unsupported_event_kind`` rather than a generic validation error."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -123,14 +145,31 @@ class IngestEvent(BaseModel):
     say: str | None = Field(default=None, max_length=MAX_TEXT_CHARS)
     do: str | None = Field(default=None, max_length=MAX_TEXT_CHARS)
     text: str | None = Field(default=None, max_length=MAX_TEXT_CHARS)
+    state: str | None = Field(default=None, min_length=1, max_length=80)
+    scope_key: str | None = Field(default=None, min_length=1, max_length=MAX_ACTOR_ID_CHARS)
+    value: StrictBool | StrictInt | StrictFloat | StrictStr | None = None
+    delta: StrictInt | StrictFloat | None = None
+    reason: str | None = Field(default=None, max_length=REASON_MAX)
 
-    @field_validator("say", "do", "text")
+    @field_validator("say", "do", "text", "reason")
     @classmethod
     def _normalise(cls, value: str | None) -> str | None:
         return normalised(value)
 
     @model_validator(mode="after")
     def _fields_fit_the_kind(self) -> Self:
+        if self.kind == STATE_CHANGE:
+            if self.state is None or self.reason is None:
+                raise ValueError("a state_change names its state and gives a reason")
+            if (self.value is None) == (self.delta is None):
+                raise ValueError("a state_change gives a value or a delta, not both")
+            if self.actor_character_id is not None or any(
+                v is not None for v in (self.say, self.do, self.text)
+            ):
+                raise ValueError("a state_change carries no actor, say, do or text")
+            return self
+        if any(getattr(self, name) is not None for name in STATE_FIELDS):
+            raise ValueError(f"only a {STATE_CHANGE} carries {', '.join(STATE_FIELDS)}")
         if self.kind == PLAYER_TURN:
             if self.actor_character_id is None:
                 raise ValueError("a player_turn needs actor_character_id")
@@ -151,6 +190,11 @@ class IngestEvent(BaseModel):
     def payload_hash(self) -> str:
         """SHA-256 of the canonical JSON of the event without its ``client_event_id``."""
         return hash_member(self.model_dump(exclude_none=True, exclude={"client_event_id"}))
+
+    @property
+    def is_turn(self) -> bool:
+        """A narrative turn (``player_turn``, ``narration``), not an inter-turn slot."""
+        return self.kind != STATE_CHANGE
 
     @property
     def gated_text(self) -> str:
@@ -271,17 +315,16 @@ class _DuplicateArrived(Withdrawn):
 
 
 def check_kinds(request: IngestRequest) -> None:
-    """422 ``unsupported_event_kind`` for a kind M2 does not record (naming its milestone)."""
+    """422 ``unsupported_event_kind`` for a kind not recorded yet (naming its milestone)."""
+    recorded = ", ".join(SUPPORTED_KINDS)
     for index, event in enumerate(request.events):
         if event.kind in SUPPORTED_KINDS:
             continue
         later = LATER_KINDS.get(event.kind)
         message = (
-            f"ingesting {event.kind!r} events arrives in {later}; M2 records "
-            f"{' and '.join(SUPPORTED_KINDS)}"
+            f"ingesting {event.kind!r} events arrives in {later}; ingest records {recorded}"
             if later
-            else f"{event.kind!r} is not an ingestable kind; M2 records "
-            f"{' and '.join(SUPPORTED_KINDS)}"
+            else f"{event.kind!r} is not an ingestable kind; ingest records {recorded}"
         )
         raise UnregisteredEventType(
             message,
@@ -364,6 +407,12 @@ async def _prepare(
         )
     await pause.refuse(db, story_id, story.status)
     await check_expected_revision(db, story_id, expected_revision)
+    changes = [event for _, event in new if not event.is_turn]
+    if changes:
+        async with db.connect() as conn:
+            for event in changes:
+                assert event.state is not None  # noqa: S101 - the model requires it
+                await state_api.check_settable(conn, story_id, event.state)
     return prepared
 
 
@@ -371,6 +420,8 @@ def gate_groups(new: Sequence[tuple[int, IngestEvent]]) -> list[GateGroup]:
     """The new events' texts grouped by actor (first appearance first), each text its own."""
     groups: dict[str | None, list[tuple[str, str]]] = {}
     for index, event in new:
+        if not event.is_turn:
+            continue  # a State set is no player input (``PUT /states`` is not gated either)
         groups.setdefault(event.actor_character_id, []).append(
             (LOCATOR.format(index=index), event.gated_text)
         )
@@ -381,7 +432,11 @@ def gate_groups(new: Sequence[tuple[int, IngestEvent]]) -> list[GateGroup]:
 
 
 def stage_event(op: Operation, event: IngestEvent) -> None:
-    """Stage one ingested event on its own turn operation, at beat 1."""
+    """Stage one ingested event on its own operation: a turn's at beat 1; a ``state_change``'s
+    ``state_set`` event, and the change itself as a commit step at the slot's position."""
+    if event.kind == STATE_CHANGE:
+        _stage_state_change(op, event)
+        return
     if event.kind == PLAYER_TURN:
         op.append(
             "player_input",
@@ -407,6 +462,90 @@ def stage_event(op: Operation, event: IngestEvent) -> None:
     )
 
 
+def _stage_state_change(op: Operation, event: IngestEvent) -> None:
+    assert event.state is not None  # noqa: S101 - the model requires it
+    assert event.reason is not None  # noqa: S101 - the model requires it
+    name = event.state
+    change = state_api.consumer_change(
+        name,
+        value=event.value,
+        delta=event.delta,
+        scope_key=event.scope_key,
+        reason=event.reason,
+    )
+    op.append(
+        "state_set",
+        StateSet(source=state_api.CONSUMER, kind=change.kind.value),
+        provenance=Provenance.CONSUMER,
+    )
+
+    async def write(conn: AsyncConnection) -> None:
+        story_id = op.story_id
+        assert story_id is not None  # noqa: S101 - an ingest's operations are its story's
+        await state_api.check_settable(conn, story_id, name)
+        applied = await states.apply_change(
+            conn, op, state_api.consumer_change_at(change, slot_position(op))
+        )
+        if isinstance(applied, Violation):
+            raise state_api.refused(name, applied)
+
+    op.add_commit_step(write)
+
+
+def _operation(
+    db: AsyncEngine,
+    story_id: str,
+    event: IngestEvent,
+    *,
+    principal: str,
+    idempotency_key: str | None,
+    operation_id: str | None,
+    queued: bool,
+) -> Operation:
+    """The operation one new event is recorded by: a ``turn`` for a narrative event, an
+    ``inter_turn`` slot for a ``state_change`` (positioned at commit after the turn written
+    before it in the batch, the batch's operations being written in order)."""
+    if event.is_turn:
+        return Operation(
+            db,
+            story_id=story_id,
+            kind=OperationKind.TURN,
+            principal=principal,
+            provenance=Provenance.CONSUMER,
+            idempotency_key=idempotency_key,
+            origin=INGESTED,
+            operation_id=operation_id,
+            queued=queued,
+        )
+    if queued:
+        # A queued batch's first operation is the queued row the drainer starts (a turn).
+        return Operation(
+            db,
+            story_id=story_id,
+            kind=OperationKind.INTER_TURN,
+            principal=principal,
+            provenance=Provenance.CONSUMER,
+            bumps_revision=True,
+            idempotency_key=idempotency_key,
+            origin=INGESTED,
+            operation_id=operation_id,
+            queued=True,
+            slot=True,
+        )
+    return Operation(
+        db,
+        story_id=story_id,
+        kind=OperationKind.INTER_TURN,
+        principal=principal,
+        provenance=Provenance.CONSUMER,
+        bumps_revision=True,
+        idempotency_key=idempotency_key,
+        origin=INGESTED,
+        operation_id=operation_id,
+        slot=True,
+    )
+
+
 def _timeline_only(state: RevalidationState) -> Decision:
     """Ingest's commit decision: abandon after a control action, otherwise commit (an ingest
     generated nothing, so a moved revision or a touched read set changes nothing)."""
@@ -429,18 +568,16 @@ async def _record(
     operation holds the story's turn slot (``first_operation_id``; a queued batch's first
     operation is its ``queued`` row) and answers for the batch (idempotency, lease, 202)."""
     ops = [
-        Operation(
+        _operation(
             db,
-            story_id=story_id,
-            kind=OperationKind.TURN,
+            story_id,
+            event,
             principal=principal,
-            provenance=Provenance.CONSUMER,
             idempotency_key=idempotency_key if position == 0 else None,
-            origin=INGESTED,
             operation_id=first_operation_id if position == 0 else None,
             queued=queued and position == 0,
         )
-        for position in range(len(new))
+        for position, (_, event) in enumerate(new)
     ]
     ops[0].holds_turn_slot = True
     batch = OperationBatch(db, story_id, ops)
@@ -500,9 +637,18 @@ async def _record(
     return results, batch.last.timeline_revision
 
 
-QueueBatch = Callable[[str, dict[str, Any], Concurrency], Awaitable["IngestResult"]]
-"""``queue_batch(operation_id, request, concurrency)``: queue the batch as one turn (#63) and
-wait for its result (or raise ``TurnAccepted``); the Engine provides it."""
+class QueueBatch(Protocol):
+    """``queue_batch(operation_id, request, concurrency, operation_kind)``: queue the batch as
+    one turn (#63), its first operation of ``operation_kind``, and wait for its result (or raise
+    ``TurnAccepted``); the Engine provides it."""
+
+    def __call__(
+        self,
+        operation_id: str,
+        queued: dict[str, Any],
+        concurrency: Concurrency,
+        operation_kind: OperationKind = ...,
+    ) -> Awaitable[IngestResult]: ...
 
 
 async def ingest(
@@ -536,8 +682,12 @@ async def ingest(
         held = await turn_gate.acquire(db, story_id, first, lease_s=concurrency.lease_s)
         if held is not None:
             if concurrency.mode == "queue" and queue_batch is not None:
+                first_event = prepared.new[0][1]
                 return await queue_batch(
-                    first, {"body": request.model_dump(mode="json")}, concurrency
+                    first,
+                    {"body": request.model_dump(mode="json")},
+                    concurrency,
+                    OperationKind.TURN if first_event.is_turn else OperationKind.INTER_TURN,
                 )
             starting = held.operation_id is not None and held.origin in (INGESTED, None)
             if starting and time.monotonic() < deadline:
@@ -621,6 +771,7 @@ __all__ = [
     "MAX_EVENTS",
     "NARRATION",
     "PLAYER_TURN",
+    "STATE_CHANGE",
     "SUPPORTED_KINDS",
     "EventResult",
     "GateGroup",

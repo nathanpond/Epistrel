@@ -45,9 +45,10 @@ async def follow_operations(
 ) -> None:
     """``core.membership``'s follower: the State values the flipped operations touched are
     re-derived in the flip's transaction (``core.states.follow_operations``)."""
-    del to
     from epistrel.core import states  # here: core.states writes through Operation
 
+    if Membership(to) is Membership.ACTIVE:
+        await states.check_active_names(conn, story_id, operation_ids)
     await states.follow_operations(conn, story_id, operation_ids)
 
 

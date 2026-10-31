@@ -54,7 +54,8 @@ class Outcome:
 
 
 class Surface:
-    """``create_story``, ``respond``, ``history`` and ``get_story`` on one surface."""
+    """``create_story``, ``respond``, ``history``, the inspection and State reads and
+    ``get_story`` on one surface."""
 
     def __init__(self, name: str, client: httpx.AsyncClient, engine: Engine) -> None:
         self.name = name
@@ -157,6 +158,44 @@ class Surface:
             keywords = {"viewpoint": None, **params}
             found = await method(RequestContext(principal=principal), story_id, **keywords)
             return _dump(bodies[kind].of(found))
+
+        return await _library(call, 200)
+
+    async def states(
+        self, story_id: str, *, principal: str | None = None, **params: Any
+    ) -> Outcome:
+        """``GET /stories/{id}/states`` or ``Engine.get_states`` (#186): ``params`` are the
+        query parameters (``viewpoint``, ``actor_character_id``) or the library's keywords."""
+        if self.name == "rest":
+            query = {k: _query(v) for k, v in params.items() if v is not None}
+            headers = bearer() | ({"X-Epistrel-Principal": principal} if principal else {})
+            return _rest(
+                await self.client.get(f"/stories/{story_id}/states", params=query, headers=headers)
+            )
+        from epistrel.api.routes.states import StatesBody
+
+        async def call() -> dict[str, Any]:
+            context = RequestContext(principal=principal)
+            found = await self.engine.get_states(context, story_id, **params)
+            return _dump(StatesBody.of(found))
+
+        return await _library(call, 200)
+
+    async def state(self, story_id: str, name: str, **params: Any) -> Outcome:
+        """``GET /stories/{id}/states/{name}`` or ``Engine.get_state`` (#186), as ``states``
+        (``as_of`` too)."""
+        if self.name == "rest":
+            query = {k: _query(v) for k, v in params.items() if v is not None}
+            return _rest(
+                await self.client.get(
+                    f"/stories/{story_id}/states/{name}", params=query, headers=bearer()
+                )
+            )
+        from epistrel.api.routes.states import StateViewBody
+
+        async def call() -> dict[str, Any]:
+            found = await self.engine.get_state(RequestContext(), story_id, name, **params)
+            return _dump(StateViewBody.of(found))
 
         return await _library(call, 200)
 

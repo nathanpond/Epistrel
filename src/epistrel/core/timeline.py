@@ -1,18 +1,18 @@
 """Truncate a story to a checkpoint, undo it, and swap continuations (FR-STORE-10,11,18,28;
 docs/02 §4.6; #65, #66).
 
-- **Truncate** to turn N is a ``control`` operation whose only mutation is timeline
-  membership: every **active** committed operation positioned after N — any kind, so a Lite
-  summary segment positioned at its ``covers_to`` > N goes too (#72 rebuilds), as do turn N's
-  own inter-turn slots (none in M2) — becomes ``discarded`` with ``membership_tx`` = the
-  truncation's transaction time. Events, rows and valid-times are untouched; events inherit
-  membership from their operation, so the update is O(operations after N). Operations that are
-  already ``discarded`` (a stacked truncation) or ``dormant`` keep their state and stamp.
-  ``stories.next_turn_index`` becomes N + 1 and the revision moves (FR-CONC-1). The truncation
-  is a control action: a turn generating meanwhile abandons with 409 ``timeline_changed``
-  (#47), and turns waiting in the story's queue fail with the same error in the truncation's
-  transaction. ``to_turn`` must be from 0 to the head - 1 (422 otherwise). The event records
-  ``{to_turn, prior_head, operation_ids}``.
+- **Truncate** to turn N is a ``control`` operation whose only mutation is timeline membership:
+  every **active** committed operation positioned after N — any kind, so a Lite summary segment
+  positioned at its ``covers_to`` > N goes too (#72 rebuilds), as do turn N's own inter-turn slots
+  (#186's State sets and definitions, #193's advances) — becomes ``discarded`` with
+  ``membership_tx`` = the truncation's transaction time. Events, rows and valid-times are
+  untouched; events inherit membership from their operation, so the update is O(operations after
+  N). Operations that are already ``discarded`` (a stacked truncation) or ``dormant`` keep their
+  state and stamp. ``stories.next_turn_index`` becomes N + 1 and the revision moves (FR-CONC-1).
+  The truncation is a control action: a turn generating meanwhile abandons with 409
+  ``timeline_changed`` (#47), and turns waiting in the story's queue fail with the same error in
+  the truncation's transaction. ``to_turn`` must be from 0 to the head - 1 (422 otherwise). The
+  event records ``{to_turn, prior_head, operation_ids}``.
 - **Untruncate** reverts the most recent truncation (LIFO): the newest ``truncate`` none of
   whose operations is active again (they are ``discarded``, or ``dormant`` once a turn was
   written over them, #66). When nothing is active after its ``to_turn`` and its tail continues
@@ -50,6 +50,7 @@ their new membership in the same transaction.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -78,7 +79,7 @@ from epistrel.core.errors import (
 )
 from epistrel.core.events.operation import Operation
 from epistrel.core.events.types import Head, Swap, Truncate, Untruncate
-from epistrel.core.membership import POSITION_MAX, follow_membership_change
+from epistrel.core.membership import POSITION_MAX, Position, follow_membership_change
 from epistrel.core.projections import structured
 from epistrel.core.stories import require_writable
 from epistrel.core.tables import events, operations, stories
@@ -124,6 +125,37 @@ def turn_boundary(data: Any) -> Any:
 
 
 TURN_BOUNDARY_REQUIRED = "turn_boundary_required"
+
+AS_OF_PATTERN = re.compile(r"^\s*(\d{1,9})(?:\s*[+⁺ ]\s*(\d{1,9}))?\s*$")
+"""``as_of``'s boundary: ``N`` or ``N+k`` (``⁺`` too, and a space: a query string's ``+``
+decodes to one)."""
+
+
+def parse_as_of(value: str | int, *, field: str = "query.as_of") -> Position:
+    """A read's checkpoint (FR-STORE-31; #186): ``"14"`` is ``N`` (turn 14's end, without its
+    inter-turn slots) and ``"14+2"`` is ``N⁺k`` (with slots 1..2), as ``Position.end_of``. A
+    beat or a step is never a boundary; anything else is 422 ``validation_error``."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        text = str(value)
+    elif isinstance(value, str):
+        text = value
+    else:
+        raise InvalidRequest("as_of is a turn N or a slot boundary N+k", {"field": field})
+    found = AS_OF_PATTERN.match(text)
+    if found is None:
+        raise InvalidRequest(
+            "as_of is a turn N or an inter-turn slot boundary N+k",
+            {"field": field, "reason": "boundary"},
+        )
+    turn, slot = int(found.group(1)), int(found.group(2) or 0)
+    if slot > POSITION_MAX:
+        raise InvalidRequest("as_of is out of range", {"field": field, "reason": "range"})
+    return Position.end_of(turn, slot)
+
+
+def boundary_label(turn: int, slot_k: int = 0) -> str:
+    """A boundary as responses print it: ``14``, or ``14⁺2`` for an inter-turn slot."""
+    return str(turn) if not slot_k else f"{turn}⁺{slot_k}"
 
 
 class TruncateRequest(BaseModel):
@@ -949,7 +981,9 @@ __all__ = [
     "UndoState",
     "UntruncateRequest",
     "Untruncation",
+    "boundary_label",
     "on_membership_change",
+    "parse_as_of",
     "remove_membership_hook",
     "run_post_commit_hooks",
     "swap",

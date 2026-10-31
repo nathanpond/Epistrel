@@ -13221,7 +13221,7 @@
       },
       "IngestEvent": {
         "additionalProperties": false,
-        "description": "One event to record. ``kind`` is free text here so that a kind M2 does not record is\nrefused with ``unsupported_event_kind`` rather than a generic validation error.",
+        "description": "One event to record. ``kind`` is free text here so that a kind not recorded yet is\nrefused with ``unsupported_event_kind`` rather than a generic validation error.",
         "properties": {
           "actor_character_id": {
             "anyOf": [
@@ -13243,6 +13243,20 @@
             "title": "Client Event Id",
             "type": "string"
           },
+          "delta": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delta"
+          },
           "do": {
             "anyOf": [
               {
@@ -13261,6 +13275,18 @@
             "title": "Kind",
             "type": "string"
           },
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
           "say": {
             "anyOf": [
               {
@@ -13273,6 +13299,32 @@
             ],
             "title": "Say"
           },
+          "scope_key": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Key"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
           "text": {
             "anyOf": [
               {
@@ -13284,6 +13336,26 @@
               }
             ],
             "title": "Text"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
           }
         },
         "required": [
@@ -33679,6 +33751,574 @@
         "title": "StageStatus",
         "type": "string"
       },
+      "StateBody": {
+        "additionalProperties": false,
+        "description": "One State as the viewpoint reads it: its `name`, `type`, `scope`, `visibility`, `owner`\nand `unit`; its `value` (a story-scoped State) or `values` by character id (a per-character\none; `null`: undefined); and `since_position`, the position of the last change folded in\n(`null`: the initial value).",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "owner": {
+            "enum": [
+              "story",
+              "external"
+            ],
+            "title": "Owner",
+            "type": "string"
+          },
+          "scope": {
+            "enum": [
+              "story",
+              "character"
+            ],
+            "title": "Scope",
+            "type": "string"
+          },
+          "since_position": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since Position"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "value": {
+            "title": "Value"
+          },
+          "values": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Values"
+          },
+          "visibility": {
+            "enum": [
+              "player_visible",
+              "hidden"
+            ],
+            "title": "Visibility",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "type",
+          "scope",
+          "visibility",
+          "owner",
+          "unit",
+          "since_position"
+        ],
+        "title": "StateBody",
+        "type": "object"
+      },
+      "StateConstraintsBody": {
+        "additionalProperties": false,
+        "description": "A State's bounds: ``min``, ``max`` and ``non_negative`` for a number, the\n``allowed_values`` of an enum, and a number's ``tolerance``.",
+        "properties": {
+          "allowed_values": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Values"
+          },
+          "max": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max"
+          },
+          "min": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min"
+          },
+          "non_negative": {
+            "default": false,
+            "title": "Non Negative",
+            "type": "boolean"
+          },
+          "tolerance": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tolerance"
+          }
+        },
+        "title": "StateConstraintsBody",
+        "type": "object"
+      },
+      "StateDeclaration": {
+        "additionalProperties": false,
+        "description": "A State the consumer declares (FR-STATE-1,2,3): its ``name``, ``type`` and ``scope``,\nits ``constraints`` and ``initial_value`` (absent: undefined until set), the ``aliases`` and\n``unit`` prose names it by, the ``entity_id`` it tracks, its ``visibility`` and ``owner``\n(``external`` with its ``provider_id``), ``silent``, and its effect rules (``rules``,\n``authorization``, ``transfer``; #188) and ``reservation_expiry_minutes``.",
+        "properties": {
+          "aliases": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Aliases",
+            "type": "array"
+          },
+          "authorization": {
+            "additionalProperties": true,
+            "title": "Authorization",
+            "type": "object"
+          },
+          "constraints": {
+            "$ref": "#/components/schemas/StateConstraintsBody"
+          },
+          "entity_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entity Id"
+          },
+          "initial_value": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Initial Value"
+          },
+          "name": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "owner": {
+            "default": "story",
+            "enum": [
+              "story",
+              "external"
+            ],
+            "title": "Owner",
+            "type": "string"
+          },
+          "provider_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Id"
+          },
+          "reservation_expiry_minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reservation Expiry Minutes"
+          },
+          "rules": {
+            "additionalProperties": true,
+            "title": "Rules",
+            "type": "object"
+          },
+          "scope": {
+            "default": "story",
+            "enum": [
+              "story",
+              "character"
+            ],
+            "title": "Scope",
+            "type": "string"
+          },
+          "silent": {
+            "default": false,
+            "title": "Silent",
+            "type": "boolean"
+          },
+          "transfer": {
+            "additionalProperties": true,
+            "title": "Transfer",
+            "type": "object"
+          },
+          "type": {
+            "enum": [
+              "number",
+              "boolean",
+              "enum",
+              "text"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "visibility": {
+            "default": "player_visible",
+            "enum": [
+              "player_visible",
+              "hidden"
+            ],
+            "title": "Visibility",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "type"
+        ],
+        "title": "StateDeclaration",
+        "type": "object"
+      },
+      "StateDeclaredBody": {
+        "description": "A declaration: the stored `definition`, its inter-turn slot `position` (`N⁺k`; `slot`\nthe full position), the slot's `operation_id` and the story's revision after it.",
+        "properties": {
+          "definition": {
+            "additionalProperties": true,
+            "title": "Definition",
+            "type": "object"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "operation_id": {
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "position": {
+            "title": "Position",
+            "type": "string"
+          },
+          "slot": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Slot",
+            "type": "object"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "definition",
+          "position",
+          "slot",
+          "operation_id"
+        ],
+        "title": "StateDeclaredBody",
+        "type": "object"
+      },
+      "StateDefineRequest": {
+        "additionalProperties": false,
+        "description": "``POST /stories/{id}/states``: the ``definition`` of a State to declare.",
+        "examples": [
+          {
+            "definition": {
+              "constraints": {
+                "non_negative": true
+              },
+              "initial_value": 10,
+              "name": "gold",
+              "type": "number",
+              "unit": "coins"
+            }
+          }
+        ],
+        "properties": {
+          "definition": {
+            "$ref": "#/components/schemas/StateDeclaration"
+          }
+        },
+        "required": [
+          "definition"
+        ],
+        "title": "StateDefineRequest",
+        "type": "object"
+      },
+      "StateDefinitionPatch": {
+        "additionalProperties": false,
+        "description": "`PATCH /stories/{id}/states/{name}/definition`: a JSON merge patch over the definition's\nmutable members (`constraints`, `authorization`, `transfer`, `rules` and `visibility`,\ninterpretive; `aliases`, `unit`, `silent` and `reservation_expiry_minutes`, prospective). A\nmember of the State's identity (`name`, `type`, `scope`, `owner`, `provider_id`,\n`entity_id`, `initial_value`, `created_by`) is 422 `immutable_field`.",
+        "examples": [
+          {
+            "constraints": {
+              "max": 500
+            }
+          }
+        ],
+        "properties": {
+          "aliases": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aliases"
+          },
+          "authorization": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Authorization"
+          },
+          "constraints": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Constraints"
+          },
+          "created_by": {
+            "title": "Created By"
+          },
+          "entity_id": {
+            "title": "Entity Id"
+          },
+          "initial_value": {
+            "title": "Initial Value"
+          },
+          "name": {
+            "title": "Name"
+          },
+          "owner": {
+            "title": "Owner"
+          },
+          "provider_id": {
+            "title": "Provider Id"
+          },
+          "reservation_expiry_minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reservation Expiry Minutes"
+          },
+          "rules": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rules"
+          },
+          "scope": {
+            "title": "Scope"
+          },
+          "silent": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Silent"
+          },
+          "transfer": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transfer"
+          },
+          "type": {
+            "title": "Type"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "visibility": {
+            "anyOf": [
+              {
+                "enum": [
+                  "player_visible",
+                  "hidden"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Visibility"
+          }
+        },
+        "title": "StateDefinitionPatch",
+        "type": "object"
+      },
+      "StateDefinitionWriteBody": {
+        "description": "The definition after a `PATCH`, the story's `config_revision` (moved by a change) and its\nunchanged `timeline_revision`.",
+        "properties": {
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "definition": {
+            "additionalProperties": true,
+            "title": "Definition",
+            "type": "object"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "definition",
+          "config_revision"
+        ],
+        "title": "StateDefinitionWriteBody",
+        "type": "object"
+      },
       "StateEffectModel": {
         "description": "A State change a structured turn committed (#187, FR-RESP-7): the State, its scope key\n(the character, for a per-character State), the value it found and the one it left, the\nreason, its source (``turn``), contingency and status. A ``hidden`` State's appears only\nfor ``omniscient``.",
         "properties": {
@@ -33731,6 +34371,203 @@
           "status"
         ],
         "title": "StateEffectModel",
+        "type": "object"
+      },
+      "StateSetRequest": {
+        "additionalProperties": false,
+        "description": "``PUT /stories/{id}/states/{name}``: a new ``value``, or a signed ``delta`` for a number\nState, for one character's value of a per-character State (``scope_key``), with a\n``reason``.",
+        "examples": [
+          {
+            "delta": -5,
+            "reason": "bought a lantern"
+          }
+        ],
+        "properties": {
+          "delta": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delta"
+          },
+          "reason": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "scope_key": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Key"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "StateSetRequest",
+        "type": "object"
+      },
+      "StateViewBody": {
+        "description": "One State through `as_of` (`null`: the story as it stands).",
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "output_viewpoint": {
+            "title": "Output Viewpoint",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/StateBody"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "state",
+          "as_of",
+          "timeline_revision",
+          "output_viewpoint"
+        ],
+        "title": "StateViewBody",
+        "type": "object"
+      },
+      "StateWrittenBody": {
+        "description": "A set: the State's `old_value` and `new_value` (`null`: undefined), its inter-turn slot\n`position` (`N⁺k`; `slot` the full position), the slot's `operation_id`, the `change_id`\nit wrote and the story's revision after it.",
+        "properties": {
+          "change_id": {
+            "title": "Change Id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "new_value": {
+            "title": "New Value"
+          },
+          "old_value": {
+            "title": "Old Value"
+          },
+          "operation_id": {
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "position": {
+            "title": "Position",
+            "type": "string"
+          },
+          "slot": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Slot",
+            "type": "object"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "state",
+          "old_value",
+          "new_value",
+          "position",
+          "slot",
+          "operation_id",
+          "change_id"
+        ],
+        "title": "StateWrittenBody",
+        "type": "object"
+      },
+      "StatesBody": {
+        "description": "The States the viewpoint may read, the world clock (only here, never among `states`),\nthe story's revision and the viewpoint the read was produced for.",
+        "properties": {
+          "clock": {
+            "$ref": "#/components/schemas/ClockBody"
+          },
+          "output_viewpoint": {
+            "title": "Output Viewpoint",
+            "type": "string"
+          },
+          "states": {
+            "items": {
+              "$ref": "#/components/schemas/StateBody"
+            },
+            "title": "States",
+            "type": "array"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "states",
+          "clock",
+          "timeline_revision",
+          "output_viewpoint"
+        ],
+        "title": "StatesBody",
         "type": "object"
       },
       "StatusBody": {
@@ -62249,7 +63086,7 @@
     },
     "/stories/{story_id}/ingest": {
       "post": {
-        "description": "Record events into the story's authoritative history without generating a reply: a `player_turn` (an actor's `say`/`do`) or consumer-authored `narration` (`text`, no actor). Each event is its own narrative turn at the next turn index and advances the timeline revision; up to 50 events are recorded all or nothing, each through the input gate.\n\nEvery event carries a `client_event_id` unique within the story. Re-ingesting an ID with the same payload returns the original result and writes nothing; the same ID with a different payload is 409 `client_event_conflict`. The response is 201 when every event is new and 200 when any was replayed (`Idempotent-Replay: true` when all were). `outcome` and `state_change` events arrive in M6 (422 `unsupported_event_kind`).\n\nThe batch is one turn for turn concurrency: while a generated turn runs, a story with `turn_concurrency: reject` answers 423 `story_busy`, and one with `queue` queues the batch (waiting for it up to the story's turn deadline, its `budgets.deadline_ms`, then 202 `{operation_id, position}`; `Prefer: respond-async` answers 202 at once).\n\nThe response reports what the input gate spent: `model_calls` (one `guardrail_check` per model-assisted input policy per text) and `elapsed_ms`.",
+        "description": "Record events into the story's authoritative history without generating a reply: a `player_turn` (an actor's `say`/`do`) or consumer-authored `narration` (`text`, no actor). Each is its own narrative turn at the next turn index, through the input gate. A `state_change` (`{state, scope_key?, value | delta, reason}`) sets a story State as `PUT /stories/{id}/states/{name}` does, with its refusals (`state_unpermitted` among them), in the next inter-turn slot after the turn written before it in the batch (or after the story's last turn): batch order is position order. Every event advances the timeline revision, none advances the world clock, and up to 50 events are recorded all or nothing.\n\nEvery event carries a `client_event_id` unique within the story. Re-ingesting an ID with the same payload returns the original result and writes nothing; the same ID with a different payload is 409 `client_event_conflict`. The response is 201 when every event is new and 200 when any was replayed (`Idempotent-Replay: true` when all were). `outcome` events arrive later in M6 (422 `unsupported_event_kind`).\n\nThe batch is one turn for turn concurrency: while a generated turn runs, a story with `turn_concurrency: reject` answers 423 `story_busy`, and one with `queue` queues the batch (waiting for it up to the story's turn deadline, its `budgets.deadline_ms`, then 202 `{operation_id, position}`; `Prefer: respond-async` answers 202 at once).\n\nThe response reports what the input gate spent: `model_calls` (one `guardrail_check` per model-assisted input policy per text) and `elapsed_ms`.",
         "operationId": "ingest",
         "parameters": [
           {
@@ -62451,7 +63288,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `client_event_conflict`, `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`, `timeline_changed`."
+            "description": "Conflict; nothing was written: `client_event_conflict`, `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_paused`, `timeline_changed`."
           },
           "422": {
             "content": {
@@ -62461,7 +63298,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `guardrail_violation`, `unsupported_event_kind`, `validation_error`."
+            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `guardrail_violation`, `state_constraint_violation`, `state_derived`, `state_readonly_external`, `state_unpermitted`, `unsupported_event_kind`, `validation_error`."
           },
           "423": {
             "content": {
@@ -67363,6 +68200,902 @@
         "summary": "Change the story's settings",
         "tags": [
           "settings"
+        ]
+      }
+    },
+    "/stories/{story_id}/states": {
+      "get": {
+        "description": "The story's States as it stands (FR-STATE-9), each with its value (`values` by character for a per-character State) and the position of its last change, and the world clock under `clock` (never among `states`; `GET /stories/{id}/clock`). The read is produced for one **output viewpoint**: `?viewpoint=` (`character:<id>` or `omniscient`), else `?actor_character_id=`, else the story's `default_output_viewpoint`; when none resolves it is refused (422 `viewpoint_unresolved`). A character viewpoint is never given a `hidden` State: it is left out entirely (the character's own value of a per-character State too), and the story's `player_view` never widens a States read. `omniscient`, used only when named, reads every State. 409 `module_off` while the story's configuration has States off.",
+        "operationId": "get_states",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "actor_character_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Actor Character Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatesBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `module_off`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`, `viewpoint_unresolved`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read a story's States for one output viewpoint",
+        "tags": [
+          "stories"
+        ]
+      },
+      "post": {
+        "description": "Declare a State as the consumer (FR-STATE-3): its `definition` (name, type, scope, constraints, initial value, aliases, unit, visibility, owner and effect rules). Answers 201 with the stored definition and its slot's `position`. The declaration follows its slot: a truncation to `N` or earlier discards it and frees its name. The write is an inter-turn slot operation at `N⁺k`, after the last completed turn `N` (ordered by commit): a checkpoint `N` excludes it and `N⁺k` includes it, and a truncation to `N` or earlier discards it. It bumps the story's `timeline_revision`. Like a turn, it waits for a turn in flight under `turn_concurrency: queue` and is 423 `story_busy` under `reject` (with `Retry-After`). It takes `Idempotency-Key` and `X-Epistrel-Expected-Revision` (409 `revision_conflict`). A refusal writes nothing. 409 `state_name_taken` for a name an active State holds, `module_off`, `story_archived`, `story_paused`; 422 `validation_error` for a shape error or `world_clock` (`reason: reserved_state`).",
+        "operationId": "define_state",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StateDefineRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StateDeclaredBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `state_name_taken`, `story_archived`, `story_paused`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Declare a State on a story",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
+    "/stories/{story_id}/states/{name}": {
+      "get": {
+        "description": "One State (FR-STATE-9), folded through `as_of`: `N` (the state after turn N's reply, without its inter-turn slots) or `N+k` (`N⁺k`: with slots 1..k; send `+` as `%2B`); the story as it stands when absent. A State declared after `as_of` is not there (404). A `hidden` State read for a character viewpoint is 404 exactly as an unknown name (as is `world_clock`: `GET /stories/{id}/clock`). The read is produced for one **output viewpoint**: `?viewpoint=` (`character:<id>` or `omniscient`), else `?actor_character_id=`, else the story's `default_output_viewpoint`; when none resolves it is refused (422 `viewpoint_unresolved`). A character viewpoint is never given a `hidden` State: it is left out entirely (the character's own value of a per-character State too), and the story's `player_view` never widens a States read. `omniscient`, used only when named, reads every State. 409 `module_off` while the story's configuration has States off.",
+        "operationId": "get_state",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The State's name.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "description": "The State's name.",
+              "examples": [
+                "gold"
+              ],
+              "pattern": "^[A-Za-z][A-Za-z0-9_]{0,79}$",
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "actor_character_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Actor Character Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "as_of",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 24,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "examples": [
+                "14",
+                "14+2"
+              ],
+              "title": "As Of"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StateViewBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `module_off`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`, `viewpoint_unresolved`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read one State of a story",
+        "tags": [
+          "stories"
+        ]
+      },
+      "put": {
+        "description": "Set a State as the consumer (FR-STATE-9): a `value`, or a signed `delta` for a number State, for `scope_key`'s value of a per-character State, with a `reason`. Answers the `old_value` and `new_value` and the slot's `position`. The write is an inter-turn slot operation at `N⁺k`, after the last completed turn `N` (ordered by commit): a checkpoint `N` excludes it and `N⁺k` includes it, and a truncation to `N` or earlier discards it. It bumps the story's `timeline_revision`. Like a turn, it waits for a turn in flight under `turn_concurrency: queue` and is 423 `story_busy` under `reject` (with `Retry-After`). It takes `Idempotency-Key` and `X-Epistrel-Expected-Revision` (409 `revision_conflict`). A refusal writes nothing. 422 `state_constraint_violation` (`{constraint, attempted, current}`), `state_readonly_external` (an externally owned value), `state_unpermitted` (`reason: source`: the State's `authorization.sources` omit `consumer`), `state_derived`, `validation_error` (`reason: reserved_state` for `world_clock`: use `POST /stories/{id}/clock/advance`); 409 `module_off` (States off; `prompt_only` and `on` both take API sets), `story_archived`, `story_paused`.",
+        "operationId": "set_state",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The State's name.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "description": "The State's name.",
+              "examples": [
+                "gold"
+              ],
+              "pattern": "^[A-Za-z][A-Za-z0-9_]{0,79}$",
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StateSetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StateWrittenBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_paused`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `state_constraint_violation`, `state_derived`, `state_readonly_external`, `state_unpermitted`, `validation_error`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Set a story-owned State between turns",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
+    "/stories/{story_id}/states/{name}/definition": {
+      "patch": {
+        "description": "Change a State's definition with a JSON merge patch (RFC 7396) over its mutable members (FR-STATE-3): a story configuration change. Each changed member records a `config_changes` row (`state:<name>.<member>`) and the story's `config_revision` moves by one; the timeline revision does not. `constraints`, `authorization`, `transfer`, `rules` and `visibility` are interpretive (a turn checked under the old ones is re-checked), the others prospective. A patch that changes nothing records nothing. 422 `validation_error` (`reason: immutable_field` for the State's identity, `reserved_state` for `world_clock`: `PATCH /stories/{id}/clock`), `state_constraint_violation` when the current value breaks new constraints; 409 `module_off`, `story_archived`.",
+        "operationId": "update_state_definition",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The State's name.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "description": "The State's name.",
+              "examples": [
+                "gold"
+              ],
+              "pattern": "^[A-Za-z][A-Za-z0-9_]{0,79}$",
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StateDefinitionPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StateDefinitionWriteBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `state_constraint_violation`, `validation_error`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Change a State's definition",
+        "tags": [
+          "stories"
         ]
       }
     },

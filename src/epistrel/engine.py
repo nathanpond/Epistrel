@@ -71,6 +71,7 @@ from epistrel.core.enums import (
     EntryStatus,
     ExposureState,
     MemoryKind,
+    OperationKind,
     RetrievalTier,
     StoryStatus,
     ThunkState,
@@ -133,6 +134,7 @@ from epistrel.core.ratings import suggest as rating_suggestion
 from epistrel.core.retrieval import lexical_backend
 from epistrel.core.retrieval import pipeline as retrieval_pipeline
 from epistrel.core.settings_schema import ConfigClass, PlayerView, StorySettings
+from epistrel.core.states import api as state_api
 from epistrel.core.tables import events
 from epistrel.core.tables.media import MediaKind, MediaState
 from epistrel.core.tables.ownership import EntityType
@@ -296,6 +298,12 @@ CODECS: dict[str, ResultCodec[Any]] = {
     # #193: the world clock moved forward between turns, and its settings changed.
     "advance_clock": ResultCodec.of(clock_service.ClockMoved),
     "update_clock": ResultCodec.of(clock_service.ClockSettingsWrite, revision_field=_CONFIG),
+    # #186: a State set and a State declared between turns, and a definition changed.
+    "set_state": ResultCodec.of(state_api.StateWritten),
+    "define_state": ResultCodec.of(state_api.StateDeclared, status=201),
+    "update_state_definition": ResultCodec.of(
+        state_api.StateDefinitionWrite, revision_field=_CONFIG
+    ),
     "model_entity": ResultCodec.of(stories.CharacterWeighted, status=201),
     "create_content_rating": ResultCodec.of(
         ratings.RatingWrite, status=201, revision_field=_CONFIG
@@ -863,11 +871,13 @@ class Engine:
         origin: str,
         concurrency: Concurrency,
         respond_async: bool,
+        operation_kind: OperationKind = OperationKind.TURN,
     ) -> T:
         """Queue a turn that found its story busy under ``queue``, hand it the request's
         ``Idempotency-Key``, start the drainer, and wait for the turn (long-poll up to
         ``turn_deadline``; ``respond_async``: not at all) — then its result, its error, or 202
-        (``TurnAccepted``) with the turn still queued."""
+        (``TurnAccepted``) with the turn still queued. ``operation_kind``: the queued
+        operation's (an ingest batch starting with a ``state_change`` starts with a slot)."""
         principal = self.require_principal(ctx)
         call = idempotency.current_call()
         await turn_gate.enqueue(
@@ -882,6 +892,7 @@ class Engine:
             origin=origin,
             queue_max=concurrency.queue_max,
             hand_over=call.hand_over if call is not None else None,
+            operation_kind=operation_kind,
         )
         self.drainer.kick(story_id)
         assert ctx.idempotency_key is not None  # noqa: S101 - every call is keyed (#61)
@@ -1860,7 +1871,10 @@ class Engine:
 
         async def run(ctx: RequestContext) -> ingest.IngestResult:
             async def queue_batch(
-                operation_id: str, queued: dict[str, Any], concurrency: Concurrency
+                operation_id: str,
+                queued: dict[str, Any],
+                concurrency: Concurrency,
+                operation_kind: OperationKind = OperationKind.TURN,
             ) -> ingest.IngestResult:
                 return await self._queue(
                     ctx,
@@ -1873,6 +1887,7 @@ class Engine:
                     origin=ingest.INGESTED,
                     concurrency=concurrency,
                     respond_async=respond_async,
+                    operation_kind=operation_kind,
                 )
 
             return await _metered(
@@ -2865,6 +2880,151 @@ class Engine:
             run,
             story_id=story_id,
             material={"story_id": story_id, "body": body},
+        )
+
+    # -- story States (FR-STATE-3,9, FR-RESP-12; #186) ------------------------------------------
+
+    @refuses_nul()
+    async def get_states(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        viewpoint: str | None = None,
+        actor_character_id: str | None = None,
+    ) -> state_api.StatesView:
+        """The story's States for one output viewpoint (FR-STATE-9, FR-RESP-12): ``viewpoint``
+        (or ``ctx.viewpoint``) when named, else ``actor_character_id``, else the story's
+        default; 422 ``viewpoint_unresolved`` when none resolves. A character viewpoint is
+        never given a ``hidden`` State (it is left out, its own scoped value too); ``omniscient``
+        reads every State. The world clock is under ``clock`` only. 409 ``module_off`` with
+        ``states.level`` off; 404 for an unknown story."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        return await state_api.read_states(
+            self.db, story_id, viewpoint=ctx.viewpoint, actor_character_id=actor_character_id
+        )
+
+    @refuses_nul()
+    async def get_state(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        name: str,
+        *,
+        viewpoint: str | None = None,
+        actor_character_id: str | None = None,
+        as_of: str | None = None,
+    ) -> state_api.StateView:
+        """One State for one output viewpoint (as ``get_states``), folded through ``as_of``:
+        ``"N"`` (turn N's end, without its inter-turn slots) or ``"N+k"`` (with slots 1..k);
+        the head when ``None``. A hidden State read without ``omniscient`` is 404 exactly as an
+        unknown name (as is ``world_clock``, read with ``get_clock``). 409 ``module_off`` with
+        ``states.level`` off."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        return await state_api.read_state(
+            self.db,
+            story_id,
+            name,
+            viewpoint=ctx.viewpoint,
+            actor_character_id=actor_character_id,
+            as_of=as_of,
+        )
+
+    async def set_state(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        name: str,
+        request: state_api.StateSetRequest,
+    ) -> state_api.StateWritten:
+        """Set a story-owned State between turns, as the consumer (FR-STATE-9): a ``value`` or a
+        ``delta``, for ``scope_key``'s value of a per-character State, with a ``reason``. An
+        inter-turn slot operation at ``N⁺k`` after the last completed turn (a truncation to N
+        or earlier discards it); it bumps the timeline revision and answers the old and new
+        value and the ``position``. Waits for a turn in flight under ``queue`` and is 423
+        ``story_busy`` under ``reject``. 422 ``state_constraint_violation``,
+        ``state_readonly_external``, ``state_unpermitted`` (``reason: source``),
+        ``state_derived``, ``validation_error`` (``reserved_state`` for ``world_clock``); 409
+        ``module_off``, ``story_archived``, ``story_paused`` or ``revision_conflict``. Nothing
+        is written on a refusal."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> state_api.StateWritten:
+            await self.check_expected_revision(ctx, story_id)
+            return await state_api.set_state(
+                self.db,
+                story_id,
+                name,
+                request,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+            )
+
+        return await self._keyed(
+            ctx,
+            "set_state",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "state": name, "body": _body(request)},
+        )
+
+    async def define_state(
+        self, ctx: RequestContext, story_id: str, request: state_api.StateDefineRequest
+    ) -> state_api.StateDeclared:
+        """Declare a State on a running story, as the consumer (FR-STATE-3): an inter-turn slot
+        operation at ``N⁺k`` (a truncation to N or earlier discards the declaration and frees
+        its name). It bumps the timeline revision and answers the stored definition and its
+        ``position`` (REST 201). 409 ``state_name_taken`` for a name an active State holds,
+        ``module_off``, ``story_archived``, ``story_paused`` or ``revision_conflict``; 422
+        ``validation_error`` for a shape error or ``world_clock`` (``reserved_state``); 423
+        ``story_busy`` as ``set_state``."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> state_api.StateDeclared:
+            await self.check_expected_revision(ctx, story_id)
+            return await state_api.define_state(
+                self.db,
+                story_id,
+                request,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+            )
+
+        return await self._keyed(
+            ctx,
+            "define_state",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "body": _body(request)},
+        )
+
+    async def update_state_definition(
+        self, ctx: RequestContext, story_id: str, name: str, patch: Mapping[str, Any]
+    ) -> state_api.StateDefinitionWrite:
+        """Change State ``name``'s definition (FR-STATE-3): a JSON merge patch over its mutable
+        members, a story configuration change (``config_revision`` + 1, one ``config_changes``
+        row per member, ``state:<name>.<member>``; no timeline revision). ``constraints``,
+        ``authorization``, ``transfer``, ``rules`` and ``visibility`` are interpretive (a turn
+        checked under the old ones is re-checked), ``aliases``, ``unit``, ``silent`` and
+        ``reservation_expiry_minutes`` prospective. 422 ``validation_error`` (``immutable_field``
+        for the State's identity; ``reserved_state`` for ``world_clock``) or
+        ``state_constraint_violation`` when the current value breaks the new constraints; 409
+        ``module_off`` or ``story_archived``."""
+        principal = self.require_principal(ctx)
+        body = dict(patch)
+
+        async def run(ctx: RequestContext) -> state_api.StateDefinitionWrite:
+            await self.check_expected_revision(ctx, story_id)
+            return await state_api.update_state_definition(
+                self.db, story_id, name, body, principal=principal
+            )
+
+        return await self._keyed(
+            ctx,
+            "update_state_definition",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "state": name, "body": body},
         )
 
     async def set_character_weight(

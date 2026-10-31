@@ -114,6 +114,13 @@ from epistrel.api.routes.predicates import PredicateDecisionBody, PredicateListB
 from epistrel.api.routes.respond import RespondResponse
 from epistrel.api.routes.retrieval import RetrievalBody
 from epistrel.api.routes.scene import EntityProfileBody, SceneBody
+from epistrel.api.routes.states import (
+    StateDeclaredBody,
+    StateDefinitionWriteBody,
+    StatesBody,
+    StateViewBody,
+    StateWrittenBody,
+)
 from epistrel.api.routes.stories import (
     CharacterWeightedBody,
     IngestResponse,
@@ -193,6 +200,7 @@ from epistrel.core.ratings.change import RatingChangeRequest, RatingCheckStarted
 from epistrel.core.ratings.suggest import SuggestionRequest
 from epistrel.core.seeds.profiles import LITE_PRESET_ID, STRUCTURED_M4_PROFILE_ID
 from epistrel.core.seeds.ratings import EVERYONE_ID, EXPLICIT_ID
+from epistrel.core.states.api import StateDefineRequest, StateSetRequest
 from epistrel.core.stories import (
     AdHocCharacter,
     CharacterWeightRequest,
@@ -224,6 +232,8 @@ from tests.story_support import story_body
 
 PRINCIPAL = "p-parity"
 CTX = RequestContext(principal=PRINCIPAL)
+GOLD = {"name": "gold", "type": "number", "initial_value": 10}
+"""A State the State steps declare (#186)."""
 REPLY = "The innkeeper sets down a mug and says nothing."
 TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
 SIGNED = re.compile(r"([?&](?:exp|sig)=)[^&]*")
@@ -1416,6 +1426,42 @@ def _steps() -> list[Step]:
                     ids["story"],
                     ClockAdvanceRequest(minutes=30, reason="they wait"),
                 )
+            ),
+        ),
+        # #186: the State API, which the story's configuration refuses (409 module_off) until
+        # #203 delivers the states module: both reads, a set, a declaration and a definition
+        # change.
+        Step(
+            "get_states",
+            lambda ids: Rest("GET", f"{s}/states", params={"viewpoint": "omniscient"}),
+            lambda e, ids: _states(e.get_states(CTX, ids["story"], viewpoint="omniscient")),
+        ),
+        Step(
+            "get_state",
+            lambda ids: Rest("GET", f"{s}/states/gold", params={"viewpoint": "omniscient"}),
+            lambda e, ids: _state(e.get_state(CTX, ids["story"], "gold", viewpoint="omniscient")),
+        ),
+        Step(
+            "set_state",
+            lambda ids: Rest("PUT", f"{s}/states/gold", {"delta": 5, "reason": "a purse"}),
+            lambda e, ids: _state_written(
+                e.set_state(CTX, ids["story"], "gold", StateSetRequest(delta=5, reason="a purse"))
+            ),
+        ),
+        Step(
+            "define_state",
+            lambda ids: Rest("POST", f"{s}/states", {"definition": GOLD}),
+            lambda e, ids: _state_declared(
+                e.define_state(
+                    CTX, ids["story"], StateDefineRequest.model_validate({"definition": GOLD})
+                )
+            ),
+        ),
+        Step(
+            "update_state_definition",
+            lambda ids: Rest("PATCH", f"{s}/states/gold/definition", {"unit": "coins"}),
+            lambda e, ids: _state_definition(
+                e.update_state_definition(CTX, ids["story"], "gold", {"unit": "coins"})
             ),
         ),
         Step(
@@ -2760,6 +2806,26 @@ async def _clock_settings(call: Awaitable[Any]) -> dict[str, Any]:
 
 async def _clock_advanced(call: Awaitable[Any]) -> dict[str, Any]:
     return dump(ClockAdvancedBody.of(await call))
+
+
+async def _states(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(StatesBody.of(await call))
+
+
+async def _state(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(StateViewBody.of(await call))
+
+
+async def _state_written(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(StateWrittenBody.of(await call))
+
+
+async def _state_declared(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(StateDeclaredBody.of(await call))
+
+
+async def _state_definition(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(StateDefinitionWriteBody.of(await call))
 
 
 async def _weighted(call: Awaitable[Any]) -> dict[str, Any]:

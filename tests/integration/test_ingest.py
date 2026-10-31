@@ -88,8 +88,8 @@ def code(response: httpx.Response) -> str:
 
 
 async def test_body_validation(stub_settings: Settings, engine: AsyncEngine) -> None:
-    """Malformed bodies are 422 and write nothing; a kind M2 does not record is
-    ``unsupported_event_kind`` naming M6."""
+    """Malformed bodies are 422 and write nothing; a kind not recorded yet is
+    ``unsupported_event_kind`` naming its milestone."""
     async with respond_client(stub_settings, engine) as (client, _):
         story, ids = await new_story(client)
         before = await footprint(engine, story)
@@ -110,7 +110,7 @@ async def test_body_validation(stub_settings: Settings, engine: AsyncEngine) -> 
             refused = await ingest(client, story, *events)
             assert refused.status_code == 422, (events, refused.text)
             assert code(refused) == "validation_error"
-        for kind in ("outcome", "state_change"):
+        for kind in ("outcome",):
             refused = await ingest(client, story, {"client_event_id": "g", "kind": kind})
             assert refused.status_code == 422, refused.text
             assert code(refused) == "unsupported_event_kind"

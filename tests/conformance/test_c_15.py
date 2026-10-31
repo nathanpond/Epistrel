@@ -1249,6 +1249,15 @@ def replay_surfaces(pg_url: str, tmp_path_factory: pytest.TempPathFactory) -> An
 
 
 REPLAY_EXCLUDED: dict[str, str] = {
+    **{
+        operation: (
+            "a State write (#186) needs the states module, which #203 delivers: until then "
+            "C-03's story runs States off and the write answers 409 module_off (its replay "
+            "under a key is covered by test_s_state_schema__api and __define, which deliver "
+            "the module)"
+        )
+        for operation in ("set_state", "define_state", "update_state_definition")
+    },
     "advance_clock": (
         "a world clock advance (#193) needs the clock module, which #203 delivers: until then "
         "C-03's story runs the clock off and the advance answers 409 module_off (its replay "

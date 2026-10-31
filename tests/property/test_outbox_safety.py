@@ -983,6 +983,14 @@ async def _staged_example(url: str, drawn: StagedDrawn, seen: Counter[str]) -> N
                     assert await sp.revision(engine, story) == before + 2
                     assert await sp.stage_names(engine, story) == ["intent", "claim", "outcome"]
                     seen["failed_completion"] += 1
+                    # #213: resumed here, so no later test's worker resumes it on the shared
+                    # database (its recovery pass resumes every stalled staged turn).
+                    resumed = await staged_rules.resume(
+                        engine, op.operation_id, registry=epistrel.in_process_providers
+                    )
+                    assert resumed.stage is not None
+                    assert resumed.stage.value == "completed", resumed
+                    await _staged_check(engine, story, cal, op.operation_id)
                 else:
                     assert answer_ is not None
                     assert answer_.status_code == 200, answer_.text

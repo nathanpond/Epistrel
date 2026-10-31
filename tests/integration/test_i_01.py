@@ -273,6 +273,14 @@ async def _failing(
     return story, before, await sp.staged_op(engine, story)
 
 
+async def _resumed(engine: AsyncEngine, epistrel: Any, operation_id: str) -> None:
+    """Resume a turn ``_failing`` left unfinished (#213) to ``completed``, so no later test's
+    worker resumes it on the shared database (its recovery pass resumes every stalled one)."""
+    done = await staged.resume(engine, operation_id, registry=epistrel.in_process_providers)
+    assert done.stage is not None
+    assert done.stage.value == "completed", done
+
+
 @pytest.mark.part("M6", "FR-EXT-19")
 async def test_i_01__staged(
     stub_settings: Settings,
@@ -355,6 +363,7 @@ async def test_i_01__staged(
         assert "beat_do" in types
         assert "external_outcome" not in types
         assert "message_rendered" not in types
+        await _resumed(engine, epistrel, op.operation_id)
         await ps.drop_outbox_jobs(engine, story)
 
         # The outcome transaction fails: the turn stays awaiting its outcome.
@@ -366,6 +375,7 @@ async def test_i_01__staged(
         types = await sp.event_types(engine, op.operation_id)
         assert "beat_do" in types
         assert "external_outcome" not in types
+        await _resumed(engine, epistrel, op.operation_id)
         await ps.drop_outbox_jobs(engine, story)
 
         # The completion fails: the outcome stays recorded.
@@ -378,6 +388,7 @@ async def test_i_01__staged(
         assert types.count("external_outcome") == 1
         assert "message_rendered" not in types
         assert types.count("beat_narration") == 1  # the intent's narration only
+        await _resumed(engine, epistrel, op.operation_id)
         await ps.drop_outbox_jobs(engine, story)
 
         # The response storage fails: the turn stays completed.

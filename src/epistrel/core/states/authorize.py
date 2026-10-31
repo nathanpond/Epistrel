@@ -19,7 +19,8 @@ at definition time and on ``update_definition``):
   as its other side besides the State itself. A counterparty that names no State of the story
   is **untracked**; one owned by an external provider (#204) is **external**.
 - A definition with ``rules`` (#192) whose sources omit ``rule`` is refused (422
-  ``state_unpermitted``, ``reason: source``; owner decision 2026-10-30).
+  ``state_unpermitted``, ``reason: source``; owner decision 2026-10-30). That check is
+  ``model.check_rules_shape``'s (after these shapes), through ``source_permitted``.
 
 **The decision** (``authorize``), in docs/02's validation order, for one effect (``StateEffect``)
 of a source (``Source``), given the turn's effects already authorized (``Authorized``):
@@ -60,7 +61,7 @@ from functools import cache
 from typing import Any, Final, Literal
 
 from epistrel.core.enums import StateOwner, StateType
-from epistrel.core.errors import InvalidRequest, StateUnpermitted
+from epistrel.core.errors import InvalidRequest
 from epistrel.core.states.model import (
     NAME_PATTERN,
     StateDefinition,
@@ -281,20 +282,11 @@ def _check_transfer(d: StateDefinition) -> None:
 
 def check_effect_rules(definition: StateDefinition) -> None:
     """``definition``'s ``authorization`` and ``transfer`` checked (422 ``validation_error``
-    with ``details.reason``), and its ``rules`` against its sources (422 ``state_unpermitted``,
-    ``reason: source``; see the module docstring)."""
+    with ``details.reason``). Its ``rules`` against its sources (422 ``state_unpermitted``,
+    ``reason: source``) are ``model.check_rules_shape``'s, which runs after this and asks
+    ``source_permitted``."""
     _check_authorization(definition)
     _check_transfer(definition)
-    if definition.rules and not source_permitted(definition, RULE):
-        raise StateUnpermitted(
-            f"State {definition.name!r} has rules but its sources omit rule",
-            {
-                "state": definition.name,
-                "field": "authorization.sources",
-                "reason": SOURCE,
-                "source": RULE,
-            },
-        )
 
 
 def source_permitted(definition: StateDefinition, source: str) -> bool:

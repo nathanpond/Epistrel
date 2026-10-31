@@ -306,9 +306,14 @@ def test_definition_shape_types() -> None:
 def test_rules_need_the_rule_source() -> None:
     """A definition with ``rules`` whose sources omit ``rule`` is 422 ``state_unpermitted``
     (``reason: source``); the default sources and an explicit ``rule`` admit them."""
-    rules_doc = {"kind": "decay", "per_day": -1}
+    # A valid #192 rule on a story-scoped number State: only the source is wrong.
+    rules_doc = {"kind": "elapsed", "per_minutes": 60, "delta": -1, "bounds_clamp": True}
     with pytest.raises(StateUnpermitted) as refused:
-        _gold(rules=rules_doc, authorization={"sources": ["director"]})
+        _gold(scope="story", rules=rules_doc, authorization={"sources": ["director"]})
     assert (refused.value.code, refused.value.details["reason"]) == ("state_unpermitted", "source")
-    assert _gold(rules=rules_doc, authorization={"sources": ["director", "rule"]}).rules
-    assert validate_definition({"name": "gold", "type": "number", "rules": rules_doc}).rules
+    assert refused.value.details["source"] == "rule"
+    ruled = _gold(scope="story", rules=rules_doc, authorization={"sources": ["director", "rule"]})
+    assert ruled.rules
+    assert validate_definition(
+        {"name": "gold", "type": "number", "initial_value": 0, "rules": rules_doc}
+    ).rules

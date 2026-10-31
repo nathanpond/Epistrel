@@ -372,10 +372,13 @@ async def test_s_state_authorization(
         error = refused.json()["error"]
         assert (error["code"], error["details"]["reason"]) == ("state_unpermitted", "source")
 
-        # -- Rules on a State whose sources omit rule: refused at update.
+        # -- Rules on a State whose sources omit rule: refused at update. ``favor`` is a
+        # story-scoped number State with an initial value, so the elapsed rule is otherwise valid.
         ruled = await client.patch(
-            f"/stories/{story}/states/gold/definition",
-            json={"rules": {"kind": "decay", "per_day": -1}},
+            f"/stories/{story}/states/favor/definition",
+            json={
+                "rules": {"kind": "elapsed", "per_minutes": 60, "delta": 1, "bounds_clamp": True}
+            },
             headers=WRITE,
         )
         assert ruled.status_code == 422, ruled.text

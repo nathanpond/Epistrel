@@ -104,10 +104,13 @@ def test_definition_rule_checks() -> None:
             validate_definition(definition)
         assert _reason(refused.value) == reason
     with pytest.raises(StateUnpermitted) as unpermitted:
-        validate_definition({**NUMBER, "rules": elapsed, "authorization": {"sources": ["turn"]}})
+        validate_definition(
+            {**NUMBER, "rules": elapsed, "authorization": {"sources": ["director"]}}
+        )
     assert unpermitted.value.details["reason"] == "source"
-    # The default sources (none named) admit rules.
-    validate_definition({**NUMBER, "rules": elapsed, "authorization": {"sources": []}})
+    # The default sources (none named) and an explicit ``rule`` admit rules.
+    validate_definition({**NUMBER, "rules": elapsed})
+    validate_definition({**NUMBER, "rules": elapsed, "authorization": {"sources": ["rule"]}})
 
 
 def test_elapsed_bounds() -> None:

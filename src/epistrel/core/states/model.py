@@ -796,11 +796,12 @@ def validate_definition(
             "reservation_expiry_minutes",
             "positive",
         )
-    check_rules_shape(d)
-    # #188 (FR-STATE-10,12): the effect rules' shapes, and rules only from a ``rule`` source.
+    # #188 (FR-STATE-10,12): the authorization and transfer shapes first, so the rules' source
+    # check in ``check_rules_shape`` reads a well-formed ``authorization.sources``.
     from epistrel.core.states.authorize import check_effect_rules
 
     check_effect_rules(d)
+    check_rules_shape(d)
     return d.model_copy(update={"initial_value": initial, "aliases": aliases, "unit": unit})
 
 
@@ -824,11 +825,19 @@ def check_rules_shape(definition: StateDefinition) -> Rule | None:
         raise _invalid("only a number State has rules", "rules", "rules_type")
     if definition.scope is not StateScope.STORY:
         raise _invalid("only a story-scoped State has rules", "rules", "rules_scope")
-    sources = definition.authorization.get("sources")
-    if sources and RULE_SOURCE not in sources:
+    # The one rules-source check (#188's AC), through the predicate #186's API sets and the
+    # dry-run share. Imported here because ``authorize`` imports this module.
+    from epistrel.core.states.authorize import source_permitted
+
+    if not source_permitted(definition, RULE_SOURCE):
         raise StateUnpermitted(
             f"State {definition.name!r} has rules, but its authorization.sources omit 'rule'",
-            {"state": definition.name, "reason": "source", "source": RULE_SOURCE},
+            {
+                "state": definition.name,
+                "field": "authorization.sources",
+                "reason": "source",
+                "source": RULE_SOURCE,
+            },
         )
     c = definition.constraints
     if isinstance(rule, DerivedRule):

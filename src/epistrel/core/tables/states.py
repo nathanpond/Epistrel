@@ -33,6 +33,15 @@ docs/02 §7.1; #185, migration 0084).
   ``(state, scope key)`` with at least one counted active change, its folded ``value``, the
   position of its last change (``since_*``) and ``change_count``. ``scope_key`` is ``''`` for a
   story-scoped State (a primary key column cannot be ``NULL``).
+- **``external_values``** — the projection of ``external_read`` events (#205, migration 0090;
+  ``core.projections.external``): one row per recorded version of an externally owned State's
+  value (FR-EXT-2, FR-STORE-17), keyed by its event (``event_id``) and positioned where it was
+  read (``position_*``: the turn's input, beat 0 and step 0, for a read at turn start; the
+  claim's beat and step for one made on demand during verification; FR-STORE-31). It carries
+  the State (``state_id``), the scope key (``''`` for a story-scoped State), the ``version``
+  (1 for a read; #215's confirmations add later ones), the ``value`` (``NULL``: unknown, #206),
+  its ``source`` and the event's operation (``operation_id``: a read follows its turn's
+  membership through it). Rebuilt from the log; a fork refolds it from the copied events.
 """
 
 from __future__ import annotations
@@ -56,6 +65,7 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB, ExcludeConstraint
 
 from epistrel.core.enums import (
     ClockMode,
+    ExternalValueSource,
     StateChangeKind,
     StateChangeSource,
     StateChangeStatus,
@@ -237,6 +247,32 @@ state_values = Table(
     CheckConstraint("change_count > 0", name="change_count"),
 )
 
+external_values = Table(
+    "external_values",
+    metadata,
+    Column("event_id", ulid_type(), nullable=False),
+    Column("story_id", ulid_type(), nullable=False),
+    Column("operation_id", ulid_type(), nullable=False),
+    Column("state_id", ulid_type(), nullable=False),
+    Column("scope_key", Text, nullable=False, server_default=text("''")),
+    *position_group("position", nullable=False),
+    Column("version", Integer, nullable=False),
+    Column("value", JSONB(none_as_null=True), nullable=True),
+    Column("source", pg_enum(ExternalValueSource, "external_value_source"), nullable=False),
+    PrimaryKeyConstraint("event_id"),
+    CheckConstraint("version > 0", name="version"),
+)
+Index(
+    "ix_external_values_story_state_scope_position",
+    external_values.c.story_id,
+    external_values.c.state_id,
+    external_values.c.scope_key,
+    external_values.c.position_turn,
+    external_values.c.position_slot_k,
+    external_values.c.position_beat,
+    external_values.c.position_step,
+)
+
 __all__ = [
     "ACTIVE_NAME_CONSTRAINT",
     "CLOCK_SETTINGS_CHECK",
@@ -245,6 +281,7 @@ __all__ = [
     "STATE_CHANGES",
     "STATE_DEFINITIONS",
     "STORY_SCOPE_KEY",
+    "external_values",
     "state_changes",
     "state_definitions",
     "state_values",

@@ -86,6 +86,7 @@ async def test_rebuild_no_revision_bump(engine: AsyncEngine) -> None:
         "belief_state": 0,
         "nested_belief_state": 0,
         "state_values": 0,
+        "external_values": 0,
     }
 
     await play_turn(engine, story_id, "turn 3, again")
@@ -175,6 +176,7 @@ def test_history_survives_dropping_and_rebuilding_projections(pg_url: str) -> No
             "belief_state": 0,
             "nested_belief_state": 0,
             "state_values": 0,
+            "external_values": 0,
         }
         assert len(rebuilt.json()["operation_id"]) == 26
 

@@ -287,6 +287,88 @@ class ScriptedProvider:
         return self
 
 
+# -- external States and their recorded reads (#205) ------------------------------------------
+
+
+async def external_gold(
+    engine: AsyncEngine,
+    story_id: str,
+    name: str,
+    *,
+    external_ids: Mapping[str, str] | None = None,
+    **fields: Any,
+) -> Any:
+    """Bind the story to provider ``name`` and declare ``gold`` (``state_support.gold``) owned
+    by it (in a turn, so a fork copies the declaration); answers the stored definition."""
+    from tests import state_support
+
+    await bind(engine, story_id, name, external_ids or {"player": "p-1"})
+    (gold,) = await state_support.define_all(
+        engine, story_id, state_support.gold(owner="external", provider_id=name, **fields)
+    )
+    return gold
+
+
+async def external_reads(engine: AsyncEngine, story_id: str) -> list[Any]:
+    """The story's ``external_read`` events, in log order, with their positions."""
+    async with engine.connect() as conn:
+        found = await conn.execute(
+            text(
+                "SELECT e.id, e.payload, e.category, e.operation_id, e.narrative_turn, "
+                "e.turn_variant, e.beat, e.step FROM events e WHERE e.story_id = :s "
+                "AND e.type = 'external_read' ORDER BY e.seq"
+            ),
+            {"s": story_id},
+        )
+        return list(found)
+
+
+async def external_value_rows(engine: AsyncEngine, story_id: str) -> list[dict[str, Any]]:
+    """The story's ``external_values`` rows (``event_id`` left out), by position."""
+    async with engine.connect() as conn:
+        found = await conn.execute(
+            text(
+                "SELECT * FROM external_values WHERE story_id = :s ORDER BY position_turn, "
+                "position_slot_k, position_beat, position_step, state_id, scope_key"
+            ),
+            {"s": story_id},
+        )
+        return [dict(r._mapping) for r in found]
+
+
+async def reconstruction(engine: AsyncEngine, story_id: str) -> list[tuple[Any, ...]]:
+    """The story's ``external_values`` by names, not ids (comparable across a fork): turn,
+    variant, beat, step, version, value, source, the State's name and the scope character's."""
+    async with engine.connect() as conn:
+        found = await conn.execute(
+            text(
+                "SELECT v.position_turn, v.position_variant, v.position_beat, v.position_step, "
+                "v.version, v.value, v.source::text AS source, d.name AS state, "
+                "c.name AS scope FROM external_values v "
+                "JOIN state_definitions d ON d.id = v.state_id "
+                "LEFT JOIN characters c ON c.id::text = v.scope_key "
+                "WHERE v.story_id = :s ORDER BY 1, 3, 4, 8, 9"
+            ),
+            {"s": story_id},
+        )
+        return [tuple(r) for r in found]
+
+
+async def external_facts(engine: AsyncEngine, story_id: str) -> list[Any]:
+    """The story's facts of provenance ``external``, with their proposition's literal."""
+    async with engine.connect() as conn:
+        found = await conn.execute(
+            text(
+                "SELECT f.id, f.provenance, f.authority, f.visibility, f.source_event_ids, "
+                "f.valid_from, f.tx_to, f.subject_id, p.literal FROM facts f "
+                "JOIN propositions p ON p.id = f.proposition_id WHERE f.story_id = :s "
+                "AND f.provenance = 'external' ORDER BY f.tx_from"
+            ),
+            {"s": story_id},
+        )
+        return list(found)
+
+
 # -- the loopback HTTP stub ---------------------------------------------------------------------
 
 
@@ -414,9 +496,14 @@ __all__ = [
     "Timeout",
     "allowed_hosts",
     "bind",
+    "external_facts",
+    "external_gold",
+    "external_reads",
+    "external_value_rows",
     "http_spec",
     "in_process_spec",
     "read_template",
+    "reconstruction",
     "register",
     "stub_server",
     "unique_name",

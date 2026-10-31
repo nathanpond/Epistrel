@@ -437,6 +437,18 @@ class TimeAwareness(StrEnum):
     NONE = "none"
 
 
+class ExternalValueSource(StrEnum):
+    """Where an ``external_values`` version came from (FR-EXT-2,7,20; #205): a live ``read``,
+    the ``last_known`` recorded value or ``unknown`` under the provider's unavailability policy
+    (#206), or a write's ``confirmation`` carrying the resulting values (#215). Postgres enum
+    ``external_value_source``."""
+
+    READ = "read"
+    LAST_KNOWN = "last_known"
+    UNKNOWN = "unknown"
+    CONFIRMATION = "confirmation"
+
+
 PG_ENUM_TYPES: dict[str, type[StrEnum]] = {
     "event_category": EventCategory,
     "operation_kind": OperationKind,
@@ -476,6 +488,7 @@ PG_ENUM_TYPES: dict[str, type[StrEnum]] = {
     "state_change_status": StateChangeStatus,
     "clock_mode": ClockMode,
     "time_awareness": TimeAwareness,
+    "external_value_source": ExternalValueSource,
 }
 """Postgres enum type name (``<schema>.<name>`` outside ``public``) → the Python enum whose
 values it holds (creation order)."""

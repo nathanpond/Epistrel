@@ -4,7 +4,8 @@ The M2 set is ``transcript_messages``, ``story_heads``, ``story_texts`` (#60) an
 ``lite_summary_segments`` (#72); M4 adds the structured projections over canon,
 ``relationships``, ``placement`` and ``scene_state`` (#137, ``structured``); M5 the belief
 projections over the partitions, ``belief_state`` (#159, ``beliefs``) and ``nested_belief_state``
-(#167); M6 the State values, ``state_values`` (#185, ``states``). Each projection
+(#167); M6 the State values, ``state_values`` (#185, ``states``), and the external values,
+``external_values`` (#205, ``external``: a fold of the ``external_read`` events). Each projection
 is registered with ``register_projection``; ``apply_events`` maintains them inside
 ``Operation.commit()``, and ``rebuild`` refolds them from the log (the structured ones from
 canon).
@@ -19,6 +20,7 @@ from epistrel.core.projections.base import (
     registered_projections,
 )
 from epistrel.core.projections.beliefs import BeliefStateProjection, NestedBeliefStateProjection
+from epistrel.core.projections.external import ExternalValuesProjection
 from epistrel.core.projections.fold import (
     RebuildResult,
     apply_events,
@@ -52,11 +54,15 @@ NESTED_BELIEF_STATE = register_projection(NestedBeliefStateProjection())
 """The nested-belief projection (#167), folded from the story's nested beliefs."""
 STATE_VALUES = register_projection(StateValuesProjection())
 """The State values (#185), folded from the story's active State changes."""
-STORED_STATE = (*STRUCTURED, BELIEF_STATE, NESTED_BELIEF_STATE, STATE_VALUES)
-"""The projections folded from stored state rather than the log; a fork refolds them."""
+EXTERNAL_VALUES = register_projection(ExternalValuesProjection())
+"""The external values (#205), folded from the story's ``external_read`` events."""
+STORED_STATE = (*STRUCTURED, BELIEF_STATE, NESTED_BELIEF_STATE, STATE_VALUES, EXTERNAL_VALUES)
+"""The projections a fork refolds rather than copies: those folded from stored state, and the
+external values (#205), folded from the copied ``external_read`` events (FR-STORE-17)."""
 
 __all__ = [
     "BELIEF_STATE",
+    "EXTERNAL_VALUES",
     "HEADS",
     "LITE_SUMMARY",
     "NESTED_BELIEF_STATE",

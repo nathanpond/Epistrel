@@ -1247,6 +1247,8 @@ class Operation:
                 provenance=staged.provenance,
                 type=staged.type,
                 payload=staged.payload,
+                step=staged.step or 0,
+                slot_k=self.slot_k,
             )
             for event_id, seq, staged in zip(ids, self.seqs, self._staged, strict=True)
         ]

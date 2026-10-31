@@ -1000,6 +1000,7 @@ class Engine:
                     concurrency=concurrency,
                     planned=item.request.get("turn_budget"),
                     lexical=lexical_backend(self.settings.lexical_backend),
+                    providers=self.in_process_providers,
                 ),
             )
             return
@@ -1811,6 +1812,7 @@ class Engine:
                     gate=gate,
                     queue_turn=queue_turn,
                     lexical=lexical_backend(self.settings.lexical_backend),
+                    providers=self.in_process_providers,
                 )
             return await lite.respond(
                 self.db,
@@ -2644,6 +2646,7 @@ class Engine:
                     principal=principal,
                     gate=gate,
                     lexical=lexical_backend(self.settings.lexical_backend),
+                    providers=self.in_process_providers,
                 )
             return await lite.regenerate(
                 self.db, self.models, ctx, story_id, request, principal=principal, gate=gate

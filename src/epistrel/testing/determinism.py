@@ -259,6 +259,11 @@ ORDER: dict[str, str] = {
         "t.slot_k, t.beat, t.step, t.turn_variant, t.tx_from, t.kind, t.reason"
     ),
     "state_values": f"{_STORY_RANK}, {_STATE_RANK}, {_SCOPE_RANK} NULLS FIRST",
+    # External values (#205): by State, scope and the position they were read at.
+    "external_values": (
+        f"{_STORY_RANK}, {_STATE_RANK}, {_SCOPE_RANK} NULLS FIRST, t.position_turn, "
+        "t.position_slot_k, t.position_beat, t.position_step, t.position_variant, t.version"
+    ),
     # The read set's change index (#136): by revision, then valid window and change kind.
     "proposition_changes": (
         f"{_STORY_RANK}, t.timeline_revision, t.tx_time, t.valid_window, t.change, t.holder"

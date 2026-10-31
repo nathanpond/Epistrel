@@ -371,6 +371,29 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
     provider = provider_support.unique_name("deleted")
     await provider_support.register(engine, provider_support.in_process_spec(provider))
     await provider_support.bind(engine, story_id, provider, {"player": "p-1"})
+    # A recorded external read (#205): its event and its ``external_values`` row.
+    async with Operation(
+        engine,
+        story_id=story_id,
+        kind=OperationKind.CONTROL,
+        principal="p-author",
+        bumps_revision=True,
+    ) as op:
+        op.append(
+            "external_read",
+            {
+                "provider": provider,
+                "value_name": "gold",
+                "state_id": new_ulid(),
+                "scope_key": character_id,
+                "query_hash": "0" * 64,
+                "value": 7,
+                "raw_hash": "0" * 64,
+                "read_at": clock.now().isoformat(),
+            },
+            provenance=Provenance.SYSTEM,
+        )
+        await op.commit()
 
 
 def _due() -> datetime:

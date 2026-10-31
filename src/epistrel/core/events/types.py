@@ -8,7 +8,8 @@ outputs are ``audit``; truncate, untruncate, swap, fork, settings and story/char
 
 from __future__ import annotations
 
-from typing import Any
+from datetime import datetime
+from typing import Any, Literal
 
 from pydantic import ConfigDict, Field, JsonValue
 
@@ -585,6 +586,39 @@ class StateSet(EventPayload):
 
     source: str
     kind: str
+
+
+EXTERNAL_READ = "external_read"
+"""The event type of a recorded external-data read (#205)."""
+EXTERNAL_READ_SOURCES: tuple[str, ...] = ("live", "last_known", "unknown")
+"""``ExternalRead.source``: a ``live`` read, or the value the provider's unavailability policy
+pinned instead (#206: the ``last_known`` recorded value, citing ``origin_event_id``, or
+``unknown``)."""
+
+
+@register(EXTERNAL_READ, category=EventCategory.INPUT)
+class ExternalRead(EventPayload):
+    """One read of an externally owned State's value (FR-EXT-2,4, FR-STORE-17; #205): the
+    single source of truth for that reading. ``provider`` and ``value_name`` name the
+    provider's value, ``state_id`` and ``scope_key`` the State it owns (``None``: a story-scoped
+    State), ``query_hash`` the request (provider, value, the story's binding and the scope
+    key), ``value`` what it answered (the State's stored form; ``None``: unknown), ``raw_hash``
+    the SHA-256 of the raw answer (the raw body is never stored nor logged), ``read_at`` when,
+    and ``source`` how it was obtained (``EXTERNAL_READ_SOURCES``). Positioned at the turn's
+    input (beat 0, step 0) for a read at turn start, at a claim's beat and step for one made on
+    demand during verification; ``core.projections.external`` folds it into
+    ``external_values``."""
+
+    provider: str
+    value_name: str
+    state_id: str
+    scope_key: str | None = None
+    query_hash: str
+    value: JsonValue = None
+    raw_hash: str = ""
+    read_at: datetime
+    source: Literal["live", "last_known", "unknown"] = "live"
+    origin_event_id: str | None = Field(default=None, exclude_if=lambda v: v is None)
 
 
 @register("belief_authored", category=EventCategory.CONTROL)

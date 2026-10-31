@@ -840,6 +840,8 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "positions, refolded by erasure's rebuilt stage (#167)",
     "state_values": "a projection of State changes, which are erased and redacted: ids, folded "
     "values and positions, refolded by erasure's rebuilt stage (#185)",
+    "external_values": "a projection of external_read events, which are indexed: ids, a "
+    "provider's typed value and positions, refolded by erasure's rebuilt stage (#205)",
     # Deployment tables (#334: the coverage test enumerates every table with text or JSON).
     "alembic_version": "the schema migration's revision id",
     "schema_meta": "schema bookkeeping keys and values",

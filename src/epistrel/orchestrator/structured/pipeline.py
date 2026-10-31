@@ -251,6 +251,7 @@ from epistrel.core.settings_schema import (
     VerifySettings,
     resolve_generation,
 )
+from epistrel.core.states import external as external_values
 from epistrel.core.tables import entity_aliases, events, facts, operations, stories
 from epistrel.core.tables.characters import TRUE_AGE_MAX, TRUE_AGE_MIN
 from epistrel.core.tables.commitments import thunks
@@ -360,6 +361,9 @@ from epistrel.orchestrator.policies.output_gate import (
 )
 from epistrel.orchestrator.policies.rebase import output_passes, output_recheck
 from epistrel.orchestrator.policies.store import guard_context
+from epistrel.orchestrator.providers import external_facts
+from epistrel.orchestrator.providers.in_process import InProcessRegistry
+from epistrel.orchestrator.providers.pinned import PinnedReads
 from epistrel.orchestrator.repair import ladder as repair_ladder
 from epistrel.orchestrator.repair.ladder import Recheck, RepairLadder, RepairResult
 from epistrel.orchestrator.structured import effects as state_effects
@@ -518,6 +522,7 @@ async def respond(
     gate: lite.Gate,
     queue_turn: lite.QueueTurn,
     lexical: LexicalSearch | None = None,
+    providers: InProcessRegistry | None = None,
 ) -> RespondResult:
     """Play one structured turn; see the module docstring (the prechecks are Lite's)."""
     started = ctx.received_at if ctx.received_at is not None else time.monotonic()
@@ -617,6 +622,7 @@ async def respond(
                     configuration=lite._captured(concurrency),
                     timing=timing,
                     lexical=lexical,
+                    providers=providers,
                     plan=plan,
                 )
         finally:
@@ -636,6 +642,7 @@ async def run_queued(
     concurrency: Concurrency,
     planned: dict[str, Any] | None = None,
     lexical: LexicalSearch | None = None,
+    providers: InProcessRegistry | None = None,
 ) -> RespondResult:
     """Play a queued structured turn (#63's drainer took the slot for it); see Lite's."""
     story = await read_story_cast(db, story_id)
@@ -689,6 +696,7 @@ async def run_queued(
             configuration=lite._captured(concurrency),
             timing=timing,
             lexical=lexical,
+            providers=providers,
             plan=plan,
         )
 
@@ -703,6 +711,7 @@ async def regenerate(
     principal: str,
     gate: lite.Gate,
     lexical: LexicalSearch | None = None,
+    providers: InProcessRegistry | None = None,
 ) -> RegenerateResult:
     """Regenerate a structured story's head turn (FR-COMMIT-8, FR-STORE-12; #66, #154): the
     recorded input played again as a new variant, reading the story as it stood before the turn
@@ -784,6 +793,7 @@ async def regenerate(
                     configuration=lite._captured(concurrency),
                     timing=timing,
                     lexical=lexical,
+                    providers=providers,
                     regenerating=recorded,
                     plan=plan,
                 )
@@ -1871,6 +1881,20 @@ async def _check_turn(
             for claim in outcome.claims:
                 claim = await _cued(conn, story_id, claim, scopes, env)
                 by_beat.setdefault(claim.beat, []).append(claim)
+        pinned_reads = external_values.current()
+        if isinstance(pinned_reads, PinnedReads):
+            # #205: every external State a claim resolves to is pinned before any claim is
+            # checked (on demand, at the claim's beat and step), so the attempt's lookups agree.
+            await pinned_reads.ensure(
+                (
+                    claim.proposition,
+                    int(claim.beat or 0),
+                    int(getattr(scopes.get(claim.beat or -1), "step", 0) or 0),
+                )
+                for claims in by_beat.values()
+                for claim in claims
+                if claim.proposition is not None
+            )
 
         def scope_of(claim: DetectedClaim) -> tuple[str, ...] | None:
             beat = scopes.get(claim.beat or -1)
@@ -3871,6 +3895,7 @@ async def play(
     configuration: StoryProfile,
     timing: lite.TurnTiming | None = None,
     lexical: LexicalSearch | None = None,
+    providers: InProcessRegistry | None = None,
     regenerating: RecordedTurn | None = None,
     plan: planner.TurnPlan | None = None,
 ) -> RespondResult:
@@ -3919,6 +3944,9 @@ async def play(
     typed_say, typed_do = say, do
     books: list[state_effects.Book] = [state_effects.Book(story_id)]
     """#187: the attempt's States (``effects.load``)."""
+    pins = PinnedReads(db, story_id, in_process=providers or InProcessRegistry())
+    """#205: the turn's pinned external reads, shared by every primary; each attempt's read
+    phase resets them, so a regenerated turn reads live again and a rebased one keeps them."""
     state_settled: list[Any] = []
     """#187: the State findings settled without the ladder (``settle_states``)."""
 
@@ -4130,6 +4158,7 @@ async def play(
 
     async def begin(conn: AsyncConnection) -> TurnRead:
         clock.reset()
+        pins.reset()  # #205: a new attempt reads every external value live again
         reading = time.perf_counter()
         read = await read_turn(
             conn,
@@ -4315,6 +4344,11 @@ async def play(
         async with db.connect() as conn:
             books[:] = [await state_effects.load(conn, story_id, settings)]
         book = books[0]
+        # #205: the attempt's external reads at the turn's input (every player-visible external
+        # State in the actor's scope), outside any transaction; the narrator's tracked values
+        # list only what is pinned.
+        await pins.start(read.turn, read.actor.id)
+        book.external = pins.by_name()
         tracked, tracked_syntax = book.narrator_section()
         by_draft: dict[int, Rendered] = {}
         joined = joined_input(say, do)
@@ -5121,6 +5155,12 @@ async def play(
             if any(b.effects for b in checked.beats):
                 op.add_commit_step(partial(apply_effects, beats=list(checked.beats)))
         op.add_commit_step(partial(write_turn, read=read, rendered=rendered, checked=checked))
+        # #205: the attempt's pinned reads, recorded; a committed reference to one is an
+        # external fact citing its event (FR-EXT-4).
+        pins.stage(op)
+        references = external_facts.references(pins, checked.checked)
+        if references:
+            op.add_commit_step(partial(external_facts.commit, op=op, references=references))
         if regenerating is not None:
             op.add_commit_step(fail_queue)
 
@@ -5785,7 +5825,7 @@ async def play(
     retiring = () if regenerating is None else await _retiring(db, story_id, regenerating.turn)
     # A regenerate reads the story as it stood before the variant it replaces (#154): that
     # variant's records are left out of every derived read; its own commit retires them.
-    with excluding(retiring):
+    with excluding(retiring), external_values.pinning(pins):
         await run_with_revalidation(
             op,
             begin=begin,

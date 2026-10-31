@@ -65,14 +65,14 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core import states
 from epistrel.core.concurrency import RebaseCheckFailed
-from epistrel.core.enums import StateChangeKind, StateChangeSource
+from epistrel.core.enums import StateChangeKind, StateChangeSource, StateOwner
 from epistrel.core.errors import ModuleOff, StateNotFound
 from epistrel.core.membership import Position, step_of
 from epistrel.core.profiles import schema
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.readset import StructuredReadSet, register_rebase_check
 from epistrel.core.resolution.entities import NARRATOR
-from epistrel.core.states import StateChange, StateDefinition, UndefinedType
+from epistrel.core.states import StateChange, StateDefinition, Undefined, UndefinedType
 from epistrel.core.states import effects as rules
 from epistrel.core.states.effects import Finding, Planned
 from epistrel.core.states.model import Value
@@ -109,6 +109,9 @@ class Book:
     values: dict[rules.Key, Value | UndefinedType] = field(default_factory=dict)
     names: dict[str, str] = field(default_factory=dict)
     entity_names: dict[str, str] = field(default_factory=dict)
+    external: dict[tuple[str, str | None], Value | None] = field(default_factory=dict)
+    """#205: the turn's pinned external values by ``(State name, scope key)``
+    (``PinnedReads.by_name``): the narrator sees an externally owned State only when pinned."""
 
     @property
     def on(self) -> bool:
@@ -141,15 +144,21 @@ class Book:
         if not self.on or not self.definitions:
             return (), ""
         found = list(self.definitions.values())
-        lines = tuple(
-            rules.narrator_line(
-                d,
-                {scope: v for (name, scope), v in self.values.items() if name == d.name},
-                self.names,
-            )
-            for d in found
-        )
-        return lines, rules.syntax(found, character=False)
+        lines: list[str] = []
+        for d in found:
+            if d.owner is StateOwner.EXTERNAL:
+                # #205: the pinned value only; an unpinned external State is absent.
+                pinned = {
+                    scope: Undefined if v is None else v
+                    for (name, scope), v in self.external.items()
+                    if name == d.name
+                }
+                if pinned:
+                    lines.append(rules.narrator_line(d, pinned, self.names))
+                continue
+            values = {scope: v for (name, scope), v in self.values.items() if name == d.name}
+            lines.append(rules.narrator_line(d, values, self.names))
+        return tuple(lines), rules.syntax(found, character=False)
 
 
 def level_of(settings: ProfileSettings) -> str | None:

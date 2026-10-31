@@ -17,6 +17,9 @@ only through it (ADR-160's owner paths):
   (``core.states.folded_at``) on the active timeline through the claim's position, for the
   subjects asked (every story State, and the per-character States of the subjects that are
   characters), as the viewpoint may read it: a ``hidden`` State only ``omniscient``.
+  An externally owned State's value is its pinned read (#205, ``core.states.external``): the
+  current turn's pin, else the recorded version at or before the position; one with none is
+  left out (a claim on it is ``novel``).
 - ``verdict`` (pure): over a canon holder's values, a claim is ``supported`` when its value
   matches the fold (a number within the State's ``constraints.tolerance``; an enum and a boolean
   exactly; text case-insensitively) and ``contradicted`` otherwise (``functional_key``; a
@@ -63,7 +66,7 @@ from typing import TYPE_CHECKING, Final
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from epistrel.core.enums import StateScope, StateType, StateVisibility
+from epistrel.core.enums import StateOwner, StateScope, StateType, StateVisibility
 from epistrel.core.propositions.model import (
     Interval,
     LiteralKind,
@@ -435,24 +438,43 @@ async def read(
     per-character States of ``subjects`` (``None``: every character), folded through
     ``through``, as ``viewpoint`` may read them, ordered by State and subject."""
     from epistrel.core import states
+    from epistrel.core.states import external
 
     defined = [s for s in await states.definitions(conn, story_id) if _visible(s, viewpoint)]
     if not defined:
         return []
     cast = await _characters(conn, story_id)
     wanted = cast if subjects is None else cast & frozenset(subjects)
-    folded = await states.folded_at(conn, story_id, defined, through=through)
+    owned = [s for s in defined if s.owner is not StateOwner.EXTERNAL]
+    folded = await states.folded_at(conn, story_id, owned, through=through)
+
+    def keys_of(state: StateDefinition) -> list[str | None]:
+        return [None] if state.scope is StateScope.STORY else sorted(wanted, key=str)
+
+    # #205: an externally owned State's value is its pinned read, never a fold; one with no
+    # pin (not read this turn, or never recorded) has no value here.
+    remote = external.external(defined)
+    pinned = await external.pinned_values(
+        conn,
+        story_id,
+        remote,
+        [(str(s.id), k) for s in remote for k in keys_of(s)],
+        through=through,
+    )
     found: list[OwnedValue] = []
     for state in defined:
         assert state.id is not None  # noqa: S101 - a stored definition has its id
-        keys: list[str | None] = (
-            [None] if state.scope is StateScope.STORY else sorted(wanted, key=str)
-        )
-        for scope_key in keys:
-            fold = folded.get((state.id, scope_key))
-            value: Value | UndefinedType | None = (
-                fold.value if fold is not None else state.initial_value
-            )
+        is_external = state.owner is StateOwner.EXTERNAL
+        for scope_key in keys_of(state):
+            value: Value | UndefinedType | None
+            if is_external:
+                pin = pinned.get((state.id, scope_key))
+                if pin is None:
+                    continue
+                value = pin.value
+            else:
+                fold = folded.get((state.id, scope_key))
+                value = fold.value if fold is not None else state.initial_value
             literal = (
                 None if value is None or isinstance(value, UndefinedType) else value_literal(value)
             )

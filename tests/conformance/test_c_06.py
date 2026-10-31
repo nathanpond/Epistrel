@@ -15,11 +15,16 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.core.enums import OperationKind
 from epistrel.core.ids import new_ulid
+from epistrel.core.states import verify as sv
 from epistrel.engine import Engine
 from epistrel.orchestrator.providers import registry
 from epistrel.orchestrator.providers.port import Binding, ProviderUnavailable
+from tests import canon_support as canon
+from tests import effect_support as es
 from tests import genesis_support as g
+from tests import multi_support as ms
 from tests import provider_support as ps
 from tests import state_support as ss
 from tests.auth_support import auth_settings
@@ -27,6 +32,7 @@ from tests.event_support import rows
 from tests.respond_support import body as respond_body
 from tests.respond_support import respond_client
 from tests.story_support import READ, WRITE, create, story_body
+from tests.structured_turn_support import beat, structured_story, turn_report
 
 pytestmark = pytest.mark.integration
 
@@ -420,3 +426,92 @@ async def test_c_06__bindings(pg_url: str, engine: AsyncEngine, states_delivered
         )
         assert played.status_code == 200, played.text
         await ss.set_level(engine, story_id, None)
+
+
+async def _gold_turn(client: Any, stub: Any, story: str, cal: str, narration: str) -> Any:
+    stub.reset()
+    es.narrator(stub, es.render(beat("narration", narration)))
+    ms.renders_for(stub, "Mira", es.render(beat("say", "Mind the edge.")))
+    answer = await client.post(
+        f"/stories/{story}/respond",
+        json=respond_body(cal, None, do="checks his purse"),
+        headers=WRITE,
+    )
+    assert answer.status_code == 200, answer.text
+    return answer
+
+
+@pytest.mark.part("M6", "FR-EXT-2")
+@pytest.mark.parametrize("transport", ["in_process", "http"])
+async def test_c_06__live_read(
+    pg_url: str,
+    engine: AsyncEngine,
+    states_delivered: None,
+    drained_embedding_jobs: None,
+    transport: str,
+) -> None:
+    """Over either adapter: a turn showing an externally owned State reads it live during
+    generation (once), and the verify path routes a claim on the value to the pinned version
+    (#191's ``state_value`` lookup), never to canon prose and never to a second read: "300" is
+    ``supported``, "500" ``contradicted`` and repaired.
+
+    Complement asserted: a planted canon fact that Cal's gold is 500 answers nothing (the 500
+    claim stays contradicted, the 300 claim supported)."""
+    settings = auth_settings(pg_url, model_adapter="stub")
+    name = ps.unique_name("ledger")
+    with ps.stub_server() as server:
+        server.route("GET", "/players/p-1/gold", ps.Reply(200, {"balance": 300}))
+        async with (
+            ps.allowed_hosts(engine, [server.host]),
+            respond_client(settings, engine) as (client, lib),
+        ):
+            stub = lib.models.stub
+            fake = ps.ScriptedProvider(name)
+            if transport == "http":
+                await ps.register(engine, ps.http_spec(server.base_url, name))
+            else:
+                await ps.register(engine, ps.in_process_spec(name))
+                fake.attach(lib)
+                fake.script("gold", 300)
+            story, ids = await structured_story(client, "Cal", "Mira")
+            cal = ids["Cal"]
+            await ss.set_level(engine, story, "on")
+            gold = await ps.external_gold(engine, story, name)
+
+            def reads() -> int:
+                if transport == "http":
+                    return len([r for r in server.received if r.method == "GET"])
+                return len(fake.reads)
+
+            # A planted canon fact with another value.
+            await canon.commit(
+                engine,
+                story,
+                sv.proposition(gold.id, cal, sv.number_literal(500)),
+                kind=OperationKind.CONTROL,
+                provenance="author",
+            )
+            for said, kind in (("300", "supported"), ("500", "contradicted")):
+                before = reads()
+                answer = await _gold_turn(
+                    client, stub, story, cal, f"Rain taps. Cal has {said} gold left."
+                )
+                assert reads() == before + 1, said  # one live read per turn, none to verify
+                (prompt,) = es.prompts(stub, "NarratorRender")
+                assert "300" in prompt
+                report = await turn_report(engine, story)
+                (verdict,) = [
+                    v
+                    for v in report["verify"]["verdicts"]
+                    if v.get("kind") in ("supported", "contradicted")
+                ]
+                assert verdict["kind"] == kind, said
+                text_out = answer.json()["message"]["text"]
+                if kind == "contradicted":
+                    assert [r["rung"] for r in report["repairs"]] == [1]
+                    assert "500 gold" not in text_out
+                else:
+                    assert "300 gold left" in text_out
+            values = [r.payload["value"] for r in await ps.external_reads(engine, story)]
+            assert values == [300, 300]
+            await ss.set_level(engine, story, None)

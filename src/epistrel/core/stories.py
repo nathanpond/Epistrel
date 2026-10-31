@@ -182,7 +182,12 @@ from epistrel.core.tables.propositions import (
 )
 from epistrel.core.tables.providers import story_provider_bindings
 from epistrel.core.tables.readset import proposition_changes
-from epistrel.core.tables.states import state_changes, state_definitions, state_values
+from epistrel.core.tables.states import (
+    external_values,
+    state_changes,
+    state_definitions,
+    state_values,
+)
 from epistrel.core.tables.utterances import utterances
 from epistrel.core.trimmed import trim_as_sent
 
@@ -243,6 +248,9 @@ STORY_TABLES: tuple[Table, ...] = (
     state_values,
     state_changes,
     state_definitions,
+    # External values (#205): the projection of the ``external_read`` events (rebuilt by a
+    # fork), no foreign key.
+    external_values,
     # Memory records (#135): a derived table, before the operations it references.
     memories,
     # Speech acts (#150): a derived table, before the operations it references.

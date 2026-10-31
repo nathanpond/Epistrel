@@ -868,6 +868,7 @@ async def verify_detected(
             believer=believer,
             intent=None if intent_of is None or believer is None else intent_of(claim),
             cites=() if cites_of is None or believer is None else tuple(cites_of(claim)),
+            giver=claim.giver,  # #519: a detected transfer's giver (the hand-over exception)
             # #146's resolution exemption: a claim filling an open thunk resolves it, so
             # binding the thunk to a modeled character is reconciliation's to judge (#154,
             # #165), not a permission denial.

@@ -20,7 +20,8 @@ its prose was declared. ``detect_render(beats, …)`` (once per render, every be
   (``core.verify.protected``: names, aliases and values hidden from the speaker; never over the
   player's own input, whose text asserts only what it states, #567). Each hit is a
   #140 ``ClaimSketch`` and goes through ``normalize``: possession → ``holds``; transfer →
-  ``holds`` for the recipient (and a negated ``holds`` for the giver); consumption →
+  ``holds`` for the recipient (and a negated ``holds`` for the giver; when the giver is the
+  clause's subject, the recipient's claim names it, ``giver``, #519); consumption →
   ``consumed``; injury → ``injured`` (its cause a qualifier); movement → ``located_at`` (a
   departure from a named place, "left the orchard", "out of the orchard": a negated
   ``located_at`` of it, #440; a departure with no place: a negated ``located_at`` of the
@@ -400,6 +401,11 @@ class DetectedClaim:
     speaker's own assertion."""
     recalled: str | None = field(default=None, compare=False, repr=False)
     """#172: a ``recall`` claim's recalled content (never in a payload)."""
+    giver: str | None = None
+    """#519: the entity that hands the item over, on a transfer's affirmed ``holds`` of its
+    recipient when the giver is the clause's subject ("Jenni hands Cal the key"): the
+    permission check reads it (a render's own character handing the player's character an
+    item is that render's own action)."""
 
     @property
     def think_leak(self) -> bool:
@@ -617,6 +623,8 @@ class _Beat:
     uncovered: bool = False
     """An uncovered mention that became no claim (``UNCOVERED_MENTION``)."""
     sketches: list[tuple[str, ClaimSketch, tuple[int, int]]] = field(default_factory=list)
+    givers: dict[int, str] = field(default_factory=dict)
+    """#519: a transfer sketch's giver, by its index in ``sketches``."""
 
     def hit(self, category: str) -> None:
         self.hits[category] = self.hits.get(category, 0) + 1
@@ -899,6 +907,8 @@ def _transfer(
         return False
     item = str(items[0].entity_id)
     if recipient is not None:
+        if polarity is Polarity.AFFIRMED:
+            beat.givers[len(beat.sketches)] = subject
         beat.sketches.append(("transfer", _sketch(recipient, "holds", item, polarity, span), span))
     if polarity is Polarity.AFFIRMED:
         beat.sketches.append(
@@ -1121,13 +1131,13 @@ def _detect_beat(
     lone += _times(work, env.scene_entity)
     mention_claims = _mentions(work, _declared_ids(beat), env.scene_entity, seed=seed)
     found_claims: list[DetectedClaim] = []
-    for category, sketch, _span in [*work.sketches, *lone]:
+    for i, (category, sketch, _span) in enumerate([*work.sketches, *lone]):
         found = _normalize_one(sketch, beat.speaker, position, env, context)
         if isinstance(found, Unnormalizable) and sketch.literal is None:
             work.noise += 1  # an unresolved common noun: noise, never a claim
             work.risky.add(category)
             continue
-        found_claims.append(_claim(index, beat, category, sketch, found))
+        found_claims.append(_claim(index, beat, category, sketch, found, work.givers.get(i)))
     for _category, sketch_or_reason, span in mention_claims:
         if isinstance(sketch_or_reason, Unnormalizable):
             found_claims.append(
@@ -1163,7 +1173,11 @@ def _detect_beat(
         # nested beliefs: not a second claim.
         if target is not None and (not claim.protected or claims[target].attribution is not None):
             old = claims[target]
-            claims[target] = replace(old, merged=tuple(dict.fromkeys((*old.merged, "detector"))))
+            claims[target] = replace(
+                old,
+                merged=tuple(dict.fromkeys((*old.merged, "detector"))),
+                giver=old.giver or claim.giver,  # #519: the text names who handed it over
+            )
             continue
         claims.append(claim)
         if claim.category in RISK_CATEGORIES:
@@ -1197,6 +1211,7 @@ def _claim(
     category: str,
     sketch: ClaimSketch,
     found: Proposition | Unnormalizable,
+    giver: str | None = None,
 ) -> DetectedClaim:
     start, end = sketch.span or (0, len(beat.text))
     return DetectedClaim(
@@ -1208,6 +1223,7 @@ def _claim(
         proposition=found if isinstance(found, Proposition) else None,
         unnormalized=found if isinstance(found, Unnormalizable) else None,
         sketch=sketch,
+        giver=giver,
     )
 
 

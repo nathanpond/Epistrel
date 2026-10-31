@@ -18,6 +18,10 @@ and hands me the key."
   is ever written from the input (the complement), and the rest of the input stands. Placed in the
   kitchen while Cal is in the parlor, Jenni's narrated action is dropped (``not_present``) and
   nothing of hers is recorded.
+- ``test_s_player_authority__hand_over`` (#519): asked for the key under ``own_character``,
+  Jenni complies with the obvious action, "Jenni hands Cal the key." in her own render. The
+  hand-over is her action (the player's character only receives it), so it survives without a
+  repair and is canon.
 - ``test_s_player_authority__viewpoint`` (#561): under ``co_author`` with per-character
   partitions, a narration breaking Jenni's viewpoint (``could_not_know``, ``contradicted``,
   ``not_perceived``) is rejected and nothing is recorded; a narrated ``say`` her beliefs hold
@@ -214,6 +218,57 @@ async def test_s_player_authority(
         assert report["rejected"] == [{"text": HANDS, "character_id": jenni, "code": "not_present"}]
         made = (await st.utterances(engine, story))[before:]
         assert jenni not in {u.speaker_character_id for u in made}
+
+
+GIVES = "Jenni hands Cal the key."
+
+
+@pytest.mark.integration
+@pytest.mark.part("M5", "FR-RESP-11")
+async def test_s_player_authority__hand_over(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#519: under ``own_character``, asked for the key, Jenni complies with the obvious action,
+    handing it over in her own render. The hand-over is her observable action (the player's
+    character only receives the key), so it survives without a repair: nothing is denied, the
+    beat is recorded as rendered, and the transfer is canon (provenance ``render``)."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        story, ids = await st.structured_story(client, "Cal", "Jenni", "Bobby")
+        async with engine.begin() as conn:
+            key = await store.add_entity(conn, story, "item", "the key")
+        stub = epistrel.models.stub
+        cal, jenni = ids["Cal"], ids["Jenni"]
+        assert await _authority(client, story) == "own_character"
+        stub.script("generation", [st.render(st.beat("do", GIVES))])
+        answer = await respond(client, story, body(cal, None, do=HANDS))
+        assert answer.status_code == 200, answer.text
+        report = await st.turn_report(engine, story)
+        assert report["player_authority"]["requests"][0]["outcome"] == "complied"
+        assert report["verify"]["denied"] == []
+        assert "repairs" not in report  # no repair ran (the key is absent then)
+        assert {v["permission"] for v in report["verify"]["verdicts"]} == {"permitted:own"}
+        done = await rows(
+            engine,
+            "SELECT payload->>'text' AS text FROM events WHERE story_id = :s "
+            "AND type = 'beat_do' AND character_id = :c",
+            s=story,
+            c=jenni,
+        )
+        assert [d.text for d in done] == [GIVES]
+        assert {f.provenance for f in await _key_facts(engine, story, key)} == {"render"}
+        held = await rows(
+            engine,
+            "SELECT e.character_id, p.polarity::text AS polarity FROM facts f "
+            "JOIN propositions p ON p.id = f.proposition_id "
+            "JOIN entities e ON e.id = p.subject_id AND e.story_id = f.story_id "
+            "WHERE f.story_id = :s AND p.object_id = :k",
+            s=story,
+            k=key,
+        )
+        assert {(h.character_id, h.polarity) for h in held} == {
+            (cal, "affirmed"),
+            (jenni, "negated"),
+        }
 
 
 NODS = "Jenni nods at Bobby, who holds the key."

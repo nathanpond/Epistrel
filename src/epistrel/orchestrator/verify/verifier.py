@@ -532,6 +532,7 @@ class ClaimSource(Protocol):
         position: tuple[int, int] | None,
         protected: bool,
         resolves: str | None = None,
+        giver: str | None = None,
     ) -> Permission | None: ...
 
     async def anchor(
@@ -600,6 +601,7 @@ class RecordsSource:
         position: tuple[int, int] | None,
         protected: bool,
         resolves: str | None = None,
+        giver: str | None = None,
     ) -> Permission | None:
         del position
         facts = PermissionFacts(
@@ -610,6 +612,7 @@ class RecordsSource:
             allow_new_arrivals=self.allow_new_arrivals,
             protected=protected,
             resolves=resolves,
+            giver=giver,
         )
         return permissions.permission(claim, asserter, permissions.owner_of(claim, facts), facts)
 
@@ -697,6 +700,7 @@ class CanonSource:
         position: tuple[int, int] | None,
         protected: bool,
         resolves: str | None = None,
+        giver: str | None = None,
     ) -> Permission | None:
         return await permissions.check(
             self.conn,
@@ -709,6 +713,7 @@ class CanonSource:
             registry=await self.registry(),
             remember=self.remember,
             resolves=resolves,
+            giver=giver,
         )
 
     async def anchor(
@@ -1439,12 +1444,14 @@ class Verifier:
         believer: str | None = None,
         intent: str | None = None,
         cites: Sequence[str] = (),
+        giver: str | None = None,
     ) -> VerifyResult | None:
         """``claim``'s verdict as ``viewpoint`` may know it, at narrative ``position`` (canon
         written at or before it); ``None`` when the story's verification is off. A claim that
         ends ``novel`` passes ``asserter``'s permission check (``protected``: the claim's text
         matched protected content, #148's detector; ``resolves``: the open thunk the claim fills,
-        #146's resolution exemption) before it can be canonized or repaired. ``believer`` (#166:
+        #146's resolution exemption; ``giver``: a detected transfer's giver, #519's hand-over
+        exception) before it can be canonized or repaired. ``believer`` (#166:
         the speaker of a first-person ``say``) adds the belief dimension and the classification,
         with the beat's declared ``intent`` and its ``think``'s ``cites``."""
         if not self.config.on:
@@ -1470,7 +1477,7 @@ class Verifier:
             result = await self._hidden(result, claim, holder, position)
         if asserter is not None and result.kind is VerdictKind.NOVEL:
             result = await self._permit(
-                result, claim, asserter, at, protected=protected, resolves=resolves
+                result, claim, asserter, at, protected=protected, resolves=resolves, giver=giver
             )
         if believer is not None and self.beliefs is not None:
             result = await self._speech(result, claim, believer, intent, cites, position)
@@ -1774,9 +1781,15 @@ class Verifier:
         *,
         protected: bool,
         resolves: str | None = None,
+        giver: str | None = None,
     ) -> VerifyResult:
         found = await self.source.permission(
-            claim, asserter, position=at.position, protected=protected, resolves=resolves
+            claim,
+            asserter,
+            position=at.position,
+            protected=protected,
+            resolves=resolves,
+            giver=giver,
         )
         anchor = None
         if isinstance(found, Permitted):

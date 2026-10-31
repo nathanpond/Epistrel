@@ -1,14 +1,33 @@
 """Unit checks of ``core.verify.permission`` outside the M4 parts (#144): #180's co-author
-exception (which replaced M4's stub), #176's reactive exception, and the reason precedence.
-S-NOVELTY-PERMISSION's M4 matrix is in ``tests/scenario/test_s_novelty_permission.py``."""
+exception (which replaced M4's stub), #176's reactive exception, #519's hand-over exception,
+and the reason precedence. S-NOVELTY-PERMISSION's M4 matrix is in
+``tests/scenario/test_s_novelty_permission.py``."""
 
 from __future__ import annotations
 
 import pytest
 
+from epistrel.core.propositions.model import Polarity
+from epistrel.core.propositions.vocabulary import CORE_BY_NAME
 from epistrel.core.verify import permission as pm
-from epistrel.core.verify.permission import Asserter, Basis, Denied, Permitted, Reason
-from tests.scenario.test_s_novelty_permission import BOBBY, CAL, CAMP, JENNI, KITCHEN, decide
+from epistrel.core.verify.permission import (
+    Asserter,
+    Basis,
+    Denied,
+    PermissionFacts,
+    Permitted,
+    Reason,
+)
+from tests import novelty_support as ns
+from tests.scenario.test_s_novelty_permission import (
+    BOBBY,
+    CAL,
+    CAMP,
+    ENTITIES,
+    JENNI,
+    KITCHEN,
+    decide,
+)
 
 
 def test_co_author_exception() -> None:
@@ -63,3 +82,38 @@ def test_reason_precedence() -> None:
         Reason.STATE_CHANGE,
     )
     assert pm.PRECEDENCE[-1] is Reason.PROTECTED_CONTENT
+
+
+KEY = "01JD00000000000000000000K1"
+"""An item no modeled character is (absent from ``ENTITIES``: world texture)."""
+
+
+def test_hand_over_exception() -> None:
+    """#519 (owner's option (c), FR-VERIFY-11): Jenni's render handing Cal (the player's
+    character) the key is her own action, so ``holds(Cal, key)`` with the detected giver Jenni
+    is permitted (``own``). Every other claim about Cal is unchanged and stays
+    ``player_character``: no giver ("Cal picks up the key", Cal acting), another character as
+    the giver (Bobby), another render than the giver's, a director pass, a modeled character
+    as the "item", a placement, and a negated ``holds``. Protected content and locked canon
+    still win."""
+    jenni = Asserter("character", JENNI)
+    assert decide(CAL, "holds", KEY, jenni, giver=JENNI) == Permitted(Basis.OWN)
+    assert decide(CAL, "holds", KEY, jenni) == Denied(Reason.PLAYER_CHARACTER)
+    assert decide(CAL, "holds", KEY, jenni, giver=BOBBY) == Denied(Reason.PLAYER_CHARACTER)
+    bobby = Asserter("character", BOBBY)
+    assert decide(CAL, "holds", KEY, bobby, giver=JENNI) == Denied(Reason.PLAYER_CHARACTER)
+    director = Asserter("director")
+    assert decide(CAL, "holds", KEY, director, giver=JENNI) == Denied(Reason.PLAYER_CHARACTER)
+    assert decide(CAL, "holds", BOBBY, jenni, giver=JENNI) == Denied(Reason.PLAYER_CHARACTER)
+    assert decide(CAL, "located_at", KITCHEN, jenni, giver=JENNI) == Denied(Reason.PLAYER_CHARACTER)
+    assert decide(CAL, "holds", KEY, jenni, giver=JENNI, protected=True) == Denied(
+        Reason.PROTECTED_CONTENT
+    )
+    assert decide(CAL, "holds", KEY, jenni, giver=JENNI, locked=True) == Denied(Reason.LOCKED_CANON)
+    negated = ns.claim(CAL, CORE_BY_NAME["holds"].id, KEY).model_copy(
+        update={"polarity": Polarity.NEGATED}
+    )
+    given = PermissionFacts(entities=ENTITIES, predicate=CORE_BY_NAME["holds"], giver=JENNI)
+    assert pm.permission(negated, jenni, pm.owner_of(negated, given), given) == Denied(
+        Reason.PLAYER_CHARACTER
+    )

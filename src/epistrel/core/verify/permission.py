@@ -36,6 +36,14 @@ decision) is ``other_character_secret``, as it would be for the narrator's own r
 player's character stays ``player_character``. The reactor's thoughts never reach this rule: a
 narrated thought is dropped before verification (``core.epistemic.roles``).
 
+**The hand-over exception** (FR-VERIFY-11; #519). A render's affirmed ``holds`` of the player's
+character, of an item, whose detected transfer (``core.verify.detect``'s transfer table) names
+the render's own character as the giver ("Jenni hands Cal the key." in Jenni's render), is that
+character's own observable action: permitted with basis ``own``. The player's character only
+receives the item. Anything else about the player's character is unchanged: "Cal picks up the
+key" (Cal acting), "Cal takes the key from Jenni" (no giver is named for a taking: the taker
+acts) and a hand-over by another character all stay ``player_character``.
+
 **Ownership.** ``owner_of`` derives the subject's owner from ``entities.character_id`` and
 ``characters.is_player``: ``player_character``, ``modeled_character`` (an entity with a
 character row), ``external`` (the predicate is owned by an external provider) or ``world``
@@ -109,7 +117,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.enums import RecordProvenance
-from epistrel.core.propositions.model import Predicate, PredicateOwner, Proposition
+from epistrel.core.propositions.model import Polarity, Predicate, PredicateOwner, Proposition
 from epistrel.core.propositions.registry import Registry, load
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME
 from epistrel.core.readset import KeyedLookup, StructuredReadSet, register_rebase_check
@@ -276,6 +284,9 @@ class PermissionFacts:
     """The claim's text matched protected content (#148's detector)."""
     resolves: str | None = None
     """The open thunk the claim resolves (#146's resolution exemption), or ``None``."""
+    giver: str | None = None
+    """#519: the entity a detected transfer names as handing the item over (``DetectedClaim
+    .giver``), or ``None`` (see "The hand-over exception")."""
 
 
 # -- the matrix ---------------------------------------------------------------------------------
@@ -344,6 +355,9 @@ def permission(
         return _reactive(claim, asserter, subject_owner, facts, modeled, name)
     own = asserter.character_id
     others = [e for e in modeled if e.character_id != own]
+    if asserter.kind == "character" and _hands_over(claim, facts, own):
+        # #519: the hand-over exception (see the module docstring).
+        return _texture(facts, Basis.OWN)
     mine = next((e for e in facts.entities.values() if e.character_id == own), None)
     if asserter.kind in ("player", "co_author") and (mine is None or mine.is_player):
         # Player input for the player's own character (FR-AUTH-3: input for a character the
@@ -388,6 +402,28 @@ def _reactive(
     if others and name != "spoke_to":
         return Denied(Reason.OTHER_CHARACTER_SECRET)
     return _texture(facts, Basis.REACTIVE)
+
+
+def _hands_over(claim: Proposition, facts: PermissionFacts, own: str | None) -> bool:
+    """#519: ``claim`` is an affirmed ``holds`` of the player's character, of an item no
+    modeled character is, handed over by the render's own character (``facts.giver``)."""
+    if facts.predicate is None or facts.predicate.name != "holds" or facts.giver is None:
+        return False
+    if claim.polarity is not Polarity.AFFIRMED or claim.object_id is None:
+        return False
+    giver = facts.entities.get(facts.giver)
+    subject = facts.entities.get(claim.subject_id)
+    item = facts.entities.get(claim.object_id)
+    return (
+        giver is not None
+        and own is not None
+        and giver.character_id == own
+        and subject is not None
+        and subject.is_player
+        and subject.character_id != own
+        and (item is None or not item.modeled)
+        and set(_argument_ids(claim)) == {claim.subject_id, claim.object_id}
+    )
 
 
 def _texture(facts: PermissionFacts, basis: Basis) -> Permission:
@@ -463,12 +499,13 @@ async def facts_for(
     through_position: tuple[int, int] | None = None,
     protected: bool = False,
     resolves: str | None = None,
+    giver: str | None = None,
 ) -> PermissionFacts:
     """The structured data ``claim``'s permission is decided over (the claim's entities and
     the asserter's own), its canon reads keyed."""
     conn = lookup.conn
     predicate = registry.get(claim.predicate_id)
-    ids = _argument_ids(claim)
+    ids = _argument_ids(claim) + ([giver] if giver is not None else [])
     own = [
         c
         for c in (
@@ -514,6 +551,7 @@ async def facts_for(
         allow_new_arrivals=await arrival_policy(conn, story_id),
         protected=protected,
         resolves=resolves,
+        giver=giver,
     )
 
 
@@ -532,6 +570,7 @@ class _Call:
     protected: bool
     code: str
     resolves: str | None = None
+    giver: str | None = None
 
 
 _CALLS: dict[int, tuple[weakref.ref[StructuredReadSet], list[_Call]]] = {}
@@ -566,11 +605,13 @@ async def check(
     registry: Registry | None = None,
     remember: bool = True,
     resolves: str | None = None,
+    giver: str | None = None,
 ) -> Permission | None:
     """``claim``'s permission for ``asserter`` over the story's structured data, its canon
     reads keyed in ``read_set``; ``None`` (inert, nothing read) when verification is off. The
     answer is recorded for the turn's rebase re-check unless ``remember`` is off. ``resolves``
-    names the open thunk the claim resolves (the resolution exemption)."""
+    names the open thunk the claim resolves (the resolution exemption); ``giver`` the entity a
+    detected transfer names as handing the item over (the hand-over exception)."""
     if await options_for(conn, story_id) is None:
         return None
     facts = await facts_for(
@@ -582,6 +623,7 @@ async def check(
         through_position=through_position,
         protected=protected,
         resolves=resolves,
+        giver=giver,
     )
     found = permission(claim, asserter, owner_of(claim, facts), facts)
     if remember:
@@ -596,6 +638,7 @@ async def check(
                 protected,
                 found.code(),
                 resolves,
+                giver,
             ),
         )
     return found
@@ -621,6 +664,7 @@ async def recheck(conn: AsyncConnection, op: Operation) -> bool:
             protected=call.protected,
             remember=False,
             resolves=call.resolves,
+            giver=call.giver,
         )
         if again is None or again.code() != call.code:
             log.debug("rebase re-check: a permission changed (%d checked)", len(calls))

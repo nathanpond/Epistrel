@@ -9,8 +9,9 @@ from its turn report; #76). A story's genesis from a scenario keeps its full cre
 (#122) on its ``genesis`` operation, returned only to a read naming the ``omniscient``
 viewpoint. Within the result window the stored result of
 the operation's ``Idempotency-Key`` is included — for a viewpoint-bound result (a turn) only
-when the read names that same viewpoint; another named viewpoint is 409
-``idempotency_conflict``, and a read naming none gets the view without the result.
+when the read names that same viewpoint; another named character viewpoint is 409
+``idempotency_conflict``, and a read naming none, or naming ``omniscient`` (which still gets
+the eval hooks and read-set keys below, #534), gets the view without the result.
 
 **Long-running operations (FR-EXT-16's status surface, M3 subset; #128).** The view names what
 an operation was for (``label``) and its ``stages`` ``[{name, status, at}]``, each ``status``
@@ -185,7 +186,9 @@ async def read_operation(
         result = await stored_result(conn, operation_id)
         label, stages = await _stages(conn, row)
     if result is not None and row.viewpoint is not None and viewpoint != row.viewpoint:
-        if viewpoint is not None:
+        # An omniscient read of another viewpoint's result omits it but keeps the eval hooks
+        # and read-set keys (#534); another named viewpoint is a key conflict.
+        if viewpoint is not None and not _omniscient(viewpoint):
             raise IdempotencyConflict(
                 "the operation's result was produced for another output viewpoint",
                 {"reason": "viewpoint"},

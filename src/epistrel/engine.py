@@ -1438,10 +1438,12 @@ class Engine:
         """One operation through the history API (FR-CONC-6): kind, status, position, the
         story's revision once it committed, attempts, origin and, within the result window,
         its stored result. A result made for a viewpoint is returned only to a read naming
-        that viewpoint (``viewpoint`` or ``ctx.viewpoint``); another named viewpoint is 409
-        ``idempotency_conflict``. Unknown is 404. An operation of a story the erasure reconciler
-        holds blocked is 503 ``erasure_pending`` like every other read of that story (#333): its
-        stored result may carry what the pending erasure removes. So is one whose
+        that viewpoint (``viewpoint`` or ``ctx.viewpoint``); another named character viewpoint
+        is 409 ``idempotency_conflict``, and an ``omniscient`` read omits the result but keeps
+        the eval hooks and read-set keys (#534). Unknown is 404. An operation of a story the
+        erasure reconciler holds blocked is 503 ``erasure_pending`` like every other read of
+        that story (#333): its stored result may carry what the pending erasure removes. So is
+        one whose
         deployment-scoped stored result, or creation report, a pending catalog-scope erasure
         reaches (#346)."""
         ctx = with_requested(ctx, viewpoint, field="query.viewpoint")

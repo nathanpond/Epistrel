@@ -35,9 +35,11 @@ from tests.auth_support import auth_settings
 from tests.event_support import new_story as new_event_story
 from tests.event_support import play_turn, rows
 from tests.idempotency_support import KEY, REPLAY, committed_turns, key_row, keyed
+from tests.openapi_support import assert_documented
 from tests.policy_support import unique
-from tests.respond_support import PLAYER, body, new_story, respond_client
+from tests.respond_support import FIRST, PLAYER, body, new_story, respond_client
 from tests.story_support import READ, WRITE, count, create, story_body
+from tests.structured_turn_support import beat, render, structured_story
 
 AUTHOR = RequestContext(principal="p-author")
 
@@ -288,8 +290,15 @@ async def test_operations_read(stub_settings: Settings, engine: AsyncEngine) -> 
         assert isinstance(mine["attempts"], list)
         plain = (await client.get(f"/operations/{operation}", headers=READ)).json()
         assert plain["result"] is None
-        other = await client.get(f"/operations/{operation}?viewpoint=omniscient", headers=READ)
+        other = await client.get(
+            f"/operations/{operation}?viewpoint=character:{ids[FIRST]}", headers=READ
+        )
         assert (other.status_code, _error(other)["code"]) == (409, "idempotency_conflict")
+        assert _error(other)["details"]["reason"] == "viewpoint"
+        # #534: an omniscient read omits the other viewpoint's result instead of refusing.
+        omniscient = await client.get(f"/operations/{operation}?viewpoint=omniscient", headers=READ)
+        assert omniscient.status_code == 200, omniscient.text
+        assert (omniscient.json()["result"], omniscient.json()["status"]) == (None, "committed")
 
         events = [
             {"client_event_id": f"ops-n{n}", "kind": "narration", "text": f"Night {n}."}
@@ -305,6 +314,59 @@ async def test_operations_read(stub_settings: Settings, engine: AsyncEngine) -> 
         first = (await client.get(f"/operations/{operation_ids[0]}", headers=READ)).json()
         assert first["result"]["status"] == 201
         assert first["idempotency_key"] == batch.headers[KEY]
+
+
+OPERATION = "/operations/{operation_id}"
+
+
+async def test_omniscient_read_of_a_character_turn_keeps_its_eval_hooks(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """Inside the result window, an omniscient read of a structured turn played for a
+    character's viewpoint (FR-CONC-6, FR-OBS-2, FR-RESP-12; #534) answers 200 with the eval
+    hooks and the read-set keys and no `result`, over REST and the library alike, in the shape
+    the committed document declares. Complement: the turn's own viewpoint gets the result and
+    no hooks, and another character's viewpoint is still 409 `idempotency_conflict`."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        story, ids = await structured_story(client, "Wren", "Ada")
+        epistrel.models.stub.script("generation", [render(beat("say", "Hello.", intent="sincere"))])
+        played = await keyed(client, story, body(ids["Wren"], "Ada?"), "i534-turn")
+        assert played.status_code == 200, played.text
+        own = played.json()["output_viewpoint"]
+        assert own == f"character:{ids['Wren']}"
+        operation = played.json()["beats"][0]["operation_id"]
+        assert (await key_row(engine, "i534-turn")).result is not None  # inside the window
+
+        seen = await client.get(f"/operations/{operation}?viewpoint=omniscient", headers=READ)
+        assert seen.status_code == 200, seen.text
+        assert_documented(seen, "GET", OPERATION)
+        read = seen.json()
+        assert read["result"] is None
+        assert read["eval_hooks"] is not None
+        assert set(read["eval_hooks"]["latency_ms_by_stage"]) >= {"plan", "render", "commit"}
+        assert read["read_set"] is not None
+        assert read["read_set"]["keys"] is not None
+        assert len(read["read_set"]["keys"]) == read["read_set"]["keys_count"]
+
+        view = await epistrel.get_operation(AUTHOR, operation, viewpoint="omniscient")
+        assert (view.result, view.eval_hooks) == (None, read["eval_hooks"])
+        assert view.read_set is not None
+        assert view.read_set.keys is not None
+
+        mine = await client.get(f"/operations/{operation}?viewpoint={own}", headers=READ)
+        assert mine.status_code == 200, mine.text
+        stored = mine.json()["result"]["body"]["beats"]
+        assert [(b["operation_id"], b["text"]) for b in stored] == [
+            (b["operation_id"], b["text"]) for b in played.json()["beats"]
+        ]
+        assert (mine.json()["eval_hooks"], mine.json()["read_set"]["keys"]) == (None, None)
+        other = await client.get(
+            f"/operations/{operation}?viewpoint=character:{ids['Ada']}", headers=READ
+        )
+        assert (other.status_code, _error(other)["code"]) == (409, "idempotency_conflict")
+        assert_documented(other, "GET", OPERATION)
+        with pytest.raises(IdempotencyConflict):
+            await epistrel.get_operation(AUTHOR, operation, viewpoint=f"character:{ids['Ada']}")
 
 
 async def test_result_window_setting_is_prospective(

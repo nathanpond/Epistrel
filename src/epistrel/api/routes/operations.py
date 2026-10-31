@@ -50,8 +50,11 @@ OPERATION_DESCRIPTION = (
     "\n\nWithin the idempotency result window (default 24 hours) `result` holds the stored "
     "response (`status`, `body`) of the operation's `Idempotency-Key`. A result produced for an "
     "output viewpoint (a turn) is returned only when `?viewpoint=` names that viewpoint; another "
-    "named viewpoint is 409 `idempotency_conflict`. After the window `result` is absent: the "
-    "operation is the reference a retry receives. Unknown ids are 404."
+    "named character viewpoint is 409 `idempotency_conflict`. A read naming no viewpoint, or "
+    "naming `omniscient` for a result produced for a character, gets the operation with "
+    "`result` null; the omniscient read still gets `eval_hooks` and `read_set.keys`. After the "
+    "window `result` is absent: the operation is the reference a retry receives. Unknown ids "
+    "are 404."
 )
 
 
@@ -138,7 +141,13 @@ class OperationBody(BaseModel):
     attempts: list[dict[str, Any]]
     config_revisions: dict[str, Any] | None
     idempotency_key: str | None
-    result: StoredResultBody | None = None
+    result: StoredResultBody | None = Field(
+        default=None,
+        description="Within the result window, the stored response of the operation's "
+        "`Idempotency-Key`. Null after the window, for a read naming no viewpoint, and for an "
+        "`omniscient` read of a result produced for a character viewpoint (that read still "
+        "gets `eval_hooks` and `read_set.keys`).",
+    )
     queued_ms: int | None = None
     first_call_offset_ms: int | None = None
     creation_report: CreationReport | None = None

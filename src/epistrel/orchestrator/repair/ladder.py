@@ -107,7 +107,7 @@ from epistrel.core.repair.rungs import (
 )
 from epistrel.core.resolution.context import load_time_basis
 from epistrel.core.settings_schema import NAME_PLACEHOLDER, OMNISCIENT, VerifySettings
-from epistrel.core.states.effects import REFUSED_TAGS, STATE_UNNARRATED, Finding
+from epistrel.core.states.effects import REFUSED_TAGS, STATE_UNNARRATED, TIME_STOP, Finding
 from epistrel.core.tables import entities
 from epistrel.core.tables.propositions import closed_sets
 from epistrel.core.turns.beats import BEAT_TEXT_MAX, TurnBeat
@@ -934,6 +934,9 @@ def state_deterministic(beat: TurnBeat, findings: Sequence[Finding]) -> TurnBeat
     undeclared change without its sentence and its effect; ``None`` when nothing of the beat
     would be left (the fallback line then). #190: an unnarrated effect keeps its effect and the
     beat gains one line built from its reason (``Finding.narration``)."""
+    if any(f.tag == TIME_STOP for f in findings):
+        # #196 (FR-CLOCK-16): nothing narrated past a due event's stop is committed.
+        return None
     unnarrated = [f for f in findings if f.tag == STATE_UNNARRATED and f.narration]
     rest = [f for f in findings if f.tag != STATE_UNNARRATED]
     settled = _state_settled(beat, rest) if rest else beat

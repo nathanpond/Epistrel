@@ -138,6 +138,12 @@ class TurnStage:
         self._accepted = [a for a in self._accepted if a.beat != index]
         self._beats[beat.beat] = beat
 
+    def drop(self, index: int) -> None:
+        """Remove staged beat ``index`` and every acceptance formed from it (#196: a beat a
+        due event's stop placed past the cutoff is never committed)."""
+        self._beats.pop(index, None)
+        self._accepted = [a for a in self._accepted if a.beat != index]
+
     def discard(self) -> None:
         """The turn was abandoned: nothing staged survives."""
         self._beats.clear()

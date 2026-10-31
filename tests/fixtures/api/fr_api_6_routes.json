@@ -1259,6 +1259,26 @@
     },
     {
       "method": "GET",
+      "path": "/stories/{story_id}/scheduled-events",
+      "requirement": "FR-CLOCK-9"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/scheduled-events",
+      "requirement": "FR-CLOCK-9"
+    },
+    {
+      "method": "PATCH",
+      "path": "/stories/{story_id}/scheduled-events/{event_id}",
+      "requirement": "FR-CLOCK-9"
+    },
+    {
+      "method": "DELETE",
+      "path": "/stories/{story_id}/scheduled-events/{event_id}",
+      "requirement": "FR-CLOCK-9"
+    },
+    {
+      "method": "GET",
       "path": "/stories/{story_id}/states",
       "requirement": "FR-STATE-9"
     },

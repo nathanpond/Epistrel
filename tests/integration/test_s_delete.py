@@ -30,6 +30,7 @@ from epistrel.core.stories import STORY_ID_EXCEPTIONS, STORY_TABLES
 from epistrel.core.tables.ownership import EntityType
 from epistrel.core.turns import beats
 from epistrel.core.verify import shadow
+from epistrel.core.world_clock import stops as scheduled
 from epistrel.orchestrator.jobs import queue as job_queue
 from epistrel.orchestrator.jobs import timers
 from epistrel.orchestrator.jobs.handlers.rebuild import REBUILD_KIND
@@ -412,6 +413,29 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
     async with proposal_op:
         proposal_op.add_commit_step(propose)
         await proposal_op.commit()
+    # A scheduled event (#196): its version row, written with its lifecycle event.
+    async with Operation(
+        engine,
+        story_id=story_id,
+        kind=OperationKind.CONTROL,
+        principal="p-author",
+        bumps_revision=True,
+    ) as event_op:
+
+        async def schedule(conn: AsyncConnection) -> None:
+            await scheduled.create(
+                conn,
+                event_op,
+                story_id,
+                proposition_id=new_ulid(),
+                planned=60,
+                owner="world",
+                participants=[character_id],
+                position=Position(0),
+            )
+
+        event_op.add_commit_step(schedule)
+        await event_op.commit()
 
 
 def _due() -> datetime:

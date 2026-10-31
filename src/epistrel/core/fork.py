@@ -741,6 +741,15 @@ OVERRIDES: dict[str, dict[str, str]] = {
             "WITH ORDINALITY AS s(id, n) ORDER BY s.n) AS char(26)[])"
         ),
     },
+    # Scheduled events (#196): the owner (a character id, or ``author``/``world``) and the
+    # participants are the fork's copies of the characters.
+    "scheduled_events": {
+        "owner": f'{_ID}(t."owner"::text)',
+        "participants": (
+            f"CAST(ARRAY(SELECT {_ID}(s.id::text) FROM unnest(t.participants) "  # noqa: S608
+            "WITH ORDINALITY AS s(id, n) ORDER BY s.n) AS char(26)[])"
+        ),
+    },
     # Speech acts (#150): the propositions an utterance asserts are the fork's copies.
     "utterances": {
         "proposition_ids": (

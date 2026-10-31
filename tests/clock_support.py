@@ -13,6 +13,7 @@ import json
 import types
 from collections.abc import Iterator
 from contextlib import contextmanager
+from typing import Any
 
 import pytest
 from sqlalchemy import text
@@ -119,3 +120,82 @@ async def clock_changes(engine: AsyncEngine, story_id: str) -> int:
             {"s": story_id},
         )
     return int(found or 0)
+
+
+# -- scheduled events (#196) ----------------------------------------------------------------------
+
+STOPS = "scheduled_stops"
+"""The profile flag (``clock.scheduled_stops``) whose stops #203 delivers with the clock."""
+
+
+def _with_stops() -> types.MappingProxyType[str, frozenset[str]]:
+    return types.MappingProxyType(
+        {**schema.DELIVERED, "clock": LEVELS, STOPS: frozenset({schema.ON})}
+    )
+
+
+def deliver_stops(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Deliver ``clock`` and ``scheduled_stops`` for the test (#203 delivers them for real)."""
+    monkeypatch.setattr(schema, "DELIVERED", _with_stops())
+
+
+async def set_clock(
+    engine: AsyncEngine, story_id: str, level: str = "on", *, stops: bool = True
+) -> None:
+    """Set the story's ``clock`` override: ``level`` and the ``scheduled_stops`` flag (the
+    profile's switch for due-event stops; the clock's own ``stop_at_due_events`` is the
+    other)."""
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO story_profile_overrides (story_id, settings, revision) "
+                "VALUES (:s, CAST(:o AS jsonb), 1) ON CONFLICT (story_id) DO UPDATE "
+                "SET settings = story_profile_overrides.settings || excluded.settings, "
+                "revision = story_profile_overrides.revision + 1"
+            ),
+            {"s": story_id, "o": json.dumps({"clock": {"level": level, STOPS: stops}})},
+        )
+
+
+async def anchor_at(engine: AsyncEngine, story_id: str, minute: int) -> None:
+    """The author's starting anchor: the exact minute of the day ``minute`` at offset 0 (no
+    route sets it)."""
+    from epistrel.core.world_clock.anchor import Anchor, statement_of
+
+    hour, meridian = (minute // 60) % 12 or 12, "pm" if minute >= 720 else "am"
+    statement = statement_of(f"{hour}:{minute % 60:02d} {meridian}")  # one reading only
+    assert statement is not None
+    found = Anchor.unanchored().refine(statement, 0, Position(0))
+    assert isinstance(found, Anchor)
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "UPDATE state_definitions SET anchor = CAST(:a AS jsonb) "
+                "WHERE story_id = :s AND name = 'world_clock'"
+            ),
+            {"a": json.dumps(found.document()), "s": story_id},
+        )
+
+
+async def events(engine: AsyncEngine, story_id: str) -> list[Any]:
+    """The story's scheduled events as it stands (``core.world_clock.stops.events_at``)."""
+    from epistrel.core.world_clock import stops
+
+    async with engine.connect() as conn:
+        return list(await stops.events_at(conn, story_id))
+
+
+async def statuses(engine: AsyncEngine, story_id: str, event_id: str) -> list[str]:
+    """Every lifecycle step of one event on the active timeline, in order (its
+    ``scheduled_event`` events)."""
+    async with engine.connect() as conn:
+        found = await conn.execute(
+            text(
+                "SELECT e.payload->>'status' AS status FROM events e "
+                "JOIN operations o ON o.operation_id = e.operation_id "
+                "WHERE e.story_id = :s AND e.type = 'scheduled_event' "
+                "AND e.payload->>'event_id' = :e AND o.membership = 'active' ORDER BY e.seq"
+            ),
+            {"s": story_id, "e": event_id},
+        )
+        return [str(r.status) for r in found]

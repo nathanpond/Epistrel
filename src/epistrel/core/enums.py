@@ -447,6 +447,22 @@ class TimeAwareness(StrEnum):
     NONE = "none"
 
 
+class ScheduledStatus(StrEnum):
+    """Where a canon scheduled event stands (FR-CLOCK-9,18; #196): ``pending`` (not yet due),
+    ``possibly_due`` (due under some readings of a partial anchor, #197), ``due`` (the clock
+    reached its planned time), ``surfaced`` (presented to a render), then ``completed``,
+    ``missed`` (still surfaced past its planned time plus its grace) or ``cancelled``; a
+    reschedule returns it to ``pending``. Postgres enum ``scheduled_status``."""
+
+    PENDING = "pending"
+    POSSIBLY_DUE = "possibly_due"
+    DUE = "due"
+    SURFACED = "surfaced"
+    COMPLETED = "completed"
+    MISSED = "missed"
+    CANCELLED = "cancelled"
+
+
 class ExternalValueSource(StrEnum):
     """Where an ``external_values`` version came from (FR-EXT-2,7,20; #205): a live ``read``,
     the ``last_known`` recorded value or ``unknown`` under the provider's unavailability policy
@@ -500,6 +516,7 @@ PG_ENUM_TYPES: dict[str, type[StrEnum]] = {
     "clock_mode": ClockMode,
     "time_awareness": TimeAwareness,
     "external_value_source": ExternalValueSource,
+    "scheduled_status": ScheduledStatus,
 }
 """Postgres enum type name (``<schema>.<name>`` outside ``public``) → the Python enum whose
 values it holds (creation order)."""

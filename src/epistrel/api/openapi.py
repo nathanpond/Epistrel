@@ -469,6 +469,28 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "erased_subject_referenced",
     ),
     "update_clock": ("story_archived",),
+    # Scheduled events (#196): the list for a viewpoint, and writes at inter-turn slots.
+    "list_scheduled_events": ("viewpoint_unresolved",),
+    "create_scheduled_event": (
+        "story_archived",
+        "story_paused",
+        "module_off",
+        "clock_unanchored",
+        "erased_subject_referenced",
+    ),
+    "reschedule_scheduled_event": (
+        "story_archived",
+        "story_paused",
+        "module_off",
+        "clock_unanchored",
+        "erased_subject_referenced",
+    ),
+    "cancel_scheduled_event": (
+        "story_archived",
+        "story_paused",
+        "module_off",
+        "erased_subject_referenced",
+    ),
     # The State API (#186): reads for a viewpoint, and sets and declarations at inter-turn slots
     # (as a turn, they wait for or are refused by one in flight), and definition updates.
     "get_states": ("module_off", "viewpoint_unresolved"),

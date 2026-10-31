@@ -568,6 +568,23 @@ class ClockAdvanced(EventPayload):
     to_offset: int | None = None
 
 
+@register("scheduled_event", category=EventCategory.DERIVED)
+class ScheduledEventChanged(EventPayload):
+    """A canon scheduled event's lifecycle step (FR-CLOCK-9; #196): the event (``event_id``,
+    its canon ``scheduled`` proposition), the ``status`` it moved to (``pending`` when created
+    or rescheduled, ``due``, ``surfaced``, ``completed``, ``missed``, ``cancelled``), its
+    ``planned`` offset, the ``cause`` (``created``, ``rescheduled``, ``stop``, ``overdue``,
+    ``surfaced``, ``grace``, ``left``, ``cancelled``) and, for a stop, the clock offset it
+    stopped at (``stopped_at``). The event is positioned at the step that caused it; the
+    ``scheduled_events`` version is written with it. Identifiers and minutes only."""
+
+    event_id: str
+    status: str
+    planned: int
+    cause: str
+    stopped_at: int | None = None
+
+
 @register("state_defined", category=EventCategory.CONTROL)
 class StateDefined(EventPayload):
     """A State declared between turns (FR-STATE-3,9; #186's ``POST /stories/{id}/states``), in

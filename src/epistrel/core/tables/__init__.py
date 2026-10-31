@@ -74,6 +74,7 @@ from epistrel.core.tables.providers import external_providers, story_provider_bi
 from epistrel.core.tables.rating_checks import guardrail_check_results, rating_check_jobs
 from epistrel.core.tables.ratings import content_rating_versions, content_ratings
 from epistrel.core.tables.readset import proposition_changes
+from epistrel.core.tables.scheduled_events import scheduled_events
 from epistrel.core.tables.states import (
     external_values,
     state_changes,
@@ -146,6 +147,7 @@ __all__ = [
     "scenario_catalog",
     "scenario_versions",
     "scene_state",
+    "scheduled_events",
     "state_changes",
     "state_definitions",
     "state_proposals",

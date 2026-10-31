@@ -219,6 +219,7 @@ from epistrel.core.tables.propositions import (
     predicates,
     propositions,
 )
+from epistrel.core.tables.scheduled_events import scheduled_events
 from epistrel.core.tables.states import (
     STORY_SCOPE_KEY,
     state_changes,
@@ -1272,6 +1273,37 @@ async def _redact_policies(
     )
 
 
+async def _erase_scheduled(
+    conn: AsyncConnection,
+    story_id: str,
+    refs: Mapping[str, set[str]],
+    removed: set[str],
+    tally: _Tally,
+    run: _StoryRun,
+) -> None:
+    """Scheduled events (#196): every version naming an erased character (a participant or the
+    owner) is deleted, each with a marker; the event's canon ``scheduled`` fact goes with the
+    facts (``_erase_facts``)."""
+    named = set(refs.get(scheduled_events.name, set()))
+    if not removed or not named:
+        return
+    c = scheduled_events.c
+    found = await conn.execute(
+        select(c.id, c.owner, c.participants).where(c.story_id == story_id, c.id.in_(sorted(named)))
+    )
+    for row in sorted(found, key=lambda r: str(r.id)):
+        if row.owner not in removed and not set(row.participants or ()) & removed:
+            continue
+        await _delete(
+            conn,
+            run,
+            tally,
+            scheduled_events.name,
+            str(row.id),
+            delete(scheduled_events).where(c.id == row.id),
+        )
+
+
 async def _redact_structured(
     conn: AsyncConnection,
     story_id: str,
@@ -1295,6 +1327,7 @@ async def _redact_structured(
     await _erase_memories(conn, story_id, refs, removed, redactor, tally, run)
     await _erase_thunks(conn, story_id, refs, removed, redactor, tally, run)
     await _erase_states(conn, story_id, refs, removed, redactor, tally, run)
+    await _erase_scheduled(conn, story_id, refs, removed, tally, run)
     owned = list(
         await conn.scalars(
             select(entity_aliases.c.id)

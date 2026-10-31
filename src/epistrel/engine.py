@@ -149,6 +149,7 @@ from epistrel.core.viewpoint import (
     resolve_viewpoint,
     with_requested,
 )
+from epistrel.core.world_clock import scheduled as scheduled_events
 from epistrel.core.world_clock import service as clock_service
 from epistrel.observability import instrument
 from epistrel.orchestrator import queue_drainer
@@ -300,6 +301,10 @@ CODECS: dict[str, ResultCodec[Any]] = {
     # #193: the world clock moved forward between turns, and its settings changed.
     "advance_clock": ResultCodec.of(clock_service.ClockMoved),
     "update_clock": ResultCodec.of(clock_service.ClockSettingsWrite, revision_field=_CONFIG),
+    # #196: a scheduled event created, rescheduled or cancelled between turns.
+    "create_scheduled_event": ResultCodec.of(scheduled_events.ScheduledEventWritten, status=201),
+    "reschedule_scheduled_event": ResultCodec.of(scheduled_events.ScheduledEventWritten),
+    "cancel_scheduled_event": ResultCodec.of(scheduled_events.ScheduledEventWritten),
     # #186: a State set and a State declared between turns, and a definition changed.
     "set_state": ResultCodec.of(state_api.StateWritten),
     "define_state": ResultCodec.of(state_api.StateDeclared, status=201),
@@ -2913,6 +2918,110 @@ class Engine:
             run,
             story_id=story_id,
             material={"story_id": story_id, "body": body},
+        )
+
+    # -- scheduled events (FR-CLOCK-9,19; #196) -------------------------------------------------
+
+    @refuses_nul()
+    async def list_scheduled_events(
+        self, ctx: RequestContext, story_id: str, *, viewpoint: str | None = None
+    ) -> scheduled_events.ScheduledEventList:
+        """The scheduled events ``viewpoint`` holds (FR-CLOCK-9): ``omniscient``, every canon
+        event as the story stands (its status, planned offset, owner, participants, place,
+        grace and the offset it stopped the clock at); ``character:<id>``, the canon events
+        the character participates in and, under per-character partitions, its belief-only
+        schedules (labelled ``belief``: they never stop the clock). 422
+        ``viewpoint_unresolved``; 404 for an unknown story."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        return await scheduled_events.list_events(self.db, story_id, viewpoint=ctx.viewpoint)
+
+    async def create_scheduled_event(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        request: scheduled_events.ScheduledEventCreate,
+    ) -> scheduled_events.ScheduledEventWritten:
+        """Create a canon scheduled event between turns (FR-CLOCK-9; REST 201): its name, its
+        planned time (an offset, or ``"HH:MM"`` the anchor places), its participants, place
+        and owner (``author`` or ``world``), at the next inter-turn slot ``N⁺k``; it is
+        ``pending`` and stops the clock once when an advance reaches it with stops on. 422 for
+        an unknown participant or place, ``clock_unanchored`` for a time of day the anchor
+        cannot place; 409 ``module_off`` with the clock off, ``story_archived``,
+        ``story_paused`` or ``revision_conflict``."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> scheduled_events.ScheduledEventWritten:
+            await self.check_expected_revision(ctx, story_id)
+            return await scheduled_events.create_event(
+                self.db, story_id, request, principal=principal, idempotency_key=ctx.idempotency_key
+            )
+
+        return await self._keyed(
+            ctx,
+            "create_scheduled_event",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "body": _body(request)},
+        )
+
+    async def reschedule_scheduled_event(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        event_id: str,
+        request: scheduled_events.ScheduledEventReschedule,
+    ) -> scheduled_events.ScheduledEventWritten:
+        """Reschedule a scheduled event (FR-CLOCK-9,19): it is ``pending`` again at its new
+        time and may stop the clock once more. Only its owner, the author or the world may
+        change it; the consumer acts as the author. 404 for an unknown event; 422
+        (``reason: event_settled``) for a cancelled or completed one; 409 ``module_off``,
+        ``story_archived``, ``story_paused`` or ``revision_conflict``."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> scheduled_events.ScheduledEventWritten:
+            await self.check_expected_revision(ctx, story_id)
+            return await scheduled_events.reschedule_event(
+                self.db,
+                story_id,
+                event_id,
+                request,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+            )
+
+        return await self._keyed(
+            ctx,
+            "reschedule_scheduled_event",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "event": event_id, "body": _body(request)},
+        )
+
+    async def cancel_scheduled_event(
+        self, ctx: RequestContext, story_id: str, event_id: str
+    ) -> scheduled_events.ScheduledEventWritten:
+        """Cancel a scheduled event (FR-CLOCK-9): it is ``cancelled`` and never stops the
+        clock. 404 for an unknown event; 422 (``reason: event_settled``) for a cancelled or
+        completed one; 409 ``module_off``, ``story_archived``, ``story_paused`` or
+        ``revision_conflict``."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> scheduled_events.ScheduledEventWritten:
+            await self.check_expected_revision(ctx, story_id)
+            return await scheduled_events.cancel_event(
+                self.db,
+                story_id,
+                event_id,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+            )
+
+        return await self._keyed(
+            ctx,
+            "cancel_scheduled_event",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "event": event_id},
         )
 
     # -- story States (FR-STATE-3,9, FR-RESP-12; #186) ------------------------------------------

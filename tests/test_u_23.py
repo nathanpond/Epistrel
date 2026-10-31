@@ -2,7 +2,8 @@
 
 Every U-23 (M6) function lives in this file (traceability counts a test ID per milestone in one
 file): #194's non-appointment clauses (``test_u_23``, ``test_u_23__stamps``); #196 adds the
-appointment clauses (``__appointment``).
+appointment clauses (``__appointment``, pure: ``core.world_clock.stops`` and
+``orchestrator.structured.stopping``).
 
 - ``test_u_23`` (pure: ``core.world_clock.timing``, ``orchestrator.structured.clocking`` and
   the render schema). Clock 15:05 (#195's anchor fixes the minute); one render "At 15:10 she
@@ -31,6 +32,7 @@ appointment clauses (``__appointment``).
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -39,11 +41,12 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
-from epistrel.core.enums import ClockMode, StateChangeSource
+from epistrel.core.enums import ClockMode, ScheduledStatus, StateChangeSource
 from epistrel.core.membership import Position
 from epistrel.core.propositions.model import Granularity, Instant, Interval
 from epistrel.core.resolution.time import TimeBasis
 from epistrel.core.turns.beats import DeclaredAdvance, TurnBeat
+from epistrel.core.world_clock import stops
 from epistrel.core.world_clock.anchor import Anchor, statement_of
 from epistrel.core.world_clock.pacing import validate_pacing_table
 from epistrel.core.world_clock.timing import (
@@ -55,7 +58,7 @@ from epistrel.core.world_clock.timing import (
     restamp,
     time_turn,
 )
-from epistrel.orchestrator.structured import clocking
+from epistrel.orchestrator.structured import clocking, stopping
 from epistrel.orchestrator.structured.render import render_schema
 from tests import clock_support as ck
 from tests import multi_support as ms
@@ -339,3 +342,96 @@ async def test_u_23__stamps(
         # The turn's report times every render.
         assert report["clock"]["end"] == 55
         assert [b["start"] for b in report["clock"]["beats"]][-1] == 55
+
+
+# -- the appointment (#196) -------------------------------------------------------------------
+
+MEETING_ID = "01J9Z8Q4N5V6W7X8Y9Z0A1B2M1"
+
+
+def meeting(planned: int = 55, **fields: Any) -> stops.ScheduledEvent:
+    """Jenni's canon 16:00 meeting (offset 55 from 15:05), pending."""
+    found: dict[str, Any] = {"participants": ("jenni",), **fields}
+    return stops.ScheduledEvent(MEETING_ID, ScheduledStatus.PENDING, planned, **found)
+
+
+def schedule(*events: stops.ScheduledEvent, on: bool = True) -> stopping.Schedule:
+    return stopping.Schedule(
+        events, on, frozenset({"jenni", "bobby"}), None, {MEETING_ID: "the meeting"}
+    )
+
+
+@pytest.mark.part("M6", "FR-CLOCK-9,17")
+def test_u_23__appointment() -> None:
+    """Pacing crosses an appointment (FR-CLOCK-9,17): a 60-word render (a 2-minute increment, no
+    skip) from 15:59 with a canon 16:00 meeting ends at 16:00, clamped, with no regeneration;
+    the next sequential render starts at 16:00 with the meeting surfaced to it as due (its
+    lines); in a simultaneous turn from 15:59 the turn's end is clamped at 16:00 and the meeting
+    is surfaced to the next turn. The stopped advance names the meeting. Complements: with stops
+    off the clock passes 16:00 and the meeting is overdue; a meeting involving no one present
+    never stops it; ``check_advance`` answers ``Stop`` only for a pending, involved event."""
+    at = replace(clock(), start=54, minute=AT_1505 + 54)  # 15:59
+    long = TurnBeat("say", 2, " ".join(["word"] * 60), "jenni")
+    after = TurnBeat("say", 3, "Shall we?", "bobby")
+
+    # Sequential: clamped at 16:00, no re-render; Bobby starts at 16:00 with it surfaced.
+    found, timed = stopping.cut(at, schedule(meeting()), [long, after], mode=SEQUENTIAL)
+    (stop,) = found.stops
+    assert (stop.at, stop.unit, stop.skip) == (55, 1, False)
+    assert found.regenerate == {}
+    assert [(t.start, t.end) for t in found.timing.beat_times] == [(54, 54), (54, 55), (55, 55)]
+    assert found.timing.turn_end == 55
+    assert [(a.source, a.minutes, a.stopped_by) for a in found.timing.advances] == [
+        (StateChangeSource.PACING, 1, MEETING_ID)
+    ]
+    planned = stopping.lifecycle(schedule(meeting()), found, timed, sequential=True)
+    assert [(p.status.value, p.beat) for p in planned] == [("due", 2), ("surfaced", 3)]
+    lines = stopping.due_lines([meeting()], schedule(meeting()), at, character_id="jenni")
+    assert lines == (
+        "Scheduled event now due: the meeting (planned for 16:00). It is due at this moment; "
+        "let it interrupt what is happening.",
+    )
+    assert stopping.due_lines([meeting()], schedule(meeting()), at, character_id="bobby") == ()
+
+    # Simultaneous: the turn's end is clamped at 16:00, and the meeting surfaces next turn.
+    found, timed = stopping.cut(at, schedule(meeting()), [long, after], mode=SIMULTANEOUS)
+    assert found.timing.turn_end == 55
+    assert all(t.end <= 55 for t in found.timing.beat_times)
+    assert found.regenerate == {}
+    planned = stopping.lifecycle(schedule(meeting()), found, timed, sequential=False)
+    assert [p.status.value for p in planned] == ["due"]
+    due = replace(meeting(), status=ScheduledStatus.DUE, stopped_clock_at=55)
+    later, timed = stopping.cut(at, schedule(due), [after], mode=SIMULTANEOUS)
+    assert [
+        (p.status.value, p.beat)
+        for p in stopping.lifecycle(schedule(due), later, timed, sequential=False)
+    ] == [("surfaced", 1)]
+
+    # Complements: stops off (overdue, the clock passes); nobody present involved.
+    found, _ = stopping.cut(at, schedule(meeting(), on=False), [long, after], mode=SEQUENTIAL)
+    assert (found.stops, found.timing.turn_end) == ((), 56)
+    assert [e.event_id for e, _ in found.overdue] == [MEETING_ID]
+    away = meeting(participants=("marcus",))
+    found, _ = stopping.cut(at, schedule(away), [long, after], mode=SEQUENTIAL)
+    assert (found.stops, found.overdue, found.timing.turn_end) == ((), (), 56)
+    span = stops.AdvanceSpan(54, 56)
+    assert stops.check_advance(span, {"jenni"}, None, events=[meeting()], stops=True) == stops.Stop(
+        meeting(), 55
+    )
+    assert (
+        stops.check_advance(
+            stops.AdvanceSpan(54, 54), {"jenni"}, None, events=[meeting()], stops=True
+        )
+        == stops.Proceed()
+    )
+    assert stops.check_advance(
+        span, {"jenni"}, None, events=[meeting()], stops=False
+    ) == stops.Proceed((meeting(),))
+    surfaced = replace(meeting(), status=ScheduledStatus.SURFACED)
+    assert (
+        stops.check_advance(span, {"jenni"}, None, events=[surfaced], stops=True) == stops.Proceed()
+    )
+    at_scene = meeting(participants=(), place_id="diner")
+    assert stops.check_advance(span, set(), "diner", events=[at_scene], stops=True) == stops.Stop(
+        at_scene, 55
+    )

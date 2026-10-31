@@ -254,6 +254,11 @@ ORDER: dict[str, str] = {
     # States (#185): declarations by name; changes by their State's name, scope (the cast
     # ordinal of its character) and position, then kind and record time; values likewise.
     "state_definitions": f"{_STORY_RANK}, t.name",
+    # Scheduled events (#196): versions by position, then planned time and status.
+    "scheduled_events": (
+        f"{_STORY_RANK}, t.narrative_turn, t.slot_k, t.beat, t.step, t.turn_variant, "
+        "t.planned_offset_minutes, t.status"
+    ),
     "state_changes": (
         f"{_STORY_RANK}, {_STATE_RANK}, {_SCOPE_RANK} NULLS FIRST, t.narrative_turn, "
         "t.slot_k, t.beat, t.step, t.turn_variant, t.tx_from, t.kind, t.reason"

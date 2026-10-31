@@ -124,7 +124,12 @@ def _advances(clock: ClockRead, beat: TurnBeat) -> list[TimedAdvance]:
     found: list[TimedAdvance] = []
     for declared in beat.advances:
         at = int(declared.step) if declared.step is not None else step
-        if declared.minutes is not None:
+        if declared.to_offset is not None:
+            # #196: the engine's own target (a time stop's cutoff).
+            found.append(
+                TimedAdvance(at, to_offset=int(declared.to_offset), reason=declared.reason)
+            )
+        elif declared.minutes is not None:
             found.append(
                 TimedAdvance(
                     at,
@@ -160,6 +165,17 @@ def _advances(clock: ClockRead, beat: TurnBeat) -> list[TimedAdvance]:
     return found
 
 
+@dataclass(frozen=True, slots=True)
+class Timed:
+    """A turn's renders as timing reads them: each render's ``TimedBeat``, its declared steps
+    by first beat and each beat's own step."""
+
+    beats: tuple[TimedBeat, ...]
+    steps: Mapping[int, Sequence[int]]
+    owners: Mapping[int, int]
+    renders: tuple[tuple[TurnBeat, ...], ...]
+
+
 def timed_turn(
     clock: ClockRead,
     beats: Sequence[TurnBeat],
@@ -172,6 +188,20 @@ def timed_turn(
 ) -> TurnTiming:
     """The turn's timing (see the module docstring). ``steps``: each character render's
     declared step indices, by the beat its steps sit at (its first beat)."""
+    found = timed_renders(clock, beats, say=say, do=do, player_last=player_last, steps=steps)
+    return time_turn(found.beats, found.steps, mode, clock.start, found.owners)
+
+
+def timed_renders(
+    clock: ClockRead,
+    beats: Sequence[TurnBeat],
+    *,
+    say: str = "",
+    do: str = "",
+    player_last: int = PLAYER_BEAT,
+    steps: Mapping[int, Sequence[int]] | None = None,
+) -> Timed:
+    """The turn's renders, timed (``timed_turn`` without the timing)."""
     renders = renders_of(beats, player_last)
     timed: list[TimedBeat] = []
     by_first: dict[int, list[int]] = {}
@@ -194,7 +224,7 @@ def timed_turn(
             )
         )
     owners = {b.beat: b.step for b in beats if b.step}
-    return time_turn(timed, by_first, mode, clock.start, owners)
+    return Timed(tuple(timed), by_first, owners, tuple(tuple(r) for r in renders))
 
 
 _ATTEMPT: ContextVar[tuple[str, ClockRead] | None] = ContextVar(

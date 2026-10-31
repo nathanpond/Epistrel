@@ -214,6 +214,8 @@ state_changes = Table(
     Column("valid_time_minutes", BigInteger, nullable=True),
     Column("tx_from", TIMESTAMP(timezone=True), nullable=False),
     Column("estimate_meta", JSONB(none_as_null=True), nullable=True),
+    Column("stopped_by_event_id", ulid_type(), nullable=True),
+    Column("paused_for_event_id", ulid_type(), nullable=True),
     CheckConstraint("narrative_turn IS NOT NULL AND turn_variant IS NOT NULL", name="positioned"),
     CheckConstraint(
         "(kind = 'set') = (value IS NOT NULL) AND (kind = 'set') = (delta IS NULL)",

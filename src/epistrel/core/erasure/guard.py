@@ -400,6 +400,7 @@ CONTENT_WRITE_PATHS: tuple[WritePath, ...] = (
     WritePath("epistrel.core.turns.beats", DIRECT),
     WritePath("epistrel.core.states", DIRECT),
     WritePath("epistrel.core.states.proposals", DIRECT),
+    WritePath("epistrel.core.world_clock.stops", DIRECT),
     WritePath(
         "epistrel.core.verify.shadow",
         EXEMPT,

@@ -104,7 +104,7 @@ does not name its only institution. An author declares such rules where they hol
 
 | Predicate | Subject → object | Cardinality | Temporal | Direction | Exclusions, containment | Qualifiers | Projection | Semantics |
 |---|---|---|---|---|---|---|---|---|
-| `scheduled`<br>`01JPRED0000000000000000026` | any → event | multi per (subject) | event | — | — | `participants` (ids), `place` (id) | — | A planned event owned by the subject (an appointment, a deadline, a departure): its planned time is the valid-time instant, its `participants` and `place` qualifiers (FR-CLOCK-9). |
+| `scheduled`<br>`01JPRED0000000000000000026` | any → event | multi per (subject) | event | — | — | `participants` (ids), `place` (id) | scheduled_events | A planned event owned by the subject (an appointment, a deadline, a departure): its planned time is the valid-time instant, its `participants` and `place` qualifiers (FR-CLOCK-9). |
 
 ## Scene time
 

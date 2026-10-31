@@ -1276,6 +1276,18 @@ REPLAY_EXCLUDED: dict[str, str] = {
         "C-03's story runs the clock off and the advance answers 409 module_off (its replay "
         "under a key is covered by test_s_clock_timeline, which delivers the module)"
     ),
+    **{
+        operation: (
+            "a scheduled event write (#196) needs the clock module, which #203 delivers: until "
+            "then C-03's story runs the clock off and the write answers 409 module_off (its "
+            "replay under a key is covered by test_s_diner__api, which delivers the module)"
+        )
+        for operation in (
+            "create_scheduled_event",
+            "reschedule_scheduled_event",
+            "cancel_scheduled_event",
+        )
+    },
 }
 """Mutating routes the replay does not reach, each with the reason
 (``replay_support.REPLACED_NOT_STORED`` names the one replayed without a stored result)."""

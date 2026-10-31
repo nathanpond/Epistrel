@@ -120,6 +120,7 @@ from epistrel.api.routes.predicates import PredicateDecisionBody, PredicateListB
 from epistrel.api.routes.respond import RespondResponse
 from epistrel.api.routes.retrieval import RetrievalBody
 from epistrel.api.routes.scene import EntityProfileBody, SceneBody
+from epistrel.api.routes.scheduled_events import ScheduledEventsBody, ScheduledEventWrittenBody
 from epistrel.api.routes.state_proposals import (
     AnalysisQueuedBody,
     ProposalApprovedBody,
@@ -225,6 +226,7 @@ from epistrel.core.story_texts import CustomInstructionsRequest, PinnedMemoriesR
 from epistrel.core.tables.ownership import EntityType
 from epistrel.core.timeline import Swapped, TruncateRequest, UntruncateRequest, Untruncation
 from epistrel.core.variants import ChainRef, SwapRequest
+from epistrel.core.world_clock.scheduled import ScheduledEventCreate, ScheduledEventReschedule
 from epistrel.core.world_clock.service import ClockAdvanceRequest
 from epistrel.engine import Engine, operations
 from epistrel.orchestrator.jobs.handlers.rebuild import RebuildQueued
@@ -248,6 +250,8 @@ CTX = RequestContext(principal=PRINCIPAL)
 GOLD = {"name": "gold", "type": "number", "initial_value": 10}
 """A State the State steps declare (#186)."""
 PROPOSAL = "01J9Z8Q4N5V6W7X8Y9Z0A1B2D5"
+EVENT = "01J9Z8Q4N5V6W7X8Y9Z0A1B2E6"
+"""#196: a scheduled event id (the clock's gate answers before it is looked up)."""
 """A State proposal id the proposal steps name (#192; refused by the module gate first)."""
 REPLY = "The innkeeper sets down a mug and says nothing."
 TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
@@ -1458,6 +1462,43 @@ def _steps() -> list[Step]:
                     ClockAdvanceRequest(minutes=30, reason="they wait"),
                 )
             ),
+        ),
+        # #196: the scheduled events listed, and the writes its story's configuration refuses
+        # (409 module_off) until #203 delivers the clock module (the gate answers before the
+        # event is looked up).
+        Step(
+            "list_scheduled_events",
+            lambda ids: Rest("GET", f"{s}/scheduled-events", params={"viewpoint": "omniscient"}),
+            lambda e, ids: _scheduled_list(
+                e.list_scheduled_events(CTX, ids["story"], viewpoint="omniscient")
+            ),
+        ),
+        Step(
+            "create_scheduled_event",
+            lambda ids: Rest(
+                "POST", f"{s}/scheduled-events", {"proposition": "the delivery", "planned": 60}
+            ),
+            lambda e, ids: _scheduled_written(
+                e.create_scheduled_event(
+                    CTX,
+                    ids["story"],
+                    ScheduledEventCreate(proposition="the delivery", planned=60),
+                )
+            ),
+        ),
+        Step(
+            "reschedule_scheduled_event",
+            lambda ids: Rest("PATCH", f"{s}/scheduled-events/{EVENT}", {"planned": 90}),
+            lambda e, ids: _scheduled_written(
+                e.reschedule_scheduled_event(
+                    CTX, ids["story"], EVENT, ScheduledEventReschedule(planned=90)
+                )
+            ),
+        ),
+        Step(
+            "cancel_scheduled_event",
+            lambda ids: Rest("DELETE", f"{s}/scheduled-events/{EVENT}"),
+            lambda e, ids: _scheduled_written(e.cancel_scheduled_event(CTX, ids["story"], EVENT)),
         ),
         # #186: the State API, which the story's configuration refuses (409 module_off) until
         # #203 delivers the states module: both reads, a set, a declaration and a definition
@@ -2864,6 +2905,14 @@ async def _clock_settings(call: Awaitable[Any]) -> dict[str, Any]:
 
 async def _clock_advanced(call: Awaitable[Any]) -> dict[str, Any]:
     return dump(ClockAdvancedBody.of(await call))
+
+
+async def _scheduled_list(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ScheduledEventsBody.of(await call))
+
+
+async def _scheduled_written(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ScheduledEventWrittenBody.of(await call))
 
 
 async def _states(call: Awaitable[Any]) -> dict[str, Any]:

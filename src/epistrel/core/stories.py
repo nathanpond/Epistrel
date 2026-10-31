@@ -182,6 +182,7 @@ from epistrel.core.tables.propositions import (
 )
 from epistrel.core.tables.providers import story_provider_bindings
 from epistrel.core.tables.readset import proposition_changes
+from epistrel.core.tables.scheduled_events import scheduled_events
 from epistrel.core.tables.states import (
     external_values,
     state_changes,
@@ -254,6 +255,9 @@ STORY_TABLES: tuple[Table, ...] = (
     external_values,
     # Engine-proposed States (#192): the review queue (no foreign key, no membership).
     state_proposals,
+    # Scheduled events (#196): a derived table (each lifecycle step a version), before the
+    # operations it references; copied by a fork through the fork point like ``facts``.
+    scheduled_events,
     # Memory records (#135): a derived table, before the operations it references.
     memories,
     # Speech acts (#150): a derived table, before the operations it references.

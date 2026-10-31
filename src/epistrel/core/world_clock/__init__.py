@@ -63,6 +63,7 @@ Log lines carry identifiers and counts only (invariant 3); this module logs noth
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -104,6 +105,7 @@ if TYPE_CHECKING:
     from epistrel.core.world_clock.timing import TurnTiming
 
 MODULE = "clock"
+_ULID = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
 HEAD = Position(2**31 - 1)
 """A position after every turn and slot: the clock as the story stands."""
 """The profile module that runs the clock (``clock.level``)."""
@@ -486,6 +488,10 @@ async def record_turn(
                 source=found.source,
                 position=Position(turn, variant, 0, found.beat_position, found.step_position),
                 reason=found.reason,
+                # #196: a due event's stop; an event the turn itself creates has no row yet.
+                stopped_by_event_id=found.stopped_by
+                if found.stopped_by is not None and _ULID.match(found.stopped_by)
+                else None,
             )
         )
     return written
@@ -538,8 +544,12 @@ async def advance(
     position: Position,
     reason: str,
     estimate_meta: dict[str, Any] | None = None,
+    stopped_by_event_id: str | None = None,
+    paused_for_event_id: str | None = None,
 ) -> Advance:
-    """Advance the clock in ``op``'s commit transaction (see the module docstring)."""
+    """Advance the clock in ``op``'s commit transaction (see the module docstring); a stopped
+    advance names the scheduled event that stopped it (#196), a paused one the event it paused
+    for (#197)."""
     if (minutes is None) == (to_offset is None):
         raise InvalidRequest("an advance gives minutes or a target offset", {"field": "minutes"})
     source = StateChangeSource(source)
@@ -568,6 +578,8 @@ async def advance(
             position=position,
             status=StateChangeStatus.COMMITTED,
             estimate_meta=estimate_meta,
+            stopped_by_event_id=stopped_by_event_id,
+            paused_for_event_id=paused_for_event_id,
         ),
     )
     if isinstance(applied, Violation):  # pragma: no cover - a forward advance breaks nothing

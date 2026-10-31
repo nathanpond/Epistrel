@@ -58,6 +58,7 @@ from epistrel.core.tables.propositions import (
     predicates,
     propositions,
 )
+from epistrel.core.tables.scheduled_events import scheduled_events
 from epistrel.core.tables.states import state_changes, state_definitions, state_proposals
 
 STORY_SCOPE = "story"
@@ -415,6 +416,20 @@ def state_proposal_record(row: Any) -> Record:
         fields["suggested_unit"] = row.suggested_unit
     fields.update(text_fields(row.evidence, "evidence"))
     return Record(state_proposals.name, str(row.id), _str(row.story_id), fields)
+
+
+def scheduled_event_record(row: Any) -> Record:
+    """A scheduled event's version (#196): it holds no text of its own (the event's canon
+    ``scheduled`` proposition is indexed with the proposition); its participants, and a
+    character owner, are declared subjects."""
+    declared: list[Declared] = [
+        (SubjectKind.CHARACTER, str(p), f"participants[{index}]")
+        for index, p in enumerate(row.participants or ())
+    ]
+    owner = _str(getattr(row, "owner", None))
+    if owner and owner not in ("author", "world"):
+        declared.append((SubjectKind.CHARACTER, owner, "owner"))
+    return Record(scheduled_events.name, str(row.id), _str(row.story_id), {}, tuple(declared))
 
 
 def exposure_record(row: Any) -> Record:
@@ -890,6 +905,11 @@ async def read_state_proposals(conn: AsyncConnection, story_id: str | None) -> l
     return await _story_rows(conn, state_proposals, story_id, state_proposal_record)
 
 
+async def read_scheduled_events(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    """A story's scheduled event versions, as ``scheduled_event_record`` indexes them."""
+    return await _story_rows(conn, scheduled_events, story_id, scheduled_event_record)
+
+
 async def read_thunks(conn: AsyncConnection, story_id: str | None) -> list[Record]:
     """A story's thunks, as ``thunk_record`` indexes them."""
     return await _story_rows(conn, thunks, story_id, thunk_record)
@@ -954,10 +974,12 @@ __all__ = [
     "read_beliefs",
     "read_divergences",
     "read_exposures",
+    "read_scheduled_events",
     "read_state_changes",
     "read_state_definitions",
     "read_state_proposals",
     "read_thunks",
+    "scheduled_event_record",
     "snapshot_record",
     "state_change_record",
     "state_definition_record",

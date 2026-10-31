@@ -476,6 +476,7 @@ CORE_PREDICATES: tuple[Predicate, ...] = (
         cardinality=_M,
         temporal_kind=_EVENT,
         qualifiers={"participants": QualifierKind.IDS, "place": QualifierKind.ID},
+        projection="scheduled_events",
         docs="A planned event owned by the subject (an appointment, a deadline, a departure): "
         "its planned time is the valid-time instant, its `participants` and `place` "
         "qualifiers (FR-CLOCK-9).",

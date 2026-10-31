@@ -125,6 +125,11 @@ class TimedBeat:
     last_beat: int
     pacing: int = 0
     advances: tuple[TimedAdvance, ...] = ()
+    cap: int | None = None
+    """#196: the clock offset the render may not pass (a due scheduled event's stop): its
+    advances and its pacing end there."""
+    stopped_by: str | None = None
+    """#196: the scheduled event (its key) whose stop ``cap`` is."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +153,8 @@ class Advance:
     reason: str
     beat_position: int
     step_position: int
+    stopped_by: str | None = None
+    """#196: the scheduled event whose stop cut this advance short (FR-CLOCK-16)."""
 
     @property
     def position(self) -> tuple[int, int]:
@@ -171,6 +178,8 @@ class TurnTiming:
     """Each render's ``(first_beat, last_beat)``."""
     owners: tuple[tuple[int, int], ...] = ()
     """Each beat's own step, where a step owns it (``(beat, step)``)."""
+    skipping: tuple[bool, ...] = ()
+    """#196: whether each render moved by an advance (a skip) rather than its pacing."""
 
     @property
     def minutes(self) -> int:
@@ -225,12 +234,14 @@ def time_turn(
     beat_times: list[BeatTime] = []
     step_starts: list[tuple[tuple[int, int], int]] = []
     contradicted: list[tuple[int, TimedAdvance]] = []
-    accepted: list[list[tuple[int, int, str]]] = []
+    accepted: list[list[tuple[int, int, str, str | None]]] = []
+    skipping: list[bool] = []
     cursor = turn_start
     for n, beat in enumerate(beats):
         start = turn_start if simultaneous else cursor
         at = start
-        mine: list[tuple[int, int, str]] = []
+        mine: list[tuple[int, int, str, str | None]] = []
+        moving = False
         for step in _steps_of([*steps.get(beat.first_beat, ()), *(a.step for a in beat.advances)]):
             for advance in beat.advances:
                 if advance.step != step or advance.flashback:
@@ -244,12 +255,25 @@ def time_turn(
                 if moved < 0:
                     contradicted.append((n, advance))
                     continue
+                moving = True
+                stopped = None
+                if beat.cap is not None and at + moved >= beat.cap:
+                    # #196: a due event's stop: the advance ends at the event's time.
+                    moved, stopped = max(0, beat.cap - at), beat.stopped_by
+                if moved == 0:
+                    continue
                 at += moved
-                mine.append((step, moved, advance.reason))
+                mine.append((step, moved, advance.reason, stopped))
             step_starts.append(((n, step), at))
-        end = at if mine else start + max(0, int(beat.pacing))
+        if moving:
+            end = at
+        else:
+            end = start + max(0, int(beat.pacing))
+            if beat.cap is not None and end > beat.cap:
+                end = max(start, beat.cap)
         beat_times.append(BeatTime(start, end))
         accepted.append(mine)
+        skipping.append(moving)
         cursor = end
     if not beats:
         turn_end = turn_start
@@ -267,6 +291,7 @@ def time_turn(
         contradicted=tuple(contradicted),
         layout=tuple((b.first_beat, b.last_beat) for b in beats),
         owners=tuple(sorted((int(b), int(s)) for b, s in (owners or {}).items() if s)),
+        skipping=tuple(skipping),
     )
 
 
@@ -282,19 +307,32 @@ def _step_position(beat: TimedBeat, step: int) -> tuple[int, int]:
 def _recorded(
     beats: Sequence[TimedBeat],
     beat_times: Sequence[BeatTime],
-    accepted: Sequence[Sequence[tuple[int, int, str]]],
+    accepted: Sequence[Sequence[tuple[int, int, str, str | None]]],
     *,
     simultaneous: bool,
 ) -> tuple[Advance, ...]:
     def of(n: int, at: tuple[int, int] | None) -> list[Advance]:
         beat, found = beats[n], []
-        for step, moved, reason in accepted[n]:
+        for step, moved, reason, stopped in accepted[n]:
             where = at if at is not None else _step_position(beat, step)
-            found.append(Advance(moved, StateChangeSource.DECLARED_SKIP, n, step, reason, *where))
+            found.append(
+                Advance(moved, StateChangeSource.DECLARED_SKIP, n, step, reason, *where, stopped)
+            )
         minutes = beat_times[n].end - beat_times[n].start
         if not accepted[n] and minutes > 0:
             where = at if at is not None else (beat.last_beat, POSITION_MAX)
-            found.append(Advance(minutes, StateChangeSource.PACING, n, None, "pacing", *where))
+            clamped = beat.cap is not None and beat_times[n].end == beat.cap
+            found.append(
+                Advance(
+                    minutes,
+                    StateChangeSource.PACING,
+                    n,
+                    None,
+                    "pacing",
+                    *where,
+                    beat.stopped_by if clamped else None,
+                )
+            )
         return found
 
     if not beats:

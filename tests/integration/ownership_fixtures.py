@@ -379,6 +379,17 @@ async def _state_proposal(client: httpx.AsyncClient, kind: Kind, entity: Entity)
     return {"proposal_id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2D5"}
 
 
+async def _scheduled_event(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """A scheduled event id for the event writes (#196), whose story runs the clock off until
+    #203 (the module gate answers before the id is looked up)."""
+    return {"event_id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2E6"}
+
+
+async def _omniscient(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """The omniscient viewpoint, as a query parameter (#196's list)."""
+    return {"query.viewpoint": "omniscient"}
+
+
 async def _believing(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
     """The query naming the story's non-player character, Ada, whose belief projection the
     read answers (#159): a ``query.``-prefixed value is a query parameter, not a path value."""
@@ -663,6 +674,14 @@ CALLS: dict[tuple[str, str], Call] = {
     ("GET", f"{S}/clock"): Call(200),
     ("PATCH", f"{S}/clock"): Call(200, {"mode": "manual"}),
     ("POST", f"{S}/clock/advance"): Call(409, {"minutes": 30, "reason": "they wait"}),
+    # -- stories: its scheduled events (#196): the list, and writes the story's configuration
+    # refuses (409 module_off) until #203 delivers the clock module
+    ("GET", f"{S}/scheduled-events"): Call(200, prepare=_omniscient),
+    ("POST", f"{S}/scheduled-events"): Call(409, {"proposition": "the delivery", "planned": 60}),
+    ("PATCH", f"{S}/scheduled-events/{{event_id}}"): Call(
+        409, {"planned": 90}, prepare=_scheduled_event
+    ),
+    ("DELETE", f"{S}/scheduled-events/{{event_id}}"): Call(409, prepare=_scheduled_event),
     # -- stories: its States (#186), which the story's configuration refuses (409 module_off)
     # until #203 delivers the states module
     ("GET", f"{S}/states"): Call(409),

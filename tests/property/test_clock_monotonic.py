@@ -41,11 +41,12 @@ from hypothesis import strategies as st
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import states, world_clock
-from epistrel.core.enums import StateChangeSource
+from epistrel.core.enums import ScheduledStatus, StateChangeSource
 from epistrel.core.errors import ClockBackward
 from epistrel.core.events import Operation
 from epistrel.core.membership import POSITION_MAX, Position
 from epistrel.core.resolution.time import TimeBasis
+from epistrel.core.world_clock import stops
 from epistrel.core.world_clock.timing import (
     SEQUENTIAL,
     SIMULTANEOUS,
@@ -394,3 +395,121 @@ def test_clock_monotonic__timing(
             assert committing.at(position) == zero + timing.step_start(n, step)
             assert timing.step_start(n, step) == at
     assert committing.at(Position(turn, variant, 0, first, 0)) == zero + timing.turn_end
+
+
+# -- due-event stops (#196) --------------------------------------------------------------------
+
+scheduled = st.lists(
+    st.tuples(
+        st.integers(0, 240),  # the planned offset
+        st.sampled_from(["pending", "pending", "due", "surfaced", "completed"]),
+        st.booleans(),  # involves someone present (else no one, and not the scene)
+    ),
+    max_size=4,
+)
+PRESENT = "01J9Z8Q4N5V6W7X8Y9Z0A1B2P1"
+
+
+@pytest.mark.part("M6", "FR-CLOCK-9,16")
+@settings(max_examples=EXAMPLES, deadline=None)
+@given(
+    st.lists(render, min_size=1, max_size=4),
+    st.sampled_from([SEQUENTIAL, SIMULTANEOUS]),
+    scheduled,
+    st.booleans(),
+    st.integers(1, 4),
+)
+def test_clock_monotonic__stops(
+    renders: list[tuple[int, int, int, list[tuple[int, bool, int, bool]]]],
+    mode: str,
+    events: list[tuple[int, str, bool]],
+    on: bool,
+    turns: int,
+) -> None:
+    """#196's clauses (FR-CLOCK-9,16): for any turns of renders (pacing, skips at steps) and
+    any canon scheduled events (pending or not, involving someone present or no one), each turn
+    cut at its due events (``core.world_clock.stops.cut_turn``) moves the clock forward only
+    (the capped recorded advances fold to its end); with stops on it never carries the clock
+    past a pending involved event: a sequential turn's renders stop at each one they reach (each
+    capped there, the next starting at it), a simultaneous turn ends at the earliest (its
+    cutoff), every render ending at or before it; a stopped event, ``due`` afterwards, never
+    stops a later turn (at most once, across the turns), and a regenerated render is one whose
+    advance (not its pacing) reached the stop. Complements: with stops off, or for an event
+    that is not pending or involves no one present, the clock is never stopped (the timing is
+    the uncapped one) and the crossed pending involved events are overdue."""
+    beats: list[TimedBeat] = []
+    steps: dict[int, list[int]] = {}
+    first = 1
+    for count, declared, pacing, advances in renders:
+        found = [
+            TimedAdvance(min(step, declared), minutes=max(0, amount))
+            for step, _, amount, _ in advances
+        ]
+        beats.append(TimedBeat(first, first + count - 1, pacing, tuple(found)))
+        steps[first] = list(range(1, declared + 1))
+        first += count
+    pending = [
+        stops.ScheduledEvent(
+            f"01J9Z8Q4N5V6W7X8Y9Z0A1B{n:03d}",
+            ScheduledStatus(status),
+            planned,
+            participants=(PRESENT,) if involved else ("01J9Z8Q4N5V6W7X8Y9Z0A1B2Q9",),
+        )
+        for n, (planned, status, involved) in enumerate(events)
+    ]
+    start = 0
+    stopped_once: set[str] = set()
+    for _ in range(turns):
+        cut = stops.cut_turn(
+            beats, steps, mode, start, events=pending, present={PRESENT}, scene=None, stops=on
+        )
+        timing, uncapped = cut.timing, cut.uncapped
+        assert uncapped is not None
+        # Forward only, and the recorded (capped) advances fold to the turn's end.
+        assert all(a.minutes >= 0 for a in timing.advances)
+        assert start + sum(a.minutes for a in timing.advances) == timing.turn_end
+        assert all(t.start <= t.end for t in timing.beat_times)
+        assert timing.turn_end >= start
+        crossing = [
+            e
+            for e in pending
+            if e.status is ScheduledStatus.PENDING
+            and PRESENT in e.participants
+            and start < e.planned <= uncapped.turn_end
+        ]
+        if not on or not crossing:
+            assert cut.stops == ()
+            assert timing.beat_times == uncapped.beat_times
+            assert timing.turn_end == uncapped.turn_end
+            if not on:
+                assert {e.event_id for e, _ in cut.overdue} >= {
+                    e.event_id
+                    for e in crossing
+                    if any(t.start < e.planned <= t.end for t in uncapped.beat_times)
+                }
+        else:
+            earliest = min(e.planned for e in crossing)
+            assert cut.stops
+            assert min(s.at for s in cut.stops) == earliest
+            assert len({s.event.event_id for s in cut.stops}) == len(cut.stops)
+            assert not {s.event.event_id for s in cut.stops} & stopped_once
+            if mode == SIMULTANEOUS:
+                assert timing.turn_end == earliest == cut.cutoff
+                assert all(t.end <= earliest for t in timing.beat_times)
+            else:
+                for s in cut.stops:
+                    assert timing.beat_times[s.unit].end == s.at
+                    if s.unit + 1 < len(timing.beat_times):
+                        assert timing.beat_times[s.unit + 1].start == s.at
+                    assert s.skip == uncapped.skipping[s.unit]
+                assert timing.turn_end <= uncapped.turn_end
+            # A regenerated render reached the stop by an advance, never by its pacing alone.
+            for unit in cut.regenerate:
+                assert uncapped.skipping[unit]
+        # The stopped events are due afterwards: they never stop again.
+        stopped_once |= {s.event.event_id for s in cut.stops}
+        pending = [
+            replace(e, status=ScheduledStatus.DUE) if e.event_id in stopped_once else e
+            for e in pending
+        ]
+        start = timing.turn_end

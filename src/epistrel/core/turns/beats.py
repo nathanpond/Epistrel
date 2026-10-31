@@ -213,6 +213,9 @@ class DeclaredAdvance:
     minutes: int | None = None
     to: str | None = None
     step: int | None = None
+    to_offset: int | None = None
+    """#196: a target the engine sets (a clock offset): a time stop's cutoff, which a beat
+    regenerated under it reaches."""
 
 
 @dataclass(frozen=True, slots=True)

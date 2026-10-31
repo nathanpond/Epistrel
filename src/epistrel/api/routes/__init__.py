@@ -30,6 +30,7 @@ from epistrel.api.routes import (
     respond,
     retrieval,
     scene,
+    scheduled_events,
     state_proposals,
     states,
     stories,
@@ -66,6 +67,7 @@ router.include_router(principals.router)
 router.include_router(story_profile.router)
 router.include_router(story_rating.router)
 router.include_router(clock.router)
+router.include_router(scheduled_events.router)
 router.include_router(admin_providers.story_router)
 router.include_router(states.router)
 router.include_router(state_proposals.router)

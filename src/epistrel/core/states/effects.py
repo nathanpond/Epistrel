@@ -80,6 +80,10 @@ transfer or cap refusal; ``constraint`` the reason): unpermitted novelty, repair
 STATE_CAPPED: Final = "state_capped"
 """A declared effect larger than its State's caps allow (FR-STATE-10, #188): repaired down to
 the cap deterministically (``amount``)."""
+TIME_STOP: Final = "time_stop"
+"""#196 (FR-CLOCK-16): a beat placed after a due scheduled event's stop: regenerated to end at
+or before the cutoff (the repair reason ``time_stop``); its deterministic rung is the fallback
+line, never the beat as it was."""
 INVALID_EFFECT = "invalid_effect"
 """The constraint of a repaired render's effect that names no State it may change."""
 UNDEFINED = "undefined"
@@ -108,6 +112,7 @@ Tag = Literal[
     "state_unpermitted",
     "state_capped",
     "state_unnarrated",
+    "time_stop",
 ]
 TAGS: frozenset[str] = frozenset(
     {
@@ -117,6 +122,7 @@ TAGS: frozenset[str] = frozenset(
         STATE_UNPERMITTED,
         STATE_CAPPED,
         STATE_UNNARRATED,
+        TIME_STOP,
     }
 )
 REFUSED_TAGS: frozenset[str] = frozenset({STATE_CONSTRAINT, STATE_UNPERMITTED})
@@ -863,6 +869,7 @@ __all__ = [
     "STATE_UNNARRATED",
     "STATE_UNPERMITTED",
     "TAGS",
+    "TIME_STOP",
     "UNDEFINED",
     "Finding",
     "Key",

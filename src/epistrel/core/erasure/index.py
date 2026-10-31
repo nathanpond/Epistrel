@@ -797,6 +797,13 @@ SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
     SubjectWriter("state_definitions", (_STATES,), f"{_RECORDS}:read_state_definitions"),
     SubjectWriter("state_changes", (_STATES,), f"{_RECORDS}:read_state_changes"),
     SubjectWriter("state_proposals", (f"{_STATES}.proposals",), f"{_RECORDS}:read_state_proposals"),
+    # Scheduled events (#196): no text of their own; the participants and a character owner
+    # are declared subjects.
+    SubjectWriter(
+        "scheduled_events",
+        ("epistrel.core.world_clock.stops",),
+        f"{_RECORDS}:read_scheduled_events",
+    ),
 )
 """Every indexed table (see the module docstring); the coverage test's source of truth."""
 

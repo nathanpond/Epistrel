@@ -539,6 +539,10 @@ class StateChange:
     prerequisite_effect_ids: tuple[str, ...] = ()
     estimate_meta: Mapping[str, Any] | None = None
     """An estimated clock advance's estimate and reason (#193, #197)."""
+    stopped_by_event_id: str | None = None
+    """A clock advance a due scheduled event stopped: the event (its ``proposition_id``; #196)."""
+    paused_for_event_id: str | None = None
+    """A clock advance a ``possibly_due`` event paused: the event (#197)."""
 
 
 @dataclass(frozen=True, slots=True)

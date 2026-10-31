@@ -136,6 +136,7 @@ from epistrel.core.propositions.registry import (
     file_identity_proposal,
     load,
 )
+from epistrel.core.propositions.vocabulary import SCHEDULED
 from epistrel.core.resolution.identity import pair_of
 from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX, OMNISCIENT
 from epistrel.core.tables import characters, entities, events, predicates, propositions
@@ -999,6 +1000,12 @@ async def commit_fact(
         await file_identity_proposal(
             conn, story_id, pair, reason="canon_same_as", fact_ids=[fact.id]
         )
+    if fact.predicate_id == SCHEDULED and fact.commit_state is FactCommitState.COMMITTED:
+        # #196 (FR-CLOCK-9): a canon scheduled event is an event of ``scheduled_events``,
+        # written with its fact (here: the clock reads canon).
+        from epistrel.core.world_clock import stops
+
+        await stops.on_canon_fact(conn, story_id, fact, operation, beat=beat, slot_k=slot_k)
     return fact
 
 

@@ -72,9 +72,15 @@ CLOCK_ANCHOR = "01JPRED0000000000000000036"
 TIME_OF_DAY_BAND = "01JPRED0000000000000000037"
 ELAPSED_SINCE = "01JPRED0000000000000000038"
 SCHEDULED_STATUS = "01JPRED0000000000000000039"
+CURRENT_TIME = "01JPRED0000000000000000040"
+UNCONSCIOUS = "01JPRED0000000000000000041"
 CLOCK_CHECKS: tuple[str, ...] = (TIME_IS, TIME_OF_DAY_BAND, ELAPSED_SINCE, SCHEDULED_STATUS)
 """The clock checks (#195): answered by the world clock's anchor when the story runs the clock
 (``core.world_clock.verify``)."""
+CLOCK_PREDICATES: tuple[str, ...] = (*CLOCK_CHECKS, CLOCK_ANCHOR, CURRENT_TIME)
+"""Every predicate about the clock's time (#200): with the clock on, a character's context and
+its ``belief(A)`` record set never carry canon on them (``core.world_clock.time_belief``); a
+character knows the time only as its own time belief."""
 
 BARRIERS: tuple[str, ...] = ("none", "door_open", "door_closed", "window", "thin_wall", "wall")
 """The values of ``adjacent_to``'s ``barrier`` qualifier (#161): what stands between two
@@ -608,6 +614,36 @@ CORE_PREDICATES: tuple[Predicate, ...] = (
         "`past`). A clock check (#195): `uncertain` until scheduled events are kept (#196, "
         "#197); with the clock off it is `uncertain(no_clock)`.",
     ),
+    _core(
+        WORLD_CLOCK,
+        id=CURRENT_TIME,
+        name="current_time",
+        object_type="str",
+        cardinality=_F,
+        temporal_kind=_FLUENT,
+        docs="What time it is, as a holder came to believe it (#200, FR-CLOCK-15): the subject is "
+        "the `world_clock` State's id, the object the time as read or told (a `str` literal: "
+        '"15:00", "about four"), the valid-time the instant it was read or told. Viewpoint-'
+        "free and held only as a belief, written through `transition()` with an `observation` "
+        "(a watch or clock beat) or `testimony` antecedent: it overrides the time a character "
+        "derives from the story's `time_awareness`, carried forward by the time the character "
+        "perceives since (`core.world_clock.time_belief`).",
+    ),
+    _core(
+        LIFE,
+        id=UNCONSCIOUS,
+        name="unconscious",
+        subject_type="person",
+        object_type=NONE,
+        cardinality=_F,
+        temporal_kind=_FLUENT,
+        qualifiers={"kind": _STR},
+        docs="The subject is unconscious (no object), its `kind` `asleep` or `unconscious`; "
+        "negated, awake. Claim detection (#148) writes it when narration or a beat says a "
+        "character passes out, falls asleep, wakes or comes to, and waking closes it (#200, "
+        "FR-CLOCK-15). Perception routing (#161) reads it from canon: an unconscious character "
+        "perceives nothing, and the time it perceives excludes the span.",
+    ),
 )
 """Every core predicate, in documentation order."""
 
@@ -629,10 +665,12 @@ __all__ = [
     "BARRIERS",
     "CLOCK_ANCHOR",
     "CLOCK_CHECKS",
+    "CLOCK_PREDICATES",
     "CORE_BY_ID",
     "CORE_BY_NAME",
     "CORE_NAMES",
     "CORE_PREDICATES",
+    "CURRENT_TIME",
     "DEFAULT_BARRIER",
     "EDUCATION_PREDICATES",
     "ELAPSED_SINCE",
@@ -643,6 +681,7 @@ __all__ = [
     "SPOKE_TO",
     "STATE_VALUE",
     "TIME_OF_DAY_BAND",
+    "UNCONSCIOUS",
     "Family",
     "family_of",
 ]

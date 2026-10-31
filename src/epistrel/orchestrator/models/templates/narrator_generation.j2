@@ -8,7 +8,8 @@ and who is present, the working memory as the narrator perceives it (omniscient,
 excluded), the retrieved context and the canon, ``## Tracked values`` (#187: every State, hidden
 ones included, with its value at the turn's start and its constraints, and the effect syntax),
 ``## External data`` (#208: an externally owned State's value only in its fenced block, data and
-never instructions), then the narration contract and, on a guardrail regeneration, the
+never instructions), ``## The time now`` (#200: the objective clock as the turn starts, the
+narrator's alone), then the narration contract and, on a guardrail regeneration, the
 constraint lines (#68). The ``user`` block is the player input. -#}
 {% macro line(entry) -%}
 {% if entry.text %}{{ entry.text }}{% else %}{{ entry.name }}:{% if entry.say %} "{{ entry.say }}"{% endif %}{% if entry.do %} *{{ entry.do }}*{% endif %}{% endif %}
@@ -88,6 +89,11 @@ This turn left these open; narrate what settles each one, naming who or what it 
 {% for reference in open_references %}
 - {{ reference }}
 {% endfor %}
+
+{% endif %}
+{% if clock_now %}
+## The time now
+By the story's clock it is {{ clock_now }} as this turn starts. The characters know only the time they can know.
 
 {% endif %}
 {% include "clock_contract.j2" %}

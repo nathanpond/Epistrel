@@ -9,7 +9,8 @@ decides from:
 - an import of the ``placement`` or ``scene_state`` projection table (from ``core.tables`` or
   ``core.tables.projections``), or a ``placement.c``/``scene_state.c`` reference;
 - a reference to the topology and channel predicates routing reads (``ADJACENT_TO``,
-  ``ON_CHANNEL``).
+  ``ON_CHANNEL``) and to the consciousness predicate it honors (``UNCONSCIOUS``, #200: anything
+  else asks ``perception.changes_consciousness`` or ``scene.perception_gaps``).
 
 Only ``ALLOWED`` modules may: the routing modules themselves, #137's projections (which write
 the tables), the table and vocabulary definitions, and story deletion. Anything else needing
@@ -31,7 +32,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SOURCE_ROOT = "src/epistrel"
 TABLES = frozenset({"placement", "scene_state"})
 TABLE_MODULES = frozenset({"epistrel.core.tables", "epistrel.core.tables.projections"})
-PREDICATES = frozenset({"ADJACENT_TO", "ON_CHANNEL"})
+PREDICATES = frozenset({"ADJACENT_TO", "ON_CHANNEL", "UNCONSCIOUS"})
 ALLOWED = frozenset(
     {
         "src/epistrel/core/epistemic/perception.py",

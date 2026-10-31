@@ -442,12 +442,21 @@ OWNER_BELIEF_ONLY: dict[str, OwnerBeliefOnly] = {}
 belief_only=)``)."""
 
 
+OwnerBelief = Callable[[AsyncConnection, str, str, Proposition, Any], Awaitable["Verdict | None"]]
+"""#200: a ``belief(A)`` holder's verdict on a claim on an owner-lookup predicate, decided by
+the owner from A's own view of the value (``(conn, story, A, claim, through)``: the clock
+checks against A's time belief), or ``None`` to decide it as any belief holder's claim."""
+OWNER_BELIEF: dict[str, OwnerBelief] = {}
+"""The belief deciders of owner lookups, by predicate id (``register_owner_lookup(belief=)``)."""
+
+
 def register_owner_lookup(
     predicate_id: str,
     lookup: OwnerLookup,
     *,
     active: OwnerActive | None = None,
     belief_only: OwnerBeliefOnly | None = None,
+    belief: OwnerBelief | None = None,
 ) -> OwnerLookup:
     """Make ``predicate_id`` an owner-lookup predicate answered by ``lookup``. With ``active``
     the lookup is **conditional** (#195: ``time_is`` is the clock's only while the story runs
@@ -455,7 +464,9 @@ def register_owner_lookup(
     the owner only for a story ``active`` admits, and a pure ``check`` hands the claim to the
     lookup only when it is given the owner's values. With ``belief_only``, a claim it admits is
     decided for a ``belief(A)`` holder over A's partition alone (#207: ADR-167's canon fallback
-    never answers an externally owned value, so one A holds no belief about stays ``novel``)."""
+    never answers an externally owned value, so one A holds no belief about stays ``novel``).
+    With ``belief`` (#200), a ``belief(A)`` holder's claim is decided by it whenever it answers
+    (the clock checks against A's time belief, never the clock or A's canon)."""
     OWNER_LOOKUPS[predicate_id] = lookup
     if active is not None:
         OWNER_ACTIVE[predicate_id] = active
@@ -465,6 +476,10 @@ def register_owner_lookup(
         OWNER_BELIEF_ONLY[predicate_id] = belief_only
     else:
         OWNER_BELIEF_ONLY.pop(predicate_id, None)
+    if belief is not None:
+        OWNER_BELIEF[predicate_id] = belief
+    else:
+        OWNER_BELIEF.pop(predicate_id, None)
     return lookup
 
 
@@ -493,6 +508,16 @@ async def owner_belief_only(conn: AsyncConnection, story_id: str, claim: Proposi
     character knows its value only as its own belief (see ``register_owner_lookup``)."""
     test = OWNER_BELIEF_ONLY.get(claim.predicate_id)
     return test is not None and await test(conn, story_id, claim)
+
+
+async def owner_belief(
+    conn: AsyncConnection, story_id: str, holder_id: str, claim: Proposition, through: Any
+) -> Verdict | None:
+    """#200: ``holder_id``'s belief verdict on ``claim`` as the predicate's owner decides it
+    (``register_owner_lookup(belief=)``), or ``None`` when it has no such decider or the decider
+    does not answer."""
+    decide = OWNER_BELIEF.get(claim.predicate_id)
+    return None if decide is None else await decide(conn, story_id, holder_id, claim, through)
 
 
 # -- author declarations (#108's loose lists, typed) --------------------------------------------
@@ -1511,6 +1536,7 @@ __all__ = [
     "IDENTITY",
     "IMPLICATION_MAX_DEPTH",
     "OWNER_ACTIVE",
+    "OWNER_BELIEF",
     "OWNER_BELIEF_ONLY",
     "OWNER_LOOKUPS",
     "PROPOSABLE",
@@ -1523,6 +1549,7 @@ __all__ = [
     "IdentityReason",
     "ImplicationRule",
     "OwnerActive",
+    "OwnerBelief",
     "OwnerBeliefOnly",
     "OwnerLookup",
     "PredicateDecl",
@@ -1553,6 +1580,7 @@ __all__ = [
     "list_predicates",
     "load",
     "owner_active",
+    "owner_belief",
     "owner_belief_only",
     "owner_lookup",
     "register_author",

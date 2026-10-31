@@ -1,0 +1,84 @@
+{
+  "category": "consciousness",
+  "language": "en",
+  "description": "Consciousness language (#200, FR-CLOCK-15): unconscious(subject), a fluent with its kind (asleep or unconscious), for the subject before the verb. Passing out, fainting, blacking out and losing consciousness make it unconscious (kind unconscious); falling asleep, dozing off and nodding off asleep (kind asleep); waking and coming to end it (a negated unconscious of the kind it ends). A negated verb asserts nothing. A bare verb ('comes to') counts only when nothing follows it in its clause, so 'came to the diner' stays movement.",
+  "predicate": "unconscious",
+  "lemmas": [
+    {
+      "lemma": "pass out",
+      "forms": ["pass out", "passes out", "passed out", "passing out"],
+      "state": "unconscious"
+    },
+    {
+      "lemma": "faint",
+      "forms": ["faint", "faints", "fainted", "fainting"],
+      "state": "unconscious"
+    },
+    {
+      "lemma": "black out",
+      "forms": ["black out", "blacks out", "blacked out", "blacking out"],
+      "state": "unconscious"
+    },
+    {
+      "lemma": "lose consciousness",
+      "forms": [
+        "lose consciousness",
+        "loses consciousness",
+        "lost consciousness",
+        "losing consciousness"
+      ],
+      "state": "unconscious"
+    },
+    {
+      "lemma": "fall asleep",
+      "forms": ["fall asleep", "falls asleep", "fell asleep", "falling asleep"],
+      "state": "asleep"
+    },
+    {
+      "lemma": "doze off",
+      "forms": ["doze off", "dozes off", "dozed off", "dozing off"],
+      "state": "asleep"
+    },
+    {
+      "lemma": "nod off",
+      "forms": ["nod off", "nods off", "nodded off", "nodding off"],
+      "state": "asleep"
+    },
+    {
+      "lemma": "wake",
+      "forms": [
+        "wake",
+        "wakes",
+        "woke",
+        "waking",
+        "wake up",
+        "wakes up",
+        "woke up",
+        "waking up",
+        "awakens",
+        "awoke",
+        "awakened"
+      ],
+      "state": "awake",
+      "ends": "asleep"
+    },
+    {
+      "lemma": "come to",
+      "forms": ["come to", "comes to", "came to", "coming to"],
+      "state": "awake",
+      "ends": "unconscious",
+      "bare": true
+    },
+    {
+      "lemma": "regain consciousness",
+      "forms": [
+        "regain consciousness",
+        "regains consciousness",
+        "regained consciousness",
+        "regaining consciousness"
+      ],
+      "state": "awake",
+      "ends": "unconscious"
+    }
+  ]
+}

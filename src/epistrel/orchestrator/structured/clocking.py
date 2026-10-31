@@ -289,6 +289,14 @@ def render_scope(
         yield
 
 
+def now_text(clock: ClockRead | None) -> str:
+    """#200: the clock as the turn starts, as the director reads it (the anchor's known
+    components, else the offset: "+06h 30m"); empty with no clock. The narrator's alone."""
+    if clock is None:
+        return ""
+    return clock.anchor.display(clock.start) or world_clock.display(clock.start)
+
+
 def report(timing: TurnTiming | None) -> dict[str, Any] | None:
     """``turn_report.clock``: the turn's start and end, each render's start and end, and its
     advances and contradicted times (counts and minutes, never text)."""
@@ -311,6 +319,7 @@ __all__ = [
     "PLAYER_BEAT",
     "ClockRead",
     "attempt",
+    "now_text",
     "read_clock",
     "render_scope",
     "renders_of",

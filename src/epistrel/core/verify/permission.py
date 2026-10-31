@@ -72,7 +72,8 @@ sibling introduces Jenni's backstory too.
   backstory, actions or thoughts, or a director pass asserting anything about a modeled
   character beyond an arrival or an identity (#171: a director's ``same_as`` linking one
   non-player modeled character to an unmodeled entity, "the stranger is Bobby", is permitted
-  with basis ``identity``);
+  with basis ``identity``; #200: that one passes out, falls asleep or wakes, ``unconscious``,
+  is the world's to narrate, basis ``world``);
 - ``player_authority``: player input about another character (``player_authority =
   own_character``, or anything but an observable action under ``co_author``): the player's text
   stands and is not repaired, but it is never canonized;
@@ -141,6 +142,10 @@ OwnerKind = Literal["modeled_character", "player_character", "world", "external"
 PLACEMENT_PREDICATES: tuple[str, ...] = ("located_at", "present_at")
 """An arrival's predicates (by name; both core)."""
 PERSON = "person"
+
+WORLD_ON_CHARACTERS: frozenset[str] = frozenset({"unconscious"})
+"""#200 (FR-CLOCK-15): what a director pass may narrate of a non-player modeled character (by
+name; core): that it passes out, falls asleep, wakes or comes to (basis ``world``)."""
 
 LOCKED_FIELDS: frozenset[str] = frozenset({"age", "name", "appearance_of", "visual_identity_of"})
 """The predicates a character definition fixes (true age, name, appearance, visual identity):
@@ -362,6 +367,10 @@ def permission(
             # #171 (FR-PROP-7): a narrated reveal that an unmodeled entity is a modeled
             # character ("the stranger is Bobby"); two characters as one is M7's merge.
             return _texture(facts, Basis.IDENTITY)
+        if name in WORLD_ON_CHARACTERS and len(modeled) == 1:
+            # #200 (FR-CLOCK-15): the scene narrates a character passing out, falling asleep
+            # or waking: the world's to say, as an arrival is.
+            return _texture(facts, Basis.WORLD)
         if modeled:
             return Denied(Reason.OTHER_CHARACTER_SECRET)
         return _texture(facts, Basis.WORLD)

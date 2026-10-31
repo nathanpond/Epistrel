@@ -258,6 +258,15 @@ class GenerationInputs(InputSchema):
     beliefs: Annotated[list[str], C.BELIEF_STATE] = Field(default_factory=list, max_length=200)
     """A structured character render's ``## What you believe`` (FR-TURN-8; #170): its own belief
     state (``core.epistemic.context.CharacterContext.belief_lines``)."""
+    time_belief: Annotated[str, C.BELIEF_STATE] = Field(default="", max_length=4_000)
+    """A structured character render's ``## Your sense of time`` (FR-CLOCK-11; #200): its own
+    time belief, the time it perceived in the scene and the schedules it holds
+    (``CharacterContext.time_belief``); never the objective clock. Empty when the story runs no
+    clock and in every other prompt."""
+    clock_now: Annotated[str, C.SCENE] = Field(default="", max_length=300)
+    """The narrator's objective time (#200, FR-CLOCK-11): the clock as the turn starts, as the
+    anchor shows it ("Saturday, 17:30 (evening)"); never a character's (a character knows the
+    time only as its own belief, ``time_belief``)."""
     private_memories: Annotated[list[str], C.WORKING_MEMORY] = Field(
         default_factory=list, max_length=20
     )

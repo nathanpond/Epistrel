@@ -156,10 +156,13 @@ from epistrel.orchestrator.models.registry import (
 )
 from epistrel.orchestrator.models.structured import Uncertain
 from epistrel.orchestrator.verify.verifier import (
+    CLOCK_CHECKED,
+    TIME_CHANNELS,
     ClaimRef,
     SafeDisposition,
     Verifier,
     VerifyResult,
+    own_time_claim,
 )
 
 log = logging.getLogger(__name__)
@@ -340,6 +343,11 @@ async def load_env(
         else frozenset()
     )
 
+    # #200: who is asleep or passed out, so a waking names the state it ends.
+    from epistrel.core.epistemic.scene import unconscious_kinds
+
+    unconscious = await unconscious_kinds(conn, story_id, turn, read_set=read_set)
+
     def context_for(speaker: str) -> ResolutionContext:
         return contexts.get(speaker) or contexts[NARRATOR]
 
@@ -357,6 +365,7 @@ async def load_env(
         private=private,
         states=states,
         scope_keys=scope_keys,
+        unconscious=unconscious,
     )
 
 
@@ -851,6 +860,22 @@ async def verify_detected(
             if claim.channel == SAY_CHANNEL and claim.speaker not in (PLAYER, NARRATOR)
             else None
         )
+        if (
+            verifier.config.clock
+            and claim.proposition.predicate_id in CLOCK_CHECKED
+            and claim.channel in TIME_CHANNELS
+            and claim.speaker not in (PLAYER, NARRATOR)
+        ):
+            # #200 (FR-CLOCK-10): a character's own time claim is checked against its time
+            # belief (its belief relation; a time a ``do`` shows is what is seen: objective);
+            # with the profile's ``clock.time_claims`` off it is checked as narration is
+            # (objectively, as #195 and #194 shipped), with no belief dimension.
+            if verifier.config.time_claims and own_time_claim(
+                claim.proposition.predicate_id, claim.channel
+            ):
+                believer = claim.speaker
+            else:
+                believer = None
         proposition = claim.proposition
         if claim.attribution is not None:
             # #167: "Bobby thinks …" asserts Bobby's belief, not the proposition: checked

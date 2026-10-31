@@ -71,7 +71,9 @@ entities, held at ``suspected`` or above at the query's position, strongest firs
 everything and no beliefs; the player's character (``characters.is_player``) has no partition
 and reads ``objective`` and ``public`` records only (FR-EPI-12). With ``partitions`` off (every
 Lite story, M4's structured profile) memories are not filtered and canon keeps its own
-visibility filter, as in M4.
+visibility filter, as in M4. #200 (ADR-167): with the clock on, a ``character:<id>`` canon read
+leaves out the clock's canon and every ``scheduled`` fact the character does not hold
+(``core.world_clock.time_belief.hidden_canon``): it knows the time only as its time belief.
 
 **Quarantine** (#145, FR-GUARD-4,5): a quarantined memory is no candidate of any stage (the
 occasion and assessment reads, the vector, lexical and alias arms, rehydration), so it is in no
@@ -1217,6 +1219,13 @@ async def retrieve(
             through_position=(now_turn, 0),
             limit=CANON_PER_ENTITY,
         )
+    if canon and seen_as.kind == "character" and seen_as.character_id is not None:
+        # #200 (ADR-167): a character's canon arm leaves out the clock's canon and the
+        # schedules it does not hold; it knows the time only as its own time belief.
+        from epistrel.core.world_clock.time_belief import hidden_canon
+
+        hidden = await hidden_canon(conn, story_id, seen_as.character_id, canon)
+        canon = [f for f in canon if str(f.id) not in hidden]
     clk.lap("profiles")
 
     # 5b. the viewpoint character's own beliefs (#159): its partition, never another's.

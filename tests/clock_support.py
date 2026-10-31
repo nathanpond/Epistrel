@@ -139,12 +139,47 @@ def deliver_stops(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(schema, "DELIVERED", _with_stops())
 
 
+TIME_CLAIMS = "time_claims"
+"""#200: the profile flag (``clock.time_claims``) that checks a character's time claims against
+its time belief, which #203 delivers with the clock."""
+
+
+def deliver_time_claims(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Deliver ``clock`` with ``scheduled_stops`` and ``time_claims`` for the test (#203)."""
+    monkeypatch.setattr(
+        schema,
+        "DELIVERED",
+        types.MappingProxyType({**_with_stops(), TIME_CLAIMS: frozenset({schema.ON})}),
+    )
+
+
+async def set_awareness(engine: AsyncEngine, story_id: str, awareness: str) -> None:
+    """The ``world_clock`` definition's ``time_awareness`` (#200; the API's ``PATCH /clock``
+    sets it the same way, and #202 seeds it from the scenario)."""
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "UPDATE state_definitions SET time_awareness = CAST(:a AS time_awareness) "
+                "WHERE story_id = :s AND name = 'world_clock'"
+            ),
+            {"a": awareness, "s": story_id},
+        )
+
+
 async def set_clock(
-    engine: AsyncEngine, story_id: str, level: str = "on", *, stops: bool = True
+    engine: AsyncEngine,
+    story_id: str,
+    level: str = "on",
+    *,
+    stops: bool = True,
+    time_claims: bool | None = None,
 ) -> None:
     """Set the story's ``clock`` override: ``level`` and the ``scheduled_stops`` flag (the
     profile's switch for due-event stops; the clock's own ``stop_at_due_events`` is the
-    other)."""
+    other), and #200's ``time_claims`` flag when given."""
+    found: dict[str, Any] = {"level": level, STOPS: stops}
+    if time_claims is not None:
+        found[TIME_CLAIMS] = time_claims
     async with engine.begin() as conn:
         await conn.execute(
             text(
@@ -153,7 +188,7 @@ async def set_clock(
                 "SET settings = story_profile_overrides.settings || excluded.settings, "
                 "revision = story_profile_overrides.revision + 1"
             ),
-            {"s": story_id, "o": json.dumps({"clock": {"level": level, STOPS: stops}})},
+            {"s": story_id, "o": json.dumps({"clock": found})},
         )
 
 

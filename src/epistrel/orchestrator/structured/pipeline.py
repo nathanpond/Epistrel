@@ -4835,6 +4835,8 @@ async def play(
             pending_outcomes=pending_lines,
             # #194: the time contract, when the story runs the world clock.
             clock_contract=books[0].clock is not None,
+            # #200 (FR-CLOCK-11): the objective time, the narrator's alone.
+            clock_now=clocking.now_text(books[0].clock),
         )
         # #174 (FR-MULTI-6): the primaries' order, the request's or the director's.
         ordered = multi.Ordered(tuple(p.id for p in primaries), multi.REQUEST)

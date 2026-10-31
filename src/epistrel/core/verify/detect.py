@@ -22,7 +22,9 @@ its prose was declared. ``detect_render(beats, …)`` (once per render, every be
   #140 ``ClaimSketch`` and goes through ``normalize``: possession → ``holds``; transfer →
   ``holds`` for the recipient (and a negated ``holds`` for the giver; when the giver is the
   clause's subject, the recipient's claim names it, ``giver``, #519); consumption →
-  ``consumed``; injury → ``injured`` (its cause a qualifier); movement → ``located_at`` (a
+  ``consumed``; injury → ``injured`` (its cause a qualifier); consciousness (#200) →
+  ``unconscious`` (passing out or falling asleep, its ``kind``; waking or coming to a negated one
+  of the kind the subject is in, ``DetectionEnv.unconscious``); movement → ``located_at`` (a
   departure from a named place, "left the orchard", "out of the orchard": a negated
   ``located_at`` of it, #440; a departure with no place: a negated ``located_at`` of the
   current placement; a negated departure asserts nothing); a lone clock
@@ -118,6 +120,7 @@ Category = Literal[
     "consumption",
     "injury",
     "movement",
+    "consciousness",
     "time",
     "protected_content",
     "inner_state",
@@ -131,6 +134,7 @@ DETECTOR_CATEGORIES: tuple[Category, ...] = (
     "consumption",
     "injury",
     "movement",
+    "consciousness",
     "time",
     "protected_content",
     "inner_state",
@@ -162,6 +166,9 @@ MESSAGE = "message"
 THINK_REF = "think:"
 """The ``protected_ref`` prefix of a claim that leaks a private thought (#172)."""
 INNER_STATE_CHANNELS: frozenset[str] = frozenset({"say", "do", "narration", "message"})
+CHANGE_CATEGORIES: frozenset[str] = frozenset({"movement", "consciousness"})
+"""The detector categories whose verb states a change (#518's ``change_cue``; #200 adds
+consciousness: passing out, waking)."""
 """The beats the inner-state check reads (#172): every player-facing channel."""
 
 Span = tuple[int | None, int, int]
@@ -221,9 +228,13 @@ class Tables:
     quantity: Mapping[str, Any]
     time: Mapping[str, Any]
     cues: Mapping[str, Any]
+    states: tuple[VerbTable, ...] = ()
+    """#200: the verb tables of a subject's state (consciousness), detected as ``verbs`` are."""
 
 
 VERB_CATEGORIES = ("possession", "transfer", "consumption", "injury", "movement")
+STATE_CATEGORIES = ("consciousness",)
+"""#200: the state verb tables (``Tables.states``): passing out, falling asleep, waking."""
 
 
 def _table(name: str) -> dict[str, Any]:
@@ -232,27 +243,32 @@ def _table(name: str) -> dict[str, Any]:
     return loaded
 
 
+def _verb_table(category: str) -> VerbTable:
+    raw = _table(category)
+    lemmas = tuple(
+        Lemma(
+            str(e["lemma"]),
+            tuple(str(f) for f in e["forms"]),
+            {k: v for k, v in e.items() if k not in ("lemma", "forms")},
+        )
+        for e in raw["lemmas"]
+    )
+    options = {
+        k: v for k, v in raw.items() if k not in ("category", "language", "description", "lemmas")
+    }
+    return VerbTable(category, str(raw["predicate"]), lemmas, options)
+
+
 @cache
 def tables() -> Tables:
     """The English detector tables (``detectors/*.json``)."""
-    verbs = []
-    for category in VERB_CATEGORIES:
-        raw = _table(category)
-        lemmas = tuple(
-            Lemma(
-                str(e["lemma"]),
-                tuple(str(f) for f in e["forms"]),
-                {k: v for k, v in e.items() if k not in ("lemma", "forms")},
-            )
-            for e in raw["lemmas"]
-        )
-        options = {
-            k: v
-            for k, v in raw.items()
-            if k not in ("category", "language", "description", "lemmas")
-        }
-        verbs.append(VerbTable(category, str(raw["predicate"]), lemmas, options))
-    return Tables(tuple(verbs), _table("quantity"), _table("time"), _table("cues"))
+    return Tables(
+        tuple(_verb_table(c) for c in VERB_CATEGORIES),
+        _table("quantity"),
+        _table("time"),
+        _table("cues"),
+        tuple(_verb_table(c) for c in STATE_CATEGORIES),
+    )
 
 
 def _alternation(words: Sequence[str]) -> str:
@@ -263,7 +279,7 @@ def _alternation(words: Sequence[str]) -> str:
 @cache
 def _verb_patterns() -> tuple[tuple[VerbTable, Lemma, re.Pattern[str]], ...]:
     found = []
-    for table in tables().verbs:
+    for table in (*tables().verbs, *tables().states):
         for lemma in table.lemmas:
             pattern = re.compile(rf"(?<![\w'\u2019])(?:{_alternation(lemma.forms)})(?![\w'\u2019])")
             found.append((table, lemma, pattern))
@@ -437,10 +453,11 @@ class DetectedClaim:
     def change_cue(self) -> bool:
         """#518: the claim states a change, so it may change its speaker's own fluent from its
         start (``core.verify.rules``' ``fluent_change``): the render declared it, or the movement
-        detector found it (a verb of motion). An extraction-only claim ("never set foot in the
+        detector found it (a verb of motion), or (#200) the consciousness detector (passing out,
+        waking). An extraction-only claim ("never set foot in the
         cellar") states no change: it keeps the contradiction rules' answer."""
         return self.layer == "declared" or (
-            self.category == "movement" and "detector" in (self.layer, *self.merged)
+            self.category in CHANGE_CATEGORIES and "detector" in (self.layer, *self.merged)
         )
 
     @property
@@ -560,6 +577,9 @@ class DetectionEnv:
     number State in a sentence that states a balance is a ``state_value`` claim."""
     scope_keys: frozenset[str] = frozenset()
     """#191: the story's characters, the scope keys of a per-character State."""
+    unconscious: Mapping[str, str] = field(default_factory=dict)
+    """#200: the entities canon holds unconscious at the turn's start, with the ``kind`` each
+    is in (``core.epistemic.scene.unconscious_kinds``): a waking ends that kind."""
 
     def with_private(self, records: Sequence[PrivateRecord]) -> DetectionEnv:
         """This environment with ``records`` added to its private records (a render's
@@ -763,6 +783,8 @@ def _verb_hits(beat: _Beat, registry: Registry, env: DetectionEnv) -> None:
             continue
         if at > 0 and beat.tokens[at - 1].word in _DETERMINERS:
             continue
+        if lemma.options.get("bare") and _continues(beat, end, at):
+            continue  # #200: "came to the diner" is movement, "came to" alone a waking
         taken.append((start, end))
         token = beat.tokens[at]
         beat.hit(table.category)
@@ -775,6 +797,35 @@ def _verb_hits(beat: _Beat, registry: Registry, env: DetectionEnv) -> None:
         if not made:
             beat.noise += 1
             beat.risky.add(table.category)
+
+
+def _continues(beat: _Beat, end: int, at: int) -> bool:
+    """Whether a word follows ``end`` in the clause of ``beat.tokens[at]``."""
+    clause = beat.tokens[at].clause
+    return any(t.start >= end and t.clause == clause for t in beat.tokens)
+
+
+def _consciousness(
+    beat: _Beat,
+    lemma: Lemma,
+    subject: str | None,
+    polarity: Polarity,
+    span: tuple[int, int],
+    env: DetectionEnv,
+) -> bool:
+    """#200: ``unconscious(subject)`` with its ``kind`` (see the module docstring); a waking is
+    a negated one of the kind the subject is in. A negated verb asserts nothing."""
+    if subject is None or polarity is Polarity.NEGATED:
+        return False
+    state = str(lemma.options.get("state", "unconscious"))
+    if state == "awake":
+        kind = env.unconscious.get(subject) or str(lemma.options.get("ends", "asleep"))
+        claim = _sketch(subject, "unconscious", None, Polarity.NEGATED, span, {"kind": kind})
+    else:
+        claim = _sketch(subject, "unconscious", None, polarity, span, {"kind": state})
+    beat.sketches.append(("consciousness", claim, span))
+    beat.used.add(subject)
+    return True
 
 
 def _sketch(
@@ -854,6 +905,8 @@ def _verb_claims(
         )
         beat.used |= {victim, *([subject] if subject else [])}
         return True
+    if category == "consciousness":
+        return _consciousness(beat, lemma, subject, polarity, span, env)
     if subject is None:
         return False
     if category == "movement":

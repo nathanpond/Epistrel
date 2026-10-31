@@ -17,7 +17,16 @@ beats committed, by beat), from authoritative state only, never from a consumer'
   itself (FR-EPI-1);
 - the story's characters, the languages each understands (``characters.languages``; ``NULL``:
   every language) and its places (``place`` entities), and the scene's location: the player
-  character's.
+  character's;
+- **consciousness** (#200, FR-CLOCK-15): who canon's current ``unconscious`` facts hold asleep or
+  passed out at the turn's start (``SceneState.unconscious``), which routing honors.
+
+**Perception gaps** (#200): ``perception_gaps`` answers the spans in which a character perceived
+no time passing (canon holds it unconscious, or, once placed at all, it is placed nowhere), which
+``core.world_clock.time_belief`` leaves out of the time a character perceives;
+``unconscious_kinds`` gives claim detection the state a waking ends. Only this module and
+``core.epistemic.perception`` name the ``unconscious`` predicate
+(``check-perception-authority``).
 
 The stored scene is omniscient: a ``latent`` placement counts, since routing is authoritative.
 """
@@ -57,6 +66,7 @@ from epistrel.core.propositions.vocabulary import (
     LOCATED_AT,
     LOCATED_IN,
     ON_CHANNEL,
+    UNCONSCIOUS,
 )
 from epistrel.core.readset import KeyedLookup, StructuredReadSet, register_rebase_check
 from epistrel.core.tables import characters, entities, placement, story_heads
@@ -242,6 +252,11 @@ async def load_scene(
         for c, row in cast.items()
         if row.languages is not None
     }
+    # #200 (FR-CLOCK-15): who canon holds unconscious at the turn's start.
+    unconscious = frozenset(
+        by_entity.get(str(f.subject_id), str(f.subject_id))
+        for f in await current_facts(UNCONSCIOUS)
+    )
     scene = SceneState(
         location=placements.get(player) if player is not None else None,
         placements=placements,
@@ -251,6 +266,8 @@ async def load_scene(
         languages=languages,
         characters=frozenset(cast),
         places=places,
+        unconscious=unconscious & frozenset(cast),
+        entity_of={c: e for e, c in by_entity.items()},
     )
     return scene, {beat: tuple(found) for beat, found in moves.items()}
 
@@ -265,6 +282,168 @@ async def load_scene_state(
     """The scene at the start of ``turn`` (``load_scene`` without the turn's moves)."""
     scene, _ = await load_scene(conn, story_id, turn, read_set=read_set)
     return scene
+
+
+# -- a character's perception gaps (#200) ----------------------------------------------------------
+
+Span = tuple[int, int]
+"""A half-open span of story-minutes."""
+
+
+def _merged(spans: Iterable[tuple[int, int]]) -> list[Span]:
+    found: list[list[int]] = []
+    for lo, hi in sorted(s for s in spans if s[0] < s[1]):
+        if found and lo <= found[-1][1]:
+            found[-1][1] = max(found[-1][1], hi)
+        else:
+            found.append([lo, hi])
+    return [(a, b) for a, b in found]
+
+
+async def _entity_of(conn: AsyncConnection, story_id: str, character_id: str) -> str | None:
+    found = await conn.scalar(
+        select(entities.c.id).where(
+            entities.c.story_id == story_id, entities.c.character_id == character_id
+        )
+    )
+    return None if found is None else str(found)
+
+
+async def unconscious_spans(
+    conn: AsyncConnection,
+    story_id: str,
+    character_id: str,
+    *,
+    read_set: StructuredReadSet | None = None,
+) -> list[tuple[int, int | None, str | None]]:
+    """#200 (FR-CLOCK-15): the story-minute spans canon holds ``character_id`` unconscious, as
+    the story stands: ``(start, end, kind)``, ``end`` ``None`` while it still holds. Read through
+    ``KeyedLookup`` (the epistemic model never reads ``facts`` itself)."""
+    entity = await _entity_of(conn, story_id, character_id)
+    lookup = KeyedLookup(conn, read_set if read_set is not None else StructuredReadSet())
+    found = await lookup.canon_at(
+        story_id, predicate=UNCONSCIOUS, subjects=[entity or character_id]
+    )
+    spans: list[tuple[int, int | None, str | None]] = []
+    for fact in found:
+        p = fact.proposition
+        if p.polarity.value != "affirmed":
+            continue
+        lo, hi = p.valid_time.possible()
+        if lo is None:
+            continue
+        kind = p.qualifiers.get("kind")
+        spans.append(
+            (int(lo), None if hi is None else int(hi), None if kind is None else str(kind))
+        )
+    return sorted(spans, key=lambda s: s[0])
+
+
+HEAD_ROW = (2**31 - 1, 0)
+"""A ``(turn, slot)`` past every turn: a projection row "as the story stands"."""
+
+
+async def _placed_spans(
+    conn: AsyncConnection, story_id: str, character_id: str
+) -> list[tuple[int | None, int | None]] | None:
+    """The story-minute spans #137's placement projection places ``character_id`` somewhere,
+    as the story stands; ``None``: never placed (the story does not track where it is)."""
+    entity = await _entity_of(conn, story_id, character_id)
+    if entity is None:
+        return None
+    rows = [
+        dict(r._mapping)
+        for r in await conn.execute(
+            select(placement).where(
+                placement.c.story_id == story_id,
+                placement.c.entity_id == entity,
+                placement.c.location_id.is_not(None),
+            )
+        )
+    ]
+    kept = [r for r in rows if through(r, HEAD_ROW)]
+    if not kept:
+        return None
+    return [(r["valid_from"], r["valid_to"]) for r in kept]
+
+
+async def perception_gaps(
+    conn: AsyncConnection,
+    story_id: str,
+    character_id: str,
+    start: int,
+    end: int,
+    *,
+    read_set: StructuredReadSet | None = None,
+) -> list[Span]:
+    """#200 (FR-CLOCK-15): the spans of ``[start, end)`` (story-minutes) in which
+    ``character_id`` perceived no time passing: while canon holds it unconscious, and, once the
+    placement projection places it at all, while it is placed nowhere (absent: #175's unplaced
+    character). Merged, in order."""
+    if end <= start:
+        return []
+    gaps: list[Span] = []
+    for lo, hi, _ in await unconscious_spans(conn, story_id, character_id, read_set=read_set):
+        a, b = max(lo, start), min(end if hi is None else hi, end)
+        if a < b:
+            gaps.append((a, b))
+    placed = await _placed_spans(conn, story_id, character_id)
+    if placed:
+        first = min((lo for lo, _ in placed if lo is not None), default=None)
+        present = _merged(
+            (start if lo is None else max(lo, start), end if hi is None else min(hi, end))
+            for lo, hi in placed
+        )
+        cursor = start if first is None else max(start, first)
+        for lo, hi in present:
+            if lo > cursor:
+                gaps.append((cursor, lo))
+            cursor = max(cursor, hi)
+        if cursor < end:
+            gaps.append((cursor, end))
+    return _merged(gaps)
+
+
+async def arrived_at(
+    conn: AsyncConnection, story_id: str, character_id: str, now: int
+) -> int | None:
+    """#200: the story-minute ``character_id``'s current placement started (its scene's start
+    for it); ``None`` when no placement with a known start covers ``now``."""
+    starts = [
+        lo
+        for lo, hi in await _placed_spans(conn, story_id, character_id) or ()
+        if lo is not None and lo <= now and (hi is None or now < hi)
+    ]
+    return max(starts) if starts else None
+
+
+async def unconscious_kinds(
+    conn: AsyncConnection,
+    story_id: str,
+    turn: int,
+    *,
+    read_set: StructuredReadSet | None = None,
+) -> dict[str, str]:
+    """#200: the entities canon holds unconscious at the start of ``turn``, each with its
+    ``kind`` (``asleep``, ``unconscious``): claim detection reads it, so "Marcus wakes" names
+    the state it ends."""
+    from epistrel.core import world_clock
+    from epistrel.core.membership import Position as NarrativePosition
+
+    now = await world_clock.story_time_at(conn, story_id, NarrativePosition(turn))
+    lookup = KeyedLookup(conn, read_set if read_set is not None else StructuredReadSet())
+    found = await lookup.canon_at(
+        story_id,
+        predicate=UNCONSCIOUS,
+        subjects=None,
+        story_time=now,
+        through_position=(turn, 0),
+    )
+    return {
+        str(f.subject_id): str(f.proposition.qualifiers.get("kind") or "unconscious")
+        for f in found
+        if f.proposition.polarity.value == "affirmed"
+    }
 
 
 _ASSUMED: dict[int, tuple[weakref.ref[StructuredReadSet], int, Level]] = {}
@@ -339,11 +518,16 @@ __all__ = [
     "PERCEPTION_MODULE",
     "START_SLOT",
     "Moves",
+    "Span",
+    "arrived_at",
     "current_level",
     "level_of",
     "load_scene",
     "load_scene_state",
+    "perception_gaps",
     "placed_elsewhere",
     "recheck",
     "remember_level",
+    "unconscious_kinds",
+    "unconscious_spans",
 ]

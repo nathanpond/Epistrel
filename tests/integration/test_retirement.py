@@ -19,7 +19,9 @@ test ID per milestone in one file):
 - ``test_i_16__retired_stay_active``: history views, keyed lookups, rehydration without a
   return to the hot set, and the ledger delivering what retired records mention;
 - ``test_i_15`` and ``test_s_retention__vectors``: a dormant continuation's vectors;
-- ``test_i_15__m6_states`` (I-15's M6 part, #185): its State records and their projection.
+- ``test_i_15__m6_states`` (I-15's M6 part, #185): its State records and their projection;
+- ``test_i_16__m6`` (I-16's M6 part, #200): memories about a scheduled event retire while the
+  event still reaches its holder's context through the schedule channel.
 
 These run on a database of their own (``embedding_support.embedding_db``): the first real
 embedding pins the deployment's dimension, a schema change the shared database must never see.
@@ -36,17 +38,21 @@ import pytest
 from sqlalchemy import event, text
 
 from epistrel.core import mutation
+from epistrel.core.canon import facts
 from epistrel.core.commit import lifecycle
 from epistrel.core.commit.sketch import ThunkSketch
 from epistrel.core.db import database_url
 from epistrel.core.enums import OpenSlot
+from epistrel.core.epistemic.context import TurnState, build_context
 from epistrel.core.history import read_history
 from epistrel.core.memory import pins, records, retirement
 from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.propositions import registry as predicate_registry
 from epistrel.core.propositions.model import Interval, Proposition
+from epistrel.core.propositions.vocabulary import SCHEDULED
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.retrieval import pipeline
+from epistrel.core.world_clock import time_belief
 from epistrel.observability import metrics
 from epistrel.orchestrator.jobs import queue
 from epistrel.orchestrator.jobs.handlers.consolidation import CONSOLIDATION
@@ -55,6 +61,7 @@ from epistrel.orchestrator.jobs.handlers.retirement import RECONCILE
 from epistrel.orchestrator.jobs.recurring import NoPayload
 from epistrel.testing.determinism import OPERATIONAL_TABLES, differences
 from tests import canon_support as c
+from tests import clock_support as ck
 from tests import consolidation_support as cs
 from tests import hot_set_support as h
 from tests import retrieval_support as r
@@ -605,6 +612,80 @@ async def test_i_16__retired_stay_active(s: Scratch) -> None:
     assert kept[lantern].vector is not None
     assert kept[lantern].version == r.VERSION
     assert kept[lantern].retrieval_tier == "retired"
+
+
+@pytest.mark.part("M6", "FR-MEM-8; FR-CLOCK-9")
+async def test_i_16__m6(s: Scratch, monkeypatch: pytest.MonkeyPatch) -> None:
+    """I-16's M6 part (#200): memory records about a scheduled event retire under budget
+    pressure like any other, while the event still reaches its holder's generation context
+    through the schedule channel (``CharacterContext.time_belief``, read from the event, never
+    from memory). Bobby's budget is 10 (floor 0.2); he holds his 16:30 dentist appointment (a
+    canon event, the clock anchored at 11:00) and twelve memories about it, two below the
+    floor: they retire (``floor``), and his context still says "Bobby's dentist appointment:
+    16:30, about 5½ hours from now". Complement: Ann, who does not hold the event, sees neither
+    the schedule nor the memories, and no canon ``scheduled`` fact about it."""
+    ck.deliver(monkeypatch)
+    db = s.db
+    w = await h.story(db)
+    story, bobby, ann = w.story_id, w.characters["Bobby"], w.characters["Ann"]
+    await store_overrides(
+        db,
+        story,
+        {
+            **h.overrides(memories_per_character=10, importance_floor=0.2),
+            "character_knowledge": {"partitions": True},
+            "perception": {"level": "co_location"},
+        },
+    )
+    await ck.set_level(db, story, "on")
+    await ck.anchor_at(db, story, 11 * 60)
+    made = await s.client.post(
+        f"/stories/{story}/scheduled-events",
+        json={
+            "proposition": "Bobby's dentist appointment",
+            "planned": 330,
+            "participants": [bobby],
+            "owner": "world",
+        },
+        headers=WRITE,
+    )
+    assert made.status_code == 201, made.text
+    _, ids = await h.held(
+        db,
+        story,
+        bobby,
+        12,
+        importance=[0.05, 0.05, *[0.9] * 10],
+        label="the dentist appointment",
+    )
+    await h.fake_vectors(db, story)
+    async with db.begin() as conn:
+        (opened,) = await retirement.open_episodes(conn, story)
+        await retirement.run_episode(conn, story, opened.id)
+    found = await h.memory_rows(db, story)
+    assert [(found[i].retrieval_tier, found[i].retired_reason) for i in ids[:2]] == [
+        ("retired", "floor"),
+        ("retired", "floor"),
+    ]
+
+    async with db.connect() as conn:
+        settings = (await effective_configuration(conn, story)).settings
+        turn = await retirement.head_turn(conn, story) + 1
+        held = await build_context(conn, bobby, TurnState(story, turn, settings))
+        other = await build_context(conn, ann, TurnState(story, turn, settings))
+    assert held.time_belief is not None
+    assert "Bobby's dentist appointment: 16:30, about 5½ hours from now." in held.time_belief
+    assert other.time_belief is not None
+    seen = " ".join([other.time_belief, *other.canon, *other.retrieved, *other.working_memory])
+    assert "dentist" not in seen
+    # The canon fact of the event is left out of every character context and ``belief(A)``
+    # record set but its holder's (ADR-167; the filter build_context, the character arm of
+    # retrieval and ``check_with`` share).
+    async with db.connect() as conn:
+        (fact,) = await facts.canon(conn, story, predicate=SCHEDULED)
+        assert await time_belief.hidden_canon(conn, story, bobby, [fact]) == set()
+        assert await time_belief.hidden_canon(conn, story, ann, [fact]) == {fact.id}
+    await ck.set_level(db, story, None)  # no undelivered level left behind
 
 
 SWAP_METADATA_TABLES = frozenset(

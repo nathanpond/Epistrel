@@ -40,7 +40,17 @@ takes nothing else, and ``python -m tools.gates check-character-context`` checks
 - **Retrieved context and canon** (#141, #133): retrieval for ``character:<id>``, whose
   viewpoint filter (#159) composes into every arm. The assembler takes only that already
   filtered set (``core.retrieval.filtered.ViewpointFiltered``, U-31). Every ``age`` canon fact
-  about a character is left out: true ages travel only as below.
+  about a character is left out: true ages travel only as below. #200 (ADR-167): with the
+  clock on, so is every fact on a clock predicate (``time_is``, ``time_of_day_band``,
+  ``elapsed_since``, ``scheduled_status``, ``clock_anchor``, ``current_time``) and every canon
+  ``scheduled`` fact the character does not hold (``time_belief.hidden_canon``).
+- **Your sense of time** (#200, FR-CLOCK-11; the story runs the clock): the character's time
+  belief as text (``core.world_clock.time_belief``: derived from the story's
+  ``time_awareness`` unless an observation, testimony or a gap overrides it), the time it
+  perceived in the scene, and the schedules it holds with the time left as it believes it
+  ("your meeting: 17:00, about 5½ hours from now"). The objective clock reaches the director's
+  context and verification only: a character's prompt never shows it where it differs from
+  the belief.
 - **Your private memories** (#172, FR-VERIFY-9, FR-EPI-11; per-character partitions only): the
   character's own ``think`` memories, at most ``PRIVATE_MAX``, those retrieval ranked first, then
   the most recent, each "you thought: …". They sit in U-31's pins tier (never cut by the prompt
@@ -203,8 +213,11 @@ class CharacterContext:
     """#172: "you thought: …" lines, the character's own ``think`` memories."""
     player_requests: tuple[str, ...] = ()
     """#180's section (empty until it lands)."""
-    time_belief: None = None
-    """M6's own time belief (FR-CLOCK-11)."""
+    time_belief: str | None = None
+    """#200 (FR-CLOCK-11): ``## Your sense of time``, the character's time belief as text, the
+    time it perceived in the scene and the schedules it holds with the time left as it believes
+    it (``core.world_clock.time_belief``); ``None`` when the story runs no clock. The only time
+    input to a character's prompt: never the objective clock."""
     partitioned: bool = False
     """Built under per-character partitions: the render then takes no turn section that is not
     viewpoint-scoped (the rolling summary, the text pins; #544, ``prompt.character_inputs``)."""
@@ -364,6 +377,7 @@ def compose(
     player_heard: Sequence[str] = (),
     tracked: Sequence[str] = (),
     tracked_syntax: str = "",
+    time_belief: str | None = None,
 ) -> CharacterContext:
     """The context's sections from already-filtered inputs (see the module docstring). Pure."""
     if working.viewpoint != f"{CHARACTER_VIEWPOINT_PREFIX}{character_id}":
@@ -391,6 +405,7 @@ def compose(
         player_heard=tuple(player_heard),
         tracked=tuple(tracked),
         tracked_syntax=tracked_syntax if tracked else "",
+        time_belief=time_belief,
     )
 
 
@@ -767,6 +782,7 @@ async def build_context(
 ) -> CharacterContext:
     """``character_id``'s generation context for this turn (see the module docstring)."""
     from epistrel.core.retrieval.pipeline import RetrievalQuery, retrieve
+    from epistrel.core.world_clock.time_belief import hidden_canon, time_belief
 
     started = time.perf_counter()
     story_id = state.story_id
@@ -816,6 +832,10 @@ async def build_context(
         settings=settings,
     )
     hidden = _hidden_ages(retrieval, frozenset(cast.character_of))
+    # #200 (ADR-167): the clock's canon and the schedules the character does not hold are the
+    # director's; the character knows the time only as its own time belief.
+    hidden |= await hidden_canon(conn, story_id, character_id, retrieval.canon)
+    believed = await time_belief(conn, story_id, character_id, Position(state.turn))
     retrieved: list[str] = []
     canon: list[str] = []
     for item in retrieval.context.items:
@@ -888,6 +908,7 @@ async def build_context(
         player_heard=player_heard,
         tracked=tracked,
         tracked_syntax=tracked_syntax,
+        time_belief=None if believed is None else believed.text(),
     )
 
 

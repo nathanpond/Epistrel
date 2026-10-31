@@ -103,6 +103,22 @@ dimension as any first-person claim; a report never canonizes, and neither does 
 about a plan that is no event and not the speaker's own (a character's world claim). The result
 carries the classification (``VerifyResult.schedule``).
 
+**Time claims by speaker** (FR-CLOCK-10,15, FR-TURN-6; #200). With the clock on, a clock check
+(``time_is``, ``time_of_day_band``, ``elapsed_since``, ``scheduled_status``) from narration,
+the director or the composed message is objective (#195's anchor). A character's own one is
+checked twice: objectively as above, and, as its belief dimension, against its time belief
+(``core.world_clock.time_belief``, through ``check_with``'s ``belief(A)`` holder; ``say``,
+``think``, and a ``do`` acting on its belief: a time a ``do`` shows, the wall clock, is what is
+seen, ``own_time_claim``), then classified by intent as any first-person claim. A belief the
+time belief contradicts is the speaker's own contrary knowledge (a deceptive claim against it is
+a lie); one it holds stands while the clock leaves the claim undecided (a guess under an
+unanchored clock), and, sincere and said as a time by a speaker who knows the time (``exact``
+awareness, no override), anchors the clock as narration does (``_anchors``); a guess never
+does. The profile's ``clock.time_claims`` (``VerifyConfig.time_claims``) gates the belief
+dimension: off, a character's time claim is checked as narration's is (objectively only, as
+#195 and #194 shipped). A narrated pass-out or waking
+changes its subject's ``unconscious`` fluent from the beat (``mover``, #518).
+
 **Within one turn** a ``Verifier`` is built per turn: identical ``(claim, records)`` requests
 reuse the first validated answer (the structured call's deterministic step), escalations run one
 after the other, and every residual that reached the gate leaves an ``EscalationRecord`` in
@@ -134,7 +150,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.canon.canonize import CanonRequest, anchor_for, visibility_of
 from epistrel.core.config_changes import read_section
-from epistrel.core.epistemic import resurface
+from epistrel.core.epistemic import perception, resurface
 from epistrel.core.membership import Position as NarrativePosition
 from epistrel.core.membership import step_of
 from epistrel.core.profiles.effective import effective_configuration
@@ -149,6 +165,7 @@ from epistrel.core.propositions.model import (
 )
 from epistrel.core.propositions.registry import Registry, conditional_owner, load, owner_lookup
 from epistrel.core.propositions.vocabulary import (
+    CLOCK_CHECKS,
     SCHEDULED,
     STATE_VALUE,
     TIME_IS,
@@ -251,6 +268,26 @@ MOVERS = frozenset({"character", "player"})
 """#518: the asserters whose own ``do`` may change their character's fluents (``mover_of``)."""
 PARTITIONS_MODULE = "partitions"
 """``character_knowledge.partitions``: the belief dimension runs only under it (#166)."""
+TIME_CLAIMS = "time_claims"
+"""#200: the profile flag ``clock.time_claims`` (#106): a character's time claims are checked
+against its time belief only under it."""
+CLOCK_CHECKED = frozenset(CLOCK_CHECKS)
+"""#200: the clock checks a character's time claim is checked against its time belief on."""
+TIME_CHANNELS = frozenset({"say", "think", "do"})
+"""#200: the channels whose clock check is the character's own (its belief relation)."""
+SEEN_TIMES = frozenset({TIME_IS, TIME_OF_DAY_BAND})
+"""#200: the clock checks a ``do`` beat states as what is seen (a wall clock, the light): checked
+objectively and observed by who perceives the beat (#164), never against the actor's belief.
+A ``do``'s ``elapsed_since`` or ``scheduled_status`` is the actor acting on its belief."""
+
+
+def own_time_claim(predicate_id: str, channel: str | None) -> bool:
+    """#200: whether a character's clock check on ``channel`` is its own, checked against its
+    time belief (see ``TIME_CHANNELS`` and ``SEEN_TIMES``)."""
+    if predicate_id not in CLOCK_CHECKED or channel not in TIME_CHANNELS:
+        return False
+    return not (channel == DO and predicate_id in SEEN_TIMES)
+
 
 BUILT_IN_PARAMS = ModelParams(temperature=0.0, max_tokens=100)
 """The entailment call's own params; the story's ``entailment`` route's params win."""
@@ -274,6 +311,21 @@ def speaker_of(asserter: Asserter) -> str:
     if asserter.kind == "co_author":
         return ""
     return asserter.character_id or ""
+
+
+def time_belief_ref(verdict: Verdict) -> str | None:
+    """#200: the ``time_belief:<basis>`` a belief verdict was decided by (the speaker's time
+    belief, ``core.world_clock.time_belief``), or ``None``."""
+    from epistrel.core.world_clock.time_belief import REF_PREFIX
+
+    return next(
+        (
+            e.owner_ref
+            for e in verdict.evidence
+            if e.owner_ref is not None and e.owner_ref.startswith(REF_PREFIX)
+        ),
+        None,
+    )
 
 
 def mover_of(asserter: Asserter | None, channel: str | None, *, change: bool) -> str | None:
@@ -306,6 +358,10 @@ class VerifyConfig:
     clock: bool = False
     """#195: the story runs the world clock (``clock.level`` on or ``prompt_only``, delivered):
     its clock checks anchor the clock, and ``time_is`` is the clock's, not a fact."""
+    time_claims: bool = False
+    """#200 (FR-CLOCK-10): with the clock, the profile's ``clock.time_claims`` (delivered): a
+    character's own time claim (``say``, ``think``, ``do``) is checked against its time
+    belief. Off, it is checked as narration's is: objectively only."""
 
     @property
     def on(self) -> bool:
@@ -322,6 +378,8 @@ class VerifyConfig:
         d = deployment or VerifySettings()
         structured = profile.pipeline == "structured"
         clock = level_of(profile, "clock")
+        claims = level_of(profile, TIME_CLAIMS)
+        clocked = clock is not None and is_delivered("clock", clock)
         return cls(
             level=v.level if structured else "off",
             entailment_gate=v.entailment_gate,
@@ -329,7 +387,8 @@ class VerifyConfig:
             safe_disposition=v.safe_disposition,
             entailment_max_records=d.entailment_max_records,
             neighborhood_max_facts=d.neighborhood_max_facts,
-            clock=clock is not None and is_delivered("clock", clock),
+            clock=clocked,
+            time_claims=clocked and claims is not None and is_delivered(TIME_CLAIMS, claims),
         )
 
     @classmethod
@@ -1607,6 +1666,16 @@ class Verifier:
             self.results.append((where, found_change))
             return found_change
         mover = mover_of(asserter, where.channel, change=change)
+        if (
+            mover is None
+            and change
+            and asserter is not None
+            and asserter.kind in ANCHORS
+            and perception.changes_consciousness(claim)
+        ):
+            # #200: narration that someone passes out or wakes changes that subject's
+            # ``unconscious`` fluent from the beat (#518's ``fluent_change``).
+            mover = claim.subject_id
         found = await self.source.deterministic(
             claim, holder=holder, viewpoint=viewpoint, position=position, mover=mover
         )
@@ -1837,9 +1906,13 @@ class Verifier:
                     for e in found.evidence
                     if e.fact_id is not None and e.proposition_id is not None
                 )
+        # #200: a clock check the speaker's time belief contradicts is against what it knows
+        # of the time (its own contrary knowledge: a deceptive one is a lie).
+        timed = time_belief_ref(found)
+        knows_time = found.kind is VerdictKind.CONTRADICTED and timed is not None
         hidden = None
         open_ = result.kind not in (VerdictKind.SUPPORTED, VerdictKind.CONTRADICTED)
-        if open_ and declared != speech_acts.JOKING:
+        if open_ and declared != speech_acts.JOKING and timed is None:
             # #171: asked for a belief-consistent claim too, so an established false belief
             # beyond the speaker's view ("I've never met that stranger", canon holding that the
             # stranger is Bobby) is a sincere error, labelled false, and stands.
@@ -1854,7 +1927,7 @@ class Verifier:
             intent=intent_in,
             canon=result.kind,
             belief=found.kind,
-            contrary=bool(contrary or known),
+            contrary=bool(contrary or known or knows_time),
             hidden=hidden,
         )
         licence = None
@@ -1873,6 +1946,11 @@ class Verifier:
             # #206 (FR-EXT-11): an existing belief keeps its semantics while the provider's
             # value is Unknown: a belief-consistent claim of it stands as said, its objective
             # relation unresolved (only new objective assertions take the safe disposition).
+            found_result = dataclasses.replace(found_result, disposition=None)
+        if timed is not None and open_ and decision.belief_relation == "consistent":
+            # #200 (FR-CLOCK-10): a character's time claim its time belief holds stands as
+            # said while the clock leaves it undecided (a guess under an unanchored clock):
+            # the character's word is checked against what it can know, not the clock.
             found_result = dataclasses.replace(found_result, disposition=None)
         if (
             decision.hallucinated
@@ -2004,6 +2082,31 @@ class Verifier:
             anchor = await self.source.anchor(claim, viewpoint=at.viewpoint, position=at.position)
         return dataclasses.replace(result, asserter=asserter, permission=found, anchored_to=anchor)
 
+    def _anchors(self, r: VerifyResult, ref: ClaimRef) -> bool:
+        """#200: a character's time statement anchors the clock as narration's does when the
+        story checks time claims, the speaker knows the time (its belief is derived from
+        ``exact`` awareness, no override and no gap), it said the time sincerely and its
+        belief holds it, and said it as a time, not a guess ("must be around noon" never
+        anchors)."""
+        from epistrel.core.world_clock.time_belief import REF_PREFIX, said_time
+
+        speech = r.speech
+        if (
+            not self.config.time_claims
+            or speech is None
+            or r.claim is None
+            or ref.channel not in TIME_CHANNELS
+            or speech.decision.classification != speech_acts.SINCERE
+            or speech.decision.belief_relation != "consistent"
+            or time_belief_ref(speech.belief) != f"{REF_PREFIX}awareness:exact"
+        ):
+            return False
+        literal = r.claim.literal
+        if r.claim.predicate_id == TIME_IS and literal is not None:
+            _, hedged, _ = said_time(str(literal.value), Anchor.unanchored().clockwork)
+            return not hedged
+        return True
+
     def canon_requests(self) -> list[CanonRequest]:
         """The turn's permitted novel claims to canonize at its commit, in verification order
         (``core.canon.canonize.canonize_all`` dedupes identical ones): never a denied claim, a
@@ -2012,7 +2115,9 @@ class Verifier:
         is the State's fold). #195: with the clock on, an objective (director's or author's)
         ``time_is`` or ``time_of_day_band`` statement that narrows the anchor (verdict
         ``novel``) is a ``clock_anchor`` commitment (``anchors_clock``, ``visibility =
-        engine``); with it off, ``time_is`` canonizes as in M4."""
+        engine``); with it off, ``time_is`` canonizes as in M4. #200: so does a character's
+        sincere, belief-consistent time statement from ``exact`` awareness (``_anchors``); a
+        guess never does."""
         found: list[CanonRequest] = []
         for ref, r in self.results:
             permitted = r.permitted
@@ -2027,7 +2132,11 @@ class Verifier:
             predicate_id = r.claim.predicate_id
             if owner_lookup(predicate_id) is not None:
                 if self.config.clock and predicate_id in ANCHORING:
-                    if r.asserter.kind in ANCHORS and ref.channel not in (SAY, *NEVER_CANONIZES):
+                    objective = r.asserter.kind in ANCHORS and ref.channel not in (
+                        SAY,
+                        *NEVER_CANONIZES,
+                    )
+                    if objective or self._anchors(r, ref):
                         found.append(
                             CanonRequest(
                                 claim=r.claim,

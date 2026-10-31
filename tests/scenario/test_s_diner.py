@@ -24,6 +24,11 @@ her own statement), involving her.
   change (a sincere error with an antecedent, a hallucination without; a non-owner's "pushed
   it" refused), shared owners, and Jenni's own errand created, reported and changed from her
   renders.
+- ``test_s_diner__belief`` (#200): her sincere rush to the meeting at 11:20 is
+  belief-inconsistent and repaired, her context showing her believed time and "about 5½
+  hours" and no schedule she does not hold; the pretext is a lie; an early exit for her
+  sister's call is accepted; Marcus's belief-only 16:00 is a sincere false belief that stops
+  nothing.
 """
 
 from __future__ import annotations
@@ -790,3 +795,178 @@ async def test_s_diner__report_vs_create(
         assert verdict["speech"]["classification"] == "sincere"
         assert es.regenerations(stub) == []
         assert await ck.statuses(engine, story, bank.event_id) == ["pending", "pending"]
+
+
+def due(text_: str, event: str = "the meeting", **fields: Any) -> dict[str, Any]:
+    """A ``say`` acting on ``event`` being due now (a declared ``scheduled_status`` claim)."""
+    return beat("say", text_, propositions=[claim(event, "scheduled_status", "due")], **fields)
+
+
+async def timed_verdict(engine: AsyncEngine, story: str) -> dict[str, Any]:
+    """The last turn's one verdict on a character's own time claim (decided by its time belief,
+    #200: ``owner_ref`` ``time_belief:…``)."""
+    found = [
+        v
+        for v in (await turn_report(engine, story))["verify"]["verdicts"]
+        if any(
+            str(e.get("owner_ref", "")).startswith("time_belief:")
+            for e in (v.get("speech") or {}).get("belief_evidence", ())
+        )
+    ]
+    assert len(found) == 1, found
+    return dict(found[0])
+
+
+async def lies_of(engine: AsyncEngine, story: str, speaker: str) -> int:
+    (row,) = await rows(
+        engine,
+        "SELECT count(*) AS n FROM divergences WHERE story_id = :s AND speaker_character_id = :c",
+        s=story,
+        c=speaker,
+    )
+    return int(row.n)
+
+
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-CLOCK-10,11,15")
+async def test_s_diner__belief(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    time_claims_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """The belief clauses (#200; FR-CLOCK-10,11,15), through ``respond`` with per-character
+    partitions and ``clock.time_claims`` on:
+
+    - At 11:20 Jenni's render says she has to get going to her meeting, sincerely (it acts on
+      the meeting being due): belief-inconsistent (her own time belief is 11:20) and repaired
+      (she stays); her generation context showed her believed time and "about 5½ hours" to her
+      meeting, and not the dinner reservation Marcus holds (a canon schedule she does not).
+    - The pretext variant (her ``think``: the date is going badly, the meeting is her excuse;
+      the ``say`` declared deceptive): a lie, its divergence recorded, nothing repaired; the
+      clock and the meeting unaffected.
+    - Leaving early for an established reason (her sister's call, a canon event she holds, at
+      11:45): accepted.
+    - Belief-only: Marcus wrongly believes the meeting is at 16:00 (a belief, never an event):
+      at 16:00 his "don't you have to leave?" is a sincere false belief, accepted, and the clock
+      is not stopped at 16:00 (no event is due there)."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids, meeting = await diner(client, engine, partitions=True, others=("Marcus",))
+        await ck.set_clock(engine, story, "on", time_claims=True)
+        url = f"/stories/{story}/scheduled-events"
+        for name, planned, who in (
+            ("the dinner reservation", 9 * 60, "Marcus"),
+            ("her sister's call", 45, "Jenni"),
+        ):
+            made = await client.post(
+                url,
+                json={
+                    "proposition": name,
+                    "planned": planned,
+                    "participants": [ids[who]],
+                    "owner": "world",
+                },
+                headers=WRITE,
+            )
+            assert made.status_code == 201, made.text
+        await ck.advance(engine, story, 20)  # 11:20
+
+        # Sincerely acting on the meeting at 11:20: belief-inconsistent, repaired.
+        found = await turn(
+            client,
+            stub,
+            story,
+            ids,
+            due("I have to get going to my meeting."),
+            regenerated=REPAIRED,
+        )
+        verdict = await timed_verdict(engine, story)
+        assert (verdict["speech"]["classification"], verdict["speech"]["belief_relation"]) == (
+            "hallucination_repaired",
+            "inconsistent",
+        )
+        assert len(es.regenerations(stub)) == 1
+        assert "I have to get going to my meeting." not in [b["text"] for b in found["beats"]]
+        (prompt,) = ms.render_prompts(stub, "Jenni")
+        sense = prompt.split("## Your sense of time", 1)[1].split("\n## ", 1)[0]
+        assert "it is 11:20" in sense
+        assert "Jenni's meeting: 17:00, about 5½ hours from now." in sense
+        assert "dinner reservation" not in prompt
+        assert await ck.statuses(engine, story, meeting) == ["pending"]
+
+        # The pretext: her think says it is an excuse; a lie, recorded, nothing repaired.
+        before = await ck.offset(engine, story)
+        await turn(
+            client,
+            stub,
+            story,
+            ids,
+            beat("think", "This date is going badly. The meeting is my way out."),
+            due("I have to run, my meeting.", intent="deceptive"),
+        )
+        verdict = await timed_verdict(engine, story)
+        assert (verdict["speech"]["classification"], verdict["speech"]["belief_relation"]) == (
+            "lie",
+            "inconsistent",
+        )
+        assert es.regenerations(stub) == []
+        assert await lies_of(engine, story, ids["Jenni"]) == 1
+        assert await ck.statuses(engine, story, meeting) == ["pending"]
+        assert (await event_of(engine, story, meeting)).planned == MEETING
+        assert await ck.offset(engine, story) - before < 15  # a short exchange's pacing only
+
+        # Leaving early for an established reason: her sister's call is due as she knows it.
+        await ck.advance(engine, story, to=35)  # 11:35
+        await turn(
+            client,
+            stub,
+            story,
+            ids,
+            due("Sorry, I have to take my sister's call.", "her sister's call"),
+        )
+        verdict = await timed_verdict(engine, story)
+        assert (verdict["speech"]["classification"], verdict["speech"]["belief_relation"]) == (
+            "sincere",
+            "consistent",
+        )
+        assert es.regenerations(stub) == []
+
+        # Belief-only: Marcus thinks the meeting is at 16:00; at 16:00 he asks if she has to go.
+        (row,) = await rows(
+            engine,
+            "SELECT p.object_id, s.story_minute_zero AS zero FROM propositions p JOIN stories s "
+            "ON s.id = p.story_id WHERE p.id = :p",
+            p=meeting,
+        )
+        await pt.believe(
+            engine,
+            story,
+            ids["Marcus"],
+            Proposition(
+                subject_id=ids["Jenni"],
+                predicate_id=SCHEDULED,
+                object_id=row.object_id,
+                valid_time=Instant.of(int(row.zero) + 5 * 60, Granularity.MINUTE),
+            ),
+        )
+        await ck.advance(engine, story, to=5 * 60)  # 16:00
+        assert (await ck.offset(engine, story)) == 5 * 60  # nothing stopped the clock at 16:00
+        stub.reset()
+        ms.renders_for(stub, "Marcus", ms.render(due("Don't you have to leave?")))
+        answer = await respond(
+            client,
+            story,
+            body(ids["Cal"], "Marcus, what's up?", render_character_ids=[ids["Marcus"]]),
+        )
+        assert answer.status_code == 200, answer.text
+        verdict = await timed_verdict(engine, story)
+        assert (verdict["speech"]["classification"], verdict["speech"]["belief_relation"]) == (
+            "sincere",
+            "consistent",
+        )
+        assert es.regenerations(stub) == []
+        (prompt,) = ms.render_prompts(stub, "Marcus")
+        sense = prompt.split("## Your sense of time", 1)[1].split("\n## ", 1)[0]
+        assert "Jenni's meeting: 16:00" in sense  # as he believes it
+        assert await ck.statuses(engine, story, meeting) == ["pending"]

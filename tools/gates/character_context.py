@@ -67,6 +67,7 @@ NARRATOR = "narrator"
 through ``build_context`` (#170). ``character_inputs`` never passes it."""
 SECTIONS: dict[str, str] = {
     "own_age": CONTEXT,
+    "time_belief": CONTEXT,
     "player_input": CONTEXT,
     "beliefs": CONTEXT,
     "private_memories": CONTEXT,
@@ -94,6 +95,7 @@ SECTIONS: dict[str, str] = {
     "summary_segments": UNSCOPED,
     "external_data": NARRATOR,
     "pending_outcomes": NARRATOR,
+    "clock_now": NARRATOR,
 }
 """Every section a character's ``GenerationInputs`` may carry, classified (#544)."""
 

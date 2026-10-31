@@ -33,6 +33,10 @@ at the claim's own time (its valid-time's exact start: its step's start) rather 
 read's position, so "at 15:40 she starts driving" at 15:05 is checked at 15:40, the time its
 step starts.
 
+**A character's own time claim** (#200, FR-CLOCK-10): a ``belief(A)`` holder's clock check is
+decided against A's time belief, never the clock (``believed``, registered as the lookups'
+``belief`` decider; ``core.world_clock.time_belief``).
+
 Log lines carry identifiers and counts only (invariant 3); this module logs nothing.
 """
 
@@ -332,14 +336,31 @@ class _ClockLookup:
         return None  # no declared rule concludes a clock check
 
 
+async def believed(
+    conn: AsyncConnection,
+    story_id: str,
+    holder_id: str,
+    claim: Proposition,
+    through: Position | None,
+) -> Verdict | None:
+    """#200: a ``belief(A)`` holder's clock check, decided against A's time belief at
+    ``through`` (``core.world_clock.time_belief.verdict``); ``None`` with the clock off (the
+    claim is then any belief holder's)."""
+    from epistrel.core.world_clock import time_belief
+
+    found = await time_belief.time_belief(conn, story_id, holder_id, through)
+    return None if found is None else time_belief.verdict(claim, found)
+
+
 CLOCK_LOOKUP = _ClockLookup()
-register_owner_lookup(TIME_IS, CLOCK_LOOKUP, active=clock_on)
+register_owner_lookup(TIME_IS, CLOCK_LOOKUP, active=clock_on, belief=believed)
 for _predicate in (TIME_OF_DAY_BAND, ELAPSED_SINCE, SCHEDULED_STATUS):
-    register_owner_lookup(_predicate, CLOCK_LOOKUP)
+    register_owner_lookup(_predicate, CLOCK_LOOKUP, belief=believed)
 
 __all__ = [
     "CLOCK_LOOKUP",
     "REFINES",
+    "believed",
     "check_of",
     "clock_on",
     "owned_value",

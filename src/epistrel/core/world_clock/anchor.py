@@ -935,6 +935,12 @@ _AM: Final = frozenset({"am", "a.m.", "in the morning"})
 _PM: Final = frozenset({"pm", "p.m.", "in the evening", "at night", "in the afternoon"})
 _NAMED: Final = {"noon": 720, "midday": 720, "midnight": 0}
 _LEAD = re.compile(r"^(?:it\s+(?:is|was)|it['\u2019]s)\s+(?:now\s+)?(?:a\s+)?", re.IGNORECASE)
+HEDGES: Final = ("must be", "probably", "maybe", "perhaps", "i guess", "i think", "i'd say")
+"""#200: a guess's lead ("must be around noon"): said approximately, like "about"."""
+_FILLERS: Final = ("only", "still", "already", "just", "now")
+"""#200: words that state no time of their own ("it's only three", "it's still eight")."""
+PRECISE_MARKS: Final = ("exactly", "sharp", "on the dot", "precisely")
+"""#200: a trailing mark that the time is said to the minute ("4:52 exactly")."""
 _DAY_OF_MONTH = re.compile(r"^(?:the\s+)?(\d{1,3})(?:st|nd|rd|th)$")
 
 
@@ -990,18 +996,50 @@ def _clock_time(text: str, day: int) -> tuple[Interval, ...] | None:
                 return _points((hour - 1) % 12 or 12, 60 + minutes, meridian, day)
             return _points(hour, minutes, meridian, day)
     hour = _hour(text)
-    if hour is not None and meridian is not None:
+    if hour is not None and (meridian is not None or 1 <= hour <= 12):
+        # #200: a bare hour ("it's only three") is that hour in either half of the day.
         return _points(hour, 0, meridian, day)
     return None
+
+
+def _said(text: str) -> tuple[str, bool, bool]:
+    """``text`` as ``statement_of`` reads it: lower-cased, its lead ("it's"), a guess's hedge
+    ("must be") and filler words ("only", "still") dropped, and a trailing precision mark
+    ("exactly") cut; with whether it was hedged and whether it was marked precise (#200)."""
+    said = " ".join(_LEAD.sub("", text.strip()).casefold().replace(",", " ").split())
+    said = said.rstrip(".!?").strip()
+    hedged = precise = False
+    changed = True
+    while changed:
+        changed = False
+        for word in (*HEDGES, *_FILLERS):
+            if said.startswith(word + " "):
+                said = said[len(word) + 1 :]
+                hedged = hedged or word in HEDGES
+                changed = True
+        lead = _LEAD.sub("", said)
+        if lead != said:
+            said, changed = lead, True
+    for mark in PRECISE_MARKS:
+        if said.endswith(" " + mark):
+            said, precise = said[: -len(mark) - 1].strip(), True
+            break
+    return said, hedged, precise
+
+
+def said_precisely(text: str) -> bool:
+    """#200: whether ``text`` marks its time as exact to the minute ("4:52 exactly")."""
+    return _said(text)[2]
 
 
 def statement_of(text: str, clockwork: Clockwork = GREGORIAN_CLOCKWORK) -> Statement | None:
     """What ``text`` (a time as said: "9:15", "half past nine", "Saturday morning", "the 14th",
     "about noon") states, or ``None`` when it states nothing this module decides on (a vague
-    "after nine", a named time such as "dusk")."""
-    said = " ".join(_LEAD.sub("", text.strip()).casefold().replace(",", " ").split())
-    said = said.rstrip(".!?")
-    approximate = False
+    "after nine", a named time such as "dusk"). #200: a bare hour ("it's only three") is that
+    hour in either half of the day, filler words ("still") are dropped, and a guess ("must be
+    around noon") is said approximately."""
+    said, hedged, _ = _said(text)
+    approximate = hedged
     for word in APPROXIMATORS:
         if said.startswith(word + " "):
             if word not in ABOUT:
@@ -1042,6 +1080,8 @@ __all__ = [
     "ABOUT",
     "COMPONENTS",
     "GREGORIAN_CLOCKWORK",
+    "HEDGES",
+    "PRECISE_MARKS",
     "UNKNOWN",
     "AbsoluteRange",
     "Anchor",
@@ -1061,5 +1101,6 @@ __all__ = [
     "UnknownType",
     "band_statement",
     "fold",
+    "said_precisely",
     "statement_of",
 ]

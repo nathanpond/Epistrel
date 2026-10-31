@@ -43,6 +43,11 @@ one fenced block per pinned value in ``## External data`` (``external_data``,
 carries no value. A character render never gets the section (``check-character-context``
 classifies it narrator-only): it learns a value only as a belief through ``build_context``.
 
+**Time** (#200, FR-CLOCK-11): a character render's ``## Your sense of time`` is its
+``CharacterContext.time_belief`` (its own time belief, never the clock); the narrator's
+``## Time`` names the objective time as the turn starts (``RenderSections.clock_now``, which
+``check-character-context`` classifies narrator-only).
+
 **The cap** (``render.prompt_token_budget``, ``len // 4`` tokens): over it, retrieved items
 are dropped from the end first, then canon lines, then working memory from the oldest beat
 (``## Just now``, ``## Tracked values`` and ``## External data`` count against the cap and are
@@ -107,6 +112,9 @@ class RenderSections:
     clock_contract: bool = False
     """#194: the story runs the world clock, so the render's prompt carries ``## Time`` (time
     advances, ``time`` steps and ``flashback``)."""
+    clock_now: str = ""
+    """#200: the narrator's objective time as the turn starts; never a character's
+    (``character_inputs`` passes it nowhere: a character gets its own ``time_belief``)."""
     pending_outcomes: tuple[str, ...] = ()
     """#209: the narrator's ``## Awaiting the game``, the changes the last turns asked of the
     consumer with no outcome yet (``effects.pending_outcomes``): counted against the cap, never
@@ -231,6 +239,8 @@ def character_inputs(
         ],
         own_age=context.own_age,
         beliefs=list(context.belief_lines),
+        # #200 (FR-CLOCK-11): the character's own sense of time, never the clock.
+        time_belief=context.time_belief or "",
         private_memories=list(context.private_memories),
         pinned_memories=list(s.pins),
         summary_segments=list(s.segments),
@@ -285,6 +295,7 @@ def narrator_inputs(
         external_data=list(s.external),
         pending_outcomes=list(s.pending_outcomes),
         clock_contract=s.clock_contract,
+        clock_now=s.clock_now,
     )
 
 

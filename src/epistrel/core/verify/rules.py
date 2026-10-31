@@ -178,7 +178,11 @@ value is ``contradicted`` (``implication``, then ``functional_key`` with the own
 may read (ADR-167), where a value is an ordinary belief. A lookup registered with a
 ``belief_only`` test (#207: the value of an externally owned State) is decided over A's
 partition alone: the canon fallback is not consulted, so neither the pinned value nor a fact
-answers for A, and a value A holds no belief about stays ``novel``. An owner's value may be
+answers for A, and a value A holds no belief about stays ``novel``. A lookup registered with a
+``belief`` decider (#200: the clock checks) has a ``belief(A)`` holder's claim decided from A's
+own view whenever it answers (A's time belief, ``core.world_clock.time_belief``), and, with the
+clock on, A's canon fallback leaves out every fact on a clock predicate and every ``scheduled``
+fact A does not hold (ADR-167; ``_belief_canon``). An owner's value may be
 ``unsettled`` (``OwnedValue.unsettled``: #207's ``advisory`` provider), when the lookup answers
 ``uncertain`` with that reason whatever the claim says.
 
@@ -201,6 +205,7 @@ import weakref
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal
 
 from sqlalchemy import select
@@ -236,11 +241,18 @@ from epistrel.core.propositions.registry import (
     imply,
     load,
     owner_active,
+    owner_belief,
     owner_belief_only,
     owner_lookup,
     same_event,
 )
-from epistrel.core.propositions.vocabulary import LOCATED_AT, PRESENT_AT, SAME_AS
+from epistrel.core.propositions.vocabulary import (
+    CLOCK_PREDICATES,
+    LOCATED_AT,
+    PRESENT_AT,
+    SAME_AS,
+    SCHEDULED,
+)
 from epistrel.core.readset import (
     KeyedLookup,
     StructuredReadSet,
@@ -257,6 +269,10 @@ if TYPE_CHECKING:
     from epistrel.core.events.operation import Operation
 
 log = logging.getLogger(__name__)
+
+HIDDEN_FROM_BELIEF: frozenset[str] = frozenset({*CLOCK_PREDICATES, SCHEDULED})
+"""#200: the predicates whose canon a ``belief(A)`` record set may leave out (the clock's, and a
+``scheduled`` event A does not hold; ``_belief_canon``)."""
 
 EVIDENCE_STATES: frozenset[FactCommitState] = frozenset(
     {FactCommitState.COMMITTED, FactCommitState.REVISED}
@@ -1857,6 +1873,13 @@ async def check_with(
             owned=owned,
         )
     if holder.kind == "belief":
+        assert holder.holder_id is not None  # noqa: S101 - a belief holder names its holder
+        decided = await owner_belief(lookup.conn, story_id, holder.holder_id, c, through)
+        if decided is not None:
+            # #200: a clock check is decided against A's own time belief, never the clock or
+            # A's canon (FR-CLOCK-10, ADR-167).
+            log.debug("verify decided %s by its owner's belief reader", c.predicate_id)
+            return replace(decided, holder=holder, position=position)
         # The canon a belief holder may read: what its character sees (FR-RET-1).
         canon_viewpoint = f"{CHARACTER_VIEWPOINT_PREFIX}{holder.holder_id}"
         held, closed = await _gather(
@@ -1882,6 +1905,7 @@ async def check_with(
             log.debug("verify fetched %d belief records, %d closed sets", len(held), len(closed))
             return verdict
         known, _ = await _gather(lookup, story_id, c, predicate, registry, options, read_canon)
+        known = await _belief_canon(lookup.conn, story_id, holder.holder_id, known)
         unique = _unique([*held, *known])
         if fetched is not None:
             fetched.extend(unique)
@@ -1923,6 +1947,25 @@ async def check_with(
         owned=owned_found,
         mover=mover,
     )
+
+
+async def _belief_canon(
+    conn: AsyncConnection, story_id: str, holder_id: str, known: list[Record]
+) -> list[Record]:
+    """#200 (ADR-167): the canon in a ``belief(A)`` record set, less what a character never
+    reads as canon with the clock on: a fact on a clock predicate, and a ``scheduled`` fact A
+    does not hold (``core.world_clock.time_belief.hidden_canon``)."""
+    if not any(r.proposition.predicate_id in HIDDEN_FROM_BELIEF for r in known):
+        return known
+    from epistrel.core.world_clock.time_belief import hidden_canon
+
+    facts = [
+        SimpleNamespace(id=r.fact_id, proposition=r.proposition, proposition_id=r.proposition_id)
+        for r in known
+        if r.fact_id is not None
+    ]
+    hidden = await hidden_canon(conn, story_id, holder_id, facts)
+    return [r for r in known if r.fact_id is None or r.fact_id not in hidden]
 
 
 def _unique(records: Iterable[Record]) -> list[Record]:

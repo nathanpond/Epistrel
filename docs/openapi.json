@@ -41293,6 +41293,157 @@
         ]
       }
     },
+    "/admin/stories/{story_id}/facts/{fact_id}": {
+      "get": {
+        "description": "One version of the story's canon by id (#535), `omniscient` only (403 `omniscient_required` otherwise): any version, current or superseded (`tx_to`, `superseded_by`), its `membership` saying whether it is on the active timeline. 404 `fact_not_found` for an id that is no version of this story's, another story's included. 409 `module_off` for a Lite story (canon exists under every structured profile).",
+        "operationId": "get_fact",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The fact version's id (a ULID).",
+            "in": "path",
+            "name": "fact_id",
+            "required": true,
+            "schema": {
+              "description": "The fact version's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C5"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Fact Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "viewpoint",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Viewpoint"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden: `omniscient_required`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `fact_not_found`, `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `module_off`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`, `viewpoint_unresolved`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read one fact version",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/admin/stories/{story_id}/facts/{fact_id}/lock": {
       "delete": {
         "description": "Clear `author_locked` on current version `fact_id` (a successor of the same proposition, as for the lock). An unlocked version answers unchanged. 409 `module_off` for a Lite story (canon exists under every structured profile).\n\nA position-less `control` operation that bumps the story's timeline revision, so a turn generating meanwhile revalidates before it commits. Any principal may call it. `Idempotency-Key` and `X-Epistrel-Expected-Revision` are optional.",

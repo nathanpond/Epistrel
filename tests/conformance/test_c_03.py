@@ -42,7 +42,12 @@ from epistrel.api.routes.admin.model_config import (
     ModelConfigItem,
     ModelConfigMutation,
 )
-from epistrel.api.routes.admin.mutation import FactListBody, FactWritten, MemoryWritten
+from epistrel.api.routes.admin.mutation import (
+    FactBody,
+    FactListBody,
+    FactWritten,
+    MemoryWritten,
+)
 from epistrel.api.routes.admin.offboarding import OffboardingPlanBody, OffboardingQueuedBody
 from epistrel.api.routes.admin.policies import PolicyBody, PolicyList, PolicyMutation
 from epistrel.api.routes.admin.ratings import RatingDetailBody, RatingList, RatingMutation
@@ -351,6 +356,7 @@ MUTATION_ANSWERS = [
     ("lock_fact", 200),
     ("unlock_fact", 200),
     ("list_facts", 200),
+    ("get_fact", 200),
     ("inspect_ledger", 200),
     ("quarantine_memory", 200),
     ("unquarantine_memory", 200),
@@ -417,6 +423,10 @@ async def _hot_set(engine: Engine, story_id: str) -> dict[str, Any]:
 
 async def _fact_list(engine: Engine, story_id: str) -> dict[str, Any]:
     return dump(FactListBody.of(await engine.list_facts(CTX, story_id, viewpoint="omniscient")))
+
+
+async def _fact_body(engine: Engine, story_id: str, fact_id: str) -> dict[str, Any]:
+    return dump(FactBody.of(await engine.get_fact(CTX, story_id, fact_id, viewpoint="omniscient")))
 
 
 async def _ledger(engine: Engine, story_id: str) -> dict[str, Any]:
@@ -1131,6 +1141,15 @@ def _steps() -> list[Step]:
                 "GET", "/admin/stories/{fork}/facts", params={"viewpoint": "omniscient"}
             ),
             lambda e, ids: _fact_list(e, ids["fork"]),
+            group=MUTATION_GROUP,
+        ),
+        # One version by id (#535): the unlocked version just written.
+        Step(
+            "get_fact",
+            lambda ids: Rest(
+                "GET", "/admin/stories/{fork}/facts/{fork_fact}", params={"viewpoint": "omniscient"}
+            ),
+            lambda e, ids: _fact_body(e, ids["fork"], ids["fork_fact"]),
             group=MUTATION_GROUP,
         ),
         # The thunks and the promissory ledger (#146), omniscient, on the structured fork.

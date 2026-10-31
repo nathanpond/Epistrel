@@ -52,6 +52,7 @@ from epistrel.core import (
 )
 from epistrel.core import control as control_ops
 from epistrel.core import story_settings as settings_store
+from epistrel.core.canon.facts import Fact
 from epistrel.core.catalog import characters as catalog_characters
 from epistrel.core.catalog import companion as catalog_companion
 from epistrel.core.catalog import kinds as catalog_kinds
@@ -1380,6 +1381,18 @@ class Engine:
             limit=limit,
             cursor=cursor,
         )
+
+    @refuses_nul()
+    async def get_fact(
+        self, ctx: RequestContext, story_id: str, fact_id: str, *, viewpoint: str | None = None
+    ) -> Fact:
+        """One fact version of the story by id (#535), ``omniscient`` only (403
+        ``omniscient_required`` otherwise): any version, superseded ones included. 404
+        ``fact_not_found`` for an id that is no version of this story's; 409 ``module_off`` for
+        a Lite story."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        require_omniscient(ctx.viewpoint or "", field="query.viewpoint")
+        return await mutation.read_fact(self.db, story_id, fact_id)
 
     @library_only("a precondition every story mutation runs (`X-Epistrel-Expected-Revision`)")
     async def check_expected_revision(self, ctx: RequestContext, story_id: str) -> int:

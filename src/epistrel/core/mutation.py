@@ -911,6 +911,16 @@ async def list_facts(
     return FactPage(tuple(page), revision, page[-1].id if more and page else None)
 
 
+async def read_fact(db: AsyncEngine, story_id: str, fact_id: str) -> Fact:
+    """The story's fact version ``fact_id`` under ``omniscient`` (#535): any version, current,
+    superseded or off the active timeline (its ``membership`` says which). 404
+    ``fact_not_found`` for an id that is no version of this story's (another story's included);
+    409 ``module_off`` for a Lite story."""
+    await require_canon(db, story_id)
+    async with db.connect() as conn:
+        return await canon.read_version(conn, story_id, fact_id)
+
+
 # -- FR-GUARD-5: implication ------------------------------------------------------------------
 
 
@@ -1082,6 +1092,7 @@ __all__ = [
     "implicate",
     "list_facts",
     "quarantine",
+    "read_fact",
     "read_memory",
     "require_canon",
     "require_episodic",

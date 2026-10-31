@@ -7,7 +7,8 @@ may make them (Epistrel has no roles, S-TRUST-BOUNDARY M4):
 
 - ``POST …/memories/{memory_id}/quarantine`` ``{reason}`` and ``DELETE`` (the reverse);
 - ``POST …/memories/{memory_id}/sanitize`` ``{span, surrogate}``;
-- ``GET …/facts`` (``omniscient`` only) and ``POST …/facts`` (``commit_fact``, 201);
+- ``GET …/facts`` and ``GET …/facts/{fact_id}`` (``omniscient`` only; #535) and ``POST …/facts``
+  (``commit_fact``, 201);
 - ``POST …/facts/{fact_id}/supersede`` (201) and ``POST|DELETE …/facts/{fact_id}/lock``.
 
 Each write is a position-less ``control`` operation that bumps the story's timeline revision
@@ -310,6 +311,29 @@ async def list_facts(
         cursor=cursor,
     )
     return FactListBody.of(page)
+
+
+@router.get(
+    "/{story_id}/facts/{fact_id}",
+    response_model=FactBody,
+    operation_id="get_fact",
+    summary="Read one fact version",
+    description=(
+        "One version of the story's canon by id (#535), `omniscient` only (403 "
+        "`omniscient_required` otherwise): any version, current or superseded (`tx_to`, "
+        "`superseded_by`), its `membership` saying whether it is on the active timeline. 404 "
+        "`fact_not_found` for an id that is no version of this story's, another story's "
+        "included." + FACT_RULES
+    ),
+)
+async def get_fact(
+    story_id: StoryId,
+    fact_id: FactId,
+    ctx: ContextDep,
+    engine: EngineDep,
+    viewpoint: str | None = None,
+) -> FactBody:
+    return FactBody.of(await engine.get_fact(ctx, story_id, fact_id, viewpoint=viewpoint))
 
 
 @router.post(

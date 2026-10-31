@@ -506,6 +506,7 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "nesting_too_deep",
     ),
     "list_facts": ("module_off", "omniscient_required", "viewpoint_unresolved"),
+    "get_fact": ("module_off", "omniscient_required", "viewpoint_unresolved", "fact_not_found"),
     "inspect_ledger": ("module_off", "omniscient_required", "viewpoint_unresolved"),
     "inspect_beliefs": ("module_off", "omniscient_required", "viewpoint_unresolved"),
     "inspect_divergences": ("module_off", "omniscient_required", "viewpoint_unresolved"),

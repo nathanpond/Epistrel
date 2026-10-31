@@ -1058,6 +1058,11 @@
       "requirement": "FR-GUARD-4"
     },
     {
+      "method": "GET",
+      "path": "/admin/stories/{story_id}/facts/{fact_id}",
+      "requirement": "FR-BITEMP-3"
+    },
+    {
       "method": "POST",
       "path": "/admin/stories/{story_id}/facts",
       "requirement": "FR-GUARD-4"

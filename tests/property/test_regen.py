@@ -20,16 +20,20 @@ Asserted per example, against Postgres:
 - NFR-DETERM-2: regenerating M a second time from the restored state, with the same actions,
   reverts exactly the same facts and leaves the same outcome: the outcome set (which facts
   revert, which stay, keyed by position and value) is a function of the log alone.
+
+The complement (the runs exercised each case: a revert, a reopen, a re-roll, a restore) holds by
+construction (#514): ``CASES`` names one explicit example per case, each must exercise its own
+case, and the random draws run on top of them.
 """
 
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any
 
 import pytest
-from hypothesis import HealthCheck, given, settings
+from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
@@ -56,6 +60,8 @@ Actions = tuple[bool, bool, bool]
 """A turn's actions: (commit a fact, introduce a thunk, depend on an open thunk)."""
 
 actions = st.tuples(st.booleans(), st.booleans(), st.booleans())
+Drawn = tuple[list[Actions], int, Actions]
+"""A story's turns, the message M to regenerate, and the regeneration's actions."""
 stories = st.tuples(
     st.lists(actions, min_size=5, max_size=20),
     st.integers(min_value=1, max_value=20),
@@ -70,6 +76,28 @@ class Tally:
     reopened: int = 0
     rerolled: int = 0
     restored: int = 0
+
+    def add(self, other: Tally) -> None:
+        self.examples += other.examples
+        self.reverted += other.reverted
+        self.reopened += other.reopened
+        self.rerolled += other.rerolled
+        self.restored += other.restored
+
+
+QUIET: Actions = (False, False, False)
+NOTE: Actions = (True, False, False)
+CASES: dict[str, tuple[str, Drawn]] = {
+    # M (turn 3) commits a fact; its regeneration commits none, so the fact reverts.
+    "revert": ("reverted", ([NOTE] * 5, 3, QUIET)),
+    # Turn 1 introduces a thunk and M (turn 2) resolves it; the regeneration does not.
+    "reopen": ("reopened", ([(False, True, False), (False, False, True)] + [QUIET] * 3, 2, QUIET)),
+    # M (turn 3) commits a fact and so does its regeneration: the coin re-rolls.
+    "reroll": ("rerolled", ([NOTE] * 5, 3, NOTE)),
+    # M is the last turn (no rewind) and commits a fact and a thunk; swapping back restores it.
+    "restore": ("restored", ([QUIET] * 4 + [(True, True, False)], 20, QUIET)),
+}
+"""One explicit example per case the complement asserts, with the tally field it must raise."""
 
 
 @dataclass
@@ -208,7 +236,7 @@ def _outcome(
     return sorted(found, key=repr)
 
 
-async def _example(url: str, drawn: tuple[list[Actions], int, Actions], tally: Tally) -> None:
+async def _example(url: str, drawn: Drawn, tally: Tally) -> None:
     turns, pick, again = drawn
     engine = make_engine(auth_settings(url))
     try:
@@ -340,6 +368,7 @@ def _op_ids(ops: list[dict[str, Any]], turn: int, variant: int) -> set[str]:
 def test_regen(pg_url: str) -> None:
     """See the module docstring."""
     tally = Tally()
+    by_case = {name: Tally() for name in CASES}
 
     @settings(
         max_examples=EXAMPLES,
@@ -347,12 +376,26 @@ def test_regen(pg_url: str) -> None:
         suppress_health_check=[HealthCheck.function_scoped_fixture, HealthCheck.too_slow],
     )
     @given(drawn=stories)
-    def boundary(drawn: tuple[list[Actions], int, Actions]) -> None:
-        asyncio.run(_example(pg_url, drawn, tally))
+    def boundary(drawn: Drawn) -> None:
+        one = Tally()
+        asyncio.run(_example(pg_url, drawn, one))
+        tally.add(one)
+        for name, (_, case) in CASES.items():
+            if drawn == case:
+                by_case[name].add(one)
 
+    for _, case in CASES.values():
+        boundary = example(drawn=case)(boundary)
     boundary()
-    # Complement: the runs exercised what the property is about.
-    assert tally.examples == EXAMPLES
+    # Complement, by construction (#514): each case's own explicit example exercised it, whatever
+    # the random draws did; the draws ran on top (explicit examples do not count toward
+    # ``max_examples``).
+    covered = {counter for counter, _ in CASES.values()}
+    assert covered == {f.name for f in fields(Tally)} - {"examples"}  # a case per counter
+    for name, (counter, _) in CASES.items():
+        assert by_case[name].examples >= 1, name
+        assert getattr(by_case[name], counter) > 0, (name, by_case[name])
+    assert tally.examples == EXAMPLES + len(CASES)
     assert tally.reverted > 0
     assert tally.reopened > 0
     assert tally.rerolled > 0

@@ -28,16 +28,20 @@
   "failed_rows": [
     {
       "code": "model_unavailable",
-      "deadline_override_ms": 300000,
-      "measured_at": "2026-10-27",
+      "deadline_override_ms": 600000,
+      "measured_at": "2026-10-31",
       "model": "cydonia-24b-v4.3",
       "policies": "off",
       "purpose": "generation",
-      "reason": "deadline",
-      "sha": "ad7368b-dirty",
-      "structural_errors": null,
+      "reason": "invalid_structure",
+      "sha": "28af800-dirty",
+      "structural_errors": [
+        "the object: Value error, beats.0.step: the render declares no steps",
+        "the object: Value error, beats.0.step: the render declares no steps",
+        "the object: Value error, beats.0.step: the render declares no steps"
+      ],
       "tier": "local",
-      "turn": 2,
+      "turn": 3,
       "turn_kind": "three_character_sequential",
       "turn_path": "three-character sequential respond (#174)"
     }

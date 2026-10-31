@@ -123,7 +123,7 @@ row clears its entry.
 
 | Tier | Policies | Measured | Engine SHA | Turn | Error | Turn path |
 |---|---|---|---|---|---|---|
-| local: cydonia-24b-v4.3 (three-character sequential turns) | policies off | 2026-10-27 | `ad7368b-dirty` | 2 | model_unavailable, purpose `generation`, reason `deadline` | three-character sequential respond (#174); turn deadline 300 s (override) |
+| local: cydonia-24b-v4.3 (three-character sequential turns) | policies off | 2026-10-31 | `28af800-dirty` | 3 | model_unavailable, purpose `generation`, reason `invalid_structure`; `the object: Value error, beats.0.step: the render declares no steps`, `the object: Value error, beats.0.step: the render declares no steps`, `the object: Value error, beats.0.step: the render declares no steps` | three-character sequential respond (#174); turn deadline 600 s (override) |
 
 ## Embedding
 

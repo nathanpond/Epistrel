@@ -464,7 +464,8 @@ async def _knowledge_room(
 ) -> tuple[str, dict[str, str], str, str]:
     """``_viewpoint_room`` (partitions on, ``co_author``) with a drawer, and what only Bobby
     knows, if anything: the key in the drawer (``canon = "drawer"``, he hid it there) or in his
-    hands (``"bobby"``), scoped to him. ``knowledge`` sets ``co_author_knowledge``."""
+    hands (``"bobby"``), scoped to him, or in Cal's (``"cal"``), scoped to Cal. ``knowledge``
+    sets ``co_author_knowledge``."""
     story, ids, key = await _viewpoint_room(client, engine)
     drawer = await ps.place_entity(engine, story, "drawer")
     hidden = Visibility(scope="characters", characters=(ids["Bobby"],))
@@ -477,14 +478,17 @@ async def _knowledge_room(
             provenance="author",
             visibility=hidden,
         )
-    elif canon == "bobby":
+    elif canon in ("bobby", "cal"):
+        # "cal": the key is Cal's, and only Cal knows it (a narration about Bobby holding it is
+        # contradicted by canon hidden from Jenni, #169's hidden conflict).
+        holder = ids["Bobby"] if canon == "bobby" else ids["Cal"]
         await commit(
             engine,
             story,
-            _forever(ids["Bobby"], HOLDS, key),
+            _forever(holder, HOLDS, key),
             kind=OperationKind.CONTROL,
             provenance="author",
-            visibility=hidden,
+            visibility=Visibility(scope="characters", characters=(holder,)),
         )
     if knowledge is not None:
         patched = await client.patch(
@@ -810,3 +814,59 @@ def _before(subject: str, predicate: str, obj: str) -> Proposition:
         object_id=obj,
         valid_time=Interval.of(None, None),
     )
+
+
+async def _facts_about(engine: AsyncEngine, story: str, key: str) -> list[Any]:
+    return await rows(
+        engine,
+        "SELECT f.provenance::text AS provenance, p.subject_id FROM facts f "
+        "JOIN propositions p ON p.id = f.proposition_id "
+        "WHERE f.story_id = :s AND p.object_id = :k ORDER BY f.id",
+        s=story,
+        k=key,
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-RESP-14")
+async def test_s_player_authority__knowledge_hidden(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#598 (FR-RESP-14, NFR-PRIV-4): no oracle on hidden canon. "Jenni nods at Bobby, who holds
+    the key." in a story where nothing settles who holds it, and in one where canon hidden
+    from Jenni says Cal does (only Cal knows): the outward result is identical, under
+    ``confirm`` (the beat narrated, nothing rejected, one notice of the player's words, the
+    same message, no rejection record) and under ``free`` (no notice), and Jenni's
+    ``author_fiat`` is written in both. Where canon is hidden the claim is never canonized over
+    it: Cal's fact stands alone."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        for knowledge in ("confirm", "free"):
+            outward: list[Any] = []
+            for canon in (None, "cal"):
+                story, ids, key, _ = await _knowledge_room(
+                    client, engine, canon=canon, knowledge=knowledge
+                )
+                jenni = ids["Jenni"]
+                answer = await _narrate(client, stub, story, ids, NODS)
+                assert answer.status_code == 200, answer.text
+                turn = answer.json()
+                report = (await st.turn_report(engine, story))["player_authority"]
+                outward.append(
+                    (
+                        [_masked(n) for n in turn.get("notices", [])],
+                        [{**n, "character_id": "<id>"} for n in report["narrated"]],
+                        report["rejected"],
+                        turn["message"]["text"],
+                        await _rejected(engine, story),
+                    )
+                )
+                assert await _fiats(engine, story) == [(jenni, ids["Bobby"], key, "affirmed")]
+                if canon == "cal":
+                    found = await _facts_about(engine, story, key)
+                    assert [(f.provenance, str(f.subject_id)) for f in found] == [
+                        ("author", ids["Cal"])
+                    ], knowledge
+            assert outward[0] == outward[1], knowledge
+            assert len(outward[0][0]) == (1 if knowledge == "confirm" else 0)
+            assert outward[0][2] == []

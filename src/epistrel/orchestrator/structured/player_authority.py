@@ -56,7 +56,11 @@ about:
 A ``protected_content`` hit (#148: the player's words match a record hidden from the character)
 is no presupposition and does not drop the beat under partitions: it stays denied, never
 canonized, and the presuppositions the words state are judged as when canon settles nothing, so
-neither the beat's fate nor its notices answer whether such a record exists (NFR-PRIV-4).
+neither the beat's fate nor its notices answer whether such a record exists (NFR-PRIV-4). So
+does a claim contradicted only by canon hidden from the character (#169's ``hidden_conflict``):
+it stays ``contradicted`` (never canonized over the hidden fact), and as a presupposition it is
+judged like any other, so a fiat and, under ``confirm``, a notice, exactly as when nothing is
+hidden.
 
 A presupposition the character has no path to is **accepted** under both values of the story's
 ``co_author_knowledge``: the beat commits and the character's knowledge of it is written in the
@@ -612,6 +616,14 @@ def presuppositions(
     return found
 
 
+def _hidden_only(c: Any) -> bool:
+    """Whether checked claim ``c`` needs repair only because of canon hidden from the narrated
+    character: a protected-content hit, or #169's ``hidden_conflict``. Under partitions neither
+    drops a narrated ``do``: its fate must not answer whether such canon exists (NFR-PRIV-4)."""
+    result = c.result
+    return bool(c.claim.protected or (result is not None and result.hidden_conflict))
+
+
 def _same(a: Proposition, b: Proposition) -> bool:
     return (a.subject_id, a.predicate_id, a.object_id, a.polarity) == (
         b.subject_id,
@@ -656,7 +668,7 @@ async def verify(
             if beat.kind == "do" and any(
                 c.result is not None
                 and c.result.needs_repair
-                and not (partitions and c.claim.protected)
+                and not (partitions and _hidden_only(c))
                 for c in mine
             ):
                 failed[beat.beat] = CONTRADICTED

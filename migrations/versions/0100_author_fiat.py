@@ -13,8 +13,8 @@ Downgrade records every ``author_fiat`` transition as ``author`` (author directi
 earlier cause; the beliefs they produced and every later transition stay) and rebuilds the type
 without the label: PostgreSQL cannot drop an enum label.
 
-Revision ID: 0099
-Revises: 0098
+Revision ID: 0100
+Revises: 0099
 Create Date: 2026-10-31
 
 """
@@ -27,8 +27,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision: str = "0099"
-down_revision: str | None = "0098"
+revision: str = "0100"
+down_revision: str | None = "0099"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -63,13 +63,13 @@ def downgrade() -> None:
     ).all()
     for check in checks:
         op.execute(f'ALTER TABLE belief_transitions DROP CONSTRAINT "{check.conname}"')
-    op.execute("ALTER TYPE belief_transition_kind RENAME TO belief_transition_kind_0098")
+    op.execute("ALTER TYPE belief_transition_kind RENAME TO belief_transition_kind_0100")
     postgresql.ENUM(*KINDS_BEFORE, name="belief_transition_kind").create(bind)
     op.execute(
         "ALTER TABLE belief_transitions ALTER COLUMN kind TYPE belief_transition_kind "
         "USING kind::text::belief_transition_kind"
     )
-    op.execute("DROP TYPE belief_transition_kind_0098")
+    op.execute("DROP TYPE belief_transition_kind_0100")
     for check in checks:
         op.execute(
             f'ALTER TABLE belief_transitions ADD CONSTRAINT "{check.conname}" {check.definition}'

@@ -10425,3 +10425,4 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 
 ### Blocker: PR #664 merge held for owner set approval (#201)
 - **Blocker:** CI green at 054ba29, but E-09's set (#201) has no owner approval, which the owner made a condition of the merge. On `main`, `EPISTREL_REQUIRE_APPROVED_SETS=1` would fail the `evals` job. PR #664 and #201 are labelled `blocked` + `needs-owner-action`. **Options:** (a) the owner approves the set, then squash-merge (recommended; the set is unchanged since the 2026-10-31 request); (b) merge without #201 — rejected, the owner's condition. **Holds:** the merge of all of M6.
+- **Gate evidence:** chaos.yml iterations=500, run 41273805946 on 054ba29 — success; PR #664 CI all green on 3056c17. Nothing left but the owner's set approval.

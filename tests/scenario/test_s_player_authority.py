@@ -29,6 +29,8 @@ and hands me the key."
   contradicts is a sincere error that stands.
 - ``test_s_player_authority__knowledge`` (#598, FR-RESP-14): ``co_author_knowledge``, the
   presupposition split, the ``author_fiat`` acquisition, the notices and the correction.
+- ``test_s_player_authority__knowledge_inert`` (#670): ``co_author_knowledge`` is accepted and
+  has no effect on a Structured story without partitions or on a Lite story.
 """
 
 from __future__ import annotations
@@ -53,7 +55,7 @@ from tests import structured_turn_support as st
 from tests.auth_support import auth_settings
 from tests.canon_support import commit
 from tests.event_support import rows
-from tests.respond_support import body, respond, respond_client
+from tests.respond_support import body, new_story, respond, respond_client
 from tests.story_support import READ, WRITE
 
 HANDS = "Jenni smiles and hands me the key."
@@ -870,3 +872,57 @@ async def test_s_player_authority__knowledge_hidden(
             assert outward[0] == outward[1], knowledge
             assert len(outward[0][0]) == (1 if knowledge == "confirm" else 0)
             assert outward[0][2] == []
+
+
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-RESP-14")
+async def test_s_player_authority__knowledge_inert(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#670 (#598, FR-RESP-14): ``co_author_knowledge`` is accepted and inert where it does not
+    apply. Under ``co_author``, "Jenni takes the key from the drawer." is narrated with the
+    setting unset, ``confirm`` and ``free``: (a) on a Structured story without partitions and
+    (b) on a Lite story. Each PATCH is 200, and every run returns no notice, writes no
+    ``author_fiat`` acquisition and gives the same outcome as the unset run."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+
+        # -- (a) Structured, partitions off: the narrated action is recorded, nothing else.
+        outcomes: list[Any] = []
+        for knowledge in (None, "confirm", "free"):
+            story, ids, _key, _drawer = await _knowledge_room(client, engine, knowledge=knowledge)
+            await ps.perceive(engine, story, "none")
+            answer = await _narrate(client, stub, story, ids, TAKES)
+            assert answer.status_code == 200, answer.text
+            assert "notices" not in answer.json(), knowledge
+            assert await _fiats(engine, story) == [], knowledge
+            (event,) = await _input_events(engine, story)
+            assert not event.payload.get("notices"), knowledge
+            report = (await st.turn_report(engine, story))["player_authority"]
+            outcomes.append(
+                (
+                    report["narrated"] == [{"beat": 2, "character_id": ids["Jenni"], "kind": "do"}],
+                    report["rejected"],
+                    answer.json()["message"]["text"],
+                )
+            )
+        assert outcomes[0][0] is True
+        assert outcomes[1:] == [outcomes[0], outcomes[0]]
+
+        # -- (b) Lite: the setting is accepted and never read.
+        lite: list[Any] = []
+        for knowledge in (None, "confirm", "free"):
+            story, ids = await new_story(client, "Cal", "Jenni", "Bobby")
+            settings: dict[str, Any] = {"player_authority": "co_author"}
+            if knowledge is not None:
+                settings["co_author_knowledge"] = knowledge
+            patched = await client.patch(f"/stories/{story}/settings", json=settings, headers=WRITE)
+            assert patched.status_code == 200, patched.text
+            stub.reset()
+            answer = await respond(client, story, body(ids["Cal"], None, do=TAKES))
+            assert answer.status_code == 200, answer.text
+            turn = answer.json()
+            assert "notices" not in turn, knowledge
+            assert await _fiats(engine, story) == [], knowledge
+            lite.append((turn["message"]["text"], turn["call_counts"]))
+        assert lite[1:] == [lite[0], lite[0]]

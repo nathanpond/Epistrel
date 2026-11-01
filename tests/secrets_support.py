@@ -29,7 +29,7 @@ async def secret_story(
     return story, ids
 
 
-async def secret(
+async def lone_belief(
     engine: AsyncEngine, story_id: str, holder: str, subject: str, relation: str, obj: str
 ) -> tuple[str, str]:
     """``holder`` alone believes ``subject <relation> <obj>``, ``obj`` a new person entity
@@ -94,4 +94,4 @@ async def play(
     return Played(found.json(), await turn_report(engine, story_id))
 
 
-__all__ = ["Played", "play", "secret", "secret_story"]
+__all__ = ["Played", "lone_belief", "play", "secret_story"]

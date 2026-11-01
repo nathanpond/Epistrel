@@ -46,7 +46,7 @@ from tests import verify_support as vs
 from tests.auth_support import auth_settings
 from tests.event_support import rows
 from tests.respond_support import body, respond, respond_client
-from tests.secrets_support import play, secret, secret_story
+from tests.secrets_support import lone_belief, play, secret_story
 from tests.structured_turn_support import beat, structured_story, turn_report
 
 pytestmark = pytest.mark.integration
@@ -218,7 +218,7 @@ async def test_s_extract_adversarial__m5(
     settings = auth_settings(pg_url, model_adapter="stub")
     async with respond_client(settings, engine) as (client, epistrel):
         story, ids = await secret_story(client, engine, "Jenni", "Bobby", "Marcus")
-        dana, belief = await secret(
+        dana, belief = await lone_belief(
             engine, story, ids["Marcus"], ids["Marcus"], "married_to", "Dana"
         )
         stub = epistrel.models.stub
@@ -283,7 +283,9 @@ async def test_s_extract_adversarial__f(
     async with respond_client(settings, engine) as (client, epistrel):
         story, ids = await secret_story(client, engine, "Jenni", "Bobby", "Marcus", "Dale")
         await ms.per_character(engine, story)
-        dana, _ = await secret(engine, story, ids["Marcus"], ids["Marcus"], "married_to", "Dana")
+        dana, _ = await lone_belief(
+            engine, story, ids["Marcus"], ids["Marcus"], "married_to", "Dana"
+        )
         stub = epistrel.models.stub
         for text, kept in ((FLINCHES_AT_DANA, False), (FLINCHES, True)):
             stub.reset()

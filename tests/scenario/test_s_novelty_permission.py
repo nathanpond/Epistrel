@@ -83,7 +83,7 @@ from tests.auth_support import auth_settings
 from tests.canon_support import PRINCIPAL
 from tests.event_support import rows
 from tests.respond_support import body, respond, respond_client
-from tests.secrets_support import play, secret, secret_story
+from tests.secrets_support import lone_belief, play, secret_story
 from tests.story_support import WRITE as WRITE_HEADERS
 
 PERMISSION_MODULE = Path(pm.__file__)
@@ -437,7 +437,7 @@ async def test_s_novelty_permission__b(
     settings = auth_settings(pg_url, model_adapter="stub")
     async with respond_client(settings, engine) as (client, epistrel):
         story, ids = await secret_story(client, engine, "Wren", "Bobby", "Jenni")
-        vince, belief = await secret(
+        vince, belief = await lone_belief(
             engine, story, ids["Jenni"], ids["Jenni"], "employed_by", "Vince"
         )
         stub = epistrel.models.stub

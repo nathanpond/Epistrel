@@ -10404,3 +10404,8 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision:** PR #664's first CI run was red only on CodeQL: one new high alert, `py/clear-text-logging-sensitive-data`, at `core/summary_port.py:48`, an unchanged M2 log line. The taint source was #213's `Operation.resumed`, which read `idempotency_key` in the same row as `story_id`. Fixed by reading the key in its own query, not by dismissing the alert.
   **Why:** A code fix keeps the security gate honest, and dismissing an alert is the owner's call.
   **Issue:** #213
+
+### CodeQL alert 4 re-attributed (PR #664)
+- **Decision:** renamed the test helper `tests/secrets_support.secret` → `lone_belief` (and its 3 callers). The SARIF code flows for `py/clear-text-logging-sensitive-data` at `core/summary_port.py:48` start at the *call* `secret(...)` in `test_s_extract_adversarial.py:220/284` and `test_s_novelty_permission.py:439` (CodeQL's name heuristic) and reach the log line through `story_id`; no credential flows there. The alert has been open on `main` since 2026-10-24 (M5, PR #524); #664 re-flags it as "new" only because it changes `operation.py` on the path.
+- **Correction:** my previous fix (c665e90, idempotency key read apart from ids) was attributed to #213 from the alert location alone, without reading the flow. It is kept — harmless and keeps the key out of the logged row — but it was not the cause.
+- **Why not dismiss:** dismissing alters repo security state the owner reviews; a rename in tests removes the false source with no behaviour change.

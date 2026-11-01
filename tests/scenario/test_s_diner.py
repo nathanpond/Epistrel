@@ -18,6 +18,8 @@ her own statement), involving her.
   behaves as on. Lifecycle: Jenni leaves after it surfaced → ``completed``, and a later skip
   passes 17:00 freely; ignoring it → ``missed`` past 17:30, and a later skip is not stopped;
   rescheduled to 19:00 → ``pending`` again, and it stops the clock once more.
+- ``test_s_diner__narrated_completion`` (#672): the same completion with Jenni's departure
+  narrated by her own render (a fluent change, #518) instead of placed by the author.
 - ``test_s_diner__api``: the list for each viewpoint (a character lists only what it holds),
   create, reschedule and cancel between turns, and their keyed replays.
 - ``test_s_diner__report_vs_create`` (#198): a report of the boss's 18:00 meeting is never a
@@ -366,6 +368,62 @@ async def test_s_diner__lifecycle(
             event = await event_of(engine, story, meeting)
             assert (event.status.value, event.stopped_clock_at) == ("surfaced", None), switch
             assert [s for s in await stopped_by(engine, story) if s[2] is not None] == []
+
+
+LEAVES = "Jenni grabs her coat and heads out to the office."
+
+
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-CLOCK-6,9,16")
+async def test_s_diner__narrated_completion(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    stops_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#672 (#196 outcome 5): completion inferred from narration alone. The meeting surfaces
+    at 17:00; Jenni's own render then narrates her leaving for the office (her ``do``, with
+    ``located_at(Jenni, the office)``), with no author placement. The claim is a fluent change
+    (#518): it commits and closes her place at the diner, she is out of the scene, the meeting
+    is ``completed``, and a later skip past 17:00 is not stopped."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids, meeting = await diner(client, engine)
+        office = await ps.place_entity(engine, story, "the office")
+        await talk_until_six(client, engine, stub, story, ids)
+        assert (await event_of(engine, story, meeting)).status.value == "surfaced"
+
+        await turn(
+            client,
+            stub,
+            story,
+            ids,
+            beat("do", LEAVES, propositions=[claim("Jenni", "located_at", "the office")]),
+            say="Go, you'll be late.",
+        )
+        verdicts = (await turn_report(engine, story))["verify"]["verdicts"]
+        assert any(v.get("rule") == "fluent_change" for v in verdicts), verdicts
+        placed = await rows(
+            engine,
+            "SELECT f.provenance::text AS provenance FROM facts f "
+            "JOIN propositions p ON p.id = f.proposition_id WHERE f.story_id = :s "
+            "AND p.subject_id = :j AND p.object_id = :o AND f.membership = 'active'",
+            s=story,
+            j=ids["Jenni"],
+            o=office,
+        )
+        assert [r.provenance for r in placed] == ["render"]
+        await chat(client, stub, story, ids)
+        assert (await event_of(engine, story, meeting)).status.value == "completed"
+        assert await ck.statuses(engine, story, meeting) == [
+            "pending",
+            "due",
+            "surfaced",
+            "completed",
+        ]
+        found = await chat(client, stub, story, ids, 90)
+        assert found["clock"]["after"]["offset"] > MEETING + 90
+        assert es.regenerations(stub) == []
 
 
 async def versions(engine: AsyncEngine, story: str) -> int:

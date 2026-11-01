@@ -425,3 +425,49 @@ async def test_s_family__open_question(
             t=by_role["brother"],
         )
         assert by_role["father"] in {str(r.holder) for r in heard}
+
+
+@pytest.mark.part("M5", "FR-SCN-2,3,6,7,8,9; FR-CAT-2,6; FR-EPI-2; FR-BELIEF-15")
+async def test_s_family__open_question_by_played_character(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """#667 (NFR-PRIV-1, FR-EPI-5): an open question asserts nothing whoever the input's actor.
+
+    #567's guard, for an input whose actor is a platform-played character (FR-AUTH-3(a)): the
+    Father asks "Who has the deed?" and "Who has the love letters?" in front of the Brother and
+    the Mother. Neither question is stored as an assertion, nothing is denied or routed as
+    testimony, and nobody gains a belief about either item."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        profile = await sp.partitioned_profile(client, "Father asks")
+        scenario_id, _ = await g.published_scenario(client, _with_deed())
+        made = await g.create_from(client, sp.request(scenario_id, await sp.cast(client), profile))
+        story = made["story_id"]
+        by_role = {c["role_id"]: c["id"] for c in made["characters"]}
+        ents = await sp.entity_ids(engine, story)
+        deed, letters = ents["The deed"], ents["The love letters"]
+        seeded = {item: await _about(engine, story, item) for item in (deed, letters)}
+
+        for question in ("Who has the deed?", "Who has the love letters?"):
+            stub.script("generation", [render(beat("do", "Tom nods."))])
+            answer = await respond(
+                client,
+                story,
+                body(by_role["father"], question, render_character_ids=[by_role["brother"]]),
+            )
+            assert answer.status_code == 200, answer.text
+            report = await turn_report(engine, story)
+            assert not report["epistemic"]["testimony"].get("outcomes_by_kind"), question
+            assert not report["verify"].get("denied"), question
+        asked = await sp.rows_of(
+            engine,
+            "SELECT payload->'propositions' AS props FROM events "
+            "WHERE story_id = :s AND type = 'player_input' AND payload->>'say' LIKE 'Who has%'",
+            s=story,
+        )
+        assert len(asked) == 2
+        assert all(not r.props for r in asked)
+        for item in (deed, letters):
+            assert await _about(engine, story, item) == seeded[item]

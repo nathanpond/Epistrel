@@ -391,6 +391,9 @@ class DetectBeat:
     flashback: bool = False
     """#194 (FR-CLOCK-17): a flashback's time expressions are never checked against the present:
     its clock times and time-of-day statements become no claim."""
+    input: bool = False
+    """#667: the turn input's own ``say`` or ``do``, whoever its actor is (the player or a
+    platform-played character): never matched against protected content (see ``_detect_beat``)."""
 
 
 def shape_of(p: Proposition) -> tuple[Any, ...]:
@@ -1392,14 +1395,16 @@ def _detect_beat(
         found = _normalize_one(sketch_or_reason, beat.speaker, position, env, context)
         found_claims.append(_claim(index, beat, "entity_mention", sketch_or_reason, found))
     # Every channel is scanned for protected content but a speaker's own ``think`` and the
-    # player's own input (#567): a hit claims the hidden record's proposition, which the
-    # player's text never states ("Who has the deed?" is no "Tom holds the deed"), and the
-    # input is never repaired, so the hit would stand as its assertion and reach every hearer
-    # by testimony. The composed message the player's character reads is still scanned.
+    # turn input's own beats, whoever the actor (#567, #667): a hit claims the hidden record's
+    # proposition, which the input's text never states ("Who has the deed?" is no "Tom holds
+    # the deed"), and the input is never repaired, so the hit would stand as its assertion and
+    # reach every hearer by testimony. The composed message the player's character reads is
+    # still scanned.
     if not seed and not (beat.channel == "think" and beat.speaker != NARRATOR):
-        if message or beat.speaker != PLAYER:
+        own_input = not message and (beat.input or beat.speaker == PLAYER)
+        if not own_input:
             found_claims += _protected(work, env.protected_for(beat.speaker))
-        found_claims += _private(work, env, message=message)
+        found_claims += _private(work, env, message=message, own_input=own_input)
     # A detector claim with a declared claim's shape is that claim (declared > detector).
     by_shape = {
         shape_of(c.proposition): i for i, c in enumerate(claims) if c.proposition is not None
@@ -1526,7 +1531,9 @@ def _protected(beat: _Beat, index: ProtectedIndex | None) -> list[DetectedClaim]
     return found
 
 
-def _private(beat: _Beat, env: DetectionEnv, *, message: bool) -> list[DetectedClaim]:
+def _private(
+    beat: _Beat, env: DetectionEnv, *, message: bool, own_input: bool
+) -> list[DetectedClaim]:
     """#172: another character's thought repeated (the side index), an inner state narrated
     (``core.verify.inner_state``) and, on a character's ``say``, its recall claims."""
     from epistrel.core.epistemic.resurface import find_recalls
@@ -1547,7 +1554,7 @@ def _private(beat: _Beat, env: DetectionEnv, *, message: bool) -> list[DetectedC
             )
         )
 
-    if env.private and (message or beat.speaker != PLAYER):
+    if env.private and not own_input:
         for start, end, record in match_thoughts(beat.text, env.private, speaker=beat.speaker):
             claim(start, end, "protected_content", f"{THINK_REF}{record.ref}")
         if beat.channel in INNER_STATE_CHANNELS:

@@ -12,7 +12,8 @@ one turn may move at most 500. Cal holds 1,000.
 - The director's narration introduces 300 gold for Cal, justified by itself (``loot``): applied.
   Above the cap (800) it is repaired down to the cap: 500 commits, the narration says 500, and
   the response marks it ``capped: true`` with the declared 800. Two 400 rewards in one turn
-  under ``per_turn: 500``: the second is capped to 100.
+  under ``per_turn: 500``: the second is capped to 100. ``__repair_cap`` (#674): an effect a
+  repair adds counts against the same cap (capped to what the turn's declared effects leave).
 - A source not on the State's list (Mira's render on a director-only ``favor``) is unpermitted
   (``source``).
 - A purchase with both purses tracked: one ``transfer`` writes ``transfer_out`` on Cal's purse
@@ -384,3 +385,62 @@ async def test_s_state_authorization(
         assert ruled.status_code == 422, ruled.text
         error = ruled.json()["error"]
         assert (error["code"], error["details"]["reason"]) == ("state_unpermitted", "source")
+
+
+ANOTHER = "You pocket another 400 gold."
+
+
+@pytest.mark.part("M6", "FR-STATE-10,12")
+async def test_s_state_authorization__repair_cap(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#674 (#188): a turn's cap counts the effects its repairs add. The narrator declares a
+    400 reward (beat 2) and narrates another 400 on its next beat with no effect:
+    ``state_undeclared``, repaired by a regeneration that declares ``gold +400``. With 400 of
+    the turn's ``per_turn: 500`` used, the added effect is capped to 100: Cal's gold goes 1000 →
+    1400 → 1500 (``capped: true``, declared 400), never past the cap."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids = await es.shop(client, engine, _gold(), gold_of_player=1000)
+        cal = ids["Cal"]
+
+        def reward(reason: str, justified_by: int) -> dict[str, Any]:
+            return _effect(
+                "gold",
+                400,
+                scope_key=cal,
+                reason=reason,
+                justification="reward",
+                justified_by=justified_by,
+            )
+
+        stub.reset()
+        ms.renders_for(stub, "Mira", es.render(beat("say", "Well earned.", intent="sincere")))
+        es.narrator(
+            stub,
+            es.render(
+                beat(
+                    "narration",
+                    "You pocket 400 gold.",
+                    effects=[reward("a reward", NARRATOR_BEAT)],
+                ),
+                beat("narration", ANOTHER),
+            ),
+        )
+        added = reward("another reward", NARRATOR_BEAT + 1)
+        stub.script("regeneration", [json.dumps({"text": ANOTHER, "effects": [added]})])
+        played = await _play(client, story, cal, "accepts the rewards")
+        report = await turn_report(engine, story)
+        assert [(r["tag"], r["beat"]) for r in report["repairs"]] == [("state_undeclared", 3)]
+        assert [(e["old_value"], e["new_value"]) for e in played["state_effects"]] == [
+            (1000, 1400),
+            (1400, 1500),
+        ]
+        assert [(e.get("capped"), e.get("declared")) for e in played["state_effects"]] == [
+            (None, None),
+            (True, 400),
+        ]
+        assert await es.gold_of(engine, story, cal) == 1500

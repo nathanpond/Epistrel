@@ -87,6 +87,29 @@ NO_DOCKER_MESSAGE = (
 )
 
 
+def grouped_args(args: list[str], invocation_dir: Path) -> list[str]:
+    """``args`` reordered so that the paths under one directory are contiguous (#677): each
+    directory, and each path, keeps the order it first appears in, so already grouped
+    arguments come back unchanged. Interleaved arguments (a conformance file, a root file,
+    another conformance file) make pytest 9 collect the re-entered directory as a second
+    ``Package`` node, and it matches a conftest's fixtures to the node they were parsed for, so
+    the second node's tests lose them (``fixture 'surface' not found``)."""
+    first: dict[Path, int] = {}
+    keys: list[tuple[int, ...]] = []
+    for arg in args:
+        path = (invocation_dir / arg.split("::", 1)[0]).resolve()
+        keys.append(tuple(first.setdefault(p, len(first)) for p in [*reversed(path.parents), path]))
+    return [args[i] for i in sorted(range(len(args)), key=lambda i: (keys[i], i))]
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection(session: pytest.Session) -> None:
+    """Group the command-line paths by directory before collection (``grouped_args``)."""
+    config = session.config
+    if not config.option.pyargs:
+        config.args[:] = grouped_args(config.args, config.invocation_params.dir)
+
+
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Everything under tests/integration/, tests/chaos/ and tests/determinism/ is an
     integration test, everything under tests/chaos/ a ``chaos`` test (#75), and everything

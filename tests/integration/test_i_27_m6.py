@@ -4,6 +4,8 @@ The M3 parts live in ``tests/integration/test_i_27.py``, the M4 and M5 parts in
 ``test_i_27_m4.py`` and ``test_i_27_m5.py`` (traceability counts a test ID per milestone in one
 file). The scenario is S-FAMILY's Sunday Dinner of ``tests/seeded_clock_support``: a
 per-sibling allowance, a starting clock (Sunday 1987-10-25, 14:00) and the world's 18:00 dinner.
+``test_i_27__m6_tie_break`` (#673): genesis refuses a ``state:<name>`` tie-break naming no number
+State of the scenario, atomically.
 """
 
 from __future__ import annotations
@@ -205,3 +207,48 @@ async def test_i_27__m6(
             "(SELECT 1 FROM stories s WHERE s.id = e.story_id)) AS e",
         )
         assert (orphans[0].d, orphans[0].e) == (0, 0)
+
+
+MOOD: dict[str, Any] = {"name": "mood", "type": "text", "scope": "story", "initial_value": "calm"}
+"""A text State: no ``state:<name>`` tie-break can read it."""
+
+
+@pytest.mark.part("M6", "FR-SCN-5,9,11; FR-STATE-3; FR-CLOCK-3,9")
+async def test_i_27__m6_tie_break(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#673 (#188, FR-MULTI-8): genesis checks a scenario's ``state:<name>`` tie-break
+    (``story_settings_defaults.simultaneous_tie_break``) against its States once they exist.
+    A scenario naming ``state:missing`` (no such State) or ``state:mood`` (a text State)
+    publishes, and a story created from it is refused 422 ``validation_error`` with reason
+    ``tie_break_state_invalid``, with nothing written. Complement: ``state:allowance``, the
+    scenario's number State, is created."""
+    async with respond_client(stub_settings, engine) as (client, _lib):
+        characters = await sp.cast(client)
+        profile = await sc.seeded_profile(client)
+
+        async def scenario(tie_break: str) -> str:
+            body = sc.family(states=[sc.ALLOWANCE, MOOD])
+            defaults = body.setdefault("story_settings_defaults", {})
+            defaults["simultaneous_tie_break"] = tie_break
+            scenario_id, _ = await g.published_scenario(client, body)
+            return scenario_id
+
+        for tie_break in ("state:missing", "state:mood"):
+            request = sp.request(await scenario(tie_break), characters, profile)
+            counted = await g.counts(engine)
+            refused = await client.post("/stories", json=request, headers=g.WRITE)
+            assert refused.status_code == 422, (tie_break, refused.text)
+            error = refused.json()["error"]
+            assert error["code"] == "validation_error", (tie_break, error)
+            assert error["details"]["reason"] == "tie_break_state_invalid", (tie_break, error)
+            assert error["details"]["field"] == "body.settings.simultaneous_tie_break"
+            assert await g.counts(engine) == counted, tie_break
+
+        request = sp.request(await scenario("state:allowance"), characters, profile)
+        made = await g.create_from(client, request)
+        assert set(await sc.definitions(engine, made["story_id"])) == {
+            "world_clock",
+            "allowance",
+            "mood",
+        }

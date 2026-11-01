@@ -10426,3 +10426,13 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 ### Blocker: PR #664 merge held for owner set approval (#201)
 - **Blocker:** CI green at 054ba29, but E-09's set (#201) has no owner approval, which the owner made a condition of the merge. On `main`, `EPISTREL_REQUIRE_APPROVED_SETS=1` would fail the `evals` job. PR #664 and #201 are labelled `blocked` + `needs-owner-action`. **Options:** (a) the owner approves the set, then squash-merge (recommended; the set is unchanged since the 2026-10-31 request); (b) merge without #201 — rejected, the owner's condition. **Holds:** the merge of all of M6.
 - **Gate evidence:** chaos.yml iterations=500, run 41273805946 on 054ba29 — success; PR #664 CI all green on 3056c17. Nothing left but the owner's set approval.
+
+### Owner answers, 2026-11-01 (asked in the /n8-exec M6 session)
+- **#201:** the owner approved E-09's `time_estimation` set and asked Claude to commit the approval line (`PROVENANCE.md`: `approved by owner 2026-11-01`). `--check-sets` with `EPISTREL_REQUIRE_APPROVED_SETS=1` passes. The merge blocker is lifted; #201 is added to PR #664's `Closes`.
+- **#637:** moved to the M6 milestone and closed by PR #664 (the fix is `107bcf9`, with its test).
+- **#649:** an `author_fiat` acquisition **permits** the character to state the fact, as perception or testimony would. That is a behaviour change in `core/verify/permission` and the verifier, and is **not built in M6**: the merge isn't held for it. #649 stays open as a decided story for the next milestone's plan. **Affects:** M7 (or wherever /n8-replan places it).
+- **#634:** a public stale external snapshot stays a `could_have_known` path, so the claim stays `sincere_error` (current behaviour). Closed.
+- **#588:** fix #612 first, then rerun the three-character row. #588 stays blocked on #612; `needs-owner-action` removed.
+- **#648:** no deployed database holds pre-M6 free-form drafts, so no backfill. Closed.
+- **#632:** Lite needs time-skip handling too (classify, estimate, bound; FR-CLOCK-7/8), not just #203's pacing. Kept open as a story for a later milestone. **Affects:** M7+ plans (Lite clock scope).
+- **Review items for /n8-verify M6** (owner chose review there, not before merge): #598's change that removes the hidden-canon oracle (security-relevant), and #218's `reconciliation_marks.detail` column.

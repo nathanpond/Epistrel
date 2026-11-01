@@ -626,3 +626,10 @@ async def test_e06_check_against_the_stub(dummy_dsn: str) -> None:
     failing = await check_prompt_params(layer, samples=2)
     assert failing.lengths == {32: None, 128: None}
     assert not failing.lengths_ok
+
+
+def test_a_structural_error_with_backticks_renders_as_one_code_span() -> None:
+    """#612: a refusal's remedy names fields in backticks; the failed-run table fences such an
+    error with two, so it renders as one code span."""
+    assert mm._code_span("beats.0.step: no step") == "`beats.0.step: no step`"
+    assert mm._code_span("leave `step` out") == "`` leave `step` out ``"

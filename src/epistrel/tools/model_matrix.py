@@ -1157,6 +1157,12 @@ def _turn_path_text(row: Mapping[str, Any]) -> str:
     return path
 
 
+def _code_span(text: str) -> str:
+    """``text`` as a Markdown code span: a text holding a backtick (#612's remedies name fields
+    as `` `step` ``) is fenced with two, padded, so it renders whole."""
+    return f"`` {text} ``" if "`" in text else f"`{text}`"
+
+
 def _failed_lines(failed_rows: Sequence[Mapping[str, Any]]) -> list[str]:
     if not failed_rows:
         return []
@@ -1168,7 +1174,7 @@ def _failed_lines(failed_rows: Sequence[Mapping[str, Any]]) -> list[str]:
             f", {name} `{f[name]}`" for name in ("purpose", "reason") if f.get(name)
         )
         if f.get("structural_errors"):
-            error += "; " + ", ".join(f"`{e}`" for e in f["structural_errors"])
+            error += "; " + ", ".join(_code_span(e) for e in f["structural_errors"])
         lines.append(
             f"| {_label(f)} | {POLICY_LABELS.get(f['policies'], f['policies'])} | "
             f"{f['measured_at']} | `{f['sha']}` | {f['turn']} | {error} | {_turn_path_text(f)} |"

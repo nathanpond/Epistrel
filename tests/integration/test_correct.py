@@ -9,18 +9,24 @@ operation, on any story, and its interaction with a turn's external effects (FR-
 - A ``co_author`` story under partitions: a notice of a turn with a confirmed external effect
   says ``external_effects: true`` (the history read, as of the read); correcting the turn does
   not undo the effect, which stays confirmed and is listed in ``reconciliation_required``.
+- A crash inside ``correct`` (#671) leaves the original turn active; the retry replaces it.
 """
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
+import httpx2 as httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.testing import crash
+from epistrel.testing.faults import EngineProcess, crash_at
 from tests import structured_turn_support as st
-from tests.auth_support import auth_settings
+from tests.auth_support import CREDENTIAL_A, auth_settings
+from tests.crash_support import integrity, recover
 from tests.event_support import rows
 from tests.integration.test_timeline_effects import _insert
 from tests.respond_support import body, new_story, played, respond, respond_client
@@ -145,3 +151,42 @@ async def test_correct_external_effects(
         later = await respond(client, story, body(ids["Cal"], "Well?"))
         assert later.status_code == 200, later.text
         assert "notices" not in later.json()
+
+
+@pytest.mark.parametrize("point", ["after_events", "before_commit"])
+async def test_correct_crash_leaves_the_original(
+    point: str, stub_settings: Settings, engine: AsyncEngine, pg_url: str
+) -> None:
+    """#671 (#598): ``correct`` is one operation. A child engine killed inside it (``SIGKILL``
+    at ``point``, after the replacement's events are written or just before the commit) leaves
+    the original turn active: one ``player_input``, its operation active, no dormant variant,
+    the story's revision unchanged and nothing in flight once its leases lapse. The same
+    correction, retried, replaces the turn."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids = await new_story(client)
+        player = next(iter(ids.values()))
+        stub.script("generation", ["A door creaks."])
+        await played(client, story, body(player, "Is anyone there?"))
+        revision = await _revision(client, story)
+        (original,) = await _inputs(engine, story)
+
+        child = EngineProcess(pg_url, CREDENTIAL_A, crash=crash_at(point, 1, "turn"))
+        async with child, httpx.AsyncClient(base_url=child.base_url, timeout=30) as remote:
+            with contextlib.suppress(httpx.HTTPError):
+                await _correct(remote, story, 1, "Who goes there?")
+            assert await child.wait_exit(10) == crash.EXIT_STATUS
+        await recover(engine)
+        assert await _inputs(engine, story) == [original]
+        assert original.membership == "active"
+        assert await _revision(client, story) == revision
+        assert await integrity(engine, [story]) == []
+
+        stub.script("generation", ["Footsteps answer."])
+        retried = await _correct(client, story, 1, "Who goes there?")
+        assert retried.status_code == 200, retried.text
+        fixed = retried.json()
+        assert (fixed["turn"], fixed["variant"], fixed["previous_variant"]) == (1, 2, 1)
+        before, after = await _inputs(engine, story)
+        assert (before.operation_id, before.membership) == (original.operation_id, "dormant")
+        assert (after.membership, after.payload["say"]) == ("active", "Who goes there?")

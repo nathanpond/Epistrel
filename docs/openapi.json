@@ -377,7 +377,7 @@
         "type": "string"
       },
       "AuthoredBeliefBody": {
-        "description": "The belief after the call: its kind (``first_order``, or ``nested`` with its attributed\nholder and depth, #167), proposition, dual confidence, accessibility and hold state, the\ntransition that produced it (``provenance``), the positions between which the holder holds\nit, valid-time (story-minutes) and its lineage.",
+        "description": "The belief after the call: its kind (``first_order``, or ``nested`` with its attributed\nholder and depth, #167), proposition, dual confidence, accessibility and hold state, the\ntransition that produced it (``provenance``) with that transition's kind\n(``provenance_kind``: ``author`` for a belief this call produced; one it changed in place\nkeeps the transition that produced it) and testimony source (``provenance_source_character``,\n``null`` unless the kind is ``testimony``; #654), the positions between which the holder\nholds it, valid-time (story-minutes) and its lineage.",
         "properties": {
           "accessibility": {
             "title": "Accessibility",
@@ -457,6 +457,20 @@
             "title": "Provenance",
             "type": "string"
           },
+          "provenance_kind": {
+            "$ref": "#/components/schemas/BeliefTransitionKind"
+          },
+          "provenance_source_character": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provenance Source Character"
+          },
           "state": {
             "title": "State",
             "type": "string"
@@ -498,6 +512,8 @@
           "accessibility",
           "state",
           "provenance",
+          "provenance_kind",
+          "provenance_source_character",
           "held_from",
           "held_to",
           "valid_from",
@@ -627,7 +643,7 @@
         "type": "string"
       },
       "BeliefItemBody": {
-        "description": "One belief the character holds now: the ``belief_state`` row (``current_level``,\n``current_scalar``, ``polarity``, ``since``) joined with its belief record (``kind``,\n``confidence_scalar``, ``provenance``: #160's acquisition, ``held_from``/``held_to``,\n``valid_from``/``valid_to`` in story-minutes) and the proposition it holds.",
+        "description": "One belief the character holds now: the ``belief_state`` row (``current_level``,\n``current_scalar``, ``polarity``, ``since``) joined with its belief record (``kind``,\n``confidence_scalar``, ``provenance``: #160's acquisition, ``held_from``/``held_to``,\n``valid_from``/``valid_to`` in story-minutes) and the proposition it holds.\n``provenance_kind`` is that transition's kind (how the character came to hold it; ``null``\nexactly when ``provenance`` is), ``provenance_source_character`` its source character\n(``null`` unless the kind is ``testimony``; #654).",
         "properties": {
           "belief_id": {
             "title": "Belief Id",
@@ -687,6 +703,27 @@
             ],
             "title": "Provenance"
           },
+          "provenance_kind": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BeliefTransitionKind"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provenance_source_character": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provenance Source Character"
+          },
           "since": {
             "$ref": "#/components/schemas/NarrativePositionBody"
           },
@@ -727,6 +764,8 @@
           "current_scalar",
           "since",
           "provenance",
+          "provenance_kind",
+          "provenance_source_character",
           "held_from",
           "held_to",
           "valid_from",
@@ -842,6 +881,23 @@
         ],
         "title": "BeliefRequest",
         "type": "object"
+      },
+      "BeliefTransitionKind": {
+        "description": "The typed cause of a belief-set change (FR-EPI-7, FR-BELIEF-2; #160): the acquisition\noperations ``observation``, ``testimony``, ``inference``, ``discovery``, ``correction``,\n``forgetting`` and ``revision``, plus ``author`` (author direction, a seed), ``resolution``\n(a thunk binding's knowledge obligation, FR-COMMIT-14) and ``author_fiat`` (#598,\nFR-RESP-14: a presupposition of the ``co_author`` player's narration the narrated character\nhad no path to, accepted as its knowledge). Postgres enum ``belief_transition_kind``.",
+        "enum": [
+          "observation",
+          "testimony",
+          "inference",
+          "discovery",
+          "correction",
+          "forgetting",
+          "revision",
+          "author",
+          "resolution",
+          "author_fiat"
+        ],
+        "title": "BeliefTransitionKind",
+        "type": "string"
       },
       "BeliefWritten": {
         "description": "The belief, its transition, the held beliefs it closed (``closed``), the story's\nrevision and the ``control`` operation.",

@@ -163,6 +163,27 @@ class Surface:
 
         return await _library(call, 200)
 
+    async def write_belief(
+        self, story_id: str, body: dict[str, Any], principal: str = AUTHOR
+    ) -> Outcome:
+        """``POST /admin/stories/{id}/beliefs`` or ``Engine.write_belief`` (#160; #654)."""
+        if self.name == "rest":
+            return _rest(
+                await self.client.post(
+                    f"/admin/stories/{story_id}/beliefs", json=body, headers=_headers(principal)
+                )
+            )
+        from epistrel.api.routes.admin.beliefs import BeliefWritten
+        from epistrel.core.epistemic.author import BeliefRequest
+
+        async def call() -> dict[str, Any]:
+            written = await self.engine.write_belief(
+                RequestContext(principal=principal), story_id, BeliefRequest.model_validate(body)
+            )
+            return _dump(BeliefWritten.of(written))
+
+        return await _library(call, 201)
+
     async def states(
         self, story_id: str, *, principal: str | None = None, **params: Any
     ) -> Outcome:

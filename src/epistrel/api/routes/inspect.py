@@ -51,7 +51,7 @@ from epistrel.core.commit.lifecycle import (
     LedgerPage,
     Thunk,
 )
-from epistrel.core.enums import ExposureState, ThunkState
+from epistrel.core.enums import BeliefTransitionKind, ExposureState, ThunkState
 from epistrel.core.epistemic.exposure import Exposure
 from epistrel.core.epistemic.inspection import (
     INSPECT_LIMIT_DEFAULT as KNOWLEDGE_LIMIT_DEFAULT,
@@ -66,7 +66,12 @@ from epistrel.core.epistemic.partitions import (
 from epistrel.core.epistemic.partitions import (
     INSPECT_LIMIT_MAX as BELIEFS_LIMIT_MAX,
 )
-from epistrel.core.epistemic.partitions import Belief, BeliefInspection, BeliefState
+from epistrel.core.epistemic.partitions import (
+    Acquisition,
+    Belief,
+    BeliefInspection,
+    BeliefState,
+)
 from epistrel.core.ids import ULID_PATTERN
 from epistrel.core.membership import Position
 from epistrel.core.propositions.model import Proposition
@@ -300,7 +305,10 @@ class BeliefItemBody(BaseModel):
     """One belief the character holds now: the ``belief_state`` row (``current_level``,
     ``current_scalar``, ``polarity``, ``since``) joined with its belief record (``kind``,
     ``confidence_scalar``, ``provenance``: #160's acquisition, ``held_from``/``held_to``,
-    ``valid_from``/``valid_to`` in story-minutes) and the proposition it holds."""
+    ``valid_from``/``valid_to`` in story-minutes) and the proposition it holds.
+    ``provenance_kind`` is that transition's kind (how the character came to hold it; ``null``
+    exactly when ``provenance`` is), ``provenance_source_character`` its source character
+    (``null`` unless the kind is ``testimony``; #654)."""
 
     belief_id: str
     proposition_id: str
@@ -311,6 +319,8 @@ class BeliefItemBody(BaseModel):
     current_scalar: float | None
     since: NarrativePositionBody
     provenance: str | None
+    provenance_kind: BeliefTransitionKind | None
+    provenance_source_character: str | None
     held_from: NarrativePositionBody
     held_to: NarrativePositionBody | None
     valid_from: int | None
@@ -318,7 +328,9 @@ class BeliefItemBody(BaseModel):
     tx_from: str
 
     @classmethod
-    def of(cls, state: BeliefState, belief: Belief) -> BeliefItemBody:
+    def of(
+        cls, state: BeliefState, belief: Belief, acquisition: Acquisition | None
+    ) -> BeliefItemBody:
         return cls(
             belief_id=belief.id,
             proposition_id=state.proposition_id,
@@ -329,6 +341,10 @@ class BeliefItemBody(BaseModel):
             current_scalar=state.current_scalar,
             since=NarrativePositionBody.of(state.since),
             provenance=belief.provenance,
+            provenance_kind=None if acquisition is None else acquisition.kind,
+            provenance_source_character=None
+            if acquisition is None
+            else acquisition.source_character_id,
             held_from=NarrativePositionBody.of(belief.held_from),
             held_to=None if belief.held_to is None else NarrativePositionBody.of(belief.held_to),
             valid_from=belief.valid_from,
@@ -365,7 +381,10 @@ class BeliefsBody(BaseModel):
     def of(cls, page: BeliefInspection) -> BeliefsBody:
         return cls(
             character=page.holder_character_id,
-            beliefs=[BeliefItemBody.of(state, belief) for state, belief in page.items],
+            beliefs=[
+                BeliefItemBody.of(state, belief, page.acquisition(belief))
+                for state, belief in page.items
+            ],
             revision=page.revision,
             next_after=page.next_after,
             identities=[

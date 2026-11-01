@@ -63,7 +63,7 @@ Log lines carry identifiers and counts only (invariant 3); this module logs noth
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any, Protocol
@@ -90,6 +90,7 @@ from epistrel.core.enums import (
     BeliefConfidenceLevel,
     BeliefHoldState,
     BeliefKind,
+    BeliefTransitionKind,
     EventCategory,
     Membership,
     Provenance,
@@ -672,6 +673,42 @@ INSPECT_LIMIT_MAX = 500
 
 
 @dataclass(frozen=True, slots=True)
+class Acquisition:
+    """How a belief was acquired (FR-EPI-7; #654): the ``kind`` of the ``belief_transitions``
+    row its ``provenance`` names and, for ``testimony`` alone, that transition's
+    ``source_character_id`` (``None`` for every other kind, and once an erasure cleared it)."""
+
+    kind: BeliefTransitionKind
+    source_character_id: str | None
+
+    @classmethod
+    def of(cls, kind: BeliefTransitionKind | str, source: str | None) -> Acquisition:
+        found = BeliefTransitionKind(kind)
+        return cls(found, source if found is BeliefTransitionKind.TESTIMONY else None)
+
+
+async def acquisitions(
+    conn: AsyncConnection, story_id: str, transition_ids: Iterable[str | None]
+) -> dict[str, Acquisition]:
+    """The ``Acquisition`` of each of ``transition_ids`` (beliefs' ``provenance``), by
+    transition id, in one query (#654: an inspection page reads its producing transitions in
+    one batch, never one per belief; ``beliefs`` is not denormalised)."""
+    wanted = sorted({i for i in transition_ids if i is not None})
+    if not wanted:
+        return {}
+    t = belief_transitions.c
+    rows = await conn.execute(
+        select(t.id, t.kind, t.source_character_id).where(t.story_id == story_id, t.id.in_(wanted))
+    )
+    return {
+        str(r.id): Acquisition.of(
+            r.kind, None if r.source_character_id is None else str(r.source_character_id)
+        )
+        for r in rows
+    }
+
+
+@dataclass(frozen=True, slots=True)
 class BeliefInspection:
     """``GET /stories/{id}/inspect/beliefs``' answer: a page of one holder's ``belief_state``
     rows with their beliefs, the story's revision, and ``next_after``."""
@@ -684,6 +721,13 @@ class BeliefInspection:
     identities: tuple[Any, ...] = ()
     """#171: the ``same_as`` the holder holds (``core.resolution.identity.Identity``): the
     canon facts its viewpoint reads and its own ``same_as`` beliefs (also among ``items``)."""
+    acquisitions: Mapping[str, Acquisition] = field(default_factory=dict)
+    """#654: each item's ``Acquisition`` by its belief's ``provenance`` (``acquisition``)."""
+
+    def acquisition(self, belief: Belief) -> Acquisition | None:
+        """How ``belief`` was acquired: its producing transition's (``None`` when that row is
+        not on this page's ``acquisitions``)."""
+        return self.acquisitions.get(belief.provenance)
 
 
 async def _states_as_of(
@@ -789,7 +833,10 @@ async def inspect(
             beliefs=True,
             characters=(),
         )
-    return BeliefInspection(story_id, character, revision, page.items, page.next_after, held.held)
+        found = await acquisitions(conn, story_id, (b.provenance for _, b in page.items))
+    return BeliefInspection(
+        story_id, character, revision, page.items, page.next_after, held.held, found
+    )
 
 
 # -- the projection ---------------------------------------------------------------------------
@@ -1369,6 +1416,7 @@ __all__ = [
     "INSPECT_LIMIT_DEFAULT",
     "INSPECT_LIMIT_MAX",
     "LEVELS",
+    "Acquisition",
     "Belief",
     "BeliefChange",
     "BeliefHook",
@@ -1379,6 +1427,7 @@ __all__ = [
     "NestedBelief",
     "SpeechActBelief",
     "StatePage",
+    "acquisitions",
     "at_least",
     "belief_states",
     "believers_of",

@@ -12,7 +12,8 @@ library (the ``surface`` fixture).
 
 M6 (``test_c_28__m6``, #207): the same holds for the snapshotted external facts
 (``…/inspect/external-facts``: each ``external_read`` with the facts citing it), which keeps no
-partitions gate.
+partitions gate. ``test_c_28__provenance_kind`` (#654): the belief reads carry each belief's
+acquisition kind and testimony source, read in one batch per page.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from typing import Any
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.core.epistemic import transitions
 from tests import canon_support as c
 from tests import effect_support as effects
 from tests import erasure_support as e
@@ -32,10 +34,12 @@ from tests import multi_support as multi
 from tests import partition_support as ps
 from tests import perception_support as perception
 from tests import provider_support as pv
+from tests import retrieval_support as retrieval
 from tests import state_support as states
 from tests.conformance.conftest import Surface
 from tests.conftest import REPO_ROOT
 from tests.event_support import rows
+from tests.memory_support import use_structured
 from tests.respond_support import body
 from tests.story_support import story_body
 from tests.structured_turn_support import beat, render, structured_story
@@ -260,6 +264,85 @@ async def test_c_28__m6(
     plain = (await surface.create_story(story_body("Wren", "Ada"))).json
     empty = await surface.inspect("external-facts", plain["story_id"], viewpoint="omniscient")
     assert (empty.status, empty.json["items"], empty.json["next_after_id"]) == (200, [], None)
+
+
+@pytest.mark.part("M6", "FR-ADMIN-5")
+async def test_c_28__provenance_kind(
+    surface: Surface, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#654: the belief reads say how the character came to hold each belief. Ann is directed
+    to believe Bobby is in the garden (the admin write: ``author``, no source), told by Bobby
+    that Cal is in the kitchen (``testimony`` through ``transition()``: source Bobby) and
+    discovers she is at school with Cal as its source (``discovery``: a source the read does not
+    report, testimony's alone). The inspection reports each belief's ``provenance_kind`` and
+    ``provenance_source_character`` from the transition its ``provenance`` names, reading a
+    page's transitions in one query; the admin write answers the same two fields, and a belief
+    it changes in place keeps the testimony that produced it."""
+    w = await c.world(engine)
+    story = w.story_id
+    await use_structured(engine, story)
+    await perception.perceive(engine, story, "co_location")
+    ann, bobby, cal = (w.characters[n] for n in ("Ann", "Bobby", "Cal"))
+    people, places = w.people, w.places
+
+    garden = c.at(people["Bobby"], places["garden"], 0, None)
+    authored = await surface.write_belief(
+        story, {"holder": ann, "proposition": garden.model_dump(mode="json")}
+    )
+    assert authored.status == 201, authored.code
+    directed = authored.json["belief"]
+    assert directed["provenance"] == authored.json["transition"]["id"]
+    assert (directed["provenance_kind"], directed["provenance_source_character"]) == (
+        "author",
+        None,
+    )
+    kitchen = c.at(people["Cal"], places["kitchen"], 0, None)
+    told = await ps.transit(
+        engine, story, ann, kitchen, cause=transitions.Kind.TESTIMONY, source=bobby
+    )
+    found = await ps.transit(
+        engine,
+        story,
+        ann,
+        c.at(people["Ann"], places["school"], 0, None),
+        cause=transitions.Kind.DISCOVERY,
+        source=cal,
+    )
+    assert found.transition.source_character_id == cal
+
+    with retrieval.statements(surface.engine.db) as seen:
+        read = await surface.inspect("beliefs", story, viewpoint="omniscient", character=ann)
+    assert read.status == 200, read.code
+    items = {b["belief_id"]: b for b in read.json["beliefs"]}
+    expected = {
+        directed["id"]: (directed["provenance"], "author", None),
+        told.belief.id: (told.transition.id, "testimony", bobby),
+        found.belief.id: (found.transition.id, "discovery", None),
+    }
+    assert {
+        i: (b["provenance"], b["provenance_kind"], b["provenance_source_character"])
+        for i, b in items.items()
+    } == expected
+    # One batched read of the page's producing transitions, not one per belief.
+    assert len(seen.reading("belief_transitions")) == 1, seen.reading("belief_transitions")
+
+    # The admin write changes Ann's testimony belief in place: it keeps its producing transition.
+    again = await surface.write_belief(
+        story,
+        {
+            "holder": ann,
+            "proposition": kitchen.model_dump(mode="json"),
+            "confidence_level": "known",
+        },
+    )
+    assert again.status == 201, again.code
+    changed = again.json["belief"]
+    assert (changed["id"], again.json["transition"]["kind"]) == (told.belief.id, "author")
+    assert (
+        changed["provenance"],
+        changed["provenance_kind"],
+        changed["provenance_source_character"],
+    ) == (told.transition.id, "testimony", bobby)
 
 
 def _references(path: Path) -> set[str]:

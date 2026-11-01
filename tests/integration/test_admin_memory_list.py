@@ -186,3 +186,31 @@ async def test_list_memories(
             f"{ADMIN_PREFIX}/stories/{UNKNOWN}/memories", params=OMNISCIENT, headers=bearer()
         )
         assert unknown.status_code == 404, unknown.text
+
+
+async def test_list_memories__one_story_only(
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#668: the list is the named story's memories only. Two stories with three bulk turns
+    each: listing either returns its own three memories and none of the other's (unfiltered,
+    with a filter, and paged)."""
+    worlds = [await cs.story(engine, cs.dials()) for _ in range(2)]
+    own: list[list[str]] = []
+    for w in worlds:
+        bobby = w.characters["Bobby"]
+        turns = await cs.bulk_turns(engine, w.story_id, 3, actor=bobby, name="Bobby")
+        own.append(sorted(t.memory_id for t in turns))
+    assert not set(own[0]) & set(own[1])
+
+    async with respond_client(auth_settings(pg_url, model_adapter="stub"), engine) as (
+        client,
+        _epistrel,
+    ):
+        for w, mine in zip(worlds, own, strict=True):
+            path = f"{ADMIN_PREFIX}/stories/{w.story_id}/memories"
+            cases: list[tuple[dict[str, Any], int]] = [({}, 3), ({"kind": "episodic"}, 3)]
+            for params, count in [*cases, ({"limit": 2}, 2)]:
+                found = await client.get(path, params={**OMNISCIENT, **params}, headers=bearer())
+                assert found.status_code == 200, found.text
+                listed = [m["id"] for m in found.json()["memories"]]
+                assert listed == mine[:count], params

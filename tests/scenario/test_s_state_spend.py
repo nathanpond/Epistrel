@@ -20,6 +20,9 @@ adapter, Mira's render scripted by name and the narrator's by its contract line.
   deterministic rung (the attempt narrated as refused, the effect dropped). The value is never
   negative, on ``state_values`` and on the fold. Complement: with 600 gold the same purchase
   commits.
+- ``test_s_state_spend__refused_effects`` (#669): an effect on an unknown State, another story's
+  State, ``world_clock``, a ``delta`` on a text State and a character's effect on a hidden
+  State are each ``invalid_structure``; the narrator's effect on the hidden State commits.
 """
 
 from __future__ import annotations
@@ -334,3 +337,76 @@ async def test_s_state_insufficient(
         assert [(e["old_value"], e["new_value"]) for e in turn["state_effects"]] == [(600, 100)]
         assert not es.regenerations(stub)
         assert await es.gold_of(engine, story, cal) == 100
+
+
+def _rumor() -> Any:
+    from epistrel.core.states import StateDefinition
+
+    return StateDefinition.model_validate(
+        {
+            "name": "rumor",
+            "type": "text",
+            "scope": "story",
+            "initial_value": "none",
+            "authorization": es.ANY_CHARACTER,
+        }
+    )
+
+
+@pytest.mark.part("M6", "FR-STATE-1,4,5; FR-TURN-11; FR-RESP-7")
+async def test_s_state_spend__refused_effects(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#669 (#187): the turn contract refuses each structurally wrong State effect.
+
+    Mira's render declares, one turn each: an effect on a State the story does not have, on
+    another story's State (``favor``, defined only in a second shop), on ``world_clock``, a
+    ``delta`` on a text State and an effect on the hidden ``suspicion``. Each is 503
+    ``invalid_structure`` naming its error, and no value moves. Complement: the narrator's
+    effect on ``suspicion`` commits."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids = await es.shop(
+            client, engine, es.gold(), es.suspicion(), _rumor(), gold_of_player=1000
+        )
+        cal = ids["Cal"]
+        await es.shop(client, engine, es.gold(name="favor", aliases=()))
+        refusals = [
+            (es.effect("purse", delta=-5), "not one of the story's States"),
+            (es.effect("favor", scope_key=cal, delta=-5), "not one of the story's States"),
+            (es.effect("world_clock", delta=30), "moves only by a time advance"),
+            (es.effect("rumor", delta=1), "a delta applies to a number State"),
+            (es.effect("suspicion", delta=1), "changes only through the narrator"),
+        ]
+        for declared, error in refusals:
+            stub.reset()
+            ms.renders_for(stub, "Mira", es.render(beat("do", SOLD, effects=[declared])))
+            es.narrator(stub, es.render(beat("narration", "Smoke curls.")))
+            refused = await respond(client, story, body(cal, None, do="asks for a nail"))
+            assert refused.status_code == 503, (error, refused.text)
+            details = refused.json()["error"]["details"]
+            assert details["reason"] == "invalid_structure", error
+            assert any(error in e for e in details["structural_errors"]), (error, details)
+        assert await es.gold_of(engine, story, cal) == 1000
+        assert await ss.value(engine, story, "suspicion", None) == 0
+        assert await ss.value(engine, story, "rumor", None) == "none"
+        assert not await es.turn_changes(engine, story)
+
+        # -- Complement: the narrator's effect on the hidden State commits.
+        stub.reset()
+        ms.renders_for(stub, "Mira", es.render(beat("do", "Mira shrugs.")))
+        es.narrator(
+            stub,
+            es.render(
+                beat(
+                    "narration",
+                    "A draught stirs the forge.",
+                    effects=[es.effect("suspicion", delta=1, reason="a stranger lingers")],
+                )
+            ),
+        )
+        await _play(client, story, cal, "waits by the forge")
+        assert await ss.value(engine, story, "suspicion", None) == 1

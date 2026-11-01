@@ -1874,7 +1874,7 @@ async def _check_turn(
     )
     outcomes: list[DetectionOutcome] = []
     input_beats = [
-        DetectBeat(1, channel, text, input_speaker)
+        DetectBeat(1, channel, text, input_speaker, input=True)
         for channel, text in ((SAY, say), (DO, do))
         if text
     ]

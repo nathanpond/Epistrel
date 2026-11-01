@@ -4,15 +4,18 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from epistrel.core.antecedents import RecordAntecedent
 from epistrel.core.ids import new_ulid
 from epistrel.core.membership import Position
 from epistrel.core.propositions.model import Interval, Proposition
+from epistrel.orchestrator.models.prompts import make_environment
+from epistrel.orchestrator.models.structured import parse
 from epistrel.orchestrator.structured import steps as s
 from epistrel.orchestrator.structured.render import render_schema
 
@@ -76,6 +79,39 @@ def test_render_steps__structure() -> None:
             _render(beats, steps)
     with pytest.raises(ValidationError, match="only a character"):
         _render([{"kind": "narration", "text": "Rain."}], [GOOD[2]], actor=None)
+
+
+def test_render_steps__no_steps_correction() -> None:
+    """#612: a render that names a ``step`` but declares no ``steps`` is still refused (the
+    validation is not loosened), and the correction the retry is sent names the remedy, for a
+    beat's ``step`` and for a ``time_advance``'s. The step contract and the time contract tell
+    the model up front that a reply with no ``steps`` leaves ``step`` out."""
+    schema = render_schema(
+        actor_id="jenni", player_id="cal", cast_ids=["jenni"], max_beats=6, clock_level="on"
+    )
+    advance = {"kind": "time_advance", "state": "world_clock", "minutes": 5, "reason": "a walk"}
+    remedy = "leave `step` out, or declare the `steps` it names"
+    for beat, where in (
+        ({"kind": "do", "text": "She heads for the ferry.", "step": 1}, "beats.0.step"),
+        (
+            {"kind": "do", "text": "She heads for the ferry.", "effects": [{**advance, "step": 1}]},
+            "beats.0.effects.0.step",
+        ),
+    ):
+        failure = parse(json.dumps({"beats": [beat]}), schema)
+        assert not isinstance(failure, BaseModel)
+        assert failure.reason == "schema_error"
+        assert f"{where}: the render declares no steps ({remedy})" in failure.problem
+    unmarked = {"kind": "do", "text": "She heads for the ferry.", "effects": [advance]}
+    assert isinstance(parse(json.dumps({"beats": [unmarked]}), schema), BaseModel)
+
+    environment = make_environment()
+    contract = environment.get_template("steps_contract.j2").render(belief_steps=True)
+    assert "when nothing you believe changes, declare no `steps` and leave `step` out" in contract
+    clock = environment.get_template("clock_contract.j2").render(
+        clock_contract=True, voiced_characters=True
+    )
+    assert "Without declared `steps`, leave `step` out." in clock
 
 
 IDS = {name: new_ulid() for name in ("bridge", "condition")}

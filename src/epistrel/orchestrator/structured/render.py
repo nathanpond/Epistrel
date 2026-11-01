@@ -685,6 +685,10 @@ class StepDecl(_Strict):
 _OWNING = frozenset({"act", "time"})
 """The step kinds that own beats (#168's ``act``, #194's ``time``)."""
 
+_NO_STEPS_REMEDY = " (leave `step` out, or declare the `steps` it names)"
+"""#612: the no-steps refusal names its remedy, so the correction a retry is sent (at
+``temperature=0``) can be acted on instead of repeated."""
+
 
 def _steps_structure(steps: Sequence[StepDecl], beats: Sequence[BeatDecl]) -> None:
     """The declared steps' structural rules (#168; see the module docstring): indices ``1..n``
@@ -694,10 +698,11 @@ def _steps_structure(steps: Sequence[StepDecl], beats: Sequence[BeatDecl]) -> No
     if not steps:
         for n, beat in enumerate(beats):
             if beat.step is not None:
-                raise ValueError(f"beats.{n}.step: the render declares no steps")
+                raise ValueError(f"beats.{n}.step: the render declares no steps{_NO_STEPS_REMEDY}")
             for m, effect in enumerate(beat.effects):
                 if effect.kind == TIME_ADVANCE and effect.step is not None:
-                    raise ValueError(f"beats.{n}.effects.{m}.step: the render declares no steps")
+                    where = f"beats.{n}.effects.{m}.step"
+                    raise ValueError(f"{where}: the render declares no steps{_NO_STEPS_REMEDY}")
         return
     indices = [s.index for s in steps]
     if indices != list(range(1, len(steps) + 1)):

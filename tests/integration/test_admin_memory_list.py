@@ -208,8 +208,9 @@ async def test_list_memories__one_story_only(
     ):
         for w, mine in zip(worlds, own, strict=True):
             path = f"{ADMIN_PREFIX}/stories/{w.story_id}/memories"
-            for params in ({}, {"kind": "episodic"}, {"limit": 2}):
+            cases: list[tuple[dict[str, Any], int]] = [({}, 3), ({"kind": "episodic"}, 3)]
+            for params, count in [*cases, ({"limit": 2}, 2)]:
                 found = await client.get(path, params={**OMNISCIENT, **params}, headers=bearer())
                 assert found.status_code == 200, found.text
                 listed = [m["id"] for m in found.json()["memories"]]
-                assert listed == mine[: params.get("limit", 3)], params
+                assert listed == mine[:count], params

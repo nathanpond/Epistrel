@@ -656,6 +656,38 @@ StepKind = Literal["observe", "believe", "act", "time"]
 ConfidenceName = Literal["unknown", "suspected", "believed", "known"]
 
 
+_STEP_FIELDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "observe": (("index", "kind", "proposition"), ("proposition",)),
+    "believe": (("index", "kind", "cites", "proposition", "confidence"), ("proposition",)),
+    "act": (("index", "kind", "cites", "proposition"), ()),
+    "time": (("index", "kind"), ()),
+}
+"""#612: each step kind's fields and the ones it requires, ``_steps_structure``'s rules: only a
+``believe`` declares a ``confidence``, an ``observe`` and a ``time`` cite nothing, a ``time``
+names no proposition, an ``observe`` and a ``believe`` name one."""
+
+
+def _per_step_kind(schema: dict[str, Any]) -> None:
+    """A step's JSON Schema as one alternative per kind (#612, as ``_per_kind`` does for beats,
+    #480), so constrained decoding cannot write the field a step kind may not declare (the
+    validator still enforces it)."""
+    properties: dict[str, Any] = schema["properties"]
+    schema["anyOf"] = [
+        {
+            "type": "object",
+            "properties": {
+                **{name: properties[name] for name in fields},
+                "kind": {**properties["kind"], "enum": [kind]},
+            },
+            "required": ["index", "kind", *required],
+            "additionalProperties": False,
+        }
+        for kind, (fields, required) in _STEP_FIELDS.items()
+    ]
+    for key in ("properties", "required", "additionalProperties", "type"):
+        schema.pop(key, None)
+
+
 class StepDecl(_Strict):
     """One declared causal step of a character's render (#168, FR-TURN-12): ``observe`` (what
     the character perceives: a ``proposition``), ``believe`` (what it concludes: a
@@ -664,6 +696,8 @@ class StepDecl(_Strict):
     FR-CLOCK-17: a step for timing alone, which cites nothing, writes no belief and owns the
     beats naming it like an ``act``; a time advance attaches to it). ``confidence`` is a
     ``believe``'s (``believed`` when left out)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, json_schema_extra=_per_step_kind)
 
     index: int = Field(ge=1, le=MAX_STEP_INDEX)
     kind: StepKind
@@ -713,7 +747,10 @@ def _steps_structure(steps: Sequence[StepDecl], beats: Sequence[BeatDecl]) -> No
         if step.kind in ("observe", "believe") and step.proposition is None:
             raise ValueError(f"{where}.proposition: an {step.kind} step names its proposition")
         if step.kind != "believe" and step.confidence is not None:
-            raise ValueError(f"{where}.confidence: only a believe step declares a confidence")
+            raise ValueError(
+                f"{where}.confidence: only a believe step declares a confidence"
+                f" (leave it out of the {step.kind} step)"
+            )
         if step.kind == "observe" and step.cites:
             raise ValueError(f"{where}.cites: an observe step cites nothing")
         if step.kind == "time" and (step.cites or step.proposition is not None):

@@ -611,8 +611,10 @@ CORE_PREDICATES: tuple[Predicate, ...] = (
         cardinality=_F,
         temporal_kind=_FLUENT,
         docs="A scheduled event's status (a `str` literal: `due`, `not_due`, `possibly_due`, "
-        "`past`). A clock check (#195): `uncertain` until scheduled events are kept (#196, "
-        "#197); with the clock off it is `uncertain(no_clock)`.",
+        "`past`). A clock check (#195): the anchor decides `due`, `possibly_due` and `not_due` "
+        "for an event at a known frame minute, never reporting `possibly_due` as `due` (#197); "
+        "a claim's check does not yet carry the event's minute, so a claim is "
+        "`uncertain(unresolved_time)` (#644); with the clock off it is `uncertain(no_clock)`.",
     ),
     _core(
         WORLD_CLOCK,
